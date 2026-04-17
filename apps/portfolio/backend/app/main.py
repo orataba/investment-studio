@@ -1,0 +1,139 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+
+from app.api.router import api_router
+from app.core.settings import get_settings
+
+settings = get_settings()
+DEFAULT_PORTFOLIO_ID = "yungu"
+
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    description="Portfolio management backend with portfolio, account, risk, and review surfaces.",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(api_router, prefix="/api")
+
+
+@app.get("/")
+def root() -> RedirectResponse:
+    return RedirectResponse(url=f"{settings.frontend_url}/portfolios", status_code=307)
+
+
+@app.get("/portfolios")
+def portfolios_page() -> RedirectResponse:
+    return RedirectResponse(url=f"{settings.frontend_url}/portfolios", status_code=307)
+
+
+@app.get("/portfolios/{portfolio_id}")
+def portfolio_page(portfolio_id: str) -> RedirectResponse:
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/portfolios/{portfolio_id}/holdings",
+        status_code=307,
+    )
+
+
+@app.get("/portfolios/{portfolio_id}/{section_path:path}")
+def portfolio_section_page(portfolio_id: str, section_path: str) -> RedirectResponse:
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/portfolios/{portfolio_id}/{section_path}",
+        status_code=307,
+    )
+
+
+@app.get("/holdings")
+def holdings_page() -> RedirectResponse:
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/portfolios/{DEFAULT_PORTFOLIO_ID}/holdings",
+        status_code=307,
+    )
+
+
+@app.get("/snapshot")
+def snapshot_page() -> RedirectResponse:
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/portfolios/{DEFAULT_PORTFOLIO_ID}/snapshot",
+        status_code=307,
+    )
+
+
+@app.get("/accounts")
+def accounts_page() -> RedirectResponse:
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/portfolios/{DEFAULT_PORTFOLIO_ID}/accounts",
+        status_code=307,
+    )
+
+
+@app.get("/performance")
+def performance_page() -> RedirectResponse:
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/portfolios/{DEFAULT_PORTFOLIO_ID}/performance",
+        status_code=307,
+    )
+
+
+@app.get("/transactions")
+def transactions_page() -> RedirectResponse:
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/portfolios/{DEFAULT_PORTFOLIO_ID}/transactions",
+        status_code=307,
+    )
+
+
+@app.get("/research")
+def research_page() -> RedirectResponse:
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/portfolios/{DEFAULT_PORTFOLIO_ID}/research",
+        status_code=307,
+    )
+
+
+@app.get("/taxonomies")
+def taxonomies_page() -> RedirectResponse:
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/portfolios/{DEFAULT_PORTFOLIO_ID}/taxonomies",
+        status_code=307,
+    )
+
+
+@app.get("/x-ray")
+def xray_page() -> RedirectResponse:
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/portfolios/{DEFAULT_PORTFOLIO_ID}/snapshot",
+        status_code=307,
+    )
+
+
+@app.get("/stock-intersection")
+def stock_intersection_page() -> RedirectResponse:
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/portfolios/{DEFAULT_PORTFOLIO_ID}/holdings",
+        status_code=307,
+    )
+
+
+@app.get("/risk")
+def risk_page() -> RedirectResponse:
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/portfolios/{DEFAULT_PORTFOLIO_ID}/risk",
+        status_code=307,
+    )
+
+
+@app.get("/review")
+def review_page() -> RedirectResponse:
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/portfolios/{DEFAULT_PORTFOLIO_ID}/review",
+        status_code=307,
+    )

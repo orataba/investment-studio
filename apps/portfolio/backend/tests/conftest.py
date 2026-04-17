@@ -1,0 +1,273 @@
+from __future__ import annotations
+
+import importlib
+import json
+import sys
+from copy import deepcopy
+from pathlib import Path
+
+from alembic import command
+from alembic.config import Config
+import pytest
+from fastapi.testclient import TestClient
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT_STR = str(BACKEND_ROOT)
+if BACKEND_ROOT_STR in sys.path:
+    sys.path.remove(BACKEND_ROOT_STR)
+sys.path.insert(0, BACKEND_ROOT_STR)
+
+from tests.store_fixture import TEST_PORTFOLIO_STORE
+
+from app.api.routes import transactions as transaction_routes
+from app.services import asset_charts, ledger, performance, portfolio_store
+
+
+def _market_point(
+    metric_family: str,
+    quote_basis: str,
+    as_of_date: str,
+    value: str,
+    currency: str,
+) -> dict[str, object]:
+    return {
+        "metric_family": metric_family,
+        "quote_basis": quote_basis,
+        "as_of_date": as_of_date,
+        "value": value,
+        "currency": currency,
+        "status": "complete",
+    }
+
+
+REGISTRY_INSTRUMENT_DETAILS = [
+    {
+        "asset_id": "equity-us-abbv",
+        "asset_name": "AbbVie Inc",
+        "asset_type": "equity",
+        "currency": "USD",
+        "identifiers": [
+            {"identifier_type": "ticker", "identifier_value": "ABBV", "is_primary": True},
+            {"identifier_type": "isin", "identifier_value": "US00287Y1091", "is_primary": False},
+        ],
+        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
+        "market_data": [
+            _market_point("price", "close", "2026-02-10", "206.47", "USD"),
+            _market_point("price", "close", "2026-03-15", "210.20", "USD"),
+            _market_point("price", "close", "2026-04-08", "207.18", "USD"),
+            _market_point("price", "close", "2026-04-15", "206.47", "USD"),
+        ],
+    },
+    {
+        "asset_id": "fund-us-agg",
+        "asset_name": "iShares Core U.S. Aggregate Bond ETF",
+        "asset_type": "fund",
+        "currency": "USD",
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": "AGG", "is_primary": True}],
+        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
+        "market_data": [
+            _market_point("price", "close", "2026-03-05", "96.82", "USD"),
+            _market_point("price", "close", "2026-03-28", "97.62", "USD"),
+            _market_point("price", "close", "2026-04-14", "96.97", "USD"),
+            _market_point("price", "close", "2026-04-15", "91.62", "USD"),
+        ],
+    },
+    {
+        "asset_id": "fund-hk-2800",
+        "asset_name": "Tracker Fund of Hong Kong",
+        "asset_type": "fund",
+        "currency": "HKD",
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": "2800.HK", "is_primary": True}],
+        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
+        "market_data": [
+            _market_point("price", "close", "2026-03-04", "21.30", "HKD"),
+            _market_point("price", "close", "2026-04-02", "21.05", "HKD"),
+            _market_point("price", "close", "2026-04-15", "21.34", "HKD"),
+        ],
+    },
+    {
+        "asset_id": "fx-usd-hkd",
+        "asset_name": "USD/HKD Spot",
+        "asset_type": "fx",
+        "currency": "HKD",
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": "USDHKD", "is_primary": True}],
+        "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
+        "market_data": [
+            _market_point("fx", "spot", "2026-02-20", "7.80", "HKD"),
+            _market_point("fx", "spot", "2026-03-04", "7.79", "HKD"),
+            _market_point("fx", "spot", "2026-04-02", "7.82", "HKD"),
+            _market_point("fx", "spot", "2026-04-15", "7.80", "HKD"),
+        ],
+    },
+    {
+        "asset_id": "fx-usd-cny",
+        "asset_name": "USD/CNY Spot",
+        "asset_type": "fx",
+        "currency": "CNY",
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": "USDCNY", "is_primary": True}],
+        "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
+        "market_data": [
+            _market_point("fx", "spot", "2026-04-02", "7.29", "CNY"),
+            _market_point("fx", "spot", "2026-04-15", "7.20", "CNY"),
+        ],
+    },
+]
+
+
+def _latest_market_data(detail: dict[str, object]) -> list[dict[str, object]]:
+    latest_by_basis: dict[str, dict[str, object]] = {}
+    for point in detail.get("market_data", []):
+        if not isinstance(point, dict):
+            continue
+        basis = str(point.get("quote_basis") or "")
+        if not basis:
+            continue
+        current = latest_by_basis.get(basis)
+        if current is None or str(point.get("as_of_date") or "") >= str(current.get("as_of_date") or ""):
+            latest_by_basis[basis] = point
+    return [deepcopy(item) for item in latest_by_basis.values()]
+
+
+REGISTRY_INSTRUMENTS = [
+    {
+        **{
+            key: deepcopy(value)
+            for key, value in detail.items()
+            if key != "market_data"
+        },
+        "latest_market_data": _latest_market_data(detail),
+    }
+    for detail in REGISTRY_INSTRUMENT_DETAILS
+]
+
+
+FX_PAYLOAD = {
+    "supported_currencies": ["USD", "HKD", "CNY"],
+    "maintained_pairs": ["USD/HKD", "USD/CNY"],
+    "rates": [
+        {
+            "base_currency": "USD",
+            "quote_currency": "HKD",
+            "rate": 7.8,
+            "as_of_date": "2026-04-15",
+            "source_kind": "direct",
+            "asset_id": "fx-usd-hkd",
+            "source_asset_ids": ["fx-usd-hkd"],
+            "provider": "test",
+            "status": "complete",
+        },
+        {
+            "base_currency": "HKD",
+            "quote_currency": "USD",
+            "rate": 1 / 7.8,
+            "as_of_date": "2026-04-15",
+            "source_kind": "inverse",
+            "asset_id": "fx-usd-hkd",
+            "source_asset_ids": ["fx-usd-hkd"],
+            "provider": "test",
+            "status": "complete",
+        },
+        {
+            "base_currency": "USD",
+            "quote_currency": "CNY",
+            "rate": 7.2,
+            "as_of_date": "2026-04-15",
+            "source_kind": "direct",
+            "asset_id": "fx-usd-cny",
+            "source_asset_ids": ["fx-usd-cny"],
+            "provider": "test",
+            "status": "complete",
+        },
+        {
+            "base_currency": "CNY",
+            "quote_currency": "USD",
+            "rate": 1 / 7.2,
+            "as_of_date": "2026-04-15",
+            "source_kind": "inverse",
+            "asset_id": "fx-usd-cny",
+            "source_asset_ids": ["fx-usd-cny"],
+            "provider": "test",
+            "status": "complete",
+        },
+        {
+            "base_currency": "HKD",
+            "quote_currency": "CNY",
+            "rate": 7.2 / 7.8,
+            "as_of_date": "2026-04-15",
+            "source_kind": "cross",
+            "asset_id": None,
+            "source_asset_ids": ["fx-usd-hkd", "fx-usd-cny"],
+            "provider": "test",
+            "status": "complete",
+        },
+        {
+            "base_currency": "CNY",
+            "quote_currency": "HKD",
+            "rate": 7.8 / 7.2,
+            "as_of_date": "2026-04-15",
+            "source_kind": "cross",
+            "asset_id": None,
+            "source_asset_ids": ["fx-usd-hkd", "fx-usd-cny"],
+            "provider": "test",
+            "status": "complete",
+        },
+    ],
+}
+
+
+def _run_alembic_upgrade(database_url: str) -> None:
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "head")
+
+
+def _get_registry_instrument(asset_id: str):
+    return deepcopy(next((item for item in REGISTRY_INSTRUMENTS if item["asset_id"] == asset_id), None))
+
+
+def _get_registry_instrument_detail(asset_id: str):
+    return deepcopy(next((item for item in REGISTRY_INSTRUMENT_DETAILS if item["asset_id"] == asset_id), None))
+
+
+@pytest.fixture(autouse=True)
+def isolated_portfolio_store(tmp_path, monkeypatch):
+    database_path = tmp_path / "portfolio.db"
+    database_url = f"sqlite+pysqlite:///{database_path}"
+    research_outputs_root = tmp_path / "research_outputs"
+    monkeypatch.setenv("YUNGU_PORTFOLIO_DATABASE_URL", database_url)
+    monkeypatch.setenv("YUNGU_PORTFOLIO_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("YUNGU_PORTFOLIO_RESEARCH_OUTPUTS_ROOT", str(research_outputs_root))
+
+    from app.core import settings as settings_module
+    from app.db import session as session_module
+
+    settings_module.get_settings.cache_clear()
+    session_module.get_engine.cache_clear()
+    session_module.get_session_factory.cache_clear()
+
+    _run_alembic_upgrade(database_url)
+    portfolio_store.reset_store(deepcopy(TEST_PORTFOLIO_STORE))
+
+    monkeypatch.setattr(transaction_routes, "get_registry_instrument", _get_registry_instrument)
+    monkeypatch.setattr(asset_charts, "get_registry_instrument_detail", _get_registry_instrument_detail)
+    monkeypatch.setattr(ledger, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))
+    monkeypatch.setattr(ledger, "get_registry_instrument_detail", _get_registry_instrument_detail)
+    monkeypatch.setattr(ledger, "get_platform_fx_rates", lambda: deepcopy(FX_PAYLOAD))
+    monkeypatch.setattr(performance, "get_registry_instrument_detail", _get_registry_instrument_detail)
+    monkeypatch.setattr(performance, "get_platform_fx_rates", lambda: deepcopy(FX_PAYLOAD))
+
+    yield
+
+    settings_module.get_settings.cache_clear()
+    session_module.get_engine.cache_clear()
+    session_module.get_session_factory.cache_clear()
+
+
+@pytest.fixture
+def client():
+    import app.main as main_module
+
+    main_module = importlib.reload(main_module)
+    with TestClient(main_module.app) as test_client:
+        yield test_client

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yungu-portfolio-backend"
+version = "0.1.0"
+description = "Yungu Portfolio backend"
+readme = "../README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic>=1.16,<2.0",
+  "fastapi>=0.115,<1.0",
+  "numpy>=1.26,<3.0",
+  "pandas>=2.2,<3.0",
+  "pydantic-settings>=2.10,<3.0",
+  "psycopg[binary]>=3.2,<4.0",
+  "scipy>=1.13,<2.0",
+  "sqlalchemy>=2.0,<3.0",
+  "uvicorn[standard]>=0.34,<1.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+addopts = "--capture=no tests"
+testpaths = ["tests"]

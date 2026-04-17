@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: yungu-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: yungu
+      POSTGRES_USER: yungu
+      POSTGRES_PASSWORD: yungu
+    ports:
+      - "5432:5432"
+    volumes:
+      - yungu-postgres-data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+
+volumes:
+  yungu-postgres-data:

@@ -1,0 +1,2 @@
+"""Yungu Portfolio backend app."""
+
