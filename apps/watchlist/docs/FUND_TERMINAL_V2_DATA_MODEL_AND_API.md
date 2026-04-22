@@ -281,13 +281,17 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 
 - `/watchlists`
 - `/watchlists/:watchlistId`
-- `/watchlists/:watchlistId/instruments/:assetId`
-- `/instruments`
+- `/instruments/:assetId`
 - `/research`
 - `/documents`
 - `/monitoring`
 
-旧 `/funds/*` 前端路由也已经删除。
+说明：
+
+- 详情页 canonical 路由已经收口到 `/instruments/:assetId`
+- `watchlist` 来源只作为 query context 透传，不再进入主路径
+- watchlist 不再提供独立的 shared registry 页面；共享资产浏览与维护统一放在 `Database Dashboard`
+- 旧 `/funds/*` 前端路由已删除
 
 ## 8. 当前明确不再维护的东西
 

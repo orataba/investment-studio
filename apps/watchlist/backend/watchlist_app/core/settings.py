@@ -22,15 +22,6 @@ class Settings(BaseSettings):
     recalc_worker_poll_interval_seconds: float = 1.0
     recalc_worker_shutdown_timeout_seconds: float = 5.0
     recalc_worker_running_job_timeout_seconds: float = 300.0
-    email_sync_enabled: bool = False
-    email_imap_host: str | None = None
-    email_imap_port: int = 993
-    email_imap_username: str | None = None
-    email_imap_password: str | None = None
-    email_imap_folder: str = "INBOX"
-    email_imap_use_ssl: bool = True
-    email_imap_max_messages: int = 20
-    email_imap_mark_seen: bool = False
     copilot_provider: str = "stub"
     copilot_openai_model: str = "gpt-5.4"
     copilot_openai_api_key: str | None = None
@@ -80,10 +71,6 @@ class Settings(BaseSettings):
     @property
     def migration_database_url(self) -> str:
         return self.alembic_database_url or self.database_url
-
-    @property
-    def email_sync_ready(self) -> bool:
-        return bool(self.email_imap_host and self.email_imap_username and self.email_imap_password)
 
 
 @lru_cache

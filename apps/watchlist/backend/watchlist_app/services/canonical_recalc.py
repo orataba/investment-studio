@@ -59,10 +59,6 @@ NAV_BASIS_PRIORITY = ("nav_with_dividend", "nav")
 def _default_nav_settings() -> dict[str, Any]:
     return {
         "nav_basis_preference": "auto",
-        "source_mode": "manual",
-        "source_email": "",
-        "source_location": "Manual upload",
-        "source_api_profile": "",
         "default_benchmark_asset_id": None,
         "peer_baseline_asset_ids": [],
     }
@@ -75,11 +71,6 @@ def _normalize_nav_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
     }
     if normalized.get("nav_basis_preference") not in {"auto", "nav_with_dividend", "nav"}:
         normalized["nav_basis_preference"] = "auto"
-    if normalized.get("source_mode") not in {"manual", "email", "api"}:
-        normalized["source_mode"] = "manual"
-    normalized["source_email"] = str(normalized.get("source_email") or "")
-    normalized["source_location"] = str(normalized.get("source_location") or "Manual upload")
-    normalized["source_api_profile"] = str(normalized.get("source_api_profile") or "")
     normalized["default_benchmark_asset_id"] = (
         str(normalized.get("default_benchmark_asset_id")).strip() or None
         if normalized.get("default_benchmark_asset_id") is not None
@@ -862,12 +853,6 @@ class CanonicalRecalcService:
             "nav_basis_type": selection["nav_basis_type"],
             "nav_basis_source": selection["nav_basis_source"],
             "nav_basis_status": selection["nav_basis_status"],
-            "source_settings": {
-                "source_mode": str(nav_settings.get("source_mode", "manual")),
-                "source_email": str(nav_settings.get("source_email", "")),
-                "source_location": str(nav_settings.get("source_location", "Manual upload")),
-                "source_api_profile": str(nav_settings.get("source_api_profile", "")),
-            },
             "compare_settings": {
                 "default_benchmark_asset_id": nav_settings.get("default_benchmark_asset_id"),
                 "peer_asset_ids": list(nav_settings.get("peer_baseline_asset_ids") or []),

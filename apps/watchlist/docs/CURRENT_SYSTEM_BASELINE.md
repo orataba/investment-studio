@@ -21,10 +21,8 @@
 
 - `/watchlists`
   当前主入口，已经接上 watchlist、views、screener。
-- `/watchlists/:watchlistId/instruments/:assetId`
-  当前详情页入口，先做 instrument dispatch，再进入 fund overlay。
-- `/instruments`
-  当前共享资产库入口，已经可以按关键词和资产类型浏览 shared registry。
+- `/instruments/:assetId`
+  当前详情页 canonical 入口，先做 instrument dispatch，再进入 fund overlay；来源 watchlist 只作为 query context 传递，不再进入主路径。
 - `/monitoring`
   当前可用工作面，覆盖 freshness、缺失 label、open recalc job。
 
@@ -63,10 +61,11 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 - 当前页 add / delete / move 后，filter 选项会重新拉取
 - watchlist `move` / `copy` 必须先命中 source watchlist membership，不能绕过 source 直接向 target 加资产
 - 自定义 view 的 `view_id` 会做 path-safe slug 化；创建冲突会重试；复制 watchlist 时也会清洗 legacy custom view id
-- canonical NAV history 在 watchlist detail 是只读视图；导入、刷新、编辑共享净值要回到 `Platform / Instruments`
+- canonical NAV history 在 watchlist detail 是只读视图；导入、刷新、编辑共享净值要回到 `Database Dashboard`
 - monitoring 的缺失项检查是 taxonomy-aware，只检查当前分类下适用且 `required_for_monitoring` 的字段
 - 后端 API 已统一到 `instrument` 主语；旧 `/api/funds/...` 兼容路由已删除
-- 前端路由也只保留 `/watchlists/.../instruments/...` 和 `/instruments`
+- 前端详情 canonical 路由是 `/instruments/:assetId`
+- watchlist 不再单独提供共享资产库页面；共享资产浏览和维护统一回到 `Database Dashboard`
 - stale read repair 现在写 durable recalc job，并由后台 worker 自动消费；worker 会回收超时 `running` job，Web 请求只负责发现 stale，不直接补算
 - 产品框架的示例标签值不再在 migration 或运行时自动注入；watchlist 数据只保留显式录入和值得追溯的派生结果
 
@@ -113,7 +112,7 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 
 - non-fund instrument detail overlay
 - Documents workspace 的完整工作面
-- Email sync / OCR / extraction pipeline 的完整闭环
+- Database Dashboard 侧 Email sync / OCR / extraction pipeline 的完整闭环
 - 真实 OpenAI provider 已启用且对用户开放的 Copilot
 
 ## 8. 继续推进时建议按什么顺序做

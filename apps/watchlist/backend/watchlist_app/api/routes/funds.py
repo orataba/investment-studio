@@ -127,10 +127,6 @@ def _default_research_payload() -> dict[str, object]:
 def _default_nav_settings_payload() -> dict[str, object]:
     return {
         "nav_basis_preference": "auto",
-        "source_mode": "manual",
-        "source_email": "",
-        "source_location": "Manual upload",
-        "source_api_profile": "",
         "default_benchmark_asset_id": None,
         "peer_baseline_asset_ids": [],
     }
@@ -143,11 +139,6 @@ def _normalize_nav_settings_payload(payload: dict[str, object] | None) -> dict[s
     }
     if normalized.get("nav_basis_preference") not in {"auto", "nav_with_dividend", "nav"}:
         normalized["nav_basis_preference"] = "auto"
-    if normalized.get("source_mode") not in {"manual", "email", "api"}:
-        normalized["source_mode"] = "manual"
-    normalized["source_email"] = str(normalized.get("source_email") or "")
-    normalized["source_location"] = str(normalized.get("source_location") or "Manual upload")
-    normalized["source_api_profile"] = str(normalized.get("source_api_profile") or "")
     normalized["default_benchmark_asset_id"] = (
         str(normalized.get("default_benchmark_asset_id")).strip() or None
         if normalized.get("default_benchmark_asset_id") is not None
@@ -219,7 +210,7 @@ def create_manual_fund(
         status_code=410,
         detail=(
             "Manual fund creation is no longer supported in Watchlist. "
-            "Create the asset in Platform / Instruments, then add it from the shared registry."
+            "Create the asset in Database Dashboard, then add it from the shared registry."
         ),
     )
 
@@ -467,8 +458,8 @@ def upsert_fund_nav_series(
     raise HTTPException(
         status_code=409,
         detail=(
-            "Canonical NAV series is now owned by shared data ops. "
-            "Use Platform / Instruments to import or edit shared market data."
+            "Canonical NAV series is now owned by Database Dashboard. "
+            "Use Database Dashboard to import or edit shared market data."
         ),
     )
 
@@ -501,14 +492,6 @@ def upsert_fund_nav_settings(
     provided_fields = payload.model_fields_set
     if "nav_basis_preference" in provided_fields:
         next_payload["nav_basis_preference"] = payload.nav_basis_preference
-    if "source_mode" in provided_fields:
-        next_payload["source_mode"] = payload.source_mode
-    if "source_email" in provided_fields:
-        next_payload["source_email"] = payload.source_email
-    if "source_location" in provided_fields:
-        next_payload["source_location"] = payload.source_location
-    if "source_api_profile" in provided_fields:
-        next_payload["source_api_profile"] = payload.source_api_profile
     if "default_benchmark_asset_id" in provided_fields:
         next_payload["default_benchmark_asset_id"] = payload.default_benchmark_asset_id
     if "peer_baseline_asset_ids" in provided_fields:
@@ -550,7 +533,7 @@ def trigger_fund_nav_refresh(
     raise HTTPException(
         status_code=409,
         detail=(
-            "NAV refresh now runs from shared data ops. "
-            "Use Platform / Instruments to trigger the shared market data refresh."
+            "NAV refresh now runs from Database Dashboard. "
+            "Use Database Dashboard to trigger the shared market data refresh."
         ),
     )

@@ -10,11 +10,19 @@ from platform_app.api.contracts import (
     PlatformInstrumentRecord,
     PlatformInstrumentsResponse,
     PlatformMarketDataUpsertRequest,
+    PlatformNavImportFileRequest,
+    PlatformNavImportPreviewRequest,
+    PlatformNavImportPreviewResponse,
     PlatformNavImportRequest,
     PlatformRefreshTriggerRequest,
     PlatformSourceSettingsUpdateRequest,
 )
-from platform_app.services.market_data_ops import import_nav_text, refresh_market_data
+from platform_app.services.market_data_ops import (
+    import_nav_file,
+    import_nav_text,
+    preview_nav_import,
+    refresh_market_data,
+)
 from platform_app.services.instrument_store import (
     archive_instrument,
     create_instrument,
@@ -183,6 +191,52 @@ def import_instrument_nav_history(
         record = import_nav_text(
             asset_id=asset_id,
             raw_text=payload.raw_text,
+            provider=payload.provider,
+            status=payload.status,
+            updated_by=payload.updated_by,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if record is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    return PlatformInstrumentRecord.model_validate(record)
+
+
+@router.post(
+    "/{asset_id}/nav-import/preview",
+    response_model=PlatformNavImportPreviewResponse,
+)
+def preview_instrument_nav_history(
+    asset_id: str,
+    payload: PlatformNavImportPreviewRequest,
+) -> PlatformNavImportPreviewResponse:
+    try:
+        rows = preview_nav_import(
+            asset_id=asset_id,
+            raw_text=payload.raw_text,
+            file_name=payload.file_name,
+            file_bytes=payload.decoded_bytes(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if rows is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    return PlatformNavImportPreviewResponse(
+        row_count=len(rows),
+        rows=rows,
+    )
+
+
+@router.post("/{asset_id}/nav-import/file", response_model=PlatformInstrumentRecord)
+def import_instrument_nav_history_file(
+    asset_id: str,
+    payload: PlatformNavImportFileRequest,
+) -> PlatformInstrumentRecord:
+    try:
+        record = import_nav_file(
+            asset_id=asset_id,
+            file_name=payload.file_name,
+            file_bytes=payload.decoded_bytes(),
             provider=payload.provider,
             status=payload.status,
             updated_by=payload.updated_by,

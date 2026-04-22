@@ -39,6 +39,6 @@ def portfolio_page() -> RedirectResponse:
     return RedirectResponse(url=settings.portfolio_url, status_code=307)
 
 
-@app.get("/instruments")
-def instruments_page() -> RedirectResponse:
-    return RedirectResponse(url=f"{settings.frontend_url}/instruments", status_code=307)
+@app.get("/database-dashboard")
+def database_dashboard_page() -> RedirectResponse:
+    return RedirectResponse(url=f"{settings.frontend_url}/database-dashboard", status_code=307)

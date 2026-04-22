@@ -632,7 +632,7 @@ def add_items_to_watchlist(
             status_code=404,
             detail=(
                 f'Instrument not found in shared registry: {missing_label}. '
-                "Add the asset in Platform / Instruments first."
+                "Add the asset in Database Dashboard first."
             ),
         )
     if unsupported_asset_ids:
@@ -641,7 +641,7 @@ def add_items_to_watchlist(
             status_code=400,
             detail=(
                 f"Watchlist currently supports fund instruments only: {unsupported_label}. "
-                "Use Platform / Instruments for shared master data, then add supported funds here."
+                "Use Database Dashboard for shared master data, then add supported funds here."
             ),
         )
 

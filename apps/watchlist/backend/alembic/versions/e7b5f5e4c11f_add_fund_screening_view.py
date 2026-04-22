@@ -1,4 +1,4 @@
-"""seed private fund screening view
+"""add fund screening view
 
 Revision ID: e7b5f5e4c11f
 Revises: d0f6c3a2b9ef
@@ -21,9 +21,9 @@ branch_labels = None
 depends_on = None
 
 
-VIEW_ID = "private-fund-screening"
-VIEW_NAME = "私募筛选"
-VIEW_DESCRIPTION = "按策略、风险行为与环境适配快速筛选私募产品。"
+VIEW_ID = "fund-screening"
+VIEW_NAME = "基金筛选"
+VIEW_DESCRIPTION = "按分类、研究标签和监控判断快速筛选基金。"
 VIEW_COLUMNS = [
     ("asset_name", 1, 320),
     ("attr.strategy_family", 2, 140),

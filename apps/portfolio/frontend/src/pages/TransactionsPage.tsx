@@ -2366,7 +2366,7 @@ export default function TransactionsPage() {
                     ))}
                     {!filteredInstrumentOptions.length ? (
                       <div className="empty-state">
-                        No registry instruments match the current search. Manage master data in Platform / Instruments.
+                        No registry instruments match the current search. Manage master data in Database Dashboard.
                       </div>
                     ) : null}
                   </div>

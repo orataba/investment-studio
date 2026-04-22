@@ -1,4 +1,4 @@
-"""seed latest quote watchlist fields
+"""add overview quote watchlist fields
 
 Revision ID: f6d4c7f0a9b1
 Revises: e7b5f5e4c11f

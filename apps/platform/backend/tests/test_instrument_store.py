@@ -22,6 +22,7 @@ from platform_app.services.instrument_store import (
     replace_nav_history,
     upsert_market_data,
 )
+from platform_app.services.market_data_ops import import_nav_file, preview_nav_import
 
 TEST_SHARED_STORE = {
     "registry_name": DEFAULT_REGISTRY_NAME,
@@ -274,5 +275,48 @@ def test_replace_nav_history_updates_shared_store_without_app_callbacks(
         point["quote_basis"] == "official_nav"
         and point["as_of_date"] == "2026-04-15"
         and point["value"] == "100.2000"
+        for point in record["latest_market_data"]
+    )
+
+
+def test_preview_nav_import_filters_rows_to_selected_instrument(
+    isolated_store: Path,
+) -> None:
+    rows = preview_nav_import(
+        asset_id="fund-us-agg",
+        raw_text=(
+            "date,asset_code,asset_name,nav,nav_with_dividend,currency\n"
+            "2026-04-15,AGG,iShares Core U.S. Aggregate Bond ETF,100.2,100.7,USD\n"
+            "2026-04-15,SPY,SPDR S&P 500 ETF Trust,500.1,500.1,USD\n"
+        ),
+    )
+
+    assert rows is not None
+    assert len(rows) == 1
+    assert rows[0]["asset_code"] == "AGG"
+    assert rows[0]["as_of_date"] == "2026-04-15"
+
+
+def test_import_nav_file_accepts_csv_bytes(
+    isolated_store: Path,
+) -> None:
+    record = import_nav_file(
+        asset_id="fund-us-agg",
+        file_name="agg_nav.csv",
+        file_bytes=(
+            "date,asset_code,asset_name,nav,nav_with_dividend,currency\n"
+            "2026-04-15,AGG,iShares Core U.S. Aggregate Bond ETF,100.2,100.7,USD\n"
+            "2026-04-14,AGG,iShares Core U.S. Aggregate Bond ETF,100.0,100.5,USD\n"
+        ).encode("utf-8"),
+        provider="pytest_file",
+        status="complete",
+        updated_by="pytest",
+    )
+
+    assert record is not None
+    assert any(
+        point["quote_basis"] == "official_nav"
+        and point["as_of_date"] == "2026-04-15"
+        and point["value"] == "100.2"
         for point in record["latest_market_data"]
     )

@@ -62,8 +62,8 @@ def ingest_nav_facts(
     raise HTTPException(
         status_code=409,
         detail=(
-            "Canonical NAV ingest is now owned by shared data ops. "
-            "Use Platform / Instruments to import or update shared market data."
+            "Canonical NAV ingest is now owned by Database Dashboard. "
+            "Use Database Dashboard to import or update shared market data."
         ),
     )
 

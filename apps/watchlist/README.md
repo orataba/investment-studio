@@ -25,7 +25,7 @@
 其中：
 
 - `Watchlists` 与单资产详情页是当前主界面
-- Watchlist 里的资产新增只允许从平台 `Instruments` 共享库搜索并引用，不再在 Watchlist 内创建资产主档
+- Watchlist 里的资产新增只允许从 `Database Dashboard` 共享库搜索并引用，不再在 Watchlist 内创建资产主档
 - 当前 watchlist 可用范围是 `fund`；shared registry 可以管理更广的资产类型，但它们不会进入 watchlist detail 主链路
 - `Monitoring` 已经是可用工作面；`Research / Documents` 一级路由仍以轻量页为主
 - Copilot 后端接口仍保留为后续扩展入口，但当前 UI 默认隐藏，不作为已发布能力
@@ -100,7 +100,7 @@ cd /home/shaw/yungu/apps/watchlist/backend && pytest
 - Monitoring 的缺失项检查已经改成 taxonomy-aware；不同分类叶子只检查适用的 label，不再全 fund 共用一套静态 tag 清单
 - 示例基金标签值不再在 migration 或 add-to-watchlist 运行时自动注入；产品框架赋值只来自显式录入和后续真实数据链路
 - 后端主语已经统一到 `instrument`，当前只暴露 `/api/instruments/...` 明确接口；旧 `/api/funds/...` 兼容路由已移除
-- Instrument Detail 里的 canonical NAV history 现在是只读视图；导入、编辑、刷新共享净值要去 `Platform / Instruments`，这里只保留本地 basis / source / benchmark 设置
+- Instrument Detail 里的 canonical NAV history 现在是只读视图；导入、编辑、刷新共享净值要去 `Database Dashboard`，这里只保留本地 basis / benchmark 设置
 
 ## 当前文档
 

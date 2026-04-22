@@ -1,5 +1,7 @@
+from base64 import b64decode
 from datetime import date
 from decimal import Decimal
+import binascii
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -101,7 +103,7 @@ class PlatformEmailRule(BaseModel):
 class PlatformSourceSettings(BaseModel):
     source_mode: SourceMode = "manual"
     source_email: str = ""
-    source_location: str = "Shared data ops"
+    source_location: str = "Database Dashboard"
     source_api_profile: str = ""
     source_email_rules: list[PlatformEmailRule] = Field(default_factory=list)
 
@@ -233,3 +235,66 @@ class PlatformNavImportRequest(BaseModel):
     provider: str | None = None
     status: DataStatus = "complete"
     updated_by: str | None = None
+
+
+class PlatformNavImportFileRequest(BaseModel):
+    file_name: str = Field(min_length=1)
+    file_content_base64: str = Field(min_length=1)
+    provider: str | None = None
+    status: DataStatus = "complete"
+    updated_by: str | None = None
+
+    @field_validator("file_name")
+    @classmethod
+    def normalize_file_name(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("file_content_base64")
+    @classmethod
+    def normalize_base64(cls, value: str) -> str:
+        return value.strip()
+
+    def decoded_bytes(self) -> bytes:
+        try:
+            return b64decode(self.file_content_base64, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise ValueError("Invalid base64 file payload.") from error
+
+
+class PlatformNavImportPreviewRequest(BaseModel):
+    raw_text: str | None = None
+    file_name: str | None = None
+    file_content_base64: str | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "PlatformNavImportPreviewRequest":
+        has_text = bool((self.raw_text or "").strip())
+        has_file = bool((self.file_name or "").strip()) and bool(
+            (self.file_content_base64 or "").strip()
+        )
+        if has_text == has_file:
+            raise ValueError("Provide either raw_text or file_name + file_content_base64.")
+        return self
+
+    def decoded_bytes(self) -> bytes | None:
+        if not self.file_content_base64:
+            return None
+        try:
+            return b64decode(self.file_content_base64.strip(), validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise ValueError("Invalid base64 file payload.") from error
+
+
+class PlatformNavImportPreviewRow(BaseModel):
+    as_of_date: date
+    nav: Decimal | None = None
+    nav_with_dividend: Decimal | None = None
+    currency: str = Field(min_length=1, max_length=8)
+    frequency: str = Field(min_length=1)
+    asset_code: str | None = None
+    asset_name: str | None = None
+
+
+class PlatformNavImportPreviewResponse(BaseModel):
+    row_count: int
+    rows: list[PlatformNavImportPreviewRow]

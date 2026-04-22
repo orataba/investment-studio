@@ -5,9 +5,9 @@
 当前状态：
 
 - `apps/platform`
-  平台入口与共享资产运维 dashboard，维护 `shared_asset` schema 中的 `Instruments / FX` 主数据，但不是其他 app 的运行时依赖。
+  平台入口与 `Database Dashboard`，维护 `shared_asset` schema 中的 `Instruments / FX / NAV` 主数据，支持手工录入、CSV/Excel 导入、邮件刷新与历史查看，但不是其他 app 的运行时依赖。
 - `apps/watchlist`
-  已有可运行的前后端、数据库迁移、测试与文档，继续承载 watchlist / fund detail / facts / recalc 基线；Copilot 当前只保留后端扩展接口，默认 UI 不对外开放。
+  已有可运行的前后端、数据库迁移、测试与文档，继续承载 fund-only watchlist / fund detail / facts / recalc 基线；Copilot 当前只保留后端扩展接口，默认 UI 不对外开放。
 - `apps/portfolio`
   已有可运行的前后端、数据库迁移、交易与绩效内核，以及成体系的领域文档；部分 workspace 页面仍为占位实现。
 
@@ -46,11 +46,11 @@ yungu/
 ## 当前边界
 
 - `apps/watchlist`
-  承载 watchlist / fund detail / facts / read model / recalc 语境；Copilot 仅保留后端接口边界，不作为当前已发布 UI 能力。
+  承载 fund-only watchlist / fund detail / facts / read model / recalc 语境；Copilot 仅保留后端接口边界，不作为当前已发布 UI 能力。
 - `apps/portfolio`
   承载 portfolio / account / transaction / performance / review 语境。
 - `apps/platform`
-  平台 landing / app switcher 与 shared asset ops dashboard；只维护共享资产，不承载其他 app 的业务编排。
+  平台 landing / app switcher 与 `Database Dashboard`；只维护共享资产，不承载其他 app 的业务编排。
 - `packages/asset-core`
   当前承载共享资产 contract、持久化 model 与 shared store helper：`asset_id`、`name`、identifiers、`asset_type`、`currency`、typed `market_data` 与最小 `quote_selection_policy`。
 - `packages/ui`

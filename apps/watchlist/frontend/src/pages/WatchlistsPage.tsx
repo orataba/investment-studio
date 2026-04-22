@@ -28,7 +28,7 @@ import {
   runScreenerQuery,
 } from '../lib/api'
 import {
-  buildWatchlistInstrumentPath,
+  buildInstrumentDetailPath,
   buildWatchlistPath,
   PLATFORM_HOME_URL,
 } from '../lib/navigation'
@@ -202,7 +202,7 @@ function renderCell(
 ) {
   if (fieldKey === 'asset_name') {
     return (
-      <Link to={buildWatchlistInstrumentPath(watchlistId, assetId)} className="table-link">
+      <Link to={buildInstrumentDetailPath(assetId, watchlistId)} className="table-link">
         {typeof value === 'string' && value ? value : assetId.toUpperCase()}
       </Link>
     )
@@ -848,7 +848,7 @@ export default function WatchlistsPage() {
 
       if (missingIdentifiers.length) {
         throw new Error(
-          `Watchlist accepts shared-registry funds only. Check these identifiers in Platform / Instruments: ${missingIdentifiers.join(', ')}.`,
+          `Watchlist accepts shared-registry funds only. Check these identifiers in Database Dashboard: ${missingIdentifiers.join(', ')}.`,
         )
       }
 
@@ -2642,7 +2642,7 @@ export default function WatchlistsPage() {
               </div>
               <p className="watchlists-registry-note">
                 Watchlist only references existing assets from{' '}
-                <a href={`${PLATFORM_HOME_URL}/instruments`}>Platform / Instruments</a>. This release only accepts
+                <a href={`${PLATFORM_HOME_URL}/database-dashboard`}>Database Dashboard</a>. This release only accepts
                 `fund` assets. If the fund is not listed here, it does not exist in the shared registry yet.
               </p>
               {selectedSharedInstrument ? (

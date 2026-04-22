@@ -191,10 +191,6 @@ class ManualProfileUpsertRequest(BaseModel):
 
 class NavSettingsUpsertRequest(BaseModel):
     nav_basis_preference: Literal["auto", "nav_with_dividend", "nav"] | None = None
-    source_mode: Literal["manual", "email", "api"] | None = None
-    source_email: str | None = None
-    source_location: str | None = None
-    source_api_profile: str | None = None
     default_benchmark_asset_id: str | None = None
     peer_baseline_asset_ids: list[str] | None = None
     updated_by: str | None = None

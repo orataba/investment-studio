@@ -46,18 +46,17 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
         "ticker_or_isin",
         "data_freshness_status",
     ]
-    private_fund_view = next(
+    fund_screening_view = next(
         item
         for item in detail_payload["views"]
-        if item["view_id"] == "private-fund-screening"
+        if item["view_id"] == "fund-screening"
     )
-    assert private_fund_view["name"] == "私募分类筛选"
-    assert private_fund_view["default_group_by"] == "attr.fund_category_l1"
-    assert private_fund_view["default_filters"] == {
+    assert fund_screening_view["name"] == "基金分类筛选"
+    assert fund_screening_view["default_group_by"] == "attr.fund_category_l1"
+    assert fund_screening_view["default_filters"] == {
         "asset_type": ["fund"],
-        "attr.fund_regime": ["私募"],
     }
-    assert private_fund_view["columns"] == [
+    assert fund_screening_view["columns"] == [
         "asset_name",
         "attr.fund_regime",
         "attr.fund_category_l1",
@@ -473,10 +472,6 @@ def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
     assert initial_response.status_code == 200
     assert initial_response.json() == {
         "nav_basis_preference": "auto",
-        "source_mode": "manual",
-        "source_email": "",
-        "source_location": "Manual upload",
-        "source_api_profile": "",
         "default_benchmark_asset_id": None,
         "peer_baseline_asset_ids": [],
     }
@@ -485,10 +480,6 @@ def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
         "/api/instruments/sxv264/nav-settings",
         json={
             "nav_basis_preference": "nav",
-            "source_mode": "email",
-            "source_email": "ops@example.com",
-            "source_location": "INBOX",
-            "source_api_profile": "nav-email-profile",
             "default_benchmark_asset_id": "savf63",
             "peer_baseline_asset_ids": ["fund-us-agg", "savf63", "sxv264", "fund-us-agg"],
             "updated_by": "test-suite",
@@ -497,10 +488,6 @@ def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
     assert update_response.status_code == 200
     assert update_response.json() == {
         "nav_basis_preference": "nav",
-        "source_mode": "email",
-        "source_email": "ops@example.com",
-        "source_location": "INBOX",
-        "source_api_profile": "nav-email-profile",
         "default_benchmark_asset_id": "savf63",
         "peer_baseline_asset_ids": ["fund-us-agg", "savf63"],
     }
@@ -509,12 +496,6 @@ def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
     assert nav_series_response.status_code == 200
     nav_series_payload = nav_series_response.json()
     assert nav_series_payload["nav_basis_preference"] == "nav"
-    assert nav_series_payload["source_settings"] == {
-        "source_mode": "email",
-        "source_email": "ops@example.com",
-        "source_location": "INBOX",
-        "source_api_profile": "nav-email-profile",
-    }
     assert nav_series_payload["compare_settings"] == {
         "default_benchmark_asset_id": "savf63",
         "peer_asset_ids": ["fund-us-agg", "savf63"],
@@ -594,7 +575,7 @@ def test_watchlist_rejects_unknown_shared_instrument_ids(client: TestClient) -> 
         json={"asset_ids": ["not-in-registry"]},
     )
     assert add_response.status_code == 404
-    assert "Platform / Instruments" in add_response.json()["detail"]
+    assert "Database Dashboard" in add_response.json()["detail"]
 
 
 def test_screener_query_triggers_async_refresh_when_shared_data_is_newer(
@@ -959,7 +940,7 @@ def test_watchlist_rejects_archived_shared_instrument_ids(
         json={"asset_ids": ["fund-archived"]},
     )
     assert add_response.status_code == 404
-    assert "Platform / Instruments" in add_response.json()["detail"]
+    assert "Database Dashboard" in add_response.json()["detail"]
 
 
 def test_manual_instrument_creation_route_is_gone(client: TestClient) -> None:

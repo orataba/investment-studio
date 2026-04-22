@@ -5,9 +5,9 @@
 `Yungu` 现在是一个单仓、多 app、单 PostgreSQL 的结构：
 
 - `apps/platform`
-  平台入口和 shared asset ops dashboard。
+  平台入口和 Database Dashboard。
 - `apps/watchlist`
-  Watchlist / Instrument Detail / monitoring / recalc；Copilot 当前只保留后端扩展接口，不作为已发布 UI。
+  fund-only Watchlist / Fund Detail / monitoring / recalc；Copilot 当前只保留后端扩展接口，不作为已发布 UI。
 - `apps/portfolio`
   Portfolio / account / transaction / performance / risk / research / taxonomy。
 
@@ -28,13 +28,14 @@
 ### Platform
 
 - 只直接读写 `shared_asset`
-- 提供平台首页、app registry 和 shared asset ops API
+- 提供平台首页、app registry 和 Database Dashboard API
 - 可以下线；`watchlist` 和 `portfolio` 的核心读写路径不应受影响
 
 ### Watchlist
 
 - 直接读写 `watchlist`
 - 直接读取 `shared_asset`
+- 当前已发布范围收口为 `fund` 资产类型
 - 在本地维护自己的 read models、recalc jobs、manual profile 和产品框架；Copilot 仅保留 backend extension boundary
 
 ### Portfolio
@@ -89,7 +90,8 @@
 
 ### Shared Instrument Maintenance
 
-1. 在 `Platform / Instruments` 维护共享资产主档、identifier、价格、净值、FX
+1. 在 `Database Dashboard` 维护共享资产主档、identifier、价格、净值、FX
+   支持手工录入、CSV/Excel 文件导入、邮件刷新，并能直接查看选中资产的共享市场数据与净值历史
 2. 数据写入 `shared_asset`
 3. `Watchlist` 和 `Portfolio` 直接从 `shared_asset` 读取
 

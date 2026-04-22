@@ -1,4 +1,4 @@
-"""retire implicit default portfolio seed
+"""retire default portfolio seed
 
 Revision ID: 20260416_0003
 Revises: 20260416_0002

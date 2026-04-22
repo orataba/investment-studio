@@ -11,7 +11,7 @@ import {
   type MonitoringWatchlistSummary,
 } from '../lib/api'
 import {
-  buildWatchlistInstrumentPath,
+  buildInstrumentDetailPath,
   buildWatchlistPath,
   PLATFORM_HOME_URL,
 } from '../lib/navigation'
@@ -77,7 +77,7 @@ function resolveDetailPath(
   if (!watchlistId) {
     return null
   }
-  return buildWatchlistInstrumentPath(watchlistId, asset.asset_id)
+  return buildInstrumentDetailPath(asset.asset_id, watchlistId)
 }
 
 function resolveJobDetailPath(asset: MonitoringRecalcJobRecord) {
@@ -85,7 +85,7 @@ function resolveJobDetailPath(asset: MonitoringRecalcJobRecord) {
   if (!watchlistId) {
     return null
   }
-  return buildWatchlistInstrumentPath(watchlistId, asset.asset_id)
+  return buildInstrumentDetailPath(asset.asset_id, watchlistId)
 }
 
 function AssetLink({ asset }: { asset: MonitoringAssetRecord | MonitoringRecalcJobRecord }) {
@@ -372,9 +372,6 @@ export default function MonitoringPage() {
             <button type="button" onClick={() => void loadDashboard(true)}>
               {refreshing ? 'Refreshing...' : 'Refresh'}
             </button>
-            <Link to="/instruments" className="toolbar-link">
-              Instruments
-            </Link>
             <Link to="/watchlists" className="toolbar-link">
               Watchlists
             </Link>

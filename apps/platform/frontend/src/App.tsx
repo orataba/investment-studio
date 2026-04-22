@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react'
 import type {
   AssetIdentifier as PlatformAssetIdentifier,
   AssetType,
@@ -68,6 +68,10 @@ type PlatformInstrumentRecord = {
   lifecycle_state: PlatformLifecycleState
 }
 
+type PlatformInstrumentDetail = PlatformInstrumentRecord & {
+  market_data: PlatformMarketDataPoint[]
+}
+
 type PlatformInstrumentsResponse = {
   registry_name: string
   instruments: PlatformInstrumentRecord[]
@@ -94,8 +98,24 @@ type PlatformFxRatesResponse = {
   rates: PlatformFxRateRecord[]
 }
 
+type PlatformNavImportPreviewRow = {
+  as_of_date: string
+  nav?: string | null
+  nav_with_dividend?: string | null
+  currency: string
+  frequency: string
+  asset_code?: string | null
+  asset_name?: string | null
+}
+
+type PlatformNavImportPreviewResponse = {
+  row_count: number
+  rows: PlatformNavImportPreviewRow[]
+}
+
 const PLATFORM_NAME_FALLBACK = (import.meta.env.VITE_PLATFORM_NAME || 'Yungu').trim() || 'Yungu'
 const PLATFORM_API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+const DATABASE_DASHBOARD_PATH = '/database-dashboard'
 const FX_PANEL_PAIRS: Array<[SupportedCurrency, SupportedCurrency]> = [
   ['USD', 'HKD'],
   ['USD', 'CNY'],
@@ -137,11 +157,22 @@ function normalizeConfiguredUrl(value: string | null | undefined): string | null
 }
 
 function buildFallbackApps(): PlatformAppCard[] {
+  const apps: PlatformAppCard[] = [
+    {
+      app_id: 'database_dashboard',
+      name: 'Database Dashboard',
+      url: DATABASE_DASHBOARD_PATH,
+      api_url: '/api/instruments',
+      eyebrow: 'Shared database ops',
+      description:
+        'Shared instruments, FX, NAV imports, email refresh rules, and other shared market data operations.',
+      availability: 'ready',
+    },
+  ]
   const watchlistUrl = normalizeConfiguredUrl(import.meta.env.VITE_WATCHLIST_URL)
   const watchlistApiUrl = normalizeConfiguredUrl(import.meta.env.VITE_WATCHLIST_API_URL)
   const portfolioUrl = normalizeConfiguredUrl(import.meta.env.VITE_PORTFOLIO_URL)
   const portfolioApiUrl = normalizeConfiguredUrl(import.meta.env.VITE_PORTFOLIO_API_URL)
-  const apps: PlatformAppCard[] = []
 
   if (watchlistUrl) {
     apps.push({
@@ -149,9 +180,9 @@ function buildFallbackApps(): PlatformAppCard[] {
       name: 'Watchlist',
       url: watchlistUrl,
       api_url: watchlistApiUrl,
-      eyebrow: 'Research and monitoring',
+      eyebrow: 'Fund research and monitoring',
       description:
-        'Fund and asset watchlists, detail pages, facts ingest, read models, and copilot-assisted review.',
+        'Fund-only watchlists, fund detail pages, facts ingest, read models, and monitoring workflows.',
       availability: 'ready',
     })
   }
@@ -335,6 +366,22 @@ function formatFxSourceKind(sourceKind: FxRateSourceKind) {
   return 'Direct'
 }
 
+function currentLocalDate() {
+  const now = new Date()
+  const offsetMs = now.getTimezoneOffset() * 60_000
+  return new Date(now.getTime() - offsetMs).toISOString().slice(0, 10)
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize)
+    binary += String.fromCharCode(...chunk)
+  }
+  return btoa(binary)
+}
+
 function findFxRate(
   rates: PlatformFxRateRecord[],
   baseCurrency: SupportedCurrency,
@@ -384,18 +431,18 @@ function HomePage({
         <a className="platform-nav-link platform-nav-link-active" href="/">
           Home
         </a>
-        <a className="platform-nav-link" href="/instruments">
-          Instruments
+        <a className="platform-nav-link" href={DATABASE_DASHBOARD_PATH}>
+          Database Dashboard
         </a>
       </header>
 
       <section className="hero">
         <div className="hero-kicker">{platformName}</div>
-        <h1>Home chooses the app. The platform maintains the shared asset core.</h1>
+        <h1>Platform is the entry. Database Dashboard owns shared data operations.</h1>
         <p className="hero-copy">
-          Watchlist and Portfolio stay decoupled at the workflow layer. Shared instruments,
-          identifiers, typed market data, and quote selection policies live at the platform
-          level so both apps can consume the same master list without forcing business fusion.
+          Platform currently exposes three entry points: Database Dashboard, Watchlist, and
+          Portfolio. Shared instruments, FX, email refresh rules, and NAV imports belong to
+          Database Dashboard so the app workflows stay decoupled.
         </p>
         <div className="hero-meta">Registry source: {sourceLabel}</div>
       </section>
@@ -423,11 +470,11 @@ function HomePage({
       <section className="registry-panel">
         <div className="registry-panel-header">
           <div>
-            <div className="registry-kicker">Shared Asset Core</div>
-            <h2>Instrument Registry</h2>
+            <div className="registry-kicker">Database Dashboard</div>
+            <h2>Shared Data Operations</h2>
           </div>
-          <a className="app-link" href="/instruments">
-            Open Instruments
+          <a className="app-link" href={DATABASE_DASHBOARD_PATH}>
+            Open Database Dashboard
           </a>
         </div>
         <div className="registry-stats">
@@ -441,7 +488,7 @@ function HomePage({
           </div>
           <div className="registry-stat">
             <span className="registry-stat-label">Use Case</span>
-            <strong>Transaction instrument picker</strong>
+            <strong>Shared instrument / FX / NAV ops</strong>
           </div>
         </div>
       </section>
@@ -464,6 +511,7 @@ function InstrumentsPage({
   onUpdateSourceSettings,
   onTriggerRefresh,
   onImportNavText,
+  onImportNavFile,
   onArchiveInstrument,
   onRestoreInstrument,
 }: {
@@ -514,6 +562,14 @@ function InstrumentsPage({
     status: DataStatus
     updated_by?: string | null
   }) => Promise<void>
+  onImportNavFile: (payload: {
+    asset_id: string
+    file_name: string
+    file_content_base64: string
+    provider?: string | null
+    status: DataStatus
+    updated_by?: string | null
+  }) => Promise<void>
   onArchiveInstrument: (payload: { asset_id: string; updated_by?: string | null }) => Promise<void>
   onRestoreInstrument: (payload: { asset_id: string; updated_by?: string | null }) => Promise<void>
 }) {
@@ -527,16 +583,24 @@ function InstrumentsPage({
   const [quoteBasis, setQuoteBasis] = useState<QuoteBasis>('close')
   const [metricValue, setMetricValue] = useState('')
   const [metricCurrency, setMetricCurrency] = useState('USD')
-  const [metricDate, setMetricDate] = useState('2026-04-15')
+  const [metricDate, setMetricDate] = useState(() => currentLocalDate())
   const [metricStatus, setMetricStatus] = useState<DataStatus>('complete')
   const [sourceMode, setSourceMode] = useState<SourceMode>('manual')
   const [sourceEmail, setSourceEmail] = useState('')
-  const [sourceLocation, setSourceLocation] = useState('Shared data ops')
+  const [sourceLocation, setSourceLocation] = useState('Database Dashboard')
   const [sourceApiProfile, setSourceApiProfile] = useState('')
   const [navImportText, setNavImportText] = useState('')
+  const [navImportFileName, setNavImportFileName] = useState('')
+  const [navImportFileContent, setNavImportFileContent] = useState('')
+  const [navImportFileInputKey, setNavImportFileInputKey] = useState(0)
+  const [navPreview, setNavPreview] = useState<PlatformNavImportPreviewResponse | null>(null)
+  const [navPreviewError, setNavPreviewError] = useState<string | null>(null)
+  const [selectedInstrumentDetail, setSelectedInstrumentDetail] = useState<PlatformInstrumentDetail | null>(null)
+  const [selectedInstrumentDetailError, setSelectedInstrumentDetailError] = useState<string | null>(null)
+  const [selectedInstrumentDetailLoading, setSelectedInstrumentDetailLoading] = useState(false)
   const [editableFxPair, setEditableFxPair] = useState('USD/HKD')
   const [fxRateValue, setFxRateValue] = useState('')
-  const [fxRateDate, setFxRateDate] = useState('2026-04-15')
+  const [fxRateDate, setFxRateDate] = useState(() => currentLocalDate())
   const [fxRateStatus, setFxRateStatus] = useState<DataStatus>('complete')
 
   const selectedEditableFxPair = useMemo(() => {
@@ -587,6 +651,60 @@ function InstrumentsPage({
     () => (selectedInstrument ? summaryQuoteChips(selectedInstrument) : []),
     [selectedInstrument],
   )
+  const selectedInstrumentNavHistory = useMemo(
+    () => {
+      const merged = new Map<
+        string,
+        {
+          as_of_date: string
+          nav: string | null
+          nav_with_dividend: string | null
+          currency: string
+          status: DataStatus
+          provider: string | null
+        }
+      >()
+      for (const point of selectedInstrumentDetail?.market_data || []) {
+        if (point.metric_family !== 'nav') {
+          continue
+        }
+        const existing =
+          merged.get(point.as_of_date) ||
+          {
+            as_of_date: point.as_of_date,
+            nav: null,
+            nav_with_dividend: null,
+            currency: point.currency,
+            status: point.status,
+            provider: point.provider || null,
+          }
+        if (point.quote_basis === 'official_nav') {
+          existing.nav = point.value
+        }
+        if (point.quote_basis === 'total_return_nav') {
+          existing.nav_with_dividend = point.value
+        }
+        existing.currency = point.currency
+        existing.status = point.status
+        existing.provider = point.provider || existing.provider
+        merged.set(point.as_of_date, existing)
+      }
+      return [...merged.values()].sort((left, right) => right.as_of_date.localeCompare(left.as_of_date))
+    },
+    [selectedInstrumentDetail],
+  )
+  const selectedInstrumentMarketHistory = useMemo(
+    () =>
+      [...(selectedInstrumentDetail?.market_data || [])].sort((left, right) => {
+        if (left.as_of_date === right.as_of_date) {
+          return `${left.metric_family}:${left.quote_basis}`.localeCompare(
+            `${right.metric_family}:${right.quote_basis}`,
+          )
+        }
+        return right.as_of_date.localeCompare(left.as_of_date)
+      }),
+    [selectedInstrumentDetail],
+  )
 
   function syncSelectedInstrument(assetId: string) {
     setSelectedAssetId(assetId)
@@ -600,6 +718,32 @@ function InstrumentsPage({
     setMetricCurrency(selected.currency)
   }
 
+  async function refreshSelectedInstrumentDetail(assetId: string) {
+    if (!assetId) {
+      setSelectedInstrumentDetailLoading(false)
+      setSelectedInstrumentDetail(null)
+      setSelectedInstrumentDetailError(null)
+      return
+    }
+    setSelectedInstrumentDetailLoading(true)
+    setSelectedInstrumentDetailError(null)
+    try {
+      const detail = await fetchJson<PlatformInstrumentDetail>(
+        `/api/instruments/${encodeURIComponent(assetId)}`,
+      )
+      setSelectedInstrumentDetail(detail)
+    } catch (requestError) {
+      setSelectedInstrumentDetail(null)
+      setSelectedInstrumentDetailError(
+        requestError instanceof Error
+          ? requestError.message
+          : 'Failed to load selected instrument detail.',
+      )
+    } finally {
+      setSelectedInstrumentDetailLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (!instruments.length) {
       if (selectedAssetId) {
@@ -611,6 +755,10 @@ function InstrumentsPage({
       syncSelectedInstrument(instruments[0].asset_id)
     }
   }, [instruments, selectedAssetId])
+
+  useEffect(() => {
+    void refreshSelectedInstrumentDetail(selectedAssetId)
+  }, [selectedAssetId])
 
   useEffect(() => {
     if (!selectedInstrument) {
@@ -686,6 +834,7 @@ function InstrumentsPage({
       provider: 'platform_manual',
     })
     setMetricValue('')
+    await refreshSelectedInstrumentDetail(selectedAssetId)
   }
 
   async function handleSourceSettingsSubmit(event: FormEvent<HTMLFormElement>) {
@@ -700,6 +849,7 @@ function InstrumentsPage({
       source_location: sourceLocation.trim(),
       source_api_profile: sourceApiProfile.trim(),
     })
+    await refreshSelectedInstrumentDetail(selectedAssetId)
   }
 
   async function handleRefreshClick() {
@@ -710,21 +860,92 @@ function InstrumentsPage({
       asset_id: selectedAssetId,
       updated_by: 'platform_ui',
     })
+    await refreshSelectedInstrumentDetail(selectedAssetId)
+  }
+
+  async function handleNavFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) {
+      setNavImportFileName('')
+      setNavImportFileContent('')
+      setNavPreview(null)
+      setNavPreviewError(null)
+      return
+    }
+    const buffer = await file.arrayBuffer()
+    setNavImportFileName(file.name)
+    setNavImportFileContent(bytesToBase64(new Uint8Array(buffer)))
+    setNavImportText('')
+    setNavPreview(null)
+    setNavPreviewError(null)
+  }
+
+  async function handlePreviewNavImport() {
+    if (!selectedAssetId) {
+      return
+    }
+    const payload =
+      navImportFileName && navImportFileContent
+        ? {
+            file_name: navImportFileName,
+            file_content_base64: navImportFileContent,
+          }
+        : {
+            raw_text: navImportText.trim(),
+          }
+    if (!('raw_text' in payload ? payload.raw_text : payload.file_name)) {
+      return
+    }
+    try {
+      const preview = await fetchJson<PlatformNavImportPreviewResponse>(
+        `/api/instruments/${encodeURIComponent(selectedAssetId)}/nav-import/preview`,
+        {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        },
+      )
+      setNavPreview(preview)
+      setNavPreviewError(null)
+    } catch (requestError) {
+      setNavPreview(null)
+      setNavPreviewError(
+        requestError instanceof Error ? requestError.message : 'Failed to preview NAV import.',
+      )
+    }
   }
 
   async function handleNavImportSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selectedAssetId || !navImportText.trim()) {
+    if (!selectedAssetId) {
       return
     }
-    await onImportNavText({
-      asset_id: selectedAssetId,
-      raw_text: navImportText.trim(),
-      provider: 'platform_paste_import',
-      status: 'complete',
-      updated_by: 'platform_ui',
-    })
+    if (navImportFileName && navImportFileContent) {
+      await onImportNavFile({
+        asset_id: selectedAssetId,
+        file_name: navImportFileName,
+        file_content_base64: navImportFileContent,
+        provider: 'platform_file_import',
+        status: 'complete',
+        updated_by: 'platform_ui',
+      })
+    } else if (navImportText.trim()) {
+      await onImportNavText({
+        asset_id: selectedAssetId,
+        raw_text: navImportText.trim(),
+        provider: 'platform_paste_import',
+        status: 'complete',
+        updated_by: 'platform_ui',
+      })
+    } else {
+      return
+    }
     setNavImportText('')
+    setNavImportFileName('')
+    setNavImportFileContent('')
+    setNavImportFileInputKey((current) => current + 1)
+    setNavPreview(null)
+    setNavPreviewError(null)
+    await refreshSelectedInstrumentDetail(selectedAssetId)
   }
 
   async function handleArchiveClick(assetId: string) {
@@ -732,6 +953,9 @@ function InstrumentsPage({
       asset_id: assetId,
       updated_by: 'platform_ui',
     })
+    if (assetId === selectedAssetId) {
+      await refreshSelectedInstrumentDetail(assetId)
+    }
   }
 
   async function handleRestoreClick(assetId: string) {
@@ -739,6 +963,9 @@ function InstrumentsPage({
       asset_id: assetId,
       updated_by: 'platform_ui',
     })
+    if (assetId === selectedAssetId) {
+      await refreshSelectedInstrumentDetail(assetId)
+    }
   }
 
   return (
@@ -747,8 +974,8 @@ function InstrumentsPage({
         <a className="platform-nav-link" href="/">
           Home
         </a>
-        <a className="platform-nav-link platform-nav-link-active" href="/instruments">
-          Instruments
+        <a className="platform-nav-link platform-nav-link-active" href={DATABASE_DASHBOARD_PATH}>
+          Database Dashboard
         </a>
       </header>
 
@@ -756,14 +983,14 @@ function InstrumentsPage({
         <div className="registry-breadcrumbs">
           <a href="/">Home</a>
           <span>/</span>
-          <span>Instruments</span>
+          <span>Database Dashboard</span>
         </div>
-        <div className="registry-kicker">Shared Asset Core</div>
+        <div className="registry-kicker">Database Dashboard</div>
         <h1>{registryName}</h1>
         <p className="hero-copy">
-          This is the platform-owned instrument master and typed quote registry.
-          Portfolio and Watchlist now read role-based quotes from this layer instead of
-          guessing from a single generic price or NAV field inside app-local pages.
+          This workspace owns shared instruments, FX, NAV imports, email refresh rules, and
+          typed market data. Watchlist and Portfolio reference this layer directly without
+          turning Platform into a runtime business orchestrator.
         </p>
         <div className="registry-pagehead-actions">
           <div className="registry-table-meta">
@@ -956,7 +1183,7 @@ function InstrumentsPage({
           </label>
           <label>
             <span>As Of</span>
-            <input value={metricDate} onChange={(event) => setMetricDate(event.target.value)} required />
+            <input type="date" value={metricDate} onChange={(event) => setMetricDate(event.target.value)} required />
           </label>
           <label>
             <span>Status</span>
@@ -984,7 +1211,7 @@ function InstrumentsPage({
           <div>
             <div className="registry-form-title">Shared Data Ops</div>
             <div className="registry-table-meta">
-              Source configuration and refresh ownership now sit at the platform layer.
+              Database Dashboard owns source configuration and refresh execution.
             </div>
           </div>
         </div>
@@ -1036,7 +1263,7 @@ function InstrumentsPage({
                 <input
                   value={sourceLocation}
                   onChange={(event) => setSourceLocation(event.target.value)}
-                  placeholder="Shared ops queue / mailbox folder / endpoint rule"
+                  placeholder="Database Dashboard queue / mailbox folder / endpoint rule"
                 />
               </label>
               <div className="registry-form-actions">
@@ -1048,14 +1275,14 @@ function InstrumentsPage({
                 </button>
               </div>
               <div className="registry-form-note">
-                Email refresh is now executed from platform shared data ops. API mode remains explicit but is not yet wired to a vendor adapter.
+                Email refresh is executed from Database Dashboard. API mode remains explicit but is not yet wired to a vendor adapter.
               </div>
             </form>
 
             <form className="registry-form registry-form-compact" onSubmit={(event) => void handleNavImportSubmit(event)}>
               <div className="registry-form-title">Import NAV History</div>
               <div className="registry-form-note">
-                Paste CSV or TSV with `date`, `nav`, `nav_with_dividend`, `currency`, `frequency`.
+                Import canonical NAV from pasted CSV/TSV text, uploaded Excel/CSV files, or email refresh.
                 Existing shared NAV rows for the same dates will be replaced.
               </div>
               <label>
@@ -1063,18 +1290,96 @@ function InstrumentsPage({
                 <input value={selectedInstrument?.asset_name || ''} readOnly placeholder="Select an instrument above" />
               </label>
               <label>
+                <span>Upload Excel / CSV</span>
+                <input
+                  key={navImportFileInputKey}
+                  type="file"
+                  accept=".csv,.tsv,.txt,.xlsx,.xls"
+                  onChange={(event) => void handleNavFileChange(event)}
+                />
+              </label>
+              {navImportFileName ? (
+                <div className="registry-form-note">
+                  File ready: <strong>{navImportFileName}</strong>
+                </div>
+              ) : null}
+              <label>
                 <span>Pasted Rows</span>
                 <textarea
                   value={navImportText}
-                  onChange={(event) => setNavImportText(event.target.value)}
+                  onChange={(event) => {
+                    if (navImportFileName || navImportFileContent) {
+                      setNavImportFileName('')
+                      setNavImportFileContent('')
+                      setNavImportFileInputKey((current) => current + 1)
+                    }
+                    setNavImportText(event.target.value)
+                  }}
                   placeholder={`date,nav,nav_with_dividend,currency\n2026-04-15,12.84,18.12,USD\n2026-04-14,12.81,18.07,USD`}
                 />
               </label>
               <div className="registry-form-actions">
-                <button type="submit" className="registry-submit" disabled={!selectedAssetId || !navImportText.trim()}>
+                <button
+                  type="button"
+                  className="registry-submit secondary"
+                  disabled={!selectedAssetId || (!navImportText.trim() && !navImportFileContent)}
+                  onClick={() => void handlePreviewNavImport()}
+                >
+                  Preview Parsed Rows
+                </button>
+                <button
+                  type="submit"
+                  className="registry-submit"
+                  disabled={!selectedAssetId || (!navImportText.trim() && !navImportFileContent)}
+                >
                   Import NAV Rows
                 </button>
+                <button type="button" className="app-link secondary" onClick={() => void handleRefreshClick()}>
+                  Refresh From Source
+                </button>
               </div>
+              {navPreviewError ? <div className="registry-error">{navPreviewError}</div> : null}
+              {navPreview ? (
+                <div className="registry-preview">
+                  <div className="registry-preview-header">
+                    <strong>{navPreview.row_count} rows ready to import</strong>
+                    <span>
+                      {navImportFileName ? `Parsed from ${navImportFileName}` : 'Parsed from pasted text'}
+                    </span>
+                  </div>
+                  <div className="registry-table-wrap">
+                    <table className="registry-table registry-table-compact">
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th>NAV</th>
+                          <th>Total Return NAV</th>
+                          <th>Currency</th>
+                          <th>Code</th>
+                          <th>Name</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {navPreview.rows.slice(0, 12).map((row) => (
+                          <tr key={`${row.as_of_date}-${row.nav || ''}-${row.nav_with_dividend || ''}`}>
+                            <td>{row.as_of_date}</td>
+                            <td>{row.nav || '—'}</td>
+                            <td>{row.nav_with_dividend || '—'}</td>
+                            <td>{row.currency}</td>
+                            <td>{row.asset_code || '—'}</td>
+                            <td>{row.asset_name || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {navPreview.row_count > 12 ? (
+                    <div className="registry-form-note">
+                      Showing first 12 rows. The full parsed set will be imported.
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </form>
           </div>
 
@@ -1147,6 +1452,97 @@ function InstrumentsPage({
               ) : (
                 <span className="metric-chip metric-chip-muted">No selected quotes</span>
               )}
+            </div>
+            {selectedInstrumentDetailError ? <div className="registry-error">{selectedInstrumentDetailError}</div> : null}
+            <div className="registry-detail-section">
+              <div className="registry-detail-header">
+                <div>
+                  <div className="registry-form-title">NAV History</div>
+                  <div className="registry-table-meta">
+                    {selectedInstrumentDetailLoading
+                      ? 'Loading full history...'
+                      : `${selectedInstrumentNavHistory.length} NAV rows in shared market data`}
+                  </div>
+                </div>
+              </div>
+              <div className="registry-table-wrap">
+                <table className="registry-table registry-table-compact">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Official NAV</th>
+                      <th>Total Return NAV</th>
+                      <th>Currency</th>
+                      <th>Status</th>
+                      <th>Provider</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedInstrumentNavHistory.length ? (
+                      selectedInstrumentNavHistory.slice(0, 16).map((point) => (
+                        <tr key={`${point.as_of_date}-${point.currency}`}>
+                          <td>{point.as_of_date}</td>
+                          <td>{point.nav || '—'}</td>
+                          <td>{point.nav_with_dividend || '—'}</td>
+                          <td>{point.currency}</td>
+                          <td>{point.status}</td>
+                          <td>{point.provider || '—'}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={6}>No NAV history loaded for this instrument.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="registry-detail-section">
+              <div className="registry-detail-header">
+                <div>
+                  <div className="registry-form-title">All Shared Market Data</div>
+                  <div className="registry-table-meta">
+                    {selectedInstrumentDetailLoading
+                      ? 'Refreshing detail...'
+                      : `${selectedInstrumentMarketHistory.length} shared market-data points`}
+                  </div>
+                </div>
+              </div>
+              <div className="registry-table-wrap">
+                <table className="registry-table registry-table-compact">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Family</th>
+                      <th>Basis</th>
+                      <th>Value</th>
+                      <th>Currency</th>
+                      <th>Status</th>
+                      <th>Provider</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedInstrumentMarketHistory.length ? (
+                      selectedInstrumentMarketHistory.slice(0, 24).map((point) => (
+                        <tr key={`${point.metric_family}-${point.quote_basis}-${point.as_of_date}-${point.currency}`}>
+                          <td>{point.as_of_date}</td>
+                          <td>{point.metric_family}</td>
+                          <td>{formatBasisLabel(point.quote_basis)}</td>
+                          <td>{point.value}</td>
+                          <td>{point.currency}</td>
+                          <td>{point.status}</td>
+                          <td>{point.provider || '—'}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={7}>No shared market data loaded for this instrument.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
         </div>
@@ -1495,6 +1891,32 @@ export default function App() {
     }
   }
 
+  async function handleImportNavFile(payload: {
+    asset_id: string
+    file_name: string
+    file_content_base64: string
+    provider?: string | null
+    status: DataStatus
+    updated_by?: string | null
+  }) {
+    try {
+      const updated = await fetchJson<PlatformInstrumentRecord>(
+        `/api/instruments/${encodeURIComponent(payload.asset_id)}/nav-import/file`,
+        {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        },
+      )
+      setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
+      setRegistryNotice(updated.refresh_status.message || `Imported NAV history for "${updated.asset_name}".`)
+      setRegistryError(null)
+    } catch (requestError) {
+      setRegistryError(
+        requestError instanceof Error ? requestError.message : 'Failed to import NAV file.',
+      )
+    }
+  }
+
   async function handleArchiveInstrument(payload: { asset_id: string; updated_by?: string | null }) {
     try {
       const updated = await fetchJson<PlatformInstrumentRecord>(
@@ -1533,7 +1955,7 @@ export default function App() {
     }
   }
 
-  if (currentPath === '/instruments') {
+  if (currentPath === DATABASE_DASHBOARD_PATH) {
     return (
       <InstrumentsPage
         registryName={registryName}
@@ -1550,6 +1972,7 @@ export default function App() {
         onUpdateSourceSettings={handleUpdateSourceSettings}
         onTriggerRefresh={handleTriggerRefresh}
         onImportNavText={handleImportNavText}
+        onImportNavFile={handleImportNavFile}
         onArchiveInstrument={handleArchiveInstrument}
         onRestoreInstrument={handleRestoreInstrument}
       />

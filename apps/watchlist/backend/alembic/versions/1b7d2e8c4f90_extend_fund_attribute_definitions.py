@@ -1,4 +1,4 @@
-"""extend fund tags to public/private/ETF
+"""extend fund attribute definitions
 
 Revision ID: 1b7d2e8c4f90
 Revises: 9f3e2c4d1a7b

@@ -60,24 +60,8 @@ def watchlist_detail_page(watchlist_id: str) -> RedirectResponse:
     return RedirectResponse(url=f"{settings.frontend_url}/watchlists/{watchlist_id}", status_code=307)
 
 
-@app.get("/watchlists/{watchlist_id}/instruments/{instrument_path:path}")
-def watchlist_instrument_detail_page(
-    watchlist_id: str,
-    instrument_path: str,
-) -> RedirectResponse:
-    return RedirectResponse(
-        url=f"{settings.frontend_url}/watchlists/{watchlist_id}/instruments/{instrument_path}",
-        status_code=307,
-    )
-
-
-@app.get("/instruments")
-def instruments_page() -> RedirectResponse:
-    return RedirectResponse(url=f"{settings.frontend_url}/instruments", status_code=307)
-
-
 @app.get("/instruments/{instrument_path:path}")
-def instrument_library_page(instrument_path: str) -> RedirectResponse:
+def instrument_detail_page(instrument_path: str) -> RedirectResponse:
     return RedirectResponse(
         url=f"{settings.frontend_url}/instruments/{instrument_path}",
         status_code=307,

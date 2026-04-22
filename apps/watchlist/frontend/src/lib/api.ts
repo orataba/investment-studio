@@ -461,12 +461,6 @@ export type FundNavSeriesResponse = {
   nav_basis_type: string | null
   nav_basis_source: string
   nav_basis_status: string
-  source_settings?: {
-    source_mode: 'manual' | 'email' | 'api'
-    source_email: string
-    source_location: string
-    source_api_profile: string
-  }
   compare_settings?: {
     default_benchmark_asset_id: string | null
     peer_asset_ids: string[]
@@ -498,12 +492,6 @@ type RawFundNavSeriesResponse = {
   nav_basis_type: string | null
   nav_basis_source: string
   nav_basis_status: string
-  source_settings?: {
-    source_mode: 'manual' | 'email' | 'api'
-    source_email: string
-    source_location: string
-    source_api_profile: string
-  }
   compare_settings?: {
     default_benchmark_asset_id: string | null
     peer_asset_ids: string[]
@@ -572,7 +560,6 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
     nav_basis_type: response.nav_basis_type,
     nav_basis_source: response.nav_basis_source,
     nav_basis_status: response.nav_basis_status,
-    source_settings: response.source_settings,
     compare_settings: response.compare_settings,
     refresh_status: response.refresh_status,
     series: response.series,

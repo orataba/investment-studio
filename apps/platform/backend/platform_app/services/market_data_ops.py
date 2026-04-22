@@ -328,6 +328,21 @@ def _parse_nav_rows_from_xls(file_bytes: bytes) -> list[dict[str, object]]:
     return _parse_nav_rows_from_matrix(_matrix_from_xls(file_bytes))
 
 
+def _parse_nav_rows_from_uploaded_file(
+    *,
+    file_name: str,
+    file_bytes: bytes,
+) -> list[dict[str, object]]:
+    lower_name = file_name.lower().strip()
+    if lower_name.endswith((".csv", ".tsv", ".txt")):
+        return _parse_nav_rows_from_text(file_bytes.decode("utf-8", errors="ignore"))
+    if lower_name.endswith(".xlsx"):
+        return _parse_nav_rows_from_xlsx(file_bytes)
+    if lower_name.endswith(".xls"):
+        return _parse_nav_rows_from_xls(file_bytes)
+    raise ValueError("Unsupported NAV file type. Use csv, tsv, txt, xlsx, or xls.")
+
+
 def _parse_nav_rows_from_attachment(
     *,
     attachment_name: str,
@@ -596,6 +611,69 @@ def _merge_rows_by_date(rows: list[dict[str, object]]) -> list[dict[str, object]
     return [merged[key] for key in sorted(merged.keys())]
 
 
+def _filter_rows_for_instrument(
+    *,
+    instrument: dict[str, object],
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not rows:
+        return []
+
+    has_row_identity = any(
+        str(row.get("asset_code") or "").strip() or str(row.get("asset_name") or "").strip()
+        for row in rows
+    )
+    if not has_row_identity:
+        return rows
+
+    identifier_candidates = {
+        str(item.get("identifier_value") or "").strip().upper()
+        for item in list(instrument.get("identifiers", []))
+        if str(item.get("identifier_value") or "").strip()
+    }
+    identifier_candidates.add(str(instrument.get("asset_id") or "").strip().upper())
+
+    instrument_name = _normalize_text_token(str(instrument.get("asset_name") or ""))
+    filtered: list[dict[str, object]] = []
+    for row in rows:
+        row_code = str(row.get("asset_code") or "").strip().upper()
+        row_name = _normalize_text_token(str(row.get("asset_name") or ""))
+        code_match = bool(row_code) and row_code in identifier_candidates
+        name_match = bool(row_name and instrument_name) and (
+            row_name == instrument_name
+            or row_name in instrument_name
+            or instrument_name in row_name
+        )
+        if code_match or name_match:
+            filtered.append(row)
+    return filtered
+
+
+def _prepare_nav_rows_for_instrument(
+    *,
+    asset_id: str,
+    rows: list[dict[str, object]],
+) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
+    instrument = get_instrument(asset_id)
+    if instrument is None:
+        return None, []
+
+    filtered_rows = _filter_rows_for_instrument(instrument=instrument, rows=rows)
+    if not filtered_rows:
+        has_row_identity = any(
+            str(row.get("asset_code") or "").strip()
+            or str(row.get("asset_name") or "").strip()
+            for row in rows
+        )
+        if has_row_identity:
+            raise ValueError(
+                "Detected NAV rows, but none matched the selected instrument identifier or name."
+            )
+        raise ValueError("No NAV rows detected.")
+
+    return instrument, _merge_rows_by_date(filtered_rows)
+
+
 def _search_uids_for_rule(
     mailbox,
     *,
@@ -721,19 +799,60 @@ def import_nav_text(
     updated_by: str | None,
 ) -> dict[str, object] | None:
     rows = _parse_nav_rows_from_text(raw_text)
-    if not rows:
-        raise ValueError(
-            "No NAV rows detected. Paste CSV/TSV text with date and nav/nav_with_dividend columns."
-        )
-    normalized_status = _normalize_import_status(rows, status)
+    _, prepared_rows = _prepare_nav_rows_for_instrument(asset_id=asset_id, rows=rows)
+    normalized_status = _normalize_import_status(prepared_rows, status)
     return replace_nav_history(
         asset_id=asset_id,
-        rows=rows,
+        rows=prepared_rows,
         provider=provider or "platform_manual_import",
         point_status=normalized_status,
         refresh_status="imported",
         updated_by=updated_by,
-        message=f"Imported {len(rows)} NAV rows into shared market data.",
+        message=f"Imported {len(prepared_rows)} NAV rows into shared market data.",
+        mode="manual",
+    )
+
+
+def preview_nav_import(
+    *,
+    asset_id: str,
+    raw_text: str | None = None,
+    file_name: str | None = None,
+    file_bytes: bytes | None = None,
+) -> list[dict[str, object]] | None:
+    if raw_text is not None:
+        rows = _parse_nav_rows_from_text(raw_text)
+    elif file_name is not None and file_bytes is not None:
+        rows = _parse_nav_rows_from_uploaded_file(file_name=file_name, file_bytes=file_bytes)
+    else:
+        raise ValueError("Provide NAV import text or a NAV file payload.")
+
+    instrument, prepared_rows = _prepare_nav_rows_for_instrument(asset_id=asset_id, rows=rows)
+    if instrument is None:
+        return None
+    return prepared_rows
+
+
+def import_nav_file(
+    *,
+    asset_id: str,
+    file_name: str,
+    file_bytes: bytes,
+    provider: str | None,
+    status: str,
+    updated_by: str | None,
+) -> dict[str, object] | None:
+    rows = _parse_nav_rows_from_uploaded_file(file_name=file_name, file_bytes=file_bytes)
+    _, prepared_rows = _prepare_nav_rows_for_instrument(asset_id=asset_id, rows=rows)
+    normalized_status = _normalize_import_status(prepared_rows, status)
+    return replace_nav_history(
+        asset_id=asset_id,
+        rows=prepared_rows,
+        provider=provider or f"platform_file_import:{file_name}",
+        point_status=normalized_status,
+        refresh_status="imported",
+        updated_by=updated_by,
+        message=f"Imported {len(prepared_rows)} NAV rows from {file_name}.",
         mode="manual",
     )
 
@@ -764,17 +883,17 @@ def refresh_market_data(
             asset_id=asset_id,
             status="blocked",
             message=(
-                f"API refresh profile {profile or 'unconfigured profile'} is not wired in shared data ops yet."
+                f"API refresh profile {profile or 'unconfigured profile'} is not wired in Database Dashboard yet."
             ),
             updated_by=updated_by,
             mode="api",
         )
 
-    location = str(source_settings.get("source_location") or "Shared data ops").strip()
+    location = str(source_settings.get("source_location") or "Database Dashboard").strip()
     return update_refresh_status(
         asset_id=asset_id,
         status="awaiting_manual_import",
-        message=f"Manual source active in shared data ops. Import canonical NAV from {location}.",
+        message=f"Manual source active in Database Dashboard. Import canonical NAV from {location}.",
         updated_by=updated_by,
         mode="manual",
     )

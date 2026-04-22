@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 
 import FundDetailPage from './FundDetailPage'
 import {
@@ -9,7 +9,9 @@ import {
 import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
 
 export default function InstrumentDetailPage() {
-  const { assetId = '', watchlistId = '' } = useParams()
+  const { assetId = '' } = useParams()
+  const [searchParams] = useSearchParams()
+  const watchlistId = (searchParams.get('watchlist') || '').trim()
   const [instrument, setInstrument] = useState<InstrumentResolveResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)

@@ -1,4 +1,4 @@
-"""seed private fund watchlist tags
+"""initial fund attribute definitions
 
 Revision ID: d0f6c3a2b9ef
 Revises: b144f727c418

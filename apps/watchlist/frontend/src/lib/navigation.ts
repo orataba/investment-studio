@@ -14,6 +14,10 @@ export function buildWatchlistPath(watchlistId: string) {
   return `${WATCHLIST_ENTRY_PATH}/${watchlistId}`
 }
 
-export function buildWatchlistInstrumentPath(watchlistId: string, assetId: string) {
-  return `${buildWatchlistPath(watchlistId)}/instruments/${assetId}`
+export function buildInstrumentDetailPath(assetId: string, watchlistId?: string | null) {
+  const normalizedWatchlistId = (watchlistId || '').trim()
+  const search = normalizedWatchlistId
+    ? `?${new URLSearchParams({ watchlist: normalizedWatchlistId }).toString()}`
+    : ''
+  return `/instruments/${assetId}${search}`
 }

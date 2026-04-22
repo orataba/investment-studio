@@ -24,7 +24,8 @@ a {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -414,6 +415,33 @@ select {
   line-height: 1.5;
 }
 
+.registry-preview,
+.registry-detail-section {
+  display: grid;
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #ece7dd;
+}
+
+.registry-preview-header,
+.registry-detail-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.registry-preview-header strong {
+  font-size: 14px;
+}
+
+.registry-preview-header span {
+  font-size: 12px;
+  color: #6b7280;
+  text-transform: uppercase;
+}
+
 .registry-table-header {
   display: flex;
   align-items: flex-end;
@@ -445,6 +473,11 @@ select {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #6b7280;
+}
+
+.registry-table-compact th,
+.registry-table-compact td {
+  padding: 10px 10px;
 }
 
 .instrument-id-stack,

@@ -126,9 +126,6 @@ export default function WatchlistEntryPage() {
           </span>
         </div>
         <div className="toolbar">
-          <Link to="/instruments" className="toolbar-link">
-            Instruments
-          </Link>
           <Link to="/monitoring" className="toolbar-link">
             Monitoring
           </Link>

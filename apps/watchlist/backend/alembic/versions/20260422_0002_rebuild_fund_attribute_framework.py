@@ -22,10 +22,10 @@ depends_on = None
 
 REFERENCE_CREATED_AT = datetime(2026, 4, 22, 0, 2, tzinfo=UTC)
 MIGRATION_SOURCE_RECORD_ID = "migration/fund-framework-v3"
-PRIVATE_SCREENING_VIEW_ID = "private-fund-screening"
-PRIVATE_SCREENING_VIEW_NAME = "私募分类筛选"
-PRIVATE_SCREENING_VIEW_DESCRIPTION = "先按分类树缩小私募基金池，再叠加研究标签和监控判断。"
-PRIVATE_SCREENING_VIEW_COLUMNS = [
+FUND_SCREENING_VIEW_ID = "fund-screening"
+FUND_SCREENING_VIEW_NAME = "基金分类筛选"
+FUND_SCREENING_VIEW_DESCRIPTION = "先按分类树缩小基金池，再叠加研究标签和监控判断。"
+FUND_SCREENING_VIEW_COLUMNS = [
     ("asset_name", 1, 320),
     ("attr.fund_regime", 2, 120),
     ("attr.fund_category_l1", 3, 150),
@@ -615,11 +615,11 @@ def upgrade() -> None:
         next_filters = _rewrite_filters(row["default_filters_json"])
         next_sort = _rewrite_sort_rules(row["default_sort_json"])
         next_advanced = _rewrite_advanced_filter(row["default_advanced_filter_json"])
-        if view_id.endswith(f"::{PRIVATE_SCREENING_VIEW_ID}"):
-            next_name = PRIVATE_SCREENING_VIEW_NAME
-            next_description = PRIVATE_SCREENING_VIEW_DESCRIPTION
+        if view_id.endswith("::private-fund-screening") or view_id.endswith(f"::{FUND_SCREENING_VIEW_ID}"):
+            next_name = FUND_SCREENING_VIEW_NAME
+            next_description = FUND_SCREENING_VIEW_DESCRIPTION
             next_group_by = "attr.fund_category_l1"
-            next_filters = {"asset_type": ["fund"], "attr.fund_regime": ["私募"]}
+            next_filters = {"asset_type": ["fund"]}
             next_sort = []
             next_advanced = {}
         bind.execute(
@@ -655,7 +655,7 @@ def upgrade() -> None:
         bind.execute(
             sa.delete(column_table).where(column_table.c.watchlist_view_id == view_id)
         )
-        if view_id.endswith(f"::{PRIVATE_SCREENING_VIEW_ID}"):
+        if view_id.endswith("::private-fund-screening") or view_id.endswith(f"::{FUND_SCREENING_VIEW_ID}"):
             op.bulk_insert(
                 column_table,
                 [
@@ -667,7 +667,7 @@ def upgrade() -> None:
                         "is_visible": True,
                         "pin_side": None,
                     }
-                    for field_key, display_order, width in PRIVATE_SCREENING_VIEW_COLUMNS
+                    for field_key, display_order, width in FUND_SCREENING_VIEW_COLUMNS
                 ],
             )
             continue

@@ -4,7 +4,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type ChangeEvent,
   type MouseEvent as ReactMouseEvent,
 } from 'react'
 import { Link, useParams } from 'react-router-dom'
@@ -228,8 +227,6 @@ type NavDraft = {
   rows: EditableNavRow[]
 }
 
-type QuoteSourceMode = 'manual' | 'email' | 'api'
-
 type DetailTab =
   | 'quote'
   | 'performance'
@@ -322,28 +319,6 @@ const TAB_ORDER: DetailTab[] = [
 ]
 
 const CORE_TABS: DetailTab[] = ['quote', 'performance', 'risk', 'price', 'exposure', 'people', 'strategy']
-
-const DEFAULT_NAV_SOURCE_SETTINGS = {
-  source_mode: 'manual' as QuoteSourceMode,
-  source_email: '',
-  source_location: 'Manual upload',
-  source_api_profile: '',
-}
-
-const NAV_IMPORT_HEADER_MAP: Record<string, keyof EditableNavRow | ''> = {
-  date: 'as_of_date',
-  asofdate: 'as_of_date',
-  as_of_date: 'as_of_date',
-  trade_date: 'as_of_date',
-  navdate: 'as_of_date',
-  nav: 'nav',
-  navwithdividend: 'nav_with_dividend',
-  nav_with_dividend: 'nav_with_dividend',
-  currency: 'currency',
-  ccy: 'currency',
-  frequency: 'frequency',
-  freq: 'frequency',
-}
 
 const TAB_LABELS: Record<DetailTab, string> = {
   quote: 'Quote',
@@ -692,89 +667,6 @@ function parseOptionalNumber(value: string) {
   }
   const parsed = Number(trimmed)
   return Number.isFinite(parsed) ? parsed : null
-}
-
-function normalizeNavImportHeader(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '')
-}
-
-function splitDelimitedRow(line: string, delimiter: string) {
-  return line
-    .split(delimiter)
-    .map((cell) => cell.trim().replace(/^"(.*)"$/, '$1'))
-}
-
-function parseNavImportRows(rawText: string): EditableNavRow[] {
-  const lines = rawText
-    .replace(/\r\n/g, '\n')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-
-  if (!lines.length) {
-    return []
-  }
-
-  const delimiter = lines[0].includes('\t')
-    ? '\t'
-    : lines[0].split(';').length > lines[0].split(',').length
-      ? ';'
-      : ','
-  const firstCells = splitDelimitedRow(lines[0], delimiter)
-  let columnOrder = firstCells.map((cell) => NAV_IMPORT_HEADER_MAP[normalizeNavImportHeader(cell)] || '')
-  const hasHeader = columnOrder.includes('as_of_date') || columnOrder.some(Boolean)
-
-  if (!hasHeader) {
-    columnOrder = ['as_of_date', 'nav', 'nav_with_dividend', 'currency', 'frequency']
-  }
-
-  const dataLines = hasHeader ? lines.slice(1) : lines
-  const importedRows = dataLines
-    .map((line) => {
-      const cells = splitDelimitedRow(line, delimiter)
-      const nextRow = createEmptyImportedNavRow()
-      columnOrder.forEach((column, index) => {
-        if (!column) {
-          return
-        }
-        const cell = cells[index] || ''
-        if (column === 'as_of_date') {
-          nextRow.as_of_date = cell
-        } else if (column === 'nav') {
-          nextRow.nav = cell
-        } else if (column === 'nav_with_dividend') {
-          nextRow.nav_with_dividend = cell
-        } else if (column === 'currency') {
-          nextRow.currency = cell || 'USD'
-        } else if (column === 'frequency') {
-          nextRow.frequency = cell || 'daily'
-        }
-      })
-      return nextRow
-    })
-    .filter((row) => row.as_of_date && (row.nav || row.nav_with_dividend))
-    .sort((left, right) => right.as_of_date.localeCompare(left.as_of_date))
-
-  if (!importedRows.length) {
-    throw new Error('No valid NAV rows found. Include date plus at least one NAV column.')
-  }
-
-  return importedRows
-}
-
-function mergeImportedNavRows(existingRows: EditableNavRow[], importedRows: EditableNavRow[]) {
-  const datedRows = new Map(existingRows.filter((row) => row.as_of_date).map((row) => [row.as_of_date, row]))
-  importedRows.forEach((row) => {
-    datedRows.set(row.as_of_date, row)
-  })
-  return Array.from(datedRows.values()).sort((left, right) => right.as_of_date.localeCompare(left.as_of_date))
-}
-
-function getNavSourceSettings(navSeries: FundNavSeriesResponse) {
-  return {
-    ...DEFAULT_NAV_SOURCE_SETTINGS,
-    ...(navSeries.source_settings || {}),
-  }
 }
 
 function toEditablePeopleDraft(people: FundPeopleResponse): PeopleDraft {
@@ -2599,7 +2491,7 @@ type FundDetailPageProps = {
 export default function FundDetailPage({ fundId: propFundId }: FundDetailPageProps = {}) {
   const { fundId: routeFundId = 'fax' } = useParams()
   const fundId = propFundId || routeFundId
-  const platformInstrumentsUrl = `${PLATFORM_HOME_URL}/instruments`
+  const databaseDashboardUrl = `${PLATFORM_HOME_URL}/database-dashboard`
   const [bundle, setBundle] = useState<FundDetailBundle | null>(null)
   const [activeTab, setActiveTab] = useState<DetailTab>('quote')
   const [chartRange, setChartRange] = useState<ChartRange>('3Y')
@@ -2610,15 +2502,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [benchmarkNavSeries, setBenchmarkNavSeries] = useState<FundNavSeriesResponse | null>(null)
   const [rollingReturnWindowMonths, setRollingReturnWindowMonths] =
     useState<RollingReturnWindowMonths>(12)
-  const [showQuoteSourceSettings, setShowQuoteSourceSettings] = useState(false)
-  const [showNavImportModal, setShowNavImportModal] = useState(false)
-  const [navImportText, setNavImportText] = useState('')
-  const [navImportSourceRecordId, setNavImportSourceRecordId] = useState('quote_nav_import')
   const [quoteActionNotice, setQuoteActionNotice] = useState<string | null>(null)
-  const [quoteSourceMode, setQuoteSourceMode] = useState<QuoteSourceMode>('manual')
-  const [quoteSourceEmail, setQuoteSourceEmail] = useState('')
-  const [quoteSourceLocation, setQuoteSourceLocation] = useState('Manual upload')
-  const [quoteSourceApiProfile, setQuoteSourceApiProfile] = useState('')
   const [peerBaselineDraftIds, setPeerBaselineDraftIds] = useState<string[]>([])
   const [chartStartDate, setChartStartDate] = useState('')
   const [chartEndDate, setChartEndDate] = useState('')
@@ -2799,12 +2683,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setDocumentsDraft(toEditableDocumentsDraft(bundle.documents))
     setResearchDraft(toEditableResearchDraft(bundle.research))
     setNavDraft(toEditableNavDraft(bundle.navSeries))
-    setNavDraftSourceRecordId('manual_nav_editor')
-    const sourceSettings = getNavSourceSettings(bundle.navSeries)
-    setQuoteSourceMode(sourceSettings.source_mode)
-    setQuoteSourceEmail(sourceSettings.source_email)
-    setQuoteSourceLocation(sourceSettings.source_location)
-    setQuoteSourceApiProfile(sourceSettings.source_api_profile)
   }, [bundle])
 
   useEffect(() => {
@@ -2943,7 +2821,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setBenchmarkNavSeries(null)
     setPeerBaselineDraftIds([])
     setQuoteActionNotice(null)
-    setShowQuoteSourceSettings(false)
     setOpenQuoteChartMenu(null)
   }, [fundId])
 
@@ -3342,9 +3219,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setSectionError(null)
     setSectionNotice(null)
     setEditingNav(false)
-    setSectionError('Canonical NAV history is managed in Platform / Instruments.')
+    setSectionError('Canonical NAV history is managed in Database Dashboard.')
     setQuoteActionNotice(
-      'Watchlist detail is read-only for canonical NAV history. Use Platform / Instruments to import or refresh shared market data.',
+      'Watchlist detail is read-only for canonical NAV history. Use Database Dashboard to import or refresh shared market data.',
     )
   }
 
@@ -3832,8 +3709,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       tone: null,
     },
     {
-      label: 'Update Source',
-      value: toTitleCase(quoteSourceMode),
+      label: 'Refresh Owner',
+      value: 'Database Dashboard',
       tone: 'status-attribute',
     },
     {
@@ -4943,20 +4820,12 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     })
   }
 
-  function scrollToNavHistoryPanel() {
-    if (typeof window !== 'undefined') {
-      window.requestAnimationFrame(() => {
-        document.getElementById('nav-history-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      })
-    }
-  }
-
   function beginNavEditing() {
     setSectionNotice(null)
     setEditingNav(false)
-    setSectionError('Canonical NAV history is managed in Platform / Instruments.')
+    setSectionError('Canonical NAV history is managed in Database Dashboard.')
     setQuoteActionNotice(
-      'Watchlist detail is read-only for canonical NAV history. Use Platform / Instruments to import or refresh shared market data.',
+      'Watchlist detail is read-only for canonical NAV history. Use Database Dashboard to import or refresh shared market data.',
     )
   }
 
@@ -4967,9 +4836,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   function handleAddNavQuote() {
     setSectionNotice(null)
     setEditingNav(false)
-    setSectionError('Canonical NAV history is managed in Platform / Instruments.')
+    setSectionError('Canonical NAV history is managed in Database Dashboard.')
     setQuoteActionNotice(
-      'Watchlist detail is read-only for canonical NAV history. Use Platform / Instruments to import or refresh shared market data.',
+      'Watchlist detail is read-only for canonical NAV history. Use Database Dashboard to import or refresh shared market data.',
     )
   }
 
@@ -5031,82 +4900,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     } finally {
       setSavingSection(null)
     }
-  }
-
-  async function handleQuoteUpdateNow() {
-    setSectionError(null)
-    setSectionNotice(null)
-    setSectionError('Shared NAV refresh now runs from Platform / Instruments.')
-    setQuoteActionNotice('Use Platform / Instruments to trigger shared market data refresh.')
-  }
-
-  async function handleSaveQuoteSourceSettings() {
-    setSavingSection('quote_source')
-    setSectionError(null)
-    setSectionNotice(null)
-    try {
-      await updateInstrumentNavSettings(fundId, {
-        nav_basis_preference: navSeries.nav_basis_preference || 'auto',
-        source_mode: quoteSourceMode,
-        source_email: quoteSourceEmail,
-        source_location: quoteSourceLocation,
-        source_api_profile: quoteSourceApiProfile,
-        updated_by: 'terminal_ui',
-      })
-      const sourceSummary =
-        quoteSourceMode === 'email'
-          ? `Email source ${quoteSourceEmail || 'not set'}`
-          : quoteSourceMode === 'api'
-            ? `API source ${quoteSourceApiProfile || 'not set'}`
-            : `Manual source ${quoteSourceLocation || 'Manual upload'}`
-      setQuoteActionNotice(`Source settings saved. ${sourceSummary}.`)
-      setShowQuoteSourceSettings(false)
-      setRefreshToken((value) => value + 1)
-    } catch (saveError) {
-      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save source settings.')
-    } finally {
-      setSavingSection(null)
-    }
-  }
-
-  function openNavImportModal() {
-    setSectionNotice(null)
-    setShowNavImportModal(false)
-    setSectionError('Canonical NAV history is managed in Platform / Instruments.')
-    setQuoteActionNotice(
-      'Watchlist detail is read-only for canonical NAV history. Use Platform / Instruments to import shared market data.',
-    )
-  }
-
-  function handleApplyNavImport() {
-    try {
-      const importedRows = parseNavImportRows(navImportText)
-      setNavDraft((current) => {
-        const base = current ?? toEditableNavDraft(navSeries)
-        return {
-          ...base,
-          rows: mergeImportedNavRows(base.rows, importedRows),
-        }
-      })
-      setNavDraftSourceRecordId(navImportSourceRecordId.trim() || 'quote_nav_import')
-      setEditingNav(true)
-      setShowNavImportModal(false)
-      setNavImportText('')
-      setQuoteActionNotice(`Imported ${importedRows.length} NAV rows into the editor. Review and save NAV.`)
-      scrollToNavHistoryPanel()
-    } catch (importError) {
-      setSectionError(importError instanceof Error ? importError.message : 'Failed to parse NAV import.')
-    }
-  }
-
-  async function handleNavImportFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    if (!file) {
-      return
-    }
-    const text = await file.text()
-    setNavImportText(text)
-    event.target.value = ''
   }
 
   return (
@@ -5185,18 +4978,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 <div className="instrument-quote-facts">
                   <div className="instrument-quote-panel-toolbar">
                     <div className="toolbar">
-                      <a href={platformInstrumentsUrl} className="toolbar-link">
-                        Platform / Instruments
+                      <a href={databaseDashboardUrl} className="toolbar-link">
+                        Database Dashboard
                       </a>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowQuoteSourceSettings(true)
-                          setQuoteActionNotice(null)
-                        }}
-                      >
-                        Source Settings
-                      </button>
                       <button
                         type="button"
                         className={timelineNoteCaptureMode ? 'button-primary' : undefined}
@@ -6255,172 +6039,13 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   <div className="instrument-placeholder">
                     {navSeries.rows.length
                       ? `${quoteBasisLabel} is unavailable for the current currency or date window. Switch Data Type, Currency, or range.`
-                      : 'No NAV history is available yet. Add shared market data in Platform / Instruments to materialize the quote curve.'}
+                      : 'No NAV history is available yet. Add shared market data in Database Dashboard to materialize the quote curve.'}
                   </div>
                 )}
               </div>
 
             </div>
           </section>
-
-          {showQuoteSourceSettings ? (
-            <div
-              className="instrument-modal-backdrop"
-              onClick={() => setShowQuoteSourceSettings(false)}
-            >
-              <div
-                className="instrument-modal"
-                role="dialog"
-                aria-modal="true"
-                aria-label="Source Settings"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <div className="instrument-modal-header">
-                  <div>
-                    <div className="panel-title">Update Source</div>
-                    <div className="instrument-quote-source-title">Source configuration for NAV refresh</div>
-                  </div>
-                  <div className="toolbar">
-                    <button type="button" onClick={() => setShowQuoteSourceSettings(false)}>
-                      Close
-                    </button>
-                    <button
-                      type="button"
-                      className="button-primary"
-                      onClick={() => void handleSaveQuoteSourceSettings()}
-                      disabled={savingSection === 'quote_source'}
-                    >
-                      {savingSection === 'quote_source' ? 'Saving...' : 'Save Settings'}
-                    </button>
-                  </div>
-                </div>
-                <div className="form-grid form-grid-3 instrument-quote-source-grid">
-                  <label className="form-field">
-                    <span>Source Mode</span>
-                    <select
-                      value={quoteSourceMode}
-                      onChange={(event) => setQuoteSourceMode(event.target.value as QuoteSourceMode)}
-                    >
-                      <option value="manual">Manual</option>
-                      <option value="email">Email</option>
-                      <option value="api">API</option>
-                    </select>
-                  </label>
-                  <label className="form-field">
-                    <span>Email Source</span>
-                    <input
-                      value={quoteSourceEmail}
-                      onChange={(event) => setQuoteSourceEmail(event.target.value)}
-                      placeholder="pricing@internal.com"
-                      disabled={quoteSourceMode !== 'email'}
-                    />
-                  </label>
-                  <label className="form-field">
-                    <span>API Profile</span>
-                    <input
-                      value={quoteSourceApiProfile}
-                      onChange={(event) => setQuoteSourceApiProfile(event.target.value)}
-                      placeholder="vendor_profile"
-                      disabled={quoteSourceMode !== 'api'}
-                    />
-                  </label>
-                  <label className="form-field detail-span-2">
-                    <span>Folder / Rule</span>
-                    <input
-                      value={quoteSourceLocation}
-                      onChange={(event) => setQuoteSourceLocation(event.target.value)}
-                      placeholder="Daily NAV attachments / IMAP rule / API endpoint placeholder"
-                    />
-                  </label>
-                  <div className="instrument-quote-source-meta">
-                    <div>
-                      <span>Last Fact Update</span>
-                      <strong>{formatDateTime(summary.freshness.last_fact_update_at)}</strong>
-                    </div>
-                    <div>
-                      <span>Last Recalculated</span>
-                      <strong>{formatDateTime(summary.freshness.last_recalculated_at)}</strong>
-                    </div>
-                    <div>
-                      <span>Current Basis Source</span>
-                      <strong>{formatNavBasisSource(navSeries.nav_basis_source)}</strong>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {showNavImportModal ? (
-            <div
-              className="instrument-modal-backdrop"
-              onClick={() => setShowNavImportModal(false)}
-            >
-              <div
-                className="instrument-modal"
-                role="dialog"
-                aria-modal="true"
-                aria-label="Import NAV"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <div className="instrument-modal-header">
-                  <div>
-                    <div className="panel-title">Import NAV</div>
-                    <div className="instrument-quote-source-title">Paste or upload NAV history for this instrument</div>
-                  </div>
-                  <div className="toolbar">
-                    <button type="button" onClick={() => setShowNavImportModal(false)}>
-                      Close
-                    </button>
-                    <button type="button" className="button-primary" onClick={handleApplyNavImport}>
-                      Import to Editor
-                    </button>
-                  </div>
-                </div>
-                <div className="form-grid form-grid-3 instrument-quote-source-grid">
-                  <label className="form-field">
-                    <span>Source Record ID</span>
-                    <input
-                      value={navImportSourceRecordId}
-                      onChange={(event) => setNavImportSourceRecordId(event.target.value)}
-                      placeholder="quote_nav_import"
-                    />
-                  </label>
-                  <label className="form-field detail-span-2">
-                    <span>Upload File</span>
-                    <input
-                      type="file"
-                      accept=".csv,.tsv,.txt"
-                      onChange={(event) => void handleNavImportFileChange(event)}
-                    />
-                  </label>
-                  <label className="form-field detail-span-3">
-                    <span>Paste Rows</span>
-                    <textarea
-                      rows={10}
-                      value={navImportText}
-                      onChange={(event) => setNavImportText(event.target.value)}
-                      placeholder={'date,nav,nav_with_dividend,currency,frequency\n2026-04-10,15.00,15.94,USD,daily'}
-                    />
-                  </label>
-                  <div className="instrument-quote-source-meta detail-span-3">
-                    <div>
-                      <span>Supported Columns</span>
-                      <strong>Date, NAV, NAV with Dividend, Currency, Frequency</strong>
-                    </div>
-                    <div>
-                      <span>Accepted Formats</span>
-                      <strong>CSV, TSV, pasted table</strong>
-                    </div>
-                    <div>
-                      <span>Flow</span>
-                      <strong>Import to editor, review, then Save NAV</strong>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : null}
 
           {timelineNoteDraft ? (
             <div
@@ -6630,13 +6255,13 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   <div className="instrument-section-title">NAV / NAV with Dividend</div>
                 </div>
                 <div className="toolbar">
-                  <a href={platformInstrumentsUrl} className="toolbar-link">
-                    Manage In Platform
+                  <a href={databaseDashboardUrl} className="toolbar-link">
+                    Open Database Dashboard
                   </a>
                 </div>
               </div>
               <div className="instrument-form-note nav-history-editor-note">
-                Canonical NAV history is managed in <a href={platformInstrumentsUrl}>Platform / Instruments</a>.
+                Canonical NAV history is managed in <a href={databaseDashboardUrl}>Database Dashboard</a>.
                 Watchlist detail stays read-only here; only local basis and comparison settings remain editable.
               </div>
 

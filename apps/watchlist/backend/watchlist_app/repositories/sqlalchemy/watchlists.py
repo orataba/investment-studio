@@ -39,9 +39,9 @@ def _allocate_local_view_id(
     return candidate
 
 
-PRIVATE_FUND_SCREENING_VIEW_ID = "private-fund-screening"
-PRIVATE_FUND_SCREENING_VIEW_NAME = "私募分类筛选"
-PRIVATE_FUND_SCREENING_VIEW_DESCRIPTION = "先按分类树缩小私募基金池，再叠加研究标签和监控判断。"
+FUND_SCREENING_VIEW_ID = "fund-screening"
+FUND_SCREENING_VIEW_NAME = "基金分类筛选"
+FUND_SCREENING_VIEW_DESCRIPTION = "先按分类树缩小基金池，再叠加研究标签和监控判断。"
 
 
 def _overview_view_columns() -> list[dict[str, object]]:
@@ -58,7 +58,7 @@ def _overview_view_columns() -> list[dict[str, object]]:
     ]
 
 
-def _private_fund_screening_view_columns() -> list[dict[str, object]]:
+def _fund_screening_view_columns() -> list[dict[str, object]]:
     return [
         {"field_key": "asset_name", "display_order": 1, "width": 320},
         {"field_key": "attr.fund_regime", "display_order": 2, "width": 120},
@@ -152,15 +152,15 @@ class SQLAlchemyWatchlistRepository:
         self.create_view(
             session,
             watchlist_id=watchlist_id,
-            view_id=PRIVATE_FUND_SCREENING_VIEW_ID,
-            name=PRIVATE_FUND_SCREENING_VIEW_NAME,
-            description=PRIVATE_FUND_SCREENING_VIEW_DESCRIPTION,
+            view_id=FUND_SCREENING_VIEW_ID,
+            name=FUND_SCREENING_VIEW_NAME,
+            description=FUND_SCREENING_VIEW_DESCRIPTION,
             kind="system",
             default_group_by="attr.fund_category_l1",
             default_sort=[],
-            default_filters={"asset_type": ["fund"], "attr.fund_regime": ["私募"]},
+            default_filters={"asset_type": ["fund"]},
             default_advanced_filter={},
-            columns=_private_fund_screening_view_columns(),
+            columns=_fund_screening_view_columns(),
             is_default=False,
         )
         session.flush()

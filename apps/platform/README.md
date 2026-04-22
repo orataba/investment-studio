@@ -1,18 +1,20 @@
 # Yungu Platform
 
-这是 `Yungu` 的平台入口和 shared asset ops app。
+这是 `Yungu` 的平台入口和 `Database Dashboard` app。
 
 当前状态：
 
 - `frontend/` 与 `backend/` 都已可运行
-- `Platform` 只负责平台首页、app switcher 和 shared asset ops
+- `Platform` 只负责平台首页、app switcher 和 `Database Dashboard`
 - `Platform` 直接维护 `shared_asset` schema，但不是 `Watchlist` / `Portfolio` 的运行时数据中转层
+- `Platform` 对 `Watchlist` 的入口和 app registry 文案应反映当前真实发布范围：fund-only，Copilot 仅保留 backend extension boundary
 
 ## 当前职责
 
 - 展示 `Yungu` 平台首页
 - 提供到 `Watchlist` 与 `Portfolio` 的入口
-- 提供 shared asset ops API 与 dashboard，维护 `Instruments / FX / market facts`
+- 提供 `Database Dashboard` API 与页面，维护 `Instruments / FX / NAV / market facts`
+- 在 `Database Dashboard` 里支持手工录入、CSV/Excel 导入、邮件刷新，并展示选中资产的共享市场数据与净值历史
 - 在前端用 `/api/apps` 暴露 app registry
 
 ## 当前不承载
@@ -25,9 +27,9 @@
 ## 目录
 
 - `frontend/`
-  平台 landing / app switcher / shared asset ops dashboard
+  平台 landing / app switcher / Database Dashboard
 - `backend/`
-  平台 backend，提供健康检查、app registry 与 shared asset ops API
+  平台 backend，提供健康检查、app registry 与 `Database Dashboard` API
 
 ## Shared Asset Migration
 
