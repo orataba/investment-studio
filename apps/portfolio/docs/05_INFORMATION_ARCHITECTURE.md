@@ -1,5 +1,7 @@
 # 05 Information Architecture
 
+> 说明：这份 IA 文档保留目标态工作面设计。当前实际实现以 [README.md](../README.md) 为准，其中 `Snapshot` 仍未作为主导航工作面发布，当前路由会回退到 `Holdings`。
+
 ## 1. Purpose
 
 这份文档的目标是把前四份已经确定的产品、领域模型和计算规格，映射成一套稳定的信息架构。
@@ -338,7 +340,9 @@
 
 **Primary question**
 
-- 风险在哪里、偏离是否过大、该怎么解释？
+- 当前风险在哪里？
+- 过去这段时间风险是怎么走出来的？
+- 现在哪些风险需要处理？
 
 **Primary objects**
 
@@ -349,14 +353,18 @@
 
 **Core blocks**
 
+- `Current`
 - exposure
 - target weight drift / `target_weight_gap`
 - optional intended / unintended drift
 - target risk budget gap / `target_risk_budget_gap`
 - concentration
-- realized risk
-- scenario results
 - limits & alerts
+- `Realized`
+- realized risk path
+- drawdown / worst-day / volatility summary
+- recent monitoring tape
+- scenario results
 
 **Comparator**
 
@@ -376,6 +384,7 @@
 - target resolution mode（按 `weight` / `risk_budget` 分维度解析）
 - comparison denominator label（`portfolio_total_risk` 或 sleeve drilldown 时的 `parent_local_risk`）
 - `as_of_date`
+- realized-risk window
 
 **Rule management**
 
@@ -440,6 +449,7 @@
 - account balance summary
 - account positions
 - account-level ledger slice（derived from `LedgerPosting`）
+- as-of replay boundary: account balances / positions / linked transactions 都按 selected `as_of_date` 截断；未到 `effective_date` 的证券现金腿只进入 pending settlement，不提前冲 settled cash
 - default settlement cash mapping
 - paired securities-to-cash view
 
@@ -458,6 +468,7 @@
 **Primary question**
 
 - 这个周期最重要的结果和动作是什么？
+- 要把哪些收益、风险和研究结论带到下一次讨论？
 
 **Primary objects**
 
@@ -474,7 +485,7 @@
 - benchmark-relative section（composition-aware；`return_only` 时降级为 performance-only）
 - target drift summary
 - target risk budget summary
-- period risk detail
+- research handoff
 - commentary
 - actions
 - export artifacts
@@ -528,6 +539,7 @@
 - member weight path / rebalance suggestions
 - artifact viewer
 - handoff to portfolio context
+- current context 与 backtest actual rows 必须共享同一 `as_of_date` 边界；dated positions 不得配 undated cash
 
 **Not this page**
 
@@ -583,6 +595,7 @@
 - per-scope target editor
 - `Unassigned` diagnostics
 - default planning taxonomy selector
+- taxonomy root default-target selector
 - planning target-set management
 
 **Rules**

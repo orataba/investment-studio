@@ -14,10 +14,10 @@ NAV_DIR = PROJECT_ROOT / "nav"
 
 sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.db.models import Instrument, InstrumentIdentifier  # noqa: E402
-from app.db.session import get_session_factory  # noqa: E402
-from app.services import market_data_ops  # noqa: E402
-from app.services.instrument_store import (  # noqa: E402
+from platform_app.db.models import Instrument, InstrumentIdentifier  # noqa: E402
+from platform_app.db.session import get_session_factory  # noqa: E402
+from platform_app.services import market_data_ops  # noqa: E402
+from platform_app.services.instrument_store import (  # noqa: E402
     _default_lifecycle_state,
     _default_quote_selection_policy,
     _default_refresh_status,

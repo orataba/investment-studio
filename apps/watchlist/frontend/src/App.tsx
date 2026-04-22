@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Route, Routes } from 'react-router-dom'
 
 import InstrumentsLibraryPage from './pages/InstrumentsLibraryPage'
 import MonitoringPage from './pages/MonitoringPage'
@@ -17,10 +17,6 @@ export default function App() {
           <Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} />
           <Route path="/watchlists/:watchlistId/instruments/:assetId" element={<InstrumentDetailPage />} />
           <Route path="/instruments/*" element={<InstrumentsLibraryPage />} />
-          <Route
-            path="/funds/*"
-            element={<Navigate to="/instruments" replace />}
-          />
           <Route
             path="/research"
             element={

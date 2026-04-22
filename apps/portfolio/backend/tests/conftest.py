@@ -19,8 +19,8 @@ sys.path.insert(0, BACKEND_ROOT_STR)
 
 from tests.store_fixture import TEST_PORTFOLIO_STORE
 
-from app.api.routes import transactions as transaction_routes
-from app.services import asset_charts, ledger, performance, portfolio_store
+from portfolio_app.api.routes import transactions as transaction_routes
+from portfolio_app.services import asset_charts, ledger, performance, portfolio_store
 
 
 def _market_point(
@@ -231,7 +231,11 @@ def _get_registry_instrument_detail(asset_id: str):
 
 
 @pytest.fixture(autouse=True)
-def isolated_portfolio_store(tmp_path, monkeypatch):
+def isolated_portfolio_store(request, tmp_path, monkeypatch):
+    if request.node.get_closest_marker("postgresql_integration") is not None:
+        yield
+        return
+
     database_path = tmp_path / "portfolio.db"
     database_url = f"sqlite+pysqlite:///{database_path}"
     research_outputs_root = tmp_path / "research_outputs"
@@ -239,8 +243,8 @@ def isolated_portfolio_store(tmp_path, monkeypatch):
     monkeypatch.setenv("YUNGU_PORTFOLIO_DATABASE_SCHEMA", "")
     monkeypatch.setenv("YUNGU_PORTFOLIO_RESEARCH_OUTPUTS_ROOT", str(research_outputs_root))
 
-    from app.core import settings as settings_module
-    from app.db import session as session_module
+    from portfolio_app.core import settings as settings_module
+    from portfolio_app.db import session as session_module
 
     settings_module.get_settings.cache_clear()
     session_module.get_engine.cache_clear()
@@ -250,6 +254,7 @@ def isolated_portfolio_store(tmp_path, monkeypatch):
     portfolio_store.reset_store(deepcopy(TEST_PORTFOLIO_STORE))
 
     monkeypatch.setattr(transaction_routes, "get_registry_instrument", _get_registry_instrument)
+    monkeypatch.setattr(transaction_routes, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))
     monkeypatch.setattr(asset_charts, "get_registry_instrument_detail", _get_registry_instrument_detail)
     monkeypatch.setattr(ledger, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))
     monkeypatch.setattr(ledger, "get_registry_instrument_detail", _get_registry_instrument_detail)
@@ -266,7 +271,7 @@ def isolated_portfolio_store(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client():
-    import app.main as main_module
+    import portfolio_app.main as main_module
 
     main_module = importlib.reload(main_module)
     with TestClient(main_module.app) as test_client:

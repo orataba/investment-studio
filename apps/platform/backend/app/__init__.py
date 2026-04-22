@@ -1,1 +1,0 @@
-"""Yungu platform backend package."""

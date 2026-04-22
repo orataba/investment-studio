@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from app.main import app
+from platform_app.main import app
 
 
 def test_health_reports_email_readiness(monkeypatch) -> None:
-    from app.api.routes import health
+    from platform_app.api.routes import health
 
     class StubSettings:
         app_name = "Yungu Platform API"

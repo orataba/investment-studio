@@ -945,6 +945,23 @@ select {
   color: #4b5563;
 }
 
+.review-filter-grid,
+.review-filter-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.review-filter-grid {
+  grid-template-columns: repeat(3, minmax(180px, 220px));
+}
+
+.review-filter-grid span {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #4b5563;
+}
+
 .performance-filter-actions {
   display: flex;
   align-items: center;
@@ -1221,6 +1238,180 @@ select {
   color: #8f1d1d;
 }
 
+.risk-ranked-bars,
+.risk-ribbon,
+.risk-account-bars {
+  display: grid;
+  gap: 12px;
+  padding: 14px 0 12px;
+  border-top: 1px solid #ececec;
+}
+
+.risk-ranked-row,
+.risk-account-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+}
+
+.risk-ranked-label,
+.risk-account-label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.risk-ranked-title,
+.risk-account-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.risk-ranked-meta,
+.risk-account-meta,
+.risk-ranked-detail,
+.risk-account-detail-line,
+.risk-account-value-meta {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.risk-ranked-bar-stack,
+.risk-account-bar-stack {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.risk-ranked-bar-track,
+.risk-account-track {
+  position: relative;
+  height: 16px;
+  border-radius: 999px;
+  background: #f6f1e8;
+  overflow: hidden;
+}
+
+.risk-ranked-bar-fill,
+.risk-account-track-span {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.risk-account-track-span {
+  display: flex;
+  overflow: hidden;
+}
+
+.risk-account-segment {
+  height: 100%;
+}
+
+.risk-account-segment-cash,
+.risk-account-legend-swatch-cash {
+  background: #d4b269;
+}
+
+.risk-account-segment-position,
+.risk-account-legend-swatch-position {
+  background: #1f4b99;
+}
+
+.risk-account-segment-negative {
+  background: #b45309;
+}
+
+.risk-ranked-value,
+.risk-account-value {
+  display: grid;
+  gap: 2px;
+  justify-items: end;
+  text-align: right;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.risk-account-detail-line {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.risk-ribbon-track {
+  display: flex;
+  min-height: 28px;
+  border-radius: 14px;
+  background: #f6f1e8;
+  overflow: hidden;
+}
+
+.risk-ribbon-segment {
+  min-width: 4px;
+}
+
+.risk-ribbon-legend {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.risk-ribbon-legend-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  align-items: center;
+}
+
+.risk-ribbon-swatch,
+.risk-account-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+}
+
+.risk-ribbon-label,
+.risk-ribbon-value,
+.risk-account-legend-item {
+  font-size: 12px;
+  color: #111827;
+}
+
+.risk-ribbon-label {
+  min-width: 0;
+  font-weight: 700;
+}
+
+.risk-ribbon-value {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.risk-ribbon-detail {
+  grid-column: 2 / 4;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.risk-account-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.risk-account-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .holdings-side-toolbar {
   padding-top: 0;
   border-top: none;
@@ -1233,6 +1424,21 @@ select {
 
 @media (max-width: 1100px) {
   .holdings-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .risk-ranked-row,
+  .risk-account-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .risk-ranked-value,
+  .risk-account-value {
+    justify-items: start;
+    text-align: left;
+  }
+
+  .risk-ribbon-legend {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -1401,6 +1607,20 @@ select {
   font-size: 13px;
   line-height: 1.6;
   color: #4b5563;
+}
+
+.research-tab-section {
+  display: grid;
+  gap: 18px;
+}
+
+.research-inline-toggle-active {
+  color: #0f4c81;
+  text-decoration: underline;
+}
+
+.research-weight-schedule-row-flagged {
+  background: #f7fbff;
 }
 
 .research-artifact-viewer {
@@ -2523,6 +2743,7 @@ th {
   .transaction-inspector-grid,
   .transaction-filter-group,
   .performance-filter-group,
+  .review-filter-grid,
   .transaction-form-grid,
   .taxonomy-workbench-grid,
   .taxonomy-detail-grid,
@@ -2571,6 +2792,7 @@ th {
   .transaction-inspector-grid,
   .transaction-filter-group,
   .performance-filter-group,
+  .review-filter-grid,
   .transaction-form-grid,
   .taxonomy-workbench-grid,
   .taxonomy-detail-grid,

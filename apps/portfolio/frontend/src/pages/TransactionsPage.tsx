@@ -1,23 +1,25 @@
 import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom'
 
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
   createPortfolioInternalTransfer,
   createPortfolioTransaction,
-  getPlatformInstruments,
+  deletePortfolioTransaction,
   getPortfolioAccounts,
   getPortfolioFxRates,
+  getPortfolioInstruments,
   getPortfolioTransactionsWorkspace,
-  type PlatformInstrumentRecord,
   type PortfolioAccountRecord,
   type PortfolioPositionLotRecord,
   type PortfolioSharedFxRateRecord,
+  type SharedInstrumentRecord,
   type PortfolioTransactionCreatePayload,
   type PortfolioTransactionFilters,
   type PortfolioTransactionRecord,
   type PortfolioTransactionWorkspaceResponse,
+  updatePortfolioTransaction,
 } from '../lib/api'
 import {
   formatCurrency,
@@ -28,7 +30,6 @@ import {
   formatUnitPrice,
 } from '../lib/format'
 
-const DEFAULT_FORM_DATE = '2026-04-15'
 const DEFAULT_FORM_TIME = (import.meta.env.VITE_PORTFOLIO_DEFAULT_TRADE_TIME || '12:00').slice(0, 5)
 const DEFAULT_TRADE_TIMEZONE = import.meta.env.VITE_PORTFOLIO_DEFAULT_TRADE_TIMEZONE || 'Asia/Shanghai'
 const TRANSACTION_TYPES = [
@@ -62,7 +63,7 @@ const INCOME_ASSET_TYPES: Record<string, Set<string>> = {
 
 function primaryIdentifier(
   instrument:
-    | PlatformInstrumentRecord
+    | SharedInstrumentRecord
     | {
         asset_id: string
         identifiers: Array<{ identifier_value: string; is_primary: boolean }>
@@ -81,6 +82,26 @@ function isTransferTransaction(transactionType: string) {
 
 function isFxConversionTransaction(transactionType: string) {
   return transactionType === 'fx_conversion'
+}
+
+function localTodayIso() {
+  const now = new Date()
+  const timezoneOffsetMs = now.getTimezoneOffset() * 60 * 1000
+  return new Date(now.getTime() - timezoneOffsetMs).toISOString().slice(0, 10)
+}
+
+function formatFormNumber(
+  value: number | null | undefined,
+  options?: { zeroAsEmpty?: boolean },
+) {
+  const zeroAsEmpty = options?.zeroAsEmpty ?? false
+  if (value == null) {
+    return ''
+  }
+  if (zeroAsEmpty && Math.abs(value) < 1e-9) {
+    return ''
+  }
+  return String(value)
 }
 
 function accountAllowsAssetType(
@@ -255,7 +276,7 @@ function eligibleCounterpartyAccounts(
 
 function isSelectableInstrument(
   transactionType: string,
-  instrument: PlatformInstrumentRecord,
+  instrument: SharedInstrumentRecord,
   account?: PortfolioAccountRecord | null,
   accountCurrency?: string | null,
   transferObjectType?: string | null,
@@ -395,6 +416,8 @@ type TransactionFormState = {
   trade_date: string
   trade_time: string
   settlement_date: string
+  entitlement_date: string
+  acquisition_date: string
   account_id: string
   counterparty_account_id: string
   settlement_cash_account_id: string
@@ -412,6 +435,7 @@ type TransactionFormState = {
 }
 
 function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionFormState {
+  const defaultFormDate = localTodayIso()
   const defaultSecurityAccount = accounts.find((account) => account.account_type === 'securities_account')
   const defaultCashAccount =
     accounts.find((account) => account.account_id === defaultSecurityAccount?.default_settlement_cash_account_id) ??
@@ -419,9 +443,11 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
 
   return {
     transaction_type: 'buy',
-    trade_date: DEFAULT_FORM_DATE,
+    trade_date: defaultFormDate,
     trade_time: DEFAULT_FORM_TIME,
-    settlement_date: DEFAULT_FORM_DATE,
+    settlement_date: defaultFormDate,
+    entitlement_date: '',
+    acquisition_date: '',
     account_id: defaultSecurityAccount?.account_id ?? accounts[0]?.account_id ?? '',
     counterparty_account_id: '',
     settlement_cash_account_id: defaultCashAccount?.account_id ?? '',
@@ -437,6 +463,46 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     note: '',
     instrument_search: '',
   }
+}
+
+function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord): TransactionFormState {
+  return {
+    transaction_type: transaction.transaction_type,
+    trade_date: transaction.trade_date,
+    trade_time: transaction.trade_time || DEFAULT_FORM_TIME,
+    settlement_date: transaction.settlement_date,
+    entitlement_date: transaction.entitlement_date || '',
+    acquisition_date: transaction.acquisition_date || '',
+    account_id: transaction.account.account_id,
+    counterparty_account_id: transaction.counterparty_account_id || '',
+    settlement_cash_account_id: transaction.settlement_cash_account?.account_id || '',
+    transfer_object_type: transaction.transfer_object_type || 'cash',
+    asset_id: transaction.asset_id || '',
+    quantity: formatFormNumber(transaction.quantity, { zeroAsEmpty: true }),
+    price: formatFormNumber(transaction.price, { zeroAsEmpty: true }),
+    gross_amount: formatFormNumber(transaction.gross_amount, { zeroAsEmpty: true }),
+    counter_amount: formatFormNumber(transaction.counter_amount, { zeroAsEmpty: true }),
+    fx_rate: formatFormNumber(transaction.fx_rate, { zeroAsEmpty: true }),
+    fees: formatFormNumber(transaction.fees),
+    taxes: formatFormNumber(transaction.taxes),
+    note: transaction.note || '',
+    instrument_search: '',
+  }
+}
+
+function supportsEntitlementDate(transactionType: string) {
+  return transactionType === 'dividend' || transactionType === 'coupon' || transactionType === 'fee' || transactionType === 'tax'
+}
+
+function supportsAcquisitionDate(transactionType: string, accountType?: string | null) {
+  return transactionType === 'opening_balance' && accountType === 'securities_account'
+}
+
+function canEditTransaction(transaction: PortfolioTransactionRecord | null) {
+  if (!transaction) {
+    return false
+  }
+  return !transaction.transfer_group_id && !isTransferTransaction(transaction.transaction_type)
 }
 
 function tradeTimeLabel(tradeTime: string, tradeTimezone: string, tradeTimeIsEstimated: boolean) {
@@ -480,10 +546,10 @@ function resolvePositionLotImpactKinds(
 }
 
 export default function TransactionsPage() {
-  const { portfolioId = 'yungu' } = useParams()
+  const { portfolioId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const [accounts, setAccounts] = useState<PortfolioAccountRecord[]>([])
-  const [instruments, setInstruments] = useState<PlatformInstrumentRecord[]>([])
+  const [instruments, setInstruments] = useState<SharedInstrumentRecord[]>([])
   const [fxRates, setFxRates] = useState<PortfolioSharedFxRateRecord[]>([])
   const [transactionsWorkspace, setTransactionsWorkspace] = useState<PortfolioTransactionWorkspaceResponse | null>(null)
   const [metaLoading, setMetaLoading] = useState(true)
@@ -492,6 +558,7 @@ export default function TransactionsPage() {
   const [formError, setFormError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null)
   const [form, setForm] = useState<TransactionFormState>(() => buildInitialFormState([]))
 
   const filters: PortfolioTransactionFilters = {
@@ -519,9 +586,25 @@ export default function TransactionsPage() {
 
   useEffect(() => {
     let cancelled = false
+
+    if (!portfolioId) {
+      setAccounts([])
+      setInstruments([])
+      setFxRates([])
+      setPageError('Portfolio id is required.')
+      setMetaLoading(false)
+      return () => {
+        cancelled = true
+      }
+    }
+
     setMetaLoading(true)
 
-    Promise.all([getPortfolioAccounts(portfolioId), getPlatformInstruments(), getPortfolioFxRates(portfolioId)])
+    Promise.all([
+      getPortfolioAccounts(portfolioId),
+      getPortfolioInstruments(portfolioId),
+      getPortfolioFxRates(portfolioId),
+    ])
       .then(([accountsResponse, instrumentsResponse, fxRatesResponse]) => {
         if (cancelled) {
           return
@@ -551,6 +634,16 @@ export default function TransactionsPage() {
 
   useEffect(() => {
     let cancelled = false
+
+    if (!portfolioId) {
+      setTransactionsWorkspace(null)
+      setPageError('Portfolio id is required.')
+      setLoadingTransactions(false)
+      return () => {
+        cancelled = true
+      }
+    }
+
     setLoadingTransactions(true)
 
     getPortfolioTransactionsWorkspace(portfolioId, {
@@ -618,6 +711,10 @@ export default function TransactionsPage() {
     selectedAccount?.account_type,
     form.transfer_object_type,
   )
+
+  if (!portfolioId) {
+    return <Navigate replace to="/portfolios" />
+  }
   const shouldUsePrice = usesPrice(form.transaction_type)
   const shouldShowFees = showsFeeField(form.transaction_type)
   const shouldShowTaxes = showsTaxField(form.transaction_type)
@@ -898,15 +995,37 @@ export default function TransactionsPage() {
     }
   }, [form.taxes, shouldShowTaxes])
 
+  useEffect(() => {
+    if (!supportsEntitlementDate(form.transaction_type) && form.entitlement_date) {
+      setForm((current) => ({
+        ...current,
+        entitlement_date: '',
+      }))
+    }
+  }, [form.entitlement_date, form.transaction_type])
+
+  useEffect(() => {
+    if (!supportsAcquisitionDate(form.transaction_type, selectedAccount?.account_type) && form.acquisition_date) {
+      setForm((current) => ({
+        ...current,
+        acquisition_date: '',
+      }))
+    }
+  }, [form.acquisition_date, form.transaction_type, selectedAccount?.account_type])
+
   async function refreshTransactions(
     activeFilters: PortfolioTransactionFilters,
     selectedTransactionOverride?: string | null,
   ) {
     setLoadingTransactions(true)
     try {
+      const resolvedTransactionId =
+        selectedTransactionOverride === undefined
+          ? selectedTransactionId || undefined
+          : selectedTransactionOverride || undefined
       const response = await getPortfolioTransactionsWorkspace(portfolioId, {
         ...activeFilters,
-        transaction_id: selectedTransactionOverride || selectedTransactionId || undefined,
+        transaction_id: resolvedTransactionId,
       })
       setTransactionsWorkspace(response)
       setPageError(null)
@@ -917,10 +1036,27 @@ export default function TransactionsPage() {
     }
   }
 
+  function openCreateDrawer() {
+    setEditingTransactionId(null)
+    setForm(buildInitialFormState(accounts))
+    setFormError(null)
+    setNotice(null)
+    setDrawerOpen(true)
+  }
+
+  function openEditDrawer(transaction: PortfolioTransactionRecord) {
+    setEditingTransactionId(transaction.transaction_id)
+    setForm(buildFormStateFromTransaction(transaction))
+    setFormError(null)
+    setNotice(null)
+    setDrawerOpen(true)
+  }
+
   async function handleCreateTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setFormError(null)
     setNotice(null)
+    const isEditingTransaction = editingTransactionId !== null
 
     const resolvedAccount =
       accounts.find((account) => account.account_id === form.account_id) ?? selectedAccount ?? null
@@ -991,6 +1127,8 @@ export default function TransactionsPage() {
         trade_date: form.trade_date,
         trade_time: form.trade_time || null,
         settlement_date: form.settlement_date || form.trade_date,
+        entitlement_date: null,
+        acquisition_date: null,
         account_id: resolvedAccount.account_id,
         settlement_cash_account_id: null,
         asset_id: null,
@@ -1007,9 +1145,16 @@ export default function TransactionsPage() {
       }
 
       try {
-        const created = await createPortfolioTransaction(portfolioId, payload)
+        const created = isEditingTransaction
+          ? await updatePortfolioTransaction(portfolioId, editingTransactionId, payload)
+          : await createPortfolioTransaction(portfolioId, payload)
         setDrawerOpen(false)
-        setNotice(`Added ${formatLabel(created.transaction_type)} transaction ${created.transaction_id}.`)
+        setEditingTransactionId(null)
+        setNotice(
+          isEditingTransaction
+            ? `Updated ${formatLabel(created.transaction_type)} transaction ${created.transaction_id}.`
+            : `Added ${formatLabel(created.transaction_type)} transaction ${created.transaction_id}.`,
+        )
         setForm(buildInitialFormState(accounts))
         patchSearchParams({
           account_id: filters.account_id || created.account.account_id,
@@ -1017,12 +1162,22 @@ export default function TransactionsPage() {
         })
         await refreshTransactions(filters, created.transaction_id)
       } catch (error) {
-        setFormError(error instanceof Error ? error.message : 'Failed to create FX conversion.')
+        setFormError(
+          error instanceof Error
+            ? error.message
+            : isEditingTransaction
+              ? 'Failed to update FX conversion.'
+              : 'Failed to create FX conversion.',
+        )
       }
       return
     }
 
     if (isTransferTransaction(form.transaction_type)) {
+      if (isEditingTransaction) {
+        setFormError('Paired internal transfers must be deleted and recreated as a batch.')
+        return
+      }
       const isTransferOut = form.transaction_type === 'transfer_out'
       const transferObjectType = form.transfer_object_type === 'position' ? 'position' : 'cash'
       const rawGrossAmount = computedGrossAmount.trim()
@@ -1090,6 +1245,12 @@ export default function TransactionsPage() {
       trade_date: form.trade_date,
       trade_time: form.trade_time || null,
       settlement_date: form.settlement_date || form.trade_date,
+      entitlement_date: supportsEntitlementDate(form.transaction_type)
+        ? form.entitlement_date || form.trade_date
+        : null,
+      acquisition_date: supportsAcquisitionDate(form.transaction_type, resolvedAccount.account_type)
+        ? form.acquisition_date || null
+        : null,
       account_id: resolvedAccount.account_id,
       settlement_cash_account_id: shouldRequireSettlement ? form.settlement_cash_account_id || null : null,
       asset_id: shouldAllowInstrument ? selectedInstrument?.asset_id ?? null : null,
@@ -1105,9 +1266,16 @@ export default function TransactionsPage() {
     }
 
     try {
-      const created = await createPortfolioTransaction(portfolioId, payload)
+      const created = isEditingTransaction
+        ? await updatePortfolioTransaction(portfolioId, editingTransactionId, payload)
+        : await createPortfolioTransaction(portfolioId, payload)
       setDrawerOpen(false)
-      setNotice(`Added ${formatLabel(created.transaction_type)} transaction ${created.transaction_id}.`)
+      setEditingTransactionId(null)
+      setNotice(
+        isEditingTransaction
+          ? `Updated ${formatLabel(created.transaction_type)} transaction ${created.transaction_id}.`
+          : `Added ${formatLabel(created.transaction_type)} transaction ${created.transaction_id}.`,
+      )
       setForm(buildInitialFormState(accounts))
       patchSearchParams({
         account_id: filters.account_id || created.account.account_id,
@@ -1115,13 +1283,51 @@ export default function TransactionsPage() {
       })
       await refreshTransactions(filters, created.transaction_id)
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : 'Failed to create transaction.')
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : isEditingTransaction
+            ? 'Failed to update transaction.'
+            : 'Failed to create transaction.',
+      )
+    }
+  }
+
+  async function handleDeleteTransaction(transaction: PortfolioTransactionRecord) {
+    const deletingTransferPair = Boolean(transaction.transfer_group_id)
+    const confirmed = window.confirm(
+      deletingTransferPair
+        ? `Delete transfer pair ${transaction.transfer_group_id}? This removes both legs.`
+        : `Delete transaction ${transaction.transaction_id}?`,
+    )
+    if (!confirmed) {
+      return
+    }
+
+    setFormError(null)
+    setNotice(null)
+
+    try {
+      const deleted = await deletePortfolioTransaction(portfolioId, transaction.transaction_id)
+      setDrawerOpen(false)
+      setEditingTransactionId(null)
+      setForm(buildInitialFormState(accounts))
+      patchSearchParams({ transaction_id: null })
+      await refreshTransactions(filters, null)
+      setNotice(
+        deletingTransferPair
+          ? `Deleted transfer pair ${deleted.transfer_group_id}.`
+          : `Deleted transaction ${transaction.transaction_id}.`,
+      )
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Failed to delete transaction.')
     }
   }
 
   const summary = transactionsWorkspace?.summary
   const derivationBoundary = transactionsWorkspace?.derivation_boundary
   const selectedTransaction = transactionsWorkspace?.selected_transaction ?? null
+  const isEditingTransaction = editingTransactionId !== null
 
   useEffect(() => {
     const nextTransactionId = transactionsWorkspace?.selected_transaction_id ?? ''
@@ -1180,7 +1386,7 @@ export default function TransactionsPage() {
         <div className="holdings-meta-row">
           <p className="coverage-note">
             Transaction entry now uses portfolio-private accounts and facts, while instrument selection reads
-            directly from the platform-owned registry. `ledger_postings`, `positions`, and `snapshot` stay as
+            directly from the platform-owned registry. `ledger_postings`, `positions`, and holdings stay as
             the next derivation layers.
           </p>
         </div>
@@ -1298,10 +1504,7 @@ export default function TransactionsPage() {
               type="button"
               className="toolbar-link button-primary"
               disabled={metaLoading || accounts.length === 0}
-              onClick={() => {
-                setDrawerOpen(true)
-                setFormError(null)
-              }}
+              onClick={openCreateDrawer}
             >
               Add Transaction
             </button>
@@ -1448,8 +1651,27 @@ export default function TransactionsPage() {
           <section className="transaction-inspector-grid">
             <article className="panel">
               <div className="panel-header">
-                <div className="panel-title">Selected Transaction Fact</div>
-                <div className="portfolio-detail-meta">{selectedTransaction.transaction_id}</div>
+                <div>
+                  <div className="panel-title">Selected Transaction Fact</div>
+                  <div className="portfolio-detail-meta">{selectedTransaction.transaction_id}</div>
+                </div>
+                <div className="transaction-filter-actions">
+                  <button
+                    type="button"
+                    className="toolbar-link"
+                    disabled={!canEditTransaction(selectedTransaction)}
+                    onClick={() => openEditDrawer(selectedTransaction)}
+                  >
+                    Edit Fact
+                  </button>
+                  <button
+                    type="button"
+                    className="toolbar-link"
+                    onClick={() => void handleDeleteTransaction(selectedTransaction)}
+                  >
+                    {selectedTransaction.transfer_group_id ? 'Delete Pair' : 'Delete Fact'}
+                  </button>
+                </div>
               </div>
               <div className="account-summary-list">
                 <div className="account-summary-row">
@@ -1503,6 +1725,18 @@ export default function TransactionsPage() {
                     {selectedTransaction.trade_date} {selectedTransaction.trade_time} / {selectedTransaction.settlement_date}
                   </strong>
                 </div>
+                {selectedTransaction.entitlement_date ? (
+                  <div className="account-summary-row">
+                    <span>Entitlement Date</span>
+                    <strong>{selectedTransaction.entitlement_date}</strong>
+                  </div>
+                ) : null}
+                {selectedTransaction.acquisition_date ? (
+                  <div className="account-summary-row">
+                    <span>Acquisition Date</span>
+                    <strong>{selectedTransaction.acquisition_date}</strong>
+                  </div>
+                ) : null}
                 <div className="account-summary-row">
                   <span>Gross / Net Cash</span>
                   <strong>
@@ -1671,20 +1905,38 @@ export default function TransactionsPage() {
       </section>
 
       {drawerOpen ? (
-        <div className="transaction-drawer-backdrop" role="presentation" onClick={() => setDrawerOpen(false)}>
+        <div
+          className="transaction-drawer-backdrop"
+          role="presentation"
+          onClick={() => {
+            setDrawerOpen(false)
+            setEditingTransactionId(null)
+          }}
+        >
           <aside
             className="transaction-drawer"
             role="dialog"
             aria-modal="true"
-            aria-label="Add transaction"
+            aria-label={isEditingTransaction ? 'Edit transaction' : 'Add transaction'}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="transaction-drawer-header">
               <div>
-                <div className="panel-title">Add Transaction</div>
-                <div className="portfolio-detail-meta">Portfolio-private fact entry with platform instrument picker</div>
+                <div className="panel-title">{isEditingTransaction ? 'Edit Transaction' : 'Add Transaction'}</div>
+                <div className="portfolio-detail-meta">
+                  {isEditingTransaction
+                    ? 'Correct the canonical portfolio fact and replay downstream layers from this ledger entry.'
+                    : 'Portfolio-private fact entry with shared registry picker'}
+                </div>
               </div>
-              <button type="button" className="toolbar-link" onClick={() => setDrawerOpen(false)}>
+              <button
+                type="button"
+                className="toolbar-link"
+                onClick={() => {
+                  setDrawerOpen(false)
+                  setEditingTransactionId(null)
+                }}
+              >
                 Close
               </button>
             </div>
@@ -1775,6 +2027,38 @@ export default function TransactionsPage() {
                     }
                   />
                 </label>
+
+                {supportsEntitlementDate(form.transaction_type) ? (
+                  <label>
+                    <span>Entitlement Date</span>
+                    <input
+                      type="date"
+                      value={form.entitlement_date}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          entitlement_date: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                ) : null}
+
+                {supportsAcquisitionDate(form.transaction_type, selectedAccount?.account_type) ? (
+                  <label>
+                    <span>Acquisition Date</span>
+                    <input
+                      type="date"
+                      value={form.acquisition_date}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          acquisition_date: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                ) : null}
 
                 <label>
                   <span>Transaction Currency</span>
@@ -2026,7 +2310,7 @@ export default function TransactionsPage() {
                   <div className="transaction-picker-header">
                     <div className="panel-title">Instrument Picker</div>
                     <div className="portfolio-detail-meta">
-                      Source: platform `/api/instruments` · filtered to {selectedAccount?.currency || resolvedTransactionCurrency}
+                      Source: shared asset registry · filtered to {selectedAccount?.currency || resolvedTransactionCurrency}
                     </div>
                   </div>
 
@@ -2127,7 +2411,7 @@ export default function TransactionsPage() {
                       }`}
                 </div>
                 <button type="submit" className="toolbar-link button-primary">
-                  Save Transaction
+                  {isEditingTransaction ? 'Save Changes' : 'Save Transaction'}
                 </button>
               </div>
             </form>

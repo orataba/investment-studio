@@ -424,6 +424,7 @@ export default function TaxonomiesPage() {
   const [taxonomyScope, setTaxonomyScope] = useState<TaxonomyAssignmentScope>('instrument')
   const [taxonomyPlanningEnabled, setTaxonomyPlanningEnabled] = useState(false)
   const [taxonomyBudgetingLevel, setTaxonomyBudgetingLevel] = useState('')
+  const [taxonomyRootDefaultTargetDimension, setTaxonomyRootDefaultTargetDimension] = useState<'weight' | 'risk_budget'>('weight')
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(new Set())
@@ -436,6 +437,7 @@ export default function TaxonomiesPage() {
   const [selectedTaxonomyPurpose, setSelectedTaxonomyPurpose] = useState('')
   const [selectedTaxonomyPlanningEnabled, setSelectedTaxonomyPlanningEnabled] = useState(false)
   const [selectedTaxonomyBudgetingLevel, setSelectedTaxonomyBudgetingLevel] = useState('')
+  const [selectedTaxonomyRootDefaultTargetDimension, setSelectedTaxonomyRootDefaultTargetDimension] = useState<'weight' | 'risk_budget'>('weight')
   const [selectedTaxonomyStatus, setSelectedTaxonomyStatus] = useState('active')
   const [selectedTaxonomyEffectiveFrom, setSelectedTaxonomyEffectiveFrom] = useState('')
   const [selectedTaxonomyEffectiveTo, setSelectedTaxonomyEffectiveTo] = useState('')
@@ -571,6 +573,7 @@ export default function TaxonomiesPage() {
       setSelectedTaxonomyPurpose('')
       setSelectedTaxonomyPlanningEnabled(false)
       setSelectedTaxonomyBudgetingLevel('')
+      setSelectedTaxonomyRootDefaultTargetDimension('weight')
       setSelectedTaxonomyStatus('active')
       setSelectedTaxonomyEffectiveFrom('')
       setSelectedTaxonomyEffectiveTo('')
@@ -581,6 +584,7 @@ export default function TaxonomiesPage() {
     setSelectedTaxonomyPurpose(selectedTaxonomy.purpose ?? '')
     setSelectedTaxonomyPlanningEnabled(selectedTaxonomy.planning_enabled)
     setSelectedTaxonomyBudgetingLevel(selectedTaxonomy.budgeting_level ?? '')
+    setSelectedTaxonomyRootDefaultTargetDimension(selectedTaxonomy.root_default_target_dimension ?? 'weight')
     setSelectedTaxonomyStatus(selectedTaxonomy.status)
     setSelectedTaxonomyEffectiveFrom(selectedTaxonomy.effective_from ?? '')
     setSelectedTaxonomyEffectiveTo(selectedTaxonomy.effective_to ?? '')
@@ -1335,6 +1339,23 @@ export default function TaxonomiesPage() {
     )
   }
 
+  function renderRootDefaultTargetCell() {
+    if (!selectedTaxonomy) {
+      return '—'
+    }
+    return (
+      <select
+        className="taxonomy-default-target-select"
+        value={selectedTaxonomy.root_default_target_dimension}
+        onChange={(event) => void handleUpdateRootDefaultTarget(event.target.value as 'weight' | 'risk_budget')}
+        disabled={actionPending === `taxonomy-root-default-${selectedTaxonomy.taxonomy_id}`}
+      >
+        <option value="weight">Weight</option>
+        <option value="risk_budget">Risk Budget</option>
+      </select>
+    )
+  }
+
   function renderTargetCell(
     kind: 'saa' | 'taa',
     dimension: 'weight' | 'risk_budget',
@@ -1692,6 +1713,7 @@ export default function TaxonomiesPage() {
         primary_assignment_scope: taxonomyScope,
         planning_enabled: taxonomyPlanningEnabled,
         budgeting_level: taxonomyBudgetingLevel || null,
+        root_default_target_dimension: taxonomyRootDefaultTargetDimension,
       })
       setTaxonomyName('')
       setTaxonomyType('custom')
@@ -1699,6 +1721,7 @@ export default function TaxonomiesPage() {
       setTaxonomyScope('instrument')
       setTaxonomyPlanningEnabled(false)
       setTaxonomyBudgetingLevel('')
+      setTaxonomyRootDefaultTargetDimension('weight')
       setShowTaxonomyCreate(false)
       handleTaxonomySelection(created.taxonomy_id)
       setNotice(`Created taxonomy "${created.name}".`)
@@ -1725,6 +1748,7 @@ export default function TaxonomiesPage() {
         purpose: selectedTaxonomyPurpose || null,
         planning_enabled: selectedTaxonomyPlanningEnabled,
         budgeting_level: selectedTaxonomyPlanningEnabled ? selectedTaxonomyBudgetingLevel || null : null,
+        root_default_target_dimension: selectedTaxonomyRootDefaultTargetDimension,
         effective_from: selectedTaxonomyEffectiveFrom || null,
         effective_to: selectedTaxonomyEffectiveTo || null,
         status: selectedTaxonomyStatus,
@@ -1860,6 +1884,26 @@ export default function TaxonomiesPage() {
         default_target_dimension: defaultTargetDimension,
       })
       setNotice(`Updated default target for "${node.node_name}".`)
+      await reloadWorkspace()
+    } catch (error) {
+      setActionError(extractErrorMessage(error))
+    } finally {
+      setActionPending(null)
+    }
+  }
+
+  async function handleUpdateRootDefaultTarget(defaultTargetDimension: 'weight' | 'risk_budget') {
+    if (!portfolioId || !selectedTaxonomy || selectedTaxonomy.root_default_target_dimension === defaultTargetDimension) {
+      return
+    }
+    setActionPending(`taxonomy-root-default-${selectedTaxonomy.taxonomy_id}`)
+    setActionError(null)
+    setNotice(null)
+    try {
+      await updatePortfolioTaxonomy(portfolioId, selectedTaxonomy.taxonomy_id, {
+        root_default_target_dimension: defaultTargetDimension,
+      })
+      setNotice(`Updated root default target for "${selectedTaxonomy.name}".`)
       await reloadWorkspace()
     } catch (error) {
       setActionError(extractErrorMessage(error))
@@ -2256,7 +2300,7 @@ export default function TaxonomiesPage() {
                           </button>
                         </div>
                       </td>
-                      <td>—</td>
+                      <td>{renderRootDefaultTargetCell()}</td>
                       <td>—</td>
                       <td>—</td>
                       <td>—</td>
@@ -2404,6 +2448,18 @@ export default function TaxonomiesPage() {
                     <option value="weight_and_risk_budget">Weight + Risk Budget</option>
                   </select>
                 </label>
+                <label>
+                  <span>Root Default Target</span>
+                  <select
+                    value={taxonomyRootDefaultTargetDimension}
+                    onChange={(event) =>
+                      setTaxonomyRootDefaultTargetDimension(event.target.value as 'weight' | 'risk_budget')
+                    }
+                  >
+                    <option value="weight">Weight</option>
+                    <option value="risk_budget">Risk Budget</option>
+                  </select>
+                </label>
                 <label className="taxonomy-form-span-2">
                   <span>Purpose</span>
                   <input value={taxonomyPurpose} onChange={(event) => setTaxonomyPurpose(event.target.value)} />
@@ -2488,6 +2544,18 @@ export default function TaxonomiesPage() {
                       <option value="weight">Weight</option>
                       <option value="risk_budget">Risk Budget</option>
                       <option value="weight_and_risk_budget">Weight + Risk Budget</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Root Default Target</span>
+                    <select
+                      value={selectedTaxonomyRootDefaultTargetDimension}
+                      onChange={(event) =>
+                        setSelectedTaxonomyRootDefaultTargetDimension(event.target.value as 'weight' | 'risk_budget')
+                      }
+                    >
+                      <option value="weight">Weight</option>
+                      <option value="risk_budget">Risk Budget</option>
                     </select>
                   </label>
                   <label>

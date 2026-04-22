@@ -3,7 +3,7 @@ from __future__ import annotations
 from math import isclose, sqrt
 from copy import deepcopy
 
-from app.services import performance, portfolio_store
+from portfolio_app.services import performance, portfolio_store
 
 
 def _write_store(store: dict[str, object]) -> None:
@@ -6619,3 +6619,219 @@ def test_performance_summary_ignores_flows_before_first_complete_snapshot(client
     assert isclose(summary["delta"], 15.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["unrealized_pnl"], 15.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["total_pnl"], 15.0, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_daily_snapshots_keep_nav_constant_until_security_cash_settles(client, monkeypatch):
+    instrument_detail = _test_instrument_detail(
+        asset_id="equity-us-settlement-test",
+        asset_name="Settlement Test Equity",
+        history=[
+            ("2026-01-01", "100.00"),
+            ("2026-01-02", "100.00"),
+            ("2026-01-03", "100.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-settlement-test" else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+
+    store = _minimal_store(
+        portfolio_id="settlement-replay-test",
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": "settlement-replay-test",
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "asset_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Opening cash.",
+                "created_at": "2026-01-01T09:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": "settlement-replay-test",
+                "transaction_type": "buy",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-03",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "asset_id": "equity-us-settlement-test",
+                "instrument_ref": {
+                    "asset_id": "equity-us-settlement-test",
+                    "asset_name": "Settlement Test Equity",
+                    "asset_type": "equity",
+                    "currency": "USD",
+                    "identifiers": [
+                        {
+                            "identifier_type": "ticker",
+                            "identifier_value": "SETL",
+                            "is_primary": True,
+                        }
+                    ],
+                },
+                "quantity": 1.0,
+                "price": 100.0,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Buy with delayed settlement.",
+                "created_at": "2026-01-01T09:30:00Z",
+            },
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-03"
+    _write_store(store)
+
+    response = client.get("/api/portfolios/settlement-replay-test/snapshots/daily")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["latest_complete_as_of_date"] == "2026-01-03"
+
+    by_date = {item["as_of_date"]: item for item in payload["snapshots"]}
+    assert by_date["2026-01-01"]["cash_balance"] == 100.0
+    assert by_date["2026-01-02"]["cash_balance"] == 100.0
+    assert by_date["2026-01-03"]["cash_balance"] == 0.0
+    assert by_date["2026-01-01"]["ending_nav"] == 100.0
+    assert by_date["2026-01-02"]["ending_nav"] == 100.0
+    assert by_date["2026-01-03"]["ending_nav"] == 100.0
+
+
+def test_account_contribution_carries_pending_settlement_in_ending_values(client, monkeypatch):
+    instrument_detail = _test_instrument_detail(
+        asset_id="equity-us-account-settlement-test",
+        asset_name="Account Settlement Test Equity",
+        history=[
+            ("2026-01-01", "100.00"),
+            ("2026-01-02", "100.00"),
+            ("2026-01-03", "100.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-account-settlement-test" else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+
+    store = _minimal_store(
+        portfolio_id="account-contribution-settlement-test",
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": "account-contribution-settlement-test",
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "asset_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Opening cash.",
+                "created_at": "2026-01-01T09:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": "account-contribution-settlement-test",
+                "transaction_type": "buy",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-03",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "asset_id": "equity-us-account-settlement-test",
+                "instrument_ref": {
+                    "asset_id": "equity-us-account-settlement-test",
+                    "asset_name": "Account Settlement Test Equity",
+                    "asset_type": "equity",
+                    "currency": "USD",
+                    "identifiers": [
+                        {
+                            "identifier_type": "ticker",
+                            "identifier_value": "ACTSETL",
+                            "is_primary": True,
+                        }
+                    ],
+                },
+                "quantity": 1.0,
+                "price": 100.0,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Buy with delayed settlement.",
+                "created_at": "2026-01-01T09:30:00Z",
+            },
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-03"
+    _write_store(store)
+
+    response = client.get(
+        "/api/portfolios/account-contribution-settlement-test/performance/contribution?axis=account"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    slices = [
+        item
+        for item in payload["daily_slices"]
+        if item["as_of_date"] == "2026-01-01"
+    ]
+    by_group = {item["group_key"]: item for item in slices}
+
+    assert isclose(by_group["cash-usd-main"]["ending_value_base"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(by_group["broker-us-core"]["ending_value_base"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(
+        sum((item["ending_value_base"] or 0.0) for item in slices),
+        100.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert isclose(
+        sum((item["ending_weight"] or 0.0) for item in slices),
+        1.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )

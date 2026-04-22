@@ -1,4 +1,12 @@
-export const PLATFORM_HOME_URL = 'http://127.0.0.1:5172'
+function normalizeConfiguredUrl(value: string | undefined, fallback: string) {
+  const normalized = (value || '').trim().replace(/\/$/, '')
+  return normalized || fallback
+}
+
+export const PLATFORM_HOME_URL = normalizeConfiguredUrl(
+  import.meta.env.VITE_PLATFORM_URL,
+  'http://127.0.0.1:5172',
+)
 
 export const WATCHLIST_ENTRY_PATH = '/watchlists'
 

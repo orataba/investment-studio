@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
 
-from .conftest import TEST_SHARED_INSTRUMENTS
+from .conftest import TEST_SHARED_INSTRUMENTS, seed_shared_instrument
 
 
 def test_create_watchlist_generates_unique_ids_and_required_columns(
@@ -50,8 +51,8 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
         for item in detail_payload["views"]
         if item["view_id"] == "private-fund-screening"
     )
-    assert private_fund_view["name"] == "私募筛选"
-    assert private_fund_view["default_group_by"] == "attr.strategy_family"
+    assert private_fund_view["name"] == "私募分类筛选"
+    assert private_fund_view["default_group_by"] == "attr.fund_category_l1"
     assert private_fund_view["default_filters"] == {
         "asset_type": ["fund"],
         "attr.fund_regime": ["私募"],
@@ -59,15 +60,14 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
     assert private_fund_view["columns"] == [
         "asset_name",
         "attr.fund_regime",
-        "attr.fund_vehicle",
-        "attr.strategy_family",
-        "attr.strategy_subtype",
+        "attr.fund_category_l1",
+        "attr.fund_category_l2",
+        "attr.fund_category_l3",
         "attr.implementation_style",
+        "attr.style_profile",
+        "attr.manager_assessment",
         "attr.volatility_bucket",
         "attr.drawdown_control",
-        "attr.equity_correlation_bucket",
-        "attr.preferred_regime",
-        "attr.weak_regime",
         "attr.style_stability",
         "attr.transparency_quality",
         "data_freshness_status",
@@ -106,6 +106,46 @@ def test_adding_shared_registry_instrument_to_created_watchlist_materializes_row
     assert payload["total_rows"] == 1
     assert payload["rows"][0]["asset_name"] == "iShares Core U.S. Aggregate Bond ETF"
     assert payload["rows"][0]["ticker_or_isin"] == "AGG"
+
+
+def test_adding_non_fund_shared_registry_instrument_is_rejected(
+    client: TestClient,
+) -> None:
+    seed_shared_instrument(
+        {
+            "asset_id": "equity-demo",
+            "asset_name": "Demo Equity",
+            "asset_type": "equity",
+            "currency": "USD",
+            "identifiers": [
+                {"identifier_type": "ticker", "identifier_value": "DEMO", "is_primary": True},
+            ],
+            "market_data": [
+                {
+                    "metric_family": "price",
+                    "quote_basis": "close",
+                    "as_of_date": "2026-04-15",
+                    "value": "12.3400",
+                    "currency": "USD",
+                    "status": "complete",
+                }
+            ],
+            "lifecycle_state": {"status": "active"},
+        }
+    )
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Fund Only", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["equity-demo"]},
+    )
+
+    assert add_response.status_code == 400
+    assert "fund instruments only" in add_response.json()["detail"]
 
 
 def test_move_watchlist_items_transfers_membership_to_target_watchlist(
@@ -238,6 +278,78 @@ def test_copy_watchlist_items_adds_membership_to_target_without_removing_source(
     assert target_payload["rows"][0]["asset_name"] == "SXV264 Total Return Fund"
     assert target_payload["rows"][0]["latest_quote"] == pytest.approx(101.2365, abs=1e-6)
     assert target_payload["rows"][0]["latest_quote_date"] == "2026-04-14"
+
+
+def test_move_watchlist_items_rejects_assets_missing_from_source(
+    client: TestClient,
+) -> None:
+    source = client.post(
+        "/api/watchlists",
+        json={"name": "Move Missing Source", "description": None},
+    )
+    target = client.post(
+        "/api/watchlists",
+        json={"name": "Move Missing Target", "description": None},
+    )
+    source_watchlist_id = source.json()["watchlist_id"]
+    target_watchlist_id = target.json()["watchlist_id"]
+
+    move_response = client.post(
+        f"/api/watchlists/{source_watchlist_id}/items/move",
+        json={"asset_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
+    )
+    assert move_response.status_code == 400
+    assert move_response.json()["detail"] == "Assets not found in source watchlist: sxv264."
+
+    target_rows = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": target_watchlist_id,
+            "view_id": "overview",
+            "selected_fields": ["asset_name"],
+            "sort": [],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert target_rows.status_code == 200
+    assert target_rows.json()["total_rows"] == 0
+
+
+def test_copy_watchlist_items_rejects_assets_missing_from_source(
+    client: TestClient,
+) -> None:
+    source = client.post(
+        "/api/watchlists",
+        json={"name": "Copy Missing Source", "description": None},
+    )
+    target = client.post(
+        "/api/watchlists",
+        json={"name": "Copy Missing Target", "description": None},
+    )
+    source_watchlist_id = source.json()["watchlist_id"]
+    target_watchlist_id = target.json()["watchlist_id"]
+
+    copy_response = client.post(
+        f"/api/watchlists/{source_watchlist_id}/items/copy",
+        json={"asset_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
+    )
+    assert copy_response.status_code == 400
+    assert copy_response.json()["detail"] == "Assets not found in source watchlist: sxv264."
+
+    target_rows = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": target_watchlist_id,
+            "view_id": "overview",
+            "selected_fields": ["asset_name"],
+            "sort": [],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert target_rows.status_code == 200
+    assert target_rows.json()["total_rows"] == 0
 
 
 def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
@@ -426,7 +538,7 @@ def test_watchlist_add_rolls_back_when_recalc_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from fastapi import HTTPException
-    from app.api.routes import watchlists as watchlists_route
+    from watchlist_app.api.routes import watchlists as watchlists_route
 
     created_watchlist = client.post(
         "/api/watchlists",
@@ -489,7 +601,7 @@ def test_screener_query_triggers_async_refresh_when_shared_data_is_newer(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.api.routes import screener as screener_route
+    from watchlist_app.api.routes import screener as screener_route
 
     created_watchlist = client.post(
         "/api/watchlists",
@@ -538,7 +650,7 @@ def test_instrument_summary_triggers_async_refresh_when_shared_data_is_newer(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services import read_model_freshness
+    from watchlist_app.services import read_model_freshness
 
     created_watchlist = client.post(
         "/api/watchlists",
@@ -571,7 +683,7 @@ def test_instrument_summary_triggers_async_refresh_when_shared_data_is_newer(
     )
     monkeypatch.setattr(
         read_model_freshness,
-        "_start_async_recalc",
+        "_enqueue_stale_recalc_job",
         lambda **kwargs: scheduled.append(kwargs) or True,
     )
 
@@ -587,10 +699,188 @@ def test_instrument_summary_triggers_async_refresh_when_shared_data_is_newer(
     ]
 
 
-def test_funds_summary_compat_alias_still_works(client: TestClient) -> None:
+def test_stale_read_repair_enqueues_single_durable_recalc_job(client: TestClient) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services.read_model_freshness import schedule_asset_refresh_if_stale
+
     created_watchlist = client.post(
         "/api/watchlists",
-        json={"name": "Compat Alias", "description": None},
+        json={"name": "Durable Freshness Repair", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["sxv264"]},
+    )
+    assert add_response.status_code == 200
+
+    first = schedule_asset_refresh_if_stale(
+        asset_id="sxv264",
+        local_latest_date=date(2026, 4, 13),
+        trigger_ref_type="instrument_summary_read",
+        trigger_ref_id="sxv264",
+    )
+    second = schedule_asset_refresh_if_stale(
+        asset_id="sxv264",
+        local_latest_date=date(2026, 4, 13),
+        trigger_ref_type="instrument_summary_read",
+        trigger_ref_id="sxv264",
+    )
+
+    assert first is True
+    assert second is True
+
+    session_factory = session_module.get_session_factory()
+    with session_factory() as session:
+        jobs = list(SQLAlchemyRecalcJobRepository().list_recent(session))
+
+    matching = [
+        job
+        for job in jobs
+        if job.asset_id == "sxv264"
+        and job.job_type == "all"
+        and job.trigger_type == "stale_read_repair"
+        and job.trigger_ref_type == "instrument_summary_read"
+        and job.trigger_ref_id == "sxv264"
+    ]
+    assert len(matching) == 1
+    assert matching[0].job_status == "queued"
+
+
+def test_process_next_recalc_job_refreshes_shared_metadata_drift(
+    client: TestClient,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services.recalc_worker import process_next_recalc_job
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Metadata Drift Repair", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["sxv264"]},
+    )
+    assert add_response.status_code == 200
+
+    seed_shared_instrument(
+        {
+            **TEST_SHARED_INSTRUMENTS["sxv264"],
+            "asset_name": "SXV264 Renamed Total Return Fund",
+            "identifiers": [
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "SXV264X",
+                    "is_primary": True,
+                }
+            ],
+        }
+    )
+
+    summary_response = client.get("/api/instruments/sxv264/summary")
+    assert summary_response.status_code == 200
+
+    session_factory = session_module.get_session_factory()
+    with session_factory() as session:
+        jobs = list(SQLAlchemyRecalcJobRepository().list_recent(session))
+    queued_jobs = [
+        job
+        for job in jobs
+        if job.asset_id == "sxv264"
+        and job.trigger_type == "stale_read_repair"
+        and job.job_status == "queued"
+    ]
+    assert len(queued_jobs) == 1
+
+    assert process_next_recalc_job() is True
+
+    with session_factory() as session:
+        jobs = list(SQLAlchemyRecalcJobRepository().list_recent(session))
+    completed_jobs = [
+        job
+        for job in jobs
+        if job.asset_id == "sxv264"
+        and job.trigger_type == "stale_read_repair"
+        and job.job_status == "completed"
+    ]
+    assert len(completed_jobs) == 1
+
+    screener = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "view_id": "overview",
+            "selected_fields": ["asset_name", "ticker_or_isin"],
+            "sort": [],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert screener.status_code == 200
+    payload = screener.json()
+    assert payload["rows"][0]["asset_name"] == "SXV264 Renamed Total Return Fund"
+    assert payload["rows"][0]["ticker_or_isin"] == "SXV264X"
+
+
+def test_process_next_recalc_job_recovers_stale_running_job(
+    client: TestClient,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services.recalc_job_ids import make_recalc_job_id
+    from watchlist_app.services.recalc_worker import process_next_recalc_job
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Worker Recovery", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["sxv264"]},
+    )
+    assert add_response.status_code == 200
+
+    session_factory = session_module.get_session_factory()
+    repository = SQLAlchemyRecalcJobRepository()
+    job_id = make_recalc_job_id()
+    with session_factory() as session:
+        record = repository.create(
+            session,
+            recalc_job_id=job_id,
+            job_type="all",
+            asset_id="sxv264",
+            trigger_type="stale_read_repair",
+            trigger_ref_type="instrument_summary_read",
+            trigger_ref_id="sxv264",
+            job_status="queued",
+            priority=95,
+            dedupe_key=f"all:sxv264:{job_id}",
+            payload_json={"requested_by": "test"},
+        )
+        repository.mark_running(session, record)
+        record.started_at = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=10)
+        session.commit()
+
+    assert process_next_recalc_job() is True
+
+    with session_factory() as session:
+        recovered = repository.get(session, job_id)
+
+    assert recovered is not None
+    assert recovered.job_status == "completed"
+
+
+def test_legacy_funds_summary_route_is_gone(client: TestClient) -> None:
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Removed Compat Alias", "description": None},
     )
     watchlist_id = created_watchlist.json()["watchlist_id"]
 
@@ -602,8 +892,7 @@ def test_funds_summary_compat_alias_still_works(client: TestClient) -> None:
 
     response = client.get("/api/funds/sxv264/summary")
 
-    assert response.status_code == 200
-    assert response.json()["asset_id"] == "sxv264"
+    assert response.status_code == 404
 
 
 def test_instruments_library_alias_lists_local_assets(client: TestClient) -> None:
@@ -644,7 +933,7 @@ def test_watchlist_rejects_archived_shared_instrument_ids(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.api.routes import watchlists as watchlists_route
+    from watchlist_app.api.routes import watchlists as watchlists_route
 
     created_watchlist = client.post(
         "/api/watchlists",
@@ -673,9 +962,9 @@ def test_watchlist_rejects_archived_shared_instrument_ids(
     assert "Platform / Instruments" in add_response.json()["detail"]
 
 
-def test_manual_fund_creation_route_is_gone(client: TestClient) -> None:
+def test_manual_instrument_creation_route_is_gone(client: TestClient) -> None:
     response = client.post(
-        "/api/funds/manual",
+        "/api/instruments/manual",
         json={"ticker": "TACT-01", "name": "Tactical Test Fund"},
     )
     assert response.status_code == 410
@@ -685,8 +974,8 @@ def test_watchlist_add_returns_502_when_shared_registry_is_unreachable(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.api.routes import watchlists as watchlists_route
-    from app.services.shared_instrument_registry import SharedInstrumentRegistryTransportError
+    from watchlist_app.api.routes import watchlists as watchlists_route
+    from watchlist_app.services.shared_instrument_registry import SharedInstrumentRegistryTransportError
 
     created_watchlist = client.post(
         "/api/watchlists",
@@ -711,8 +1000,8 @@ def test_detail_resolution_uses_local_overlay_when_shared_registry_returns_500(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services import instrument_resolution
-    from app.services.shared_instrument_registry import SharedInstrumentRegistryHttpError
+    from watchlist_app.services import instrument_resolution
+    from watchlist_app.services.shared_instrument_registry import SharedInstrumentRegistryHttpError
 
     created_watchlist = client.post(
         "/api/watchlists",
@@ -749,9 +1038,9 @@ def test_detail_resolution_uses_cached_watchlist_row_when_shared_registry_return
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.api.routes import watchlists as watchlists_route
-    from app.services import instrument_resolution
-    from app.services.shared_instrument_registry import SharedInstrumentRegistryHttpError
+    from watchlist_app.api.routes import watchlists as watchlists_route
+    from watchlist_app.services import instrument_resolution
+    from watchlist_app.services.shared_instrument_registry import SharedInstrumentRegistryHttpError
 
     created_watchlist = client.post(
         "/api/watchlists",
@@ -759,16 +1048,16 @@ def test_detail_resolution_uses_cached_watchlist_row_when_shared_registry_return
     )
     watchlist_id = created_watchlist.json()["watchlist_id"]
 
-    equity_record = {
-        "asset_id": "equity-msft",
-        "asset_name": "Microsoft Corporation",
-        "asset_type": "equity",
+    fund_record = {
+        "asset_id": "fund-msft-strategy",
+        "asset_name": "Microsoft Strategy Fund",
+        "asset_type": "fund",
         "currency": "USD",
         "lifecycle_state": {"status": "active"},
         "identifiers": [
             {
                 "identifier_type": "ticker",
-                "identifier_value": "MSFT",
+                "identifier_value": "MSFTX",
                 "is_primary": True,
             }
         ],
@@ -777,17 +1066,17 @@ def test_detail_resolution_uses_cached_watchlist_row_when_shared_registry_return
     monkeypatch.setattr(
         watchlists_route,
         "get_shared_instrument",
-        lambda asset_id: equity_record if asset_id == "equity-msft" else None,
+        lambda asset_id: fund_record if asset_id == "fund-msft-strategy" else None,
     )
     monkeypatch.setattr(
         instrument_resolution,
         "get_shared_instrument",
-        lambda asset_id: equity_record if asset_id == "equity-msft" else None,
+        lambda asset_id: fund_record if asset_id == "fund-msft-strategy" else None,
     )
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["equity-msft"]},
+        json={"asset_ids": ["fund-msft-strategy"]},
     )
     assert add_response.status_code == 200
 
@@ -799,28 +1088,21 @@ def test_detail_resolution_uses_cached_watchlist_row_when_shared_registry_return
 
     monkeypatch.setattr(instrument_resolution, "get_shared_instrument", _raise_registry_error)
 
-    response = client.get("/api/instruments/equity-msft/resolve")
+    response = client.get("/api/instruments/fund-msft-strategy/resolve")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["requested_asset_id"] == "equity-msft"
-    assert payload["canonical_asset_id"] == "equity-msft"
-    assert payload["asset_name"] == "Microsoft Corporation"
-    assert payload["asset_type"] == "equity"
-    assert payload["primary_identifier"] == "MSFT"
-    assert payload["detail_subject_id"] is None
-    assert payload["detail_supported"] is False
-    assert payload["support_reason"] == "shared_registry_unavailable"
+    assert payload["requested_asset_id"] == "fund-msft-strategy"
+    assert payload["canonical_asset_id"] == "fund-msft-strategy"
+    assert payload["asset_name"] == "Microsoft Strategy Fund"
+    assert payload["asset_type"] == "fund"
+    assert payload["primary_identifier"] == "MSFTX"
+    assert payload["detail_subject_id"] == "fund-msft-strategy"
+    assert payload["detail_supported"] is True
+    assert payload["support_reason"] == "detail_ready_local_cache"
 
 
-def test_shared_registry_service_does_not_fallback_locally_on_platform_404(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.services import shared_instrument_registry as registry
-
-    def _raise_not_found(path: str):
-        raise registry.SharedInstrumentRegistryNotFoundError()
-
-    monkeypatch.setattr(registry, "_fetch_json", _raise_not_found)
+def test_shared_registry_service_returns_none_for_missing_asset() -> None:
+    from watchlist_app.services import shared_instrument_registry as registry
 
     assert registry.get_shared_instrument("stale-asset") is None
 
@@ -828,21 +1110,22 @@ def test_shared_registry_service_does_not_fallback_locally_on_platform_404(
 def test_local_detail_support_is_explicit_by_asset_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.api.routes import watchlists as watchlists_route
+    from watchlist_app.api.routes import watchlists as watchlists_route
 
     assert watchlists_route._supports_local_detail({"asset_type": "fund"}) is True
     assert watchlists_route._supports_local_detail({"asset_type": "equity"}) is False
 
 
-def test_shared_registry_service_bubbles_transport_errors_without_local_fallback(
+def test_shared_registry_service_wraps_storage_errors_without_local_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services import shared_instrument_registry as registry
+    from watchlist_app.services import shared_instrument_registry as registry
 
-    def _raise_transport_error(path: str):
+    def _raise_transport_error(*_args, **_kwargs):
         raise registry.SharedInstrumentRegistryTransportError("Failed to reach shared instrument registry.")
 
-    monkeypatch.setattr(registry, "_fetch_json", _raise_transport_error)
+    monkeypatch.setattr(registry.shared_store, "list_instruments", _raise_transport_error)
+    monkeypatch.setattr(registry.shared_store, "find_instrument_by_identifier", _raise_transport_error)
 
     with pytest.raises(registry.SharedInstrumentRegistryTransportError):
         registry.list_shared_instruments()
@@ -883,6 +1166,113 @@ def test_duplicate_custom_view_name_returns_409(client: TestClient) -> None:
     assert duplicate.json()["detail"] == "Watchlist view name already exists"
 
 
+def test_custom_view_ids_are_slugged_to_path_safe_values(client: TestClient) -> None:
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Path Safe Views", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    payload = {
+        "name": "A/B",
+        "description": None,
+        "default_group_by": "none",
+        "default_sort": [],
+        "default_filters": {},
+        "default_advanced_filters": None,
+        "columns": [
+            {"field_key": "asset_name", "display_order": 1, "width": 320, "is_visible": True}
+        ],
+    }
+
+    created = client.post(f"/api/watchlists/{watchlist_id}/views", json=payload)
+    assert created.status_code == 200
+    assert created.json()["view_id"] == "a-b"
+
+    updated = client.put(
+        f"/api/watchlists/{watchlist_id}/views/{created.json()['view_id']}",
+        json={
+            **payload,
+            "name": "A/B Updated",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "A/B Updated"
+
+
+def test_copy_watchlist_sanitizes_legacy_custom_view_ids(client: TestClient) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.db.models.watchlists import WatchlistView, WatchlistViewColumn
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Legacy View Copy", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    legacy_view_id = f"{watchlist_id}::a/b"
+    with session_module.get_session_factory()() as session:
+        session.add(
+            WatchlistView(
+                watchlist_view_id=legacy_view_id,
+                watchlist_id=watchlist_id,
+                name="A/B",
+                description=None,
+                kind="custom",
+                default_sort_json=[],
+                default_filters_json={},
+                default_advanced_filter_json={},
+                default_group_by="none",
+                density="standard",
+                is_default=False,
+                created_at=datetime.now(UTC).replace(microsecond=0),
+            )
+        )
+        session.add(
+            WatchlistViewColumn(
+                watchlist_view_id=legacy_view_id,
+                field_key="asset_name",
+                display_order=1,
+                width=320,
+                is_visible=True,
+                pin_side=None,
+            )
+        )
+        session.commit()
+
+    copied = client.post(f"/api/watchlists/{watchlist_id}/copy")
+    assert copied.status_code == 200
+    copied_watchlist_id = copied.json()["watchlist_id"]
+
+    copied_detail = client.get(f"/api/watchlists/{copied_watchlist_id}")
+    assert copied_detail.status_code == 200
+    copied_view = next(
+        item for item in copied_detail.json()["views"] if item["name"] == "A/B"
+    )
+    assert copied_view["view_id"] == "a-b"
+
+    updated = client.put(
+        f"/api/watchlists/{copied_watchlist_id}/views/{copied_view['view_id']}",
+        json={
+            "name": "A/B Updated",
+            "description": None,
+            "default_group_by": "none",
+            "default_sort": [],
+            "default_filters": {},
+            "default_advanced_filters": None,
+            "columns": [
+                {
+                    "field_key": "asset_name",
+                    "display_order": 1,
+                    "width": 320,
+                    "is_visible": True,
+                }
+            ],
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "A/B Updated"
+
+
 def test_default_view_remains_overview_after_creating_custom_view(client: TestClient) -> None:
     created_watchlist = client.post(
         "/api/watchlists",
@@ -911,6 +1301,135 @@ def test_default_view_remains_overview_after_creating_custom_view(client: TestCl
     assert detail.json()["default_view_id"] == "overview"
 
 
+def test_create_watchlist_retries_when_slug_conflicts_during_insert(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.api.routes import watchlists as watchlists_route
+
+    original_create = watchlists_route.watchlist_repository.create
+    generated_ids = iter(["retry-list", "retry-list-2"])
+    attempted_ids: list[str] = []
+    failed_once = False
+
+    def _generate_retry_id(_session, _name: str) -> str:
+        return next(generated_ids)
+
+    def _create(*args, **kwargs):
+        nonlocal failed_once
+        attempted_ids.append(kwargs["watchlist_id"])
+        if not failed_once:
+            failed_once = True
+            raise IntegrityError("insert", {}, Exception("duplicate key value violates unique constraint"))
+        return original_create(*args, **kwargs)
+
+    monkeypatch.setattr(watchlists_route, "_generate_watchlist_id", _generate_retry_id)
+    monkeypatch.setattr(watchlists_route.watchlist_repository, "create", _create)
+
+    response = client.post(
+        "/api/watchlists",
+        json={"name": "Retry List", "description": None},
+    )
+    assert response.status_code == 200
+    assert response.json()["watchlist_id"] == "retry-list-2"
+    assert attempted_ids == ["retry-list", "retry-list-2"]
+
+
+def test_copy_watchlist_retries_when_slug_conflicts_during_insert(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.api.routes import watchlists as watchlists_route
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Retry Source", "description": None},
+    )
+    source_watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    original_duplicate = watchlists_route.watchlist_repository.duplicate
+    generated_ids = iter(["retry-source-copy", "retry-source-copy-2"])
+    attempted_ids: list[str] = []
+    failed_once = False
+
+    def _generate_retry_id(_session, _name: str) -> str:
+        return next(generated_ids)
+
+    def _duplicate(*args, **kwargs):
+        nonlocal failed_once
+        attempted_ids.append(kwargs["watchlist_id"])
+        if not failed_once:
+            failed_once = True
+            raise IntegrityError("insert", {}, Exception("duplicate key value violates unique constraint"))
+        return original_duplicate(*args, **kwargs)
+
+    monkeypatch.setattr(watchlists_route, "_generate_watchlist_id", _generate_retry_id)
+    monkeypatch.setattr(watchlists_route.watchlist_repository, "duplicate", _duplicate)
+
+    response = client.post(f"/api/watchlists/{source_watchlist_id}/copy")
+    assert response.status_code == 200
+    assert response.json()["watchlist_id"] == "retry-source-copy-2"
+    assert attempted_ids == ["retry-source-copy", "retry-source-copy-2"]
+
+
+def test_create_watchlist_view_retries_when_slug_conflicts_during_insert(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.api.routes import watchlists as watchlists_route
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Retry View Parent", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    original_create_view = watchlists_route.watchlist_repository.create_view
+    generated_ids = iter(["retry-view", "retry-view-2"])
+    attempted_ids: list[str] = []
+    failed_once = False
+
+    def _generate_retry_id(_session, **_kwargs) -> str:
+        return next(generated_ids)
+
+    def _create_view(*args, **kwargs):
+        nonlocal failed_once
+        attempted_ids.append(kwargs["view_id"])
+        if not failed_once:
+            failed_once = True
+            raise IntegrityError(
+                "insert",
+                {},
+                Exception("duplicate key value violates unique constraint"),
+            )
+        return original_create_view(*args, **kwargs)
+
+    monkeypatch.setattr(
+        watchlists_route,
+        "_generate_watchlist_view_id",
+        _generate_retry_id,
+    )
+    monkeypatch.setattr(watchlists_route.watchlist_repository, "create_view", _create_view)
+
+    response = client.post(
+        f"/api/watchlists/{watchlist_id}/views",
+        json={
+            "name": "Retry View",
+            "description": None,
+            "default_group_by": "none",
+            "default_sort": [],
+            "default_filters": {},
+            "default_advanced_filters": None,
+            "columns": [
+                {"field_key": "asset_name", "display_order": 1, "width": 320, "is_visible": True}
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["view_id"] == "retry-view-2"
+    assert attempted_ids == ["retry-view", "retry-view-2"]
+
+
 def test_screener_filters_match_multi_select_attribute_values(client: TestClient) -> None:
     created_watchlist = client.post(
         "/api/watchlists",
@@ -931,6 +1450,8 @@ def test_screener_filters_match_multi_select_attribute_values(client: TestClient
             "label": "Strategy Tags",
             "description": "Test multi-select attribute",
             "data_type": "multi_select",
+            "domain_code": "research",
+            "group_code": "custom",
             "options": ["市场中性", "套利", "CTA"],
             "is_groupable": True,
             "is_filterable": True,
@@ -1037,49 +1558,14 @@ def test_explicit_empty_filters_override_view_defaults(client: TestClient) -> No
     assert unfiltered.json()["total_rows"] == 2
 
 
-def test_legacy_catalog_watchlist_state_helpers_are_disabled() -> None:
-    from app.domain import catalog
-
-    with pytest.raises(RuntimeError, match="Legacy domain.catalog watchlist state is disabled"):
-        catalog.create_watchlist(name="Legacy", description=None)
-
-    with pytest.raises(RuntimeError, match="Legacy domain.catalog watchlist state is disabled"):
-        catalog.get_watchlist("coverage")
-
-    with pytest.raises(RuntimeError, match="Legacy domain.catalog watchlist state is disabled"):
-        catalog.list_watchlist_views("coverage")
-
-    with pytest.raises(RuntimeError, match="Legacy domain.catalog watchlist state is disabled"):
-        catalog.create_watchlist_view("coverage", {"name": "Legacy View"})
-
-    with pytest.raises(RuntimeError, match="Legacy domain.catalog watchlist state is disabled"):
-        catalog.add_watchlist_items("coverage", ["sxv264"])
-
-    with pytest.raises(RuntimeError, match="Legacy domain.catalog watchlist state is disabled"):
-        catalog.query_watchlist_rows({"watchlist_id": "coverage"})
+def test_legacy_catalog_module_is_removed() -> None:
+    with pytest.raises(ModuleNotFoundError):
+        __import__("watchlist_app.domain.catalog")
 
 
-def test_watchlist_api_does_not_call_legacy_catalog_watchlist_state_helpers(
+def test_watchlist_api_runs_without_legacy_catalog_module(
     client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.domain import catalog
-
-    def _unexpected_call(name: str):
-        def _raiser(*args, **kwargs):
-            raise AssertionError(f"{name} should not be called")
-
-        return _raiser
-
-    for helper_name in (
-        "create_watchlist",
-        "get_watchlist",
-        "list_watchlist_views",
-        "create_watchlist_view",
-        "add_watchlist_items",
-        "query_watchlist_rows",
-    ):
-        monkeypatch.setattr(catalog, helper_name, _unexpected_call(helper_name))
 
     created_watchlist = client.post(
         "/api/watchlists",
@@ -1134,7 +1620,7 @@ def test_watchlist_child_routes_return_404_for_missing_watchlists(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.api.routes import watchlists as watchlists_route
+    from watchlist_app.api.routes import watchlists as watchlists_route
 
     def _unexpected_registry_lookup(*args, **kwargs):
         raise AssertionError("shared registry lookup should not run for missing watchlists")
@@ -1214,8 +1700,8 @@ def test_screener_returns_404_for_missing_watchlists_and_views(client: TestClien
 
 
 def test_delete_watchlist_removes_watchlist_read_model_rows(client: TestClient) -> None:
-    from app.db.session import get_session_factory
-    from app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
 
     created_watchlist = client.post(
         "/api/watchlists",
@@ -1269,11 +1755,18 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     expected_keys = {
         "fund_regime",
         "fund_vehicle",
-        "strategy_family",
-        "strategy_subtype",
+        "fund_category_l1",
+        "fund_category_l2",
+        "fund_category_l3",
         "implementation_style",
         "trading_universe",
         "alpha_source",
+        "style_profile",
+        "manager_assessment",
+        "team_stability_assessment",
+        "portfolio_construction",
+        "capacity_bucket",
+        "historical_delivery",
         "volatility_bucket",
         "drawdown_control",
         "equity_correlation_bucket",
@@ -1284,7 +1777,9 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     }
     assert expected_keys.issubset(definitions_by_key.keys())
     assert definitions_by_key["fund_regime"]["options"] == ["公募", "私募"]
-    assert definitions_by_key["strategy_family"]["options"][:4] == ["主动权益", "被动指数", "股票对冲", "CTA"]
+    assert definitions_by_key["fund_category_l1"]["domain_code"] == "classification"
+    assert definitions_by_key["fund_category_l2"]["required_for_monitoring"] is True
+    assert definitions_by_key["style_profile"]["group_code"] == "research_style"
     assert definitions_by_key["preferred_regime"]["data_type"] == "multi_select"
 
     field_registry_response = client.get("/api/field-registry")
@@ -1294,20 +1789,20 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
 
     assert "attr.fund_regime" in fields_by_key
     assert fields_by_key["attr.fund_regime"]["filter_mode"] == "multi_select"
-    assert "attr.strategy_family" in fields_by_key
-    assert fields_by_key["attr.strategy_family"]["filter_mode"] == "multi_select"
-    assert fields_by_key["attr.strategy_family"]["group_mode"] == "discrete"
-    assert fields_by_key["attr.strategy_family"]["product_scope_json"] == []
+    assert "attr.fund_category_l1" in fields_by_key
+    assert fields_by_key["attr.fund_category_l1"]["filter_mode"] == "multi_select"
+    assert fields_by_key["attr.fund_category_l1"]["group_mode"] == "discrete"
+    assert fields_by_key["attr.fund_category_l1"]["category_code"] == "product_classification"
     assert fields_by_key["attr.coverage_status"]["product_scope_json"] == []
     assert fields_by_key["latest_quote"]["asset_scope_json"] == []
     assert fields_by_key["latest_quote"]["source_metric_code"] == "asset_chart_read_model.series.latest_quote"
     assert fields_by_key["latest_quote_date"]["data_type"] == "date"
 
 
-def test_existing_funds_receive_seeded_example_tags(client: TestClient) -> None:
+def test_adding_funds_does_not_inject_product_framework_values(client: TestClient) -> None:
     created_watchlist = client.post(
         "/api/watchlists",
-        json={"name": "Seeded Fund Tags", "description": None},
+        json={"name": "Clean Product Framework", "description": None},
     )
     watchlist_id = created_watchlist.json()["watchlist_id"]
     add_response = client.post(
@@ -1319,20 +1814,22 @@ def test_existing_funds_receive_seeded_example_tags(client: TestClient) -> None:
     public_response = client.get("/api/instrument-attributes/assets/fund-us-agg")
     assert public_response.status_code == 200
     public_values = public_response.json()["values"]
-    assert public_values["fund_regime"] == "公募"
-    assert public_values["fund_vehicle"] == "ETF"
-    assert public_values["strategy_family"] == "被动指数"
-    assert public_values["strategy_subtype"] == ["债券指数"]
-    assert public_values["alpha_source"] == ["指数复制"]
+    assert "fund_regime" not in public_values
+    assert "fund_vehicle" not in public_values
+    assert "fund_category_l1" not in public_values
+    assert "fund_category_l2" not in public_values
+    assert "fund_category_l3" not in public_values
+    assert "alpha_source" not in public_values
 
     private_response = client.get("/api/instrument-attributes/assets/sxv264")
     assert private_response.status_code == 200
     private_values = private_response.json()["values"]
-    assert private_values["fund_regime"] == "私募"
-    assert private_values["fund_vehicle"] == "场外开放式"
-    assert private_values["strategy_family"] == "多策略"
-    assert private_values["strategy_subtype"] == ["复合多策略"]
-    assert private_values["alpha_source"] == ["选股Alpha", "Carry/票息"]
+    assert "fund_regime" not in private_values
+    assert "fund_vehicle" not in private_values
+    assert "fund_category_l1" not in private_values
+    assert "fund_category_l2" not in private_values
+    assert "fund_category_l3" not in private_values
+    assert "alpha_source" not in private_values
 
 
 def test_instrument_attributes_can_be_cleared_with_null_and_empty_list(client: TestClient) -> None:
@@ -1354,6 +1851,8 @@ def test_instrument_attributes_can_be_cleared_with_null_and_empty_list(client: T
             "label": "Tag Clear Single",
             "description": "Single-select clear test",
             "data_type": "single_select",
+            "domain_code": "research",
+            "group_code": "custom",
             "options": ["低波", "高波"],
             "is_groupable": True,
             "is_filterable": True,
@@ -1370,6 +1869,8 @@ def test_instrument_attributes_can_be_cleared_with_null_and_empty_list(client: T
             "label": "Tag Clear Multi",
             "description": "Multi-select clear test",
             "data_type": "multi_select",
+            "domain_code": "research",
+            "group_code": "custom",
             "options": ["市场中性", "CTA"],
             "is_groupable": True,
             "is_filterable": True,
@@ -1405,10 +1906,11 @@ def test_instrument_attributes_can_be_cleared_with_null_and_empty_list(client: T
     assert payload["values"]["tag_clear_multi"] == []
 
 
-def test_monitoring_dashboard_surfaces_missing_tags_quotes_and_open_recalc_jobs(
+def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_jobs(
     client: TestClient,
 ) -> None:
-    TEST_SHARED_INSTRUMENTS["fund-no-data"] = {
+    seed_shared_instrument(
+        {
         "asset_id": "fund-no-data",
         "asset_name": "No Data Fund",
         "asset_type": "fund",
@@ -1422,68 +1924,67 @@ def test_monitoring_dashboard_surfaces_missing_tags_quotes_and_open_recalc_jobs(
         ],
         "market_data": [],
         "lifecycle_state": {"status": "active"},
+        },
+    )
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Monitoring Coverage", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["sxv264", "fund-no-data"]},
+    )
+    assert add_response.status_code == 200
+    assert add_response.json()["accepted_count"] == 2
+
+    recalc_response = client.post("/api/recalc/assets/sxv264/performance")
+    assert recalc_response.status_code == 200
+
+    response = client.get("/api/monitoring/dashboard")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["overview"] == {
+        "watchlist_count": 1,
+        "unique_asset_count": 2,
+        "needs_refresh_count": 1,
+        "missing_quote_count": 1,
+        "missing_label_count": 2,
+        "open_recalc_job_count": 1,
+        "failed_recalc_job_count": 0,
     }
 
-    try:
-        created_watchlist = client.post(
-            "/api/watchlists",
-            json={"name": "Monitoring Coverage", "description": None},
-        )
-        watchlist_id = created_watchlist.json()["watchlist_id"]
+    watchlist_summary = payload["watchlists"][0]
+    assert watchlist_summary["watchlist_id"] == watchlist_id
+    assert watchlist_summary["item_count"] == 2
+    assert watchlist_summary["needs_refresh_count"] == 1
+    assert watchlist_summary["missing_quote_count"] == 1
+    assert watchlist_summary["missing_label_count"] == 2
+    assert watchlist_summary["open_recalc_job_count"] == 1
 
-        add_response = client.post(
-            f"/api/watchlists/{watchlist_id}/items",
-            json={"asset_ids": ["sxv264", "fund-no-data"]},
-        )
-        assert add_response.status_code == 200
-        assert add_response.json()["accepted_count"] == 2
+    attention_asset = next(
+        item
+        for item in payload["needs_attention_assets"]
+        if item["asset_id"] == "fund-no-data"
+    )
+    assert attention_asset["data_freshness_status"] == "pending_recalc"
+    assert "needs_refresh" in attention_asset["issue_flags"]
+    assert "missing_quote" in attention_asset["issue_flags"]
 
-        recalc_response = client.post("/api/recalc/assets/sxv264/performance")
-        assert recalc_response.status_code == 200
+    missing_label_asset = next(
+        item
+        for item in payload["missing_label_assets"]
+        if item["asset_id"] == "fund-no-data"
+    )
+    assert "fund_regime" in missing_label_asset["missing_attribute_keys"]
+    assert "fund_category_l1" in missing_label_asset["missing_attribute_keys"]
+    assert len(payload["missing_label_assets"]) == 2
 
-        response = client.get("/api/monitoring/dashboard")
-        assert response.status_code == 200
-        payload = response.json()
-
-        assert payload["overview"] == {
-            "watchlist_count": 1,
-            "unique_asset_count": 2,
-            "needs_refresh_count": 1,
-            "missing_quote_count": 1,
-            "missing_tag_count": 1,
-            "open_recalc_job_count": 1,
-            "failed_recalc_job_count": 0,
-        }
-
-        watchlist_summary = payload["watchlists"][0]
-        assert watchlist_summary["watchlist_id"] == watchlist_id
-        assert watchlist_summary["item_count"] == 2
-        assert watchlist_summary["needs_refresh_count"] == 1
-        assert watchlist_summary["missing_quote_count"] == 1
-        assert watchlist_summary["missing_tag_count"] == 1
-        assert watchlist_summary["open_recalc_job_count"] == 1
-
-        attention_asset = next(
-            item
-            for item in payload["needs_attention_assets"]
-            if item["asset_id"] == "fund-no-data"
-        )
-        assert attention_asset["data_freshness_status"] == "pending_recalc"
-        assert "needs_refresh" in attention_asset["issue_flags"]
-        assert "missing_quote" in attention_asset["issue_flags"]
-
-        missing_tag_asset = next(
-            item
-            for item in payload["missing_tag_assets"]
-            if item["asset_id"] == "fund-no-data"
-        )
-        assert "fund_regime" in missing_tag_asset["missing_attribute_keys"]
-        assert "strategy_family" in missing_tag_asset["missing_attribute_keys"]
-
-        assert len(payload["open_recalc_jobs"]) == 1
-        assert payload["open_recalc_jobs"][0]["asset_id"] == "sxv264"
-        assert payload["open_recalc_jobs"][0]["job_type"] == "performance"
-        assert payload["open_recalc_jobs"][0]["job_status"] == "queued"
-        assert payload["open_recalc_jobs"][0]["primary_watchlist_id"] == watchlist_id
-    finally:
-        TEST_SHARED_INSTRUMENTS.pop("fund-no-data", None)
+    assert len(payload["open_recalc_jobs"]) == 1
+    assert payload["open_recalc_jobs"][0]["asset_id"] == "sxv264"
+    assert payload["open_recalc_jobs"][0]["job_type"] == "performance"
+    assert payload["open_recalc_jobs"][0]["job_status"] == "queued"
+    assert payload["open_recalc_jobs"][0]["primary_watchlist_id"] == watchlist_id

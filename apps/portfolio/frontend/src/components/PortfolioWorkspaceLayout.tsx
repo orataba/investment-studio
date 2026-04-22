@@ -30,7 +30,7 @@ type PortfolioWorkspaceLayoutProps = {
 const portfolioTabs: WorkspaceTab[] = [...workspacePrimaryNavigation]
 
 const FALLBACK_SUMMARY: PortfolioWorkspaceSummary = {
-  portfolio_id: 'yungu',
+  portfolio_id: '',
   portfolio_name: 'Portfolio',
   base_currency: 'USD',
   as_of_date: '—',
@@ -59,7 +59,15 @@ export default function PortfolioWorkspaceLayout({
   useEffect(() => {
     let cancelled = false
 
-    getWorkspaceSummaryForPortfolio(portfolioId || FALLBACK_SUMMARY.portfolio_id)
+    if (!portfolioId) {
+      setSummary(null)
+      setSummaryError('Portfolio id is required.')
+      return () => {
+        cancelled = true
+      }
+    }
+
+    getWorkspaceSummaryForPortfolio(portfolioId)
       .then((response) => {
         if (!cancelled) {
           setSummary(response)
@@ -91,7 +99,9 @@ export default function PortfolioWorkspaceLayout({
 
   const resolvedSummary = summary ?? FALLBACK_SUMMARY
   const resolvedPortfolioId = portfolioId || resolvedSummary.portfolio_id
-  const portfolioHomePath = buildPortfolioSectionPath(resolvedPortfolioId, '/holdings')
+  const portfolioHomePath = resolvedPortfolioId
+    ? buildPortfolioSectionPath(resolvedPortfolioId, '/holdings')
+    : '/portfolios'
   const changeClassName =
     (resolvedSummary.day_change_value ?? 0) < 0 ? 'portfolio-change-negative' : 'portfolio-change-positive'
   const badges = summaryError

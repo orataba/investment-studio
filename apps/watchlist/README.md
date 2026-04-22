@@ -2,7 +2,7 @@
 
 `/home/shaw/yungu/apps/watchlist` 是当前 `Yungu / Watchlist` app 的工作区。
 
-它由原 `fof` 基线工程迁入，当前已经开始从旧的 fund/watchlist 语境收口到多资产 `instrument` 主语。
+它由原 `fof` 基线工程迁入，当前后端主语已经统一到 `instrument`，但产品可用范围明确收敛为 `fund-only watchlist`。
 
 当前 app 已经包含：
 
@@ -19,16 +19,16 @@
 
 1. `Watchlists`
 2. `Instrument Detail`
-3. `Quote / Performance / Risk / Exposure / Ratings / People / Strategy / Documents / Research`
-4. `Facts ingest / manual profile / recalc / read model / Copilot`
+3. `Classification / Quote / Performance / Risk / Exposure / Ratings / People / Strategy / Documents / Research`
+4. `Facts ingest / manual profile / recalc / read model`
 
 其中：
 
 - `Watchlists` 与单资产详情页是当前主界面
 - Watchlist 里的资产新增只允许从平台 `Instruments` 共享库搜索并引用，不再在 Watchlist 内创建资产主档
-- `/instruments` 已经是共享资产库入口，但非 fund 资产的 detail overlay 仍在补齐
-- `Research / Documents / Monitoring` 仍有部分路由或页面是占位状态
-- Copilot 已接入统一 API 协议，但默认 provider 仍为 `stub`
+- 当前 watchlist 可用范围是 `fund`；shared registry 可以管理更广的资产类型，但它们不会进入 watchlist detail 主链路
+- `Monitoring` 已经是可用工作面；`Research / Documents` 一级路由仍以轻量页为主
+- Copilot 后端接口仍保留为后续扩展入口，但当前 UI 默认隐藏，不作为已发布能力
 
 ## 目录结构
 
@@ -36,7 +36,7 @@
 .
 ├── backend
 │   ├── alembic
-│   ├── app
+│   ├── watchlist_app
 │   │   ├── api
 │   │   ├── db
 │   │   ├── repositories
@@ -57,16 +57,17 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 PYTHONPATH=. alembic upgrade head
-uvicorn --app-dir . app.main:app --reload --host 127.0.0.1 --port 8000
+uvicorn watchlist_app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 说明：
 
-- 默认数据库连接为 PostgreSQL：`postgresql+psycopg://yungu:yungu@127.0.0.1:5432/yungu`
-- `watchlist` 使用 `watchlist` schema
-- 运行时不再提供任何样本/初始化脚本；数据库结构只通过 `alembic upgrade head` 管理
+- 运行时数据库连接以 `FTV2_DATABASE_URL` 为准；如迁移需要单独连接，可设置 `FTV2_ALEMBIC_DATABASE_URL`
+- schema 以 `FTV2_DATABASE_SCHEMA` 为准
+- settings 默认值仍指向本地 PostgreSQL，但实际运行应以你当前 `.env` / shell 环境为准
+- 数据库结构只通过 `alembic upgrade head` 管理；如果要清空旧数据，使用仓库根目录的 `./infra/postgres/rebuild_local_schemas.sh`
 - FastAPI 根路径会重定向到前端 `watchlists`
-- 由于多个 backend 都使用顶层包名 `app`，命令应在当前 backend 目录内执行，或显式使用 `--app-dir .`
+- backend 顶层包名现在是 `watchlist_app`
 
 ### 2. 前端
 
@@ -89,10 +90,25 @@ cd /home/shaw/yungu/apps/watchlist/frontend && npx tsc --noEmit
 cd /home/shaw/yungu/apps/watchlist/backend && pytest
 ```
 
+## 当前行为边界
+
+- Watchlist 主表当前按页加载，默认每页 `50` 行；页面上的 `Download` 会导出当前筛选/排序结果的全量行，而不是只导出当前页
+- Watchlist filter 菜单会基于当前 watchlist 的全量行构建选项，不再只采样前几页；当前页执行 add / delete / move 后，filter 选项也会随之刷新
+- Watchlist 的 `move` / `copy` 只允许操作 source watchlist 里已经存在的资产，不再把这两个接口当成隐式 `add`
+- 自定义 view 会把展示名称映射成 path-safe 的 slug id；复制 watchlist 时也会清洗 legacy custom view id，避免把不可路由的旧 id 继续扩散
+- Watchlist 和 Instrument Detail 已改成三层产品框架：`Classification / Research Tags / Monitoring Assessment`；筛选先按分类缩池，再看定量，再看定性标签
+- Monitoring 的缺失项检查已经改成 taxonomy-aware；不同分类叶子只检查适用的 label，不再全 fund 共用一套静态 tag 清单
+- 示例基金标签值不再在 migration 或 add-to-watchlist 运行时自动注入；产品框架赋值只来自显式录入和后续真实数据链路
+- 后端主语已经统一到 `instrument`，当前只暴露 `/api/instruments/...` 明确接口；旧 `/api/funds/...` 兼容路由已移除
+- Instrument Detail 里的 canonical NAV history 现在是只读视图；导入、编辑、刷新共享净值要去 `Platform / Instruments`，这里只保留本地 basis / source / benchmark 设置
+
 ## 当前文档
 
+- [../../docs/README.md](../../docs/README.md)
+  仓库级文档入口，包含数据库工作流和平台边界说明。
 - [docs/INDEX.md](./docs/INDEX.md)
 - [docs/CURRENT_SYSTEM_BASELINE.md](./docs/CURRENT_SYSTEM_BASELINE.md)
+- [docs/FUND_PRODUCT_FRAMEWORK.md](./docs/FUND_PRODUCT_FRAMEWORK.md)
 - [docs/FUND_TERMINAL_V2_DATA_MODEL_AND_API.md](./docs/FUND_TERMINAL_V2_DATA_MODEL_AND_API.md)
 - [docs/FUND_TERMINAL_V2_AI_COPILOT.md](./docs/FUND_TERMINAL_V2_AI_COPILOT.md)
 

@@ -100,8 +100,8 @@ export default function InstrumentDetailPage() {
       </div>
       <div className="stub-body">
         <p>
-          Watchlist detail dispatch is now instrument-based, but{' '}
-          <strong>{instrument.asset_type}</strong> overlays are not implemented yet.
+          This watchlist release is fund-only. <strong>{instrument.asset_type}</strong> instruments can exist in the
+          shared registry, but they do not have a local watchlist detail workspace yet.
         </p>
         <p className="muted">
           Asset ID: {instrument.requested_asset_id}

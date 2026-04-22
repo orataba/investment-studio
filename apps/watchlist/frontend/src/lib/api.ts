@@ -131,14 +131,21 @@ export type InstrumentAttributeDefinition = {
   label: string
   description: string | null
   data_type: 'single_select' | 'multi_select' | 'boolean' | 'number' | 'text' | 'date'
+  domain_code: 'classification' | 'research' | 'monitoring'
+  group_code: string
+  display_order: number
   options: string[]
+  asset_scope_json: string[]
+  applicability_json: Record<string, string[]>
+  rubric_json: Record<string, unknown>
   is_groupable: boolean
   is_filterable: boolean
   is_view_column: boolean
   default_visible: boolean
+  required_for_monitoring: boolean
 }
 
-export type FundAttributeValuesResponse = {
+export type InstrumentAttributeValuesResponse = {
   asset_id: string
   definitions: InstrumentAttributeDefinition[]
   values: Record<string, unknown>
@@ -161,14 +168,21 @@ export type InstrumentAttributeDefinitionCreatePayload = {
   label: string
   description?: string | null
   data_type: 'single_select' | 'multi_select' | 'boolean' | 'number' | 'text' | 'date'
+  domain_code: 'classification' | 'research' | 'monitoring'
+  group_code: string
+  display_order?: number
   options?: string[]
+  asset_scope_json?: string[]
+  applicability_json?: Record<string, string[]>
+  rubric_json?: Record<string, unknown>
   is_groupable?: boolean
   is_filterable?: boolean
   is_view_column?: boolean
   default_visible?: boolean
+  required_for_monitoring?: boolean
 }
 
-export type FundAttributeUpdatePayload = {
+export type InstrumentAttributeUpdatePayload = {
   values: Array<{
     attribute_key: string
     value: unknown
@@ -207,7 +221,7 @@ export type MonitoringWatchlistSummary = {
   item_count: number
   needs_refresh_count: number
   missing_quote_count: number
-  missing_tag_count: number
+  missing_label_count: number
   open_recalc_job_count: number
   last_activity_at: string | null
 }
@@ -256,13 +270,13 @@ export type MonitoringDashboardResponse = {
     unique_asset_count: number
     needs_refresh_count: number
     missing_quote_count: number
-    missing_tag_count: number
+    missing_label_count: number
     open_recalc_job_count: number
     failed_recalc_job_count: number
   }
   watchlists: MonitoringWatchlistSummary[]
   needs_attention_assets: MonitoringAssetRecord[]
-  missing_tag_assets: MonitoringAssetRecord[]
+  missing_label_assets: MonitoringAssetRecord[]
   open_recalc_jobs: MonitoringRecalcJobRecord[]
 }
 
@@ -436,6 +450,7 @@ export type FundResearchResponse = {
   overview: Record<string, unknown>
   thesis: string
   conclusions: Array<Record<string, unknown>>
+  timeline_notes?: Array<Record<string, unknown>>
   notes: string[]
 }
 
@@ -516,46 +531,6 @@ type RawFundNavSeriesResponse = {
 export type ManualProfileUpdatePayload = {
   payload: Record<string, unknown>
   updated_by?: string
-}
-
-export type CopilotMessagePayload = {
-  role: 'user' | 'assistant'
-  content: string
-}
-
-export type CopilotCitation = {
-  label: string
-  ref_type: string
-  ref_id?: string | null
-  note?: string | null
-}
-
-export type CopilotChatResponse = {
-  provider: string
-  model: string
-  mode: string
-  answer: string
-  suggestions: string[]
-  citations: CopilotCitation[]
-  context_summary: Record<string, unknown>
-  generated_at: string
-}
-
-export type WatchlistCopilotChatPayload = {
-  question: string
-  view_id?: string | null
-  selected_fields?: string[]
-  filters?: Record<string, unknown>
-  advanced_filters?: Record<string, unknown> | null
-  sort?: Array<{ field: string; direction: string }>
-  group_by?: string | null
-  history?: CopilotMessagePayload[]
-}
-
-export type FundCopilotChatPayload = {
-  question: string
-  active_tab?: string | null
-  history?: CopilotMessagePayload[]
 }
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
@@ -814,16 +789,18 @@ export function createInstrumentAttributeDefinition(
   })
 }
 
-export function getFundInstrumentAttributes(fundId: string) {
-  return fetchJson<FundAttributeValuesResponse>(`/api/instrument-attributes/assets/${fundId}`)
+export function getInstrumentAttributes(assetId: string) {
+  return fetchJson<InstrumentAttributeValuesResponse>(
+    `/api/instrument-attributes/assets/${assetId}`,
+  )
 }
 
-export function updateFundInstrumentAttributes(
-  fundId: string,
-  payload: FundAttributeUpdatePayload,
+export function updateInstrumentAttributes(
+  assetId: string,
+  payload: InstrumentAttributeUpdatePayload,
 ) {
-  return fetchJson<FundAttributeValuesResponse & { updated: boolean }>(
-    `/api/instrument-attributes/assets/${fundId}`,
+  return fetchJson<InstrumentAttributeValuesResponse & { updated: boolean }>(
+    `/api/instrument-attributes/assets/${assetId}`,
     {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -842,153 +819,126 @@ function buildInstrumentDetailApiPath(assetId: string, suffix: string) {
   return `/api/instruments/${encodeURIComponent(assetId)}/${suffix}`
 }
 
-export function getFundSummary(fundId: string) {
-  return fetchJson<FundSummaryResponse>(buildInstrumentDetailApiPath(fundId, 'summary'))
+export function getInstrumentSummary(assetId: string) {
+  return fetchJson<FundSummaryResponse>(buildInstrumentDetailApiPath(assetId, 'summary'))
 }
 
-export function getFundLibrary() {
+export function getInstrumentLibrary() {
   return fetchJson<RawFundLibraryItem[]>('/api/instruments/library').then((items) =>
     items.map(normalizeFundLibraryItem),
   )
 }
 
-export function getFundChart(fundId: string) {
-  return fetchJson<FundChartResponse>(buildInstrumentDetailApiPath(fundId, 'chart'))
+export function getInstrumentChart(assetId: string) {
+  return fetchJson<FundChartResponse>(buildInstrumentDetailApiPath(assetId, 'chart'))
 }
 
-export function getFundPerformance(fundId: string) {
-  return fetchJson<FundPerformanceResponse>(buildInstrumentDetailApiPath(fundId, 'performance'))
+export function getInstrumentPerformance(assetId: string) {
+  return fetchJson<FundPerformanceResponse>(buildInstrumentDetailApiPath(assetId, 'performance'))
 }
 
-export function getFundRisk(fundId: string) {
-  return fetchJson<FundRiskResponse>(buildInstrumentDetailApiPath(fundId, 'risk'))
+export function getInstrumentRisk(assetId: string) {
+  return fetchJson<FundRiskResponse>(buildInstrumentDetailApiPath(assetId, 'risk'))
 }
 
-export function getFundExposureSummary(fundId: string) {
-  return fetchJson<FundExposureResponse>(buildInstrumentDetailApiPath(fundId, 'exposure/summary'))
-}
-
-export function getFundExposureHoldings(fundId: string) {
-  return fetchJson<FundExposureHoldingsResponse>(buildInstrumentDetailApiPath(fundId, 'exposure/holdings'))
-}
-
-export function getFundRatings(fundId: string) {
-  return fetchJson<FundRatingsResponse>(buildInstrumentDetailApiPath(fundId, 'ratings'))
-}
-
-export function getFundPeople(fundId: string) {
-  return fetchJson<FundPeopleResponse>(buildInstrumentDetailApiPath(fundId, 'people'))
-}
-
-export function getFundStrategy(fundId: string) {
-  return fetchJson<FundStrategyResponse>(buildInstrumentDetailApiPath(fundId, 'strategy'))
-}
-
-export function getFundPrice(fundId: string) {
-  return fetchJson<FundPriceResponse>(buildInstrumentDetailApiPath(fundId, 'price'))
-}
-
-export function getFundDocuments(fundId: string) {
-  return fetchJson<FundDocumentsResponse>(buildInstrumentDetailApiPath(fundId, 'documents'))
-}
-
-export function getFundResearch(fundId: string) {
-  return fetchJson<FundResearchResponse>(buildInstrumentDetailApiPath(fundId, 'research'))
-}
-
-export function getFundNavSeries(fundId: string) {
-  return fetchJson<RawFundNavSeriesResponse>(buildInstrumentDetailApiPath(fundId, 'nav-series')).then(
-    normalizeFundNavSeriesResponse,
+export function getInstrumentExposureSummary(assetId: string) {
+  return fetchJson<FundExposureResponse>(
+    buildInstrumentDetailApiPath(assetId, 'exposure/summary'),
   )
 }
 
-export function updateFundNavSeries(fundId: string, payload: unknown) {
-  return fetchJson<Record<string, unknown>>(buildInstrumentDetailApiPath(fundId, 'nav-series'), {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  })
+export function getInstrumentExposureHoldings(assetId: string) {
+  return fetchJson<FundExposureHoldingsResponse>(
+    buildInstrumentDetailApiPath(assetId, 'exposure/holdings'),
+  )
 }
 
-export function updateFundNavSettings(fundId: string, payload: unknown) {
-  return fetchJson<Record<string, unknown>>(buildInstrumentDetailApiPath(fundId, 'nav-settings'), {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  })
+export function getInstrumentRatings(assetId: string) {
+  return fetchJson<FundRatingsResponse>(buildInstrumentDetailApiPath(assetId, 'ratings'))
 }
 
-export function triggerFundNavRefresh(fundId: string, payload: unknown) {
-  return fetchJson<Record<string, unknown>>(buildInstrumentDetailApiPath(fundId, 'nav-refresh'), {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
+export function getInstrumentPeople(assetId: string) {
+  return fetchJson<FundPeopleResponse>(buildInstrumentDetailApiPath(assetId, 'people'))
 }
 
-export function updateFundPeople(
-  fundId: string,
+export function getInstrumentStrategy(assetId: string) {
+  return fetchJson<FundStrategyResponse>(buildInstrumentDetailApiPath(assetId, 'strategy'))
+}
+
+export function getInstrumentPrice(assetId: string) {
+  return fetchJson<FundPriceResponse>(buildInstrumentDetailApiPath(assetId, 'price'))
+}
+
+export function getInstrumentDocuments(assetId: string) {
+  return fetchJson<FundDocumentsResponse>(buildInstrumentDetailApiPath(assetId, 'documents'))
+}
+
+export function getInstrumentResearch(assetId: string) {
+  return fetchJson<FundResearchResponse>(buildInstrumentDetailApiPath(assetId, 'research'))
+}
+
+export function getInstrumentNavSeries(assetId: string) {
+  return fetchJson<RawFundNavSeriesResponse>(
+    buildInstrumentDetailApiPath(assetId, 'nav-series'),
+  ).then(normalizeFundNavSeriesResponse)
+}
+
+export function updateInstrumentNavSettings(assetId: string, payload: unknown) {
+  return fetchJson<Record<string, unknown>>(
+    buildInstrumentDetailApiPath(assetId, 'nav-settings'),
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function updateInstrumentPeople(
+  assetId: string,
   payload: ManualProfileUpdatePayload,
 ) {
-  return fetchJson<FundPeopleResponse>(buildInstrumentDetailApiPath(fundId, 'people'), {
+  return fetchJson<FundPeopleResponse>(buildInstrumentDetailApiPath(assetId, 'people'), {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
 }
 
-export function updateFundStrategy(
-  fundId: string,
+export function updateInstrumentStrategy(
+  assetId: string,
   payload: ManualProfileUpdatePayload,
 ) {
-  return fetchJson<FundStrategyResponse>(buildInstrumentDetailApiPath(fundId, 'strategy'), {
+  return fetchJson<FundStrategyResponse>(buildInstrumentDetailApiPath(assetId, 'strategy'), {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
 }
 
-export function updateFundPrice(
-  fundId: string,
+export function updateInstrumentPrice(
+  assetId: string,
   payload: ManualProfileUpdatePayload,
 ) {
-  return fetchJson<FundPriceResponse>(buildInstrumentDetailApiPath(fundId, 'price'), {
+  return fetchJson<FundPriceResponse>(buildInstrumentDetailApiPath(assetId, 'price'), {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
 }
 
-export function updateFundDocuments(
-  fundId: string,
+export function updateInstrumentDocuments(
+  assetId: string,
   payload: ManualProfileUpdatePayload,
 ) {
-  return fetchJson<FundDocumentsResponse>(buildInstrumentDetailApiPath(fundId, 'documents'), {
+  return fetchJson<FundDocumentsResponse>(buildInstrumentDetailApiPath(assetId, 'documents'), {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
 }
 
-export function updateFundResearch(
-  fundId: string,
+export function updateInstrumentResearch(
+  assetId: string,
   payload: ManualProfileUpdatePayload,
 ) {
-  return fetchJson<FundResearchResponse>(buildInstrumentDetailApiPath(fundId, 'research'), {
+  return fetchJson<FundResearchResponse>(buildInstrumentDetailApiPath(assetId, 'research'), {
     method: 'PUT',
-    body: JSON.stringify(payload),
-  })
-}
-
-export function chatWatchlistCopilot(
-  watchlistId: string,
-  payload: WatchlistCopilotChatPayload,
-) {
-  return fetchJson<CopilotChatResponse>(`/api/copilot/watchlists/${watchlistId}/chat`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-}
-
-export function chatFundCopilot(
-  fundId: string,
-  payload: FundCopilotChatPayload,
-) {
-  return fetchJson<CopilotChatResponse>(`/api/copilot/assets/${encodeURIComponent(fundId)}/chat`, {
-    method: 'POST',
     body: JSON.stringify(payload),
   })
 }

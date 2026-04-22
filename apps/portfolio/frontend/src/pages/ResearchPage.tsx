@@ -12,9 +12,11 @@ import {
   type PortfolioResearchArtifactContentResponse,
   type PortfolioResearchArtifactRecord,
   type PortfolioResearchBacktestMetricRecord,
+  type PortfolioResearchConstructionRowRecord,
   type PortfolioResearchPlanningScopeOption,
   type PortfolioResearchRunRecord,
   type PortfolioResearchTargetDimension,
+  type PortfolioResearchWeightSchedulePointRecord,
   type PortfolioResearchWorkbenchResponse,
 } from '../lib/api'
 import {
@@ -82,6 +84,35 @@ function resolveStatusLabel(status: string) {
   return formatLabel(status)
 }
 
+function formatResearchDimension(value: string | null | undefined) {
+  if (!value) {
+    return '—'
+  }
+  return formatLabel(value)
+}
+
+function formatSolverKind(value: string | null | undefined) {
+  if (!value) {
+    return '—'
+  }
+  if (value === 'weight') {
+    return 'Weight'
+  }
+  if (value === 'risk-budget') {
+    return 'Risk Budget'
+  }
+  if (value === 'single-member') {
+    return 'Single Member'
+  }
+  if (value === 'fallback-insufficient-history') {
+    return 'Fallback: Insufficient History'
+  }
+  if (value === 'fallback-solver') {
+    return 'Fallback: Solver'
+  }
+  return formatLabel(value.replace(/-/g, '_'))
+}
+
 function renderBacktestMetric(metric: PortfolioResearchBacktestMetricRecord) {
   if (metric.metric_id === 'observations') {
     return formatNumber(metric.value, 0)
@@ -96,6 +127,9 @@ function renderBacktestMetric(metric: PortfolioResearchBacktestMetricRecord) {
   }
   return formatNumber(metric.value, 3)
 }
+
+type ResearchDetailTab = 'summary' | 'construction' | 'weights' | 'rebalance' | 'diagnostics' | 'artifacts'
+type WeightScheduleView = 'rebalance' | 'all'
 
 export default function ResearchPage() {
   const { portfolioId = '' } = useParams()
@@ -112,6 +146,11 @@ export default function ResearchPage() {
 
   const selectedRunId = searchParams.get('run_id') ?? ''
   const selectedArtifactPath = searchParams.get('artifact_path') ?? ''
+  const detailTab = ((raw) =>
+    raw === 'construction' || raw === 'weights' || raw === 'rebalance' || raw === 'diagnostics' || raw === 'artifacts' ? raw : 'summary')(
+    searchParams.get('detail_tab'),
+  ) satisfies ResearchDetailTab
+  const weightScheduleView = (searchParams.get('weight_view') === 'all' ? 'all' : 'rebalance') satisfies WeightScheduleView
 
   const [planningTaxonomyId, setPlanningTaxonomyId] = useState('')
   const [comparatorScopeId, setComparatorScopeId] = useState('')
@@ -295,11 +334,46 @@ export default function ResearchPage() {
     () => (selectedRun?.detail?.backtest_curve ?? []).map((point) => ({ date: point.date, value: point.nav })),
     [selectedRun],
   )
+  const selectedRunWeightSchedule = useMemo<PortfolioResearchWeightSchedulePointRecord[]>(
+    () => selectedRun?.detail?.weight_schedule ?? [],
+    [selectedRun],
+  )
+  const displayedWeightSchedule = useMemo(() => {
+    if (weightScheduleView === 'all') {
+      return selectedRunWeightSchedule
+    }
+    const flagged = selectedRunWeightSchedule.filter((row) => row.rebalance_flag)
+    return flagged.length ? flagged : selectedRunWeightSchedule
+  }, [selectedRunWeightSchedule, weightScheduleView])
+  const selectedRunWeightScheduleLabels = useMemo(() => {
+    const labels: string[] = []
+    ;(selectedRun?.detail?.member_summaries ?? []).forEach((member) => {
+      if (!labels.includes(member.label)) {
+        labels.push(member.label)
+      }
+    })
+    selectedRunWeightSchedule.forEach((row) => {
+      Object.keys(row.weights ?? {}).forEach((label) => {
+        if (!labels.includes(label)) {
+          labels.push(label)
+        }
+      })
+    })
+    return labels
+  }, [selectedRun, selectedRunWeightSchedule])
 
   const selectedRunMetricMap = useMemo(() => {
     const entries = (selectedRun?.detail?.backtest_metrics ?? []).map((metric) => [metric.metric_id, metric] as const)
     return new Map(entries)
   }, [selectedRun])
+  const selectedRunSignalMap = useMemo(() => {
+    const entries = (selectedRun?.detail?.signals ?? []).map((signal) => [signal.label, signal.value] as const)
+    return new Map(entries)
+  }, [selectedRun])
+  const constructionRows = useMemo<PortfolioResearchConstructionRowRecord[]>(
+    () => selectedRun?.detail?.construction_rows ?? [],
+    [selectedRun],
+  )
 
   const summaryPlanningName =
     workbench?.planning_taxonomy_options.find((item) => item.taxonomy_id === planningTaxonomyId)?.name ??
@@ -409,26 +483,42 @@ export default function ResearchPage() {
                 {workbench.portfolio_name} · recursive sleeve backtest through {workbench.settings.as_of_date ?? workbench.as_of_date}
               </div>
             </div>
-            <div className="portfolio-summary-strip">
-              <div className="summary-card">
-                <span className="summary-card-label">Planning Axis</span>
-                <strong className="summary-card-value">{summaryPlanningName}</strong>
+            <div className="performance-summary-grid research-context-grid">
+              <div className="table-shell">
+                <table className="performance-summary-table">
+                  <tbody>
+                    <tr>
+                      <th>Planning Axis</th>
+                      <td>{summaryPlanningName}</td>
+                    </tr>
+                    <tr>
+                      <th>Scope</th>
+                      <td>{summaryScopeName}</td>
+                    </tr>
+                    <tr>
+                      <th>Target Layer</th>
+                      <td>{targetSetMode === 'taa_over_saa' ? 'TAA over SAA' : 'SAA only'}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
-              <div className="summary-card">
-                <span className="summary-card-label">Scope</span>
-                <strong className="summary-card-value">{summaryScopeName}</strong>
-              </div>
-              <div className="summary-card">
-                <span className="summary-card-label">Target Layer</span>
-                <strong className="summary-card-value">{targetSetMode === 'taa_over_saa' ? 'TAA over SAA' : 'SAA only'}</strong>
-              </div>
-              <div className="summary-card">
-                <span className="summary-card-label">Rebalance</span>
-                <strong className="summary-card-value">{formatLabel(rebalanceFrequency)}</strong>
-              </div>
-              <div className="summary-card">
-                <span className="summary-card-label">Runs</span>
-                <strong className="summary-card-value">{workbench.runs.length}</strong>
+              <div className="table-shell">
+                <table className="performance-summary-table">
+                  <tbody>
+                    <tr>
+                      <th>Target Dimension</th>
+                      <td>{formatLabel(targetDimension)}</td>
+                    </tr>
+                    <tr>
+                      <th>Rebalance</th>
+                      <td>{formatLabel(rebalanceFrequency)}</td>
+                    </tr>
+                    <tr>
+                      <th>Runs</th>
+                      <td>{workbench.runs.length}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </section>
@@ -732,8 +822,16 @@ export default function ResearchPage() {
                           <td>{selectedRun.detail?.selected_scope?.path ?? 'Top Level'}</td>
                         </tr>
                         <tr>
+                          <th>Scope Default</th>
+                          <td>{formatResearchDimension(selectedRun.detail?.selected_scope?.default_target_dimension ?? 'weight')}</td>
+                        </tr>
+                        <tr>
                           <th>Warnings</th>
                           <td>{selectedRun.detail?.warnings.length ?? 0}</td>
+                        </tr>
+                        <tr>
+                          <th>Artifacts</th>
+                          <td>{selectedRun.artifact_count}</td>
                         </tr>
                       </tbody>
                     </table>
@@ -761,6 +859,18 @@ export default function ResearchPage() {
                           <th>Sharpe</th>
                           <td>{renderBacktestMetric(selectedRunMetricMap.get('sharpe_ratio') ?? { metric_id: 'sharpe_ratio', label: '', value: null })}</td>
                         </tr>
+                        <tr>
+                          <th>Observations</th>
+                          <td>{renderBacktestMetric(selectedRunMetricMap.get('observations') ?? { metric_id: 'observations', label: '', value: null })}</td>
+                        </tr>
+                        <tr>
+                          <th>Solver</th>
+                          <td>{selectedRunSignalMap.get('Solver') ?? '—'}</td>
+                        </tr>
+                        <tr>
+                          <th>Largest Turnover</th>
+                          <td>{selectedRunSignalMap.get('Largest Turnover') ?? '—'}</td>
+                        </tr>
                       </tbody>
                     </table>
                   </div>
@@ -782,321 +892,577 @@ export default function ResearchPage() {
                   )}
                 </div>
 
-                <div className="performance-section-block">
-                  <div className="panel-header panel-header-inline">
-                    <div>
-                      <div className="panel-title">Backtest Metrics</div>
-                    </div>
-                    <div className="portfolio-detail-meta">Performance and risk diagnostics from the selected run</div>
-                  </div>
-                  <div className="table-shell">
-                    <table className="transactions-table">
-                      <thead>
-                        <tr>
-                          <th>Metric</th>
-                          <th>Value</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {!selectedRun.detail?.backtest_metrics.length ? (
-                          <TableStatusRow colSpan={2} label="No backtest metrics recorded for the selected run." />
-                        ) : (
-                          selectedRun.detail.backtest_metrics.map((metric) => (
-                            <tr key={metric.metric_id}>
-                              <td>{metric.label}</td>
-                              <td>{renderBacktestMetric(metric)}</td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
+                <div className="holdings-detail-tabbar">
+                  {[
+                    { key: 'summary', label: 'Summary', meta: `${selectedRun.detail?.backtest_metrics.length ?? 0} metrics` },
+                    { key: 'construction', label: 'Construction', meta: `${constructionRows.length} rows` },
+                    { key: 'weights', label: 'Weights', meta: `${selectedRun.detail?.member_summaries.length ?? 0} members` },
+                    { key: 'rebalance', label: 'Rebalance', meta: `${selectedRun.detail?.rebalance_events.length ?? 0} events` },
+                    { key: 'diagnostics', label: 'Diagnostics', meta: `${selectedRun.detail?.warnings.length ?? 0} warnings` },
+                    { key: 'artifacts', label: 'Artifacts', meta: `${selectedRun.artifact_count} files` },
+                  ].map((tab) => (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      className={`holdings-detail-tab ${detailTab === tab.key ? 'holdings-detail-tab-active' : ''}`}
+                      onClick={() => updateSearchParams({ detail_tab: tab.key })}
+                    >
+                      <span className="holdings-detail-tab-label">{tab.label}</span>
+                      <span className="holdings-detail-tab-meta">{tab.meta}</span>
+                    </button>
+                  ))}
                 </div>
 
-                <div className="performance-section-block">
-                  <div className="panel-header panel-header-inline">
-                    <div>
-                      <div className="panel-title">Weight Changes</div>
-                    </div>
-                    <div className="portfolio-detail-meta">Backtest-period sleeve or member weight path within the selected scope</div>
-                  </div>
-                  <div className="table-shell">
-                    <table className="transactions-table">
-                      <thead>
-                        <tr>
-                          <th>Member</th>
-                          <th>Target Dim</th>
-                          <th>Source</th>
-                          <th>Start</th>
-                          <th>End</th>
-                          <th>Average</th>
-                          <th>Range</th>
-                          <th>Selected Target</th>
-                          <th>Return</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {!selectedRun.detail?.member_summaries.length ? (
-                          <TableStatusRow colSpan={9} label="No member weight path was recorded for the selected scope." />
-                        ) : (
-                          selectedRun.detail.member_summaries.map((member) => (
-                            <tr key={`${member.member_type}:${member.member_id}`}>
-                              <td>{member.label}</td>
-                              <td>{formatLabel(member.selected_target_dimension ?? member.default_target_dimension ?? 'weight')}</td>
-                              <td>{member.source_target_set_type ? formatLabel(member.source_target_set_type) : '—'}</td>
-                              <td>{formatPercent(member.start_weight)}</td>
-                              <td>{formatPercent(member.end_weight)}</td>
-                              <td>{formatPercent(member.average_weight)}</td>
-                              <td>
-                                {formatPercent(member.min_weight)} to {formatPercent(member.max_weight)}
-                              </td>
-                              <td>{formatPercent(member.selected_target_value)}</td>
-                              <td>{formatPercent(member.cumulative_return)}</td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                <div className="performance-summary-grid research-detail-grid">
-                  <div className="performance-section-block">
-                    <div className="panel-header panel-header-inline">
-                      <div>
-                        <div className="panel-title">Rebalance Suggestions</div>
-                      </div>
-                      <div className="portfolio-detail-meta">Latest gap versus target within the selected scope</div>
-                    </div>
-                    <div className="table-shell">
-                      <table className="transactions-table">
-                        <thead>
-                          <tr>
-                            <th>Member</th>
-                            <th>Action</th>
-                            <th>Current</th>
-                            <th>Target</th>
-                            <th>Gap</th>
-                            <th>Current Value</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {!selectedRun.detail?.rebalance_suggestions.length ? (
-                            <TableStatusRow colSpan={6} label="No rebalance suggestions were generated for the selected run." />
-                          ) : (
-                            selectedRun.detail.rebalance_suggestions.map((item) => (
-                              <tr key={`${item.member_type}:${item.member_id}`}>
-                                <td>{item.label}</td>
-                                <td>{formatLabel(item.action)}</td>
-                                <td>{formatPercent(item.current_weight)}</td>
-                                <td>{formatPercent(item.target_weight)}</td>
-                                <td>{formatPercent(item.gap, 3)}</td>
-                                <td>{formatCurrency(item.current_value_base, item.base_currency)}</td>
+                {detailTab === 'summary' ? (
+                  <div className="research-tab-section">
+                    <div className="performance-summary-grid research-detail-grid">
+                      <div className="performance-section-block">
+                        <div className="panel-header panel-header-inline">
+                          <div>
+                            <div className="panel-title">Backtest Metrics</div>
+                          </div>
+                          <div className="portfolio-detail-meta">Performance and risk diagnostics from the selected run</div>
+                        </div>
+                        <div className="table-shell">
+                          <table className="transactions-table">
+                            <thead>
+                              <tr>
+                                <th>Metric</th>
+                                <th>Value</th>
                               </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  <div className="performance-section-block">
-                    <div className="panel-header panel-header-inline">
-                      <div>
-                        <div className="panel-title">Rebalance Events</div>
+                            </thead>
+                            <tbody>
+                              {!selectedRun.detail?.backtest_metrics.length ? (
+                                <TableStatusRow colSpan={2} label="No backtest metrics recorded for the selected run." />
+                              ) : (
+                                selectedRun.detail.backtest_metrics.map((metric) => (
+                                  <tr key={metric.metric_id}>
+                                    <td>{metric.label}</td>
+                                    <td>{renderBacktestMetric(metric)}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                      <div className="portfolio-detail-meta">Scheduled rebalance points and realized turnover pressure</div>
-                    </div>
-                    <div className="table-shell">
-                      <table className="transactions-table">
-                        <thead>
-                          <tr>
-                            <th>Date</th>
-                            <th>Scope</th>
-                            <th>Turnover</th>
-                            <th>Max Weight Gap</th>
-                            <th>Max Risk Gap</th>
-                            <th>Members</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {!selectedRun.detail?.rebalance_events.length ? (
-                            <TableStatusRow colSpan={6} label="No rebalance events were recorded for the selected run." />
-                          ) : (
-                            selectedRun.detail.rebalance_events.map((event) => (
-                              <tr key={`${event.rebalance_date}:${event.scope_label}`}>
-                                <td>{event.rebalance_date}</td>
-                                <td>{event.scope_label}</td>
-                                <td>{formatPercent(event.turnover, 3)}</td>
-                                <td>{formatPercent(event.max_weight_gap_before_rebalance, 3)}</td>
-                                <td>{formatPercent(event.max_risk_share_gap, 3)}</td>
-                                <td>{event.member_count}</td>
+
+                      <div className="performance-section-block">
+                        <div className="panel-header panel-header-inline">
+                          <div>
+                            <div className="panel-title">Signals</div>
+                          </div>
+                          <div className="portfolio-detail-meta">Resolved configuration for this run</div>
+                        </div>
+                        <div className="table-shell">
+                          <table className="transactions-table">
+                            <thead>
+                              <tr>
+                                <th>Signal</th>
+                                <th>Value</th>
                               </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="performance-summary-grid research-detail-grid">
-                  <div className="performance-section-block">
-                    <div className="panel-header panel-header-inline">
-                      <div>
-                        <div className="panel-title">Findings</div>
+                            </thead>
+                            <tbody>
+                              {!selectedRun.detail?.signals.length ? (
+                                <TableStatusRow colSpan={2} label="No run signals recorded for the selected run." />
+                              ) : (
+                                selectedRun.detail.signals.map((signal) => (
+                                  <tr key={signal.label}>
+                                    <td>{signal.label}</td>
+                                    <td>{signal.value}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                      <div className="portfolio-detail-meta">Structured conclusions from the selected run</div>
                     </div>
-                    <div className="table-shell">
-                      <table className="transactions-table">
-                        <thead>
-                          <tr>
-                            <th>Title</th>
-                            <th>Detail</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {!selectedRun.detail?.findings.length ? (
-                            <TableStatusRow colSpan={2} label="No findings recorded for the selected run." />
-                          ) : (
-                            selectedRun.detail.findings.map((finding) => (
-                              <tr key={finding.title}>
-                                <td>{finding.title}</td>
-                                <td className="transaction-note-cell">{finding.detail}</td>
+
+                    <div className="performance-summary-grid research-detail-grid">
+                      <div className="performance-section-block">
+                        <div className="panel-header panel-header-inline">
+                          <div>
+                            <div className="panel-title">Findings</div>
+                          </div>
+                          <div className="portfolio-detail-meta">Structured conclusions from the selected run</div>
+                        </div>
+                        <div className="table-shell">
+                          <table className="transactions-table">
+                            <thead>
+                              <tr>
+                                <th>Title</th>
+                                <th>Detail</th>
                               </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  <div className="performance-section-block">
-                    <div className="panel-header panel-header-inline">
-                      <div>
-                        <div className="panel-title">Next Questions</div>
+                            </thead>
+                            <tbody>
+                              {!selectedRun.detail?.findings.length ? (
+                                <TableStatusRow colSpan={2} label="No findings recorded for the selected run." />
+                              ) : (
+                                selectedRun.detail.findings.map((finding) => (
+                                  <tr key={finding.title}>
+                                    <td>{finding.title}</td>
+                                    <td className="transaction-note-cell">{finding.detail}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                      <div className="portfolio-detail-meta">Follow-up prompts for review, risk, or deeper construction work</div>
-                    </div>
-                    <div className="table-shell">
-                      <table className="transactions-table">
-                        <thead>
-                          <tr>
-                            <th>Question</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {!selectedRun.detail?.next_questions.length ? (
-                            <TableStatusRow colSpan={1} label="No next questions recorded for the selected run." />
-                          ) : (
-                            selectedRun.detail.next_questions.map((question) => (
-                              <tr key={question}>
-                                <td className="transaction-note-cell">{question}</td>
+
+                      <div className="performance-section-block">
+                        <div className="panel-header panel-header-inline">
+                          <div>
+                            <div className="panel-title">Next Questions</div>
+                          </div>
+                          <div className="portfolio-detail-meta">Follow-up prompts for review, risk, or deeper construction work</div>
+                        </div>
+                        <div className="table-shell">
+                          <table className="transactions-table">
+                            <thead>
+                              <tr>
+                                <th>Question</th>
                               </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-
-                {selectedRun.detail?.warnings.length ? (
-                  <div className="performance-section-block">
-                    <div className="panel-header panel-header-inline">
-                      <div>
-                        <div className="panel-title">Warnings</div>
+                            </thead>
+                            <tbody>
+                              {!selectedRun.detail?.next_questions.length ? (
+                                <TableStatusRow colSpan={1} label="No next questions recorded for the selected run." />
+                              ) : (
+                                selectedRun.detail.next_questions.map((question) => (
+                                  <tr key={question}>
+                                    <td className="transaction-note-cell">{question}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                      <div className="portfolio-detail-meta">Coverage and solver warnings emitted during the run</div>
-                    </div>
-                    <div className="table-shell">
-                      <table className="transactions-table">
-                        <thead>
-                          <tr>
-                            <th>Message</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {selectedRun.detail.warnings.map((warning) => (
-                            <tr key={warning}>
-                              <td className="transaction-note-cell">{warning}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
                     </div>
                   </div>
                 ) : null}
 
-                <div className="performance-section-block">
-                  <div className="panel-header panel-header-inline">
-                    <div>
-                      <div className="panel-title">Artifacts</div>
-                    </div>
-                    <div className="portfolio-detail-meta">Markdown, JSON, and CSV outputs produced by the run</div>
-                  </div>
-                  <div className="table-shell">
-                    <table className="transactions-table">
-                      <thead>
-                        <tr>
-                          <th>Label</th>
-                          <th>Type</th>
-                          <th>Path</th>
-                          <th />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {!selectedRun.artifacts.length ? (
-                          <TableStatusRow colSpan={4} label="No artifacts recorded for the selected run." />
-                        ) : (
-                          selectedRun.artifacts.map((artifact) => (
-                            <tr
-                              key={artifact.path}
-                              className={selectedArtifact?.path === artifact.path ? 'research-artifact-row-active' : ''}
-                            >
-                              <td>{artifact.label}</td>
-                              <td>{artifact.media_type}</td>
-                              <td className="transaction-note-cell">{artifact.path}</td>
-                              <td className="taxonomy-actions-cell">
-                                <button
-                                  type="button"
-                                  className="table-inline-button"
-                                  onClick={() => handleSelectArtifact(artifact)}
-                                >
-                                  {selectedArtifact?.path === artifact.path ? 'Viewing' : 'View'}
-                                </button>
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                <div className="performance-section-block">
-                  <div className="panel-header panel-header-inline">
-                    <div>
-                      <div className="panel-title">Artifact Viewer</div>
-                    </div>
-                    <div className="portfolio-detail-meta">{selectedArtifact?.label ?? 'No artifact selected'}</div>
-                  </div>
-                  {artifactLoading ? <CalculationStatus label="Loading selected research artifact…" /> : null}
-                  {artifactError ? <div className="inline-notice inline-notice-error">{artifactError}</div> : null}
-                  {!artifactLoading && !artifactError && artifactContent ? (
-                    <div className="research-artifact-viewer">
-                      <div className="research-artifact-meta">
-                        <span>{artifactContent.filename}</span>
-                        <span>{artifactContent.media_type}</span>
+                {detailTab === 'construction' ? (
+                  <div className="research-tab-section">
+                    <div className="performance-summary-grid research-detail-grid">
+                      <div className="performance-section-block">
+                        <div className="panel-header panel-header-inline">
+                          <div>
+                            <div className="panel-title">Construction Summary</div>
+                          </div>
+                          <div className="portfolio-detail-meta">Resolved local construction context for the selected scope</div>
+                        </div>
+                        <div className="table-shell">
+                          <table className="performance-summary-table">
+                            <tbody>
+                              <tr>
+                                <th>Scope</th>
+                                <td>{selectedRun.detail?.selected_scope?.path ?? 'Top Level'}</td>
+                              </tr>
+                              <tr>
+                                <th>Member Source</th>
+                                <td>{formatLabel(selectedRun.detail?.selected_scope?.member_source ?? 'child_sleeves')}</td>
+                              </tr>
+                              <tr>
+                                <th>Scope Default</th>
+                                <td>{formatResearchDimension(selectedRun.detail?.selected_scope?.default_target_dimension ?? 'weight')}</td>
+                              </tr>
+                              <tr>
+                                <th>Run Dimension</th>
+                                <td>{selectedRunSignalMap.get('Target Dimension') ?? '—'}</td>
+                              </tr>
+                              <tr>
+                                <th>Solver</th>
+                                <td>{selectedRunSignalMap.get('Solver') ?? '—'}</td>
+                              </tr>
+                              <tr>
+                                <th>Largest Risk Gap</th>
+                                <td>{selectedRunSignalMap.get('Largest Risk Gap') ?? '—'}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                      <pre className="research-artifact-pre">{artifactContent.content}</pre>
+
+                      <div className="performance-section-block">
+                        <div className="panel-header panel-header-inline">
+                          <div>
+                            <div className="panel-title">Assumptions</div>
+                          </div>
+                          <div className="portfolio-detail-meta">Current local construction and fallback rules</div>
+                        </div>
+                        <div className="table-shell">
+                          <table className="transactions-table">
+                            <thead>
+                              <tr>
+                                <th>Assumption</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {!selectedRun.detail?.construction_assumptions.length ? (
+                                <TableStatusRow colSpan={1} label="No explicit construction assumptions were recorded for the selected run." />
+                              ) : (
+                                selectedRun.detail.construction_assumptions.map((item) => (
+                                  <tr key={item}>
+                                    <td className="transaction-note-cell">{item}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
                     </div>
-                  ) : null}
-                  {!artifactLoading && !artifactError && !artifactContent ? (
-                    <div className="empty-state">Select an artifact to preview its content.</div>
-                  ) : null}
-                </div>
+
+                    <div className="performance-section-block">
+                      <div className="panel-header panel-header-inline">
+                        <div>
+                          <div className="panel-title">Resolved Construction Rows</div>
+                        </div>
+                        <div className="portfolio-detail-meta">Current weights, resolved targets, and implementation weights inside the selected scope</div>
+                      </div>
+                      <div className="table-shell">
+                        <table className="transactions-table">
+                          <thead>
+                            <tr>
+                              <th>Member</th>
+                              <th>Current</th>
+                              <th>Impl</th>
+                              <th>Gap</th>
+                              <th>Selected</th>
+                              <th>Weight Target</th>
+                              <th>Risk Target</th>
+                              <th>Source</th>
+                              <th>Default</th>
+                              <th>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {!constructionRows.length ? (
+                              <TableStatusRow colSpan={10} label="No construction rows were recorded for the selected run." />
+                            ) : (
+                              constructionRows.map((row) => (
+                                <tr key={`${row.member_type}:${row.member_id}`}>
+                                  <td>{row.label}</td>
+                                  <td>{formatPercent(row.current_weight)}</td>
+                                  <td>{formatPercent(row.implementation_weight)}</td>
+                                  <td>{formatPercent(row.gap_to_implementation, 3)}</td>
+                                  <td>{formatPercent(row.selected_target_value)}</td>
+                                  <td>{formatPercent(row.target_weight)}</td>
+                                  <td>{formatPercent(row.target_risk_share)}</td>
+                                  <td>{row.source_label ?? '—'}</td>
+                                  <td>{formatResearchDimension(row.default_target_dimension)}</td>
+                                  <td>{row.action ? formatLabel(row.action) : '—'}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {detailTab === 'weights' ? (
+                  <div className="research-tab-section">
+                    <div className="performance-section-block">
+                      <div className="panel-header panel-header-inline">
+                        <div>
+                          <div className="panel-title">Member Weight Changes</div>
+                        </div>
+                        <div className="portfolio-detail-meta">Backtest-period sleeve or member weight path within the selected scope</div>
+                      </div>
+                      <div className="table-shell">
+                        <table className="transactions-table">
+                          <thead>
+                            <tr>
+                              <th>Member</th>
+                              <th>Target Dim</th>
+                              <th>Source</th>
+                              <th>Start</th>
+                              <th>End</th>
+                              <th>Average</th>
+                              <th>Range</th>
+                              <th>Selected Target</th>
+                              <th>Return</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {!selectedRun.detail?.member_summaries.length ? (
+                              <TableStatusRow colSpan={9} label="No member weight path was recorded for the selected scope." />
+                            ) : (
+                              selectedRun.detail.member_summaries.map((member) => (
+                                <tr key={`${member.member_type}:${member.member_id}`}>
+                                  <td>{member.label}</td>
+                                  <td>{formatLabel(member.selected_target_dimension ?? member.default_target_dimension ?? 'weight')}</td>
+                                  <td>{member.source_target_set_type ? formatLabel(member.source_target_set_type) : '—'}</td>
+                                  <td>{formatPercent(member.start_weight)}</td>
+                                  <td>{formatPercent(member.end_weight)}</td>
+                                  <td>{formatPercent(member.average_weight)}</td>
+                                  <td>
+                                    {formatPercent(member.min_weight)} to {formatPercent(member.max_weight)}
+                                  </td>
+                                  <td>{formatPercent(member.selected_target_value)}</td>
+                                  <td>{formatPercent(member.cumulative_return)}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div className="performance-section-block">
+                      <div className="panel-header panel-header-inline">
+                        <div>
+                          <div className="panel-title">Weight Schedule</div>
+                        </div>
+                        <div className="toolbar">
+                          <span className="portfolio-detail-meta">
+                            {displayedWeightSchedule.length} rows · {weightScheduleView === 'all' ? 'All dates' : 'Rebalance dates'}
+                          </span>
+                          <button
+                            type="button"
+                            className={`toolbar-link ${weightScheduleView === 'rebalance' ? 'research-inline-toggle-active' : ''}`}
+                            onClick={() => updateSearchParams({ weight_view: 'rebalance' })}
+                          >
+                            Rebalance Dates
+                          </button>
+                          <button
+                            type="button"
+                            className={`toolbar-link ${weightScheduleView === 'all' ? 'research-inline-toggle-active' : ''}`}
+                            onClick={() => updateSearchParams({ weight_view: 'all' })}
+                          >
+                            All Dates
+                          </button>
+                        </div>
+                      </div>
+                      <div className="table-shell">
+                        <table className="transactions-table research-weight-schedule-table">
+                          <thead>
+                            <tr>
+                              <th>Date</th>
+                              <th>Nav</th>
+                              {selectedRunWeightScheduleLabels.map((label) => (
+                                <th key={label}>{label}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {!displayedWeightSchedule.length ? (
+                              <TableStatusRow colSpan={2 + selectedRunWeightScheduleLabels.length} label="No sampled weight schedule is available for the selected run." />
+                            ) : (
+                              displayedWeightSchedule.map((row) => (
+                                <tr key={row.date} className={row.rebalance_flag ? 'research-weight-schedule-row-flagged' : undefined}>
+                                  <td>{row.rebalance_flag ? `${row.date} · Rebalance` : row.date}</td>
+                                  <td>{formatCurrency(row.nav, workbench.base_currency)}</td>
+                                  {selectedRunWeightScheduleLabels.map((label) => (
+                                    <td key={`${row.date}:${label}`}>{formatPercent(row.weights?.[label] ?? null)}</td>
+                                  ))}
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {detailTab === 'rebalance' ? (
+                  <div className="research-tab-section">
+                    <div className="performance-summary-grid research-detail-grid">
+                      <div className="performance-section-block">
+                        <div className="panel-header panel-header-inline">
+                          <div>
+                            <div className="panel-title">Rebalance Suggestions</div>
+                          </div>
+                          <div className="portfolio-detail-meta">Latest gap versus target within the selected scope</div>
+                        </div>
+                        <div className="table-shell">
+                          <table className="transactions-table">
+                            <thead>
+                              <tr>
+                                <th>Member</th>
+                                <th>Action</th>
+                                <th>Current</th>
+                                <th>Target</th>
+                                <th>Gap</th>
+                                <th>Current Value</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {!selectedRun.detail?.rebalance_suggestions.length ? (
+                                <TableStatusRow colSpan={6} label="No rebalance suggestions were generated for the selected run." />
+                              ) : (
+                                selectedRun.detail.rebalance_suggestions.map((item) => (
+                                  <tr key={`${item.member_type}:${item.member_id}`}>
+                                    <td>{item.label}</td>
+                                    <td>{formatLabel(item.action)}</td>
+                                    <td>{formatPercent(item.current_weight)}</td>
+                                    <td>{formatPercent(item.target_weight)}</td>
+                                    <td>{formatPercent(item.gap, 3)}</td>
+                                    <td>{formatCurrency(item.current_value_base, item.base_currency)}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      <div className="performance-section-block">
+                        <div className="panel-header panel-header-inline">
+                          <div>
+                            <div className="panel-title">Rebalance Events</div>
+                          </div>
+                          <div className="portfolio-detail-meta">Scheduled rebalance points and realized turnover pressure</div>
+                        </div>
+                        <div className="table-shell">
+                          <table className="transactions-table">
+                            <thead>
+                              <tr>
+                                <th>Date</th>
+                                <th>Scope</th>
+                                <th>Target Dim</th>
+                                <th>Solver</th>
+                                <th>Turnover</th>
+                                <th>Max Weight Gap</th>
+                                <th>Max Risk Gap</th>
+                                <th>Members</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {!selectedRun.detail?.rebalance_events.length ? (
+                                <TableStatusRow colSpan={8} label="No rebalance events were recorded for the selected run." />
+                              ) : (
+                                selectedRun.detail.rebalance_events.map((event) => (
+                                  <tr key={`${event.rebalance_date}:${event.scope_label}`}>
+                                    <td>{event.rebalance_date}</td>
+                                    <td>{event.scope_label}</td>
+                                    <td>{formatResearchDimension(event.target_dimension)}</td>
+                                    <td>{formatSolverKind(event.solver_kind)}</td>
+                                    <td>{formatPercent(event.turnover, 3)}</td>
+                                    <td>{formatPercent(event.max_weight_gap_before_rebalance, 3)}</td>
+                                    <td>{formatPercent(event.max_risk_share_gap, 3)}</td>
+                                    <td>{event.member_count}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {detailTab === 'diagnostics' ? (
+                  <div className="research-tab-section">
+                    {selectedRun.detail?.warnings.length ? (
+                      <div className="performance-section-block">
+                        <div className="panel-header panel-header-inline">
+                          <div>
+                            <div className="panel-title">Warnings</div>
+                          </div>
+                          <div className="portfolio-detail-meta">Coverage and solver warnings emitted during the run</div>
+                        </div>
+                        <div className="table-shell">
+                          <table className="transactions-table">
+                            <thead>
+                              <tr>
+                                <th>Message</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {selectedRun.detail.warnings.map((warning) => (
+                                <tr key={warning}>
+                                  <td className="transaction-note-cell">{warning}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="empty-state">No warnings were recorded for the selected run.</div>
+                    )}
+                  </div>
+                ) : null}
+
+                {detailTab === 'artifacts' ? (
+                  <div className="research-tab-section">
+                    <div className="performance-section-block">
+                      <div className="panel-header panel-header-inline">
+                        <div>
+                          <div className="panel-title">Artifacts</div>
+                        </div>
+                        <div className="portfolio-detail-meta">Markdown, JSON, and CSV outputs produced by the run</div>
+                      </div>
+                      <div className="table-shell">
+                        <table className="transactions-table">
+                          <thead>
+                            <tr>
+                              <th>Label</th>
+                              <th>Type</th>
+                              <th>Path</th>
+                              <th />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {!selectedRun.artifacts.length ? (
+                              <TableStatusRow colSpan={4} label="No artifacts recorded for the selected run." />
+                            ) : (
+                              selectedRun.artifacts.map((artifact) => (
+                                <tr
+                                  key={artifact.path}
+                                  className={selectedArtifact?.path === artifact.path ? 'research-artifact-row-active' : ''}
+                                >
+                                  <td>{artifact.label}</td>
+                                  <td>{artifact.media_type}</td>
+                                  <td className="transaction-note-cell">{artifact.path}</td>
+                                  <td className="taxonomy-actions-cell">
+                                    <button
+                                      type="button"
+                                      className="table-inline-button"
+                                      onClick={() => handleSelectArtifact(artifact)}
+                                    >
+                                      {selectedArtifact?.path === artifact.path ? 'Viewing' : 'View'}
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div className="performance-section-block">
+                      <div className="panel-header panel-header-inline">
+                        <div>
+                          <div className="panel-title">Artifact Viewer</div>
+                        </div>
+                        <div className="portfolio-detail-meta">{selectedArtifact?.label ?? 'No artifact selected'}</div>
+                      </div>
+                      {artifactLoading ? <CalculationStatus label="Loading selected research artifact…" /> : null}
+                      {artifactError ? <div className="inline-notice inline-notice-error">{artifactError}</div> : null}
+                      {!artifactLoading && !artifactError && artifactContent ? (
+                        <div className="research-artifact-viewer">
+                          <div className="research-artifact-meta">
+                            <span>{artifactContent.filename}</span>
+                            <span>{artifactContent.media_type}</span>
+                          </div>
+                          <pre className="research-artifact-pre">{artifactContent.content}</pre>
+                        </div>
+                      ) : null}
+                      {!artifactLoading && !artifactError && !artifactContent ? (
+                        <div className="empty-state">Select an artifact to preview its content.</div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
               </>
             )}
           </section>

@@ -18,8 +18,11 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["watchlist_app*"]
 
 [tool.pytest.ini_options]
 addopts = "--capture=no tests"
 testpaths = ["tests"]
+markers = [
+  "postgresql_integration: exercises PostgreSQL-only schema and constraint behavior",
+]

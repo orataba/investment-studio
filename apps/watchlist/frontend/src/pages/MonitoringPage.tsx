@@ -218,11 +218,11 @@ export default function MonitoringPage() {
     )
   }, [dashboard, selectedWatchlistId])
 
-  const visibleMissingTagAssets = useMemo(() => {
+  const visibleMissingLabelAssets = useMemo(() => {
     if (!dashboard) {
       return []
     }
-    return dashboard.missing_tag_assets.filter((item) =>
+    return dashboard.missing_label_assets.filter((item) =>
       matchesSelectedWatchlist(item.watchlists, selectedWatchlistId),
     )
   }, [dashboard, selectedWatchlistId])
@@ -273,7 +273,7 @@ export default function MonitoringPage() {
           unique_asset_count: selectedWatchlist.item_count,
           needs_refresh_count: selectedWatchlist.needs_refresh_count,
           missing_quote_count: selectedWatchlist.missing_quote_count,
-          missing_tag_count: selectedWatchlist.missing_tag_count,
+          missing_label_count: selectedWatchlist.missing_label_count,
           open_recalc_job_count: selectedWatchlist.open_recalc_job_count,
         }
       : dashboard.overview
@@ -291,7 +291,7 @@ export default function MonitoringPage() {
         value: summary.missing_quote_count,
         tone: 'unavailable',
       },
-      { label: 'Missing Tags', value: summary.missing_tag_count, tone: 'partial' },
+      { label: 'Missing Labels', value: summary.missing_label_count, tone: 'partial' },
       {
         label: 'Open Recalc',
         value: summary.open_recalc_job_count,
@@ -349,8 +349,8 @@ export default function MonitoringPage() {
             <div className="panel-title">Monitoring</div>
             <h1 className="page-title">Product Pool Monitoring</h1>
             <div className="monitoring-page-note">
-              Focused on data freshness, missing quote coverage, missing fund tags, and open
-              recalc work.
+              Focused on data freshness, missing quote coverage, missing classification or
+              monitoring labels, and open recalc work.
             </div>
           </div>
           <div className="toolbar">
@@ -433,7 +433,7 @@ export default function MonitoringPage() {
                       <th>Items</th>
                       <th>Needs Refresh</th>
                       <th>Missing Quote</th>
-                      <th>Missing Tags</th>
+                      <th>Missing Labels</th>
                       <th>Open Recalc</th>
                       <th>Last Activity</th>
                       <th>Actions</th>
@@ -450,7 +450,7 @@ export default function MonitoringPage() {
                         <td>{item.item_count}</td>
                         <td>{item.needs_refresh_count}</td>
                         <td>{item.missing_quote_count}</td>
-                        <td>{item.missing_tag_count}</td>
+                        <td>{item.missing_label_count}</td>
                         <td>{item.open_recalc_job_count}</td>
                         <td>{formatDateTime(item.last_activity_at)}</td>
                         <td>
@@ -559,25 +559,25 @@ export default function MonitoringPage() {
             <div className="panel-header">
               <div>
                 <div className="panel-title">Monitoring</div>
-                <div className="watchlists-title">Missing Fund Tags</div>
+                <div className="watchlists-title">Missing Classification / Monitoring Labels</div>
               </div>
             </div>
-            {visibleMissingTagAssets.length ? (
+            {visibleMissingLabelAssets.length ? (
               <div className="table-shell">
                 <table className="monitoring-table">
                   <thead>
                     <tr>
                       <th>Name</th>
                       <th>Watchlists</th>
-                      <th>Missing Tags</th>
+                      <th>Missing Labels</th>
                       <th>Freshness</th>
                       <th>Latest Quote Date</th>
                       <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleMissingTagAssets.map((item: MonitoringAssetRecord) => (
-                      <tr key={`${item.asset_id}-missing-tags`}>
+                    {visibleMissingLabelAssets.map((item: MonitoringAssetRecord) => (
+                      <tr key={`${item.asset_id}-missing-labels`}>
                         <td>
                           <div className="monitoring-primary-cell">
                             <AssetLink asset={item} />
@@ -610,7 +610,9 @@ export default function MonitoringPage() {
                 </table>
               </div>
             ) : (
-              <div className="empty-state">No key fund tags missing right now.</div>
+              <div className="empty-state">
+                No key classification or monitoring labels missing right now.
+              </div>
             )}
           </section>
 

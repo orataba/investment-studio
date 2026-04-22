@@ -5,9 +5,9 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool, text
 
-from app.core.settings import get_settings
-from app.db.base import Base
-import app.db.models  # noqa: F401
+from watchlist_app.core.settings import get_settings
+from watchlist_app.db.base import Base
+import watchlist_app.db.models  # noqa: F401
 
 
 config = context.config
@@ -18,6 +18,17 @@ if config.config_file_name is not None:
 settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.migration_database_url)
 target_metadata = Base.metadata
+
+
+def _search_path_fragments(schema: str | None) -> list[str]:
+    fragments: list[str] = []
+    for candidate in [schema, "shared_asset", "public"]:
+        if not candidate:
+            continue
+        normalized = candidate.strip()
+        if normalized and normalized not in fragments:
+            fragments.append(normalized)
+    return fragments
 
 
 def run_migrations_offline() -> None:
@@ -46,7 +57,15 @@ def run_migrations_online() -> None:
         if settings.database_schema and connection.dialect.name == "postgresql":
             connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{settings.database_schema}"'))
             connection.commit()
-            connection.execute(text(f'SET search_path TO "{settings.database_schema}"'))
+            connection.execute(
+                text(
+                    "SET search_path TO "
+                    + ", ".join(
+                        f'"{fragment}"' if fragment != "public" else "public"
+                        for fragment in _search_path_fragments(settings.database_schema)
+                    )
+                )
+            )
             connection.commit()
             version_table_schema = settings.database_schema
         context.configure(

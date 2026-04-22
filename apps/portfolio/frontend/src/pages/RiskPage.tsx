@@ -2,7 +2,11 @@ import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 
 import CalculationStatus from '../components/CalculationStatus'
+import PerformanceNavChart from '../components/PerformanceNavChart'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import RiskAccountBars from '../components/RiskAccountBars'
+import RiskExposureRibbon from '../components/RiskExposureRibbon'
+import RiskRankedBars from '../components/RiskRankedBars'
 import {
   getHoldingsWorkspace,
   getPortfolioAccountsWorkspace,
@@ -10,6 +14,7 @@ import {
   getPortfolioTaxonomyCatalog,
   type HoldingsWorkspaceResponse,
   type PortfolioAccountsWorkspaceResponse,
+  type PortfolioDailyPerformancePoint,
   type PortfolioPerformanceCoverageState,
   type PortfolioPerformanceResponse,
   type PortfolioTaxonomyCatalogResponse,
@@ -24,7 +29,7 @@ import {
   formatUnitPrice,
 } from '../lib/format'
 
-type RiskDetailTab = 'concentration' | 'accounts' | 'monitoring'
+type RiskMode = 'current' | 'realized'
 
 const LOOKBACK_OPTIONS = [30, 60, 90] as const
 
@@ -69,6 +74,87 @@ function isRecordActive(effectiveFrom?: string | null, effectiveTo?: string | nu
   return true
 }
 
+function buildMonthlyBuckets(dailySeries: PortfolioDailyPerformancePoint[]) {
+  const orderedKeys: string[] = []
+  const buckets = new Map<
+    string,
+    {
+      bucketKey: string
+      startDate: string
+      endDate: string
+      observationCount: number
+      growthIndex: number
+      staleCount: number
+      seenComplete: boolean
+      seenPartial: boolean
+      seenUnavailable: boolean
+      maxDrawdown: number | null
+    }
+  >()
+
+  dailySeries.forEach((point) => {
+    const bucketKey = point.as_of_date.slice(0, 7)
+    let bucket = buckets.get(bucketKey)
+    if (!bucket) {
+      bucket = {
+        bucketKey,
+        startDate: point.as_of_date,
+        endDate: point.as_of_date,
+        observationCount: 0,
+        growthIndex: 1,
+        staleCount: 0,
+        seenComplete: false,
+        seenPartial: false,
+        seenUnavailable: false,
+        maxDrawdown: null,
+      }
+      buckets.set(bucketKey, bucket)
+      orderedKeys.push(bucketKey)
+    }
+
+    bucket.endDate = point.as_of_date
+    if (point.daily_ttwror != null) {
+      bucket.growthIndex *= 1 + point.daily_ttwror
+      bucket.observationCount += 1
+    }
+    if (point.stale_price_flag || point.stale_fx_flag) {
+      bucket.staleCount += 1
+    }
+    if (point.drawdown != null) {
+      bucket.maxDrawdown =
+        bucket.maxDrawdown == null ? point.drawdown : Math.min(bucket.maxDrawdown, point.drawdown)
+    }
+    if (point.coverage_state === 'complete') {
+      bucket.seenComplete = true
+    } else if (point.coverage_state === 'partial') {
+      bucket.seenPartial = true
+    } else {
+      bucket.seenUnavailable = true
+    }
+  })
+
+  return orderedKeys.map((bucketKey) => {
+    const bucket = buckets.get(bucketKey)!
+    let coverageState: PortfolioPerformanceCoverageState = 'unavailable'
+    if (bucket.seenComplete) {
+      coverageState = bucket.seenPartial || bucket.seenUnavailable ? 'partial' : 'complete'
+    } else if (bucket.seenPartial) {
+      coverageState = 'partial'
+    }
+
+    return {
+      bucketKey: bucket.bucketKey,
+      startDate: bucket.startDate,
+      endDate: bucket.endDate,
+      coverageState,
+      observationCount: bucket.observationCount,
+      staleCount: bucket.staleCount,
+      cumulativeReturn: bucket.observationCount ? bucket.growthIndex - 1 : null,
+      maxDrawdown: bucket.maxDrawdown,
+    }
+  })
+}
+
 function TableStatusRow({
   colSpan,
   label,
@@ -100,13 +186,7 @@ export default function RiskPage() {
   const [performanceError, setPerformanceError] = useState<string | null>(null)
 
   const requestedAsOfDate = searchParams.get('as_of_date') ?? ''
-  const detailTab = (() => {
-    const raw = searchParams.get('detail_tab')
-    if (raw === 'accounts' || raw === 'monitoring') {
-      return raw
-    }
-    return 'concentration'
-  })() satisfies RiskDetailTab
+  const riskMode = (searchParams.get('risk_tab') === 'realized' ? 'realized' : 'current') satisfies RiskMode
   const lookbackDays = (() => {
     const raw = Number(searchParams.get('lookback_days') ?? '')
     if (LOOKBACK_OPTIONS.includes(raw as (typeof LOOKBACK_OPTIONS)[number])) {
@@ -114,7 +194,6 @@ export default function RiskPage() {
     }
     return 30
   })()
-
   const [draftAsOfDate, setDraftAsOfDate] = useState(requestedAsOfDate)
 
   useEffect(() => {
@@ -279,46 +358,100 @@ export default function RiskPage() {
     }
   }, [holdingsRows, sortedHoldings])
 
-  const realizedRiskMetrics = useMemo(() => {
-    const dailySeries = performanceWorkspace?.daily_series ?? []
-    const validDailyReturns = dailySeries.filter((point) => point.daily_ttwror != null)
-    const worstPoint = validDailyReturns.reduce<(typeof validDailyReturns)[number] | null>(
-      (worst, point) => {
-        if (!worst || (point.daily_ttwror ?? 0) < (worst.daily_ttwror ?? 0)) {
-          return point
-        }
-        return worst
-      },
-      null,
-    )
-    return {
-      staleDays: dailySeries.filter((point) => point.stale_price_flag || point.stale_fx_flag).length,
-      downDays: validDailyReturns.filter((point) => (point.daily_ttwror ?? 0) < 0).length,
-      worstPoint,
-    }
-  }, [performanceWorkspace])
-
   const accountExposureRows = useMemo(() => {
     const totalNav = holdingsWorkspace?.totals.market_value ?? 0
     return (accountsWorkspace?.accounts ?? [])
       .map((item) => {
         const cashBalance = item.derived_cash_balance ?? 0
+        const cashBalanceBase = item.derived_cash_balance_base ?? cashBalance
         const positionMarketValue = item.position_market_value ?? 0
-        const totalExposure = cashBalance + positionMarketValue
+        const totalExposureBase = cashBalanceBase + positionMarketValue
+        const grossExposureBase = Math.abs(cashBalanceBase) + Math.abs(positionMarketValue)
         return {
           accountId: item.account.account_id,
           accountName: item.account.account_name,
           accountType: item.account.account_type,
           currency: item.account.currency,
           cashBalance,
+          cashBalanceBase,
           positionMarketValue,
-          totalExposure,
-          allocation: totalNav > 0 ? totalExposure / totalNav : null,
+          totalExposureBase,
+          grossExposureBase,
+          allocation: totalNav > 0 ? totalExposureBase / totalNav : null,
           positionLineCount: item.position_line_count,
         }
       })
-      .sort((left, right) => right.totalExposure - left.totalExposure)
+      .sort((left, right) => right.totalExposureBase - left.totalExposureBase)
   }, [accountsWorkspace, holdingsWorkspace])
+
+  const concentrationChartItems = useMemo(
+    () =>
+      sortedHoldings.slice(0, 10).map((row) => {
+        const marketValue = row.market_value_base ?? row.market_value ?? 0
+        const unrealizedPnl =
+          row.market_value_base != null && row.cost_basis_base != null
+            ? row.market_value_base - row.cost_basis_base
+            : null
+        return {
+          id: row.line_id,
+          label: row.asset_core.asset_name,
+          value: row.allocation ?? 0,
+          valueLabel: formatPercent(row.allocation),
+          subtitle: formatLabel(row.asset_core.asset_type),
+          detail: `${formatCurrency(marketValue, holdingsWorkspace?.base_currency ?? 'USD')} · ${formatSignedCurrency(
+            unrealizedPnl,
+            holdingsWorkspace?.base_currency ?? 'USD',
+          )}`,
+        }
+      }),
+    [holdingsWorkspace?.base_currency, sortedHoldings],
+  )
+
+  const assetTypeChartSegments = useMemo(
+    () =>
+      assetTypeExposure.map((bucket) => ({
+        id: bucket.key,
+        label: formatLabel(bucket.key),
+        value: bucket.allocation,
+        valueLabel: formatPercent(bucket.allocation),
+        detail: `${bucket.count} lines · ${formatCurrency(bucket.marketValue, holdingsWorkspace?.base_currency ?? 'USD')}`,
+      })),
+    [assetTypeExposure, holdingsWorkspace?.base_currency],
+  )
+
+  const currencyChartSegments = useMemo(
+    () =>
+      currencyExposure.map((bucket) => ({
+        id: bucket.key,
+        label: bucket.key,
+        value: bucket.allocation,
+        valueLabel: formatPercent(bucket.allocation),
+        detail: `${bucket.count} lines · ${formatCurrency(bucket.marketValue, holdingsWorkspace?.base_currency ?? 'USD')}`,
+      })),
+    [currencyExposure, holdingsWorkspace?.base_currency],
+  )
+
+  const accountExposureChartItems = useMemo(
+    () =>
+      [...accountExposureRows]
+        .sort((left, right) => right.grossExposureBase - left.grossExposureBase)
+        .map((row) => ({
+          id: row.accountId,
+          label: row.accountName,
+          grossValue: row.grossExposureBase,
+          cashValue: row.cashBalanceBase,
+          positionValue: row.positionMarketValue,
+          totalLabel: formatSignedCurrency(row.totalExposureBase, holdingsWorkspace?.base_currency ?? 'USD'),
+          shareLabel: formatPercent(row.allocation),
+          cashLabel: `Cash ${formatSignedCurrency(row.cashBalanceBase, holdingsWorkspace?.base_currency ?? 'USD')}`,
+          positionLabel: `Positions ${formatCurrency(
+            row.positionMarketValue,
+            holdingsWorkspace?.base_currency ?? 'USD',
+          )}`,
+          detail: `${formatLabel(row.accountType)} · ${row.currency} · ${row.positionLineCount} lines`,
+        })),
+    [accountExposureRows, holdingsWorkspace?.base_currency],
+  )
 
   const planningTaxonomies = taxonomyCatalog?.taxonomies.filter((taxonomy) => taxonomy.planning_enabled) ?? []
   const defaultPlanningTaxonomy =
@@ -343,54 +476,125 @@ export default function RiskPage() {
         targetSet.status === 'active' &&
         isRecordActive(targetSet.effective_from, targetSet.effective_to, holdingsWorkspace?.as_of_date ?? null),
     ).length ?? 0
+
+  const navChartPoints = useMemo(
+    () =>
+      (performanceWorkspace?.daily_series ?? [])
+        .filter((point) => point.ending_nav != null)
+        .map((point) => ({ date: point.as_of_date, value: point.ending_nav as number })),
+    [performanceWorkspace],
+  )
+  const monthlyBuckets = useMemo(
+    () => buildMonthlyBuckets(performanceWorkspace?.daily_series ?? []),
+    [performanceWorkspace],
+  )
+  const recentMonthlyBuckets = useMemo(
+    () => [...monthlyBuckets].reverse().slice(0, 12),
+    [monthlyBuckets],
+  )
   const recentDailyRows = useMemo(
     () => [...(performanceWorkspace?.daily_series ?? [])].reverse().slice(0, 20),
     [performanceWorkspace],
   )
+  const worstDailyRows = useMemo(
+    () =>
+      [...(performanceWorkspace?.daily_series ?? [])]
+        .filter((point) => point.daily_ttwror != null)
+        .sort((left, right) => (left.daily_ttwror ?? 0) - (right.daily_ttwror ?? 0))
+        .slice(0, 10),
+    [performanceWorkspace],
+  )
 
-  const summaryRowsLeft = [
+  const realizedRiskMetrics = useMemo(() => {
+    const dailySeries = performanceWorkspace?.daily_series ?? []
+    const validDailyReturns = dailySeries.filter((point) => point.daily_ttwror != null)
+    const worstDay =
+      [...validDailyReturns].sort((left, right) => (left.daily_ttwror ?? 0) - (right.daily_ttwror ?? 0))[0] ?? null
+    const deepestDrawdown =
+      [...dailySeries].filter((point) => point.drawdown != null).sort((left, right) => (left.drawdown ?? 0) - (right.drawdown ?? 0))[0] ??
+      null
+    return {
+      observationCount: performanceWorkspace?.summary.return_observation_count ?? 0,
+      staleDays: dailySeries.filter((point) => point.stale_price_flag || point.stale_fx_flag).length,
+      downDays: validDailyReturns.filter((point) => (point.daily_ttwror ?? 0) < 0).length,
+      worstDay,
+      deepestDrawdown,
+    }
+  }, [performanceWorkspace])
+
+  const currentSummaryLeft = [
     { label: 'As Of Date', value: holdingsWorkspace?.as_of_date ?? '—' },
-    { label: 'Position Count', value: String(holdingsRows.length || 0) },
+    { label: 'Positions', value: String(holdingsRows.length || 0) },
     { label: 'Top 1 Weight', value: formatPercent(concentrationMetrics.top1) },
     { label: 'Top 3 Weight', value: formatPercent(concentrationMetrics.top3) },
     { label: 'Top 5 Weight', value: formatPercent(concentrationMetrics.top5) },
     { label: 'HHI', value: formatNumber(concentrationMetrics.hhi, 4) },
     { label: 'Effective Names', value: formatNumber(concentrationMetrics.effectiveNames, 2) },
-    {
-      label: 'Pricing Coverage',
-      value: `${concentrationMetrics.pricedLines} / ${holdingsRows.length || 0}`,
-    },
+    { label: 'Pricing Coverage', value: `${concentrationMetrics.pricedLines} / ${holdingsRows.length || 0}` },
   ]
 
-  const summaryRowsRight = [
+  const currentSummaryRight = [
+    { label: 'Planning Taxonomy', value: defaultPlanningTaxonomy?.name ?? 'Not configured' },
+    { label: 'Root SAA', value: activeDefaultSaaTargetSet ? activeDefaultSaaTargetSet.name : 'Not configured' },
+    { label: 'Root TAA', value: activeDefaultTaaTargetSet ? activeDefaultTaaTargetSet.name : 'Not configured' },
+    { label: 'Scoped Target Sets', value: String(activeScopedTargetSetCount) },
     {
-      label: `Realized Window`,
+      label: 'Risk Budget Comparator',
+      value: activeDefaultScopeTargetSets.some((targetSet) => targetSet.risk_budget_enabled) ? 'Configured' : 'Not configured',
+    },
+    { label: 'Planning Taxonomies', value: String(planningTaxonomies.length) },
+    {
+      label: 'Deposit Accounts',
+      value: String(accountExposureRows.filter((row) => row.accountType === 'deposit_account').length),
+    },
+    { label: 'Unpriced Holdings', value: String(concentrationMetrics.unpricedLines) },
+  ]
+
+  const realizedSummaryLeft = [
+    {
+      label: 'Window',
       value: riskWindowEndDate ? `${riskWindowStartDate} to ${riskWindowEndDate}` : '—',
     },
+    { label: 'Observations', value: String(realizedRiskMetrics.observationCount) },
+    { label: 'Cumulative Return', value: signedPercent(performanceWorkspace?.summary.cumulative_ttwror) },
+    { label: 'Annualized Volatility', value: signedPercent(performanceWorkspace?.summary.annualized_volatility) },
     { label: 'Current Drawdown', value: signedPercent(performanceWorkspace?.summary.current_drawdown) },
     { label: 'Max Drawdown', value: signedPercent(performanceWorkspace?.summary.max_drawdown) },
-    { label: 'Annualized Volatility', value: signedPercent(performanceWorkspace?.summary.annualized_volatility) },
-    { label: 'Worst Day', value: signedPercent(realizedRiskMetrics.worstPoint?.daily_ttwror, 3) },
-    {
-      label: 'Worst Day Date',
-      value: realizedRiskMetrics.worstPoint?.as_of_date ?? '—',
-    },
     { label: 'Down Days', value: String(realizedRiskMetrics.downDays) },
-    { label: 'Stale Observations', value: String(realizedRiskMetrics.staleDays) },
+    { label: 'Stale Days', value: String(realizedRiskMetrics.staleDays) },
+  ]
+
+  const realizedSummaryRight = [
+    { label: 'Start NAV', value: formatCurrency(performanceWorkspace?.summary.start_nav, performanceWorkspace?.base_currency ?? holdingsWorkspace?.base_currency ?? 'USD') },
+    { label: 'End NAV', value: formatCurrency(performanceWorkspace?.summary.end_nav, performanceWorkspace?.base_currency ?? holdingsWorkspace?.base_currency ?? 'USD') },
+    { label: 'Net External Inflow', value: formatSignedCurrency(performanceWorkspace?.summary.net_external_inflow, performanceWorkspace?.base_currency ?? holdingsWorkspace?.base_currency ?? 'USD') },
+    { label: 'Total P&L', value: formatSignedCurrency(performanceWorkspace?.summary.total_pnl, performanceWorkspace?.base_currency ?? holdingsWorkspace?.base_currency ?? 'USD') },
+    { label: 'Worst Day', value: signedPercent(realizedRiskMetrics.worstDay?.daily_ttwror, 3) },
+    { label: 'Worst Day Date', value: realizedRiskMetrics.worstDay?.as_of_date ?? '—' },
+    { label: 'Deepest Drawdown Date', value: realizedRiskMetrics.deepestDrawdown?.as_of_date ?? '—' },
+    { label: 'Sortino Ratio', value: formatNumber(performanceWorkspace?.summary.sortino_ratio, 2) },
   ]
 
   return (
-    <PortfolioWorkspaceLayout activeSection="Risk" toolbarLabel="View: Current Risk">
+    <PortfolioWorkspaceLayout
+      activeSection="Risk"
+      toolbarLabel={riskMode === 'realized' ? 'View: Realized Risk' : 'View: Current Risk'}
+    >
       <section className="portfolio-detail-surface">
         <div className="portfolio-detail-toolbar">
           <div className="panel-title">Risk</div>
-          <div className="portfolio-detail-meta">Current-state concentration, realized risk, and configuration coverage</div>
+          <div className="portfolio-detail-meta">
+            {riskMode === 'realized'
+              ? 'Past window risk path, drawdown, volatility, and monitoring tape'
+              : 'Current exposure structure, concentration, drift context, and live monitoring'}
+          </div>
         </div>
 
         <div className="holdings-meta-row">
           <p className="coverage-note">
-            Risk is assembled from the current statement of assets plus a recent realized-risk window. Target drift and
-            risk-budget blocks stay explicit about configuration state instead of pretending there is a live model.
+            Risk is split between <code>Current</code> and <code>Realized</code>. Current risk stays anchored to the
+            selected as-of date; realized risk explains how the recent path was produced without collapsing into the
+            period review pack.
           </p>
         </div>
 
@@ -414,91 +618,103 @@ export default function RiskPage() {
           </div>
         </form>
 
-        <div className="performance-inline-tabs">
-          {LOOKBACK_OPTIONS.map((days) => (
+        <div className="holdings-detail-tabbar">
+          {[
+            { key: 'current', label: 'Current', meta: `${holdingsRows.length} lines` },
+            { key: 'realized', label: 'Realized', meta: `${lookbackDays}D window` },
+          ].map((tab) => (
             <button
-              key={days}
+              key={tab.key}
               type="button"
-              className={`performance-inline-tab ${lookbackDays === days ? 'performance-inline-tab-active' : ''}`}
-              onClick={() => updateSearchParam('lookback_days', String(days))}
+              className={`holdings-detail-tab ${riskMode === tab.key ? 'holdings-detail-tab-active' : ''}`}
+              onClick={() => updateSearchParam('risk_tab', tab.key)}
             >
-              {days}D
+              <span className="holdings-detail-tab-label">{tab.label}</span>
+              <span className="holdings-detail-tab-meta">{tab.meta}</span>
             </button>
           ))}
         </div>
+
+        {riskMode === 'realized' ? (
+          <div className="performance-inline-tabs">
+            {LOOKBACK_OPTIONS.map((days) => (
+              <button
+                key={days}
+                type="button"
+                className={`performance-inline-tab ${lookbackDays === days ? 'performance-inline-tab-active' : ''}`}
+                onClick={() => updateSearchParam('lookback_days', String(days))}
+              >
+                {days}D
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
         {performanceError ? <div className="inline-notice inline-notice-error">{performanceError}</div> : null}
 
         {workspaceLoading ? (
-          <CalculationStatus label="Loading holdings, accounts, and taxonomy coverage for current-state risk…" />
+          <CalculationStatus label="Loading holdings, accounts, taxonomy coverage, and realized-risk window…" />
+        ) : null}
+
+        {!workspaceLoading && !holdingsWorkspace && !workspaceError ? (
+          <div className="empty-state">No risk workspace is available for this portfolio.</div>
         ) : null}
 
         {!workspaceLoading && holdingsWorkspace && accountsWorkspace ? (
           <>
-            <div className="performance-summary-grid">
-              <div className="table-shell">
-                <table className="performance-summary-table">
-                  <thead>
-                    <tr>
-                      <th colSpan={2}>Concentration And Structure</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summaryRowsLeft.map((row) => (
-                      <tr key={row.label}>
-                        <th>{row.label}</th>
-                        <td>{row.value}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="table-shell">
-                <table className="performance-summary-table">
-                  <thead>
-                    <tr>
-                      <th colSpan={2}>Realized Risk And Monitoring</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summaryRowsRight.map((row) => (
-                      <tr key={row.label}>
-                        <th>{row.label}</th>
-                        <td>{row.value}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div className="holdings-detail-tabbar">
-              {[
-                { key: 'concentration', label: 'Concentration', meta: `${holdingsRows.length} holdings` },
-                { key: 'accounts', label: 'Accounts & Exposure', meta: `${accountExposureRows.length} accounts` },
-                { key: 'monitoring', label: 'Monitoring', meta: `${planningTaxonomies.length} planning taxonomies` },
-              ].map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  className={`holdings-detail-tab ${detailTab === tab.key ? 'holdings-detail-tab-active' : ''}`}
-                  onClick={() => updateSearchParam('detail_tab', tab.key)}
-                >
-                  <span className="holdings-detail-tab-label">{tab.label}</span>
-                  <span className="holdings-detail-tab-meta">{tab.meta}</span>
-                </button>
-              ))}
-            </div>
-
-            {detailTab === 'concentration' ? (
+            {riskMode === 'current' ? (
               <>
+                <div className="performance-summary-grid">
+                  <div className="table-shell">
+                    <table className="performance-summary-table">
+                      <thead>
+                        <tr>
+                          <th colSpan={2}>Current Structure</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {currentSummaryLeft.map((row) => (
+                          <tr key={row.label}>
+                            <th>{row.label}</th>
+                            <td>{row.value}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="table-shell">
+                    <table className="performance-summary-table">
+                      <thead>
+                        <tr>
+                          <th colSpan={2}>Target And Monitoring Context</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {currentSummaryRight.map((row) => (
+                          <tr key={row.label}>
+                            <th>{row.label}</th>
+                            <td>{row.value}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
                 <section className="performance-section-block">
                   <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                     <div className="panel-title">Top Concentrations</div>
-                    <div className="portfolio-detail-meta">Largest current weights and unrealized contribution to concentration</div>
+                    <div className="portfolio-detail-meta">
+                      Largest current weights and their unrealized contribution to concentration
+                    </div>
                   </div>
+                  <RiskRankedBars
+                    items={concentrationChartItems}
+                    ariaLabel="Top concentration holdings ranked by current portfolio weight"
+                    emptyLabel="No holdings available for concentration review."
+                  />
                   <div className="table-shell">
                     <table className="transactions-table">
                       <thead>
@@ -547,6 +763,11 @@ export default function RiskPage() {
 
                 <div className="performance-summary-grid">
                   <div className="table-shell">
+                    <RiskExposureRibbon
+                      segments={assetTypeChartSegments}
+                      ariaLabel="Asset-type x-ray strip for current portfolio exposure"
+                      emptyLabel="No asset-type exposure rows available."
+                    />
                     <table className="transactions-table">
                       <thead>
                         <tr>
@@ -577,6 +798,11 @@ export default function RiskPage() {
                   </div>
 
                   <div className="table-shell">
+                    <RiskExposureRibbon
+                      segments={currencyChartSegments}
+                      ariaLabel="Currency x-ray strip for current portfolio exposure"
+                      emptyLabel="No currency exposure rows available."
+                    />
                     <table className="transactions-table">
                       <thead>
                         <tr>
@@ -606,58 +832,57 @@ export default function RiskPage() {
                     </table>
                   </div>
                 </div>
-              </>
-            ) : null}
 
-            {detailTab === 'accounts' ? (
-              <section className="performance-section-block">
-                <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                  <div className="panel-title">Account And Cash Location</div>
-                  <div className="portfolio-detail-meta">Where portfolio risk and settlement cash currently sit</div>
-                </div>
-                <div className="table-shell">
-                  <table className="transactions-table">
-                    <thead>
-                      <tr>
-                        <th>Account</th>
-                        <th>Type</th>
-                        <th>Currency</th>
-                        <th>Cash Balance</th>
-                        <th>Position Market Value</th>
-                        <th>Total Exposure</th>
-                        <th>Portfolio Share</th>
-                        <th>Position Lines</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {accountExposureRows.length ? (
-                        accountExposureRows.map((row) => (
-                          <tr key={row.accountId}>
-                            <td>{row.accountName}</td>
-                            <td>{formatLabel(row.accountType)}</td>
-                            <td>{row.currency}</td>
-                            <td>{formatSignedCurrency(row.cashBalance, row.currency)}</td>
-                            <td>{formatCurrency(row.positionMarketValue, row.currency)}</td>
-                            <td>{formatCurrency(row.totalExposure, row.currency)}</td>
-                            <td>{formatPercent(row.allocation)}</td>
-                            <td>{row.positionLineCount}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <TableStatusRow colSpan={8} label="No account exposure rows available." />
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            ) : null}
+                <section className="performance-section-block">
+                  <div className="portfolio-detail-toolbar performance-subsection-toolbar">
+                    <div className="panel-title">Account And Cash Location</div>
+                    <div className="portfolio-detail-meta">Where current exposure and settlement cash sit by account</div>
+                  </div>
+                  <RiskAccountBars
+                    items={accountExposureChartItems}
+                    ariaLabel="Account exposure bars showing cash and positions by account"
+                    emptyLabel="No account exposure rows available."
+                  />
+                  <div className="table-shell">
+                    <table className="transactions-table">
+                      <thead>
+                        <tr>
+                          <th>Account</th>
+                          <th>Type</th>
+                          <th>Currency</th>
+                          <th>Cash Balance</th>
+                          <th>Position Market Value</th>
+                          <th>Total Exposure</th>
+                          <th>Portfolio Share</th>
+                          <th>Position Lines</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {accountExposureRows.length ? (
+                          accountExposureRows.map((row) => (
+                            <tr key={row.accountId}>
+                              <td>{row.accountName}</td>
+                              <td>{formatLabel(row.accountType)}</td>
+                              <td>{row.currency}</td>
+                              <td>{formatSignedCurrency(row.cashBalance, row.currency)}</td>
+                              <td>{formatCurrency(row.positionMarketValue, row.currency)}</td>
+                              <td>{formatCurrency(row.totalExposureBase, holdingsWorkspace.base_currency)}</td>
+                              <td>{formatPercent(row.allocation)}</td>
+                              <td>{row.positionLineCount}</td>
+                            </tr>
+                          ))
+                        ) : (
+                          <TableStatusRow colSpan={8} label="No account exposure rows available." />
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
 
-            {detailTab === 'monitoring' ? (
-              <>
                 <section className="performance-section-block">
                   <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                     <div className="panel-title">Configuration Coverage</div>
-                    <div className="portfolio-detail-meta">Risk blocks stay explicit about what is and is not configured</div>
+                    <div className="portfolio-detail-meta">Current risk stays explicit about what is and is not configured</div>
                   </div>
                   <div className="table-shell">
                     <table className="transactions-table">
@@ -672,7 +897,11 @@ export default function RiskPage() {
                         <tr>
                           <td>Taxonomy Catalog</td>
                           <td>{taxonomyCatalog?.taxonomies.length ? 'Configured' : 'Not configured'}</td>
-                          <td>{taxonomyCatalog?.taxonomies.length ? `${taxonomyCatalog.taxonomies.length} taxonomies loaded` : 'No portfolio taxonomies yet'}</td>
+                          <td>
+                            {taxonomyCatalog?.taxonomies.length
+                              ? `${taxonomyCatalog.taxonomies.length} taxonomies loaded`
+                              : 'No portfolio taxonomies yet'}
+                          </td>
                         </tr>
                         <tr>
                           <td>Default Planning Taxonomy</td>
@@ -680,16 +909,16 @@ export default function RiskPage() {
                           <td>
                             {defaultPlanningTaxonomy
                               ? `${defaultPlanningTaxonomy.name} drives default drift and target context`
-                              : 'Risk defaults remain provisional until a default planning taxonomy is selected'}
+                              : 'Current drift stays provisional until a default planning taxonomy is selected'}
                           </td>
                         </tr>
                         <tr>
-                          <td>Planning Targets</td>
+                          <td>Root Planning Targets</td>
                           <td>{activeDefaultSaaTargetSet ? 'Configured' : 'Not configured'}</td>
                           <td>
                             {activeDefaultSaaTargetSet
-                              ? `Root scope SAA is active${activeDefaultTaaTargetSet ? '; root TAA also active' : ''}${activeScopedTargetSetCount ? `; ${activeScopedTargetSetCount} local sleeve scopes configured` : ''}`
-                              : 'Target drift remains unavailable until the default planning taxonomy has an active root-scope SAA'}
+                              ? `Root scope SAA is active${activeDefaultTaaTargetSet ? '; root TAA also active' : ''}${activeScopedTargetSetCount ? `; ${activeScopedTargetSetCount} local scopes configured` : ''}`
+                              : 'Root-scope target compare remains unavailable until a planning SAA is active'}
                           </td>
                         </tr>
                         <tr>
@@ -701,8 +930,8 @@ export default function RiskPage() {
                           </td>
                           <td>
                             {activeDefaultScopeTargetSets.some((targetSet) => targetSet.risk_budget_enabled)
-                              ? 'The default planning taxonomy has an active risk-budget comparator at the root scope'
-                              : 'Risk-budget gap remains unavailable until the active root comparator enables risk-budget targets'}
+                              ? 'The default planning taxonomy enables root-scope risk-budget comparison'
+                              : 'Risk-budget gap stays unavailable until the active comparator enables risk-budget targets'}
                           </td>
                         </tr>
                         <tr>
@@ -714,26 +943,120 @@ export default function RiskPage() {
                               : 'Every holding in the current statement is priced'}
                           </td>
                         </tr>
-                        <tr>
-                          <td>Recent Stale Observations</td>
-                          <td>{realizedRiskMetrics.staleDays ? 'Observed' : 'Clean'}</td>
-                          <td>
-                            {realizedRiskMetrics.staleDays
-                              ? `${realizedRiskMetrics.staleDays} recent observations used stale prices or FX`
-                              : 'No stale price or FX flags in the selected realized-risk window'}
-                          </td>
-                        </tr>
                       </tbody>
                     </table>
                   </div>
                 </section>
+              </>
+            ) : (
+              <>
+                <div className="performance-summary-grid">
+                  <div className="table-shell">
+                    <table className="performance-summary-table">
+                      <thead>
+                        <tr>
+                          <th colSpan={2}>Realized Risk Window</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {realizedSummaryLeft.map((row) => (
+                          <tr key={row.label}>
+                            <th>{row.label}</th>
+                            <td>{row.value}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="table-shell">
+                    <table className="performance-summary-table">
+                      <thead>
+                        <tr>
+                          <th colSpan={2}>Return And Stress Summary</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {realizedSummaryRight.map((row) => (
+                          <tr key={row.label}>
+                            <th>{row.label}</th>
+                            <td>{row.value}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {performanceLoading && !performanceWorkspace ? (
+                  <CalculationStatus label="Building realized-risk path from the recent performance window…" />
+                ) : null}
+
+                <div className="performance-block-grid">
+                  <section className="performance-section-block">
+                    <div className="portfolio-detail-toolbar performance-subsection-toolbar">
+                      <div className="panel-title">NAV And Drawdown Path</div>
+                      <div className="portfolio-detail-meta">
+                        {riskWindowEndDate ? `${lookbackDays}D realized-risk window through ${riskWindowEndDate}` : 'No active risk window'}
+                      </div>
+                    </div>
+                    <PerformanceNavChart
+                      points={navChartPoints}
+                      currency={performanceWorkspace?.base_currency ?? holdingsWorkspace.base_currency}
+                    />
+                  </section>
+
+                  <section className="performance-section-block">
+                    <div className="portfolio-detail-toolbar performance-subsection-toolbar">
+                      <div className="panel-title">Monthly Risk Buckets</div>
+                      <div className="portfolio-detail-meta">Latest monthly buckets derived from the realized-risk window</div>
+                    </div>
+                    <div className="table-shell">
+                      <table className="transactions-table">
+                        <thead>
+                          <tr>
+                            <th>Bucket</th>
+                            <th>Coverage</th>
+                            <th>Observations</th>
+                            <th>Stale Days</th>
+                            <th>Bucket Return</th>
+                            <th>Max Drawdown</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {recentMonthlyBuckets.length ? (
+                            recentMonthlyBuckets.map((bucket) => (
+                              <tr key={bucket.bucketKey}>
+                                <td>{bucket.bucketKey}</td>
+                                <td>
+                                  <span className={`coverage-pill ${coverageClassName(bucket.coverageState)}`}>
+                                    {formatLabel(bucket.coverageState)}
+                                  </span>
+                                </td>
+                                <td>{bucket.observationCount}</td>
+                                <td>{bucket.staleCount}</td>
+                                <td className={bucket.cumulativeReturn != null && bucket.cumulativeReturn < 0 ? 'negative-cell' : ''}>
+                                  {signedPercent(bucket.cumulativeReturn)}
+                                </td>
+                                <td className={bucket.maxDrawdown != null && bucket.maxDrawdown < 0 ? 'negative-cell' : ''}>
+                                  {signedPercent(bucket.maxDrawdown)}
+                                </td>
+                              </tr>
+                            ))
+                          ) : (
+                            <TableStatusRow colSpan={6} label="No monthly realized-risk buckets available." />
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
 
                 <section className="performance-section-block">
                   <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                    <div className="panel-title">Recent Monitoring Tape</div>
-                    <div className="portfolio-detail-meta">Latest 20 observations from the current realized-risk window</div>
+                    <div className="panel-title">Worst Days</div>
+                    <div className="portfolio-detail-meta">Largest negative daily moves in the active realized-risk window</div>
                   </div>
-                  {performanceLoading && !performanceWorkspace ? <CalculationStatus label="Loading recent realized-risk tape…" /> : null}
                   <div className="table-shell">
                     <table className="transactions-table">
                       <thead>
@@ -742,6 +1065,56 @@ export default function RiskPage() {
                           <th>Coverage</th>
                           <th>Ending NAV</th>
                           <th>Daily Return</th>
+                          <th>Drawdown</th>
+                          <th>P&amp;L Ex Flows</th>
+                          <th>Stale Flags</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {worstDailyRows.length ? (
+                          worstDailyRows.map((point) => (
+                            <tr key={point.as_of_date}>
+                              <td>{point.as_of_date}</td>
+                              <td>
+                                <span className={`coverage-pill ${coverageClassName(point.coverage_state)}`}>
+                                  {formatLabel(point.coverage_state)}
+                                </span>
+                              </td>
+                              <td>{formatCurrency(point.ending_nav, performanceWorkspace?.base_currency ?? holdingsWorkspace.base_currency)}</td>
+                              <td className={point.daily_ttwror != null && point.daily_ttwror < 0 ? 'negative-cell' : ''}>
+                                {signedPercent(point.daily_ttwror, 3)}
+                              </td>
+                              <td className={point.drawdown != null && point.drawdown < 0 ? 'negative-cell' : ''}>
+                                {signedPercent(point.drawdown)}
+                              </td>
+                              <td className={point.delta != null && point.delta < 0 ? 'negative-cell' : ''}>
+                                {formatSignedCurrency(point.delta, performanceWorkspace?.base_currency ?? holdingsWorkspace.base_currency)}
+                              </td>
+                              <td>{point.stale_price_flag || point.stale_fx_flag ? 'Observed' : 'Clean'}</td>
+                            </tr>
+                          ))
+                        ) : (
+                          <TableStatusRow colSpan={7} label="No negative daily-return rows are available." />
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                <section className="performance-section-block">
+                  <div className="portfolio-detail-toolbar performance-subsection-toolbar">
+                    <div className="panel-title">Recent Monitoring Tape</div>
+                    <div className="portfolio-detail-meta">Latest realized-risk observations used for current monitoring</div>
+                  </div>
+                  <div className="table-shell">
+                    <table className="transactions-table">
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th>Coverage</th>
+                          <th>Ending NAV</th>
+                          <th>Daily Return</th>
+                          <th>Cumulative Return</th>
                           <th>Drawdown</th>
                           <th>Stale Price</th>
                           <th>Stale FX</th>
@@ -761,6 +1134,9 @@ export default function RiskPage() {
                               <td className={point.daily_ttwror != null && point.daily_ttwror < 0 ? 'negative-cell' : ''}>
                                 {signedPercent(point.daily_ttwror, 3)}
                               </td>
+                              <td className={point.cumulative_ttwror != null && point.cumulative_ttwror < 0 ? 'negative-cell' : ''}>
+                                {signedPercent(point.cumulative_ttwror)}
+                              </td>
                               <td className={point.drawdown != null && point.drawdown < 0 ? 'negative-cell' : ''}>
                                 {signedPercent(point.drawdown)}
                               </td>
@@ -768,19 +1144,15 @@ export default function RiskPage() {
                               <td>{point.stale_fx_flag ? 'Yes' : 'No'}</td>
                             </tr>
                           ))
-                        ) : performanceLoading ? (
-                          <TableStatusRow colSpan={7} label="Loading recent monitoring tape…" />
-                        ) : performanceError ? (
-                          <TableStatusRow colSpan={7} label={performanceError} tone="error" />
                         ) : (
-                          <TableStatusRow colSpan={7} label="No recent monitoring rows available." />
+                          <TableStatusRow colSpan={8} label="No recent realized-risk rows available." />
                         )}
                       </tbody>
                     </table>
                   </div>
                 </section>
               </>
-            ) : null}
+            )}
           </>
         ) : null}
       </section>

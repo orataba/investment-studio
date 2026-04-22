@@ -1,76 +1,129 @@
 # Yungu Platform Boundaries
 
-## 目标
+## Current Topology
 
-`Yungu` 是一个平台，下面有两个独立 app：
+`Yungu` 现在是一个单仓、多 app、单 PostgreSQL 的结构：
 
-- `Watchlist`
-- `Portfolio`
+- `apps/platform`
+  平台入口和 shared asset ops dashboard。
+- `apps/watchlist`
+  Watchlist / Instrument Detail / monitoring / recalc；Copilot 当前只保留后端扩展接口，不作为已发布 UI。
+- `apps/portfolio`
+  Portfolio / account / transaction / performance / risk / research / taxonomy。
 
-当前阶段不做业务融合，只做平台化整理与最小共享抽取。
+数据库拓扑是：
 
-## Shared
+- `shared_asset` schema
+- `watchlist` schema
+- `portfolio` schema
 
-当前只计划共享最小资产核心层：
+不是：
+
+- `platform` 作为共享数据 API
+- `watchlist` / `portfolio` 通过 app-to-app HTTP 互相取数
+- 一个 app 的 detail page 直接充当另一个 app 的上下文页
+
+## Runtime Boundaries
+
+### Platform
+
+- 只直接读写 `shared_asset`
+- 提供平台首页、app registry 和 shared asset ops API
+- 可以下线；`watchlist` 和 `portfolio` 的核心读写路径不应受影响
+
+### Watchlist
+
+- 直接读写 `watchlist`
+- 直接读取 `shared_asset`
+- 在本地维护自己的 read models、recalc jobs、manual profile 和产品框架；Copilot 仅保留 backend extension boundary
+
+### Portfolio
+
+- 直接读写 `portfolio`
+- 直接读取 `shared_asset`
+- 在本地维护自己的 ledger、lots、performance、risk、taxonomy、target set、research
+
+## Shared Layer
+
+当前共享层分成两部分：
+
+### `packages/asset-core`
+
+承载跨 app 稳定 contract 和共享持久化 helper：
 
 - `asset_id`
 - `asset_name`
 - identifiers
 - `asset_type`
 - `currency`
-- `price`
-- `nav`
-- `fx`
+- typed market data / FX
+- quote selection policy
+- shared store helper / db models
 
-后续可视情况再纳入：
+### `shared_asset` schema
 
-- very basic asset master metadata
-- common document/source plumbing
-- common copilot infrastructure
+承载共享资产主档和共享市场事实：
 
-## App Private
+- instrument
+- instrument_identifier
+- instrument_market_data
+- registry metadata
 
-### Watchlist
+`shared_asset` 的 Alembic 入口独立放在 [infra/shared_asset](../infra/shared_asset/README.md)，不再挂在 `platform` app 下。
 
-保留私域对象：
+## Storage Boundary
 
-- watchlists
-- watchlist views
-- field registry
-- instrument attributes
-- fund manual profiles
-- fund scoring
-- watchlist read models
-- watchlist/detail copilot context
+共享资产身份由数据库直接约束，而不是靠 app 约定：
 
-### Portfolio
+- `portfolio.transaction_record.asset_id -> shared_asset.instrument.asset_id`
+- `watchlist.watchlist_item.asset_id -> shared_asset.instrument.asset_id`
+- `watchlist.asset_detail.asset_id -> shared_asset.instrument.asset_id`
 
-保留私域对象：
+这意味着：
 
+- app 私有 schema 可以引用共享资产
+- 共享资产重命名/修正要通过 canonical registry 完成
+- 本地脏数据会在 FK 迁移或写入时暴露，而不是长期静默漂移
+
+## Data Flow
+
+### Shared Instrument Maintenance
+
+1. 在 `Platform / Instruments` 维护共享资产主档、identifier、价格、净值、FX
+2. 数据写入 `shared_asset`
+3. `Watchlist` 和 `Portfolio` 直接从 `shared_asset` 读取
+
+### Watchlist Read Models
+
+1. 用户把共享资产加入 watchlist
+2. `watchlist` 持有自己的本地镜像和 read models
+3. stale 检查发现 canonical 数据变化时，写 durable `recalc_job`
+4. 后台 worker 消费 job，刷新本地 read model 和 canonical metadata mirror
+
+### Portfolio Facts
+
+1. 用户显式创建 portfolio / account / transaction，或用导入脚本导入
+2. `portfolio` 只在自己的 schema 持久化业务事实
+3. valuation / holdings / charts / performance 使用 `shared_asset` 的 canonical instrument 和 market data
+
+## Non-goals
+
+下面这些仍然不属于共享层：
+
+- watchlist rows
+- fund detail read models
+- monitoring labels / research tags / manual profiles
 - portfolios
 - accounts
 - transactions
-- ledger postings
-- lots
-- target sets
-- portfolio snapshots
-- risk snapshots
-- period risk summaries
-- review packs
+- ledger postings / lots
+- target sets / review packs / research runs
 
-## 共享原则
+共享的是“资产身份和市场事实”，不是 app 业务语义。
 
-- 共享数据源，不共享业务语义。
-- 共享主键，不共享 app 私域对象。
-- 共享技术底座，不共享业务读模型。
-- 共享设计语言，不共享页面职责。
+## Operational Rule
 
-## 资产详情原则
+如果未来再新增功能，默认遵守这条判断：
 
-未来资产详情必须分层：
-
-- shared asset core
-- watchlist context
-- portfolio context
-
-不允许用一个 app 的 detail page 直接替代另一个 app 的上下文页面。
+- 如果是共享资产身份或共享市场事实，优先放 `asset-core + shared_asset`
+- 如果是某个 app 的工作流、派生读模型、研究判断、展示状态，必须留在 app 私域

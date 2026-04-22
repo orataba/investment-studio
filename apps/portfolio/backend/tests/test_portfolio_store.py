@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services import portfolio_store
+from portfolio_app.services import portfolio_store
 
 
 def test_reset_store_without_payload_leaves_store_empty() -> None:

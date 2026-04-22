@@ -5,7 +5,7 @@ import zipfile
 
 from openpyxl import Workbook
 
-from app.services.market_data_ops import (
+from platform_app.services.market_data_ops import (
     _filter_rows_for_rule,
     _parse_nav_rows_from_label_snapshot_matrix,
     _parse_nav_rows_from_xlsx,

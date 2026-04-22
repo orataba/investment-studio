@@ -1,9 +1,7 @@
 import React, { startTransition, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
-import CopilotDrawer, { type CopilotMessage } from '../components/CopilotDrawer'
 import {
-  chatWatchlistCopilot,
   copyWatchlistItems,
   copyWatchlist,
   type FieldCategory,
@@ -20,7 +18,7 @@ import {
   deleteWatchlist,
   deleteWatchlistItems,
   getFieldRegistry,
-  getFundChart,
+  getInstrumentChart,
   getSharedInstruments,
   getWatchlistDetail,
   getWatchlists,
@@ -55,6 +53,8 @@ type ModalKind =
 type SparklineCacheEntry = { requestKey: string; points: FundChartPoint[] }
 type FilterState = Record<string, unknown[]>
 type FilterOption = { key: string; label: string; value: unknown }
+const WATCHLIST_PAGE_SIZE = 50
+const SCREENER_BULK_PAGE_SIZE = 500
 
 function filterValueKey(value: unknown) {
   if (typeof value === 'string') {
@@ -140,6 +140,33 @@ function buildFilterOptions(
   selectedValues.forEach(addOption)
 
   return [...byKey.values()].sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'))
+}
+
+async function loadAllScreenerRows(
+  payload: Record<string, unknown>,
+  pageSize: number = SCREENER_BULK_PAGE_SIZE,
+) {
+  const firstPage = await runScreenerQuery({
+    ...payload,
+    pagination: { page: 1, page_size: pageSize },
+  })
+  if (firstPage.total_rows <= firstPage.rows.length) {
+    return firstPage.rows
+  }
+
+  const rows = [...firstPage.rows]
+  const totalPages = Math.max(1, Math.ceil(firstPage.total_rows / pageSize))
+  for (let page = 2; page <= totalPages; page += 1) {
+    const nextPage = await runScreenerQuery({
+      ...payload,
+      pagination: { page, page_size: pageSize },
+    })
+    if (!nextPage.rows.length) {
+      break
+    }
+    rows.push(...nextPage.rows)
+  }
+  return rows.slice(0, firstPage.total_rows)
 }
 
 function statusClass(value: unknown) {
@@ -432,21 +459,20 @@ export default function WatchlistsPage() {
   const [isCopyingItems, setIsCopyingItems] = useState(false)
   const [moveTargetWatchlistId, setMoveTargetWatchlistId] = useState('')
   const [isMovingItems, setIsMovingItems] = useState(false)
+  const [isExporting, setIsExporting] = useState(false)
   const [instrumentSearch, setInstrumentSearch] = useState('')
   const [sharedInstrumentResults, setSharedInstrumentResults] = useState<SharedInstrumentRecord[]>([])
   const [selectedInstrumentId, setSelectedInstrumentId] = useState('')
   const [isSearchingInstruments, setIsSearchingInstruments] = useState(false)
   const [isAdding, setIsAdding] = useState(false)
   const [isBatchAdding, setIsBatchAdding] = useState(false)
+  const [currentPage, setCurrentPage] = useState(1)
   const [sortRules, setSortRules] = useState<Array<{ field: string; direction: string }>>([])
   const [notice, setNotice] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [sparklineMap, setSparklineMap] = useState<Record<string, SparklineCacheEntry>>({})
   const [reloadToken, setReloadToken] = useState(0)
-  const [copilotOpen, setCopilotOpen] = useState(false)
-  const [copilotLoading, setCopilotLoading] = useState(false)
-  const [copilotMessages, setCopilotMessages] = useState<CopilotMessage[]>([])
   const filterMenuRef = useRef<HTMLDivElement | null>(null)
   const groupMenuRef = useRef<HTMLDivElement | null>(null)
   const moreMenuRef = useRef<HTMLDivElement | null>(null)
@@ -459,6 +485,29 @@ export default function WatchlistsPage() {
   const resizeFrame = useRef<number | null>(null)
   const pendingResize = useRef<{ column: string; width: number } | null>(null)
   const batchFileInputRef = useRef<HTMLInputElement | null>(null)
+  const baseScreenerPayload = useMemo(() => {
+    if (!watchlistId) {
+      return null
+    }
+
+    const requestedFields = workingColumns.length ? [...workingColumns] : [primaryDisplayColumn]
+    if (workingGroupBy && workingGroupBy !== 'none' && !requestedFields.includes(workingGroupBy)) {
+      requestedFields.push(workingGroupBy)
+    }
+
+    return {
+      watchlist_id: watchlistId,
+      view_id: activeViewId || null,
+      selected_fields: requestedFields,
+      filters: workingFilters,
+      sort: sortRules,
+      group_by: workingGroupBy,
+    }
+  }, [activeViewId, primaryDisplayColumn, sortRules, watchlistId, workingColumns, workingFilters, workingGroupBy])
+  const screenerCriteriaKey = useMemo(
+    () => JSON.stringify(baseScreenerPayload || {}),
+    [baseScreenerPayload],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -561,12 +610,6 @@ export default function WatchlistsPage() {
   }, [watchlistId])
 
   useEffect(() => {
-    setCopilotOpen(false)
-    setCopilotMessages([])
-    setCopilotLoading(false)
-  }, [watchlistId])
-
-  useEffect(() => {
     function handleClick(event: MouseEvent) {
       const target = event.target as Node | null
       if (filterMenuOpen && filterMenuRef.current && target && !filterMenuRef.current.contains(target)) {
@@ -597,6 +640,7 @@ export default function WatchlistsPage() {
 
     getSharedInstruments({
       search: instrumentSearch,
+      asset_type: 'fund',
       limit: 12,
     })
       .then((results) => {
@@ -631,7 +675,7 @@ export default function WatchlistsPage() {
   }, [instrumentSearch, modalKind])
 
   useEffect(() => {
-    if (!watchlistDetail) {
+    if (!watchlistDetail || !baseScreenerPayload) {
       setScreenerResult(null)
       return
     }
@@ -641,18 +685,9 @@ export default function WatchlistsPage() {
 
     async function loadRows() {
       try {
-        const requestedFields = workingColumns.length ? [...workingColumns] : [primaryDisplayColumn]
-        if (workingGroupBy && workingGroupBy !== 'none' && !requestedFields.includes(workingGroupBy)) {
-          requestedFields.push(workingGroupBy)
-        }
         const result = await runScreenerQuery({
-          watchlist_id: watchlistId,
-          view_id: activeViewId || null,
-          selected_fields: requestedFields,
-          filters: workingFilters,
-          sort: sortRules,
-          group_by: workingGroupBy,
-          pagination: { page: 1, page_size: 50 },
+          ...baseScreenerPayload,
+          pagination: { page: currentPage, page_size: WATCHLIST_PAGE_SIZE },
         })
 
         if (!cancelled) {
@@ -673,10 +708,22 @@ export default function WatchlistsPage() {
     return () => {
       cancelled = true
     }
-  }, [activeViewId, watchlistDetail, workingColumns, workingFilters, workingGroupBy, sortRules, reloadToken])
+  }, [baseScreenerPayload, currentPage, reloadToken, watchlistDetail])
+
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [screenerCriteriaKey])
 
   const activeView =
     watchlistDetail?.views.find((item) => item.view_id === activeViewId) || watchlistDetail?.views[0] || null
+  const totalPages = useMemo(
+    () => Math.max(1, Math.ceil((screenerResult?.total_rows || 0) / WATCHLIST_PAGE_SIZE)),
+    [screenerResult?.total_rows],
+  )
+  const pageStart = screenerResult?.total_rows ? (currentPage - 1) * WATCHLIST_PAGE_SIZE + 1 : 0
+  const pageEnd = screenerResult?.total_rows
+    ? Math.min(currentPage * WATCHLIST_PAGE_SIZE, screenerResult.total_rows)
+    : 0
   const visibleSparklineColumns = useMemo(
     () =>
       workingColumns.filter(
@@ -729,7 +776,7 @@ export default function WatchlistsPage() {
       const entries = await Promise.all(
         missingTargets.map(async ({ assetId, detailSubjectId }) => {
           try {
-            const chart = await getFundChart(detailSubjectId)
+            const chart = await getInstrumentChart(detailSubjectId)
             const points: FundChartPoint[] = chart.series[0]?.points?.slice(-rangeSize) ?? []
             return [assetId, { requestKey: sparklineRequestKey, points }] as const
           } catch (chartError) {
@@ -757,6 +804,15 @@ export default function WatchlistsPage() {
     }
   }, [screenerResult, sparklineMap, sparklineRequestKey, visibleSparklineColumns])
 
+  useEffect(() => {
+    if (!screenerResult) {
+      return
+    }
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages)
+    }
+  }, [currentPage, screenerResult, totalPages])
+
   async function handleBatchAddFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file || !watchlistId) {
@@ -780,6 +836,9 @@ export default function WatchlistsPage() {
         rows.map(async (row) => {
           try {
             const resolved = await resolveSharedInstrument(row.identifier)
+            if (resolved.asset_type !== 'fund') {
+              throw new Error(`${row.identifier} resolves to ${resolved.asset_type}, but watchlist currently supports funds only.`)
+            }
             resolvedAssetIds.add(resolved.asset_id)
           } catch (resolveError) {
             missingIdentifiers.push(row.identifier)
@@ -789,7 +848,7 @@ export default function WatchlistsPage() {
 
       if (missingIdentifiers.length) {
         throw new Error(
-          `Shared registry missing: ${missingIdentifiers.join(', ')}. Add them in Platform / Instruments first.`,
+          `Watchlist accepts shared-registry funds only. Check these identifiers in Platform / Instruments: ${missingIdentifiers.join(', ')}.`,
         )
       }
 
@@ -1058,18 +1117,17 @@ export default function WatchlistsPage() {
     }
 
     let cancelled = false
-    runScreenerQuery({
+    loadAllScreenerRows({
       watchlist_id: watchlistId,
       selected_fields: filterableFields.map((field) => field.field_key),
       filters: {},
       advanced_filters: null,
       sort: [],
       group_by: 'none',
-      pagination: { page: 1, page_size: 1000 },
     })
       .then((result) => {
         if (!cancelled) {
-          setFilterOptionRows(result.rows)
+          setFilterOptionRows(result)
         }
       })
       .catch(() => {
@@ -1081,7 +1139,7 @@ export default function WatchlistsPage() {
     return () => {
       cancelled = true
     }
-  }, [watchlistId, filterFieldKeySignature])
+  }, [watchlistId, filterFieldKeySignature, reloadToken])
 
   const filterOptionsByField = useMemo(() => {
     const options = new Map<string, FilterOption[]>()
@@ -1198,74 +1256,6 @@ export default function WatchlistsPage() {
   const allRowsSelected =
     allVisibleRowIds.length > 0 && allVisibleRowIds.every((assetId) => selectedRows.includes(assetId))
 
-  function openWatchlistCopilot() {
-    setCopilotOpen(true)
-    if (!copilotMessages.length) {
-      setCopilotMessages([
-        {
-          role: 'assistant',
-          content: `我可以基于当前 Watchlist「${activeWatchlist?.name || 'Current'}」的 view、筛选、分组和可见行来回答问题。`,
-          suggestions: [
-            '总结当前名单的更新与风险重点',
-            '找出最值得优先复核的产品',
-            '解释这页里表现和回撤最突出的对象',
-          ],
-        },
-      ])
-    }
-  }
-
-  async function handleSendWatchlistCopilot(question: string) {
-    if (!watchlistId) {
-      return
-    }
-    const userMessage: CopilotMessage = { role: 'user', content: question }
-    const history = [...copilotMessages, userMessage].map((message) => ({
-      role: message.role,
-      content: message.content,
-    }))
-    setCopilotMessages((current) => [...current, userMessage])
-    setCopilotLoading(true)
-    try {
-      const response = await chatWatchlistCopilot(watchlistId, {
-        question,
-        view_id: activeViewId || null,
-        selected_fields: ensureRequiredColumns(visibleColumns),
-        filters: workingFilters,
-        advanced_filters:
-          activeView?.default_advanced_filters && typeof activeView.default_advanced_filters === 'object'
-            ? activeView.default_advanced_filters
-            : null,
-        sort: sortRules,
-        group_by: workingGroupBy,
-        history,
-      })
-      setCopilotMessages((current) => [
-        ...current,
-        {
-          role: 'assistant',
-          content: response.answer,
-          citations: response.citations,
-          suggestions: response.suggestions,
-          generatedAt: response.generated_at,
-        },
-      ])
-    } catch (copilotError) {
-      setCopilotMessages((current) => [
-        ...current,
-        {
-          role: 'assistant',
-          content:
-            copilotError instanceof Error
-              ? copilotError.message
-              : 'Copilot is unavailable for this watchlist right now.',
-        },
-      ])
-    } finally {
-      setCopilotLoading(false)
-    }
-  }
-
   async function refreshWatchlistDetail(nextViewId?: string) {
     if (!watchlistId) {
       return
@@ -1278,6 +1268,27 @@ export default function WatchlistsPage() {
       setActiveViewId(nextId)
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Failed to refresh watchlist.')
+    }
+  }
+
+  async function handleDownloadCurrentView() {
+    if (!baseScreenerPayload || !screenerResult?.total_rows) {
+      setNotice('No visible rows to export.')
+      return
+    }
+
+    setIsExporting(true)
+    setMoreMenuOpen(false)
+    setError(null)
+    setNotice(null)
+    try {
+      const exportRows = await loadAllScreenerRows(baseScreenerPayload)
+      downloadCsv(['asset_id', ...visibleColumns], exportRows)
+      setNotice(`Exported ${exportRows.length} rows from the current watchlist view.`)
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : 'Failed to export watchlist view.')
+    } finally {
+      setIsExporting(false)
     }
   }
 
@@ -1525,7 +1536,7 @@ export default function WatchlistsPage() {
                 setError(null)
               }}
             >
-              Add Securities &amp; Indexes
+              Add Funds
             </button>
 
             <div className="watchlists-view-group">
@@ -1683,7 +1694,8 @@ export default function WatchlistsPage() {
                     <div>
                       <div className="watchlists-filter-title">Filters</div>
                       <div className="watchlists-filter-subtitle">
-                        Filter the current product pool by discrete fields and tags.
+                        Filter the current product pool by classification, research labels, and
+                        monitoring labels.
                       </div>
                     </div>
                     <button
@@ -1797,24 +1809,14 @@ export default function WatchlistsPage() {
                   <button
                     type="button"
                     className="watchlists-menu-item"
-                    onClick={() => {
-                      setMoreMenuOpen(false)
-                      if (screenerResult?.rows.length) {
-                        downloadCsv(['asset_id', ...visibleColumns], screenerResult.rows)
-                        setNotice('Current watchlist view exported.')
-                      } else {
-                        setNotice('No visible rows to export.')
-                      }
-                    }}
+                    disabled={isExporting}
+                    onClick={() => void handleDownloadCurrentView()}
                   >
-                    Download
+                    {isExporting ? 'Exporting...' : 'Download'}
                   </button>
                 </div>
               ) : null}
             </div>
-            <button type="button" className="watchlists-toolbar-button" onClick={openWatchlistCopilot}>
-              Copilot
-            </button>
             {selectedRows.length ? (
               <button
                 type="button"
@@ -1861,6 +1863,7 @@ export default function WatchlistsPage() {
                     await deleteWatchlistItems(watchlistId, selectedRows)
                     setSelectedRows([])
                     await refreshWatchlistDetail()
+                    setReloadToken(Date.now())
                     setNotice(`Deleted ${selectedRows.length} instruments.`)
                   } catch (deleteError) {
                     setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete instruments.')
@@ -2048,6 +2051,52 @@ export default function WatchlistsPage() {
             </tbody>
           </table>
         </div>
+        {screenerResult ? (
+          <div className="watchlists-pagination">
+            <div className="watchlists-pagination-summary">
+              {screenerResult.total_rows
+                ? `Showing ${pageStart}-${pageEnd} of ${screenerResult.total_rows} rows`
+                : 'No rows in this watchlist view'}
+            </div>
+            <div className="watchlists-pagination-actions">
+              <button
+                type="button"
+                className="watchlists-pagination-button"
+                disabled={currentPage <= 1}
+                onClick={() => setCurrentPage(1)}
+              >
+                First
+              </button>
+              <button
+                type="button"
+                className="watchlists-pagination-button"
+                disabled={currentPage <= 1}
+                onClick={() => setCurrentPage((page) => Math.max(page - 1, 1))}
+              >
+                Previous
+              </button>
+              <span className="watchlists-pagination-status">
+                {`Page ${currentPage} of ${totalPages}`}
+              </span>
+              <button
+                type="button"
+                className="watchlists-pagination-button"
+                disabled={currentPage >= totalPages}
+                onClick={() => setCurrentPage((page) => Math.min(page + 1, totalPages))}
+              >
+                Next
+              </button>
+              <button
+                type="button"
+                className="watchlists-pagination-button"
+                disabled={currentPage >= totalPages}
+                onClick={() => setCurrentPage(totalPages)}
+              >
+                Last
+              </button>
+            </div>
+          </div>
+        ) : null}
       </section>
 
       {modalKind === 'columns' ? (
@@ -2573,8 +2622,8 @@ export default function WatchlistsPage() {
           <div className="watchlists-modal watchlists-add-modal" onClick={(event) => event.stopPropagation()}>
             <div className="watchlists-modal-header">
               <div>
-                <div className="panel-title">Add Securities &amp; Indexes</div>
-                <div className="section-heading">Shared Registry Only</div>
+                <div className="panel-title">Add Funds</div>
+                <div className="section-heading">Shared Registry · Fund Only</div>
               </div>
               <button type="button" onClick={() => setModalKind(null)}>
                 Close
@@ -2588,13 +2637,13 @@ export default function WatchlistsPage() {
                   className="form-input"
                   value={instrumentSearch}
                   onChange={(event) => setInstrumentSearch(event.target.value)}
-                  placeholder="Ticker, ISIN, or instrument name"
+                  placeholder="Ticker, ISIN, or fund name"
                 />
               </div>
               <p className="watchlists-registry-note">
                 Watchlist only references existing assets from{' '}
-                <a href={`${PLATFORM_HOME_URL}/instruments`}>Platform / Instruments</a>. If the
-                instrument is not listed here, it does not exist in the shared registry yet.
+                <a href={`${PLATFORM_HOME_URL}/instruments`}>Platform / Instruments</a>. This release only accepts
+                `fund` assets. If the fund is not listed here, it does not exist in the shared registry yet.
               </p>
               {selectedSharedInstrument ? (
                 <div className="watchlists-registry-selected">
@@ -2633,8 +2682,8 @@ export default function WatchlistsPage() {
                 {!isSearchingInstruments && !sharedInstrumentResults.length ? (
                   <div className="empty-state">
                     {instrumentSearch.trim()
-                      ? `Instrument "${instrumentSearch.trim()}" does not exist in the shared registry.`
-                      : 'No instruments are available in the shared registry.'}
+                      ? `Fund "${instrumentSearch.trim()}" does not exist in the shared registry.`
+                      : 'No fund instruments are available in the shared registry.'}
                   </div>
                 ) : null}
               </div>
@@ -2691,16 +2740,6 @@ export default function WatchlistsPage() {
         </div>
       ) : null}
 
-      <CopilotDrawer
-        open={copilotOpen}
-        title="Watchlist Copilot"
-        subtitle={activeWatchlist?.name || 'Current watchlist'}
-        loading={copilotLoading}
-        messages={copilotMessages}
-        placeholder="Ask about this watchlist..."
-        onClose={() => setCopilotOpen(false)}
-        onSend={(message) => void handleSendWatchlistCopilot(message)}
-      />
     </div>
   )
 }

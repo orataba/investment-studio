@@ -19,6 +19,7 @@ def test_taxonomy_create_node_assignment_round_trip(client):
     taxonomy_payload = taxonomy_response.json()
     assert taxonomy_payload["taxonomy_id"].startswith("tax-risk-sleeves")
     assert taxonomy_payload["planning_enabled"] is True
+    assert taxonomy_payload["root_default_target_dimension"] == "weight"
 
     node_response = client.post(
         f"/api/portfolios/yungu/taxonomies/{taxonomy_payload['taxonomy_id']}/nodes",
@@ -272,11 +273,13 @@ def test_taxonomy_update_node_and_assignment_round_trip(client):
         json={
             "name": "Editable Planning Axis 2",
             "purpose": "Updated purpose",
+            "root_default_target_dimension": "risk_budget",
         },
     )
     assert update_taxonomy_response.status_code == 200
     assert update_taxonomy_response.json()["name"] == "Editable Planning Axis 2"
     assert update_taxonomy_response.json()["purpose"] == "Updated purpose"
+    assert update_taxonomy_response.json()["root_default_target_dimension"] == "risk_budget"
 
     update_node_response = client.patch(
         f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/nodes/{child_node_id}",
@@ -354,7 +357,7 @@ def test_planning_taxonomy_node_default_target_and_cash_bucket_assignment_round_
     assert assignment_response.json()["target_scope"] == "cash_bucket"
 
 
-def test_target_set_accepts_non_normalized_totals_for_levered_scope(client):
+def test_target_set_accepts_levered_weight_totals_with_normalized_risk_share(client):
     taxonomy_response = client.post(
         "/api/portfolios/yungu/taxonomies",
         json={
@@ -394,7 +397,7 @@ def test_target_set_accepts_non_normalized_totals_for_levered_scope(client):
                 {
                     "taxonomy_node_id": second_child_id,
                     "target_weight": 0.3,
-                    "target_risk_share": 0.35,
+                    "target_risk_share": 0.2,
                 },
             ],
         },
@@ -410,7 +413,139 @@ def test_target_set_accepts_non_normalized_totals_for_levered_scope(client):
         if item["target_set_id"] == target_set_response.json()["target_set_id"]
     ]
     assert sum(item["target_weight"] for item in saved_lines) == pytest.approx(1.5)
-    assert sum(item["target_risk_share"] for item in saved_lines) == pytest.approx(1.15)
+    assert sum(item["target_risk_share"] for item in saved_lines) == pytest.approx(1.0)
+
+
+def test_target_set_rejects_non_normalized_risk_share_totals(client):
+    taxonomy_response = client.post(
+        "/api/portfolios/yungu/taxonomies",
+        json={
+            "name": "Risk Share Validation Axis",
+            "taxonomy_type": "custom",
+            "primary_assignment_scope": "instrument",
+            "planning_enabled": True,
+            "budgeting_level": "weight_and_risk_budget",
+        },
+    )
+    taxonomy_id = taxonomy_response.json()["taxonomy_id"]
+
+    first_child_response = client.post(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/nodes",
+        json={"node_name": "Sleeve One", "sort_order": 0},
+    )
+    second_child_response = client.post(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/nodes",
+        json={"node_name": "Sleeve Two", "sort_order": 1},
+    )
+    first_child_id = first_child_response.json()["taxonomy_node_id"]
+    second_child_id = second_child_response.json()["taxonomy_node_id"]
+
+    target_set_response = client.post(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/target-sets",
+        json={
+            "target_set_type": "saa",
+            "name": "Invalid Risk Share",
+            "weight_enabled": True,
+            "risk_budget_enabled": True,
+            "lines": [
+                {
+                    "taxonomy_node_id": first_child_id,
+                    "target_weight": 1.2,
+                    "target_risk_share": 0.8,
+                },
+                {
+                    "taxonomy_node_id": second_child_id,
+                    "target_weight": 0.3,
+                    "target_risk_share": 0.35,
+                },
+            ],
+        },
+    )
+    assert target_set_response.status_code == 400
+    assert "sum to 100%" in target_set_response.json()["detail"]
+
+
+def test_target_set_scope_uses_effective_assignment_periods(client):
+    taxonomy_response = client.post(
+        "/api/portfolios/yungu/taxonomies",
+        json={
+            "name": "Effective Scope Axis",
+            "taxonomy_type": "custom",
+            "primary_assignment_scope": "instrument",
+            "planning_enabled": True,
+            "budgeting_level": "weight",
+        },
+    )
+    taxonomy_id = taxonomy_response.json()["taxonomy_id"]
+
+    root_response = client.post(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/nodes",
+        json={"node_name": "Leaf Sleeve", "sort_order": 0},
+    )
+    root_node_id = root_response.json()["taxonomy_node_id"]
+
+    first_assignment_response = client.post(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/assignments",
+        json={
+            "target_scope": "instrument",
+            "target_entity_id": "equity-us-abbv",
+            "taxonomy_node_id": root_node_id,
+            "effective_from": "2026-01-01",
+            "effective_to": "2026-03-31",
+        },
+    )
+    assert first_assignment_response.status_code == 200
+
+    second_assignment_response = client.post(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/assignments",
+        json={
+            "target_scope": "instrument",
+            "target_entity_id": "fund-us-agg",
+            "taxonomy_node_id": root_node_id,
+            "effective_from": "2026-04-01",
+        },
+    )
+    assert second_assignment_response.status_code == 200
+
+    target_set_response = client.post(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/target-sets",
+        json={
+            "comparator_taxonomy_node_id": root_node_id,
+            "target_set_type": "saa",
+            "name": "Future Member Scope",
+            "effective_from": "2026-04-01",
+            "weight_enabled": True,
+            "risk_budget_enabled": False,
+            "lines": [
+                {
+                    "target_member_type": "instrument",
+                    "target_member_id": "fund-us-agg",
+                    "target_weight": 1.0,
+                }
+            ],
+        },
+    )
+    assert target_set_response.status_code == 200
+
+    catalog_response = client.get("/api/portfolios/yungu/taxonomies")
+    assert catalog_response.status_code == 200
+    saved_lines = [
+        item
+        for item in catalog_response.json()["target_set_lines"]
+        if item["target_set_id"] == target_set_response.json()["target_set_id"]
+    ]
+    assert saved_lines == [
+        {
+            "target_line_id": saved_lines[0]["target_line_id"],
+            "target_set_id": target_set_response.json()["target_set_id"],
+            "taxonomy_node_id": None,
+            "target_member_type": "instrument",
+            "target_member_id": "fund-us-agg",
+            "target_weight": 1.0,
+            "target_risk_share": None,
+            "notes": None,
+        }
+    ]
 
 
 def test_deleting_default_planning_taxonomy_clears_pointer(client):
@@ -611,7 +746,7 @@ def test_leaf_scope_target_set_accepts_instrument_and_cash_members(client):
                     "target_member_type": "instrument",
                     "target_member_id": "equity-us-abbv",
                     "target_weight": 0.45,
-                    "target_risk_share": 0.5,
+                    "target_risk_share": 0.75,
                 },
                 {
                     "target_member_type": "instrument",
@@ -623,7 +758,7 @@ def test_leaf_scope_target_set_accepts_instrument_and_cash_members(client):
                     "target_member_type": "cash_bucket",
                     "target_member_id": "cash-usd-main",
                     "target_weight": 0.2,
-                    "target_risk_share": 0.25,
+                    "target_risk_share": 0.0,
                 },
             ],
         },
@@ -639,7 +774,11 @@ def test_leaf_scope_target_set_accepts_instrument_and_cash_members(client):
     ]
     assert {item["target_member_type"] for item in saved_lines} == {"instrument", "cash_bucket"}
     assert sum(item["target_weight"] for item in saved_lines) == pytest.approx(1.0)
-    assert sum(item["target_risk_share"] for item in saved_lines) == pytest.approx(1.0)
+    assert sum(
+        item["target_risk_share"] for item in saved_lines if item["target_member_type"] != "cash_bucket"
+    ) == pytest.approx(1.0)
+    cash_line = next(item for item in saved_lines if item["target_member_type"] == "cash_bucket")
+    assert cash_line["target_risk_share"] == pytest.approx(0.0)
 
 
 def test_target_set_requires_full_scope_and_blocks_referenced_node_move(client):

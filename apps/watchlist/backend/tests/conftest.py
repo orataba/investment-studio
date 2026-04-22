@@ -15,6 +15,15 @@ BACKEND_ROOT_STR = str(BACKEND_ROOT)
 if BACKEND_ROOT_STR in sys.path:
     sys.path.remove(BACKEND_ROOT_STR)
 sys.path.insert(0, BACKEND_ROOT_STR)
+WORKSPACE_ROOT = BACKEND_ROOT.parents[2]
+ASSET_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "asset-core" / "python"
+ASSET_CORE_PYTHON_STR = str(ASSET_CORE_PYTHON)
+if ASSET_CORE_PYTHON_STR in sys.path:
+    sys.path.remove(ASSET_CORE_PYTHON_STR)
+sys.path.insert(0, ASSET_CORE_PYTHON_STR)
+
+from yungu_asset_core.db_models import SharedAssetBase
+from yungu_asset_core import instrument_store as shared_store
 
 TEST_SHARED_INSTRUMENTS = {
     "fund-us-agg": {
@@ -104,37 +113,39 @@ TEST_SHARED_INSTRUMENTS = {
 }
 
 
+def seed_shared_instrument(instrument: dict[str, object]) -> None:
+    from watchlist_app.db import session as session_module
+
+    target_asset_id = str(instrument["asset_id"])
+    existing_ids = [
+        item["asset_id"]
+        for item in shared_store.list_instruments(
+            session_module.get_session_factory(),
+            include_inactive=True,
+        )
+    ]
+    existing_instruments = [
+        detail
+        for asset_id in existing_ids
+        if str(asset_id) != target_asset_id
+        if (detail := shared_store.get_instrument(session_module.get_session_factory(), asset_id)) is not None
+    ]
+    shared_store.reset_store(
+        session_module.get_session_factory(),
+        {
+            "registry_name": shared_store.instrument_registry_name(
+                session_module.get_session_factory()
+            ),
+            "instruments": [*existing_instruments, instrument],
+        },
+    )
+
+
 def _run_alembic_upgrade(database_url: str) -> None:
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     config.set_main_option("sqlalchemy.url", database_url)
     command.upgrade(config, "head")
-
-
-def _shared_registry_fetch(path: str) -> dict[str, object]:
-    from app.services.shared_instrument_registry import SharedInstrumentRegistryNotFoundError
-
-    if path == "/api/instruments":
-        return {"instruments": list(TEST_SHARED_INSTRUMENTS.values())}
-    if path.startswith("/api/instruments/resolve?"):
-        _, query = path.split("?", 1)
-        parts = dict(item.split("=", 1) for item in query.split("&") if "=" in item)
-        identifier_value = parts.get("identifier_value", "").upper()
-        for item in TEST_SHARED_INSTRUMENTS.values():
-            identifiers = item.get("identifiers", [])
-            for identifier in identifiers:
-                if str(identifier.get("identifier_value") or "").upper() == identifier_value:
-                    return item
-        raise SharedInstrumentRegistryNotFoundError()
-    prefix = "/api/instruments/"
-    if path.startswith(prefix):
-        asset_id = path[len(prefix) :]
-        record = TEST_SHARED_INSTRUMENTS.get(asset_id)
-        if record is None:
-            raise SharedInstrumentRegistryNotFoundError()
-        return record
-    raise RuntimeError(f"unsupported shared registry path: {path}")
-
 
 @pytest.fixture
 def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
@@ -142,19 +153,26 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("FTV2_DATABASE_URL", f"sqlite+pysqlite:///{database_path}")
     monkeypatch.setenv("FTV2_DATABASE_SCHEMA", "")
     monkeypatch.setenv("FTV2_EMAIL_SYNC_ENABLED", "false")
+    monkeypatch.setenv("FTV2_RECALC_WORKER_ENABLED", "false")
 
-    from app.core import settings as settings_module
-    from app.db import session as session_module
-    from app.services import shared_instrument_registry as shared_registry_module
+    from watchlist_app.core import settings as settings_module
+    from watchlist_app.db import session as session_module
 
     settings_module.get_settings.cache_clear()
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
 
     _run_alembic_upgrade(f"sqlite+pysqlite:///{database_path}")
-    monkeypatch.setattr(shared_registry_module, "_fetch_json", _shared_registry_fetch)
+    SharedAssetBase.metadata.create_all(bind=session_module.get_engine())
+    shared_store.reset_store(
+        session_module.get_session_factory(),
+        {
+            "registry_name": shared_store.DEFAULT_REGISTRY_NAME,
+            "instruments": list(TEST_SHARED_INSTRUMENTS.values()),
+        },
+    )
 
-    import app.main as main_module
+    import watchlist_app.main as main_module
 
     main_module = importlib.reload(main_module)
 

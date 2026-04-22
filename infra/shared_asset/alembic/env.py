@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import os
+import sys
+from logging.config import fileConfig
+from pathlib import Path
+
+from alembic import context
+from sqlalchemy import engine_from_config, pool, text
+
+
+WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
+ASSET_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "asset-core" / "python"
+asset_core_path = str(ASSET_CORE_PYTHON)
+if asset_core_path not in sys.path:
+    sys.path.insert(0, asset_core_path)
+
+from yungu_asset_core.db_models import SharedAssetBase
+
+
+config = context.config
+
+database_url = (
+    os.getenv("YUNGU_SHARED_ASSET_ALEMBIC_DATABASE_URL")
+    or os.getenv("YUNGU_SHARED_ASSET_DATABASE_URL")
+    or config.get_main_option("sqlalchemy.url")
+)
+if database_url:
+    config.set_main_option("sqlalchemy.url", database_url)
+
+raw_schema = os.getenv("YUNGU_SHARED_ASSET_SCHEMA", "shared_asset")
+schema = raw_schema.strip() if raw_schema and raw_schema.strip() else None
+
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+target_metadata = SharedAssetBase.metadata
+
+
+def run_migrations_offline() -> None:
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+        compare_type=True,
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online() -> None:
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+
+    with connectable.connect() as connection:
+        version_table_schema = None
+        if schema and connection.dialect.name == "postgresql":
+            connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+            connection.commit()
+            connection.execute(text(f'SET search_path TO "{schema}", public'))
+            connection.commit()
+            version_table_schema = schema
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+            version_table_schema=version_table_schema,
+        )
+
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()

@@ -1,0 +1,554 @@
+from __future__ import annotations
+
+from collections.abc import Sequence
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any
+
+from watchlist_app.db.models.read_models import AssetChartReadModel, WatchlistRowReadModel
+from watchlist_app.db.models.watchlists import InstrumentAttributeValue, WatchlistView
+
+
+def _serialize_scalar(value: object) -> object:
+    if isinstance(value, datetime):
+        return value.isoformat().replace("+00:00", "Z")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    return value
+
+
+def serialize_payload(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): serialize_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [serialize_payload(item) for item in value]
+    return _serialize_scalar(value)
+
+
+def collapse_latest_attribute_values(
+    values: Sequence[InstrumentAttributeValue],
+) -> dict[str, object]:
+    latest: dict[str, object] = {}
+    for value in values:
+        if value.attribute_key not in latest:
+            latest[value.attribute_key] = value.value_json
+    return latest
+
+
+def watchlist_row_to_dict(record: WatchlistRowReadModel) -> dict[str, object]:
+    return {
+        "watchlist_id": record.watchlist_id,
+        "asset_id": record.asset_id,
+        "asset_type": record.asset_type,
+        "asset_name": record.asset_name,
+        "share_class": record.share_class,
+        "ticker_or_isin": record.ticker_or_isin,
+        "management_firm_name": record.management_firm_name,
+        "category_name": record.category_name,
+        "overall_rating": _serialize_scalar(record.overall_rating),
+        "analyst_stance": record.analyst_stance,
+        "aum": _serialize_scalar(record.aum),
+        "return_ytd": _serialize_scalar(record.return_ytd),
+        "return_1w": _serialize_scalar(record.return_1w),
+        "return_1m": _serialize_scalar(record.return_1m),
+        "return_1y": _serialize_scalar(record.return_1y),
+        "annualized_return": _serialize_scalar(record.annualized_return),
+        "return_3y": _serialize_scalar(record.return_3y),
+        "return_5y": _serialize_scalar(record.return_5y),
+        "max_drawdown": _serialize_scalar(record.max_drawdown),
+        "volatility": _serialize_scalar(record.volatility),
+        "sharpe_ratio": _serialize_scalar(record.sharpe_ratio),
+        "duration": _serialize_scalar(record.duration),
+        "yield_to_worst": _serialize_scalar(record.yield_to_worst),
+        "avg_credit_rating": record.avg_credit_rating,
+        "attributes": serialize_payload(record.attributes_json),
+        "exposure_updated_at": _serialize_scalar(record.exposure_updated_at),
+        "last_nav_date": _serialize_scalar(record.last_nav_date),
+        "data_freshness_status": record.data_freshness_status,
+        "last_fact_update_at": _serialize_scalar(record.last_fact_update_at),
+        "last_recalculated_at": _serialize_scalar(record.last_recalculated_at),
+        "last_successful_snapshot_at": _serialize_scalar(
+            record.last_successful_snapshot_at
+        ),
+        "staleness_reason": record.staleness_reason,
+    }
+
+
+def _extract_latest_quote(payload: object) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+    series = payload.get("series")
+    if not isinstance(series, list):
+        return None
+    for candidate in series:
+        if not isinstance(candidate, dict):
+            continue
+        points = candidate.get("points")
+        if not isinstance(points, list) or not points:
+            continue
+        latest_point = points[-1]
+        if not isinstance(latest_point, dict):
+            continue
+        value = latest_point.get("value")
+        quote_date = latest_point.get("date")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        return {
+            "latest_quote": float(value),
+            "latest_quote_date": quote_date[:10] if isinstance(quote_date, str) and quote_date else None,
+        }
+    return None
+
+
+def build_latest_quote_overrides(
+    charts: Sequence[AssetChartReadModel] | None,
+) -> dict[str, dict[str, object]]:
+    overrides: dict[str, dict[str, object]] = {}
+    for chart in charts or []:
+        latest_quote = _extract_latest_quote(chart.payload_json)
+        if latest_quote is not None:
+            overrides[chart.asset_id] = latest_quote
+    return overrides
+
+
+def build_watchlist_row_materialization(
+    *,
+    watchlist_id: str,
+    asset_id: str,
+    asset_type: str,
+    source_row: WatchlistRowReadModel | None,
+    display_name: str | None,
+    share_class: str | None,
+    ticker_or_isin: str | None,
+    management_firm_name: str | None,
+    category_name: str | None,
+    overall_rating: int | None,
+    analyst_stance: str | None,
+    attributes: dict[str, object],
+    freshness_status: str,
+    last_fact_update_at: datetime | None,
+    last_recalculated_at: datetime | None,
+    last_successful_snapshot_at: datetime | None,
+    staleness_reason: str | None,
+    ) -> dict[str, object]:
+    if source_row is None:
+        payload: dict[str, object] = {
+            "asset_name": display_name or asset_id.upper(),
+            "share_class": share_class,
+            "ticker_or_isin": ticker_or_isin,
+            "management_firm_name": management_firm_name,
+            "category_name": category_name,
+            "overall_rating": overall_rating,
+            "analyst_stance": analyst_stance or "Unrated",
+            "aum": None,
+            "return_ytd": None,
+            "return_1w": None,
+            "return_1m": None,
+            "return_1y": None,
+            "annualized_return": None,
+            "return_3y": None,
+            "return_5y": None,
+            "max_drawdown": None,
+            "volatility": None,
+            "sharpe_ratio": None,
+            "duration": None,
+            "yield_to_worst": None,
+            "avg_credit_rating": None,
+            "exposure_updated_at": None,
+            "last_nav_date": None,
+        }
+    else:
+        payload = {
+            "asset_name": source_row.asset_name,
+            "share_class": source_row.share_class,
+            "ticker_or_isin": source_row.ticker_or_isin,
+            "management_firm_name": source_row.management_firm_name,
+            "category_name": source_row.category_name,
+            "overall_rating": source_row.overall_rating,
+            "analyst_stance": source_row.analyst_stance,
+            "aum": source_row.aum,
+            "return_ytd": source_row.return_ytd,
+            "return_1w": source_row.return_1w,
+            "return_1m": source_row.return_1m,
+            "return_1y": source_row.return_1y,
+            "annualized_return": source_row.annualized_return,
+            "return_3y": source_row.return_3y,
+            "return_5y": source_row.return_5y,
+            "max_drawdown": source_row.max_drawdown,
+            "volatility": source_row.volatility,
+            "sharpe_ratio": source_row.sharpe_ratio,
+            "duration": source_row.duration,
+            "yield_to_worst": source_row.yield_to_worst,
+            "avg_credit_rating": source_row.avg_credit_rating,
+            "exposure_updated_at": source_row.exposure_updated_at,
+            "last_nav_date": source_row.last_nav_date,
+        }
+
+    payload["watchlist_id"] = watchlist_id
+    payload["asset_id"] = asset_id
+    payload["asset_type"] = asset_type
+    payload["asset_name"] = display_name or payload.get("asset_name") or asset_id.upper()
+    payload["share_class"] = share_class or payload.get("share_class")
+    payload["ticker_or_isin"] = ticker_or_isin or payload.get("ticker_or_isin")
+    payload["management_firm_name"] = management_firm_name or payload.get("management_firm_name")
+    payload["category_name"] = category_name or payload.get("category_name")
+    if payload.get("overall_rating") is None:
+        payload["overall_rating"] = overall_rating
+    payload["analyst_stance"] = payload.get("analyst_stance") or analyst_stance or "Unrated"
+    payload["attributes"] = attributes
+    payload["data_freshness_status"] = freshness_status
+    payload["last_fact_update_at"] = last_fact_update_at
+    payload["last_recalculated_at"] = last_recalculated_at
+    payload["last_successful_snapshot_at"] = last_successful_snapshot_at
+    payload["staleness_reason"] = staleness_reason
+    return payload
+
+
+def _resolve_field_value(row: dict[str, object], field: str) -> object:
+    if field.startswith("attr."):
+        return row.get("attributes", {}).get(field.split(".", 1)[1])
+    return row.get(field)
+
+
+def _normalize_string(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return " ".join(str(value).replace("_", " ").lower().split())
+
+
+def _matches_operator(left: object, operator: str, right: object) -> bool:
+    if operator == "exists":
+        return left is not None
+    if operator == "not_in":
+        values = right if isinstance(right, list) else [right]
+        if left is None:
+            return None not in values
+        return all(_matches_operator(left, "neq", item) for item in values)
+    if left is None:
+        return False
+    if operator == "eq":
+        if isinstance(left, list):
+            return any(_matches_operator(item, "eq", right) for item in left)
+        if isinstance(left, str) or isinstance(right, str):
+            return _normalize_string(left) == _normalize_string(right)
+        return left == right
+    if operator == "neq":
+        if isinstance(left, list):
+            return all(_matches_operator(item, "neq", right) for item in left)
+        if isinstance(left, str) or isinstance(right, str):
+            return _normalize_string(left) != _normalize_string(right)
+        return left != right
+    if operator == "contains":
+        if isinstance(left, list):
+            return right in left
+        return _normalize_string(right) in _normalize_string(left)
+    if operator == "in":
+        values = right if isinstance(right, list) else [right]
+        return any(_matches_operator(left, "eq", item) for item in values)
+    if operator == "gte":
+        return left >= right
+    if operator == "lte":
+        return left <= right
+    if operator == "gt":
+        return left > right
+    if operator == "lt":
+        return left < right
+    return False
+
+
+def _matches_advanced_filter(
+    row: dict[str, object],
+    node: dict[str, object] | None,
+) -> bool:
+    if not node:
+        return True
+    if node.get("type") == "rule":
+        return _matches_operator(
+            _resolve_field_value(row, str(node.get("field"))),
+            str(node.get("operator")),
+            node.get("value"),
+        )
+    logic = str(node.get("logic", "and")).lower()
+    conditions = node.get("conditions", [])
+    results = [
+        _matches_advanced_filter(row, condition)
+        for condition in conditions
+        if isinstance(condition, dict)
+    ]
+    if not results:
+        return True
+    return any(results) if logic == "or" else all(results)
+
+
+def _apply_filters(
+    rows: list[dict[str, object]],
+    filters: dict[str, list[object]],
+) -> list[dict[str, object]]:
+    filtered = rows
+    for field, allowed_values in filters.items():
+        if not allowed_values:
+            continue
+        filtered = [
+            row
+            for row in filtered
+            if _resolve_field_value(row, field) is not None
+            and any(
+                _matches_operator(_resolve_field_value(row, field), "eq", value)
+                for value in allowed_values
+            )
+        ]
+    return filtered
+
+
+def _apply_sort(
+    rows: list[dict[str, object]],
+    sort_rules: list[dict[str, str]],
+) -> list[dict[str, object]]:
+    sorted_rows = list(rows)
+    for rule in reversed(sort_rules):
+        field = rule.get("field")
+        reverse = rule.get("direction", "asc").lower() == "desc"
+        sorted_rows.sort(
+            key=lambda item: (
+                _resolve_field_value(item, field) is None,
+                _resolve_field_value(item, field),
+            ),
+            reverse=reverse,
+        )
+    return sorted_rows
+
+
+def _latest_datetime(rows: Sequence[dict[str, object]]) -> datetime | None:
+    candidates = []
+    for row in rows:
+        for key in (
+            "last_successful_snapshot_at",
+            "last_recalculated_at",
+            "last_fact_update_at",
+        ):
+            value = row.get(key)
+            if isinstance(value, datetime):
+                candidates.append(value)
+            elif isinstance(value, str) and value:
+                try:
+                    candidates.append(datetime.fromisoformat(value.replace("Z", "+00:00")))
+                except ValueError:
+                    continue
+    return max(candidates) if candidates else None
+
+
+def _latest_date(rows: Sequence[dict[str, object]]) -> date | None:
+    candidates: list[date] = []
+    for row in rows:
+        for key in ("latest_quote_date", "last_nav_date"):
+            value = row.get(key)
+            if isinstance(value, date):
+                candidates.append(value)
+                break
+            if isinstance(value, str) and value:
+                try:
+                    candidates.append(date.fromisoformat(value[:10]))
+                    break
+                except ValueError:
+                    continue
+    return max(candidates) if candidates else None
+
+
+def execute_watchlist_query(
+    *,
+    rows: Sequence[WatchlistRowReadModel],
+    charts: Sequence[AssetChartReadModel] | None = None,
+    payload: dict[str, object],
+    view: WatchlistView | None,
+) -> dict[str, object]:
+    serialized_rows = [watchlist_row_to_dict(item) for item in rows]
+    latest_quote_overrides = build_latest_quote_overrides(charts)
+    if latest_quote_overrides:
+        serialized_rows = [
+            {
+                **row,
+                **latest_quote_overrides.get(str(row.get("asset_id")), {}),
+            }
+            for row in serialized_rows
+        ]
+
+    filters_provided = "filters" in payload
+    filters = payload.get("filters") or {}
+    if not filters_provided and view is not None:
+        filters = view.default_filters_json or {}
+
+    advanced_filters_provided = "advanced_filters" in payload
+    advanced_filters = payload.get("advanced_filters")
+    if not advanced_filters_provided and view is not None:
+        advanced_filters = view.default_advanced_filter_json or None
+
+    sort_rules_provided = "sort" in payload
+    sort_rules = payload.get("sort") or []
+    if not sort_rules_provided and view is not None:
+        sort_rules = view.default_sort_json or []
+
+    filtered_rows = _apply_filters(serialized_rows, filters)
+    filtered_rows = [
+        row
+        for row in filtered_rows
+        if _matches_advanced_filter(row, advanced_filters)
+    ]
+    filtered_rows = _apply_sort(filtered_rows, sort_rules)
+
+    selected_fields_provided = "selected_fields" in payload
+    selected_fields = list(payload.get("selected_fields") or [])
+    if not selected_fields_provided and view is not None:
+        selected_fields = [
+            column.field_key
+            for column in sorted(view.columns, key=lambda item: item.display_order)
+            if column.is_visible
+        ]
+    if not selected_fields:
+        selected_fields = ["asset_name", "overall_rating", "category_name"]
+
+    projected_rows = [
+        {
+            "asset_id": row["asset_id"],
+            "asset_type": row["asset_type"],
+            **{field: _resolve_field_value(row, field) for field in selected_fields},
+        }
+        for row in filtered_rows
+    ]
+
+    group_by_provided = "group_by" in payload
+    group_by = payload.get("group_by")
+    if not group_by_provided and view is not None:
+        group_by = view.default_group_by or "none"
+
+    groups: list[dict[str, object]] = []
+    if group_by and group_by != "none":
+        buckets: dict[str, int] = {}
+        for row in filtered_rows:
+            bucket = str(_resolve_field_value(row, group_by) or "Unspecified")
+            buckets[bucket] = buckets.get(bucket, 0) + 1
+        groups = [
+            {"group_value": key, "row_count": value}
+            for key, value in sorted(buckets.items())
+        ]
+
+    pagination = payload.get("pagination", {}) or {}
+    page = max(int(pagination.get("page", 1)), 1)
+    page_size = max(int(pagination.get("page_size", 50)), 1)
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    stale_statuses = {"stale", "pending_recalc", "partial"}
+    stale_row_count = sum(
+        1 for row in filtered_rows if row.get("data_freshness_status") in stale_statuses
+    )
+
+    return {
+        "rows": projected_rows[start:end],
+        "groups": groups,
+        "total_rows": len(projected_rows),
+        "stale_row_count": stale_row_count,
+        "snapshot_metadata": {
+            "as_of_date": _serialize_scalar(_latest_date(filtered_rows)),
+            "methodology_version": "watchlist-row/v1",
+            "source_cutoff_at": _serialize_scalar(_latest_datetime(filtered_rows)),
+            "is_current": True,
+            "advanced_filter_applied": advanced_filters is not None,
+        },
+    }
+
+
+def default_fund_summary_payload(
+    asset_id: str,
+    instrument_attributes: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "asset_id": asset_id,
+        "fund_name": "Sample Fund",
+        "ticker_or_isin": asset_id.upper(),
+        "rating_as_of": "2026-04-10",
+        "category_name": "Unclassified",
+        "overall_rating": None,
+        "analyst_stance": "Unrated",
+        "instrument_attributes": instrument_attributes or {},
+        "key_stats": [],
+        "freshness": {
+            "data_freshness_status": "unavailable",
+            "last_fact_update_at": None,
+            "last_recalculated_at": None,
+            "last_successful_snapshot_at": None,
+            "staleness_reason": "No read model materialized yet.",
+        },
+        "quick_monitoring_items": [],
+        "tabs": ["summary"],
+    }
+
+
+def default_fund_chart_payload(asset_id: str) -> dict[str, object]:
+    return {
+        "asset_id": asset_id,
+        "base_series_type": "nav",
+        "currency": "USD",
+        "date_range": None,
+        "series": [],
+        "available_compare_targets": [],
+    }
+
+
+def default_fund_performance_payload() -> dict[str, object]:
+    return {
+        "growth_chart_series": [],
+        "annual_returns": [],
+        "trailing_returns": [],
+        "ranking": None,
+        "snapshot_metadata": None,
+    }
+
+
+def default_fund_risk_payload() -> dict[str, object]:
+    return {
+        "risk_overview": None,
+        "scatter_points": [],
+        "risk_metrics": [],
+        "drawdown_summary": None,
+        "risk_structure": {"rows": []},
+        "current_watch": {"overall_level": None, "rows": [], "note": None},
+        "change_monitor": {"rows": [], "note": None},
+        "snapshot_metadata": None,
+    }
+
+
+def default_fund_exposure_summary_payload() -> dict[str, object]:
+    return {
+        "allocation_blocks": {},
+        "style_box": None,
+        "liquidity_leverage": None,
+        "valuation_statistics": None,
+        "holdings_summary": None,
+        "snapshot_metadata": None,
+    }
+
+
+def default_fund_exposure_holdings_payload() -> dict[str, object]:
+    return {"rows": [], "page": 1, "page_size": 0, "total_rows": 0}
+
+
+def default_fund_rating_payload() -> dict[str, object]:
+    return {
+        "overall_rating": None,
+        "overall_score": None,
+        "analyst_stance": "Unrated",
+        "methodology_version": "house-rating/v1",
+        "dimension_scores": [],
+        "override_info": None,
+    }
+
+
+def merge_summary_attributes(
+    payload: dict[str, object],
+    attributes: dict[str, object],
+) -> dict[str, object]:
+    merged = dict(payload)
+    merged["instrument_attributes"] = attributes
+    return merged

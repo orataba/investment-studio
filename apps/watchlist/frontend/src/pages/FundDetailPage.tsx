@@ -1,4 +1,5 @@
 import {
+  Fragment,
   startTransition,
   useEffect,
   useRef,
@@ -8,10 +9,7 @@ import {
 } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
-import CopilotDrawer, { type CopilotMessage } from '../components/CopilotDrawer'
 import {
-  chatFundCopilot,
-  type FundAttributeValuesResponse,
   type FundChartPoint,
   type FundChartResponse,
   type FundDocumentsResponse,
@@ -27,31 +25,30 @@ import {
   type FundSummaryResponse,
   type FundExposureHoldingsResponse as FundPortfolioHoldingsResponse,
   type FundExposureResponse as FundPortfolioResponse,
+  type InstrumentAttributeValuesResponse,
   type InstrumentAttributeDefinition,
-  getFundInstrumentAttributes,
-  getFundChart,
-  getFundDocuments,
-  getFundExposureHoldings as getFundPortfolioHoldings,
-  getFundExposureSummary as getFundPortfolioSummary,
-  getFundLibrary,
-  getFundNavSeries,
-  getFundPeople,
-  getFundPerformance,
-  getFundPrice,
-  getFundRatings,
-  getFundResearch,
-  getFundRisk,
-  getFundSummary,
-  getFundStrategy,
-  updateFundInstrumentAttributes,
-  updateFundNavSeries,
-  updateFundNavSettings,
-  updateFundDocuments,
-  updateFundPeople,
-  updateFundPrice,
-  updateFundResearch,
-  updateFundStrategy,
-  triggerFundNavRefresh,
+  getInstrumentAttributes,
+  getInstrumentChart,
+  getInstrumentDocuments,
+  getInstrumentExposureHoldings as getInstrumentPortfolioHoldings,
+  getInstrumentExposureSummary as getInstrumentPortfolioSummary,
+  getInstrumentLibrary,
+  getInstrumentNavSeries,
+  getInstrumentPeople,
+  getInstrumentPerformance,
+  getInstrumentPrice,
+  getInstrumentRatings,
+  getInstrumentResearch,
+  getInstrumentRisk,
+  getInstrumentSummary,
+  getInstrumentStrategy,
+  updateInstrumentAttributes,
+  updateInstrumentNavSettings,
+  updateInstrumentDocuments,
+  updateInstrumentPeople,
+  updateInstrumentPrice,
+  updateInstrumentResearch,
+  updateInstrumentStrategy,
 } from '../lib/api'
 import {
   formatBoolean,
@@ -62,6 +59,7 @@ import {
   formatNumber,
   formatPercent,
 } from '../lib/format'
+import { PLATFORM_HOME_URL } from '../lib/navigation'
 
 type FundDetailBundle = {
   summary: FundSummaryResponse
@@ -158,6 +156,28 @@ type EditableConclusionRow = {
   status: string
 }
 
+type TimelineNoteImportance = 'low' | 'medium' | 'high'
+
+type ResearchTimelineNote = {
+  note_id: string
+  note_date: string
+  title: string
+  summary: string
+  body: string
+  importance: TimelineNoteImportance
+  tags: string[]
+}
+
+type TimelineNoteDraft = {
+  note_id: string
+  note_date: string
+  title: string
+  summary: string
+  body: string
+  importance: TimelineNoteImportance
+  tagsText: string
+}
+
 type PeopleDraft = {
   overviewRows: EditableKeyValueRow[]
   teamRows: EditableTeamRow[]
@@ -191,7 +211,14 @@ type ResearchDraft = {
   overviewRows: EditableKeyValueRow[]
   thesis: string
   conclusionRows: EditableConclusionRow[]
+  timelineNotes: ResearchTimelineNote[]
   noteRows: EditableListRow[]
+}
+
+type ChartTimelineNoteContextMenu = {
+  clientX: number
+  clientY: number
+  anchorDate: string
 }
 
 type PriceEditSection = 'ter' | 'fees' | 'policy'
@@ -443,6 +470,86 @@ function toTitleCase(value: string) {
 
 function makeRowId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function parseTimelineNoteImportance(value: unknown): TimelineNoteImportance {
+  return value === 'high' || value === 'medium' || value === 'low' ? value : 'medium'
+}
+
+function normalizeResearchTimelineNotes(notes: Array<Record<string, unknown>> | undefined) {
+  return (notes || [])
+    .map((row) => {
+      const noteDate = typeof row.note_date === 'string' ? row.note_date.slice(0, 10) : ''
+      if (!noteDate) {
+        return null
+      }
+      return {
+        note_id:
+          typeof row.note_id === 'string' && row.note_id.trim()
+            ? row.note_id
+            : makeRowId('timeline-note'),
+        note_date: noteDate,
+        title: typeof row.title === 'string' ? row.title : '',
+        summary: typeof row.summary === 'string' ? row.summary : '',
+        body: typeof row.body === 'string' ? row.body : '',
+        importance: parseTimelineNoteImportance(row.importance),
+        tags: Array.isArray(row.tags)
+          ? row.tags
+              .map((value) => (typeof value === 'string' ? value.trim() : ''))
+              .filter(Boolean)
+          : [],
+      } satisfies ResearchTimelineNote
+    })
+    .filter((row): row is ResearchTimelineNote => row !== null)
+    .sort(sortResearchTimelineNotes)
+}
+
+function sortResearchTimelineNotes(left: ResearchTimelineNote, right: ResearchTimelineNote) {
+  const dateCompare = right.note_date.localeCompare(left.note_date)
+  if (dateCompare !== 0) {
+    return dateCompare
+  }
+  return left.title.localeCompare(right.title)
+}
+
+function createTimelineNoteDraft(
+  noteDate: string,
+  note?: ResearchTimelineNote | null,
+): TimelineNoteDraft {
+  return {
+    note_id: note?.note_id || makeRowId('timeline-note'),
+    note_date: note?.note_date || noteDate,
+    title: note?.title || '',
+    summary: note?.summary || '',
+    body: note?.body || '',
+    importance: note?.importance || 'medium',
+    tagsText: note?.tags.join(', ') || '',
+  }
+}
+
+function serializeTimelineNoteDraft(draft: TimelineNoteDraft): ResearchTimelineNote {
+  return {
+    note_id: draft.note_id,
+    note_date: draft.note_date,
+    title: draft.title.trim(),
+    summary: draft.summary.trim(),
+    body: draft.body.trim(),
+    importance: draft.importance,
+    tags: draft.tagsText
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean),
+  }
+}
+
+function formatTimelineNoteImportance(importance: TimelineNoteImportance) {
+  if (importance === 'high') {
+    return 'High'
+  }
+  if (importance === 'low') {
+    return 'Low'
+  }
+  return 'Medium'
 }
 
 function getNumber(value: unknown) {
@@ -777,6 +884,7 @@ function toEditableResearchDraft(research: FundResearchResponse): ResearchDraft 
       evidence_ref: typeof row.evidence_ref === 'string' ? row.evidence_ref : '',
       status: typeof row.status === 'string' ? row.status : '',
     })),
+    timelineNotes: normalizeResearchTimelineNotes(research.timeline_notes),
     noteRows: (research.notes || []).map((value) => ({
       id: makeRowId('research-note'),
       value,
@@ -2266,7 +2374,7 @@ function renderStackRows(items: Record<string, unknown>) {
   ))
 }
 
-function getFundTagValuesList(values: Record<string, unknown>, key: string) {
+function getFrameworkValueList(values: Record<string, unknown>, key: string) {
   const value = values[key]
   if (Array.isArray(value)) {
     return value.map((item) => String(item).trim()).filter(Boolean)
@@ -2278,7 +2386,7 @@ function getFundTagValuesList(values: Record<string, unknown>, key: string) {
   return text ? [text] : []
 }
 
-function formatFundTagValue(value: unknown) {
+function formatFrameworkValue(value: unknown) {
   if (Array.isArray(value)) {
     const items = value.map((item) => String(item).trim()).filter(Boolean)
     return items.length ? items.join(', ') : '—'
@@ -2293,25 +2401,25 @@ function formatFundTagValue(value: unknown) {
   return text || '—'
 }
 
-function isFundTagOptionSelected(
-  attributeValues: FundAttributeValuesResponse | null,
+function isFrameworkOptionSelected(
+  attributeValues: InstrumentAttributeValuesResponse | null,
   definition: InstrumentAttributeDefinition,
   option: string,
 ) {
   if (!attributeValues) {
     return false
   }
-  const values = getFundTagValuesList(attributeValues.values, definition.attribute_key)
+  const values = getFrameworkValueList(attributeValues.values, definition.attribute_key)
   return values.includes(option)
 }
 
-function buildNextFundTagValue(
-  attributeValues: FundAttributeValuesResponse | null,
+function buildNextFrameworkValue(
+  attributeValues: InstrumentAttributeValuesResponse | null,
   definition: InstrumentAttributeDefinition,
   option: string,
 ) {
   const currentValues = attributeValues
-    ? getFundTagValuesList(attributeValues.values, definition.attribute_key)
+    ? getFrameworkValueList(attributeValues.values, definition.attribute_key)
     : []
   if (definition.data_type === 'multi_select') {
     return currentValues.includes(option)
@@ -2319,6 +2427,155 @@ function buildNextFundTagValue(
       : [...currentValues, option]
   }
   return option
+}
+
+type AttributeFrameworkDomain = InstrumentAttributeDefinition['domain_code']
+
+const ATTRIBUTE_DOMAIN_ORDER: AttributeFrameworkDomain[] = [
+  'classification',
+  'research',
+  'monitoring',
+]
+
+const ATTRIBUTE_DOMAIN_META: Record<
+  AttributeFrameworkDomain,
+  {
+    title: string
+    note: string
+    emptyState: string
+  }
+> = {
+  classification: {
+    title: 'Classification',
+    note: '先定义产品属于什么池子，再做筛选和比较。这里是分类树，不是研究标签。',
+    emptyState: 'Classification definitions are unavailable.',
+  },
+  research: {
+    title: 'Research Tags',
+    note: '基于 FOF 定性研究框架的标准化研究标签，用来解释产品特点和管理人画像。',
+    emptyState: 'Complete product classification first to unlock category-specific research tags.',
+  },
+  monitoring: {
+    title: 'Monitoring Assessment',
+    note: '持续观察产品风险行为、风格稳定性和研究透明度，用于后续跟踪与复核。',
+    emptyState: 'Complete product classification first to unlock category-specific monitoring labels.',
+  },
+}
+
+const ATTRIBUTE_GROUP_LABELS: Record<string, string> = {
+  taxonomy_identity: 'Identity',
+  taxonomy_path: 'Category Path',
+  research_coverage: 'Coverage',
+  research_process: 'Process & Construction',
+  research_style: 'Style Tags',
+  research_manager: 'Manager Assessment',
+  monitoring_risk: 'Risk Profile',
+  monitoring_regime: 'Regime Fit',
+  monitoring_operational: 'Operational Coverage',
+  custom: 'Custom',
+}
+
+function hasAttributeValue(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.some((item) => String(item ?? '').trim())
+  }
+  if (typeof value === 'boolean') {
+    return true
+  }
+  if (value == null) {
+    return false
+  }
+  return String(value).trim().length > 0
+}
+
+function definitionHasAssignedValue(
+  values: Record<string, unknown>,
+  definition: InstrumentAttributeDefinition,
+) {
+  return hasAttributeValue(values[definition.attribute_key])
+}
+
+function definitionMatchesApplicability(
+  definition: InstrumentAttributeDefinition,
+  values: Record<string, unknown>,
+) {
+  const applicabilityEntries = Object.entries(definition.applicability_json || {})
+  if (!applicabilityEntries.length) {
+    return true
+  }
+  return applicabilityEntries.every(([attributeKey, expectedValues]) => {
+    if (!expectedValues.length) {
+      return true
+    }
+    const currentValues = getFrameworkValueList(values, attributeKey)
+    if (!currentValues.length) {
+      return false
+    }
+    return expectedValues.some((candidate) => currentValues.includes(candidate))
+  })
+}
+
+function isClassificationComplete(values: Record<string, unknown>) {
+  return ['fund_regime', 'fund_category_l1', 'fund_category_l2', 'fund_category_l3'].every(
+    (attributeKey) => hasAttributeValue(values[attributeKey]),
+  )
+}
+
+function buildAttributeFrameworkSections(
+  attributeValues: InstrumentAttributeValuesResponse | null,
+) {
+  if (!attributeValues) {
+    return []
+  }
+
+  const values = attributeValues.values || {}
+  const classificationReady = isClassificationComplete(values)
+
+  return ATTRIBUTE_DOMAIN_ORDER.map((domain) => {
+    const definitions = [...attributeValues.definitions]
+      .filter((definition) => definition.domain_code === domain)
+      .filter(
+        (definition) =>
+          domain === 'classification' ||
+          definitionMatchesApplicability(definition, values) ||
+          definitionHasAssignedValue(values, definition),
+      )
+      .sort((left, right) => left.display_order - right.display_order || left.label.localeCompare(right.label))
+
+    const groups = definitions.reduce<
+      Array<{ groupCode: string; label: string; definitions: InstrumentAttributeDefinition[] }>
+    >((items, definition) => {
+      const groupCode = definition.group_code || 'custom'
+      const current = items.find((item) => item.groupCode === groupCode)
+      if (current) {
+        current.definitions.push(definition)
+        return items
+      }
+      return [
+        ...items,
+        {
+          groupCode,
+          label: ATTRIBUTE_GROUP_LABELS[groupCode] || formatLabel(groupCode),
+          definitions: [definition],
+        },
+      ]
+    }, [])
+
+    const emptyState =
+      domain === 'classification' || classificationReady
+        ? ATTRIBUTE_DOMAIN_META[domain].emptyState
+        : domain === 'research'
+          ? 'Complete product classification first to unlock category-specific research tags.'
+          : 'Complete product classification first to unlock category-specific monitoring labels.'
+
+    return {
+      domain,
+      title: ATTRIBUTE_DOMAIN_META[domain].title,
+      note: ATTRIBUTE_DOMAIN_META[domain].note,
+      emptyState,
+      groups,
+    }
+  })
 }
 
 function EmptyPanel({ title, note }: { title: string; note: string }) {
@@ -2342,6 +2599,7 @@ type FundDetailPageProps = {
 export default function FundDetailPage({ fundId: propFundId }: FundDetailPageProps = {}) {
   const { fundId: routeFundId = 'fax' } = useParams()
   const fundId = propFundId || routeFundId
+  const platformInstrumentsUrl = `${PLATFORM_HOME_URL}/instruments`
   const [bundle, setBundle] = useState<FundDetailBundle | null>(null)
   const [activeTab, setActiveTab] = useState<DetailTab>('quote')
   const [chartRange, setChartRange] = useState<ChartRange>('3Y')
@@ -2370,8 +2628,14 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [chartDisplayStyle, setChartDisplayStyle] = useState<ChartDisplayStyle>('mountain')
   const [chartScale, setChartScale] = useState<ChartScale>('linear')
   const [showDividendEvents, setShowDividendEvents] = useState(true)
+  const [showTimelineNoteEvents, setShowTimelineNoteEvents] = useState(true)
   const [showDrawdownPanel, setShowDrawdownPanel] = useState(true)
   const [openQuoteChartMenu, setOpenQuoteChartMenu] = useState<QuoteChartMenu | null>(null)
+  const [timelineNoteDraft, setTimelineNoteDraft] = useState<TimelineNoteDraft | null>(null)
+  const [timelineNoteCaptureMode, setTimelineNoteCaptureMode] = useState(false)
+  const [timelineNoteViewAnchorDate, setTimelineNoteViewAnchorDate] = useState<string | null>(null)
+  const [chartTimelineNoteContextMenu, setChartTimelineNoteContextMenu] =
+    useState<ChartTimelineNoteContextMenu | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshToken, setRefreshToken] = useState(0)
@@ -2391,23 +2655,26 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [savingSection, setSavingSection] = useState<string | null>(null)
   const [sectionNotice, setSectionNotice] = useState<string | null>(null)
   const [sectionError, setSectionError] = useState<string | null>(null)
-  const [copilotOpen, setCopilotOpen] = useState(false)
-  const [copilotLoading, setCopilotLoading] = useState(false)
-  const [copilotMessages, setCopilotMessages] = useState<CopilotMessage[]>([])
   const benchmarkDefaultSeededRef = useRef(false)
   const quoteChartMenuRef = useRef<HTMLDivElement | null>(null)
-  const fundTagPickerRef = useRef<HTMLDivElement | null>(null)
-  const [fundTagAttributes, setFundTagAttributes] = useState<FundAttributeValuesResponse | null>(null)
-  const [fundTagSavingKey, setFundTagSavingKey] = useState<string | null>(null)
-  const [openFundTagPickerKey, setOpenFundTagPickerKey] = useState<string | null>(null)
+  const productFrameworkPickerRef = useRef<HTMLDivElement | null>(null)
+  const timelineNoteContextMenuRef = useRef<HTMLDivElement | null>(null)
+  const [productFrameworkAttributes, setProductFrameworkAttributes] =
+    useState<InstrumentAttributeValuesResponse | null>(null)
+  const [productFrameworkSavingKey, setProductFrameworkSavingKey] = useState<string | null>(null)
+  const [openProductFrameworkPickerKey, setOpenProductFrameworkPickerKey] =
+    useState<string | null>(null)
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
       if (!quoteChartMenuRef.current?.contains(event.target as Node)) {
         setOpenQuoteChartMenu(null)
       }
-      if (!fundTagPickerRef.current?.contains(event.target as Node)) {
-        setOpenFundTagPickerKey(null)
+      if (!productFrameworkPickerRef.current?.contains(event.target as Node)) {
+        setOpenProductFrameworkPickerKey(null)
+      }
+      if (!timelineNoteContextMenuRef.current?.contains(event.target as Node)) {
+        setChartTimelineNoteContextMenu(null)
       }
     }
 
@@ -2427,20 +2694,20 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       try {
         const [summary, library, chart, performance, risk, portfolio, holdings, ratings, people, strategy, price, documents, research, navSeries] =
           await Promise.all([
-            getFundSummary(fundId),
-            getFundLibrary(),
-            getFundChart(fundId),
-            getFundPerformance(fundId),
-            getFundRisk(fundId),
-            getFundPortfolioSummary(fundId),
-            getFundPortfolioHoldings(fundId),
-            getFundRatings(fundId),
-            getFundPeople(fundId),
-            getFundStrategy(fundId),
-            getFundPrice(fundId),
-            getFundDocuments(fundId),
-            getFundResearch(fundId),
-            getFundNavSeries(fundId),
+            getInstrumentSummary(fundId),
+            getInstrumentLibrary(),
+            getInstrumentChart(fundId),
+            getInstrumentPerformance(fundId),
+            getInstrumentRisk(fundId),
+            getInstrumentPortfolioSummary(fundId),
+            getInstrumentPortfolioHoldings(fundId),
+            getInstrumentRatings(fundId),
+            getInstrumentPeople(fundId),
+            getInstrumentStrategy(fundId),
+            getInstrumentPrice(fundId),
+            getInstrumentDocuments(fundId),
+            getInstrumentResearch(fundId),
+            getInstrumentNavSeries(fundId),
           ])
 
         if (cancelled) {
@@ -2487,25 +2754,26 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   }, [fundId, refreshToken])
 
   useEffect(() => {
-    setCopilotOpen(false)
-    setCopilotMessages([])
-    setCopilotLoading(false)
+    setTimelineNoteDraft(null)
+    setTimelineNoteCaptureMode(false)
+    setTimelineNoteViewAnchorDate(null)
+    setChartTimelineNoteContextMenu(null)
   }, [fundId])
 
   useEffect(() => {
     let cancelled = false
-    setFundTagAttributes(null)
-    setOpenFundTagPickerKey(null)
+    setProductFrameworkAttributes(null)
+    setOpenProductFrameworkPickerKey(null)
 
-    async function loadFundTags() {
+    async function loadProductFramework() {
       try {
-        const response = await getFundInstrumentAttributes(fundId)
+        const response = await getInstrumentAttributes(fundId)
         if (!cancelled) {
-          setFundTagAttributes(response)
+          setProductFrameworkAttributes(response)
         }
       } catch {
         if (!cancelled) {
-          setFundTagAttributes({
+          setProductFrameworkAttributes({
             asset_id: fundId,
             definitions: [],
             values: {},
@@ -2514,7 +2782,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       }
     }
 
-    void loadFundTags()
+    void loadProductFramework()
 
     return () => {
       cancelled = true
@@ -2565,6 +2833,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   useEffect(() => {
     setChartHoverIndex(null)
     setChartHoverPanel(null)
+    setChartTimelineNoteContextMenu(null)
+    setTimelineNoteViewAnchorDate(null)
   }, [
     chartRange,
     quoteBasis,
@@ -2649,7 +2919,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       }
 
       try {
-        const response = await getFundNavSeries(benchmarkFundId)
+        const response = await getInstrumentNavSeries(benchmarkFundId)
         if (!cancelled) {
           setBenchmarkNavSeries(response)
         }
@@ -2711,7 +2981,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setSectionError(null)
     setSectionNotice(null)
     try {
-      await updateFundPeople(fundId, {
+      await updateInstrumentPeople(fundId, {
         payload: {
           overview: Object.fromEntries(
             peopleDraft.overviewRows
@@ -2747,7 +3017,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setSectionError(null)
     setSectionNotice(null)
     try {
-      await updateFundStrategy(fundId, {
+      await updateInstrumentStrategy(fundId, {
         payload: {
           summary: strategyDraft.summary.trim(),
           investment_objective: strategyDraft.investment_objective.trim(),
@@ -2775,7 +3045,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setSectionError(null)
     setSectionNotice(null)
     try {
-      await updateFundPrice(fundId, {
+      await updateInstrumentPrice(fundId, {
         payload: {
           overview: Object.fromEntries(
             priceDraft.overviewRows
@@ -2807,7 +3077,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setSectionError(null)
     setSectionNotice(null)
     try {
-      await updateFundDocuments(fundId, {
+      await updateInstrumentDocuments(fundId, {
         payload: {
           current_documents: documentsDraft.currentDocumentRows
             .filter((row) =>
@@ -2878,7 +3148,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setSectionError(null)
     setSectionNotice(null)
     try {
-      await updateFundResearch(fundId, {
+      await updateInstrumentResearch(fundId, {
         payload: {
           overview: Object.fromEntries(
             researchDraft.overviewRows
@@ -2893,6 +3163,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
               evidence_ref: row.evidence_ref.trim(),
               status: row.status.trim(),
             })),
+          timeline_notes: researchDraft.timelineNotes,
           notes: cleanListRows(researchDraft.noteRows),
         },
         updated_by: 'terminal_ui',
@@ -2907,16 +3178,132 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     }
   }
 
-  async function handleSaveFundTag(
+  function buildResearchPayloadWithTimelineNotes(nextTimelineNotes: ResearchTimelineNote[]) {
+    return {
+      overview: bundle?.research.overview || {},
+      thesis: bundle?.research.thesis || '',
+      conclusions: bundle?.research.conclusions || [],
+      timeline_notes: nextTimelineNotes,
+      notes: bundle?.research.notes || [],
+    }
+  }
+
+  function openTimelineNoteEditor(noteDate: string, note?: ResearchTimelineNote | null) {
+    setTimelineNoteDraft(createTimelineNoteDraft(noteDate, note))
+    setTimelineNoteViewAnchorDate(null)
+    setChartTimelineNoteContextMenu(null)
+    setTimelineNoteCaptureMode(false)
+    setOpenQuoteChartMenu(null)
+    setSectionError(null)
+    setSectionNotice(null)
+  }
+
+  function focusTimelineNoteInQuote(noteDate: string) {
+    setActiveTab('quote')
+    setChartRange('MAX')
+    setChartStartDate('')
+    setChartEndDate('')
+    setTimelineNoteViewAnchorDate(noteDate)
+    setChartTimelineNoteContextMenu(null)
+    setSectionError(null)
+    setQuoteActionNotice(`Research note anchored to ${formatDate(noteDate)}.`)
+  }
+
+  async function handleSaveTimelineNote() {
+    if (!bundle || !timelineNoteDraft) {
+      return
+    }
+    const serializedNote = serializeTimelineNoteDraft(timelineNoteDraft)
+    if (!serializedNote.note_date) {
+      setSectionError('Timeline notes require a valid note date.')
+      return
+    }
+    if (!serializedNote.title && !serializedNote.summary && !serializedNote.body) {
+      setSectionError('Add at least a title, summary, or note body before saving.')
+      return
+    }
+
+    setSavingSection('timeline_note')
+    setSectionError(null)
+    setSectionNotice(null)
+    try {
+      const nextNotes = [...timelineNotes.filter((note) => note.note_id !== serializedNote.note_id), serializedNote]
+        .sort(sortResearchTimelineNotes)
+      const response = await updateInstrumentResearch(fundId, {
+        payload: buildResearchPayloadWithTimelineNotes(nextNotes),
+        updated_by: 'terminal_ui',
+      })
+      const normalizedNotes = normalizeResearchTimelineNotes(response.timeline_notes)
+      setBundle((current) => (current ? { ...current, research: response } : current))
+      setResearchDraft((current) =>
+        current
+          ? {
+              ...current,
+              timelineNotes: normalizedNotes,
+            }
+          : current,
+      )
+      setTimelineNoteDraft(null)
+      setTimelineNoteViewAnchorDate(
+        findNearestChartPoint(visibleNavSeries, serializedNote.note_date)?.date || serializedNote.note_date,
+      )
+      setSectionNotice(`Saved note for ${formatDate(serializedNote.note_date)}.`)
+    } catch (saveError) {
+      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save timeline note.')
+    } finally {
+      setSavingSection(null)
+    }
+  }
+
+  async function handleDeleteTimelineNote(noteId: string) {
+    if (!bundle) {
+      return
+    }
+    setSavingSection('timeline_note')
+    setSectionError(null)
+    setSectionNotice(null)
+    try {
+      const nextNotes = timelineNotes.filter((note) => note.note_id !== noteId)
+      const response = await updateInstrumentResearch(fundId, {
+        payload: buildResearchPayloadWithTimelineNotes(nextNotes),
+        updated_by: 'terminal_ui',
+      })
+      const normalizedNotes = normalizeResearchTimelineNotes(response.timeline_notes)
+      setBundle((current) => (current ? { ...current, research: response } : current))
+      setResearchDraft((current) =>
+        current
+          ? {
+              ...current,
+              timelineNotes: normalizedNotes,
+            }
+          : current,
+      )
+      setTimelineNoteDraft((current) => (current?.note_id === noteId ? null : current))
+      setTimelineNoteViewAnchorDate((current) => {
+        if (!current) {
+          return current
+        }
+        const hasRemaining = normalizedNotes.some((note) => note.note_date === current)
+        return hasRemaining ? current : null
+      })
+      setSectionNotice('Timeline note removed.')
+    } catch (saveError) {
+      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to delete timeline note.')
+    } finally {
+      setSavingSection(null)
+    }
+  }
+
+  async function handleSaveProductFrameworkValue(
     definition: InstrumentAttributeDefinition,
     value: unknown,
     options?: { closePicker?: boolean },
   ) {
-    setFundTagSavingKey(definition.attribute_key)
+    setProductFrameworkSavingKey(definition.attribute_key)
     setSectionError(null)
     setSectionNotice(null)
     try {
-      const response = await updateFundInstrumentAttributes(fundId, {
+      const response = await updateInstrumentAttributes(fundId, {
         values: [
           {
             attribute_key: definition.attribute_key,
@@ -2924,7 +3311,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           },
         ],
       })
-      setFundTagAttributes(response)
+      setProductFrameworkAttributes(response)
       setBundle((current) =>
         current
           ? {
@@ -2940,50 +3327,25 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           : current,
       )
       if (options?.closePicker !== false) {
-        setOpenFundTagPickerKey(null)
+        setOpenProductFrameworkPickerKey(null)
       }
     } catch (saveError) {
-      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to update fund tags.')
+      setSectionError(
+        saveError instanceof Error ? saveError.message : 'Failed to update product framework labels.',
+      )
     } finally {
-      setFundTagSavingKey(null)
+      setProductFrameworkSavingKey(null)
     }
   }
 
   async function handleSaveNavSeries() {
-    if (!navDraft) {
-      return
-    }
-    setSavingSection('nav')
     setSectionError(null)
     setSectionNotice(null)
-    try {
-      await updateFundNavSeries(fundId, {
-        rows: navDraft.rows
-          .filter((row) => row.as_of_date.trim())
-          .map((row) => ({
-            as_of_date: row.as_of_date,
-            nav: row.deleted ? null : parseOptionalNumber(row.nav),
-            nav_with_dividend: row.deleted ? null : parseOptionalNumber(row.nav_with_dividend),
-            currency: row.currency || 'USD',
-            frequency: row.frequency || 'daily',
-            is_primary: row.is_primary,
-          })),
-        updated_by: 'terminal_ui',
-        source_record_id: navDraftSourceRecordId,
-        auto_recalculate: true,
-      })
-      await updateFundNavSettings(fundId, {
-        nav_basis_preference: navDraft.basisPreference,
-        updated_by: 'terminal_ui',
-      })
-      setEditingNav(false)
-      setSectionNotice('NAV series saved and recalculated.')
-      setRefreshToken((value) => value + 1)
-    } catch (saveError) {
-      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save NAV series.')
-    } finally {
-      setSavingSection(null)
-    }
+    setEditingNav(false)
+    setSectionError('Canonical NAV history is managed in Platform / Instruments.')
+    setQuoteActionNotice(
+      'Watchlist detail is read-only for canonical NAV history. Use Platform / Instruments to import or refresh shared market data.',
+    )
   }
 
   if (loading) {
@@ -3006,7 +3368,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     )
   }
 
-  const { summary, chart, performance, risk, portfolio, holdings, ratings, people, strategy, price, documents, navSeries } = bundle
+  const { summary, chart, performance, risk, portfolio, holdings, ratings, people, strategy, price, documents, research, navSeries } = bundle
+  const timelineNotes = normalizeResearchTimelineNotes(research.timeline_notes)
   const availableCurrencies = Array.from(
     new Set(
       [chart.currency, ...navSeries.rows.map((row) => row.currency || '')]
@@ -3294,6 +3657,67 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       }
     })
     .filter((marker): marker is { row: FundNavSeriesResponse['rows'][number]; x: number } => marker !== null)
+  const visibleTimelineNotes = !showTimelineNoteEvents
+    ? []
+    : timelineNotes.filter((note) => {
+      const windowStart = visibleNavSeries[0]?.date
+      const windowEnd = visibleNavSeries[visibleNavSeries.length - 1]?.date
+      if (!windowStart || !windowEnd) {
+        return false
+      }
+      return note.note_date >= windowStart && note.note_date <= windowEnd
+    })
+  const timelineNoteMarkerGroups = !showTimelineNoteEvents
+    ? []
+    : Array.from(
+      visibleTimelineNotes.reduce(
+        (
+          groups,
+          note,
+        ) => {
+          const anchorPoint = findNearestChartPoint(visibleNavSeries, note.note_date)
+          if (!anchorPoint) {
+            return groups
+          }
+          const positionedPoint = positionedChartPoints.find((point) => point.date === anchorPoint.date)
+          if (!positionedPoint) {
+            return groups
+          }
+          const existing = groups.get(anchorPoint.date)
+          if (existing) {
+            existing.notes.push(note)
+            return groups
+          }
+          groups.set(anchorPoint.date, {
+            anchorDate: anchorPoint.date,
+            x: positionedPoint.x,
+            notes: [note],
+          })
+          return groups
+        },
+        new Map<string, { anchorDate: string; x: number; notes: ResearchTimelineNote[] }>(),
+      ).values(),
+    ).sort((left, right) => left.anchorDate.localeCompare(right.anchorDate))
+  const hoveredTimelineNoteGroup =
+    hoveredNavPoint == null
+      ? null
+      : timelineNoteMarkerGroups.find((group) => group.anchorDate === hoveredNavPoint.date) || null
+  const selectedTimelineNoteGroup =
+    timelineNoteViewAnchorDate == null
+      ? null
+      : timelineNoteMarkerGroups.find((group) => group.anchorDate === timelineNoteViewAnchorDate) || null
+  const timelineNoteContextMenuStyle = chartTimelineNoteContextMenu
+    ? {
+        left:
+          typeof window === 'undefined'
+            ? chartTimelineNoteContextMenu.clientX
+            : Math.min(chartTimelineNoteContextMenu.clientX, window.innerWidth - 220),
+        top:
+          typeof window === 'undefined'
+            ? chartTimelineNoteContextMenu.clientY
+            : Math.min(chartTimelineNoteContextMenu.clientY, window.innerHeight - 160),
+      }
+    : undefined
   const hoverNavValue = displayedNavPoint?.value ?? null
   const hoverBenchmarkValue = displayedBenchmarkBasePoint?.value ?? null
   const hoverDrawdownValue = displayedDrawdownPoint?.value ?? null
@@ -3460,64 +3884,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       tone: summary.rating_as_of ? 'status-fresh' : 'status-pending',
     },
   ]
-  const fundTagDefinitions = fundTagAttributes?.definitions ?? []
+  const productFrameworkSections = buildAttributeFrameworkSections(productFrameworkAttributes)
 
-  function openFundCopilot() {
-    setCopilotOpen(true)
-    if (!copilotMessages.length) {
-      setCopilotMessages([
-        {
-          role: 'assistant',
-          content: `我可以基于当前产品的 ${TAB_LABELS[activeTab]}、Quote、Documents、Research 和 Monitoring 上下文来回答问题。`,
-          suggestions: [
-            '总结这只产品当前最需要关注的点',
-            '解释这只产品的最新净值和更新状态',
-            '基于 Documents 和 Research 起草一段研究摘要',
-          ],
-        },
-      ])
-    }
-  }
-
-  async function handleSendFundCopilot(question: string) {
-    const userMessage: CopilotMessage = { role: 'user', content: question }
-    const history = [...copilotMessages, userMessage].map((message) => ({
-      role: message.role,
-      content: message.content,
-    }))
-    setCopilotMessages((current) => [...current, userMessage])
-    setCopilotLoading(true)
-    try {
-      const response = await chatFundCopilot(fundId, {
-        question,
-        active_tab: activeTab,
-        history,
-      })
-      setCopilotMessages((current) => [
-        ...current,
-        {
-          role: 'assistant',
-          content: response.answer,
-          citations: response.citations,
-          suggestions: response.suggestions,
-          generatedAt: response.generated_at,
-        },
-      ])
-    } catch (copilotError) {
-      setCopilotMessages((current) => [
-        ...current,
-        {
-          role: 'assistant',
-          content:
-            copilotError instanceof Error
-              ? copilotError.message
-              : 'Copilot is unavailable for this instrument right now.',
-        },
-      ])
-    } finally {
-      setCopilotLoading(false)
-    }
-  }
   const monitoringAlertRows = [
     ...(navRefreshStatus?.message ? [navRefreshStatus.message] : []),
     ...(summary.freshness.staleness_reason ? [summary.freshness.staleness_reason] : []),
@@ -4489,17 +4857,16 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   )
   const evidenceReferenceSet = new Set(evidenceReferenceOptions.map((item) => item.toLowerCase()))
 
-  function updateChartHoverFromPointer(
+  function resolveChartPointerSelection(
     event: ReactMouseEvent<SVGSVGElement>,
     geometry: ChartGeometry,
-    panel: ChartHoverPanel,
   ) {
     if (scaledVisibleSeries.length < 2) {
-      return
+      return null
     }
     const rect = event.currentTarget.getBoundingClientRect()
     if (!rect.width) {
-      return
+      return null
     }
     const relativeX = ((event.clientX - rect.left) / rect.width) * geometry.width
     const relativeY = ((event.clientY - rect.top) / Math.max(rect.height, 1)) * geometry.height
@@ -4510,26 +4877,70 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       relativeY <= plotBounds.top ||
       relativeY >= plotBounds.bottom
     ) {
+      return null
+    }
+    const xRatio = (relativeX - plotBounds.left) / Math.max(plotBounds.width, 1)
+    const nextIndex = Math.round(xRatio * (scaledVisibleSeries.length - 1))
+    const resolvedIndex = Math.min(Math.max(nextIndex, 0), scaledVisibleSeries.length - 1)
+    return {
+      index: resolvedIndex,
+      point: scaledVisibleSeries[resolvedIndex],
+      cursor: {
+        xRatio: Math.min(Math.max(xRatio, 0), 1),
+        y: relativeY,
+      },
+    }
+  }
+
+  function updateChartHoverFromPointer(
+    event: ReactMouseEvent<SVGSVGElement>,
+    geometry: ChartGeometry,
+    panel: ChartHoverPanel,
+  ) {
+    const nextSelection = resolveChartPointerSelection(event, geometry)
+    if (!nextSelection) {
       clearChartHover()
       return
     }
-    const plottingWidth = plotBounds.width
-    const xRatio = (relativeX - plotBounds.left) / Math.max(plottingWidth, 1)
-    const rawIndex =
-      xRatio * (scaledVisibleSeries.length - 1)
-    const nextIndex = Math.round(rawIndex)
     setChartHoverPanel(panel)
-    setChartHoverCursor({
-      xRatio: Math.min(Math.max(xRatio, 0), 1),
-      y: relativeY,
-    })
-    setChartHoverIndex(Math.min(Math.max(nextIndex, 0), scaledVisibleSeries.length - 1))
+    setChartHoverCursor(nextSelection.cursor)
+    setChartHoverIndex(nextSelection.index)
   }
 
   function clearChartHover() {
     setChartHoverCursor(null)
     setChartHoverIndex(null)
     setChartHoverPanel(null)
+  }
+
+  function handlePrimaryChartClick(event: ReactMouseEvent<SVGSVGElement>) {
+    if (!timelineNoteCaptureMode) {
+      return
+    }
+    const selection = resolveChartPointerSelection(event, PRIMARY_CHART_GEOMETRY)
+    if (!selection) {
+      return
+    }
+    setChartHoverPanel('primary')
+    setChartHoverCursor(selection.cursor)
+    setChartHoverIndex(selection.index)
+    openTimelineNoteEditor(selection.point.date)
+  }
+
+  function handlePrimaryChartContextMenu(event: ReactMouseEvent<SVGSVGElement>) {
+    const selection = resolveChartPointerSelection(event, PRIMARY_CHART_GEOMETRY)
+    if (!selection) {
+      return
+    }
+    event.preventDefault()
+    setChartHoverPanel('primary')
+    setChartHoverCursor(selection.cursor)
+    setChartHoverIndex(selection.index)
+    setChartTimelineNoteContextMenu({
+      clientX: event.clientX,
+      clientY: event.clientY,
+      anchorDate: selection.point.date,
+    })
   }
 
   function scrollToNavHistoryPanel() {
@@ -4541,12 +4952,12 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   }
 
   function beginNavEditing() {
-    setNavDraft(toEditableNavDraft(navSeries))
-    setNavDraftSourceRecordId('manual_nav_editor')
-    setEditingNav(true)
-    setSectionError(null)
     setSectionNotice(null)
-    scrollToNavHistoryPanel()
+    setEditingNav(false)
+    setSectionError('Canonical NAV history is managed in Platform / Instruments.')
+    setQuoteActionNotice(
+      'Watchlist detail is read-only for canonical NAV history. Use Platform / Instruments to import or refresh shared market data.',
+    )
   }
 
   function createEmptyNavRow(): NavDraft['rows'][number] {
@@ -4554,24 +4965,12 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   }
 
   function handleAddNavQuote() {
-    setSectionError(null)
     setSectionNotice(null)
-    setNavDraft((current) => {
-      if (current) {
-        return {
-          ...current,
-          rows: [...current.rows, createEmptyNavRow()],
-        }
-      }
-      const next = toEditableNavDraft(navSeries)
-      return {
-        ...next,
-        rows: [...next.rows, createEmptyNavRow()],
-      }
-    })
-    setNavDraftSourceRecordId('manual_nav_editor')
-    setEditingNav(true)
-    scrollToNavHistoryPanel()
+    setEditingNav(false)
+    setSectionError('Canonical NAV history is managed in Platform / Instruments.')
+    setQuoteActionNotice(
+      'Watchlist detail is read-only for canonical NAV history. Use Platform / Instruments to import or refresh shared market data.',
+    )
   }
 
   async function handleSaveDefaultBenchmark(nextBenchmarkAssetId: string | null) {
@@ -4579,7 +4978,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setSectionError(null)
     setSectionNotice(null)
     try {
-      await updateFundNavSettings(fundId, {
+      await updateInstrumentNavSettings(fundId, {
         default_benchmark_asset_id: nextBenchmarkAssetId,
         updated_by: 'terminal_ui',
       })
@@ -4614,7 +5013,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setSectionError(null)
     setSectionNotice(null)
     try {
-      await updateFundNavSettings(fundId, {
+      await updateInstrumentNavSettings(fundId, {
         peer_baseline_asset_ids: nextPeerAssetIds,
         updated_by: 'terminal_ui',
       })
@@ -4635,24 +5034,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   }
 
   async function handleQuoteUpdateNow() {
-    setSavingSection('quote_refresh')
     setSectionError(null)
     setSectionNotice(null)
-    try {
-      const response = await triggerFundNavRefresh(fundId, { updated_by: 'terminal_ui' })
-      const refreshStatus =
-        typeof response.refresh_status === 'object' && response.refresh_status !== null
-          ? (response.refresh_status as Record<string, unknown>)
-          : null
-      setQuoteActionNotice(
-        typeof refreshStatus?.message === 'string' ? refreshStatus.message : 'Update triggered.',
-      )
-      setRefreshToken((value) => value + 1)
-    } catch (refreshError) {
-      setSectionError(refreshError instanceof Error ? refreshError.message : 'Failed to trigger NAV refresh.')
-    } finally {
-      setSavingSection(null)
-    }
+    setSectionError('Shared NAV refresh now runs from Platform / Instruments.')
+    setQuoteActionNotice('Use Platform / Instruments to trigger shared market data refresh.')
   }
 
   async function handleSaveQuoteSourceSettings() {
@@ -4660,7 +5045,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setSectionError(null)
     setSectionNotice(null)
     try {
-      await updateFundNavSettings(fundId, {
+      await updateInstrumentNavSettings(fundId, {
         nav_basis_preference: navSeries.nav_basis_preference || 'auto',
         source_mode: quoteSourceMode,
         source_email: quoteSourceEmail,
@@ -4685,12 +5070,12 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   }
 
   function openNavImportModal() {
-    setSectionError(null)
     setSectionNotice(null)
-    setQuoteActionNotice(null)
-    setNavImportText('')
-    setNavImportSourceRecordId('quote_nav_import')
-    setShowNavImportModal(true)
+    setShowNavImportModal(false)
+    setSectionError('Canonical NAV history is managed in Platform / Instruments.')
+    setQuoteActionNotice(
+      'Watchlist detail is read-only for canonical NAV history. Use Platform / Instruments to import shared market data.',
+    )
   }
 
   function handleApplyNavImport() {
@@ -4767,9 +5152,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 {TAB_LABELS[tab]}
               </button>
             ))}
-            <button type="button" className="page-copilot-action" onClick={openFundCopilot}>
-              Copilot
-            </button>
           </div>
         </div>
 
@@ -4803,14 +5185,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 <div className="instrument-quote-facts">
                   <div className="instrument-quote-panel-toolbar">
                     <div className="toolbar">
-                      <button
-                        type="button"
-                        className="button-primary"
-                        onClick={() => void handleQuoteUpdateNow()}
-                        disabled={savingSection === 'quote_refresh'}
-                      >
-                        {savingSection === 'quote_refresh' ? 'Updating...' : 'Update Now'}
-                      </button>
+                      <a href={platformInstrumentsUrl} className="toolbar-link">
+                        Platform / Instruments
+                      </a>
                       <button
                         type="button"
                         onClick={() => {
@@ -4819,6 +5196,21 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                         }}
                       >
                         Source Settings
+                      </button>
+                      <button
+                        type="button"
+                        className={timelineNoteCaptureMode ? 'button-primary' : undefined}
+                        onClick={() => {
+                          setTimelineNoteCaptureMode((current) => !current)
+                          setChartTimelineNoteContextMenu(null)
+                          setQuoteActionNotice(
+                            !timelineNoteCaptureMode
+                              ? 'Click a date on the chart to add a research note. Right-click also opens the note menu.'
+                              : null,
+                          )
+                        }}
+                      >
+                        {timelineNoteCaptureMode ? 'Cancel Add Note' : 'Add Note'}
                       </button>
                     </div>
                   </div>
@@ -5044,6 +5436,17 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                               >
                                 Dividends
                               </button>
+                              <button
+                                type="button"
+                                className={
+                                  showTimelineNoteEvents
+                                    ? 'instrument-chart-option instrument-chart-option-active'
+                                    : 'instrument-chart-option'
+                                }
+                                onClick={() => setShowTimelineNoteEvents((current) => !current)}
+                              >
+                                Research Notes
+                              </button>
                             </div>
                           </div>
                         ) : null}
@@ -5223,12 +5626,14 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                     <svg
                       viewBox={`0 0 ${PRIMARY_CHART_GEOMETRY.width} ${PRIMARY_CHART_GEOMETRY.height}`}
                       className="instrument-line-chart"
-                      style={{ cursor: isPrimaryHoverActive ? 'crosshair' : 'default' }}
+                      style={{ cursor: timelineNoteCaptureMode || isPrimaryHoverActive ? 'crosshair' : 'default' }}
                       role="img"
                       aria-label="Interactive NAV chart"
                       onMouseMove={(event) =>
                         updateChartHoverFromPointer(event, PRIMARY_CHART_GEOMETRY, 'primary')
                       }
+                      onClick={handlePrimaryChartClick}
+                      onContextMenu={handlePrimaryChartContextMenu}
                       onMouseLeave={clearChartHover}
                     >
                       <defs>
@@ -5358,6 +5763,40 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                           </text>
                         </g>
                       ))}
+                      {timelineNoteMarkerGroups.map((group) => (
+                        <g
+                          key={`note-${group.anchorDate}`}
+                          className="instrument-chart-note-marker"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setTimelineNoteViewAnchorDate(group.anchorDate)
+                            setChartTimelineNoteContextMenu(null)
+                          }}
+                        >
+                          <circle
+                            className="instrument-chart-note-dot"
+                            cx={group.x}
+                            cy={PRIMARY_CHART_GEOMETRY.height - PRIMARY_CHART_GEOMETRY.paddingBottom - 34}
+                            r="7"
+                          />
+                          <text
+                            className="instrument-chart-note-label"
+                            x={group.x}
+                            y={PRIMARY_CHART_GEOMETRY.height - PRIMARY_CHART_GEOMETRY.paddingBottom - 29.5}
+                          >
+                            ★
+                          </text>
+                          {group.notes.length > 1 ? (
+                            <text
+                              className="instrument-chart-note-count"
+                              x={group.x + 8}
+                              y={PRIMARY_CHART_GEOMETRY.height - PRIMARY_CHART_GEOMETRY.paddingBottom - 38}
+                            >
+                              {group.notes.length}
+                            </text>
+                          ) : null}
+                        </g>
+                      ))}
 
                       {primaryHoverGuideX != null ? (
                         <g clipPath={`url(#${chartClipId})`}>
@@ -5468,10 +5907,128 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                               <strong>{formatNumber(hoveredDistribution.distribution_amount, 4)}</strong>
                             </div>
                           ) : null}
+                          {hoveredTimelineNoteGroup?.notes.length ? (
+                            <div className="instrument-chart-tooltip-events">
+                              {hoveredTimelineNoteGroup.notes.slice(0, 3).map((note) => (
+                                <div
+                                  key={note.note_id}
+                                  className="instrument-chart-tooltip-row instrument-chart-tooltip-row-note"
+                                >
+                                  <span className="instrument-chart-tooltip-series-label">
+                                    <i className="instrument-chart-tooltip-swatch" />
+                                    {note.title || note.summary || 'Research note'}
+                                  </span>
+                                  <strong>{formatTimelineNoteImportance(note.importance)}</strong>
+                                </div>
+                              ))}
+                              {hoveredTimelineNoteGroup.notes.length > 3 ? (
+                                <div className="instrument-chart-tooltip-row instrument-chart-tooltip-row-note instrument-chart-tooltip-row-note-more">
+                                  <span>{`+${hoveredTimelineNoteGroup.notes.length - 3} more notes`}</span>
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
                         </div>
                       </div>
                     ) : null}
                     </div>
+
+                    {chartTimelineNoteContextMenu ? (
+                      <div
+                        ref={timelineNoteContextMenuRef}
+                        className="instrument-chart-context-menu"
+                        style={timelineNoteContextMenuStyle}
+                      >
+                        <button
+                          type="button"
+                          className="instrument-chart-context-menu-item"
+                          onClick={() => openTimelineNoteEditor(chartTimelineNoteContextMenu.anchorDate)}
+                        >
+                          Add note at {formatDate(chartTimelineNoteContextMenu.anchorDate)}
+                        </button>
+                        {timelineNoteMarkerGroups.some(
+                          (group) => group.anchorDate === chartTimelineNoteContextMenu.anchorDate,
+                        ) ? (
+                          <button
+                            type="button"
+                            className="instrument-chart-context-menu-item"
+                            onClick={() => {
+                              setTimelineNoteViewAnchorDate(chartTimelineNoteContextMenu.anchorDate)
+                              setChartTimelineNoteContextMenu(null)
+                            }}
+                          >
+                            View notes on this date
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {selectedTimelineNoteGroup?.notes.length ? (
+                      <div className="instrument-chart-note-panel">
+                        <div className="instrument-chart-note-panel-header">
+                          <div>
+                            <strong>Research Notes</strong>
+                            <span>{formatDate(selectedTimelineNoteGroup.anchorDate)}</span>
+                          </div>
+                          <div className="toolbar">
+                            <button
+                              type="button"
+                              onClick={() => openTimelineNoteEditor(selectedTimelineNoteGroup.anchorDate)}
+                            >
+                              Add Note
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setTimelineNoteViewAnchorDate(null)}
+                            >
+                              Close
+                            </button>
+                          </div>
+                        </div>
+                        <div className="table-shell instrument-research-table-shell">
+                          <table className="terminal-table terminal-table-compact instrument-research-table instrument-chart-note-table">
+                            <thead>
+                              <tr>
+                                <th>Date</th>
+                                <th>Importance</th>
+                                <th>Title</th>
+                                <th>Summary</th>
+                                <th className="instrument-table-action-col" aria-label="Note actions" />
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {selectedTimelineNoteGroup.notes.map((note) => (
+                                <tr key={note.note_id}>
+                                  <td>{formatDate(note.note_date)}</td>
+                                  <td>{formatTimelineNoteImportance(note.importance)}</td>
+                                  <td>{note.title || 'Untitled'}</td>
+                                  <td>{note.summary || note.body || '—'}</td>
+                                  <td className="instrument-table-row-action-cell">
+                                    <div className="instrument-table-inline-actions instrument-table-inline-actions-compact">
+                                      <button
+                                        type="button"
+                                        className="table-action"
+                                        onClick={() => openTimelineNoteEditor(note.note_date, note)}
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="table-action"
+                                        onClick={() => void handleDeleteTimelineNote(note.note_id)}
+                                        disabled={savingSection === 'timeline_note'}
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : null}
 
                     {showDrawdownPanel ? (
                       <div className="instrument-drawdown-shell">
@@ -5698,7 +6255,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   <div className="instrument-placeholder">
                     {navSeries.rows.length
                       ? `${quoteBasisLabel} is unavailable for the current currency or date window. Switch Data Type, Currency, or range.`
-                      : 'Add or edit NAV rows to materialize the quote curve.'}
+                      : 'No NAV history is available yet. Add shared market data in Platform / Instruments to materialize the quote curve.'}
                   </div>
                 )}
               </div>
@@ -5865,6 +6422,161 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             </div>
           ) : null}
 
+          {timelineNoteDraft ? (
+            <div
+              className="instrument-modal-backdrop"
+              onClick={() => setTimelineNoteDraft(null)}
+            >
+              <div
+                className="instrument-modal instrument-timeline-note-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Timeline Note"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="instrument-modal-header">
+                  <div>
+                    <div className="panel-title">Research Note</div>
+                    <div className="instrument-quote-source-title">
+                      Anchored to {formatDate(timelineNoteDraft.note_date)}
+                    </div>
+                  </div>
+                  <div className="toolbar">
+                    {timelineNotes.some((note) => note.note_id === timelineNoteDraft.note_id) ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteTimelineNote(timelineNoteDraft.note_id)}
+                        disabled={savingSection === 'timeline_note'}
+                      >
+                        Delete
+                      </button>
+                    ) : null}
+                    <button type="button" onClick={() => setTimelineNoteDraft(null)}>
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="button-primary"
+                      onClick={() => void handleSaveTimelineNote()}
+                      disabled={savingSection === 'timeline_note'}
+                    >
+                      {savingSection === 'timeline_note' ? 'Saving...' : 'Save Note'}
+                    </button>
+                  </div>
+                </div>
+                <div className="form-grid form-grid-2 instrument-quote-source-grid">
+                  <label className="form-field">
+                    <span>Date</span>
+                    <input
+                      type="date"
+                      value={timelineNoteDraft.note_date}
+                      onChange={(event) =>
+                        setTimelineNoteDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                note_date: event.target.value,
+                              }
+                            : current,
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="form-field">
+                    <span>Importance</span>
+                    <select
+                      value={timelineNoteDraft.importance}
+                      onChange={(event) =>
+                        setTimelineNoteDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                importance: parseTimelineNoteImportance(event.target.value),
+                              }
+                            : current,
+                        )
+                      }
+                    >
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </label>
+                  <label className="form-field detail-span-2">
+                    <span>Title</span>
+                    <input
+                      value={timelineNoteDraft.title}
+                      onChange={(event) =>
+                        setTimelineNoteDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                title: event.target.value,
+                              }
+                            : current,
+                        )
+                      }
+                      placeholder="Brief headline for what mattered on this date"
+                    />
+                  </label>
+                  <label className="form-field detail-span-2">
+                    <span>Summary</span>
+                    <textarea
+                      rows={3}
+                      value={timelineNoteDraft.summary}
+                      onChange={(event) =>
+                        setTimelineNoteDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                summary: event.target.value,
+                              }
+                            : current,
+                        )
+                      }
+                      placeholder="Short takeaway shown in the chart tooltip."
+                    />
+                  </label>
+                  <label className="form-field detail-span-2">
+                    <span>Body</span>
+                    <textarea
+                      rows={6}
+                      value={timelineNoteDraft.body}
+                      onChange={(event) =>
+                        setTimelineNoteDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                body: event.target.value,
+                              }
+                            : current,
+                        )
+                      }
+                      placeholder="Longer context, supporting evidence, or follow-up items."
+                    />
+                  </label>
+                  <label className="form-field detail-span-2">
+                    <span>Tags</span>
+                    <input
+                      value={timelineNoteDraft.tagsText}
+                      onChange={(event) =>
+                        setTimelineNoteDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                tagsText: event.target.value,
+                              }
+                            : current,
+                        )
+                      }
+                      placeholder="event, manager change, liquidity, drawdown"
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           <section className="detail-grid detail-grid-quote">
             <section className="panel">
               <div className="instrument-section-header">
@@ -5918,49 +6630,14 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   <div className="instrument-section-title">NAV / NAV with Dividend</div>
                 </div>
                 <div className="toolbar">
-                  {editingNav ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={handleAddNavQuote}
-                      >
-                        Add Quote
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setNavDraft(toEditableNavDraft(bundle.navSeries))
-                          setNavDraftSourceRecordId('manual_nav_editor')
-                          setEditingNav(false)
-                          setSectionError(null)
-                          setSectionNotice(null)
-                        }}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        className="button-primary"
-                        onClick={() => void handleSaveNavSeries()}
-                        disabled={savingSection === 'nav'}
-                      >
-                        {savingSection === 'nav' ? 'Saving...' : 'Save NAV'}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button type="button" onClick={openNavImportModal}>
-                        Import NAV
-                      </button>
-                      <button type="button" onClick={handleAddNavQuote}>
-                        Add Quote
-                      </button>
-                      <button type="button" onClick={() => beginNavEditing()}>
-                        Edit
-                      </button>
-                    </>
-                  )}
+                  <a href={platformInstrumentsUrl} className="toolbar-link">
+                    Manage In Platform
+                  </a>
                 </div>
+              </div>
+              <div className="instrument-form-note nav-history-editor-note">
+                Canonical NAV history is managed in <a href={platformInstrumentsUrl}>Platform / Instruments</a>.
+                Watchlist detail stays read-only here; only local basis and comparison settings remain editable.
               </div>
 
               {editingNav && navDraft ? (
@@ -9101,124 +9778,182 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             </div>
           </div>
 
-          <section className="instrument-research-section">
-            <div className="instrument-research-section-header">
-              <div>
-                <div className="panel-title">Research</div>
-                <div className="instrument-section-title">Fund Tags</div>
-                <div className="instrument-product-tags-note">
-                  Used by watchlist filters and screening views across public funds, private funds, and ETFs. Changes save automatically.
+          {productFrameworkAttributes === null ? (
+            <section className="instrument-research-section">
+              <div className="instrument-research-section-header">
+                <div>
+                  <div className="panel-title">Product Framework</div>
+                  <div className="instrument-section-title">Classification</div>
+                  <div className="instrument-product-tags-note">
+                    Loading product framework...
+                  </div>
                 </div>
               </div>
-            </div>
-            {fundTagAttributes === null ? (
               <div className="instrument-placeholder instrument-research-placeholder">
-                Loading product pool tags...
+                Loading product framework...
               </div>
-            ) : fundTagDefinitions.length ? (
-              <div className="table-shell instrument-research-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-research-table instrument-product-tags-table">
-                  <thead>
-                    <tr>
-                      <th>Tag</th>
-                      <th>Notes</th>
-                      <th>Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fundTagDefinitions.map((definition) => (
-                      <tr key={definition.attribute_key}>
-                        <td className="instrument-product-tags-table-label-cell">{definition.label}</td>
-                        <td className="instrument-product-tags-table-description-cell">
-                          {definition.description || definition.attribute_key}
-                        </td>
-                        <td className="instrument-product-tags-table-value-cell">
-                          <div
-                            className="instrument-product-tags-picker"
-                            ref={openFundTagPickerKey === definition.attribute_key ? fundTagPickerRef : undefined}
-                          >
-                            <button
-                              type="button"
-                              className={`instrument-product-tags-picker-trigger${
-                                openFundTagPickerKey === definition.attribute_key
-                                  ? ' instrument-product-tags-picker-trigger-active'
-                                  : ''
-                              }`}
-                              disabled={fundTagSavingKey === definition.attribute_key}
-                              onClick={() =>
-                                setOpenFundTagPickerKey((current) =>
-                                  current === definition.attribute_key ? null : definition.attribute_key,
-                                )
-                              }
-                            >
-                              <span>
-                                {fundTagSavingKey === definition.attribute_key
-                                  ? 'Saving...'
-                                  : formatFundTagValue(fundTagAttributes.values[definition.attribute_key])}
-                              </span>
-                            </button>
-                            {openFundTagPickerKey === definition.attribute_key ? (
-                              <div className="instrument-product-tags-picker-panel">
-                                <div className="instrument-product-tags-picker-meta">
-                                  {definition.data_type === 'multi_select' ? 'Select one or more' : 'Select one'}
+            </section>
+          ) : (
+            productFrameworkSections.map((section) => (
+              <section key={section.domain} className="instrument-research-section">
+                <div className="instrument-research-section-header">
+                  <div>
+                    <div className="panel-title">Product Framework</div>
+                    <div className="instrument-section-title">{section.title}</div>
+                    <div className="instrument-product-tags-note">
+                      {section.note} Changes save automatically.
+                    </div>
+                  </div>
+                </div>
+                {section.groups.length ? (
+                  <div className="table-shell instrument-research-table-shell">
+                    <table className="terminal-table terminal-table-compact instrument-research-table instrument-product-tags-table">
+                      <thead>
+                        <tr>
+                          <th>Field</th>
+                          <th>Notes</th>
+                          <th>Value</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {section.groups.map((group) => (
+                          <Fragment key={`${section.domain}-${group.groupCode}`}>
+                            <tr className="instrument-product-tags-group-row">
+                              <td colSpan={3}>
+                                <div className="instrument-product-tags-group-label">
+                                  {group.label}
                                 </div>
-                                <div className="instrument-product-tags-picker-options">
-                                  <button
-                                    type="button"
-                                    className="instrument-product-tags-picker-option"
-                                    disabled={fundTagSavingKey === definition.attribute_key}
-                                    onClick={() =>
-                                      void handleSaveFundTag(
-                                        definition,
-                                        definition.data_type === 'multi_select' ? [] : null,
-                                        { closePicker: definition.data_type !== 'multi_select' },
-                                      )
+                              </td>
+                            </tr>
+                            {group.definitions.map((definition) => (
+                              <tr key={definition.attribute_key}>
+                                <td className="instrument-product-tags-table-label-cell">
+                                  {definition.label}
+                                </td>
+                                <td className="instrument-product-tags-table-description-cell">
+                                  {definition.description || definition.attribute_key}
+                                </td>
+                                <td className="instrument-product-tags-table-value-cell">
+                                  <div
+                                    className="instrument-product-tags-picker"
+                                    ref={
+                                      openProductFrameworkPickerKey === definition.attribute_key
+                                        ? productFrameworkPickerRef
+                                        : undefined
                                     }
                                   >
-                                    <span className="instrument-product-tags-picker-check" />
-                                    <span className="instrument-product-tags-picker-label">Clear</span>
-                                  </button>
-                                  {definition.options.map((option) => {
-                                    const selected = isFundTagOptionSelected(fundTagAttributes, definition, option)
-                                    return (
-                                      <button
-                                        key={option}
-                                        type="button"
-                                        className={`instrument-product-tags-picker-option${
-                                          selected ? ' instrument-product-tags-picker-option-selected' : ''
-                                        }`}
-                                        disabled={fundTagSavingKey === definition.attribute_key}
-                                        onClick={() =>
-                                          void handleSaveFundTag(
-                                            definition,
-                                            buildNextFundTagValue(fundTagAttributes, definition, option),
-                                            { closePicker: definition.data_type !== 'multi_select' },
-                                          )
-                                        }
-                                      >
-                                        <span className="instrument-product-tags-picker-check">
-                                          {selected ? '✓' : ''}
-                                        </span>
-                                        <span className="instrument-product-tags-picker-label">{option}</span>
-                                      </button>
-                                    )
-                                  })}
-                                </div>
-                              </div>
-                            ) : null}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="instrument-placeholder instrument-research-placeholder">
-                Product pool tag definitions are unavailable.
-              </div>
-            )}
-          </section>
+                                    <button
+                                      type="button"
+                                      className={`instrument-product-tags-picker-trigger${
+                                        openProductFrameworkPickerKey === definition.attribute_key
+                                          ? ' instrument-product-tags-picker-trigger-active'
+                                          : ''
+                                      }`}
+                                      disabled={productFrameworkSavingKey === definition.attribute_key}
+                                      onClick={() =>
+                                        setOpenProductFrameworkPickerKey((current) =>
+                                          current === definition.attribute_key
+                                            ? null
+                                            : definition.attribute_key,
+                                        )
+                                      }
+                                    >
+                                      <span>
+                                        {productFrameworkSavingKey === definition.attribute_key
+                                          ? 'Saving...'
+                                          : formatFrameworkValue(
+                                              productFrameworkAttributes.values[definition.attribute_key],
+                                            )}
+                                      </span>
+                                    </button>
+                                    {openProductFrameworkPickerKey === definition.attribute_key ? (
+                                      <div className="instrument-product-tags-picker-panel">
+                                        <div className="instrument-product-tags-picker-meta">
+                                          {definition.data_type === 'multi_select'
+                                            ? 'Select one or more'
+                                            : 'Select one'}
+                                        </div>
+                                        <div className="instrument-product-tags-picker-options">
+                                          <button
+                                            type="button"
+                                            className="instrument-product-tags-picker-option"
+                                            disabled={productFrameworkSavingKey === definition.attribute_key}
+                                            onClick={() =>
+                                              void handleSaveProductFrameworkValue(
+                                                definition,
+                                                definition.data_type === 'multi_select' ? [] : null,
+                                                {
+                                                  closePicker:
+                                                    definition.data_type !== 'multi_select',
+                                                },
+                                              )
+                                            }
+                                          >
+                                            <span className="instrument-product-tags-picker-check" />
+                                            <span className="instrument-product-tags-picker-label">
+                                              Clear
+                                            </span>
+                                          </button>
+                                          {definition.options.map((option) => {
+                                            const selected = isFrameworkOptionSelected(
+                                              productFrameworkAttributes,
+                                              definition,
+                                              option,
+                                            )
+                                            return (
+                                              <button
+                                                key={option}
+                                                type="button"
+                                                className={`instrument-product-tags-picker-option${
+                                                  selected
+                                                    ? ' instrument-product-tags-picker-option-selected'
+                                                    : ''
+                                                }`}
+                                                disabled={productFrameworkSavingKey === definition.attribute_key}
+                                                onClick={() =>
+                                                  void handleSaveProductFrameworkValue(
+                                                    definition,
+                                                    buildNextFrameworkValue(
+                                                      productFrameworkAttributes,
+                                                      definition,
+                                                      option,
+                                                    ),
+                                                    {
+                                                      closePicker:
+                                                        definition.data_type !== 'multi_select',
+                                                    },
+                                                  )
+                                                }
+                                              >
+                                                <span className="instrument-product-tags-picker-check">
+                                                  {selected ? '✓' : ''}
+                                                </span>
+                                                <span className="instrument-product-tags-picker-label">
+                                                  {option}
+                                                </span>
+                                              </button>
+                                            )
+                                          })}
+                                        </div>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </Fragment>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="instrument-placeholder instrument-research-placeholder">
+                    {section.emptyState}
+                  </div>
+                )}
+              </section>
+            ))
+          )}
 
           <section className="instrument-research-section">
             <div className="instrument-research-section-header">
@@ -9291,6 +10026,80 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             ) : (
               <div className="instrument-research-prose">
                 <p>{bundle.research.thesis || 'No thesis recorded yet.'}</p>
+              </div>
+            )}
+          </section>
+
+          <section className="instrument-research-section">
+            <div className="instrument-research-section-header">
+              <div>
+                <div className="panel-title">Research</div>
+                <div className="instrument-section-title">Timeline Notes</div>
+              </div>
+              <div className="toolbar">
+                <button
+                  type="button"
+                  onClick={() => openTimelineNoteEditor(latestPoint?.date || latestNavRecord?.as_of_date || '')}
+                >
+                  Add Note
+                </button>
+              </div>
+            </div>
+            {timelineNotes.length ? (
+              <div className="table-shell instrument-research-table-shell">
+                <table className="terminal-table terminal-table-compact instrument-research-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Importance</th>
+                      <th>Title</th>
+                      <th>Summary</th>
+                      <th>Tags</th>
+                      <th className="instrument-table-action-col" aria-label="Timeline note actions" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {timelineNotes.map((note) => (
+                      <tr key={note.note_id}>
+                        <td>{formatDate(note.note_date)}</td>
+                        <td>{formatTimelineNoteImportance(note.importance)}</td>
+                        <td>{note.title || 'Untitled'}</td>
+                        <td>{note.summary || note.body || '—'}</td>
+                        <td>{note.tags.length ? note.tags.join(', ') : '—'}</td>
+                        <td className="instrument-table-row-action-cell">
+                          <div className="instrument-table-inline-actions instrument-table-inline-actions-compact">
+                            <button
+                              type="button"
+                              className="table-action"
+                              onClick={() => focusTimelineNoteInQuote(note.note_date)}
+                            >
+                              Open in Quote
+                            </button>
+                            <button
+                              type="button"
+                              className="table-action"
+                              onClick={() => openTimelineNoteEditor(note.note_date, note)}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              className="table-action"
+                              onClick={() => void handleDeleteTimelineNote(note.note_id)}
+                              disabled={savingSection === 'timeline_note'}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="instrument-placeholder instrument-research-placeholder">
+                No timeline notes yet. Add one from Quote or create one here.
               </div>
             )}
           </section>
@@ -9591,16 +10400,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
         </section>
       ) : null}
 
-      <CopilotDrawer
-        open={copilotOpen}
-        title="Instrument Copilot"
-        subtitle={bundle ? `${bundle.summary.fund_name} · ${TAB_LABELS[activeTab]}` : TAB_LABELS[activeTab]}
-        loading={copilotLoading}
-        messages={copilotMessages}
-        placeholder={`Ask about ${TAB_LABELS[activeTab]}...`}
-        onClose={() => setCopilotOpen(false)}
-        onSend={(message) => void handleSendFundCopilot(message)}
-      />
     </div>
   )
 }

@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["platform_app*"]
 
 [tool.pytest.ini_options]
 addopts = "--capture=no tests"

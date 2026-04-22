@@ -1,16 +1,13 @@
-export type AssetIdentifier = {
-  identifier_type: string
-  identifier_value: string
-  is_primary: boolean
-}
+import type {
+  AssetCore,
+  AssetIdentifier,
+  DataStatus,
+  MetricFamily,
+  QuoteBasis,
+  QuoteSelectionPolicy,
+} from '../../../../../packages/asset-core/ts/src'
 
-export type AssetCore = {
-  asset_id: string
-  asset_name: string
-  asset_type: string
-  currency: string
-  identifiers: AssetIdentifier[]
-}
+export type { AssetCore, AssetIdentifier } from '../../../../../packages/asset-core/ts/src'
 
 export type WorkspaceSection = {
   label: string
@@ -357,30 +354,42 @@ export type HoldingsWorkspaceFilters = {
   as_of_date?: string
 }
 
-export type PlatformMarketDataPoint = {
-  metric_family: string
-  quote_basis: string
+export type SharedMarketDataPoint = {
+  metric_family: MetricFamily
+  quote_basis: QuoteBasis
   as_of_date: string
   value: string
   currency: string
   provider?: string | null
-  status: string
+  status: DataStatus
 }
 
-export type PlatformInstrumentRecord = {
+export type SharedInstrumentRecord = {
   asset_id: string
   asset_name: string
-  asset_type: string
+  asset_type: AssetCore['asset_type']
   currency: string
   identifiers: AssetIdentifier[]
-  latest_market_data: PlatformMarketDataPoint[]
-  quote_selection_policy?: Record<string, string[]>
-  coverage_state: string
+  latest_market_data: SharedMarketDataPoint[]
+  quote_selection_policy?: QuoteSelectionPolicy
+  coverage_state: DataStatus
 }
 
-export type PlatformInstrumentsResponse = {
-  registry_name: string
-  instruments: PlatformInstrumentRecord[]
+export type PortfolioSharedInstrumentsResponse = {
+  portfolio_id: string
+  instruments: SharedInstrumentRecord[]
+}
+
+type RawSharedInstrumentRecord = {
+  asset_core: AssetCore
+  coverage_state: DataStatus
+  latest_market_data: SharedMarketDataPoint[]
+  quote_selection_policy?: QuoteSelectionPolicy
+}
+
+type RawPortfolioSharedInstrumentsResponse = {
+  portfolio_id: string
+  instruments: RawSharedInstrumentRecord[]
 }
 
 export const SUPPORTED_PORTFOLIO_CURRENCIES = ['USD', 'HKD', 'CNY'] as const
@@ -414,6 +423,7 @@ export type PortfolioTaxonomyRecord = {
   primary_assignment_scope: TaxonomyAssignmentScope
   planning_enabled: boolean
   budgeting_level?: string | null
+  root_default_target_dimension: 'weight' | 'risk_budget'
   effective_from?: string | null
   effective_to?: string | null
   status: string
@@ -645,6 +655,13 @@ export type PortfolioResearchBacktestCurvePointRecord = {
   rebalance_flag: boolean
 }
 
+export type PortfolioResearchWeightSchedulePointRecord = {
+  date: string
+  rebalance_flag: boolean
+  nav?: number | null
+  weights: Record<string, number>
+}
+
 export type PortfolioResearchBacktestMemberSummaryRecord = {
   member_type: string
   member_id: string
@@ -690,6 +707,25 @@ export type PortfolioResearchRebalanceSuggestionRecord = {
   action: string
 }
 
+export type PortfolioResearchConstructionRowRecord = {
+  member_type: string
+  member_id: string
+  label: string
+  current_weight?: number | null
+  current_value_base?: number | null
+  default_target_dimension?: 'weight' | 'risk_budget' | null
+  selected_target_dimension?: PortfolioResearchTargetDimension | null
+  source_target_set_type?: 'saa' | 'taa' | null
+  source_target_set_id?: string | null
+  source_label?: string | null
+  selected_target_value?: number | null
+  target_weight?: number | null
+  target_risk_share?: number | null
+  implementation_weight?: number | null
+  gap_to_implementation?: number | null
+  action?: string | null
+}
+
 export type PortfolioResearchRunDetailRecord = {
   headline?: string | null
   coverage_note?: string | null
@@ -701,7 +737,10 @@ export type PortfolioResearchRunDetailRecord = {
   selected_scope?: PortfolioResearchScopeSelectionRecord | null
   backtest_metrics: PortfolioResearchBacktestMetricRecord[]
   backtest_curve: PortfolioResearchBacktestCurvePointRecord[]
+  weight_schedule: PortfolioResearchWeightSchedulePointRecord[]
   member_summaries: PortfolioResearchBacktestMemberSummaryRecord[]
+  construction_assumptions: string[]
+  construction_rows: PortfolioResearchConstructionRowRecord[]
   rebalance_events: PortfolioResearchRebalanceEventRecord[]
   rebalance_suggestions: PortfolioResearchRebalanceSuggestionRecord[]
   warnings: string[]
@@ -771,6 +810,7 @@ export type PortfolioTaxonomyCreatePayload = {
   primary_assignment_scope: TaxonomyAssignmentScope
   planning_enabled?: boolean
   budgeting_level?: string | null
+  root_default_target_dimension?: 'weight' | 'risk_budget'
   effective_from?: string | null
   effective_to?: string | null
   status?: string
@@ -793,6 +833,7 @@ export type PortfolioTaxonomyUpdatePayload = {
   purpose?: string | null
   planning_enabled?: boolean
   budgeting_level?: string | null
+  root_default_target_dimension?: 'weight' | 'risk_budget' | null
   effective_from?: string | null
   effective_to?: string | null
   status?: string | null
@@ -980,6 +1021,8 @@ export type PortfolioTransactionRecord = {
   trade_timezone: string
   trade_time_is_estimated: boolean
   settlement_date: string
+  entitlement_date?: string | null
+  acquisition_date?: string | null
   account: PortfolioAccountRecord
   settlement_cash_account?: PortfolioAccountRecord | null
   asset_id?: string | null
@@ -1142,6 +1185,8 @@ export type PortfolioTransactionCreatePayload = {
   trade_date: string
   trade_time?: string | null
   settlement_date?: string | null
+  entitlement_date?: string | null
+  acquisition_date?: string | null
   account_id: string
   settlement_cash_account_id?: string | null
   asset_id?: string | null
@@ -1186,10 +1231,14 @@ export type PortfolioTransactionBatchResponse = {
   transactions: PortfolioTransactionRecord[]
 }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8001').replace(/\/$/, '')
-const PLATFORM_API_BASE_URL = (
-  import.meta.env.VITE_PLATFORM_API_BASE_URL || 'http://127.0.0.1:8002'
-).replace(/\/$/, '')
+export type PortfolioTransactionDeleteResponse = {
+  portfolio_id: string
+  deleted_count: number
+  deleted_transaction_ids: string[]
+  transfer_group_id?: string | null
+}
+
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 
 async function fetchJson<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -1641,6 +1690,31 @@ export function createPortfolioTransaction(
   )
 }
 
+export function updatePortfolioTransaction(
+  portfolioId: string,
+  transactionId: string,
+  payload: PortfolioTransactionCreatePayload,
+) {
+  return fetchJson<PortfolioTransactionRecord>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/transactions/${transactionId}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function deletePortfolioTransaction(portfolioId: string, transactionId: string) {
+  return fetchJson<PortfolioTransactionDeleteResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/transactions/${transactionId}`,
+    {
+      method: 'DELETE',
+    },
+  )
+}
+
 export function createPortfolioInternalTransfer(
   portfolioId: string,
   payload: PortfolioInternalTransferCreatePayload,
@@ -1655,6 +1729,16 @@ export function createPortfolioInternalTransfer(
   )
 }
 
-export function getPlatformInstruments() {
-  return fetchJson<PlatformInstrumentsResponse>(PLATFORM_API_BASE_URL, '/api/instruments')
+export function getPortfolioInstruments(portfolioId: string) {
+  return fetchJson<RawPortfolioSharedInstrumentsResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/instruments`).then(
+    (response) => ({
+      portfolio_id: response.portfolio_id,
+      instruments: response.instruments.map((instrument) => ({
+        ...instrument.asset_core,
+        coverage_state: instrument.coverage_state,
+        latest_market_data: instrument.latest_market_data,
+        quote_selection_policy: instrument.quote_selection_policy,
+      })),
+    }),
+  )
 }

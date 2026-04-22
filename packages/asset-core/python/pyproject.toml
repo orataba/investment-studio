@@ -9,8 +9,8 @@ description = "Shared asset core contracts for Yungu"
 requires-python = ">=3.12"
 dependencies = [
   "pydantic>=2.10,<3.0",
+  "sqlalchemy>=2.0,<3.0",
 ]
 
 [tool.setuptools.packages.find]
 include = ["yungu_asset_core*"]
-

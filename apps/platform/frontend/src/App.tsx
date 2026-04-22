@@ -1,4 +1,14 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
+import type {
+  AssetIdentifier as PlatformAssetIdentifier,
+  AssetType,
+  DataStatus,
+  IdentifierType,
+  MetricFamily,
+  QuoteBasis,
+  QuoteRole,
+  QuoteSelectionPolicy as PlatformQuoteSelectionPolicy,
+} from '../../../../packages/asset-core/ts/src'
 
 type PlatformAppCard = {
   app_id: string
@@ -14,30 +24,8 @@ type PlatformAppsResponse = {
   platform_name: string
   apps: PlatformAppCard[]
 }
-
-type AssetType = 'fund' | 'bond' | 'equity' | 'cash' | 'fx' | 'other'
-type IdentifierType = 'ticker' | 'isin' | 'cusip' | 'sedol' | 'internal' | 'other'
-type MetricFamily = 'price' | 'nav' | 'fx'
-type QuoteBasis =
-  | 'last'
-  | 'close'
-  | 'adjusted_close'
-  | 'official_nav'
-  | 'total_return_nav'
-  | 'spot'
-  | 'clean_price'
-  | 'dirty_price'
-  | 'par'
-type QuoteRole = 'trading' | 'valuation' | 'total_return' | 'chart' | 'reference'
-type DataStatus = 'complete' | 'partial' | 'unavailable'
 type SourceMode = 'manual' | 'email' | 'api'
 type InstrumentLifecycleStatus = 'active' | 'archived'
-
-type PlatformAssetIdentifier = {
-  identifier_type: IdentifierType
-  identifier_value: string
-  is_primary: boolean
-}
 
 type PlatformMarketDataPoint = {
   metric_family: MetricFamily
@@ -48,8 +36,6 @@ type PlatformMarketDataPoint = {
   provider?: string | null
   status: DataStatus
 }
-
-type PlatformQuoteSelectionPolicy = Record<QuoteRole, QuoteBasis[]>
 
 type PlatformLifecycleState = {
   status: InstrumentLifecycleStatus
@@ -108,7 +94,8 @@ type PlatformFxRatesResponse = {
   rates: PlatformFxRateRecord[]
 }
 
-const PLATFORM_API_BASE = 'http://127.0.0.1:8002'
+const PLATFORM_NAME_FALLBACK = (import.meta.env.VITE_PLATFORM_NAME || 'Yungu').trim() || 'Yungu'
+const PLATFORM_API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 const FX_PANEL_PAIRS: Array<[SupportedCurrency, SupportedCurrency]> = [
   ['USD', 'HKD'],
   ['USD', 'CNY'],
@@ -144,28 +131,47 @@ const ROLE_LABELS: Record<QuoteRole, string> = {
   reference: 'Reference',
 }
 
-const fallbackApps: PlatformAppCard[] = [
-  {
-    app_id: 'watchlist',
-    name: 'Watchlist',
-    url: 'http://127.0.0.1:5173',
-    api_url: 'http://127.0.0.1:8000',
-    eyebrow: 'Research and monitoring',
-    description:
-      'Fund and asset watchlists, detail pages, facts ingest, read models, and copilot-assisted review.',
-    availability: 'ready',
-  },
-  {
-    app_id: 'portfolio',
-    name: 'Portfolio',
-    url: 'http://127.0.0.1:5174',
-    api_url: 'http://127.0.0.1:8001',
-    eyebrow: 'Portfolio management',
-    description:
-      'Portfolio, account, transaction, risk, and review workflows built on top of the shared asset core.',
-    availability: 'ready',
-  },
-]
+function normalizeConfiguredUrl(value: string | null | undefined): string | null {
+  const normalized = (value || '').trim().replace(/\/$/, '')
+  return normalized || null
+}
+
+function buildFallbackApps(): PlatformAppCard[] {
+  const watchlistUrl = normalizeConfiguredUrl(import.meta.env.VITE_WATCHLIST_URL)
+  const watchlistApiUrl = normalizeConfiguredUrl(import.meta.env.VITE_WATCHLIST_API_URL)
+  const portfolioUrl = normalizeConfiguredUrl(import.meta.env.VITE_PORTFOLIO_URL)
+  const portfolioApiUrl = normalizeConfiguredUrl(import.meta.env.VITE_PORTFOLIO_API_URL)
+  const apps: PlatformAppCard[] = []
+
+  if (watchlistUrl) {
+    apps.push({
+      app_id: 'watchlist',
+      name: 'Watchlist',
+      url: watchlistUrl,
+      api_url: watchlistApiUrl,
+      eyebrow: 'Research and monitoring',
+      description:
+        'Fund and asset watchlists, detail pages, facts ingest, read models, and copilot-assisted review.',
+      availability: 'ready',
+    })
+  }
+  if (portfolioUrl) {
+    apps.push({
+      app_id: 'portfolio',
+      name: 'Portfolio',
+      url: portfolioUrl,
+      api_url: portfolioApiUrl,
+      eyebrow: 'Portfolio management',
+      description:
+        'Portfolio, account, transaction, risk, and review workflows built on top of the shared asset core.',
+      availability: 'ready',
+    })
+  }
+  return apps
+}
+
+const fallbackApps: PlatformAppCard[] = buildFallbackApps()
+const fallbackSourceLabel = fallbackApps.length > 0 ? 'frontend env fallback' : 'backend unavailable'
 
 function normalizePath(pathname: string) {
   const normalized = pathname.replace(/\/+$/, '')
@@ -342,7 +348,8 @@ function findFxRate(
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${PLATFORM_API_BASE}${path}`, {
+  const target = PLATFORM_API_BASE ? `${PLATFORM_API_BASE}${path}` : path
+  const response = await fetch(target, {
     headers: {
       'Content-Type': 'application/json',
       ...(init?.headers || {}),
@@ -1259,9 +1266,9 @@ function InstrumentsPage({
 
 export default function App() {
   const currentPath = normalizePath(window.location.pathname)
-  const [platformName, setPlatformName] = useState('Yungu')
+  const [platformName, setPlatformName] = useState(PLATFORM_NAME_FALLBACK)
   const [apps, setApps] = useState<PlatformAppCard[]>(fallbackApps)
-  const [sourceLabel, setSourceLabel] = useState('static fallback')
+  const [sourceLabel, setSourceLabel] = useState(fallbackSourceLabel)
   const [registryName, setRegistryName] = useState('Yungu Shared Instruments')
   const [instruments, setInstruments] = useState<PlatformInstrumentRecord[]>([])
   const [fxRates, setFxRates] = useState<PlatformFxRatesResponse | null>(null)
@@ -1283,7 +1290,9 @@ export default function App() {
         }
       } catch {
         if (!cancelled) {
-          setSourceLabel('static fallback')
+          setPlatformName(PLATFORM_NAME_FALLBACK)
+          setApps(fallbackApps)
+          setSourceLabel(fallbackSourceLabel)
         }
       }
     }

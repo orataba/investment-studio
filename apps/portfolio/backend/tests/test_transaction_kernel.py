@@ -1,8 +1,116 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
-from app.services.ledger import _build_position_state, build_position_lots, derive_ledger_postings
+from portfolio_app.services.ledger import _build_position_state, build_position_lots, derive_ledger_postings
+
+
+def test_portfolio_instruments_endpoint_reads_shared_registry_via_portfolio_backend(client):
+    response = client.get("/api/portfolios/yungu/instruments")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["portfolio_id"] == "yungu"
+    assert {item["asset_core"]["asset_id"] for item in payload["instruments"]} >= {
+        "equity-us-abbv",
+        "fund-us-agg",
+        "fund-hk-2800",
+    }
+    abbv = next(
+        item for item in payload["instruments"] if item["asset_core"]["asset_id"] == "equity-us-abbv"
+    )
+    assert abbv["asset_core"]["identifiers"][0]["identifier_value"] == "ABBV"
+    assert abbv["coverage_state"] == "complete"
+
+
+def test_securities_account_defaults_to_fifo_when_cost_basis_omitted(client):
+    response = client.post(
+        "/api/portfolios/yungu/accounts",
+        json={
+            "account_name": "FIFO Default Account",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "allowed_asset_types": ["fund"],
+            "opened_at": "2026-04-22",
+            "status": "active",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["cost_basis_method"] == "fifo"
+
+
+def test_transaction_fact_can_be_updated_and_deleted(client):
+    created_response = client.post(
+        "/api/portfolios/yungu/transactions",
+        json={
+            "transaction_type": "deposit",
+            "trade_date": "2026-04-16",
+            "account_id": "cash-usd-main",
+            "gross_amount": 1000.0,
+            "currency": "USD",
+            "note": "Initial note",
+        },
+    )
+    assert created_response.status_code == 200
+    transaction_id = created_response.json()["transaction_id"]
+
+    updated_response = client.put(
+        f"/api/portfolios/yungu/transactions/{transaction_id}",
+        json={
+            "transaction_type": "deposit",
+            "trade_date": "2026-04-17",
+            "account_id": "cash-usd-main",
+            "gross_amount": 1250.0,
+            "currency": "USD",
+            "note": "Corrected note",
+        },
+    )
+    assert updated_response.status_code == 200
+    updated_payload = updated_response.json()
+    assert updated_payload["transaction_id"] == transaction_id
+    assert updated_payload["trade_date"] == "2026-04-17"
+    assert updated_payload["gross_amount"] == pytest.approx(1250.0)
+    assert updated_payload["note"] == "Corrected note"
+
+    deleted_response = client.delete(f"/api/portfolios/yungu/transactions/{transaction_id}")
+    assert deleted_response.status_code == 200
+    deleted_payload = deleted_response.json()
+    assert deleted_payload["deleted_count"] == 1
+    assert deleted_payload["deleted_transaction_ids"] == [transaction_id]
+
+    listing_response = client.get("/api/portfolios/yungu/transactions")
+    assert listing_response.status_code == 200
+    assert transaction_id not in {
+        item["transaction_id"] for item in listing_response.json()["transactions"]
+    }
+
+
+def test_deleting_transfer_leg_removes_entire_pair(client):
+    transfer_response = client.post(
+        "/api/portfolios/yungu/transactions/internal-transfer",
+        json={
+            "trade_date": "2026-04-16",
+            "from_account_id": "cash-usd-main",
+            "to_account_id": "cash-usd-reserve",
+            "transfer_object_type": "cash",
+            "gross_amount": 250.0,
+            "note": "Sweep",
+        },
+    )
+    assert transfer_response.status_code == 200
+    transfer_payload = transfer_response.json()
+    delete_target = transfer_payload["transactions"][0]["transaction_id"]
+
+    deleted_response = client.delete(f"/api/portfolios/yungu/transactions/{delete_target}")
+    assert deleted_response.status_code == 200
+    deleted_payload = deleted_response.json()
+    assert deleted_payload["deleted_count"] == 2
+    assert deleted_payload["transfer_group_id"] == transfer_payload["transfer_group_id"]
 
 
 def test_rejects_cross_currency_security_facts(client):
@@ -89,6 +197,63 @@ def test_holdings_workspace_replays_requested_as_of_date(client):
     assert hkd_row["last_price"] == pytest.approx(21.05)
     assert hkd_row["market_value"] == pytest.approx(105250.0)
     assert hkd_row["market_value_base"] == pytest.approx(105250.0 / 7.82)
+
+
+def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
+    baseline_response = client.get(
+        "/api/portfolios/yungu/accounts/workspace",
+        params={"as_of_date": "2026-04-15"},
+    )
+    assert baseline_response.status_code == 200
+    baseline_cash_row = next(
+        row
+        for row in baseline_response.json()["accounts"]
+        if row["account"]["account_id"] == "cash-usd-main"
+    )
+    baseline_cash_balance = baseline_cash_row["derived_cash_balance"]
+
+    buy_response = client.post(
+        "/api/portfolios/yungu/transactions",
+        json={
+            "transaction_type": "buy",
+            "trade_date": "2026-04-15",
+            "settlement_date": "2026-04-16",
+            "account_id": "broker-us-core",
+            "settlement_cash_account_id": "cash-usd-main",
+            "asset_id": "equity-us-abbv",
+            "quantity": 1.0,
+            "price": 206.47,
+            "gross_amount": 206.47,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+        },
+    )
+    assert buy_response.status_code == 200
+
+    trade_date_response = client.get(
+        "/api/portfolios/yungu/accounts/workspace",
+        params={"as_of_date": "2026-04-15"},
+    )
+    assert trade_date_response.status_code == 200
+    trade_date_cash_row = next(
+        row
+        for row in trade_date_response.json()["accounts"]
+        if row["account"]["account_id"] == "cash-usd-main"
+    )
+    assert trade_date_cash_row["derived_cash_balance"] == pytest.approx(baseline_cash_balance)
+
+    settlement_date_response = client.get(
+        "/api/portfolios/yungu/accounts/workspace",
+        params={"as_of_date": "2026-04-16"},
+    )
+    assert settlement_date_response.status_code == 200
+    settlement_date_cash_row = next(
+        row
+        for row in settlement_date_response.json()["accounts"]
+        if row["account"]["account_id"] == "cash-usd-main"
+    )
+    assert settlement_date_cash_row["derived_cash_balance"] == pytest.approx(baseline_cash_balance - 206.47)
 
 
 def test_holdings_workspace_includes_shared_price_sparklines(client):
@@ -1860,3 +2025,105 @@ def test_transactions_workspace_returns_selected_fact_ledger_and_related_positio
     assert all(posting["transaction_id"] == "txn-0003" for posting in payload["ledger_postings"])
     assert payload["related_position_lot_summary"]["position_lot_count"] > 0
     assert any(lot["opened_by_transaction_id"] == "txn-0003" for lot in payload["related_position_lots"])
+
+
+def test_security_trade_cash_posting_uses_settlement_effective_date(client):
+    account = client.post(
+        "/api/portfolios/yungu/accounts",
+        json={
+            "account_name": "Settlement Timing Review",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "fifo",
+            "allowed_asset_types": ["equity"],
+            "opened_at": "2026-04-01",
+            "status": "active",
+        },
+    ).json()
+
+    buy_response = client.post(
+        "/api/portfolios/yungu/transactions",
+        json={
+            "transaction_type": "buy",
+            "trade_date": "2026-04-10",
+            "settlement_date": "2026-04-12",
+            "account_id": account["account_id"],
+            "settlement_cash_account_id": "cash-usd-main",
+            "asset_id": "equity-us-abbv",
+            "quantity": 10.0,
+            "price": 100.0,
+            "gross_amount": 1000.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+        },
+    )
+    assert buy_response.status_code == 200
+
+    ledger_response = client.get(
+        f"/api/portfolios/yungu/transactions/{buy_response.json()['transaction_id']}/ledger-postings"
+    )
+    assert ledger_response.status_code == 200
+    postings = ledger_response.json()["ledger_postings"]
+
+    position_posting = next(item for item in postings if item["posting_role"] == "security_position")
+    cash_posting = next(item for item in postings if item["posting_role"] == "security_settlement_cash")
+
+    assert position_posting["effective_date"] == "2026-04-10"
+    assert cash_posting["effective_date"] == "2026-04-12"
+
+
+def test_security_opening_balance_preserves_acquisition_date_in_position_lots(client):
+    account = client.post(
+        "/api/portfolios/yungu/accounts",
+        json={
+            "account_name": "Legacy Lot Import",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "fifo",
+            "allowed_asset_types": ["equity"],
+            "opened_at": "2026-04-01",
+            "status": "active",
+        },
+    ).json()
+
+    opening_balance_response = client.post(
+        "/api/portfolios/yungu/transactions",
+        json={
+            "transaction_type": "opening_balance",
+            "trade_date": "2026-04-10",
+            "settlement_date": "2026-04-10",
+            "account_id": account["account_id"],
+            "asset_id": "equity-us-abbv",
+            "quantity": 100.0,
+            "gross_amount": 10000.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "acquisition_date": "2025-03-01",
+        },
+    )
+    assert opening_balance_response.status_code == 200
+    assert opening_balance_response.json()["acquisition_date"] == "2025-03-01"
+
+    lots_response = client.get(
+        "/api/portfolios/yungu/position-lots",
+        params={
+            "account_id": account["account_id"],
+            "asset_id": "equity-us-abbv",
+            "status": "open",
+            "as_of_date": "2026-04-15",
+        },
+    )
+    assert lots_response.status_code == 200
+    payload = lots_response.json()
+    assert payload["summary"]["position_lot_count"] == 1
+
+    lot = payload["position_lots"][0]
+    assert lot["opened_at"] == "2026-04-10"
+    assert lot["acquisition_date"] == "2025-03-01"
+    assert lot["holding_period_days"] == (date(2026, 4, 15) - date(2025, 3, 1)).days

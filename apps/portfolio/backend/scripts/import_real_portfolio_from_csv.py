@@ -15,15 +15,11 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.db.models import AccountRecordModel, PortfolioRecordModel, TransactionRecordModel
-from app.db.session import get_session_factory
-from app.services.performance import build_statement_of_assets_report
-from app.services.portfolio_store import resolve_trade_timing
+from portfolio_app.db.models import AccountRecordModel, PortfolioRecordModel, TransactionRecordModel
+from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.performance import build_statement_of_assets_report
+from portfolio_app.services.portfolio_store import resolve_trade_timing
 
-
-DEFAULT_CSV_PATH = Path("/mnt/c/Users/shawx/OneDrive/Desktop/云谷三号交易.csv")
-DEFAULT_PORTFOLIO_ID = "yungu-1"
-DEFAULT_PORTFOLIO_NAME = "云谷1号"
 DEFAULT_VALUATION_DATE = date.today()
 PRICE_DISPLAY_QUANTUM = Decimal("0.0001")
 
@@ -50,9 +46,9 @@ class InstrumentRef:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Import a real portfolio from a CSV trade blotter.")
-    parser.add_argument("--csv-path", type=Path, default=DEFAULT_CSV_PATH)
-    parser.add_argument("--portfolio-id", default=DEFAULT_PORTFOLIO_ID)
-    parser.add_argument("--portfolio-name", default=DEFAULT_PORTFOLIO_NAME)
+    parser.add_argument("--csv-path", type=Path, required=True)
+    parser.add_argument("--portfolio-id", required=True)
+    parser.add_argument("--portfolio-name")
     parser.add_argument("--valuation-date", type=date.fromisoformat, default=DEFAULT_VALUATION_DATE)
     return parser.parse_args()
 
@@ -267,6 +263,9 @@ def trade_payload(
 def main() -> None:
     args = parse_args()
     csv_path = args.csv_path.expanduser().resolve()
+    portfolio_name = str(args.portfolio_name or args.portfolio_id).strip()
+    if not portfolio_name:
+        raise ValueError("portfolio_name must not be empty.")
     rows = load_trade_rows(csv_path)
 
     session_factory = get_session_factory()
@@ -275,10 +274,10 @@ def main() -> None:
         if existing_portfolio is not None:
             raise ValueError(f"Portfolio id already exists: {args.portfolio_id}")
         duplicate_name = session.scalar(
-            select(PortfolioRecordModel).where(PortfolioRecordModel.portfolio_name == args.portfolio_name)
+            select(PortfolioRecordModel).where(PortfolioRecordModel.portfolio_name == portfolio_name)
         )
         if duplicate_name is not None:
-            raise ValueError(f"Portfolio name already exists: {args.portfolio_name}")
+            raise ValueError(f"Portfolio name already exists: {portfolio_name}")
 
         instrument_lookup = load_shared_instruments(session)
         max_sort_order = session.scalar(select(func.max(PortfolioRecordModel.sort_order)))
@@ -286,7 +285,7 @@ def main() -> None:
 
         portfolio_record = PortfolioRecordModel(
             portfolio_id=args.portfolio_id,
-            portfolio_name=args.portfolio_name,
+            portfolio_name=portfolio_name,
             base_currency="CNY",
             valuation_timezone="Asia/Shanghai",
             valuation_cutoff_policy="latest_complete_eod",
@@ -308,7 +307,7 @@ def main() -> None:
         cash_account = AccountRecordModel(
             account_id=cash_account_id,
             portfolio_id=args.portfolio_id,
-            account_name=f"{args.portfolio_name}资金账户",
+            account_name=f"{portfolio_name}资金账户",
             account_type="deposit_account",
             currency="CNY",
             institution="Imported from CSV",
@@ -322,12 +321,12 @@ def main() -> None:
         securities_account = AccountRecordModel(
             account_id=securities_account_id,
             portfolio_id=args.portfolio_id,
-            account_name=f"{args.portfolio_name}证券账户",
+            account_name=f"{portfolio_name}证券账户",
             account_type="securities_account",
             currency="CNY",
             institution="Imported from CSV",
             default_settlement_cash_account_id=cash_account_id,
-            cost_basis_method="moving_average",
+            cost_basis_method="fifo",
             allowed_asset_types_json=["fund"],
             opened_at=min(row.trade_date for row in rows),
             closed_at=None,
@@ -454,7 +453,7 @@ def main() -> None:
 
         portfolio_payload = {
             "portfolio_id": args.portfolio_id,
-            "portfolio_name": args.portfolio_name,
+            "portfolio_name": portfolio_name,
             "base_currency": "CNY",
             "valuation_timezone": "Asia/Shanghai",
             "valuation_cutoff_policy": "latest_complete_eod",
@@ -494,7 +493,7 @@ def main() -> None:
 
         session.commit()
 
-    print(f"Imported portfolio {args.portfolio_id} ({args.portfolio_name}) from {csv_path}")
+    print(f"Imported portfolio {args.portfolio_id} ({portfolio_name}) from {csv_path}")
     print(f"Trade date: {imported_trade_date.isoformat()}")
     print(f"Transactions imported: {len(rows) + 1}")
     print(f"Seed cash: {float(total_gross_amount):,.2f} CNY")

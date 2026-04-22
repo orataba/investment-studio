@@ -296,6 +296,7 @@ flowchart LR
 - `instrument_id`（现金类可为空或指向 cash instrument）
 - `trade_date`
 - `settlement_date`
+- `acquisition_date`（仅 `opening_balance + position` 使用，用于 seed opening lot 的真实建仓日）
 - `transaction_type`
 - `quantity`
 - `price`
@@ -409,6 +410,9 @@ flowchart LR
 - `transaction_id`
 - `account_id`
 - `posting_role`
+- `trade_date`
+- `settlement_date`
+- `effective_date`
 - `cash_amount_delta`
 - `quantity_delta`
 - `cost_basis_delta`
@@ -418,6 +422,9 @@ flowchart LR
 
 - `LedgerPosting` 是派生对象，不是用户直接录入的事实；
 - 同一 `Transaction` 可以生成一个或多个 `LedgerPosting`；
+- `position` posting 的 `effective_date = trade_date`；cash posting 的 `effective_date = settlement_date`；
+- 账户现金账本、按日 cash balance 与按日 ledger slice 必须按 `effective_date` 回放，而不是统一按 `trade_date` 回放；
+- trade date 与 settlement date 之间若存在未交收证券现金腿，系统必须把该 receivable / payable 继续保留在组合 NAV 中，直到 cash posting 在 `effective_date` 转入 settled cash；
 - `Accounts` 页的账户账本、账户现金变动与账户持仓变动，都应以 `LedgerPosting` 为规范展示来源。
 - 实现层可以把 `LedgerPosting` 落成可重建的 persisted cache table / materialized view，也可以按需实时展开；但对外必须表现为稳定、确定性的 canonical ledger slice。
 
@@ -596,6 +603,7 @@ flowchart LR
 - `primary_assignment_scope`
 - `planning_enabled`
 - `budgeting_level`
+- `root_default_target_dimension`
 - `effective_from`
 - `effective_to`
 - `status`
@@ -640,6 +648,7 @@ flowchart LR
 - 首版 `planning_enabled = true` 时，`primary_assignment_scope` 必须为 `instrument`，且只允许补充 `cash_bucket`。
 - `account` taxonomy 只能用于 analysis / reporting / monitoring，不得挂接 `TargetSet`。
 - 若 `planning_enabled = true`，则该 taxonomy 必须声明 canonical `budgeting_level`。
+- planning taxonomy 根层必须有 `root_default_target_dimension`，用于 `Top Level` 在 `scope_default` 模式下的默认维度解析。
 - `taxonomy_type = risk_sleeve` 可以作为语义标签保留，但 canonical planning behavior 由 `planning_enabled` 与 portfolio-level `default_planning_taxonomy_id` 决定。
 
 ### 5.2 Planning Taxonomy And Risk-Sleeve Semantics
@@ -729,6 +738,8 @@ flowchart LR
 - 若某个 planning sleeve 采用内部 risk parity / optimizer，其子层 budget 应由 research / construction layer 解析，再派生为可比较的 resolved implementation target；
 - `TargetSetLine.target_risk_share` 只能在与 realized risk share 使用同一分母时比较，不能通过祖先节点的 `target_risk_share` 乘法展开得到全局 leaf risk budget；
 - `TargetSetLine.target_weight` 只有在该行本身已经明确为 `portfolio_nav` basis 时才能直接进入 canonical drift compare；local sleeve capital share 需要先解析；
+- `TargetSet` 绑定的 direct scope members 必须按 target set 自身的 `effective_from/effective_to` 去解析重叠的 taxonomy assignments；future-dated target set 不得拿过期 assignments 做校验；
+- 若 `target_weight` 用来表达 gross exposure / overlay / leverage，则其逐节点值可以大于单节点 capital share，整套 `target_weight` 总和不要求固定为 `100%`；
 - `cash` 节点可以拥有 `target_weight`，其 `target_risk_share` 在首版必须显式记为 `0`；
 - `SAA` 与 `TAA` 采用同一种结构，只是 `target_set_type` 不同。
 
@@ -743,7 +754,7 @@ flowchart LR
 - 首版 `TargetSet.weight_basis` 的 canonical 值固定为 `portfolio_nav`。
 - `TargetSet.target_dimensions` 至少必须包含 `weight` 或 `risk_budget` 中的一种。
 - `TargetSet(type = saa | taa)` 必须在 budgeting level 上形成完整节点集；未启用维度对应字段保持为 `null`。
-- 若启用 `weight` 维度，则 `TargetSet.target_weight` 在 budgeting level 上必须逐节点显式定义，且加总为 `100% ± epsilon`。
+- 若启用 `weight` 维度，则 `TargetSet.target_weight` 在 budgeting level 上必须逐节点显式定义；其 canonical basis 固定为 `portfolio_nav`，但总和不要求归一化到 `100%`。
 - 若未启用 `weight` 维度，则 `TargetSet.target_weight` 必须全部为 `null`。
 - 若启用 `risk_budget` 维度，则非现金节点的 `TargetSet.target_risk_share` 在 budgeting level 上必须逐节点显式定义且加总为 `100% ± epsilon`；现金节点的 `target_risk_share` 必须固定为 `0`。
 - 若未启用 `risk_budget` 维度，则 `TargetSet.target_risk_share` 必须全部为 `null`。

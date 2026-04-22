@@ -3,6 +3,8 @@
 更新时间：`2026-04-14`
 关联文档：[`01_PMS_REFERENCE_BASELINE.md`](./01_PMS_REFERENCE_BASELINE.md)
 
+> 说明：这份文档描述的是 `Portfolio` 的目标态产品定义，不等同于当前已发布页面集合。当前实现以 [README.md](../README.md) 为准，其中 `Snapshot` 仍是下一阶段报告工作面，当前路由回退到 `Holdings`。
+
 ## 1. 产品定义
 
 ### 1.1 一句话定义
@@ -392,12 +394,17 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 回答：
 
-- 风险在哪里？
-- 偏离是否过大？
+- 当前风险结构是什么？
+- 当前偏离、集中和风险预算是否过大？
+- 过去这段时间风险是怎么走出来的？
 - 情景冲击下会发生什么？
-- 风险预算是否失衡？
 
 这是本项目相对 Morningstar Web Portfolio 的新增核心工作面。
+
+首版页面结构分为两部分：
+
+- `Risk / Current`：当前结构、当前 drift、当前 risk budget、当前监控与脆弱点
+- `Risk / Realized`：区间风险路径、drawdown、波动、worst days、realized monitoring tape
 
 #### Transactions
 
@@ -428,6 +435,7 @@ MVP 先支持**全球公开市场的标准化资产**：
 - account positions
 - account-level transactions
 - derived account ledger postings
+- account workspace 必须支持按 `as_of_date` 回放；证券现金腿在 `settlement_date` 前仍留作 pending settlement，不得提前挪入 settled cash
 - default settlement cash mapping
 - paired-account view（一个 cash account 可服务多个 securities accounts）
 
@@ -437,12 +445,18 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 - buy-side 周期复盘页面
 - 承载 commentary、actions、performance/risk summary，以及可归档的导出物
+- 形态上更接近基金月报 / 季报式的 period review pack
 
 它与 `Snapshot` 的区别是：
 
 - `Snapshot` 关注 as-of-now；
 - `Review` 关注一个时间区间内发生了什么以及下一步动作；
 - `Review` 在系统内默认是当前工作版本，可随事实和配置修正而重算更新。
+
+它与 `Risk` 的区别是：
+
+- `Risk` 负责分析当前风险与过去风险路径；
+- `Review` 负责把一个周期内的收益、风险、偏离、研究 handoff 和动作总结成可讨论的 pack。
 
 #### Research
 
@@ -864,8 +878,8 @@ MVP 先支持**全球公开市场的标准化资产**：
 回答：
 
 - 当前有哪些风险超标？
-- 漂移是否过大？
-- 情景冲击下会发生什么？
+- 当前漂移、集中度和 risk budget gap 是否过大？
+- 过去这段时间波动、drawdown 和 worst days 是怎么走出来的？
 - 当前更应该对比 `SAA` 还是某条 `TAA`？
 - 当前命中的 alert breaches 是什么？
 
@@ -891,12 +905,14 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 - 本周期最重要的结果是什么？
 - 风险、收益、偏离和动作如何总结？
+- 哪些 research 结论应该 handoff 到本期复盘？
 
 ### 12.10 Research
 
 回答：
 
 - 这个组合当前在所选 planning taxonomy / sleeve scope 下的回测结果是什么？
+- current context / construction rows 必须与所选 `as_of_date` 对齐，cash 口径不能混入晚于该日的交易或尚未到 `effective_date` 的 settled cash
 - 哪些结果需要更新、重跑或 handoff 到组合讨论？
 - 当前 research run 的指标、曲线、权重路径和调仓建议是什么？
 

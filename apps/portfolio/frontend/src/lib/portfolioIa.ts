@@ -27,7 +27,6 @@ export type PortfolioPageDefinition = {
 }
 
 export const workspacePrimaryNavigation = [
-  { label: 'Snapshot', href: '/snapshot' },
   { label: 'Holdings', href: '/holdings' },
   { label: 'Performance', href: '/performance' },
   { label: 'Risk', href: '/risk' },
@@ -150,8 +149,8 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
     family: 'Current-State',
     toolbarLabel: 'Page: Risk',
     summary:
-      'Risk is a first-class current-state workspace. It owns exposure, drift, risk-budget gaps, scenarios, and limits or alerts with explicit target-resolution rules.',
-    primaryQuestion: '风险在哪里、偏离是否过大、该怎么解释？',
+      'Risk is the portfolio risk cockpit. It splits between Current risk and Realized risk so current structure and historical path are visible without collapsing into the Review narrative.',
+    primaryQuestion: '当前风险在哪里，过去这段时间风险是怎么走出来的，现在哪些风险需要处理？',
     primaryObjects: ['RiskSnapshot', 'AlertEvent', 'AlertRule', 'resolved TargetSet'],
     sharedContext: [
       'portfolio_id: current workspace portfolio',
@@ -162,10 +161,10 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
       'coverage_state: complete / partial / unavailable',
     ],
     coreBlocks: [
-      { title: 'Exposure', owner: 'RiskSnapshot', role: 'Show current exposure by taxonomy, sleeve, or benchmark-aware grouping' },
+      { title: 'Current risk', owner: 'RiskSnapshot', role: 'Show current exposure, concentration, drift, and configuration-sensitive monitoring' },
+      { title: 'Realized risk', owner: 'RiskSnapshot + realized window', role: 'Show drawdown path, realized volatility, worst days, and recent monitoring tape' },
       { title: 'Target weight drift', owner: 'Resolved TargetSet', role: 'Compare actual weights against resolved planning targets' },
       { title: 'Target risk budget gap', owner: 'Resolved TargetSet + risk share', role: 'Compare realized risk share against target risk budgets' },
-      { title: 'Concentration and realized risk', owner: 'RiskSnapshot', role: 'Surface HHI, top-k concentration, realized risk, and tracking context' },
       { title: 'Scenario results', owner: 'RiskSnapshot + scenarios', role: 'Show scenario P&L and impacted positions' },
       { title: 'Limits & alerts', owner: 'AlertEvent + AlertRule', role: 'Own the live breach and monitoring surface' },
     ],
@@ -246,8 +245,8 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
     family: 'Period',
     toolbarLabel: 'Page: Review Pack',
     summary:
-      'Review is the buy-side period narrative layer. It owns scorecards, commentary, actions, and export artifacts, while resolving mixed benchmark and mixed target timelines explicitly.',
-    primaryQuestion: '这个周期最重要的结果和动作是什么？',
+      'Review is the buy-side period review pack. It turns performance, realized risk, planning context, and research handoff into one discussion-ready period surface.',
+    primaryQuestion: '这个周期最重要的结果、解释和动作是什么？',
     primaryObjects: ['ReviewPack', 'PerformanceSnapshot', 'PeriodRiskSummary', 'action items'],
     sharedContext: [
       'portfolio_id: current workspace portfolio',
@@ -262,6 +261,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
       { title: 'Performance summary', owner: 'PerformanceSnapshot', role: 'Explain return and benchmark-relative outcome for the period' },
       { title: 'Risk summary', owner: 'PeriodRiskSummary', role: 'Summarize realized risk, breaches, and key exposures over the period' },
       { title: 'Target summaries', owner: 'ResolvedTargetTimeline', role: 'Summarize drift and target risk budget over the selected period' },
+      { title: 'Research handoff', owner: 'ResearchRun', role: 'Carry the latest relevant research findings and rebalance ideas into the period pack' },
       { title: 'Commentary, actions, export artifacts', owner: 'ReviewPack + ActionItem + ExportArtifact', role: 'Capture narrative, next steps, and archived output' },
     ],
     comparator: ['Fixed order: absolute result -> primary benchmark -> resolved target timeline -> alert breaches'],

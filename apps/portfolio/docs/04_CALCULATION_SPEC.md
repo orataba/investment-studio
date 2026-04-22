@@ -108,6 +108,25 @@
 - benchmark 必须对齐到同一个 `as_of_date`；
 - 系统不得把 `T` 日股票收盘与 `T+1` 日 FX 或 benchmark 静默混用。
 
+### 2.1.3 Valuation Basis vs Total-Return Basis
+
+共享层允许同一资产同时维护多种 quote basis，例如：
+
+- `fund`: `official_nav` 与 `total_return_nav`
+- `equity`: `close` 与 `adjusted_close`
+
+这里必须区分两种用途：
+
+- `valuation` role：服务组合 statement、持仓市值、NAV、ledger-driven performance
+- `total_return` / `chart` role：服务 research、backtest、资产风险序列与图表
+
+规范如下：
+
+- 组合账面估值不得静默切到 total-return basis；若分红或派息已作为交易/现金流入账，再用复权价会造成双算；
+- fund 的 research/backtest/risk 序列应优先使用 `total_return_nav`，只有缺失时才回退到 `official_nav`；
+- equity 的 research/backtest/risk 序列应优先使用 `adjusted_close`，只有缺失时才回退到 `close`；
+- chart / sparkline 默认也应遵循 total-return-first 的顺序，避免把除权除息导致的机械跳空误当成真实损失。
+
 ### 2.2 组合基准货币
 
 每个 `Portfolio` 必须有 `base_currency`。
@@ -171,6 +190,7 @@
 - `deposit` / `withdrawal` 必须记入 `deposit_account`；`buy` / `sell` / `dividend` / `coupon` / `maturity_redemption` 默认记入 `securities_account`。
 - 若 `transfer_object_type = cash`，只更新 `deposit_account` 现金账本；若 `transfer_object_type = position`，只更新 `securities_account` 持仓账本。
 - account-level cash / position ledger 必须通过 `Transaction -> LedgerPosting` 的确定性展开生成；`deposit_account` 账本是派生视图，不要求用户为同一结算再录入第二条现金交易。
+- 证券现金腿的 settled cash 进入账户账本的业务日期是 `LedgerPosting.effective_date = settlement_date`；证券头寸 posting 的 `effective_date = trade_date`。
 - `opening_balance` 是 bootstrap event，不属于正常运行期的 external / internal recurring flow。
 
 ### 2.4.1 opening_balance 处理
@@ -241,11 +261,14 @@ $$
 组合总净值：
 
 $$
-NAV_t = Cash_t^{base} + \sum_i MV_{i,t}^{base} + OtherAssets_t - Liabilities_t
+NAV_t = SettledCash_t^{base} + PendingSettlementNet_t^{base} + \sum_i MV_{i,t}^{base} + OtherAssets_t - Liabilities_t
 $$
 
 MVP 中：
 
+- `SettledCash_t^{base}` 表示截至 `t` 已经按 `effective_date` 生效的现金 posting；
+- `PendingSettlementNet_t^{base}` 表示 trade date 已确认、但 cash leg 尚未到 `effective_date` 的证券结算应收 / 应付款；该值在 settlement 前继续留在 NAV 中，settlement 当日转入 `SettledCash_t^{base}`；
+- `Accounts` workspace、account-axis contribution、Research current context / actual rows 在任意 `as_of_date = t` 都必须复用同一条 settled-vs-pending 口径；不能出现 settled cash 已按 `effective_date` 截断，但 ending value / actual rows 又漏掉 pending settlement 的情况；
 - `OtherAssets_t` 可先默认为 `0`，除非显式支持应收项；
 - `Liabilities_t` 可先包含费用、税费、应付款等可识别项目；
 - 若未显式支持某类应计项目，则必须在结果说明中标明未纳入。
@@ -772,7 +795,7 @@ $$
 - `TargetWeight_i` 来自按维度解析后的 resolved `TargetSetLine.target_weight`
 - canonical target 只能在 selected taxonomy 的 `budgeting_level` 上直接录入；父层节点目标必须派生汇总
 - 首版 canonical target weight 固定为 `portfolio_nav` basis
-- drift 计算前必须先校验 selected `TargetSet` 启用了 `weight` 维度，且在 budgeting level 上形成完整节点集并满足 `target_weight` 加总为 `100% ± epsilon`
+- drift 计算前必须先校验 selected `TargetSet` 启用了 `weight` 维度，且在 budgeting level 上形成完整节点集；若存在 gross leverage / overlay，`target_weight` 总和可以大于 `100%`
 - 若 active `TAA` 未启用 `weight` 维度，则必须回退到 active `SAA` 的 `weight` 维度；只有当 `SAA` 也未提供该维度时，target drift 才记为 `unavailable` / `comparator missing`
 
 ### 9.2 Total drift
@@ -802,6 +825,7 @@ $$
 - `CurrentWeight_i` 在 canonical drift 中也必须使用 `portfolio_nav`；
 - 若某层 target 来自 sleeve-local capital split 或 optimizer recipe，则它不是 canonical drift 的直接输入；只有解析成 `portfolio_nav` basis 的 resolved implementation weight 后，才能进入 drift compare；
 - 因而不能默认用 `ParentWeight × ChildLocalWeight` 机械展开所有层级权重；只有当 child weight 明确也是 capital share 且不会被内部求解器 / 杠杆 / 对冲改写时，该乘法才成立；
+- resolved `target_weight` 必须在 budgeting level 上形成完整节点集，但总和不要求固定为 `100%`；若组合存在 gross leverage / overlay，target gross exposure 可以大于 `100%`；
 - 排除现金后的分析口径可用于暴露、集中度或纯分析展示，但不能替代 canonical target drift 口径。
 
 ### 9.4 MVP weight drift source decomposition

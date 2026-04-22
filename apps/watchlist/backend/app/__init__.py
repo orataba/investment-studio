@@ -1,1 +1,0 @@
-"""Yungu Watchlist backend package."""

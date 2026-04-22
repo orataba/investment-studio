@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom'
 
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
@@ -17,8 +17,13 @@ import {
 } from '../lib/api'
 import { formatCurrency, formatLabel, formatNumber, formatSignedCurrency, formatUnitPrice } from '../lib/format'
 
-const DEFAULT_ACCOUNT_OPENED_AT = '2026-04-15'
 const ACCOUNT_SCOPE_OPTIONS = ['equity', 'fund', 'bond', 'other'] as const
+
+function localTodayIso() {
+  const now = new Date()
+  const timezoneOffsetMs = now.getTimezoneOffset() * 60 * 1000
+  return new Date(now.getTime() - timezoneOffsetMs).toISOString().slice(0, 10)
+}
 
 function primaryIdentifier(position: {
   asset_id?: string | null
@@ -53,7 +58,7 @@ function accountTransactionHref(portfolioId: string, accountId: string, transact
 }
 
 export default function AccountsPage() {
-  const { portfolioId = 'yungu' } = useParams()
+  const { portfolioId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const [workspace, setWorkspace] = useState<PortfolioAccountsWorkspaceResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -64,6 +69,12 @@ export default function AccountsPage() {
   const [form, setForm] = useState<AccountFormState>(buildInitialAccountForm)
 
   async function refreshWorkspace(nextAccountId?: string | null) {
+    if (!portfolioId) {
+      setWorkspace(null)
+      setError('Portfolio id is required.')
+      setLoading(false)
+      return
+    }
     setLoading(true)
     try {
       const targetAccountId = nextAccountId ?? searchParams.get('account_id') ?? undefined
@@ -90,6 +101,15 @@ export default function AccountsPage() {
 
   useEffect(() => {
     let cancelled = false
+
+    if (!portfolioId) {
+      setWorkspace(null)
+      setError('Portfolio id is required.')
+      setLoading(false)
+      return () => {
+        cancelled = true
+      }
+    }
 
     setLoading(true)
     getPortfolioAccountsWorkspace(portfolioId, searchParams.get('account_id') ?? undefined)
@@ -138,13 +158,13 @@ export default function AccountsPage() {
     if (form.account_type !== 'securities_account') {
       if (
         form.default_settlement_cash_account_id ||
-        form.cost_basis_method !== 'moving_average' ||
+        form.cost_basis_method !== 'fifo' ||
         form.allowed_asset_types.length
       ) {
         setForm((current) => ({
           ...current,
           default_settlement_cash_account_id: '',
-          cost_basis_method: 'moving_average',
+          cost_basis_method: 'fifo',
           allowed_asset_types: [],
         }))
       }
@@ -178,6 +198,10 @@ export default function AccountsPage() {
 
   const visibleLedgerPostings = workspace?.ledger_postings ?? []
   const visiblePositions = workspace?.positions ?? []
+
+  if (!portfolioId) {
+    return <Navigate replace to="/portfolios" />
+  }
 
   async function handleCreateAccount() {
     setFormError(null)
@@ -252,8 +276,8 @@ export default function AccountsPage() {
         <div className="holdings-meta-row">
           <p className="coverage-note">
             Accounts now combines account fact entry with `LedgerPosting`-driven derived slices. Cash balances,
-            settlement mappings, and account-level positions stay here; portfolio-level holdings and snapshot
-            remain downstream views.
+            settlement mappings, and account-level positions stay here; portfolio-level holdings and review
+            surfaces remain downstream views.
           </p>
         </div>
 
@@ -670,8 +694,8 @@ export default function AccountsPage() {
                         }))
                       }
                     >
-                      <option value="moving_average">Moving Average</option>
                       <option value="fifo">FIFO</option>
+                      <option value="moving_average">Moving Average</option>
                     </select>
                   </label>
                 ) : (
@@ -775,9 +799,9 @@ function buildInitialAccountForm(accounts: PortfolioAccountRecord[] = []): Accou
     currency: defaultCashAccount?.currency ?? 'USD',
     institution: '',
     default_settlement_cash_account_id: defaultCashAccount?.account_id ?? '',
-    cost_basis_method: 'moving_average',
+    cost_basis_method: 'fifo',
     allowed_asset_types: [],
-    opened_at: DEFAULT_ACCOUNT_OPENED_AT,
+    opened_at: localTodayIso(),
     closed_at: '',
     status: 'active',
   }

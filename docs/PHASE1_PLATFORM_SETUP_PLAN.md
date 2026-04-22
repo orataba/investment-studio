@@ -1,6 +1,6 @@
 # Yungu Phase 1 Platform Setup
 
-> 历史阶段文档。当前落地状态请以根目录 `README.md` 与各 app README 为准；下面内容保留为 phase 1 建设记录。
+> 历史阶段文档，不是当前操作手册。当前落地状态请以 [README.md](../README.md)、[docs/README.md](./README.md) 和各 app README 为准；下面内容只保留为 phase 1 建设记录。
 
 ## 目标
 
@@ -25,7 +25,7 @@
 - 迁入 `pmw` 设计文档至 `apps/portfolio/docs`
 - 创建 `packages/asset-core`
 - 创建 `packages/ui`
-- 创建 `packages/copilot`
+- 创建 `packages/copilot` 预留目录
 - 补充平台 README 与边界文档
 
 ## 下一步

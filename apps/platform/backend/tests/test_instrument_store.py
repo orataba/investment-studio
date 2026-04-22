@@ -8,8 +8,8 @@ from alembic import command
 from alembic.config import Config
 import pytest
 
-from app.services import instrument_store
-from app.services.instrument_store import (
+from platform_app.services import instrument_store
+from platform_app.services.instrument_store import (
     DEFAULT_REGISTRY_NAME,
     _normalize_store,
     archive_instrument,
@@ -93,11 +93,13 @@ TEST_SHARED_STORE = {
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE_ROOT = BACKEND_ROOT.parents[2]
+SHARED_ASSET_MIGRATIONS_ROOT = WORKSPACE_ROOT / "infra" / "shared_asset"
 
 
 def _run_alembic_upgrade(database_url: str) -> None:
-    config = Config(str(BACKEND_ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config = Config(str(SHARED_ASSET_MIGRATIONS_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(SHARED_ASSET_MIGRATIONS_ROOT / "alembic"))
     config.set_main_option("sqlalchemy.url", database_url)
     command.upgrade(config, "head")
 
@@ -128,8 +130,8 @@ def isolated_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("YUNGU_PLATFORM_DATABASE_URL", database_url)
     monkeypatch.setenv("YUNGU_PLATFORM_DATABASE_SCHEMA", "")
 
-    from app.core import settings as settings_module
-    from app.db import session as session_module
+    from platform_app.core import settings as settings_module
+    from platform_app.db import session as session_module
 
     settings_module.get_settings.cache_clear()
     session_module.get_engine.cache_clear()
@@ -220,18 +222,9 @@ def test_create_rejects_identifier_collision_with_archived_instrument(
         )
 
 
-def test_upsert_market_data_notifies_watchlist_recalc(
+def test_upsert_market_data_updates_shared_store_without_app_callbacks(
     isolated_store: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    notifications: list[dict[str, str | None]] = []
-
-    monkeypatch.setattr(
-        instrument_store,
-        "schedule_watchlist_recalc",
-        lambda **kwargs: notifications.append(kwargs),
-    )
-
     record = upsert_market_data(
         asset_id="fund-us-agg",
         metric_family="price",
@@ -244,27 +237,15 @@ def test_upsert_market_data_notifies_watchlist_recalc(
     )
 
     assert record is not None
-    assert notifications == [
-        {
-            "asset_id": "fund-us-agg",
-            "trigger_ref_type": "instrument_market_data_upsert",
-            "trigger_ref_id": "price:close:2026-04-16",
-        }
-    ]
-
-
-def test_replace_nav_history_notifies_watchlist_recalc_with_latest_date(
-    isolated_store: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    notifications: list[dict[str, str | None]] = []
-
-    monkeypatch.setattr(
-        instrument_store,
-        "schedule_watchlist_recalc",
-        lambda **kwargs: notifications.append(kwargs),
+    assert any(
+        point["as_of_date"] == "2026-04-16" and point["value"] == "97.0100"
+        for point in record["latest_market_data"]
     )
 
+
+def test_replace_nav_history_updates_shared_store_without_app_callbacks(
+    isolated_store: Path,
+) -> None:
     record = replace_nav_history(
         asset_id="fund-us-agg",
         rows=[
@@ -289,10 +270,9 @@ def test_replace_nav_history_notifies_watchlist_recalc_with_latest_date(
     )
 
     assert record is not None
-    assert notifications == [
-        {
-            "asset_id": "fund-us-agg",
-            "trigger_ref_type": "instrument_nav_history_replace",
-            "trigger_ref_id": "2026-04-15",
-        }
-    ]
+    assert any(
+        point["quote_basis"] == "official_nav"
+        and point["as_of_date"] == "2026-04-15"
+        and point["value"] == "100.2000"
+        for point in record["latest_market_data"]
+    )

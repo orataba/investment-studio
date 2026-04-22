@@ -1,0 +1,87 @@
+from datetime import time
+from functools import lru_cache
+from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
+
+
+class Settings(BaseSettings):
+    app_name: str = "Yungu Portfolio API"
+    app_version: str = "0.1.0"
+    environment: str = "development"
+    frontend_url: str = "http://127.0.0.1:5174"
+    database_url: str = "postgresql+psycopg://yungu:yungu@127.0.0.1:5432/yungu"
+    alembic_database_url: str | None = None
+    database_schema: str | None = "portfolio"
+    research_outputs_root: Path = WORKSPACE_ROOT / "backend" / "research_outputs"
+    sql_echo: bool = False
+    default_trade_timezone: str = "Asia/Shanghai"
+    default_trade_time: str = "12:00"
+    cors_origins: list[str] = ["*"]
+
+    model_config = SettingsConfigDict(
+        env_prefix="YUNGU_PORTFOLIO_",
+        env_file=WORKSPACE_ROOT / "backend" / ".env",
+        extra="ignore",
+    )
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _coerce_cors_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("default_trade_timezone", mode="before")
+    @classmethod
+    def _validate_default_trade_timezone(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("default_trade_timezone must not be empty.")
+        try:
+            ZoneInfo(normalized)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("default_trade_timezone must be a valid IANA timezone.") from exc
+        return normalized
+
+    @field_validator("default_trade_time", mode="before")
+    @classmethod
+    def _validate_default_trade_time(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        try:
+            parsed = time.fromisoformat(normalized)
+        except ValueError as exc:
+            raise ValueError("default_trade_time must use HH:MM format.") from exc
+        return f"{parsed.hour:02d}:{parsed.minute:02d}"
+
+    @field_validator("database_schema", mode="before")
+    @classmethod
+    def _coerce_database_schema(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                return None
+            if not normalized.replace("_", "").isalnum() or normalized[0].isdigit():
+                raise ValueError("database_schema must be a valid SQL identifier.")
+            return normalized
+        return value
+
+    @property
+    def migration_database_url(self) -> str:
+        return self.alembic_database_url or self.database_url
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
