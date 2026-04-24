@@ -1694,7 +1694,7 @@ export default function WatchlistsPage() {
                     <div>
                       <div className="watchlists-filter-title">Filters</div>
                       <div className="watchlists-filter-subtitle">
-                        Filter the current product pool by classification, research labels, and
+                        Filter the current product pool by taxonomy, research labels, and
                         monitoring labels.
                       </div>
                     </div>

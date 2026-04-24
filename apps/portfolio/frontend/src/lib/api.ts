@@ -505,6 +505,7 @@ export type PortfolioResearchBenchmarkMode = 'none'
 export type PortfolioResearchTargetSetMode = 'saa' | 'taa_over_saa'
 export type PortfolioResearchTargetDimension = 'scope_default' | 'weight' | 'risk_budget'
 export type PortfolioResearchRebalanceFrequency = 'weekly' | 'monthly' | 'quarterly'
+export type PortfolioResearchCapitalMode = 'unit_notional' | 'fixed_gross' | 'target_volatility'
 export type PortfolioResearchArtifactPreviewKind = 'text' | 'html' | 'binary'
 
 export type PortfolioResearchPlanningTaxonomyOption = {
@@ -536,6 +537,10 @@ export type PortfolioResearchSettingsRecord = {
   run_template: PortfolioResearchRunTemplate
   target_set_mode: PortfolioResearchTargetSetMode
   target_dimension: PortfolioResearchTargetDimension
+  capital_mode: PortfolioResearchCapitalMode
+  gross_exposure?: number | null
+  target_volatility?: number | null
+  max_gross_exposure?: number | null
   rebalance_frequency: PortfolioResearchRebalanceFrequency
   notes?: string | null
   updated_at?: string | null
@@ -551,6 +556,10 @@ export type PortfolioResearchSettingsUpdatePayload = {
   run_template?: PortfolioResearchRunTemplate
   target_set_mode?: PortfolioResearchTargetSetMode
   target_dimension?: PortfolioResearchTargetDimension
+  capital_mode?: PortfolioResearchCapitalMode
+  gross_exposure?: number | null
+  target_volatility?: number | null
+  max_gross_exposure?: number | null
   rebalance_frequency?: PortfolioResearchRebalanceFrequency
   notes?: string | null
 }
@@ -1075,6 +1084,15 @@ export type PortfolioTransactionWorkspaceResponse = {
   related_position_lots: PortfolioPositionLotRecord[]
 }
 
+export type PortfolioTransactionPositionPreviewResponse = {
+  portfolio_id: string
+  account_id: string
+  asset_id: string
+  as_of_date: string
+  trade_at: string
+  quantity: number
+}
+
 export type PortfolioPositionRecord = {
   position_id: string
   portfolio_id: string
@@ -1360,6 +1378,23 @@ export function getPortfolioTransactionsWorkspace(
   return fetchJson<PortfolioTransactionWorkspaceResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/transactions/workspace${query}`,
+  )
+}
+
+export function getPortfolioTransactionPositionPreview(
+  portfolioId: string,
+  filters: {
+    account_id: string
+    asset_id: string
+    as_of_date: string
+    trade_time?: string
+    exclude_transaction_id?: string
+  },
+) {
+  const query = buildQuery(filters)
+  return fetchJson<PortfolioTransactionPositionPreviewResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/transactions/position-preview${query}`,
   )
 }
 

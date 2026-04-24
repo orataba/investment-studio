@@ -24,6 +24,7 @@ from portfolio_app.api.contracts import (
     TransactionDeleteResponse,
     TransactionListResponse,
     TransactionListSummary,
+    TransactionPositionPreviewResponse,
     TransactionRecord,
     TransactionWorkspaceResponse,
 )
@@ -43,6 +44,7 @@ from portfolio_app.services.instrument_registry import (
 )
 from portfolio_app.services.portfolio_store import (
     create_transaction,
+    create_transactions,
     delete_transactions,
     get_account,
     get_portfolio,
@@ -612,6 +614,53 @@ def get_transaction_workspace(
     )
 
 
+@router.get("/{portfolio_id}/transactions/position-preview", response_model=TransactionPositionPreviewResponse)
+def get_transaction_position_preview(
+    portfolio_id: str,
+    account_id: str,
+    asset_id: str,
+    as_of_date: date = Query(...),
+    trade_time: str | None = None,
+    exclude_transaction_id: str | None = None,
+) -> TransactionPositionPreviewResponse:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    if get_account(portfolio_id, account_id) is None:
+        raise HTTPException(status_code=400, detail="Account not found")
+
+    _load_instrument_ref(asset_id)
+    resolved_trade_timing = resolve_trade_timing(
+        trade_date=as_of_date,
+        trade_time=trade_time,
+    )
+    pending_created_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    excluded_transaction_ids = {exclude_transaction_id} if exclude_transaction_id else None
+    transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
+        portfolio_id,
+        trade_date=as_of_date,
+        trade_at=str(resolved_trade_timing["trade_at"]),
+        created_at=pending_created_at,
+        settlement_date=as_of_date,
+        exclude_transaction_ids=excluded_transaction_ids,
+    )
+    quantity = estimate_position_quantity(
+        portfolio_id,
+        transactions_as_of_trade_date,
+        account_id=account_id,
+        asset_id=asset_id,
+        account_cost_methods=_account_cost_methods(portfolio_id),
+    )
+    return TransactionPositionPreviewResponse(
+        portfolio_id=portfolio_id,
+        account_id=account_id,
+        asset_id=asset_id,
+        as_of_date=as_of_date,
+        trade_at=str(resolved_trade_timing["trade_at"]),
+        quantity=quantity,
+    )
+
+
 def _persist_transaction_record(
     *,
     portfolio_id: str,
@@ -1108,62 +1157,63 @@ def create_internal_transfer_records(
     transfer_group_id = payload.transfer_group_id or f"trf-{uuid4().hex[:12]}"
     trade_date = payload.trade_date
 
-    created_records = [
-        create_transaction(
-            portfolio_id=portfolio_id,
-            transaction_type="transfer_out",
-            trade_date=trade_date,
-            trade_time=payload.trade_time,
-            settlement_date=settlement_date,
-            entitlement_date=None,
-            acquisition_date=None,
-            account_id=payload.from_account_id,
-            settlement_cash_account_id=None,
-            asset_id=asset_id,
-            instrument_ref=instrument_ref,
-            quantity=payload.quantity,
-            price=None,
-            gross_amount=float(transferred_amount or 0.0),
-            counter_amount=None,
-            fx_rate=None,
-            fees=0,
-            taxes=0,
-            currency=transfer_currency,
-            transfer_scope="internal_portfolio",
-            transfer_object_type=transfer_object_type,
-            transfer_group_id=transfer_group_id,
-            counterparty_account_id=payload.to_account_id,
-            note=payload.note,
-            created_at=pending_created_at,
-        ),
-        create_transaction(
-            portfolio_id=portfolio_id,
-            transaction_type="transfer_in",
-            trade_date=trade_date,
-            trade_time=payload.trade_time,
-            settlement_date=settlement_date,
-            entitlement_date=None,
-            acquisition_date=None,
-            account_id=payload.to_account_id,
-            settlement_cash_account_id=None,
-            asset_id=asset_id,
-            instrument_ref=instrument_ref,
-            quantity=payload.quantity,
-            price=None,
-            gross_amount=float(transferred_amount or 0.0),
-            counter_amount=None,
-            fx_rate=None,
-            fees=0,
-            taxes=0,
-            currency=transfer_currency,
-            transfer_scope="internal_portfolio",
-            transfer_object_type=transfer_object_type,
-            transfer_group_id=transfer_group_id,
-            counterparty_account_id=payload.from_account_id,
-            note=payload.note,
-            created_at=pending_created_at,
-        ),
-    ]
+    created_records = create_transactions(
+        portfolio_id=portfolio_id,
+        records=[
+            {
+                "transaction_type": "transfer_out",
+                "trade_date": trade_date,
+                "trade_time": payload.trade_time,
+                "settlement_date": settlement_date,
+                "entitlement_date": None,
+                "acquisition_date": None,
+                "account_id": payload.from_account_id,
+                "settlement_cash_account_id": None,
+                "asset_id": asset_id,
+                "instrument_ref": instrument_ref,
+                "quantity": payload.quantity,
+                "price": None,
+                "gross_amount": float(transferred_amount or 0.0),
+                "counter_amount": None,
+                "fx_rate": None,
+                "fees": 0,
+                "taxes": 0,
+                "currency": transfer_currency,
+                "transfer_scope": "internal_portfolio",
+                "transfer_object_type": transfer_object_type,
+                "transfer_group_id": transfer_group_id,
+                "counterparty_account_id": payload.to_account_id,
+                "note": payload.note,
+                "created_at": pending_created_at,
+            },
+            {
+                "transaction_type": "transfer_in",
+                "trade_date": trade_date,
+                "trade_time": payload.trade_time,
+                "settlement_date": settlement_date,
+                "entitlement_date": None,
+                "acquisition_date": None,
+                "account_id": payload.to_account_id,
+                "settlement_cash_account_id": None,
+                "asset_id": asset_id,
+                "instrument_ref": instrument_ref,
+                "quantity": payload.quantity,
+                "price": None,
+                "gross_amount": float(transferred_amount or 0.0),
+                "counter_amount": None,
+                "fx_rate": None,
+                "fees": 0,
+                "taxes": 0,
+                "currency": transfer_currency,
+                "transfer_scope": "internal_portfolio",
+                "transfer_object_type": transfer_object_type,
+                "transfer_group_id": transfer_group_id,
+                "counterparty_account_id": payload.from_account_id,
+                "note": payload.note,
+                "created_at": pending_created_at,
+            },
+        ],
+    )
     account_lookup = {item["account_id"]: item for item in list_accounts(portfolio_id)}
     return TransactionBatchResponse(
         portfolio_id=portfolio_id,

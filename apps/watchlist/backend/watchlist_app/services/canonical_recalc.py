@@ -30,18 +30,23 @@ from watchlist_app.repositories.sqlalchemy.manual_profiles import (
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
 from watchlist_app.repositories.sqlalchemy.snapshots import SQLAlchemySnapshotRepository
+from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
+from watchlist_app.services.fund_taxonomy import (
+    build_taxonomy_context,
+    merge_taxonomy_attributes,
+)
 from watchlist_app.services.read_models import (
     build_watchlist_row_materialization,
     collapse_latest_attribute_values,
     serialize_payload,
 )
-from watchlist_app.services.recalc_job_ids import make_recalc_job_id
+from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
 from watchlist_app.services.shared_instrument_registry import get_shared_instrument
 
 
 DEFAULT_TABS = [
-    "summary",
-    "chart",
+    "overview",
+    "quote",
     "performance",
     "risk",
     "price",
@@ -820,6 +825,7 @@ class CanonicalRecalcService:
         self.read_model_repository = SQLAlchemyReadModelRepository()
         self.recalc_repository = SQLAlchemyRecalcJobRepository()
         self.snapshot_repository = SQLAlchemySnapshotRepository()
+        self.taxonomy_repository = SQLAlchemyTaxonomyRepository()
 
     def build_nav_series_payload(
         self,
@@ -957,7 +963,13 @@ class CanonicalRecalcService:
             trigger_ref_id=trigger_ref_id,
             job_status="queued",
             priority=100 if job_type == "all" else 90,
-            dedupe_key=f"{job_type}:{asset_id}:{make_recalc_job_id()}",
+            dedupe_key=make_recalc_dedupe_key(
+                job_type=job_type,
+                asset_id=asset_id,
+                trigger_type=trigger_type,
+                trigger_ref_type=trigger_ref_type,
+                trigger_ref_id=trigger_ref_id,
+            ),
             payload_json={"requested_by": trigger_type},
         )
         self.recalc_repository.mark_running(session, record)
@@ -1054,8 +1066,19 @@ class CanonicalRecalcService:
             session,
             asset_id=asset_id,
         )
-        attributes = collapse_latest_attribute_values(
+        raw_attributes = collapse_latest_attribute_values(
             self.attribute_repository.get_values_for_asset(session, asset_id)
+        )
+        assignment = self.taxonomy_repository.get_assignment(session, asset_id=asset_id)
+        taxonomy_node = (
+            self.taxonomy_repository.get_node(session, node_id=str(assignment.node_id))
+            if assignment is not None and assignment.node_id
+            else None
+        )
+        taxonomy_context = build_taxonomy_context(taxonomy_node)
+        watchlist_attributes = merge_taxonomy_attributes(
+            taxonomy_context=taxonomy_context,
+            instrument_attributes=raw_attributes,
         )
 
         performance_snapshot = self.snapshot_repository.get_current_performance(session, asset_id)
@@ -1102,7 +1125,8 @@ class CanonicalRecalcService:
             risk_snapshot=risk_snapshot,
             exposure_snapshot=exposure_snapshot,
             score_snapshot=score_snapshot,
-            attributes=attributes,
+            attributes=raw_attributes,
+            taxonomy_context=taxonomy_context,
             now=now,
         )
         chart_payload = _build_chart_payload(
@@ -1149,12 +1173,12 @@ class CanonicalRecalcService:
 
         self._refresh_watchlist_rows(
             session,
-            asset=asset,
-            summary_payload=summary_payload,
-            attributes=attributes,
-            performance_snapshot=performance_snapshot,
-            risk_snapshot=risk_snapshot,
-            exposure_snapshot=exposure_snapshot,
+                asset=asset,
+                summary_payload=summary_payload,
+                attributes=watchlist_attributes,
+                performance_snapshot=performance_snapshot,
+                risk_snapshot=risk_snapshot,
+                exposure_snapshot=exposure_snapshot,
             score_snapshot=score_snapshot,
             now=now,
         )
@@ -1413,6 +1437,7 @@ class CanonicalRecalcService:
         exposure_snapshot,
         score_snapshot,
         attributes: dict[str, object],
+        taxonomy_context: dict[str, object],
         now: datetime,
     ) -> dict[str, object]:
         last_nav_date = (
@@ -1427,9 +1452,11 @@ class CanonicalRecalcService:
             "ticker_or_isin": asset.primary_identifier_value or asset.asset_id.upper(),
             "rating_as_of": now.date().isoformat(),
             "category_name": str(asset.metadata_json.get("category_name") or "Unclassified"),
+            "management_firm_name": str(asset.metadata_json.get("management_firm_name") or "") or None,
             "overall_rating": getattr(score_snapshot, "overall_rating", None),
             "analyst_stance": getattr(score_snapshot, "analyst_stance", "Unrated"),
             "instrument_attributes": attributes,
+            "taxonomy": taxonomy_context,
             "key_stats": [
                 {"label": "Last NAV Date", "value": last_nav_date or "—"},
                 {

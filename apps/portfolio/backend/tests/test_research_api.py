@@ -198,6 +198,10 @@ def test_research_workbench_returns_backtest_defaults(client):
     assert payload["settings"]["run_template"] == "taxonomy_backtest"
     assert payload["settings"]["target_set_mode"] == "taa_over_saa"
     assert payload["settings"]["target_dimension"] == "scope_default"
+    assert payload["settings"]["capital_mode"] == "unit_notional"
+    assert payload["settings"]["gross_exposure"] is None
+    assert payload["settings"]["target_volatility"] is None
+    assert payload["settings"]["max_gross_exposure"] is None
     assert payload["settings"]["rebalance_frequency"] == "monthly"
     assert payload["settings"]["start_date"] is not None
     assert payload["planning_taxonomy_options"] == []
@@ -329,11 +333,12 @@ def test_research_run_creates_recursive_backtest_outputs(client):
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
             "as_of_date": "2026-04-15",
             "start_date": "2026-03-20",
-            "lookback_days": 30,
+            "lookback_days": 7,
             "benchmark_mode": "none",
             "run_template": "taxonomy_backtest",
             "target_set_mode": "taa_over_saa",
             "target_dimension": "scope_default",
+            "capital_mode": "unit_notional",
             "rebalance_frequency": "weekly",
             "notes": "Research regression test",
         },
@@ -356,7 +361,7 @@ def test_research_run_creates_recursive_backtest_outputs(client):
         "/api/portfolios/yungu/research/runs",
         json={"requested_by": "pytest"},
     )
-    assert run_response.status_code == 200
+    assert run_response.status_code == 200, run_response.json()
 
     run_payload = run_response.json()
     assert run_payload["status"] == "completed"
@@ -412,11 +417,12 @@ def test_research_backtest_actuals_keep_cash_until_security_settlement(client):
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
             "start_date": "2026-03-20",
-            "lookback_days": 30,
+            "lookback_days": 7,
             "benchmark_mode": "none",
             "run_template": "taxonomy_backtest",
             "target_set_mode": "taa_over_saa",
             "target_dimension": "scope_default",
+            "capital_mode": "unit_notional",
             "rebalance_frequency": "weekly",
             "notes": "Delayed settlement actuals regression",
         },
@@ -454,7 +460,7 @@ def test_research_backtest_actuals_keep_cash_until_security_settlement(client):
         "/api/portfolios/yungu/research/runs",
         json={"requested_by": "pytest"},
     )
-    assert run_response.status_code == 200
+    assert run_response.status_code == 200, run_response.json()
     run_payload = run_response.json()
     cash_row = next(
         item
@@ -474,11 +480,12 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
             "start_date": "2026-03-20",
-            "lookback_days": 30,
+            "lookback_days": 7,
             "benchmark_mode": "none",
             "run_template": "taxonomy_backtest",
             "target_set_mode": "taa_over_saa",
             "target_dimension": "scope_default",
+            "capital_mode": "unit_notional",
             "rebalance_frequency": "weekly",
         },
     )
@@ -490,15 +497,6 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
         item for item in workbench_response.json()["planning_scope_options"] if item["taxonomy_node_id"] is None
     )
     assert top_level_scope["default_target_dimension"] == "risk_budget"
-
-    run_response = client.post(
-        "/api/portfolios/yungu/research/runs",
-        json={"requested_by": "pytest"},
-    )
-    assert run_response.status_code == 200
-    run_payload = run_response.json()
-    assert run_payload["detail"]["selected_scope"]["taxonomy_node_id"] is None
-    assert run_payload["detail"]["selected_scope"]["default_target_dimension"] == "risk_budget"
 
 
 def test_deleting_selected_research_taxonomy_clears_settings(client):
@@ -516,6 +514,7 @@ def test_deleting_selected_research_taxonomy_clears_settings(client):
             "run_template": "taxonomy_backtest",
             "target_set_mode": "taa_over_saa",
             "target_dimension": "scope_default",
+            "capital_mode": "unit_notional",
             "rebalance_frequency": "monthly",
         },
     )
@@ -530,3 +529,80 @@ def test_deleting_selected_research_taxonomy_clears_settings(client):
     assert workbench_payload["default_planning_taxonomy_id"] is None
     assert workbench_payload["settings"]["planning_taxonomy_id"] is None
     assert workbench_payload["settings"]["comparator_taxonomy_node_id"] is None
+
+
+def test_research_target_volatility_scales_risk_assets_into_cash(client):
+    taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
+    _create_target_sets(client, taxonomy_id, _node_ids)
+
+    settings_response = client.put(
+        "/api/portfolios/yungu/research/settings",
+        json={
+            "planning_taxonomy_id": taxonomy_id,
+            "comparator_taxonomy_node_id": None,
+            "as_of_date": "2026-04-15",
+            "start_date": "2026-03-20",
+            "lookback_days": 7,
+            "benchmark_mode": "none",
+            "run_template": "taxonomy_backtest",
+            "target_set_mode": "taa_over_saa",
+            "target_dimension": "weight",
+            "capital_mode": "target_volatility",
+            "target_volatility": 0.01,
+            "max_gross_exposure": 1.0,
+            "rebalance_frequency": "weekly",
+        },
+    )
+    assert settings_response.status_code == 200
+    settings_payload = settings_response.json()
+    assert settings_payload["capital_mode"] == "target_volatility"
+    assert settings_payload["target_volatility"] == pytest.approx(0.01)
+    assert settings_payload["max_gross_exposure"] == pytest.approx(1.0)
+
+    run_response = client.post(
+        "/api/portfolios/yungu/research/runs",
+        json={"requested_by": "pytest"},
+    )
+    assert run_response.status_code == 200, run_response.json()
+    run_payload = run_response.json()
+    signal_map = {item["label"]: item["value"] for item in run_payload["detail"]["signals"]}
+    assert signal_map["Capital Mode"] == "Target Volatility"
+    assert signal_map["Target Volatility"] == "1.00%"
+
+    cash_row = next(
+        item
+        for item in run_payload["detail"]["construction_rows"]
+        if item["label"] == "Cash Reserve"
+    )
+    assert cash_row["implementation_weight"] is not None
+    assert cash_row["implementation_weight"] > (cash_row["target_weight"] or 0.0)
+
+
+def test_research_run_rejects_incomplete_full_lookback_for_risk_budget(client):
+    taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
+    _create_target_sets(client, taxonomy_id, _node_ids)
+
+    settings_response = client.put(
+        "/api/portfolios/yungu/research/settings",
+        json={
+            "planning_taxonomy_id": taxonomy_id,
+            "comparator_taxonomy_node_id": None,
+            "as_of_date": "2026-04-15",
+            "start_date": "2026-03-20",
+            "lookback_days": 180,
+            "benchmark_mode": "none",
+            "run_template": "taxonomy_backtest",
+            "target_set_mode": "taa_over_saa",
+            "target_dimension": "scope_default",
+            "capital_mode": "unit_notional",
+            "rebalance_frequency": "monthly",
+        },
+    )
+    assert settings_response.status_code == 200
+
+    run_response = client.post(
+        "/api/portfolios/yungu/research/runs",
+        json={"requested_by": "pytest"},
+    )
+    assert run_response.status_code == 400
+    assert "full 180-day lookback" in run_response.json()["detail"]

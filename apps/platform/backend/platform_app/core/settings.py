@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: str = "development"
     frontend_url: str = "http://127.0.0.1:5172"
-    cors_origins: list[str] = ["*"]
+    cors_origins: list[str] = ["http://127.0.0.1:5172", "http://localhost:5172"]
     watchlist_url: str = "http://127.0.0.1:5173"
     portfolio_url: str = "http://127.0.0.1:5174"
     watchlist_api_url: str = "http://127.0.0.1:8000"
@@ -57,6 +57,17 @@ class Settings(BaseSettings):
                 raise ValueError("database_schema must be a valid SQL identifier.")
             return normalized
         return value
+
+    @model_validator(mode="after")
+    def _validate_cors_policy(self) -> "Settings":
+        environment = self.environment.strip().lower()
+        if environment not in {"development", "dev", "local", "test"} and "*" in self.cors_origins:
+            raise ValueError("cors_origins must not contain '*' outside development/test.")
+        return self
+
+    @property
+    def cors_allow_credentials(self) -> bool:
+        return "*" not in self.cors_origins
 
     @property
     def email_sync_ready(self) -> bool:

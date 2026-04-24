@@ -56,6 +56,11 @@ def update_portfolio_research_settings(
             run_template=payload.run_template,
             target_set_mode=payload.target_set_mode,
             target_dimension=payload.target_dimension,
+            capital_mode=payload.capital_mode,
+            gross_exposure=payload.gross_exposure,
+            target_volatility=payload.target_volatility,
+            max_gross_exposure=payload.max_gross_exposure,
+            frozen_taxonomy_node_ids=payload.frozen_taxonomy_node_ids,
             rebalance_frequency=payload.rebalance_frequency,
             notes=payload.notes,
         )

@@ -227,6 +227,43 @@ function allowedDimensionsForBudgetingLevel(budgetingLevel?: string | null) {
   }
 }
 
+function normalizeRootDefaultTargetDimension(
+  planningEnabled: boolean,
+  budgetingLevel: string,
+  preferred: 'weight' | 'risk_budget',
+) {
+  if (!planningEnabled) {
+    return preferred
+  }
+  if (budgetingLevel === 'weight') {
+    return 'weight'
+  }
+  if (budgetingLevel === 'risk_budget') {
+    return 'risk_budget'
+  }
+  return preferred
+}
+
+function planningConfigError(
+  planningEnabled: boolean,
+  budgetingLevel: string,
+  rootDefaultTargetDimension: 'weight' | 'risk_budget',
+) {
+  if (!planningEnabled) {
+    return null
+  }
+  if (!budgetingLevel) {
+    return 'Planning-enabled taxonomies must select a budgeting level before targets can be edited.'
+  }
+  if (budgetingLevel === 'weight' && rootDefaultTargetDimension !== 'weight') {
+    return 'Weight-only taxonomies must use Weight as the root default target dimension.'
+  }
+  if (budgetingLevel === 'risk_budget' && rootDefaultTargetDimension !== 'risk_budget') {
+    return 'Risk-budget-only taxonomies must use Risk Budget as the root default target dimension.'
+  }
+  return null
+}
+
 function percentInputFromDecimal(value?: number | null) {
   if (value == null || Number.isNaN(value)) {
     return ''
@@ -1108,6 +1145,16 @@ export default function TaxonomiesPage() {
   }, [selectedTaxonomyTargetSetLines])
 
   const selectedNodePath = selectedNode ? nodePathByNodeId.get(selectedNode.taxonomy_node_id) ?? [] : []
+  const taxonomyCreatePlanningError = planningConfigError(
+    taxonomyPlanningEnabled,
+    taxonomyBudgetingLevel,
+    taxonomyRootDefaultTargetDimension,
+  )
+  const taxonomyDetailsPlanningError = planningConfigError(
+    selectedTaxonomyPlanningEnabled,
+    selectedTaxonomyBudgetingLevel,
+    selectedTaxonomyRootDefaultTargetDimension,
+  )
   const nodeCreateParentNode = nodeCreateParentId ? nodeById.get(nodeCreateParentId) ?? null : null
   const nodeCreateAnchorNode = nodeCreateAnchorNodeId ? nodeById.get(nodeCreateAnchorNodeId) ?? null : null
   const contextMenuNode = contextMenuState?.kind === 'node' ? nodeById.get(contextMenuState.nodeId) ?? null : null
@@ -1702,6 +1749,11 @@ export default function TaxonomiesPage() {
     if (!portfolioId) {
       return
     }
+    if (taxonomyCreatePlanningError) {
+      setActionError(taxonomyCreatePlanningError)
+      setNotice(null)
+      return
+    }
     setActionPending('taxonomy-create')
     setActionError(null)
     setNotice(null)
@@ -1713,7 +1765,11 @@ export default function TaxonomiesPage() {
         primary_assignment_scope: taxonomyScope,
         planning_enabled: taxonomyPlanningEnabled,
         budgeting_level: taxonomyBudgetingLevel || null,
-        root_default_target_dimension: taxonomyRootDefaultTargetDimension,
+        root_default_target_dimension: normalizeRootDefaultTargetDimension(
+          taxonomyPlanningEnabled,
+          taxonomyBudgetingLevel,
+          taxonomyRootDefaultTargetDimension,
+        ),
       })
       setTaxonomyName('')
       setTaxonomyType('custom')
@@ -1738,6 +1794,11 @@ export default function TaxonomiesPage() {
     if (!portfolioId || !selectedTaxonomy) {
       return
     }
+    if (taxonomyDetailsPlanningError) {
+      setActionError(taxonomyDetailsPlanningError)
+      setNotice(null)
+      return
+    }
     setActionPending(`taxonomy-save-${selectedTaxonomy.taxonomy_id}`)
     setActionError(null)
     setNotice(null)
@@ -1748,7 +1809,11 @@ export default function TaxonomiesPage() {
         purpose: selectedTaxonomyPurpose || null,
         planning_enabled: selectedTaxonomyPlanningEnabled,
         budgeting_level: selectedTaxonomyPlanningEnabled ? selectedTaxonomyBudgetingLevel || null : null,
-        root_default_target_dimension: selectedTaxonomyRootDefaultTargetDimension,
+        root_default_target_dimension: normalizeRootDefaultTargetDimension(
+          selectedTaxonomyPlanningEnabled,
+          selectedTaxonomyBudgetingLevel,
+          selectedTaxonomyRootDefaultTargetDimension,
+        ),
         effective_from: selectedTaxonomyEffectiveFrom || null,
         effective_to: selectedTaxonomyEffectiveTo || null,
         status: selectedTaxonomyStatus,
@@ -2431,17 +2496,20 @@ export default function TaxonomiesPage() {
                 </label>
                 <label>
                   <span>Budgeting Level</span>
-                  <select
-                    value={taxonomyBudgetingLevel}
-                    disabled={taxonomyScope !== 'instrument'}
-                    onChange={(event) => {
-                      const value = event.target.value
-                      setTaxonomyBudgetingLevel(value)
-                      if (value) {
-                        setTaxonomyPlanningEnabled(true)
-                      }
-                    }}
-                  >
+                    <select
+                      value={taxonomyBudgetingLevel}
+                      disabled={taxonomyScope !== 'instrument'}
+                      onChange={(event) => {
+                        const value = event.target.value
+                        setTaxonomyBudgetingLevel(value)
+                        if (value) {
+                          setTaxonomyPlanningEnabled(true)
+                        }
+                        setTaxonomyRootDefaultTargetDimension((current) =>
+                          normalizeRootDefaultTargetDimension(Boolean(value), value, current),
+                        )
+                      }}
+                    >
                     <option value="">None</option>
                     <option value="weight">Weight</option>
                     <option value="risk_budget">Risk Budget</option>
@@ -2477,12 +2545,18 @@ export default function TaxonomiesPage() {
                         if (!enabled) {
                           setTaxonomyBudgetingLevel('')
                         }
+                        setTaxonomyRootDefaultTargetDimension((current) =>
+                          normalizeRootDefaultTargetDimension(enabled, enabled ? taxonomyBudgetingLevel : '', current),
+                        )
                       }}
                     />
                     <span>Allow this taxonomy to feed Risk and Review defaults.</span>
                   </div>
                 </label>
               </div>
+              {taxonomyCreatePlanningError ? (
+                <div className="inline-notice inline-notice-error">{taxonomyCreatePlanningError}</div>
+              ) : null}
               <div className="transaction-form-footer">
                 <div className="taxonomy-footer-actions">
                   <button type="button" className="toolbar-link" onClick={() => setShowTaxonomyCreate(false)}>
@@ -2538,6 +2612,9 @@ export default function TaxonomiesPage() {
                         if (value) {
                           setSelectedTaxonomyPlanningEnabled(true)
                         }
+                        setSelectedTaxonomyRootDefaultTargetDimension((current) =>
+                          normalizeRootDefaultTargetDimension(Boolean(value), value, current),
+                        )
                       }}
                     >
                       <option value="">None</option>
@@ -2583,12 +2660,22 @@ export default function TaxonomiesPage() {
                           if (!enabled) {
                             setSelectedTaxonomyBudgetingLevel('')
                           }
+                          setSelectedTaxonomyRootDefaultTargetDimension((current) =>
+                            normalizeRootDefaultTargetDimension(
+                              enabled,
+                              enabled ? selectedTaxonomyBudgetingLevel : '',
+                              current,
+                            ),
+                          )
                         }}
                       />
                       <span>Use this taxonomy as a candidate planning axis.</span>
                     </div>
                   </label>
                 </div>
+                {taxonomyDetailsPlanningError ? (
+                  <div className="inline-notice inline-notice-error">{taxonomyDetailsPlanningError}</div>
+                ) : null}
                 <div className="transaction-form-footer">
                   <div className="taxonomy-footer-actions">
                     <button

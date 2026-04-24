@@ -208,7 +208,7 @@ def test_create_rejects_identifier_collision_with_archived_instrument(
     archived = archive_instrument(asset_id="fund-us-agg", updated_by="pytest")
     assert archived is not None
 
-    with pytest.raises(ValueError, match='Identifier "AGG" already belongs'):
+    with pytest.raises(ValueError, match='Identifier "ticker:AGG" already belongs'):
         create_instrument(
             asset_name="Duplicate AGG",
             asset_type="fund",
@@ -219,6 +219,54 @@ def test_create_rejects_identifier_collision_with_archived_instrument(
                     "identifier_value": "AGG",
                     "is_primary": True,
                 }
+            ],
+        )
+
+
+def test_create_allows_same_identifier_value_across_different_types(
+    isolated_store: Path,
+) -> None:
+    created = create_instrument(
+        asset_name="Internal AGG Alias",
+        asset_type="fund",
+        currency="USD",
+        identifiers=[
+            {
+                "identifier_type": "internal",
+                "identifier_value": "AGG",
+                "is_primary": True,
+            }
+        ],
+    )
+
+    assert created["asset_id"] == "agg"
+    ticker_match = find_instrument_by_identifier(identifier_value="AGG", identifier_type="ticker")
+    internal_match = find_instrument_by_identifier(identifier_value="AGG", identifier_type="internal")
+    assert ticker_match is not None
+    assert internal_match is not None
+    assert ticker_match["asset_id"] == "fund-us-agg"
+    assert internal_match["asset_id"] == "agg"
+
+
+def test_create_rejects_same_identifier_type_value_in_request(
+    isolated_store: Path,
+) -> None:
+    with pytest.raises(ValueError, match='Duplicate identifier "ticker:dup"'):
+        create_instrument(
+            asset_name="Duplicate Request Identifier",
+            asset_type="fund",
+            currency="USD",
+            identifiers=[
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "DUP",
+                    "is_primary": True,
+                },
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "dup",
+                    "is_primary": False,
+                },
             ],
         )
 

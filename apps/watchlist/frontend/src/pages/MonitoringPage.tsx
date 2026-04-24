@@ -349,8 +349,8 @@ export default function MonitoringPage() {
             <div className="panel-title">Monitoring</div>
             <h1 className="page-title">Product Pool Monitoring</h1>
             <div className="monitoring-page-note">
-              Focused on data freshness, missing quote coverage, missing classification or
-              monitoring labels, and open recalc work.
+              Focused on data freshness, missing quote coverage, missing taxonomy or
+              required research labels, and open recalc work.
             </div>
           </div>
           <div className="toolbar">
@@ -556,7 +556,7 @@ export default function MonitoringPage() {
             <div className="panel-header">
               <div>
                 <div className="panel-title">Monitoring</div>
-                <div className="watchlists-title">Missing Classification / Monitoring Labels</div>
+                <div className="watchlists-title">Missing Taxonomy / Research Labels</div>
               </div>
             </div>
             {visibleMissingLabelAssets.length ? (
@@ -608,7 +608,7 @@ export default function MonitoringPage() {
               </div>
             ) : (
               <div className="empty-state">
-                No key classification or monitoring labels missing right now.
+                No key taxonomy or research labels missing right now.
               </div>
             )}
           </section>

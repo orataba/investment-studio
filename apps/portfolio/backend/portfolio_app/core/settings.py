@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     sql_echo: bool = False
     default_trade_timezone: str = "Asia/Shanghai"
     default_trade_time: str = "12:00"
-    cors_origins: list[str] = ["*"]
+    cors_origins: list[str] = ["http://127.0.0.1:5174", "http://localhost:5174"]
 
     model_config = SettingsConfigDict(
         env_prefix="YUNGU_PORTFOLIO_",
@@ -76,6 +76,17 @@ class Settings(BaseSettings):
                 raise ValueError("database_schema must be a valid SQL identifier.")
             return normalized
         return value
+
+    @model_validator(mode="after")
+    def _validate_cors_policy(self) -> "Settings":
+        environment = self.environment.strip().lower()
+        if environment not in {"development", "dev", "local", "test"} and "*" in self.cors_origins:
+            raise ValueError("cors_origins must not contain '*' outside development/test.")
+        return self
+
+    @property
+    def cors_allow_credentials(self) -> bool:
+        return "*" not in self.cors_origins
 
     @property
     def migration_database_url(self) -> str:

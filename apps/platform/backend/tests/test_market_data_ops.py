@@ -100,6 +100,38 @@ def test_parse_nav_rows_from_xlsx_supports_chinese_date_strings_after_title_rows
     assert str(parsed[0]["nav_with_dividend"]) == "1.0"
 
 
+def test_parse_nav_rows_from_xlsx_supports_yyyymmdd_business_dates() -> None:
+    rows = [
+        [
+            "产品代码",
+            "产品名称",
+            "业务日期",
+            "客户资产净值",
+            "客户资产份额",
+            "单位净值",
+            "累计单位净值",
+        ],
+        [
+            "ZB945A",
+            "润洲正行11号私募证券投资基金A",
+            "20260422",
+            "1,028,139.61",
+            "1,059,391.66",
+            "0.9705",
+            "1.5268",
+        ],
+    ]
+
+    parsed = _parse_nav_rows_from_xlsx(_workbook_bytes(rows))
+
+    assert len(parsed) == 1
+    assert parsed[0]["as_of_date"] == "2026-04-22"
+    assert parsed[0]["asset_code"] == "ZB945A"
+    assert parsed[0]["asset_name"] == "润洲正行11号私募证券投资基金A"
+    assert str(parsed[0]["nav"]) == "0.9705"
+    assert str(parsed[0]["nav_with_dividend"]) == "1.5268"
+
+
 def test_filter_rows_for_rule_supports_exact_code_match() -> None:
     rows = [
         {

@@ -1,7 +1,7 @@
 # Fund Terminal V2 数据模型与 API 基线
 
 状态：Current baseline  
-日期：2026-04-22  
+日期：2026-04-23  
 适用范围：当前 `/home/shaw/yungu/apps/watchlist` 仓库已经实现的数据分层、关键表语义和后端 API 边界
 
 ## 1. 这份文档解决什么问题
@@ -67,10 +67,21 @@ shared instruments / manual ingest / facts ingest
 
 这一层负责 fund 的分类、研究标签和监控评估：
 
+- `instrument_taxonomy_node`
+- `instrument_taxonomy_assignment`
 - `instrument_attribute_definition`
 - `instrument_attribute_value`
 - `field_category`
 - `field_registry_record`
+
+其中：
+
+- taxonomy tables
+  管 fund 分类树本身和当前叶子赋值
+- attribute tables
+  管 `fund_vehicle`、研究标签、监控评估等非树形字段
+- `category_name`
+  仍然保留为外部 `peer category` 比较口径，不承担内部基金分类职责
 
 `instrument_attribute_definition` 当前关键字段：
 
@@ -134,9 +145,14 @@ stale read repair 也只会写 job，不会直接在 Web 请求里补算；后�
 
 ### 5.1 三层域
 
-当前 `instrument_attribute_definition.domain_code` 只分三层：
+当前产品框架按两套结构协作：
 
-- `classification`
+1. taxonomy tree
+2. attribute domains
+
+attribute domain 只分三层：
+
+- `overview`
 - `research`
 - `monitoring`
 
@@ -144,7 +160,7 @@ stale read repair 也只会写 job，不会直接在 Web 请求里补算；后�
 
 field registry 对应的 category 现在是：
 
-- `product_classification`
+- `product_taxonomy`
 - `research_framework`
 - `monitoring_assessment`
 
@@ -159,7 +175,8 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 1. 读取 `instrument_attribute_definition`
 2. 只看 `required_for_monitoring = true`
 3. 再按 `asset_scope_json` 与 `applicability_json` 判断当前资产是否适用
-4. 只对适用字段做缺失检查
+4. 同时检查 taxonomy 派生出来的必填分类上下文
+5. 只对适用字段做缺失检查
 
 ## 6. 当前 API 分组
 
@@ -232,18 +249,31 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 
 - `GET /api/field-registry`
 
-### 6.6 Screener
+### 6.6 Taxonomies
+
+- `GET /api/taxonomies/fund-taxonomy`
+- `GET /api/taxonomies/fund-taxonomy/assets/{asset_id}`
+- `PUT /api/taxonomies/fund-taxonomy/assets/{asset_id}`
+
+说明：
+
+- 这组接口只服务于 `fund` 的内部分类树
+- taxonomy assignment 默认允许为空；系统不会自动推断，正式分类由详情页人工 `PUT` 确认
+- `fund_regime` 代表根节点 `公募 / 私募`
+- `fund_taxonomy_level_1..6` 从根节点内部的一级分类开始编号
+
+### 6.7 Screener
 
 - `POST /api/screener/query`
 
-### 6.7 Facts
+### 6.8 Facts
 
 - `GET /api/facts/assets/{asset_id}/nav`
 - `POST /api/facts/assets/{asset_id}/nav`
 - `GET /api/facts/assets/{asset_id}/holdings/current`
 - `POST /api/facts/assets/{asset_id}/holdings`
 
-### 6.8 Monitoring
+### 6.9 Monitoring
 
 - `GET /api/monitoring/dashboard`
 
@@ -255,7 +285,7 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 - `missing_label_assets`
 - `open_recalc_jobs`
 
-### 6.9 Recalc
+### 6.10 Recalc
 
 - `POST /api/recalc/assets/{asset_id}/performance`
 - `POST /api/recalc/assets/{asset_id}/exposure`
@@ -265,7 +295,7 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 - `GET /api/recalc/jobs`
 - `GET /api/recalc/jobs/{job_id}`
 
-### 6.10 Copilot Backend Extension
+### 6.11 Copilot Backend Extension
 
 - `POST /api/copilot/watchlists/{watchlist_id}/chat`
 - `POST /api/copilot/assets/{asset_id}/chat`

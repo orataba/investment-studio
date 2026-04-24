@@ -37,6 +37,9 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
     )
     assert overview_view["columns"] == [
         "asset_name",
+        "attr.fund_regime",
+        "attr.fund_taxonomy_level_1",
+        "attr.fund_taxonomy_level_2",
         "price_chart_1m",
         "latest_quote",
         "latest_quote_date",
@@ -52,16 +55,16 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
         if item["view_id"] == "fund-screening"
     )
     assert fund_screening_view["name"] == "基金分类筛选"
-    assert fund_screening_view["default_group_by"] == "attr.fund_category_l1"
+    assert fund_screening_view["default_group_by"] == "attr.fund_taxonomy_level_1"
     assert fund_screening_view["default_filters"] == {
         "asset_type": ["fund"],
     }
     assert fund_screening_view["columns"] == [
         "asset_name",
         "attr.fund_regime",
-        "attr.fund_category_l1",
-        "attr.fund_category_l2",
-        "attr.fund_category_l3",
+        "attr.fund_taxonomy_level_1",
+        "attr.fund_taxonomy_level_2",
+        "attr.fund_taxonomy_level_3",
         "attr.implementation_style",
         "attr.style_profile",
         "attr.manager_assessment",
@@ -728,6 +731,172 @@ def test_stale_read_repair_enqueues_single_durable_recalc_job(client: TestClient
     ]
     assert len(matching) == 1
     assert matching[0].job_status == "queued"
+
+
+def test_stale_read_repair_commits_requeued_existing_job(client: TestClient) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services.read_model_freshness import schedule_asset_refresh_if_stale
+    from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Stale Repair Requeue", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["sxv264"]},
+    )
+    assert add_response.status_code == 200
+
+    session_factory = session_module.get_session_factory()
+    repo = SQLAlchemyRecalcJobRepository()
+    with session_factory() as session:
+        record = repo.create(
+            session,
+            recalc_job_id="stale-repair-running",
+            job_type="all",
+            asset_id="sxv264",
+            trigger_type="stale_read_repair",
+            trigger_ref_type="instrument_summary_read",
+            trigger_ref_id="sxv264",
+            job_status="running",
+            priority=95,
+            dedupe_key=make_recalc_dedupe_key(
+                job_type="all",
+                asset_id="sxv264",
+                trigger_type="stale_read_repair",
+                trigger_ref_type="instrument_summary_read",
+                trigger_ref_id="sxv264",
+            ),
+            payload_json={"requested_by": "stale_read_repair"},
+        )
+        record.started_at = datetime.now(UTC) - timedelta(seconds=600)
+        session.commit()
+
+    scheduled = schedule_asset_refresh_if_stale(
+        asset_id="sxv264",
+        local_latest_date=date(2026, 4, 13),
+        trigger_ref_type="instrument_summary_read",
+        trigger_ref_id="sxv264",
+    )
+
+    assert scheduled is True
+
+    with session_factory() as session:
+        record = repo.get(session, "stale-repair-running")
+
+    assert record is not None
+    assert record.job_status == "queued"
+    assert record.started_at is None
+    assert record.error_message == "Recovered stale running job after worker interruption."
+
+
+def test_manual_recalc_enqueue_reuses_open_dedupe_job(client: TestClient) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Manual Recalc Dedupe", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["sxv264"]},
+    )
+    assert add_response.status_code == 200
+
+    first = client.post("/api/recalc/assets/sxv264/performance")
+    second = client.post("/api/recalc/assets/sxv264/performance")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_payload = first.json()
+    second_payload = second.json()
+    assert second_payload["recalc_job_id"] == first_payload["recalc_job_id"]
+    assert second_payload["dedupe_key"] == first_payload["dedupe_key"]
+
+    session_factory = session_module.get_session_factory()
+    with session_factory() as session:
+        jobs = list(SQLAlchemyRecalcJobRepository().list_recent(session))
+
+    matching = [
+        job
+        for job in jobs
+        if job.asset_id == "sxv264"
+        and job.job_type == "performance"
+        and job.trigger_type == "manual_api"
+        and job.trigger_ref_type == "api_request"
+    ]
+    assert len(matching) == 1
+
+
+def test_manual_recalc_enqueue_returns_existing_job_after_dedupe_race(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.api.routes import recalc as recalc_route
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Manual Recalc Race", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["sxv264"]},
+    )
+    assert add_response.status_code == 200
+
+    repo = SQLAlchemyRecalcJobRepository()
+    session_factory = session_module.get_session_factory()
+    with session_factory() as session:
+        repo.create(
+            session,
+            recalc_job_id="manual-race-existing",
+            job_type="performance",
+            asset_id="sxv264",
+            trigger_type="manual_api",
+            trigger_ref_type="api_request",
+            trigger_ref_id=None,
+            job_status="queued",
+            priority=85,
+            dedupe_key=make_recalc_dedupe_key(
+                job_type="performance",
+                asset_id="sxv264",
+                trigger_type="manual_api",
+                trigger_ref_type="api_request",
+                trigger_ref_id=None,
+            ),
+            payload_json={"requested_by": "api"},
+        )
+        session.commit()
+
+    original_find_open_job = recalc_route.recalc_repository.find_open_job
+    find_calls = 0
+
+    def _find_open_job(*args, **kwargs):
+        nonlocal find_calls
+        find_calls += 1
+        if find_calls == 1:
+            return None
+        return original_find_open_job(*args, **kwargs)
+
+    monkeypatch.setattr(recalc_route.recalc_repository, "find_open_job", _find_open_job)
+
+    response = client.post("/api/recalc/assets/sxv264/performance")
+
+    assert response.status_code == 200
+    assert response.json()["recalc_job_id"] == "manual-race-existing"
+    assert find_calls == 2
 
 
 def test_process_next_recalc_job_refreshes_shared_metadata_drift(
@@ -1734,11 +1903,7 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     definitions_by_key = {item["attribute_key"]: item for item in definitions}
 
     expected_keys = {
-        "fund_regime",
         "fund_vehicle",
-        "fund_category_l1",
-        "fund_category_l2",
-        "fund_category_l3",
         "implementation_style",
         "trading_universe",
         "alpha_source",
@@ -1757,9 +1922,8 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
         "transparency_quality",
     }
     assert expected_keys.issubset(definitions_by_key.keys())
-    assert definitions_by_key["fund_regime"]["options"] == ["公募", "私募"]
-    assert definitions_by_key["fund_category_l1"]["domain_code"] == "classification"
-    assert definitions_by_key["fund_category_l2"]["required_for_monitoring"] is True
+    assert definitions_by_key["fund_vehicle"]["domain_code"] == "overview"
+    assert definitions_by_key["fund_vehicle"]["required_for_monitoring"] is True
     assert definitions_by_key["style_profile"]["group_code"] == "research_style"
     assert definitions_by_key["preferred_regime"]["data_type"] == "multi_select"
 
@@ -1770,10 +1934,13 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
 
     assert "attr.fund_regime" in fields_by_key
     assert fields_by_key["attr.fund_regime"]["filter_mode"] == "multi_select"
-    assert "attr.fund_category_l1" in fields_by_key
-    assert fields_by_key["attr.fund_category_l1"]["filter_mode"] == "multi_select"
-    assert fields_by_key["attr.fund_category_l1"]["group_mode"] == "discrete"
-    assert fields_by_key["attr.fund_category_l1"]["category_code"] == "product_classification"
+    assert "attr.fund_taxonomy_level_1" in fields_by_key
+    assert fields_by_key["attr.fund_taxonomy_level_1"]["filter_mode"] == "multi_select"
+    assert fields_by_key["attr.fund_taxonomy_level_1"]["group_mode"] == "discrete"
+    assert (
+        fields_by_key["attr.fund_taxonomy_level_1"]["category_code"]
+        == "product_taxonomy"
+    )
     assert fields_by_key["attr.coverage_status"]["product_scope_json"] == []
     assert fields_by_key["latest_quote"]["asset_scope_json"] == []
     assert fields_by_key["latest_quote"]["source_metric_code"] == "asset_chart_read_model.series.latest_quote"
@@ -1794,23 +1961,19 @@ def test_adding_funds_does_not_inject_product_framework_values(client: TestClien
 
     public_response = client.get("/api/instrument-attributes/assets/fund-us-agg")
     assert public_response.status_code == 200
-    public_values = public_response.json()["values"]
-    assert "fund_regime" not in public_values
+    public_payload = public_response.json()
+    public_values = public_payload["values"]
     assert "fund_vehicle" not in public_values
-    assert "fund_category_l1" not in public_values
-    assert "fund_category_l2" not in public_values
-    assert "fund_category_l3" not in public_values
     assert "alpha_source" not in public_values
+    assert public_payload["taxonomy"]["assigned_node_id"] is None
 
     private_response = client.get("/api/instrument-attributes/assets/sxv264")
     assert private_response.status_code == 200
-    private_values = private_response.json()["values"]
-    assert "fund_regime" not in private_values
+    private_payload = private_response.json()
+    private_values = private_payload["values"]
     assert "fund_vehicle" not in private_values
-    assert "fund_category_l1" not in private_values
-    assert "fund_category_l2" not in private_values
-    assert "fund_category_l3" not in private_values
     assert "alpha_source" not in private_values
+    assert private_payload["taxonomy"]["assigned_node_id"] is None
 
 
 def test_instrument_attributes_can_be_cleared_with_null_and_empty_list(client: TestClient) -> None:
@@ -1887,6 +2050,73 @@ def test_instrument_attributes_can_be_cleared_with_null_and_empty_list(client: T
     assert payload["values"]["tag_clear_multi"] == []
 
 
+def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlist_rows(
+    client: TestClient,
+) -> None:
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Taxonomy Coverage", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["sxv264"]},
+    )
+    assert add_response.status_code == 200
+
+    tree_response = client.get("/api/taxonomies/fund-taxonomy")
+    assert tree_response.status_code == 200
+    tree_payload = tree_response.json()
+    assert tree_payload["taxonomy_code"] == "fund_taxonomy"
+    assert any(node["node_id"] == "fund-private-equity-quant-long-500" for node in tree_payload["nodes"])
+
+    update_response = client.put(
+        "/api/taxonomies/fund-taxonomy/assets/sxv264",
+        json={"node_id": "fund-private-equity-quant-long-500", "updated_by": "test"},
+    )
+    assert update_response.status_code == 200
+    update_payload = update_response.json()
+    assert update_payload["path_labels"] == ["私募", "股票策略", "量化多头", "500指增"]
+    assert update_payload["derived_values"]["fund_regime"] == "私募"
+    assert update_payload["derived_values"]["fund_taxonomy_level_1"] == "股票策略"
+    assert update_payload["derived_values"]["fund_taxonomy_level_2"] == "量化多头"
+    assert update_payload["derived_values"]["fund_taxonomy_leaf"] == "500指增"
+
+    attributes_response = client.get("/api/instrument-attributes/assets/sxv264")
+    assert attributes_response.status_code == 200
+    attributes_payload = attributes_response.json()
+    assert attributes_payload["taxonomy"]["assigned_node_id"] == "fund-private-equity-quant-long-500"
+    assert "fund_regime" not in attributes_payload["values"]
+
+    summary_response = client.get("/api/instruments/sxv264/summary")
+    assert summary_response.status_code == 200
+    summary_payload = summary_response.json()
+    assert summary_payload["taxonomy"]["path_labels"] == ["私募", "股票策略", "量化多头", "500指增"]
+
+    screener_response = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "view_id": "fund-screening",
+            "selected_fields": [
+                "asset_name",
+                "attr.fund_regime",
+                "attr.fund_taxonomy_level_1",
+                "attr.fund_taxonomy_leaf",
+            ],
+            "group_by": "attr.fund_taxonomy_level_1",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert screener_response.status_code == 200
+    screener_payload = screener_response.json()
+    assert screener_payload["groups"] == [{"group_value": "股票策略", "row_count": 1}]
+    assert screener_payload["rows"][0]["attr.fund_regime"] == "私募"
+    assert screener_payload["rows"][0]["attr.fund_taxonomy_level_1"] == "股票策略"
+    assert screener_payload["rows"][0]["attr.fund_taxonomy_leaf"] == "500指增"
+
+
 def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_jobs(
     client: TestClient,
 ) -> None:
@@ -1961,7 +2191,7 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
         if item["asset_id"] == "fund-no-data"
     )
     assert "fund_regime" in missing_label_asset["missing_attribute_keys"]
-    assert "fund_category_l1" in missing_label_asset["missing_attribute_keys"]
+    assert "fund_taxonomy_leaf" in missing_label_asset["missing_attribute_keys"]
     assert len(payload["missing_label_assets"]) == 2
 
     assert len(payload["open_recalc_jobs"]) == 1

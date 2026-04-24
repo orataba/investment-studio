@@ -288,6 +288,11 @@ class ResearchSettingsRecordModel(Base):
     run_template: Mapped[str] = mapped_column(String, nullable=False, default="taxonomy_backtest")
     target_set_mode: Mapped[str] = mapped_column(String, nullable=False, default="taa_over_saa")
     target_dimension: Mapped[str] = mapped_column(String, nullable=False, default="scope_default")
+    capital_mode: Mapped[str] = mapped_column(String, nullable=False, default="unit_notional")
+    gross_exposure: Mapped[float | None]
+    target_volatility: Mapped[float | None]
+    max_gross_exposure: Mapped[float | None]
+    frozen_taxonomy_node_ids_json: Mapped[list[str] | None] = mapped_column(JSON)
     rebalance_frequency: Mapped[str] = mapped_column(String, nullable=False, default="monthly")
     notes: Mapped[str | None] = mapped_column(String)
     updated_at: Mapped[str | None] = mapped_column(String)

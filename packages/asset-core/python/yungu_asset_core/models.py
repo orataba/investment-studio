@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 
 AssetType = Literal["fund", "bond", "equity", "cash", "fx", "other"]
-IdentifierType = Literal["ticker", "isin", "cusip", "sedol", "internal", "other"]
+IdentifierType = Literal["ticker", "isin", "cusip", "sedol", "internal", "fund_name", "other"]
 MetricFamily = Literal["price", "nav", "fx"]
 QuoteBasis = Literal[
     "last",

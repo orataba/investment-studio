@@ -131,7 +131,7 @@ export type InstrumentAttributeDefinition = {
   label: string
   description: string | null
   data_type: 'single_select' | 'multi_select' | 'boolean' | 'number' | 'text' | 'date'
-  domain_code: 'classification' | 'research' | 'monitoring'
+  domain_code: 'overview' | 'research' | 'monitoring'
   group_code: string
   display_order: number
   options: string[]
@@ -145,10 +145,39 @@ export type InstrumentAttributeDefinition = {
   required_for_monitoring: boolean
 }
 
+export type FundTaxonomyContext = {
+  taxonomy_code: string
+  assigned_node_id: string | null
+  assigned_label: string | null
+  path_labels: string[]
+  path_node_ids: string[]
+  depth: number
+  derived_values: Record<string, string>
+}
+
+export type FundTaxonomyTreeNode = {
+  node_id: string
+  label: string
+  parent_node_id: string | null
+  level_index: number
+  display_order: number
+  is_leaf: boolean
+  path_labels: string[]
+  path_node_ids: string[]
+}
+
+export type FundTaxonomyTreeResponse = {
+  taxonomy_code: string
+  asset_type: string
+  max_depth: number
+  nodes: FundTaxonomyTreeNode[]
+}
+
 export type InstrumentAttributeValuesResponse = {
   asset_id: string
   definitions: InstrumentAttributeDefinition[]
   values: Record<string, unknown>
+  taxonomy: FundTaxonomyContext
 }
 
 export type InstrumentResolveResponse = {
@@ -168,7 +197,7 @@ export type InstrumentAttributeDefinitionCreatePayload = {
   label: string
   description?: string | null
   data_type: 'single_select' | 'multi_select' | 'boolean' | 'number' | 'text' | 'date'
-  domain_code: 'classification' | 'research' | 'monitoring'
+  domain_code: 'overview' | 'research' | 'monitoring'
   group_code: string
   display_order?: number
   options?: string[]
@@ -287,14 +316,17 @@ export type RecalcExecuteResponse = {
 }
 
 export type FundSummaryResponse = {
+  asset_id?: string
   fund_id: string
   fund_name: string
   ticker_or_isin: string
   rating_as_of: string | null
   category_name: string
+  management_firm_name: string | null
   overall_rating: number | null
   analyst_stance: string
   instrument_attributes: Record<string, unknown>
+  taxonomy: FundTaxonomyContext
   key_stats: Array<{ label: string; value: string | number | null }>
   freshness: {
     data_freshness_status: string
@@ -779,6 +811,26 @@ export function createInstrumentAttributeDefinition(
 export function getInstrumentAttributes(assetId: string) {
   return fetchJson<InstrumentAttributeValuesResponse>(
     `/api/instrument-attributes/assets/${assetId}`,
+  )
+}
+
+export function getFundTaxonomyTree() {
+  return fetchJson<FundTaxonomyTreeResponse>('/api/taxonomies/fund-taxonomy')
+}
+
+export function updateFundTaxonomy(
+  assetId: string,
+  payload: {
+    node_id: string | null
+    updated_by?: string
+  },
+) {
+  return fetchJson<FundTaxonomyContext & { asset_id: string; updated: boolean }>(
+    `/api/taxonomies/fund-taxonomy/assets/${encodeURIComponent(assetId)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    },
   )
 }
 

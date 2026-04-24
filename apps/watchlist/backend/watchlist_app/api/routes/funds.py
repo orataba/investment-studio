@@ -15,7 +15,12 @@ from watchlist_app.repositories.sqlalchemy.manual_profiles import (
     SQLAlchemyAssetManualProfileRepository,
 )
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
+from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+from watchlist_app.services.fund_taxonomy import (
+    build_taxonomy_context,
+    merge_taxonomy_into_summary,
+)
 from watchlist_app.services.read_models import (
     collapse_latest_attribute_values,
     default_fund_chart_payload,
@@ -36,6 +41,7 @@ from watchlist_app.services.read_model_freshness import (
 
 router = APIRouter()
 read_model_repository = SQLAlchemyReadModelRepository()
+taxonomy_repository = SQLAlchemyTaxonomyRepository()
 attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 manual_profile_repository = SQLAlchemyAssetManualProfileRepository()
 asset_repository = SQLAlchemyAssetRepository()
@@ -198,7 +204,20 @@ def get_fund_summary(
         if record is not None
         else default_fund_summary_payload(asset_id, instrument_attributes=attributes)
     )
-    return merge_summary_attributes(payload, attributes)
+    assignment = taxonomy_repository.get_assignment(session, asset_id=asset_id)
+    node = (
+        taxonomy_repository.get_node(session, node_id=str(assignment.node_id))
+        if assignment is not None and assignment.node_id
+        else None
+    )
+    taxonomy_context = build_taxonomy_context(node)
+    merged = merge_summary_attributes(payload, attributes)
+    asset = asset_repository.get(session, asset_id)
+    if merged.get("management_firm_name") is None and asset is not None:
+        merged["management_firm_name"] = (
+            str(asset.metadata_json.get("management_firm_name") or "").strip() or None
+        )
+    return merge_taxonomy_into_summary(merged, taxonomy_context)
 
 
 @router.post("/manual")

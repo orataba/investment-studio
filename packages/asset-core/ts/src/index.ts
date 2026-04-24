@@ -1,5 +1,5 @@
 export type AssetType = 'fund' | 'bond' | 'equity' | 'cash' | 'fx' | 'other'
-export type IdentifierType = 'ticker' | 'isin' | 'cusip' | 'sedol' | 'internal' | 'other'
+export type IdentifierType = 'ticker' | 'isin' | 'cusip' | 'sedol' | 'internal' | 'fund_name' | 'other'
 export type MetricFamily = 'price' | 'nav' | 'fx'
 export type QuoteBasis =
   | 'last'

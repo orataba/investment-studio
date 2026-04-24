@@ -1,7 +1,7 @@
 from pathlib import Path
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     alembic_database_url: str | None = None
     database_schema: str | None = "watchlist"
     sql_echo: bool = False
-    cors_origins: list[str] = ["*"]
+    cors_origins: list[str] = ["http://127.0.0.1:5173", "http://localhost:5173"]
     recalc_worker_enabled: bool = True
     recalc_worker_poll_interval_seconds: float = 1.0
     recalc_worker_shutdown_timeout_seconds: float = 5.0
@@ -67,6 +67,17 @@ class Settings(BaseSettings):
         if numeric <= 0:
             raise ValueError("worker timing values must be positive.")
         return numeric
+
+    @model_validator(mode="after")
+    def _validate_cors_policy(self) -> "Settings":
+        environment = self.environment.strip().lower()
+        if environment not in {"development", "dev", "local", "test"} and "*" in self.cors_origins:
+            raise ValueError("cors_origins must not contain '*' outside development/test.")
+        return self
+
+    @property
+    def cors_allow_credentials(self) -> bool:
+        return "*" not in self.cors_origins
 
     @property
     def migration_database_url(self) -> str:

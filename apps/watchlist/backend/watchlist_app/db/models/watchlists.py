@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    String,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -246,3 +247,50 @@ class InstrumentAttributeValue(Base):
     definition: Mapped[InstrumentAttributeDefinition] = relationship(
         back_populates="values"
     )
+
+
+class InstrumentTaxonomyNode(Base):
+    __tablename__ = "instrument_taxonomy_node"
+    __table_args__ = (
+        Index(
+            "idx_instrument_taxonomy_node_taxonomy_parent_order",
+            "taxonomy_code",
+            "parent_node_id",
+            "display_order",
+        ),
+    )
+
+    node_id: Mapped[str] = mapped_column(primary_key=True)
+    taxonomy_code: Mapped[str] = mapped_column(String, nullable=False)
+    asset_type: Mapped[str] = mapped_column(String, nullable=False)
+    label: Mapped[str] = mapped_column(String, nullable=False)
+    parent_node_id: Mapped[str | None] = mapped_column(
+        ForeignKey("instrument_taxonomy_node.node_id", ondelete="CASCADE")
+    )
+    level_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_leaf: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    path_labels_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    path_node_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+
+
+class InstrumentTaxonomyAssignment(Base):
+    __tablename__ = "instrument_taxonomy_assignment"
+    __table_args__ = (
+        Index(
+            "idx_instrument_taxonomy_assignment_taxonomy_node",
+            "taxonomy_code",
+            "node_id",
+        ),
+    )
+
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    taxonomy_code: Mapped[str] = mapped_column(String, primary_key=True)
+    node_id: Mapped[str | None] = mapped_column(
+        ForeignKey("instrument_taxonomy_node.node_id", ondelete="CASCADE")
+    )
+    assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_record_id: Mapped[str | None]

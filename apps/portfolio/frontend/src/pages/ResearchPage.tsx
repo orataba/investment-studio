@@ -12,6 +12,7 @@ import {
   type PortfolioResearchArtifactContentResponse,
   type PortfolioResearchArtifactRecord,
   type PortfolioResearchBacktestMetricRecord,
+  type PortfolioResearchCapitalMode,
   type PortfolioResearchConstructionRowRecord,
   type PortfolioResearchPlanningScopeOption,
   type PortfolioResearchRunRecord,
@@ -35,6 +36,11 @@ const TARGET_DIMENSION_OPTIONS = [
   { value: 'scope_default', label: 'Scope Default' },
   { value: 'weight', label: 'Weight' },
   { value: 'risk_budget', label: 'Risk Budget' },
+] as const
+const CAPITAL_MODE_OPTIONS = [
+  { value: 'unit_notional', label: 'Unit Notional' },
+  { value: 'fixed_gross', label: 'Fixed Gross' },
+  { value: 'target_volatility', label: 'Target Volatility' },
 ] as const
 const REBALANCE_OPTIONS = [
   { value: 'weekly', label: 'Weekly' },
@@ -159,6 +165,10 @@ export default function ResearchPage() {
   const [lookbackDays, setLookbackDays] = useState(String(LOOKBACK_OPTIONS[2]))
   const [targetSetMode, setTargetSetMode] = useState<'saa' | 'taa_over_saa'>('taa_over_saa')
   const [targetDimension, setTargetDimension] = useState<PortfolioResearchTargetDimension>('scope_default')
+  const [capitalMode, setCapitalMode] = useState<PortfolioResearchCapitalMode>('unit_notional')
+  const [grossExposure, setGrossExposure] = useState('')
+  const [targetVolatilityPct, setTargetVolatilityPct] = useState('')
+  const [maxGrossExposure, setMaxGrossExposure] = useState('')
   const [rebalanceFrequency, setRebalanceFrequency] = useState<'weekly' | 'monthly' | 'quarterly'>('monthly')
   const [notes, setNotes] = useState('')
 
@@ -219,6 +229,14 @@ export default function ResearchPage() {
     setLookbackDays(String(workbench.settings.lookback_days))
     setTargetSetMode(workbench.settings.target_set_mode)
     setTargetDimension(workbench.settings.target_dimension)
+    setCapitalMode(workbench.settings.capital_mode)
+    setGrossExposure(workbench.settings.gross_exposure != null ? String(workbench.settings.gross_exposure) : '')
+    setTargetVolatilityPct(
+      workbench.settings.target_volatility != null ? String(workbench.settings.target_volatility * 100) : '',
+    )
+    setMaxGrossExposure(
+      workbench.settings.max_gross_exposure != null ? String(workbench.settings.max_gross_exposure) : '',
+    )
     setRebalanceFrequency(workbench.settings.rebalance_frequency)
     setNotes(workbench.settings.notes ?? '')
   }, [workbench])
@@ -389,6 +407,9 @@ export default function ResearchPage() {
     if (!portfolioId) {
       return null
     }
+    const parsedGrossExposure = grossExposure.trim() ? Number(grossExposure) : null
+    const parsedTargetVolatility = targetVolatilityPct.trim() ? Number(targetVolatilityPct) / 100 : null
+    const parsedMaxGrossExposure = maxGrossExposure.trim() ? Number(maxGrossExposure) : null
     return updatePortfolioResearchSettings(portfolioId, {
       planning_taxonomy_id: planningTaxonomyId || null,
       comparator_taxonomy_node_id: comparatorScopeId || null,
@@ -399,6 +420,10 @@ export default function ResearchPage() {
       run_template: 'taxonomy_backtest',
       target_set_mode: targetSetMode,
       target_dimension: targetDimension,
+      capital_mode: capitalMode,
+      gross_exposure: capitalMode === 'fixed_gross' ? parsedGrossExposure : null,
+      target_volatility: capitalMode === 'target_volatility' ? parsedTargetVolatility : null,
+      max_gross_exposure: capitalMode === 'target_volatility' ? parsedMaxGrossExposure : null,
       rebalance_frequency: rebalanceFrequency,
       notes: notes || null,
     })
@@ -603,6 +628,55 @@ export default function ResearchPage() {
                       </option>
                     ))}
                   </select>
+                </label>
+                <label>
+                  <span>Capital Mode</span>
+                  <select
+                    value={capitalMode}
+                    onChange={(event) => setCapitalMode(event.target.value as PortfolioResearchCapitalMode)}
+                  >
+                    {CAPITAL_MODE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Target Vol (%)</span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    value={targetVolatilityPct}
+                    onChange={(event) => setTargetVolatilityPct(event.target.value)}
+                    disabled={capitalMode !== 'target_volatility'}
+                    placeholder="7.0"
+                  />
+                </label>
+                <label>
+                  <span>Gross Exposure</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={grossExposure}
+                    onChange={(event) => setGrossExposure(event.target.value)}
+                    disabled={capitalMode !== 'fixed_gross'}
+                    placeholder="1.00"
+                  />
+                </label>
+                <label>
+                  <span>Max Gross</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={maxGrossExposure}
+                    onChange={(event) => setMaxGrossExposure(event.target.value)}
+                    disabled={capitalMode !== 'target_volatility'}
+                    placeholder="1.00"
+                  />
                 </label>
                 <label>
                   <span>Rebalance</span>

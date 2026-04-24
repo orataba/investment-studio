@@ -3,7 +3,7 @@
 更新时间：`2026-04-14`
 关联文档：[`01_PMS_REFERENCE_BASELINE.md`](./01_PMS_REFERENCE_BASELINE.md)
 
-> 说明：这份文档描述的是 `Portfolio` 的目标态产品定义，不等同于当前已发布页面集合。当前实现以 [README.md](../README.md) 为准，其中 `Snapshot` 仍是下一阶段报告工作面，当前路由回退到 `Holdings`。
+> 说明：这份文档描述的是 `Portfolio` 的目标态产品定义，不等同于当前已发布页面集合。当前实现以 [README.md](../README.md) 为准，其中当前状态总览已经以 `Overview` 形式发布，`Snapshot` 不再作为独立工作面保留。
 
 ## 1. 产品定义
 

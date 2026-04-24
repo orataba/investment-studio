@@ -6,7 +6,7 @@ from copy import deepcopy
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from yungu_asset_core.db_models import (
@@ -520,10 +520,15 @@ def find_instrument_by_identifier(
         return None
     normalized_type = identifier_type.strip().lower() if identifier_type else None
     with session_factory() as session:
+        identifier_filters = [
+            func.lower(InstrumentIdentifier.identifier_value) == normalized_value,
+        ]
+        if normalized_type:
+            identifier_filters.append(func.lower(InstrumentIdentifier.identifier_type) == normalized_type)
         candidates = session.scalars(
             _instrument_query()
             .join(InstrumentIdentifier)
-            .where(InstrumentIdentifier.identifier_value == identifier_value.strip())
+            .where(*identifier_filters)
             .order_by(Instrument.asset_name, Instrument.asset_id)
         ).all()
         for candidate in candidates:
@@ -550,24 +555,27 @@ def create_instrument(
     currency: str,
     identifiers: list[dict[str, object]],
 ) -> dict[str, object]:
-    seen_identifier_values: set[str] = set()
+    seen_identifiers: set[tuple[str, str]] = set()
     for identifier in identifiers:
         identifier_value = str(identifier.get("identifier_value") or "").strip()
-        if not identifier_value:
+        identifier_type = str(identifier.get("identifier_type") or "").strip()
+        if not identifier_value or not identifier_type:
             continue
-        normalized_value = identifier_value.lower()
-        if normalized_value in seen_identifier_values:
-            raise ValueError(f'Duplicate identifier "{identifier_value}" in request.')
-        seen_identifier_values.add(normalized_value)
+        normalized_identifier = (identifier_type.lower(), identifier_value.lower())
+        if normalized_identifier in seen_identifiers:
+            raise ValueError(f'Duplicate identifier "{identifier_type}:{identifier_value}" in request.')
+        seen_identifiers.add(normalized_identifier)
 
         existing = find_instrument_by_identifier(
             session_factory,
             identifier_value=identifier_value,
+            identifier_type=identifier_type,
             include_inactive=True,
         )
         if existing is not None:
             raise ValueError(
-                f'Identifier "{identifier_value}" already belongs to "{existing["asset_name"]}" ({existing["asset_id"]}).'
+                f'Identifier "{identifier_type}:{identifier_value}" already belongs to '
+                f'"{existing["asset_name"]}" ({existing["asset_id"]}).'
             )
 
     with session_factory() as session:

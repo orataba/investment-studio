@@ -29,8 +29,13 @@ from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
     SQLAlchemyInstrumentAttributeRepository,
 )
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
+from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
 from watchlist_app.repositories.sqlalchemy.watchlists import SQLAlchemyWatchlistRepository
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+from watchlist_app.services.fund_taxonomy import (
+    build_taxonomy_context,
+    merge_taxonomy_attributes,
+)
 from watchlist_app.services.read_models import (
     build_watchlist_row_materialization,
     collapse_latest_attribute_values,
@@ -48,6 +53,7 @@ field_registry_repository = SQLAlchemyFieldRegistryRepository()
 asset_repository = SQLAlchemyAssetRepository()
 attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 read_model_repository = SQLAlchemyReadModelRepository()
+taxonomy_repository = SQLAlchemyTaxonomyRepository()
 canonical_recalc_service = CanonicalRecalcService()
 MAX_WATCHLIST_ID_ATTEMPTS = 10
 
@@ -382,6 +388,13 @@ def _materialize_watchlist_rows(
         attributes = collapse_latest_attribute_values(
             attribute_repository.get_values_for_asset(session, canonical_asset_id)
         )
+        assignment = taxonomy_repository.get_assignment(session, asset_id=canonical_asset_id)
+        node = (
+            taxonomy_repository.get_node(session, node_id=str(assignment.node_id))
+            if assignment is not None and assignment.node_id
+            else None
+        )
+        taxonomy_context = build_taxonomy_context(node)
         display_name = (
             asset.asset_name
             if asset is not None
@@ -416,7 +429,10 @@ def _materialize_watchlist_rows(
                 category_name=summary_payload.get("category_name") or asset_type.replace("_", " ").title(),
                 overall_rating=summary_payload.get("overall_rating"),
                 analyst_stance=summary_payload.get("analyst_stance"),
-                attributes=attributes,
+                attributes=merge_taxonomy_attributes(
+                    taxonomy_context=taxonomy_context,
+                    instrument_attributes=attributes,
+                ),
                 freshness_status=str(
                     (
                         freshness.get("data_freshness_status")

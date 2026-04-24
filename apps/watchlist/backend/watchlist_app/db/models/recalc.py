@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from watchlist_app.db.base import Base
@@ -12,7 +12,13 @@ from watchlist_app.db.base import Base
 class RecalcJob(Base):
     __tablename__ = "recalc_job"
     __table_args__ = (
-        UniqueConstraint("dedupe_key", name="uq_recalc_job_dedupe_key"),
+        Index(
+            "uq_recalc_job_open_dedupe_key",
+            "dedupe_key",
+            unique=True,
+            sqlite_where=text("job_status IN ('queued', 'running')"),
+            postgresql_where=text("job_status IN ('queued', 'running')"),
+        ),
         Index(
             "idx_recalc_job_status_priority",
             "job_status",

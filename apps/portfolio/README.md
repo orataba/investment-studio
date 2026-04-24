@@ -13,7 +13,7 @@
 - `Taxonomies` 已有真实配置工作台，支持层级 sleeve tree、assignment、`TargetSet`、`default planning taxonomy` 与 `cash_bucket` 维护
 - `Research` 已有真实工作台，支持 taxonomy-backed recursive sleeve backtest、run history、artifact viewer、回测指标/曲线/权重变化/调仓建议
 - `Review` 已有真实 period review pack 页面
-- `Snapshot` 仍保留为下一阶段报告工作面，当前路由会回退到 `Holdings`
+- `Overview` 已作为组合默认首页发布，承载 NAV、收益、回撤、sleeve 结构和 top holdings 总览；`Snapshot` 不再作为独立工作面保留
 
 ## 当前文档
 

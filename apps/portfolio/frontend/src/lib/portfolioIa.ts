@@ -27,6 +27,7 @@ export type PortfolioPageDefinition = {
 }
 
 export const workspacePrimaryNavigation = [
+  { label: 'Overview', href: '/overview' },
   { label: 'Holdings', href: '/holdings' },
   { label: 'Performance', href: '/performance' },
   { label: 'Risk', href: '/risk' },
@@ -38,14 +39,14 @@ export const workspacePrimaryNavigation = [
 ] as const
 
 export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> = {
-  snapshot: {
-    key: 'snapshot',
-    label: 'Snapshot',
-    href: '/snapshot',
+  overview: {
+    key: 'overview',
+    label: 'Overview',
+    href: '/overview',
     family: 'Current-State',
-    toolbarLabel: 'Page: Snapshot Report',
+    toolbarLabel: 'Page: Portfolio Overview',
     summary:
-      'Snapshot is the current-state report page. It answers how the portfolio looks now, what the key exposures are, and which benchmark or risk highlights need immediate explanation.',
+      'Overview is the current-state portfolio report. It answers how the portfolio looks now, how it has behaved since inception, and which composition or risk facts deserve immediate follow-up.',
     primaryQuestion: '这个组合现在整体怎样？',
     primaryObjects: ['PortfolioSnapshot', 'alert summary', 'selected benchmark summary'],
     sharedContext: [
@@ -57,19 +58,19 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
     ],
     coreBlocks: [
       { title: 'Portfolio summary hero', owner: 'PortfolioSnapshot', role: 'Show NAV, day move, status, and latest complete as_of_date' },
-      { title: 'Current composition summary', owner: 'PortfolioSnapshot', role: 'Summarize asset mix, taxonomy cuts, and high-level structure' },
+      { title: 'Current composition summary', owner: 'PortfolioSnapshot', role: 'Summarize sleeve mix, top holdings, and high-level structure' },
+      { title: 'Performance summary', owner: 'PerformanceSnapshot', role: 'Show since-inception return, P&L, and drawdown context' },
       { title: 'Top holdings / top groups', owner: 'PortfolioSnapshot', role: 'Surface the names or nodes driving current composition' },
-      { title: 'Benchmark-relative summary', owner: 'Resolved benchmark', role: 'Show current-state deviations vs primary benchmark' },
-      { title: 'Risk highlights', owner: 'RiskSnapshot summary', role: 'Lift current risk issues into a compact report layer' },
-      { title: 'Alert highlights', owner: 'AlertEvent summary', role: 'Call out unresolved breaches and stale inputs' },
+      { title: 'Risk highlights', owner: 'RiskSnapshot summary', role: 'Lift current risk issues into a compact current-state layer' },
+      { title: 'Coverage highlights', owner: 'Pricing coverage summary', role: 'Call out unpriced holdings and stale shared-data gaps' },
     ],
-    comparator: ['Default comparator: primary benchmark', 'Target-related content stays summary-only and links out to Risk'],
+    comparator: ['Default comparator: current sleeve mix and total NAV path', 'Benchmark-relative analysis stays secondary and links out to Performance or Risk'],
     conditionalBlocks: ['Target drift does not become a full analysis block here', 'Risk monitoring remains a drill-down, not the main canvas'],
     drillDowns: [
       { source: 'Composition block', target: 'Holdings grouped view' },
-      { source: 'Benchmark-relative summary', target: 'Performance or Risk' },
+      { source: 'Performance summary', target: 'Performance' },
       { source: 'Risk highlights', target: 'Risk' },
-      { source: 'Alert highlights', target: 'Risk / Limits & Alerts' },
+      { source: 'Coverage highlights', target: 'Holdings or Database Dashboard' },
     ],
     notThisPage: ['Not a full risk cockpit', 'Not a period performance page', 'Not the canonical holdings table'],
   },

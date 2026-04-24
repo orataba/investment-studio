@@ -79,14 +79,14 @@ Morningstar 对本项目最有价值的不是“单一功能”，而是它把�
 1. **Portfolio 入口层**
    先看到 portfolio list / all portfolios。
 2. **Portfolio workspace 层**
-   进入单一组合后，再切 `Snapshot / Holdings / Performance / Risk / Transactions / Accounts / Review / Research`。
+   进入单一组合后，再切 `Overview / Holdings / Performance / Risk / Transactions / Accounts / Review / Research`。
 3. **Report / analysis 层**
    在 workspace 内再消费底层 holdings / performance / risk 结果，生成当前状态报告与周期复盘材料。
 
 对本项目最重要的结论是：
 
 - Morningstar 的 `X-Ray / Portfolio Snapshot` 更像**当前组合状态报告**，适合客户或投委会沟通，而不只是一个简单结构页。
-- 本项目不再单独保留一个一级 `X-Ray` 工作面，而是把其核心能力沉淀为 `Snapshot` 页面和可导出的当前状态报告。
+- 本项目不再单独保留一个一级 `X-Ray` 工作面，而是把其核心能力沉淀为 `Overview` 页面和可导出的当前状态报告。
 - `Stock Intersection` 更像顾问端辅助报告，对本项目不是核心能力，可明确排除。
 - Morningstar 缺少一个面向 buy-side 小团队的独立 **Risk** 工作面，这恰好是本项目需要补上的核心差异。
 

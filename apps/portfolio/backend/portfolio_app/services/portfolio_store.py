@@ -21,6 +21,7 @@ from portfolio_app.db.models import (
     TransactionRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.ledger import build_account_workspace
 
 EMPTY_STORE: dict[str, list[dict[str, Any]]] = {
     "portfolios": [],
@@ -677,6 +678,72 @@ def _serialize_portfolio_row(item: PortfolioRecordModel) -> dict[str, object]:
         "sort_order": item.sort_order,
         "default_planning_taxonomy_id": item.default_planning_taxonomy_id,
     }
+
+
+def _safe_float(value: object) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_live_portfolio_rollup(
+    item: PortfolioRecordModel,
+    *,
+    accounts: list[AccountRecordModel],
+    transactions: list[TransactionRecordModel],
+) -> dict[str, object]:
+    base_payload = _serialize_portfolio_row(item)
+    as_of_date = item.as_of_date or date.today()
+    if not accounts and not transactions:
+        return base_payload
+
+    workspace = build_account_workspace(
+        item.portfolio_id,
+        [_serialize_account_row(account) for account in accounts],
+        [_serialize_transaction_row(transaction) for transaction in transactions],
+        selected_account_id=None,
+        base_currency=item.base_currency,
+        as_of_date=as_of_date,
+    )
+    account_rollups = workspace.get("accounts", [])
+    nav = sum(
+        (_safe_float(account.get("derived_cash_balance_base")) or 0.0)
+        + (_safe_float(account.get("position_market_value")) or 0.0)
+        for account in account_rollups
+        if isinstance(account, dict)
+    )
+    summary = workspace.get("summary", {})
+    return {
+        **base_payload,
+        "nav": nav,
+        "securities_count": int(summary.get("position_line_count") or 0),
+    }
+
+
+def _serialize_portfolio_row_with_live_summary(
+    session,
+    item: PortfolioRecordModel,
+) -> dict[str, object]:
+    accounts = session.scalars(
+        select(AccountRecordModel)
+        .where(AccountRecordModel.portfolio_id == item.portfolio_id)
+        .order_by(AccountRecordModel.account_id)
+    ).all()
+    transactions = session.scalars(
+        select(TransactionRecordModel)
+        .where(TransactionRecordModel.portfolio_id == item.portfolio_id)
+        .order_by(
+            TransactionRecordModel.trade_date,
+            TransactionRecordModel.trade_at,
+            TransactionRecordModel.created_at,
+            TransactionRecordModel.transaction_id,
+            TransactionRecordModel.settlement_date,
+        )
+    ).all()
+    return _build_live_portfolio_rollup(item, accounts=accounts, transactions=transactions)
 
 
 def _serialize_account_row(item: AccountRecordModel) -> dict[str, object]:
@@ -1340,7 +1407,7 @@ def list_portfolios() -> list[dict[str, object]]:
                 PortfolioRecordModel.portfolio_id,
             )
         ).all()
-        return [_serialize_portfolio_row(item) for item in portfolios]
+        return [_serialize_portfolio_row_with_live_summary(session, item) for item in portfolios]
 
 
 def get_portfolio(portfolio_id: str) -> dict[str, object] | None:
@@ -1349,7 +1416,7 @@ def get_portfolio(portfolio_id: str) -> dict[str, object] | None:
         record = session.get(PortfolioRecordModel, portfolio_id)
         if record is None:
             return None
-        return _serialize_portfolio_row(record)
+        return _serialize_portfolio_row_with_live_summary(session, record)
 
 
 def list_taxonomies(portfolio_id: str) -> list[dict[str, object]]:
@@ -2843,42 +2910,102 @@ def create_transaction(
     note: str | None,
     created_at: str | None = None,
 ) -> dict[str, object]:
+    records = create_transactions(
+        portfolio_id=portfolio_id,
+        records=[
+            {
+                "transaction_type": transaction_type,
+                "trade_date": trade_date,
+                "trade_time": trade_time,
+                "settlement_date": settlement_date,
+                "entitlement_date": entitlement_date,
+                "acquisition_date": acquisition_date,
+                "account_id": account_id,
+                "settlement_cash_account_id": settlement_cash_account_id,
+                "asset_id": asset_id,
+                "instrument_ref": instrument_ref,
+                "quantity": quantity,
+                "price": price,
+                "gross_amount": gross_amount,
+                "counter_amount": counter_amount,
+                "fx_rate": fx_rate,
+                "fees": fees,
+                "taxes": taxes,
+                "currency": currency,
+                "transfer_scope": transfer_scope,
+                "transfer_object_type": transfer_object_type,
+                "transfer_group_id": transfer_group_id,
+                "counterparty_account_id": counterparty_account_id,
+                "note": note,
+                "created_at": created_at,
+            }
+        ],
+    )
+    return records[0]
+
+
+def create_transactions(
+    portfolio_id: str,
+    *,
+    records: list[dict[str, Any]],
+) -> list[dict[str, object]]:
+    if not records:
+        return []
+
     session_factory = get_session_factory()
     with session_factory() as session:
-        record = TransactionRecordModel(
-            transaction_id=_next_transaction_id(session),
-            portfolio_id=portfolio_id,
-        )
-        _apply_transaction_record(
-            record,
-            transaction_type=transaction_type,
-            trade_date=trade_date,
-            trade_time=trade_time,
-            settlement_date=settlement_date,
-            entitlement_date=entitlement_date,
-            acquisition_date=acquisition_date,
-            account_id=account_id,
-            settlement_cash_account_id=settlement_cash_account_id,
-            asset_id=asset_id,
-            instrument_ref=instrument_ref,
-            quantity=quantity,
-            price=price,
-            gross_amount=gross_amount,
-            counter_amount=counter_amount,
-            fx_rate=fx_rate,
-            fees=fees,
-            taxes=taxes,
-            currency=currency,
-            transfer_scope=transfer_scope,
-            transfer_object_type=transfer_object_type,
-            transfer_group_id=transfer_group_id,
-            counterparty_account_id=counterparty_account_id,
-            note=note,
-            created_at=created_at or _current_utc_timestamp(),
-        )
-        session.add(record)
+        created: list[TransactionRecordModel] = []
+        for values in records:
+            record = TransactionRecordModel(
+                transaction_id=_next_transaction_id(session),
+                portfolio_id=portfolio_id,
+            )
+            _apply_transaction_record(
+                record,
+                transaction_type=str(values["transaction_type"]),
+                trade_date=values["trade_date"],
+                trade_time=values.get("trade_time"),
+                settlement_date=values["settlement_date"],
+                entitlement_date=values.get("entitlement_date"),
+                acquisition_date=values.get("acquisition_date"),
+                account_id=str(values["account_id"]),
+                settlement_cash_account_id=(
+                    str(values["settlement_cash_account_id"])
+                    if values.get("settlement_cash_account_id")
+                    else None
+                ),
+                asset_id=str(values["asset_id"]) if values.get("asset_id") else None,
+                instrument_ref=(
+                    values["instrument_ref"]
+                    if isinstance(values.get("instrument_ref"), dict)
+                    else None
+                ),
+                quantity=values.get("quantity"),
+                price=values.get("price"),
+                gross_amount=float(values["gross_amount"]),
+                counter_amount=values.get("counter_amount"),
+                fx_rate=values.get("fx_rate"),
+                fees=float(values["fees"]),
+                taxes=float(values["taxes"]),
+                currency=str(values["currency"]),
+                transfer_scope=str(values["transfer_scope"]) if values.get("transfer_scope") else None,
+                transfer_object_type=(
+                    str(values["transfer_object_type"]) if values.get("transfer_object_type") else None
+                ),
+                transfer_group_id=str(values["transfer_group_id"]) if values.get("transfer_group_id") else None,
+                counterparty_account_id=(
+                    str(values["counterparty_account_id"])
+                    if values.get("counterparty_account_id")
+                    else None
+                ),
+                note=str(values["note"]) if values.get("note") is not None else None,
+                created_at=str(values.get("created_at") or _current_utc_timestamp()),
+            )
+            session.add(record)
+            session.flush()
+            created.append(record)
         session.commit()
-        return _serialize_transaction_row(record)
+        return [_serialize_transaction_row(record) for record in created]
 
 
 def update_transaction(

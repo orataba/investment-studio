@@ -35,6 +35,9 @@ REBALANCE_FREQUENCIES = {"weekly", "monthly", "quarterly"}
 TARGET_MEMBER_NODE = "taxonomy_node"
 TARGET_MEMBER_INSTRUMENT = "instrument"
 TARGET_MEMBER_CASH = "cash_bucket"
+CAPITAL_MODE_UNIT_NOTIONAL = "unit_notional"
+CAPITAL_MODE_FIXED_GROSS = "fixed_gross"
+CAPITAL_MODE_TARGET_VOLATILITY = "target_volatility"
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,7 @@ class TaxonomyBacktestState:
     account_name_by_id: dict[str, str]
     instrument_detail_cache: dict[str, dict[str, object] | None]
     direct_fx_assets: dict[tuple[str, str], str]
+    frozen_taxonomy_node_ids: frozenset[str]
 
 
 def _safe_float(value: object) -> float | None:
@@ -288,6 +292,79 @@ def _build_cash_nav_series(
     if len(calendar) == 0:
         calendar = [start_date]
     return pd.Series(1.0, index=pd.Index(calendar, dtype="object"), dtype="float64")
+
+
+def _node_is_cash_subtree(state: TaxonomyBacktestState, node_id: str) -> bool:
+    subtree = state.node_subtree_by_id.get(node_id, {node_id})
+    has_cash_assignment = False
+    for subtree_node_id in subtree:
+        for assignment in state.direct_assignments_by_node.get(subtree_node_id, []):
+            target_scope = str(assignment.get("target_scope") or "")
+            if target_scope == TARGET_MEMBER_INSTRUMENT:
+                return False
+            if target_scope == TARGET_MEMBER_CASH:
+                has_cash_assignment = True
+    return has_cash_assignment
+
+
+def _member_is_cash_like(state: TaxonomyBacktestState, member: ScopeMemberRecord) -> bool:
+    if member.member_type == TARGET_MEMBER_CASH:
+        return True
+    if member.member_type != TARGET_MEMBER_NODE:
+        return False
+    return _node_is_cash_subtree(state, member.member_id)
+
+
+def _scope_is_frozen(state: TaxonomyBacktestState, scope_node_id: str | None) -> bool:
+    if scope_node_id is None:
+        return False
+    return scope_node_id in state.frozen_taxonomy_node_ids
+
+
+def _member_is_frozen(
+    state: TaxonomyBacktestState,
+    *,
+    scope_node_id: str | None,
+    member: ScopeMemberRecord,
+) -> bool:
+    if _member_is_cash_like(state, member):
+        return False
+    if _scope_is_frozen(state, scope_node_id):
+        return True
+    return member.member_type == TARGET_MEMBER_NODE and member.member_id in state.frozen_taxonomy_node_ids
+
+
+def _annualized_portfolio_volatility(return_window: pd.DataFrame, weights: pd.Series) -> float | None:
+    if return_window.empty or weights.empty:
+        return None
+    aligned = return_window.reindex(columns=weights.index, fill_value=0.0).dropna(how="all")
+    if aligned.shape[0] < 2:
+        return None
+    covariance = aligned.cov(ddof=0).to_numpy(dtype="float64")
+    covariance = np.where(np.isfinite(covariance), covariance, 0.0)
+    variance = float(weights.to_numpy(dtype="float64") @ covariance @ weights.to_numpy(dtype="float64"))
+    if variance <= 1e-12:
+        return 0.0
+    periods_per_year = _infer_periods_per_year([item for item in aligned.index.tolist() if item is not None])
+    return float(sqrt(max(variance, 0.0)) * sqrt(periods_per_year))
+
+
+def _allocate_cash_weights(
+    *,
+    cash_index: list[str],
+    preferred_weights: pd.Series,
+    total_cash_weight: float,
+) -> pd.Series:
+    if not cash_index:
+        return pd.Series(dtype="float64")
+    clipped_total = float(total_cash_weight)
+    preferred = preferred_weights.reindex(cash_index, fill_value=0.0).astype("float64")
+    preferred_total = float(preferred.sum())
+    if abs(clipped_total) <= 1e-12:
+        return pd.Series(0.0, index=cash_index, dtype="float64")
+    if preferred_total > 1e-12:
+        return preferred / preferred_total * clipped_total
+    return pd.Series(clipped_total / float(len(cash_index)), index=cash_index, dtype="float64")
 
 
 def _infer_periods_per_year(dates: list[date]) -> float:
@@ -529,29 +606,24 @@ def _scope_target_sets(
     state: TaxonomyBacktestState,
     *,
     scope_node_id: str | None,
-    as_of_date: date,
     target_set_type: str,
 ) -> dict[str, object] | None:
     candidates = state.target_sets_by_scope_type.get((scope_node_id, target_set_type), [])
-    active = [
+    configured = [
         item
         for item in candidates
-        if _period_active(
-            effective_from=item.get("effective_from"),
-            effective_to=item.get("effective_to"),
-            as_of_date=as_of_date,
-        )
+        if str(item.get("status") or "active") == "active"
     ]
-    if not active:
+    if not configured:
         return None
-    active.sort(
+    configured.sort(
         key=lambda item: (
             str(item.get("effective_from") or ""),
             str(item.get("target_set_id") or ""),
         ),
         reverse=True,
     )
-    return active[0]
+    return configured[0]
 
 
 def _resolve_dimension_target_rows(
@@ -589,7 +661,6 @@ def _resolve_dimension_target_rows(
             target_set = _scope_target_sets(
                 state,
                 scope_node_id=scope_node_id,
-                as_of_date=as_of_date,
                 target_set_type=target_set_type,
             )
             if target_set is None or not bool(target_set.get(enabled_field)):
@@ -632,7 +703,7 @@ def _resolve_dimension_target_rows(
         equal_share = 1.0 / float(len(scope_members))
         scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
         warnings.append(
-            f"{scope_label} does not have an active {resolved_dimension} target set, so Research is using an equal-{resolved_dimension.replace('_', '-')} local default."
+            f"{scope_label} does not have a configured {resolved_dimension} target set, so Research is using an equal-{resolved_dimension.replace('_', '-')} local default."
         )
         return [
             {
@@ -724,6 +795,61 @@ def _simulation_window(return_series: pd.Series, *, as_of_date: date, lookback_d
     return window.astype("float64")
 
 
+def _require_full_lookback_window(
+    *,
+    scope_label: str,
+    member_labels: list[str],
+    return_window: pd.DataFrame,
+    as_of_date: date,
+    lookback_days: int,
+) -> None:
+    required_start = as_of_date - pd.Timedelta(days=max(int(lookback_days), 1))
+    required_start_day = required_start.date() if hasattr(required_start, "date") else required_start
+    if return_window.empty or len(return_window.index) < 2:
+        joined_labels = ", ".join(member_labels) if member_labels else "selected members"
+        raise ValueError(
+            f"{scope_label} cannot solve risk-budget on {as_of_date.isoformat()} because "
+            f"{joined_labels} do not have enough aligned observations for a full {lookback_days}-day lookback window."
+        )
+    actual_start = return_window.index.min()
+    if actual_start > required_start_day:
+        joined_labels = ", ".join(member_labels) if member_labels else "selected members"
+        raise ValueError(
+            f"{scope_label} cannot solve risk-budget on {as_of_date.isoformat()} because "
+            f"{joined_labels} only have aligned history from {actual_start.isoformat()}, while a full "
+            f"{lookback_days}-day lookback requires history through {required_start_day.isoformat()}."
+        )
+
+
+def _solver_return_window(
+    *,
+    members: list[ScopeMemberRecord],
+    nav_series_by_member: dict[tuple[str, str], pd.Series],
+    as_of_date: date,
+    lookback_days: int,
+) -> pd.DataFrame:
+    if not members:
+        return pd.DataFrame()
+    start_date = as_of_date - pd.Timedelta(days=max(int(lookback_days), 1))
+    start_day = start_date.date() if hasattr(start_date, "date") else start_date
+    try:
+        aligned_members, _calendar, _warnings = _align_member_series(
+            members,
+            nav_series_by_member,
+            start_date=start_day,
+            end_date=as_of_date,
+        )
+    except ValueError:
+        return pd.DataFrame()
+    frame = pd.DataFrame(
+        {
+            f"{member.member.member_type}::{member.member.member_id}": member.returns
+            for member in aligned_members
+        }
+    )
+    return frame.astype("float64")
+
+
 def _simulate_scope(
     state: TaxonomyBacktestState,
     *,
@@ -733,7 +859,12 @@ def _simulate_scope(
     lookback_days: int,
     target_set_mode: str,
     target_dimension: str,
+    capital_mode: str,
+    gross_exposure: float | None,
+    target_volatility: float | None,
+    max_gross_exposure: float | None,
     rebalance_frequency: str,
+    apply_capital_overlay: bool,
 ) -> ScopeSimulationResult:
     scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
     scope_path = state.node_path_by_id.get(scope_node_id or ROOT_SCOPE_MEMBER_ID, ROOT_SCOPE_LABEL)
@@ -757,7 +888,12 @@ def _simulate_scope(
                 lookback_days=lookback_days,
                 target_set_mode=target_set_mode,
                 target_dimension=target_dimension,
+                capital_mode=capital_mode,
+                gross_exposure=gross_exposure,
+                target_volatility=target_volatility,
+                max_gross_exposure=max_gross_exposure,
                 rebalance_frequency=rebalance_frequency,
+                apply_capital_overlay=False,
             )
             member_results_cache[member.member_id] = child_result
             member_nav = pd.Series(
@@ -810,6 +946,16 @@ def _simulate_scope(
     member_by_key = {
         f"{member.member.member_type}::{member.member.member_id}": member.member
         for member in aligned_members
+    }
+    current_actual_rows, current_actual_warnings = _current_scope_actuals(
+        state,
+        scope_node_id=scope_node_id,
+        as_of_date=end_date,
+    )
+    current_actual_weight_by_key = {
+        f"{item['member_type']}::{item['member_id']}": float(_safe_float(item.get("current_weight")) or 0.0)
+        for item in current_actual_rows
+        if item.get("member_type") in {TARGET_MEMBER_NODE, TARGET_MEMBER_INSTRUMENT, TARGET_MEMBER_CASH}
     }
     rebalance_dates = _select_rebalance_dates(calendar, rebalance_frequency)
 
@@ -866,6 +1012,41 @@ def _simulate_scope(
                 dtype="float64",
             )
             target_values = target_values.reindex(returns_frame.columns, fill_value=0.0)
+            member_keys = list(returns_frame.columns)
+            cash_like_keys = [
+                key
+                for key in member_keys
+                if _member_is_cash_like(state, member_by_key[key])
+            ]
+            frozen_keys = [
+                key
+                for key in member_keys
+                if _member_is_frozen(
+                    state,
+                    scope_node_id=scope_node_id,
+                    member=member_by_key[key],
+                )
+            ]
+            fixed_weight_targets = pd.Series(
+                {
+                    key: current_actual_weight_by_key.get(
+                        key,
+                        float(target_values.get(key, 0.0)),
+                    )
+                    for key in frozen_keys
+                },
+                dtype="float64",
+            ).clip(lower=0.0)
+            risk_keys = [key for key in member_keys if key not in cash_like_keys and key not in frozen_keys]
+            preferred_cash_weights = pd.Series(
+                {
+                    f"{row['member_type']}::{row['member_id']}": float(_safe_float(row.get("target_weight")) or 0.0)
+                    for row in resolved_rows
+                    if f"{row['member_type']}::{row['member_id']}" in cash_like_keys
+                },
+                dtype="float64",
+            ).reindex(cash_like_keys, fill_value=0.0)
+            fixed_total = min(max(float(fixed_weight_targets.sum()), 0.0), 1.0)
 
             if target_dimension_used == TARGET_DIMENSION_RISK_BUDGET:
                 return_window = pd.DataFrame(
@@ -875,28 +1056,132 @@ def _simulate_scope(
                             as_of_date=as_of_date,
                             lookback_days=lookback_days,
                         )
-                        for column in returns_frame.columns
+                        for column in risk_keys
                     }
                 ).dropna(how="all")
-                reference = (
-                    current_weights.reindex(returns_frame.columns, fill_value=0.0).to_numpy(dtype="float64")
-                    if not current_weights.empty
-                    else None
-                )
-                solved_weights, risk_gap, solver_kind = _solve_risk_budget_weights(
-                    target_shares=target_values.to_numpy(dtype="float64"),
-                    return_window=return_window.fillna(0.0),
-                    reference_weights=reference,
-                )
-                implementation_weights = pd.Series(solved_weights, index=returns_frame.columns, dtype="float64")
+                base_cash_total = float(preferred_cash_weights.sum())
+                base_cash_total = min(max(base_cash_total, 0.0), 1.0)
+                fixed_total = min(fixed_total, max(1.0 - base_cash_total, 0.0))
+                if risk_keys:
+                    if len(risk_keys) > 1:
+                        solver_members = [member_by_key[key] for key in risk_keys]
+                        return_window = _solver_return_window(
+                            members=solver_members,
+                            nav_series_by_member=nav_series_by_member,
+                            as_of_date=as_of_date,
+                            lookback_days=lookback_days,
+                        )
+                    else:
+                        return_window = pd.DataFrame()
+                    if len(risk_keys) > 1 and index > 0:
+                        _require_full_lookback_window(
+                            scope_label=scope_label,
+                            member_labels=[label_by_key[key] for key in risk_keys],
+                            return_window=return_window,
+                            as_of_date=as_of_date,
+                            lookback_days=lookback_days,
+                        )
+                    reference = (
+                        current_weights.reindex(risk_keys, fill_value=0.0).to_numpy(dtype="float64")
+                        if not current_weights.empty
+                        else None
+                    )
+                    solved_weights, risk_gap, solver_kind = _solve_risk_budget_weights(
+                        target_shares=target_values.reindex(risk_keys, fill_value=0.0).to_numpy(dtype="float64"),
+                        return_window=return_window.fillna(0.0),
+                        reference_weights=reference,
+                    )
+                    implementation_weights = pd.Series(0.0, index=returns_frame.columns, dtype="float64")
+                    implementation_weights.loc[frozen_keys] = fixed_weight_targets.reindex(frozen_keys, fill_value=0.0)
+                    implementation_weights.loc[risk_keys] = solved_weights * max(1.0 - base_cash_total - fixed_total, 0.0)
+                    implementation_weights.loc[cash_like_keys] = _allocate_cash_weights(
+                        cash_index=cash_like_keys,
+                        preferred_weights=preferred_cash_weights,
+                        total_cash_weight=1.0
+                        - float(implementation_weights.loc[risk_keys].sum())
+                        - float(implementation_weights.loc[frozen_keys].sum()),
+                    )
+                else:
+                    implementation_weights = pd.Series(0.0, index=returns_frame.columns, dtype="float64")
+                    implementation_weights.loc[frozen_keys] = fixed_weight_targets.reindex(frozen_keys, fill_value=0.0)
+                    implementation_weights.loc[cash_like_keys] = _allocate_cash_weights(
+                        cash_index=cash_like_keys,
+                        preferred_weights=preferred_cash_weights,
+                        total_cash_weight=1.0 - float(implementation_weights.loc[frozen_keys].sum()),
+                    )
+                    risk_gap = 0.0
+                    solver_kind = "fixed-members" if frozen_keys else "single-member"
                 if solver_kind.startswith("fallback"):
                     warnings.append(
                         f"{scope_label} used {solver_kind} on {as_of_date.isoformat()} because local covariance was weak."
                     )
             else:
-                implementation_weights = target_values
+                implementation_weights = pd.Series(0.0, index=returns_frame.columns, dtype="float64")
+                implementation_weights.loc[frozen_keys] = fixed_weight_targets.reindex(frozen_keys, fill_value=0.0)
+                active_weight_keys = [key for key in member_keys if key not in cash_like_keys and key not in frozen_keys]
+                active_weight_targets = target_values.reindex(active_weight_keys, fill_value=0.0)
+                active_weight_total = float(active_weight_targets.sum())
+                active_budget = max(
+                    1.0 - float(implementation_weights.loc[frozen_keys].sum()) - float(preferred_cash_weights.sum()),
+                    0.0,
+                )
+                if active_weight_keys:
+                    if active_weight_total > 1e-12:
+                        implementation_weights.loc[active_weight_keys] = (
+                            active_weight_targets / active_weight_total * active_budget
+                        )
+                    else:
+                        implementation_weights.loc[active_weight_keys] = active_budget / float(len(active_weight_keys))
+                implementation_weights.loc[cash_like_keys] = _allocate_cash_weights(
+                    cash_index=cash_like_keys,
+                    preferred_weights=preferred_cash_weights,
+                    total_cash_weight=1.0
+                    - float(implementation_weights.loc[active_weight_keys].sum())
+                    - float(implementation_weights.loc[frozen_keys].sum()),
+                )
                 risk_gap = None
-                solver_kind = "weight"
+                solver_kind = "weight-fixed-members" if frozen_keys else "weight"
+
+            estimated_risk_sleeve_volatility = None
+            effective_gross_exposure = None
+            risk_asset_scaling_factor = None
+            if apply_capital_overlay and risk_keys:
+                risky_weights = implementation_weights.reindex(risk_keys, fill_value=0.0)
+                if capital_mode == CAPITAL_MODE_FIXED_GROSS:
+                    effective_gross_exposure = float(gross_exposure or 1.0)
+                elif capital_mode == CAPITAL_MODE_TARGET_VOLATILITY:
+                    solver_members = [member_by_key[key] for key in risk_keys]
+                    return_window = _solver_return_window(
+                        members=solver_members,
+                        nav_series_by_member=nav_series_by_member,
+                        as_of_date=as_of_date,
+                        lookback_days=lookback_days,
+                    )
+                    estimated_risk_sleeve_volatility = _annualized_portfolio_volatility(
+                        return_window.fillna(0.0),
+                        risky_weights,
+                    )
+                    if estimated_risk_sleeve_volatility and estimated_risk_sleeve_volatility > 0 and target_volatility:
+                        effective_gross_exposure = float(target_volatility) / float(estimated_risk_sleeve_volatility)
+                    else:
+                        effective_gross_exposure = 1.0
+                        if target_volatility:
+                            warnings.append(
+                                f"{scope_label} could not estimate risky-sleeve volatility on {as_of_date.isoformat()}, so capital overlay stayed at unit gross."
+                            )
+                    if max_gross_exposure is not None:
+                        effective_gross_exposure = min(float(effective_gross_exposure), float(max_gross_exposure))
+                if effective_gross_exposure is not None:
+                    risk_asset_scaling_factor = float(effective_gross_exposure)
+                    implementation_weights.loc[risk_keys] = risky_weights * risk_asset_scaling_factor
+                    if cash_like_keys:
+                        implementation_weights.loc[cash_like_keys] = _allocate_cash_weights(
+                            cash_index=cash_like_keys,
+                            preferred_weights=preferred_cash_weights,
+                            total_cash_weight=1.0
+                            - float(implementation_weights.loc[risk_keys].sum())
+                            - float(implementation_weights.loc[frozen_keys].sum()),
+                        )
 
             for row in resolved_rows:
                 member_key = f"{row['member_type']}::{row['member_id']}"
@@ -928,6 +1213,10 @@ def _simulate_scope(
                     "target_weight_total": float(current_weights.sum()),
                     "max_weight_gap_before_rebalance": pre_gap,
                     "max_risk_share_gap": risk_gap,
+                    "estimated_risk_sleeve_volatility": estimated_risk_sleeve_volatility,
+                    "target_volatility": target_volatility if apply_capital_overlay else None,
+                    "gross_exposure": effective_gross_exposure,
+                    "risk_asset_scaling_factor": risk_asset_scaling_factor,
                     "member_count": len(members),
                 }
             )
@@ -1013,6 +1302,7 @@ def _simulate_scope(
             }
         )
     warnings.extend(child_warnings)
+    warnings.extend(current_actual_warnings)
     deduped_warnings = list(dict.fromkeys(item for item in warnings if item))
     return ScopeSimulationResult(
         scope_node_id=scope_node_id,
@@ -1223,6 +1513,7 @@ def _build_taxonomy_state(
     *,
     planning_taxonomy_id: str,
     as_of_date: date,
+    frozen_taxonomy_node_ids: list[str] | None = None,
 ) -> TaxonomyBacktestState:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -1346,6 +1637,9 @@ def _build_taxonomy_state(
         account_name_by_id=account_name_by_id,
         instrument_detail_cache={},
         direct_fx_assets=_build_direct_fx_asset_map(),
+        frozen_taxonomy_node_ids=frozenset(
+            str(item).strip() for item in (frozen_taxonomy_node_ids or []) if str(item).strip()
+        ),
     )
 
 
@@ -1397,12 +1691,18 @@ def run_taxonomy_backtest(
     lookback_days: int,
     target_set_mode: str,
     target_dimension: str,
+    capital_mode: str,
+    gross_exposure: float | None,
+    target_volatility: float | None,
+    max_gross_exposure: float | None,
+    frozen_taxonomy_node_ids: list[str] | None,
     rebalance_frequency: str,
 ) -> dict[str, object]:
     state = _build_taxonomy_state(
         portfolio_id,
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=end_date,
+        frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
     )
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
         raise ValueError("Selected research scope was not found in the planning taxonomy.")
@@ -1417,7 +1717,12 @@ def run_taxonomy_backtest(
         lookback_days=lookback_days,
         target_set_mode=target_set_mode,
         target_dimension=target_dimension,
+        capital_mode=capital_mode,
+        gross_exposure=gross_exposure,
+        target_volatility=target_volatility,
+        max_gross_exposure=max_gross_exposure,
         rebalance_frequency=rebalance_frequency,
+        apply_capital_overlay=comparator_taxonomy_node_id is None,
     )
     actual_rows, actual_warnings = _current_scope_actuals(
         state,

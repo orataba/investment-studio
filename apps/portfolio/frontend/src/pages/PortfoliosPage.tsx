@@ -114,7 +114,7 @@ export default function PortfoliosPage() {
       const created = await createPortfolio({ name })
       setPortfolios((current) => [...current, created])
       setNotice(`Created portfolio "${created.portfolio_name}".`)
-      navigate(buildPortfolioSectionPath(created.portfolio_id, '/holdings'))
+      navigate(buildPortfolioSectionPath(created.portfolio_id, '/overview'))
     } catch (requestError) {
       setNotice(
         requestError instanceof Error
@@ -253,7 +253,7 @@ export default function PortfoliosPage() {
                 </svg>
               </div>
             </div>
-            <Link className="portfolio-entry-card-main" to={buildPortfolioSectionPath(portfolio.portfolio_id, '/holdings')}>
+            <Link className="portfolio-entry-card-main" to={buildPortfolioSectionPath(portfolio.portfolio_id, '/overview')}>
               <div className="portfolio-entry-card-title-stack">
                 <strong>{portfolio.portfolio_name}</strong>
                 <span>{portfolio.securities_count} Securities</span>

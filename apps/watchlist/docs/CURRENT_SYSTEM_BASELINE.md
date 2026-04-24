@@ -1,7 +1,7 @@
 # 当前系统基线
 
 状态：Current baseline  
-日期：2026-04-22  
+日期：2026-04-23  
 目的：给后续继续开发的人一个和当前代码一致、没有兼容层包袱的起点
 
 ## 1. 当前仓库已经是什么
@@ -22,7 +22,7 @@
 - `/watchlists`
   当前主入口，已经接上 watchlist、views、screener。
 - `/instruments/:assetId`
-  当前详情页 canonical 入口，先做 instrument dispatch，再进入 fund overlay；来源 watchlist 只作为 query context 传递，不再进入主路径。
+  当前详情页 canonical 入口，先做 instrument dispatch，再进入 fund overlay；来源 watchlist 只作为 query context 传递，不再进入主路径。Fund Detail 当前以 `Overview` 为首屏，先展示基础情况和基金分类树。
 - `/monitoring`
   当前可用工作面，覆盖 freshness、缺失 label、open recalc job。
 
@@ -37,7 +37,7 @@
 
 watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而是三层框架：
 
-1. `Classification`
+1. `Fund Taxonomy`
 2. `Research Tags`
 3. `Monitoring Assessment`
 
@@ -45,7 +45,7 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 
 - 数据定义：`instrument_attribute_definition`
 - 资产赋值：`instrument_attribute_value`
-- watchlist field registry 分类：`product_classification / research_framework / monitoring_assessment`
+- watchlist field registry 分类：`product_taxonomy / research_framework / monitoring_assessment`
 - Fund Detail UI 分区
 - Monitoring 缺失项检查
 
@@ -59,10 +59,12 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 - watchlist `Download` 会导出当前筛选/排序结果的全量行，而不是只导当前页
 - watchlist filter 选项按当前名单的全量结果计算，而不是固定采样前几页
 - 当前页 add / delete / move 后，filter 选项会重新拉取
+- watchlist 的 `Peer Category` 仍然代表外部 peer group；内部基金分类已经改成独立 taxonomy tree，并派生出 `fund_regime + 一级/二级/三级分类...`
+- fund taxonomy 默认允许 `Unassigned`；系统不再基于旧分类字段或 migration 自动猜测分类，必须由人在详情页明确选择
 - watchlist `move` / `copy` 必须先命中 source watchlist membership，不能绕过 source 直接向 target 加资产
 - 自定义 view 的 `view_id` 会做 path-safe slug 化；创建冲突会重试；复制 watchlist 时也会清洗 legacy custom view id
 - canonical NAV history 在 watchlist detail 是只读视图；导入、刷新、编辑共享净值要回到 `Database Dashboard`
-- monitoring 的缺失项检查是 taxonomy-aware，只检查当前分类下适用且 `required_for_monitoring` 的字段
+- monitoring 的缺失项检查是 taxonomy-aware；它既检查当前分类下适用且 `required_for_monitoring` 的字段，也检查 `fund_regime` 和分类叶子是否完整
 - 后端 API 已统一到 `instrument` 主语；旧 `/api/funds/...` 兼容路由已删除
 - 前端详情 canonical 路由是 `/instruments/:assetId`
 - watchlist 不再单独提供共享资产库页面；共享资产浏览和维护统一回到 `Database Dashboard`
@@ -77,6 +79,7 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 - `watchlists`
 - `instruments`
 - `instrument-attributes`
+- `taxonomies`
 - `field-registry`
 - `screener`
 - `facts`
@@ -89,6 +92,7 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 - watchlist / view / row read model
 - shared-registry-backed instrument add into watchlist
 - instrument library search / resolve
+- fund taxonomy tree / taxonomy assignment / derived taxonomy levels
 - NAV facts ingest
 - holdings ingest
 - performance / risk / exposure / ratings materialization

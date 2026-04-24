@@ -123,7 +123,7 @@ class InstrumentAttributeDefinitionCreateRequest(BaseModel):
         "text",
         "date",
     ]
-    domain_code: Literal["classification", "research", "monitoring"]
+    domain_code: Literal["overview", "research", "monitoring"]
     group_code: str
     display_order: int = 999
     options: list[str] = Field(default_factory=list)
@@ -144,6 +144,11 @@ class FundAttributeValueInput(BaseModel):
 
 class FundAttributesUpsertRequest(BaseModel):
     values: list[FundAttributeValueInput] = Field(default_factory=list)
+
+
+class TaxonomyAssignmentUpsertRequest(BaseModel):
+    node_id: str | None = None
+    updated_by: str | None = None
 
 
 class HoldingPositionInput(BaseModel):

@@ -469,9 +469,19 @@ def default_fund_summary_payload(
         "ticker_or_isin": asset_id.upper(),
         "rating_as_of": "2026-04-10",
         "category_name": "Unclassified",
+        "management_firm_name": None,
         "overall_rating": None,
         "analyst_stance": "Unrated",
         "instrument_attributes": instrument_attributes or {},
+        "taxonomy": {
+            "taxonomy_code": "fund_taxonomy",
+            "assigned_node_id": None,
+            "assigned_label": None,
+            "path_labels": [],
+            "path_node_ids": [],
+            "depth": 0,
+            "derived_values": {},
+        },
         "key_stats": [],
         "freshness": {
             "data_freshness_status": "unavailable",
@@ -481,7 +491,7 @@ def default_fund_summary_payload(
             "staleness_reason": "No read model materialized yet.",
         },
         "quick_monitoring_items": [],
-        "tabs": ["summary"],
+        "tabs": ["overview"],
     }
 
 

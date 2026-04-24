@@ -11,7 +11,7 @@
 3. [CURRENT_SYSTEM_BASELINE.md](./CURRENT_SYSTEM_BASELINE.md)
    当前 watchlist app 已经实现到哪里、哪些页面和接口是真实可用的。
 4. [FUND_PRODUCT_FRAMEWORK.md](./FUND_PRODUCT_FRAMEWORK.md)
-   fund 产品框架的三层模型：`Classification / Research Tags / Monitoring Assessment`。
+   fund 产品框架的三层模型：`Fund Taxonomy / Research Tags / Monitoring Assessment`。
 5. [FUND_TERMINAL_V2_DATA_MODEL_AND_API.md](./FUND_TERMINAL_V2_DATA_MODEL_AND_API.md)
    当前后端数据分层、关键表、API 分组与路由边界。
 6. [FUND_TERMINAL_V2_AI_COPILOT.md](./FUND_TERMINAL_V2_AI_COPILOT.md)

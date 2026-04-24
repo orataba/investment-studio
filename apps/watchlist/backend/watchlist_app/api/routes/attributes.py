@@ -19,6 +19,11 @@ from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
     SQLAlchemyInstrumentAttributeRepository,
 )
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
+from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
+from watchlist_app.services.fund_taxonomy import (
+    build_taxonomy_context,
+    merge_taxonomy_attributes,
+)
 
 
 router = APIRouter()
@@ -26,6 +31,7 @@ attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 field_registry_repository = SQLAlchemyFieldRegistryRepository()
 asset_repository = SQLAlchemyAssetRepository()
 read_model_repository = SQLAlchemyReadModelRepository()
+taxonomy_repository = SQLAlchemyTaxonomyRepository()
 
 
 def _require_asset(session: Session, asset_id: str):
@@ -33,6 +39,20 @@ def _require_asset(session: Session, asset_id: str):
     if record is None:
         raise HTTPException(status_code=404, detail="Asset not found")
     return record
+
+
+def _taxonomy_context_for_asset(
+    session: Session,
+    *,
+    asset_id: str,
+) -> dict[str, object]:
+    assignment = taxonomy_repository.get_assignment(session, asset_id=asset_id)
+    node = (
+        taxonomy_repository.get_node(session, node_id=str(assignment.node_id))
+        if assignment is not None and assignment.node_id
+        else None
+    )
+    return build_taxonomy_context(node)
 
 
 @router.get("/definitions")
@@ -101,11 +121,16 @@ def get_asset_attribute_values(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _require_asset(session, asset_id)
-    return present_attribute_values(
+    payload = present_attribute_values(
         asset_id,
         attribute_repository.list_definitions(session),
         attribute_repository.get_values_for_asset(session, asset_id),
     )
+    payload["taxonomy"] = _taxonomy_context_for_asset(
+        session,
+        asset_id=asset_id,
+    )
+    return payload
 
 
 @router.post("/assets/{asset_id}")
@@ -138,11 +163,18 @@ def upsert_asset_attribute_values(
         list(definitions.values()),
         attribute_repository.get_values_for_asset(session, asset_id),
     )
+    taxonomy_context = _taxonomy_context_for_asset(
+        session,
+        asset_id=asset_id,
+    )
     read_model_repository.set_attributes_for_asset(
         session,
         asset_id=asset_id,
-        attributes=current_values["values"],
+        attributes=merge_taxonomy_attributes(
+            taxonomy_context=taxonomy_context,
+            instrument_attributes=current_values["values"],
+        ),
         touched_at=datetime.now(UTC).replace(microsecond=0),
     )
     session.commit()
-    return current_values | {"updated": True}
+    return current_values | {"updated": True, "taxonomy": taxonomy_context}

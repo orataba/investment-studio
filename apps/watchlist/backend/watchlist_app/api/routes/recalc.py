@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from watchlist_app.api.contracts import RecalcExecuteRequest
+from watchlist_app.api.presenters import present_recalc_job
 from watchlist_app.db.session import get_db_session
 from watchlist_app.repositories.sqlalchemy.assets import SQLAlchemyAssetRepository
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
-from watchlist_app.services.recalc_job_ids import make_recalc_job_id
+from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
 
 
 router = APIRouter()
@@ -29,36 +31,53 @@ def _enqueue_recalc(
     job_type: str,
 ) -> dict[str, object]:
     _ensure_asset_exists(session, asset_id)
-    record = recalc_repository.create(
+    existing = recalc_repository.find_open_job(
         session,
-        recalc_job_id=make_recalc_job_id(),
+        asset_id=asset_id,
+        job_type=job_type,
+        trigger_type="manual_api",
+        trigger_ref_type="api_request",
+        trigger_ref_id=None,
+    )
+    if existing is not None:
+        return present_recalc_job(existing)
+
+    dedupe_key = make_recalc_dedupe_key(
         job_type=job_type,
         asset_id=asset_id,
         trigger_type="manual_api",
         trigger_ref_type="api_request",
         trigger_ref_id=None,
-        job_status="queued",
-        priority=100 if job_type == "all" else 85,
-        dedupe_key=f"{job_type}:{asset_id}:{make_recalc_job_id()}",
-        payload_json={"requested_by": "api"},
     )
-    session.commit()
-    return {
-        "recalc_job_id": record.recalc_job_id,
-        "job_type": record.job_type,
-        "asset_id": record.asset_id,
-        "trigger_type": record.trigger_type,
-        "trigger_ref_type": record.trigger_ref_type,
-        "trigger_ref_id": record.trigger_ref_id,
-        "job_status": record.job_status,
-        "priority": record.priority,
-        "dedupe_key": record.dedupe_key,
-        "payload_json": record.payload_json,
-        "enqueued_at": record.enqueued_at.isoformat(),
-        "started_at": None,
-        "finished_at": None,
-        "error_message": None,
-    }
+    try:
+        record = recalc_repository.create(
+            session,
+            recalc_job_id=make_recalc_job_id(),
+            job_type=job_type,
+            asset_id=asset_id,
+            trigger_type="manual_api",
+            trigger_ref_type="api_request",
+            trigger_ref_id=None,
+            job_status="queued",
+            priority=100 if job_type == "all" else 85,
+            dedupe_key=dedupe_key,
+            payload_json={"requested_by": "api"},
+        )
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        existing = recalc_repository.find_open_job(
+            session,
+            asset_id=asset_id,
+            job_type=job_type,
+            trigger_type="manual_api",
+            trigger_ref_type="api_request",
+            trigger_ref_id=None,
+        )
+        if existing is not None:
+            return present_recalc_job(existing)
+        raise HTTPException(status_code=409, detail="Open recalc job already exists.") from error
+    return present_recalc_job(record)
 
 
 @router.post("/assets/{asset_id}/performance")

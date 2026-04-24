@@ -174,8 +174,14 @@ def _ensure_research_settings_record(
         if not record.target_dimension:
             record.target_dimension = "scope_default"
             changed = True
+        if not record.capital_mode:
+            record.capital_mode = "unit_notional"
+            changed = True
         if not record.rebalance_frequency:
             record.rebalance_frequency = "monthly"
+            changed = True
+        if record.frozen_taxonomy_node_ids_json is None:
+            record.frozen_taxonomy_node_ids_json = []
             changed = True
         if changed:
             record.updated_at = _utc_now_iso()
@@ -193,6 +199,11 @@ def _ensure_research_settings_record(
         run_template="taxonomy_backtest",
         target_set_mode="taa_over_saa",
         target_dimension="scope_default",
+        capital_mode="unit_notional",
+        gross_exposure=None,
+        target_volatility=None,
+        max_gross_exposure=None,
+        frozen_taxonomy_node_ids_json=[],
         rebalance_frequency="monthly",
         notes=None,
         updated_at=_utc_now_iso(),
@@ -306,6 +317,11 @@ def _serialize_settings_row(
         "run_template": "taxonomy_backtest",
         "target_set_mode": row.target_set_mode or "taa_over_saa",
         "target_dimension": row.target_dimension or "scope_default",
+        "capital_mode": row.capital_mode or "unit_notional",
+        "gross_exposure": _safe_float(row.gross_exposure),
+        "target_volatility": _safe_float(row.target_volatility),
+        "max_gross_exposure": _safe_float(row.max_gross_exposure),
+        "frozen_taxonomy_node_ids": deepcopy(row.frozen_taxonomy_node_ids_json or []),
         "rebalance_frequency": row.rebalance_frequency or "monthly",
         "notes": row.notes,
         "updated_at": row.updated_at,
@@ -521,23 +537,21 @@ def _build_planning_target_summary(
             "scoped_target_set_count": 0,
         }
 
-    active_target_sets = [
+    configured_target_sets = [
         item
         for item in list_target_sets(portfolio_id, taxonomy_id=planning_taxonomy_id)
         if str(item.get("status") or "") == "active"
-        and (not item.get("effective_from") or str(item.get("effective_from")) <= as_of_date.isoformat())
-        and (not item.get("effective_to") or str(item.get("effective_to")) >= as_of_date.isoformat())
     ]
     return {
         "root_saa_configured": any(
             str(item.get("target_set_type") or "") == "saa" and not item.get("comparator_taxonomy_node_id")
-            for item in active_target_sets
+            for item in configured_target_sets
         ),
         "root_taa_configured": any(
             str(item.get("target_set_type") or "") == "taa" and not item.get("comparator_taxonomy_node_id")
-            for item in active_target_sets
+            for item in configured_target_sets
         ),
-        "scoped_target_set_count": sum(1 for item in active_target_sets if item.get("comparator_taxonomy_node_id")),
+        "scoped_target_set_count": sum(1 for item in configured_target_sets if item.get("comparator_taxonomy_node_id")),
     }
 
 
@@ -784,11 +798,16 @@ def _build_backtest_signals(
         (_safe_float(item.get("max_risk_share_gap")) for item in rebalance_events if _safe_float(item.get("max_risk_share_gap")) is not None),
         default=None,
     )
-    return [
+    signals = [
         {"label": "Template", "value": "Taxonomy Backtest", "tone": "neutral"},
         {
             "label": "Target Layer",
             "value": "TAA over SAA" if settings_payload.get("target_set_mode") == "taa_over_saa" else "SAA",
+            "tone": "neutral",
+        },
+        {
+            "label": "Capital Mode",
+            "value": str(settings_payload.get("capital_mode") or "unit_notional").replace("_", " ").title(),
             "tone": "neutral",
         },
         {
@@ -807,6 +826,11 @@ def _build_backtest_signals(
             "tone": "neutral",
         },
         {
+            "label": "Frozen Sleeves",
+            "value": str(len(list(settings_payload.get("frozen_taxonomy_node_ids") or []))) if list(settings_payload.get("frozen_taxonomy_node_ids") or []) else "—",
+            "tone": "neutral",
+        },
+        {
             "label": "Solver",
             "value": ", ".join(unique_solver_labels[:2]) if unique_solver_labels else "—",
             "tone": "neutral",
@@ -814,6 +838,11 @@ def _build_backtest_signals(
         {
             "label": "Largest Turnover",
             "value": _format_pct(max_turnover, 3),
+            "tone": "neutral",
+        },
+        {
+            "label": "Target Volatility",
+            "value": _format_pct(_safe_float(settings_payload.get("target_volatility"))),
             "tone": "neutral",
         },
         {
@@ -832,6 +861,7 @@ def _build_backtest_signals(
             "tone": "neutral",
         },
     ]
+    return signals
 
 
 def _construction_source_label(target_row: dict[str, object] | None) -> str:
@@ -928,6 +958,10 @@ def _build_construction_assumptions(
         assumptions.append("Scope Default resolves each sleeve using that sleeve's own default target dimension before rolling results upward.")
     if any(str(item.get("target_dimension") or "") == "risk_budget" for item in rebalance_events):
         assumptions.append("Risk-budget sleeves solve implementation weights from the trailing local covariance window over the selected lookback horizon.")
+    if str(settings_payload.get("capital_mode") or "unit_notional") == "target_volatility":
+        assumptions.append("After recursive sleeve targets are resolved, Research applies a PMW-style capital overlay: estimate risky-sleeve volatility, scale gross exposure toward target volatility, and send the residual into cash.")
+    elif str(settings_payload.get("capital_mode") or "unit_notional") == "fixed_gross":
+        assumptions.append("After recursive sleeve targets are resolved, Research applies a fixed gross-exposure overlay and leaves the residual in cash.")
     if any(str(item.get("solver_kind") or "").startswith("fallback") for item in rebalance_events):
         assumptions.append("If local covariance is weak or history is too short, the solver falls back to target shares instead of forcing an unstable optimization.")
     if any(not item.get("source_target_set_id") for item in target_rows):
@@ -1173,6 +1207,11 @@ def update_research_settings(
     run_template: str,
     target_set_mode: str,
     target_dimension: str,
+    capital_mode: str,
+    gross_exposure: float | None,
+    target_volatility: float | None,
+    max_gross_exposure: float | None,
+    frozen_taxonomy_node_ids: list[str] | None,
     rebalance_frequency: str,
     notes: str | None,
 ) -> dict[str, object] | None:
@@ -1194,6 +1233,18 @@ def update_research_settings(
             default_planning_taxonomy_id=str(portfolio.get("default_planning_taxonomy_id") or "").strip() or None,
             default_as_of_date=_default_as_of_date(portfolio),
         )
+        resolved_frozen_ids = list(dict.fromkeys(str(item).strip() for item in (frozen_taxonomy_node_ids or []) if str(item).strip()))
+        if taxonomy is None and resolved_frozen_ids:
+            raise ValueError("Frozen taxonomy nodes require a selected planning taxonomy.")
+        if taxonomy is not None and resolved_frozen_ids:
+            valid_node_ids = {
+                str(item.get("taxonomy_node_id") or "")
+                for item in list_taxonomy_nodes(portfolio_id)
+                if str(item.get("taxonomy_id") or "") == taxonomy.taxonomy_id
+            }
+            unknown = [item for item in resolved_frozen_ids if item not in valid_node_ids]
+            if unknown:
+                raise ValueError("Frozen taxonomy nodes must belong to the selected planning taxonomy.")
         row.planning_taxonomy_id = str(planning_taxonomy_id or "").strip() or None
         row.as_of_date = as_of_date or _default_as_of_date(portfolio)
         row.comparator_taxonomy_node_id = resolved_scope_node_id
@@ -1203,6 +1254,11 @@ def update_research_settings(
         row.run_template = "taxonomy_backtest"
         row.target_set_mode = (target_set_mode or "taa_over_saa").strip() or "taa_over_saa"
         row.target_dimension = (target_dimension or "scope_default").strip() or "scope_default"
+        row.capital_mode = (capital_mode or "unit_notional").strip() or "unit_notional"
+        row.gross_exposure = gross_exposure
+        row.target_volatility = target_volatility
+        row.max_gross_exposure = max_gross_exposure
+        row.frozen_taxonomy_node_ids_json = resolved_frozen_ids
         row.rebalance_frequency = (rebalance_frequency or "monthly").strip() or "monthly"
         row.notes = notes
         row.updated_at = _utc_now_iso()
@@ -1273,6 +1329,11 @@ def run_portfolio_research(
                 "run_template": settings_row.run_template or "taxonomy_backtest",
                 "target_set_mode": settings_row.target_set_mode or "taa_over_saa",
                 "target_dimension": settings_row.target_dimension or "scope_default",
+                "capital_mode": settings_row.capital_mode or "unit_notional",
+                "gross_exposure": _safe_float(settings_row.gross_exposure),
+                "target_volatility": _safe_float(settings_row.target_volatility),
+                "max_gross_exposure": _safe_float(settings_row.max_gross_exposure),
+                "frozen_taxonomy_node_ids": deepcopy(settings_row.frozen_taxonomy_node_ids_json or []),
                 "rebalance_frequency": settings_row.rebalance_frequency or "monthly",
                 "notes": settings_row.notes,
             },
@@ -1299,6 +1360,11 @@ def run_portfolio_research(
                 lookback_days=int(settings_row.lookback_days or 90),
                 target_set_mode=settings_row.target_set_mode or "taa_over_saa",
                 target_dimension=settings_row.target_dimension or "scope_default",
+                capital_mode=settings_row.capital_mode or "unit_notional",
+                gross_exposure=_safe_float(settings_row.gross_exposure),
+                target_volatility=_safe_float(settings_row.target_volatility),
+                max_gross_exposure=_safe_float(settings_row.max_gross_exposure),
+                frozen_taxonomy_node_ids=deepcopy(settings_row.frozen_taxonomy_node_ids_json or []),
                 rebalance_frequency=settings_row.rebalance_frequency or "monthly",
             )
             detail = _build_taxonomy_backtest_detail(

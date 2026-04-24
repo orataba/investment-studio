@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react'
+import { ChangeEvent, FormEvent, Fragment, useEffect, useMemo, useState } from 'react'
 import type {
   AssetIdentifier as PlatformAssetIdentifier,
   AssetType,
@@ -75,6 +75,14 @@ type PlatformInstrumentDetail = PlatformInstrumentRecord & {
 type PlatformInstrumentsResponse = {
   registry_name: string
   instruments: PlatformInstrumentRecord[]
+}
+
+type PlatformRegistrySummary = {
+  total_count: number
+  active_count: number
+  archived_count: number
+  fund_count: number
+  fund_with_nav_count: number
 }
 
 type SupportedCurrency = 'USD' | 'HKD' | 'CNY'
@@ -316,6 +324,32 @@ function summaryQuoteChips(record: PlatformInstrumentRecord) {
   }).filter((value): value is { role: QuoteRole; point: PlatformMarketDataPoint } => value !== null)
 }
 
+function latestMarketPoint(
+  record: PlatformInstrumentRecord,
+  metricFamily: MetricFamily,
+  quoteBasis: QuoteBasis,
+) {
+  return (
+    record.latest_market_data.find(
+      (point) => point.metric_family === metricFamily && point.quote_basis === quoteBasis,
+    ) ?? null
+  )
+}
+
+function latestNavSnapshot(record: PlatformInstrumentRecord) {
+  const officialNav = latestMarketPoint(record, 'nav', 'official_nav')
+  const totalReturnNav = latestMarketPoint(record, 'nav', 'total_return_nav')
+  return {
+    officialNav,
+    totalReturnNav,
+    latestNavDate: officialNav?.as_of_date ?? totalReturnNav?.as_of_date ?? null,
+  }
+}
+
+function formatPointValue(point: PlatformMarketDataPoint | null) {
+  return point ? `${point.value} ${point.currency}` : '—'
+}
+
 function formatCoverageLabel(state: DataStatus) {
   if (state === 'complete') {
     return 'Complete'
@@ -499,6 +533,7 @@ function HomePage({
 function InstrumentsPage({
   registryName,
   instruments,
+  registrySummary,
   fxRates,
   loading,
   error,
@@ -517,6 +552,7 @@ function InstrumentsPage({
 }: {
   registryName: string
   instruments: PlatformInstrumentRecord[]
+  registrySummary: PlatformRegistrySummary
   fxRates: PlatformFxRatesResponse | null
   loading: boolean
   error: string | null
@@ -602,6 +638,14 @@ function InstrumentsPage({
   const [fxRateValue, setFxRateValue] = useState('')
   const [fxRateDate, setFxRateDate] = useState(() => currentLocalDate())
   const [fxRateStatus, setFxRateStatus] = useState<DataStatus>('complete')
+  const [activePanel, setActivePanel] = useState<'create' | 'quote' | 'source' | 'nav' | 'fx' | null>(null)
+  const [searchText, setSearchText] = useState('')
+  const [assetTypeFilter, setAssetTypeFilter] = useState<'all' | AssetType>('all')
+  const [coverageFilter, setCoverageFilter] = useState<'all' | DataStatus>('all')
+  const [sourceFilter, setSourceFilter] = useState<'all' | SourceMode>('all')
+  const [navFilter, setNavFilter] = useState<'all' | 'has_nav' | 'missing_nav'>('all')
+  const [sortMode, setSortMode] = useState<'name_asc' | 'nav_desc' | 'identifier_asc' | 'coverage'>('name_asc')
+  const [selectionPrimed, setSelectionPrimed] = useState(false)
 
   const selectedEditableFxPair = useMemo(() => {
     const [baseCurrency = 'USD', quoteCurrency = 'HKD'] = editableFxPair.split('/')
@@ -649,6 +693,10 @@ function InstrumentsPage({
   const availableQuoteBases = useMemo(() => QUOTE_BASIS_OPTIONS[metricFamily], [metricFamily])
   const selectedQuoteSummary = useMemo(
     () => (selectedInstrument ? summaryQuoteChips(selectedInstrument) : []),
+    [selectedInstrument],
+  )
+  const selectedInstrumentNavSnapshot = useMemo(
+    () => (selectedInstrument ? latestNavSnapshot(selectedInstrument) : null),
     [selectedInstrument],
   )
   const selectedInstrumentNavHistory = useMemo(
@@ -705,9 +753,83 @@ function InstrumentsPage({
       }),
     [selectedInstrumentDetail],
   )
+  const filteredInstruments = useMemo(() => {
+    const searchNeedle = searchText.trim().toLowerCase()
+    const filtered = instruments.filter((item) => {
+      if (assetTypeFilter !== 'all' && item.asset_type !== assetTypeFilter) {
+        return false
+      }
+      if (coverageFilter !== 'all' && item.coverage_state !== coverageFilter) {
+        return false
+      }
+      if (sourceFilter !== 'all' && item.source_settings.source_mode !== sourceFilter) {
+        return false
+      }
+      const latestNavDate = latestNavSnapshot(item).latestNavDate
+      if (navFilter === 'has_nav' && !latestNavDate) {
+        return false
+      }
+      if (navFilter === 'missing_nav' && latestNavDate) {
+        return false
+      }
+      if (!searchNeedle) {
+        return true
+      }
+      const searchableFields = [
+        item.asset_name,
+        item.asset_id,
+        primaryIdentifier(item),
+        ...item.identifiers.map((identifier) => identifier.identifier_value),
+      ]
+      return searchableFields.some((value) => value.toLowerCase().includes(searchNeedle))
+    })
+    return [...filtered].sort((left, right) => {
+      if (sortMode === 'identifier_asc') {
+        return primaryIdentifier(left).localeCompare(primaryIdentifier(right))
+      }
+      if (sortMode === 'nav_desc') {
+        const leftNav = latestNavSnapshot(left).latestNavDate || ''
+        const rightNav = latestNavSnapshot(right).latestNavDate || ''
+        if (leftNav !== rightNav) {
+          return rightNav.localeCompare(leftNav)
+        }
+        return left.asset_name.localeCompare(right.asset_name)
+      }
+      if (sortMode === 'coverage') {
+        const rank: Record<DataStatus, number> = {
+          complete: 0,
+          partial: 1,
+          unavailable: 2,
+        }
+        if (rank[left.coverage_state] !== rank[right.coverage_state]) {
+          return rank[left.coverage_state] - rank[right.coverage_state]
+        }
+        return left.asset_name.localeCompare(right.asset_name)
+      }
+      return left.asset_name.localeCompare(right.asset_name)
+    })
+  }, [assetTypeFilter, coverageFilter, instruments, navFilter, searchText, sortMode, sourceFilter])
+  const filteredFundCount = useMemo(
+    () => filteredInstruments.filter((item) => item.asset_type === 'fund').length,
+    [filteredInstruments],
+  )
+  const filteredMissingNavCount = useMemo(
+    () =>
+      filteredInstruments.filter(
+        (item) => item.asset_type === 'fund' && !latestNavSnapshot(item).latestNavDate,
+      ).length,
+    [filteredInstruments],
+  )
+  const selectedInstrumentHiddenByFilters = useMemo(
+    () =>
+      !!selectedInstrument &&
+      !filteredInstruments.some((item) => item.asset_id === selectedInstrument.asset_id),
+    [filteredInstruments, selectedInstrument],
+  )
 
   function syncSelectedInstrument(assetId: string) {
     setSelectedAssetId(assetId)
+    setSelectionPrimed(true)
     const selected = instruments.find((item) => item.asset_id === assetId)
     if (!selected) {
       return
@@ -749,12 +871,16 @@ function InstrumentsPage({
       if (selectedAssetId) {
         setSelectedAssetId('')
       }
+      setSelectionPrimed(false)
       return
     }
-    if (!selectedAssetId || !instruments.some((item) => item.asset_id === selectedAssetId)) {
+    if (selectedAssetId && instruments.some((item) => item.asset_id === selectedAssetId)) {
+      return
+    }
+    if (selectedAssetId || !selectionPrimed) {
       syncSelectedInstrument(instruments[0].asset_id)
     }
-  }, [instruments, selectedAssetId])
+  }, [instruments, selectedAssetId, selectionPrimed])
 
   useEffect(() => {
     void refreshSelectedInstrumentDetail(selectedAssetId)
@@ -968,6 +1094,41 @@ function InstrumentsPage({
     }
   }
 
+  function clearSelectedInstrument() {
+    setSelectedAssetId('')
+    setSelectedInstrumentDetail(null)
+    setSelectedInstrumentDetailError(null)
+    setSelectedInstrumentDetailLoading(false)
+  }
+
+  function toggleSelectedInstrument(assetId: string) {
+    if (selectedAssetId === assetId) {
+      clearSelectedInstrument()
+      return
+    }
+    syncSelectedInstrument(assetId)
+  }
+
+  function openActionPanel(panel: 'create' | 'quote' | 'source' | 'nav' | 'fx', assetId?: string) {
+    if (assetId) {
+      syncSelectedInstrument(assetId)
+    }
+    setActivePanel(panel)
+  }
+
+  function panelButtonClass(panel: 'create' | 'quote' | 'source' | 'nav' | 'fx') {
+    return `registry-submit secondary${activePanel === panel ? ' registry-submit-active' : ''}`
+  }
+
+  function clearTableFilters() {
+    setSearchText('')
+    setAssetTypeFilter('all')
+    setCoverageFilter('all')
+    setSourceFilter('all')
+    setNavFilter('all')
+    setSortMode('name_asc')
+  }
+
   return (
     <main className="platform-shell">
       <header className="platform-masthead">
@@ -995,557 +1156,633 @@ function InstrumentsPage({
         <div className="registry-pagehead-actions">
           <div className="registry-table-meta">
             {showInactive
-              ? `${activeInstrumentCount} active · ${archivedInstrumentCount} archived shown`
-              : `${activeInstrumentCount} active in shared search · archived hidden by default`}
+              ? `${registrySummary.active_count} active · ${registrySummary.archived_count} archived in registry`
+              : `${activeInstrumentCount} active visible · ${registrySummary.total_count} total assets in registry`}
           </div>
-          <button type="button" className="app-link secondary" onClick={onToggleShowInactive}>
-            {showInactive ? 'Hide Archived' : 'Show Archived'}
-          </button>
         </div>
       </section>
 
       {notice ? <div className="registry-notice">{notice}</div> : null}
       {error ? <div className="registry-error">{error}</div> : null}
 
-      <section className="registry-table-shell">
-        <div className="registry-table-header">
-          <div>
-            <div className="registry-form-title">FX Spot Desk</div>
-            <div className="registry-table-meta">
-              Maintain direct `USD/HKD` and `USD/CNY` quotes here. `HKD/CNY` stays derived from the shared registry.
-            </div>
-          </div>
-        </div>
-        <div className="fx-panel-grid">
-          <div className="fx-board">
-            {fxPanelRates.map(({ pairLabel, record }) => (
-              <article className="fx-board-row" key={pairLabel}>
-                <div className="fx-board-row-main">
-                  <strong>{pairLabel}</strong>
-                  <span>{record ? record.rate : '—'}</span>
-                </div>
-                <div className="fx-board-row-meta">
-                  <span>{record ? record.as_of_date : 'No quote'}</span>
-                  <span>{record ? formatFxSourceKind(record.source_kind) : 'Missing'}</span>
-                  <span>{record ? record.status : 'unavailable'}</span>
-                </div>
-              </article>
-            ))}
-          </div>
-
-          <form className="registry-form registry-form-compact" onSubmit={(event) => void handleFxSubmit(event)}>
-            <div className="registry-form-title">Update FX Spot</div>
-            <label>
-              <span>Pair</span>
-              <select value={editableFxPair} onChange={(event) => setEditableFxPair(event.target.value)}>
-                {EDITABLE_FX_PAIRS.map(([baseCurrency, quoteCurrency]) => {
-                  const value = formatFxPairLabel(baseCurrency, quoteCurrency)
-                  return (
-                    <option key={value} value={value}>
-                      {value}
-                    </option>
-                  )
-                })}
-              </select>
-            </label>
-            <label>
-              <span>Spot Rate</span>
-              <input value={fxRateValue} onChange={(event) => setFxRateValue(event.target.value)} required />
-            </label>
-            <label>
-              <span>As Of</span>
-              <input type="date" value={fxRateDate} onChange={(event) => setFxRateDate(event.target.value)} required />
-            </label>
-            <label>
-              <span>Status</span>
-              <select value={fxRateStatus} onChange={(event) => setFxRateStatus(event.target.value as DataStatus)}>
-                <option value="complete">Complete</option>
-                <option value="partial">Partial</option>
-                <option value="unavailable">Unavailable</option>
-              </select>
-            </label>
-            <button type="submit" className="registry-submit">
-              Save FX Rate
-            </button>
-            <div className="registry-form-note">
-              Supported settlement currencies in this MVP: {(fxRates?.supported_currencies ?? ['USD', 'HKD', 'CNY']).join(' / ')}.
-            </div>
-          </form>
+      <section className="registry-overview-strip">
+        <div className="registry-form-title">Registry Overview</div>
+        <div className="registry-summary-inline" role="list" aria-label="Registry overview">
+          <span role="listitem">Total {registrySummary.total_count}</span>
+          <span role="listitem">Active {registrySummary.active_count}</span>
+          <span role="listitem">Archived {registrySummary.archived_count}</span>
+          <span role="listitem">Funds {registrySummary.fund_count}</span>
+          <span role="listitem">Funds With NAV {registrySummary.fund_with_nav_count}</span>
         </div>
       </section>
 
-      <section className="registry-form-grid">
-        <form className="registry-form" onSubmit={(event) => void handleCreate(event)}>
-          <div className="registry-form-title">Create Instrument</div>
-          <label>
-            <span>Name</span>
-            <input value={assetName} onChange={(event) => setAssetName(event.target.value)} required />
-          </label>
-          <label>
-            <span>Type</span>
-            <select value={assetType} onChange={(event) => setAssetType(event.target.value as AssetType)}>
-              <option value="equity">Equity</option>
-              <option value="fund">Fund</option>
-              <option value="bond">Bond</option>
-              <option value="cash">Cash</option>
-              <option value="fx">FX</option>
-              <option value="other">Other</option>
-            </select>
-          </label>
-          <label>
-            <span>Currency</span>
-            <input value={currency} onChange={(event) => setCurrency(event.target.value)} required />
-          </label>
-          <label>
-            <span>Primary Identifier Type</span>
-            <select
-              value={identifierType}
-              onChange={(event) => setIdentifierType(event.target.value as IdentifierType)}
-            >
-              <option value="ticker">Ticker</option>
-              <option value="isin">ISIN</option>
-              <option value="cusip">CUSIP</option>
-              <option value="sedol">SEDOL</option>
-              <option value="internal">Internal</option>
-              <option value="other">Other</option>
-            </select>
-          </label>
-          <label>
-            <span>Primary Identifier</span>
-            <input
-              value={identifierValue}
-              onChange={(event) => setIdentifierValue(event.target.value)}
-              required
-            />
-          </label>
-          <button type="submit" className="registry-submit">
-            Create Instrument
-          </button>
-          <div className="registry-form-note">
-            Watchlist and Portfolio only search and reference this registry. Asset master creation stays here.
-            Archive assets here when they should stop appearing in downstream search.
-          </div>
-        </form>
-
-        <form className="registry-form" onSubmit={(event) => void handleMetricSubmit(event)}>
-          <div className="registry-form-title">Upsert Market Quote</div>
-          <label>
-            <span>Instrument</span>
-            <select
-              value={selectedAssetId}
-              onChange={(event) => syncSelectedInstrument(event.target.value)}
-            >
-              {instruments.map((item) => (
-                <option key={item.asset_id} value={item.asset_id}>
-                  {item.asset_name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Family</span>
-            <select
-              value={metricFamily}
-              onChange={(event) => {
-                const nextFamily = event.target.value as MetricFamily
-                setMetricFamily(nextFamily)
-                setQuoteBasis(QUOTE_BASIS_OPTIONS[nextFamily][0].value)
-              }}
-            >
-              {allowedMetricFamilies.map((family) => (
-                <option key={family} value={family}>
-                  {family.toUpperCase()}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Basis</span>
-            <select value={quoteBasis} onChange={(event) => setQuoteBasis(event.target.value as QuoteBasis)}>
-              {availableQuoteBases.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Value</span>
-            <input value={metricValue} onChange={(event) => setMetricValue(event.target.value)} required />
-          </label>
-          <label>
-            <span>Currency</span>
-            <input
-              value={metricCurrency}
-              onChange={(event) => setMetricCurrency(event.target.value)}
-              required
-            />
-          </label>
-          <label>
-            <span>As Of</span>
-            <input type="date" value={metricDate} onChange={(event) => setMetricDate(event.target.value)} required />
-          </label>
-          <label>
-            <span>Status</span>
-            <select value={metricStatus} onChange={(event) => setMetricStatus(event.target.value as DataStatus)}>
-              <option value="complete">Complete</option>
-              <option value="partial">Partial</option>
-              <option value="unavailable">Unavailable</option>
-            </select>
-          </label>
-          <button type="submit" className="registry-submit">
-            Save Market Data
-          </button>
-          {selectedInstrument ? (
-            <div className="registry-form-note">
-              Valuation path: {formatPolicyPath(selectedInstrument.quote_selection_policy.valuation)}
-              {' · '}
-              Total return path: {formatPolicyPath(selectedInstrument.quote_selection_policy.total_return)}
-            </div>
-          ) : null}
-        </form>
-      </section>
-
-      <section className="registry-table-shell">
-        <div className="registry-table-header">
-          <div>
-            <div className="registry-form-title">Shared Data Ops</div>
+      <section className="registry-control-shell">
+        <div className="registry-control-grid">
+          <div className="registry-control-block">
+            <div className="registry-form-title">Find Assets</div>
             <div className="registry-table-meta">
-              Database Dashboard owns source configuration and refresh execution.
+              Search by code, asset name, asset id, or identifier, then narrow the table before
+              opening detail.
             </div>
-          </div>
-        </div>
-        <div className="registry-ops-grid">
-          <div className="registry-ops-stack">
-            <form className="registry-form registry-form-compact" onSubmit={(event) => void handleSourceSettingsSubmit(event)}>
-              <div className="registry-form-title">Source Settings</div>
+            <div className="registry-filter-grid">
+              <label className="registry-field-search">
+                <span>Search</span>
+                <input
+                  type="search"
+                  value={searchText}
+                  onChange={(event) => setSearchText(event.target.value)}
+                  placeholder="Code / name / asset id / identifier"
+                />
+              </label>
               <label>
-                <span>Instrument</span>
-                <select
-                  value={selectedAssetId}
-                  onChange={(event) => syncSelectedInstrument(event.target.value)}
-                >
-                  {instruments.map((item) => (
-                    <option key={item.asset_id} value={item.asset_id}>
-                      {item.asset_name}
-                    </option>
-                  ))}
+                <span>Type</span>
+                <select value={assetTypeFilter} onChange={(event) => setAssetTypeFilter(event.target.value as 'all' | AssetType)}>
+                  <option value="all">All Types</option>
+                  <option value="equity">Equity</option>
+                  <option value="fund">Fund</option>
+                  <option value="bond">Bond</option>
+                  <option value="cash">Cash</option>
+                  <option value="fx">FX</option>
+                  <option value="other">Other</option>
                 </select>
               </label>
               <label>
-                <span>Source Mode</span>
-                <select value={sourceMode} onChange={(event) => setSourceMode(event.target.value as SourceMode)}>
+                <span>Coverage</span>
+                <select value={coverageFilter} onChange={(event) => setCoverageFilter(event.target.value as 'all' | DataStatus)}>
+                  <option value="all">All Coverage</option>
+                  <option value="complete">Complete</option>
+                  <option value="partial">Partial</option>
+                  <option value="unavailable">Unavailable</option>
+                </select>
+              </label>
+              <label>
+                <span>Source</span>
+                <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as 'all' | SourceMode)}>
+                  <option value="all">All Sources</option>
                   <option value="manual">Manual</option>
                   <option value="email">Email</option>
                   <option value="api">API</option>
                 </select>
               </label>
               <label>
-                <span>Email Source</span>
-                <input
-                  value={sourceEmail}
-                  onChange={(event) => setSourceEmail(event.target.value)}
-                  disabled={sourceMode !== 'email'}
-                  placeholder="pricing@internal.com"
-                />
+                <span>NAV</span>
+                <select value={navFilter} onChange={(event) => setNavFilter(event.target.value as 'all' | 'has_nav' | 'missing_nav')}>
+                  <option value="all">All Assets</option>
+                  <option value="has_nav">Has NAV</option>
+                  <option value="missing_nav">Missing NAV</option>
+                </select>
               </label>
               <label>
-                <span>API Profile</span>
-                <input
-                  value={sourceApiProfile}
-                  onChange={(event) => setSourceApiProfile(event.target.value)}
-                  disabled={sourceMode !== 'api'}
-                  placeholder="vendor_profile"
-                />
+                <span>Sort</span>
+                <select value={sortMode} onChange={(event) => setSortMode(event.target.value as 'name_asc' | 'nav_desc' | 'identifier_asc' | 'coverage')}>
+                  <option value="name_asc">Name</option>
+                  <option value="nav_desc">Latest NAV Date</option>
+                  <option value="identifier_asc">Identifier</option>
+                  <option value="coverage">Coverage</option>
+                </select>
               </label>
-              <label>
-                <span>Folder / Rule</span>
-                <input
-                  value={sourceLocation}
-                  onChange={(event) => setSourceLocation(event.target.value)}
-                  placeholder="Database Dashboard queue / mailbox folder / endpoint rule"
-                />
-              </label>
-              <div className="registry-form-actions">
-                <button type="submit" className="registry-submit">
-                  Save Source Settings
-                </button>
-                <button type="button" className="app-link secondary" onClick={() => void handleRefreshClick()}>
-                  Update Now
-                </button>
+            </div>
+            <div className="registry-filter-footer">
+              <div className="registry-summary-inline registry-summary-inline-compact">
+                <span>Visible {filteredInstruments.length}</span>
+                <span>Funds {filteredFundCount}</span>
+                <span>Funds Missing NAV {filteredMissingNavCount}</span>
               </div>
-              <div className="registry-form-note">
-                Email refresh is executed from Database Dashboard. API mode remains explicit but is not yet wired to a vendor adapter.
-              </div>
-            </form>
-
-            <form className="registry-form registry-form-compact" onSubmit={(event) => void handleNavImportSubmit(event)}>
-              <div className="registry-form-title">Import NAV History</div>
-              <div className="registry-form-note">
-                Import canonical NAV from pasted CSV/TSV text, uploaded Excel/CSV files, or email refresh.
-                Existing shared NAV rows for the same dates will be replaced.
-              </div>
-              <label>
-                <span>Selected Instrument</span>
-                <input value={selectedInstrument?.asset_name || ''} readOnly placeholder="Select an instrument above" />
-              </label>
-              <label>
-                <span>Upload Excel / CSV</span>
-                <input
-                  key={navImportFileInputKey}
-                  type="file"
-                  accept=".csv,.tsv,.txt,.xlsx,.xls"
-                  onChange={(event) => void handleNavFileChange(event)}
-                />
-              </label>
-              {navImportFileName ? (
-                <div className="registry-form-note">
-                  File ready: <strong>{navImportFileName}</strong>
-                </div>
-              ) : null}
-              <label>
-                <span>Pasted Rows</span>
-                <textarea
-                  value={navImportText}
-                  onChange={(event) => {
-                    if (navImportFileName || navImportFileContent) {
-                      setNavImportFileName('')
-                      setNavImportFileContent('')
-                      setNavImportFileInputKey((current) => current + 1)
-                    }
-                    setNavImportText(event.target.value)
-                  }}
-                  placeholder={`date,nav,nav_with_dividend,currency\n2026-04-15,12.84,18.12,USD\n2026-04-14,12.81,18.07,USD`}
-                />
-              </label>
-              <div className="registry-form-actions">
+              <div className="registry-filter-actions">
                 <button
                   type="button"
-                  className="registry-submit secondary"
-                  disabled={!selectedAssetId || (!navImportText.trim() && !navImportFileContent)}
-                  onClick={() => void handlePreviewNavImport()}
+                  className={`registry-submit secondary${assetTypeFilter === 'fund' ? ' registry-submit-active' : ''}`}
+                  onClick={() => setAssetTypeFilter('fund')}
                 >
-                  Preview Parsed Rows
+                  Funds Only
                 </button>
                 <button
-                  type="submit"
-                  className="registry-submit"
-                  disabled={!selectedAssetId || (!navImportText.trim() && !navImportFileContent)}
+                  type="button"
+                  className={`registry-submit secondary${assetTypeFilter === 'fund' && navFilter === 'missing_nav' ? ' registry-submit-active' : ''}`}
+                  onClick={() => {
+                    setAssetTypeFilter('fund')
+                    setNavFilter('missing_nav')
+                  }}
                 >
-                  Import NAV Rows
+                  Missing NAV
                 </button>
-                <button type="button" className="app-link secondary" onClick={() => void handleRefreshClick()}>
-                  Refresh From Source
+                <button type="button" className="registry-submit secondary" onClick={clearTableFilters}>
+                  Reset Filters
                 </button>
               </div>
-              {navPreviewError ? <div className="registry-error">{navPreviewError}</div> : null}
-              {navPreview ? (
-                <div className="registry-preview">
-                  <div className="registry-preview-header">
-                    <strong>{navPreview.row_count} rows ready to import</strong>
-                    <span>
-                      {navImportFileName ? `Parsed from ${navImportFileName}` : 'Parsed from pasted text'}
-                    </span>
-                  </div>
-                  <div className="registry-table-wrap">
-                    <table className="registry-table registry-table-compact">
-                      <thead>
-                        <tr>
-                          <th>Date</th>
-                          <th>NAV</th>
-                          <th>Total Return NAV</th>
-                          <th>Currency</th>
-                          <th>Code</th>
-                          <th>Name</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {navPreview.rows.slice(0, 12).map((row) => (
-                          <tr key={`${row.as_of_date}-${row.nav || ''}-${row.nav_with_dividend || ''}`}>
-                            <td>{row.as_of_date}</td>
-                            <td>{row.nav || '—'}</td>
-                            <td>{row.nav_with_dividend || '—'}</td>
-                            <td>{row.currency}</td>
-                            <td>{row.asset_code || '—'}</td>
-                            <td>{row.asset_name || '—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {navPreview.row_count > 12 ? (
-                    <div className="registry-form-note">
-                      Showing first 12 rows. The full parsed set will be imported.
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </form>
+            </div>
+            {selectedInstrumentHiddenByFilters ? (
+              <div className="registry-form-note">
+                The selected asset is hidden by current filters. Reset filters to bring its row
+                back into view.
+              </div>
+            ) : null}
           </div>
 
-          <section className="registry-panel registry-panel-compact">
-            <div className="registry-panel-header">
-              <div>
-                <div className="registry-kicker">Selected Instrument</div>
-                <h2>{selectedInstrument?.asset_name || 'No instrument selected'}</h2>
-              </div>
-            </div>
-            <div className="registry-stats registry-stats-ops">
-              <div className="registry-stat">
-                <span className="registry-stat-label">Primary Identifier</span>
-                <strong>{selectedInstrument ? primaryIdentifier(selectedInstrument) : '—'}</strong>
-              </div>
-              <div className="registry-stat">
-                <span className="registry-stat-label">Source Mode</span>
-                <strong>{selectedInstrument ? formatSourceMode(selectedInstrument.source_settings.source_mode) : '—'}</strong>
-              </div>
-              <div className="registry-stat">
-                <span className="registry-stat-label">Lifecycle</span>
-                <strong>{selectedInstrument ? formatLifecycleLabel(selectedInstrument.lifecycle_state.status) : '—'}</strong>
-              </div>
-            </div>
-            <div className="registry-op-meta">
-              <div>
-                <span>Refresh Message</span>
-                <strong>{selectedInstrument?.refresh_status.message || 'No refresh requested yet.'}</strong>
-              </div>
-              <div>
-                <span>Lifecycle Changed At</span>
-                <strong>{selectedInstrument?.lifecycle_state.changed_at || '—'}</strong>
-              </div>
-              <div>
-                <span>Lifecycle Changed By</span>
-                <strong>{selectedInstrument?.lifecycle_state.changed_by || '—'}</strong>
-              </div>
-              <div>
-                <span>Refresh Status</span>
-                <strong>{selectedInstrument?.refresh_status.status || '—'}</strong>
-              </div>
-              <div>
-                <span>Requested At</span>
-                <strong>{selectedInstrument?.refresh_status.requested_at || '—'}</strong>
-              </div>
-              <div>
-                <span>Requested By</span>
-                <strong>{selectedInstrument?.refresh_status.requested_by || '—'}</strong>
-              </div>
-              <div>
-                <span>Valuation Path</span>
-                <strong>
-                  {selectedInstrument ? formatPolicyPath(selectedInstrument.quote_selection_policy.valuation) : '—'}
-                </strong>
-              </div>
-              <div>
-                <span>Total Return Path</span>
-                <strong>
-                  {selectedInstrument ? formatPolicyPath(selectedInstrument.quote_selection_policy.total_return) : '—'}
-                </strong>
-              </div>
-            </div>
-            <div className="instrument-metric-stack">
-              {selectedQuoteSummary.length ? (
-                selectedQuoteSummary.map(({ role, point }) => (
-                  <span key={`${selectedInstrument?.asset_id}-${role}-${point.quote_basis}`} className="metric-chip">
-                    {ROLE_LABELS[role]} {point.value} {point.currency}
+          <div className="registry-control-block registry-control-block-accent">
+            <div className="registry-form-title">Selected Asset</div>
+            {selectedInstrument ? (
+              <div className="registry-selected-asset">
+                <div className="registry-selected-heading">
+                  <strong>{primaryIdentifier(selectedInstrument)}</strong>
+                  <span>{selectedInstrument.asset_name}</span>
+                </div>
+                <div className="registry-selected-subtitle">
+                  {selectedInstrument.asset_type.toUpperCase()} · {selectedInstrument.currency} ·{' '}
+                  {selectedInstrumentNavSnapshot?.latestNavDate
+                    ? `Latest NAV ${selectedInstrumentNavSnapshot.latestNavDate}`
+                    : selectedInstrument.asset_type === 'fund'
+                      ? 'No NAV loaded yet'
+                      : 'Not NAV-based'}
+                </div>
+                <div className="registry-selected-meta">
+                  <span className={`coverage-badge coverage-badge-${selectedInstrument.coverage_state}`}>
+                    {formatCoverageLabel(selectedInstrument.coverage_state)}
                   </span>
-                ))
-              ) : (
-                <span className="metric-chip metric-chip-muted">No selected quotes</span>
-              )}
-            </div>
-            {selectedInstrumentDetailError ? <div className="registry-error">{selectedInstrumentDetailError}</div> : null}
-            <div className="registry-detail-section">
-              <div className="registry-detail-header">
-                <div>
-                  <div className="registry-form-title">NAV History</div>
-                  <div className="registry-table-meta">
-                    {selectedInstrumentDetailLoading
-                      ? 'Loading full history...'
-                      : `${selectedInstrumentNavHistory.length} NAV rows in shared market data`}
-                  </div>
+                  <span
+                    className={`lifecycle-badge lifecycle-badge-${selectedInstrument.lifecycle_state.status}`}
+                  >
+                    {formatLifecycleLabel(selectedInstrument.lifecycle_state.status)}
+                  </span>
+                  <span className="metric-chip">
+                    {formatSourceMode(selectedInstrument.source_settings.source_mode)}
+                  </span>
+                  <span className="metric-chip">
+                    {selectedQuoteSummary.length
+                      ? `${selectedQuoteSummary.length} selected quote${selectedQuoteSummary.length > 1 ? 's' : ''}`
+                      : 'No selected quotes'}
+                  </span>
+                </div>
+                <div className="registry-form-actions">
+                  <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('quote', selectedInstrument.asset_id)}>
+                    Add Quote
+                  </button>
+                  <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('nav', selectedInstrument.asset_id)}>
+                    Import NAV
+                  </button>
+                  <button type="button" className="registry-submit secondary" onClick={() => void handleRefreshClick()}>
+                    Refresh
+                  </button>
+                  <button type="button" className="registry-submit secondary" onClick={clearSelectedInstrument}>
+                    Close Detail
+                  </button>
                 </div>
               </div>
-              <div className="registry-table-wrap">
-                <table className="registry-table registry-table-compact">
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Official NAV</th>
-                      <th>Total Return NAV</th>
-                      <th>Currency</th>
-                      <th>Status</th>
-                      <th>Provider</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedInstrumentNavHistory.length ? (
-                      selectedInstrumentNavHistory.slice(0, 16).map((point) => (
-                        <tr key={`${point.as_of_date}-${point.currency}`}>
-                          <td>{point.as_of_date}</td>
-                          <td>{point.nav || '—'}</td>
-                          <td>{point.nav_with_dividend || '—'}</td>
-                          <td>{point.currency}</td>
-                          <td>{point.status}</td>
-                          <td>{point.provider || '—'}</td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={6}>No NAV history loaded for this instrument.</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
+            ) : (
+              <div className="registry-selected-empty">
+                Select a row in the table to inspect NAV history, quote snapshot, and source
+                settings here.
               </div>
-            </div>
-            <div className="registry-detail-section">
-              <div className="registry-detail-header">
-                <div>
-                  <div className="registry-form-title">All Shared Market Data</div>
-                  <div className="registry-table-meta">
-                    {selectedInstrumentDetailLoading
-                      ? 'Refreshing detail...'
-                      : `${selectedInstrumentMarketHistory.length} shared market-data points`}
-                  </div>
-                </div>
-              </div>
-              <div className="registry-table-wrap">
-                <table className="registry-table registry-table-compact">
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Family</th>
-                      <th>Basis</th>
-                      <th>Value</th>
-                      <th>Currency</th>
-                      <th>Status</th>
-                      <th>Provider</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedInstrumentMarketHistory.length ? (
-                      selectedInstrumentMarketHistory.slice(0, 24).map((point) => (
-                        <tr key={`${point.metric_family}-${point.quote_basis}-${point.as_of_date}-${point.currency}`}>
-                          <td>{point.as_of_date}</td>
-                          <td>{point.metric_family}</td>
-                          <td>{formatBasisLabel(point.quote_basis)}</td>
-                          <td>{point.value}</td>
-                          <td>{point.currency}</td>
-                          <td>{point.status}</td>
-                          <td>{point.provider || '—'}</td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={7}>No shared market data loaded for this instrument.</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
+            )}
+          </div>
         </div>
+      </section>
+
+      <section className="registry-table-shell">
+        <div className="registry-table-header registry-toolbar-header">
+          <div>
+            <div className="registry-form-title">Operations</div>
+            <div className="registry-table-meta">
+              {selectedInstrument
+                ? `Selected asset: ${primaryIdentifier(selectedInstrument)} · ${selectedInstrument.asset_name}`
+                : 'Select an asset from the table to manage quote, NAV, and source settings.'}
+            </div>
+          </div>
+          <div className="registry-toolbar-actions">
+            <button type="button" className={panelButtonClass('create')} onClick={() => openActionPanel('create')}>
+              Add Asset
+            </button>
+            <button
+              type="button"
+              className={panelButtonClass('quote')}
+              disabled={!selectedInstrument}
+              onClick={() => openActionPanel('quote')}
+            >
+              Add Quote
+            </button>
+            <button
+              type="button"
+              className={panelButtonClass('source')}
+              disabled={!selectedInstrument}
+              onClick={() => openActionPanel('source')}
+            >
+              Source Settings
+            </button>
+            <button
+              type="button"
+              className={panelButtonClass('nav')}
+              disabled={!selectedInstrument}
+              onClick={() => openActionPanel('nav')}
+            >
+              Import NAV
+            </button>
+            <button type="button" className={panelButtonClass('fx')} onClick={() => openActionPanel('fx')}>
+              Update FX
+            </button>
+            <button
+              type="button"
+              className="registry-submit secondary"
+              disabled={!selectedInstrument}
+              onClick={() => void handleRefreshClick()}
+            >
+              Refresh Selected
+            </button>
+            <button type="button" className="registry-submit secondary" onClick={onToggleShowInactive}>
+              {showInactive ? 'Hide Archived' : 'Show Archived'}
+            </button>
+          </div>
+        </div>
+        {activePanel ? (
+          <div className="registry-action-panel">
+            <div className="registry-action-panel-header">
+              <div>
+                <div className="registry-form-title">
+                  {activePanel === 'create'
+                    ? 'Add Asset'
+                    : activePanel === 'quote'
+                      ? 'Add Quote'
+                      : activePanel === 'source'
+                        ? 'Source Settings'
+                        : activePanel === 'nav'
+                          ? 'Import NAV'
+                          : 'Update FX'}
+                </div>
+                <div className="registry-table-meta">
+                  {activePanel === 'create'
+                    ? 'Create shared registry assets here. Downstream Watchlist and Portfolio only reference this layer.'
+                    : activePanel === 'fx'
+                      ? 'Maintain direct FX spot pairs in one place.'
+                      : selectedInstrument
+                        ? `${primaryIdentifier(selectedInstrument)} · ${selectedInstrument.asset_name}`
+                        : 'Select an asset from the table first.'}
+                </div>
+              </div>
+              <button type="button" className="app-link secondary" onClick={() => setActivePanel(null)}>
+                Close Panel
+              </button>
+            </div>
+
+            {activePanel === 'create' ? (
+              <form className="registry-form registry-action-form" onSubmit={(event) => void handleCreate(event)}>
+                <div className="registry-action-form-grid">
+                  <label>
+                    <span>Name</span>
+                    <input value={assetName} onChange={(event) => setAssetName(event.target.value)} required />
+                  </label>
+                  <label>
+                    <span>Type</span>
+                    <select value={assetType} onChange={(event) => setAssetType(event.target.value as AssetType)}>
+                      <option value="equity">Equity</option>
+                      <option value="fund">Fund</option>
+                      <option value="bond">Bond</option>
+                      <option value="cash">Cash</option>
+                      <option value="fx">FX</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Currency</span>
+                    <input value={currency} onChange={(event) => setCurrency(event.target.value)} required />
+                  </label>
+                  <label>
+                    <span>Primary Identifier Type</span>
+                    <select
+                      value={identifierType}
+                      onChange={(event) => setIdentifierType(event.target.value as IdentifierType)}
+                    >
+                      <option value="ticker">Ticker</option>
+                      <option value="isin">ISIN</option>
+                      <option value="cusip">CUSIP</option>
+                      <option value="sedol">SEDOL</option>
+                      <option value="internal">Internal</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </label>
+                  <label className="registry-field-wide">
+                    <span>Primary Identifier</span>
+                    <input
+                      value={identifierValue}
+                      onChange={(event) => setIdentifierValue(event.target.value)}
+                      required
+                    />
+                  </label>
+                </div>
+                <div className="registry-form-actions">
+                  <button type="submit" className="registry-submit">
+                    Create Asset
+                  </button>
+                </div>
+              </form>
+            ) : null}
+
+            {activePanel === 'quote' ? (
+              selectedInstrument ? (
+                <form className="registry-form registry-action-form" onSubmit={(event) => void handleMetricSubmit(event)}>
+                  <div className="registry-action-form-grid">
+                    <label className="registry-field-wide">
+                      <span>Selected Asset</span>
+                      <input value={selectedInstrument.asset_name} readOnly />
+                    </label>
+                    <label>
+                      <span>Family</span>
+                      <select
+                        value={metricFamily}
+                        onChange={(event) => {
+                          const nextFamily = event.target.value as MetricFamily
+                          setMetricFamily(nextFamily)
+                          setQuoteBasis(QUOTE_BASIS_OPTIONS[nextFamily][0].value)
+                        }}
+                      >
+                        {allowedMetricFamilies.map((family) => (
+                          <option key={family} value={family}>
+                            {family.toUpperCase()}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Basis</span>
+                      <select value={quoteBasis} onChange={(event) => setQuoteBasis(event.target.value as QuoteBasis)}>
+                        {availableQuoteBases.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Value</span>
+                      <input value={metricValue} onChange={(event) => setMetricValue(event.target.value)} required />
+                    </label>
+                    <label>
+                      <span>Currency</span>
+                      <input
+                        value={metricCurrency}
+                        onChange={(event) => setMetricCurrency(event.target.value)}
+                        required
+                      />
+                    </label>
+                    <label>
+                      <span>As Of</span>
+                      <input
+                        type="date"
+                        value={metricDate}
+                        onChange={(event) => setMetricDate(event.target.value)}
+                        required
+                      />
+                    </label>
+                    <label>
+                      <span>Status</span>
+                      <select value={metricStatus} onChange={(event) => setMetricStatus(event.target.value as DataStatus)}>
+                        <option value="complete">Complete</option>
+                        <option value="partial">Partial</option>
+                        <option value="unavailable">Unavailable</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="registry-form-actions">
+                    <button type="submit" className="registry-submit">
+                      Save Quote
+                    </button>
+                  </div>
+                  <div className="registry-form-note">
+                    Valuation path: {formatPolicyPath(selectedInstrument.quote_selection_policy.valuation)}
+                    {' · '}
+                    Total return path: {formatPolicyPath(selectedInstrument.quote_selection_policy.total_return)}
+                  </div>
+                </form>
+              ) : (
+                <div className="registry-form-note">Select an asset from the table first.</div>
+              )
+            ) : null}
+
+            {activePanel === 'source' ? (
+              selectedInstrument ? (
+                <form className="registry-form registry-action-form" onSubmit={(event) => void handleSourceSettingsSubmit(event)}>
+                  <div className="registry-action-form-grid">
+                    <label className="registry-field-wide">
+                      <span>Selected Asset</span>
+                      <input value={selectedInstrument.asset_name} readOnly />
+                    </label>
+                    <label>
+                      <span>Source Mode</span>
+                      <select value={sourceMode} onChange={(event) => setSourceMode(event.target.value as SourceMode)}>
+                        <option value="manual">Manual</option>
+                        <option value="email">Email</option>
+                        <option value="api">API</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Email Source</span>
+                      <input
+                        value={sourceEmail}
+                        onChange={(event) => setSourceEmail(event.target.value)}
+                        disabled={sourceMode !== 'email'}
+                        placeholder="pricing@internal.com"
+                      />
+                    </label>
+                    <label>
+                      <span>API Profile</span>
+                      <input
+                        value={sourceApiProfile}
+                        onChange={(event) => setSourceApiProfile(event.target.value)}
+                        disabled={sourceMode !== 'api'}
+                        placeholder="vendor_profile"
+                      />
+                    </label>
+                    <label className="registry-field-wide">
+                      <span>Folder / Rule</span>
+                      <input
+                        value={sourceLocation}
+                        onChange={(event) => setSourceLocation(event.target.value)}
+                        placeholder="Database Dashboard queue / mailbox folder / endpoint rule"
+                      />
+                    </label>
+                  </div>
+                  <div className="registry-form-actions">
+                    <button type="submit" className="registry-submit">
+                      Save Source Settings
+                    </button>
+                    <button type="button" className="registry-submit secondary" onClick={() => void handleRefreshClick()}>
+                      Refresh Now
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="registry-form-note">Select an asset from the table first.</div>
+              )
+            ) : null}
+
+            {activePanel === 'nav' ? (
+              selectedInstrument ? (
+                <form className="registry-form registry-action-form" onSubmit={(event) => void handleNavImportSubmit(event)}>
+                  <div className="registry-action-form-grid">
+                    <label className="registry-field-wide">
+                      <span>Selected Asset</span>
+                      <input value={selectedInstrument.asset_name} readOnly />
+                    </label>
+                    <label className="registry-field-wide">
+                      <span>Upload Excel / CSV</span>
+                      <input
+                        key={navImportFileInputKey}
+                        type="file"
+                        accept=".csv,.tsv,.txt,.xlsx,.xls"
+                        onChange={(event) => void handleNavFileChange(event)}
+                      />
+                    </label>
+                    <label className="registry-field-wide">
+                      <span>Pasted Rows</span>
+                      <textarea
+                        value={navImportText}
+                        onChange={(event) => {
+                          if (navImportFileName || navImportFileContent) {
+                            setNavImportFileName('')
+                            setNavImportFileContent('')
+                            setNavImportFileInputKey((current) => current + 1)
+                          }
+                          setNavImportText(event.target.value)
+                        }}
+                        placeholder={`date,nav,nav_with_dividend,currency\nYYYY-MM-DD,12.84,18.12,USD\nYYYY-MM-DD,12.81,18.07,USD`}
+                      />
+                    </label>
+                  </div>
+                  {navImportFileName ? (
+                    <div className="registry-form-note">
+                      File ready: <strong>{navImportFileName}</strong>
+                    </div>
+                  ) : null}
+                  <div className="registry-form-actions">
+                    <button
+                      type="button"
+                      className="registry-submit secondary"
+                      disabled={!selectedAssetId || (!navImportText.trim() && !navImportFileContent)}
+                      onClick={() => void handlePreviewNavImport()}
+                    >
+                      Preview Parsed Rows
+                    </button>
+                    <button
+                      type="submit"
+                      className="registry-submit"
+                      disabled={!selectedAssetId || (!navImportText.trim() && !navImportFileContent)}
+                    >
+                      Import NAV Rows
+                    </button>
+                    <button type="button" className="registry-submit secondary" onClick={() => void handleRefreshClick()}>
+                      Refresh From Source
+                    </button>
+                  </div>
+                  {navPreviewError ? <div className="registry-error">{navPreviewError}</div> : null}
+                  {navPreview ? (
+                    <div className="registry-preview">
+                      <div className="registry-preview-header">
+                        <strong>{navPreview.row_count} rows ready to import</strong>
+                        <span>{navImportFileName ? `Parsed from ${navImportFileName}` : 'Parsed from pasted text'}</span>
+                      </div>
+                      <div className="registry-table-wrap">
+                        <table className="registry-table registry-table-compact">
+                          <thead>
+                            <tr>
+                              <th>Date</th>
+                              <th>NAV</th>
+                              <th>Total Return NAV</th>
+                              <th>Currency</th>
+                              <th>Code</th>
+                              <th>Name</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {navPreview.rows.slice(0, 12).map((row) => (
+                              <tr key={`${row.as_of_date}-${row.nav || ''}-${row.nav_with_dividend || ''}`}>
+                                <td>{row.as_of_date}</td>
+                                <td>{row.nav || '—'}</td>
+                                <td>{row.nav_with_dividend || '—'}</td>
+                                <td>{row.currency}</td>
+                                <td>{row.asset_code || '—'}</td>
+                                <td>{row.asset_name || '—'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : null}
+                </form>
+              ) : (
+                <div className="registry-form-note">Select an asset from the table first.</div>
+              )
+            ) : null}
+
+            {activePanel === 'fx' ? (
+              <div className="registry-action-layout">
+                <div className="registry-table-wrap">
+                  <table className="registry-table registry-table-compact">
+                    <thead>
+                      <tr>
+                        <th>Pair</th>
+                        <th>Rate</th>
+                        <th>As Of</th>
+                        <th>Source</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {fxPanelRates.map(({ pairLabel, record }) => (
+                        <tr key={pairLabel}>
+                          <td>{pairLabel}</td>
+                          <td>{record ? record.rate : '—'}</td>
+                          <td>{record ? record.as_of_date : '—'}</td>
+                          <td>{record ? formatFxSourceKind(record.source_kind) : 'Missing'}</td>
+                          <td>{record ? record.status : 'unavailable'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <form className="registry-form registry-action-form" onSubmit={(event) => void handleFxSubmit(event)}>
+                  <div className="registry-action-form-grid">
+                    <label>
+                      <span>Pair</span>
+                      <select value={editableFxPair} onChange={(event) => setEditableFxPair(event.target.value)}>
+                        {EDITABLE_FX_PAIRS.map(([baseCurrency, quoteCurrency]) => {
+                          const value = formatFxPairLabel(baseCurrency, quoteCurrency)
+                          return (
+                            <option key={value} value={value}>
+                              {value}
+                            </option>
+                          )
+                        })}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Spot Rate</span>
+                      <input value={fxRateValue} onChange={(event) => setFxRateValue(event.target.value)} required />
+                    </label>
+                    <label>
+                      <span>As Of</span>
+                      <input type="date" value={fxRateDate} onChange={(event) => setFxRateDate(event.target.value)} required />
+                    </label>
+                    <label>
+                      <span>Status</span>
+                      <select value={fxRateStatus} onChange={(event) => setFxRateStatus(event.target.value as DataStatus)}>
+                        <option value="complete">Complete</option>
+                        <option value="partial">Partial</option>
+                        <option value="unavailable">Unavailable</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="registry-form-actions">
+                    <button type="submit" className="registry-submit">
+                      Save FX Rate
+                    </button>
+                  </div>
+                  <div className="registry-form-note">
+                    Supported settlement currencies: {(fxRates?.supported_currencies ?? ['USD', 'HKD', 'CNY']).join(' / ')}.
+                  </div>
+                </form>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       <section className="registry-table-shell">
@@ -1555,7 +1792,9 @@ function InstrumentsPage({
             <div className="registry-table-meta">
               {loading
                 ? 'Loading instruments...'
-                : `${instruments.length} instruments ${showInactive ? 'visible' : 'searchable'}`}
+                : showInactive
+                  ? `Showing ${filteredInstruments.length} filtered assets out of ${instruments.length} in registry view`
+                  : `Showing ${filteredInstruments.length} filtered active assets out of ${instruments.length} visible`}
             </div>
           </div>
           <button type="button" className="app-link secondary" onClick={onToggleShowInactive}>
@@ -1563,13 +1802,16 @@ function InstrumentsPage({
           </button>
         </div>
         <div className="registry-table-wrap">
-          <table className="registry-table">
+          <table className="registry-table registry-table-main">
             <thead>
               <tr>
+                <th>Open</th>
                 <th>Identifier</th>
                 <th>Name</th>
                 <th>Type</th>
                 <th>Currency</th>
+                <th>Latest NAV</th>
+                <th>NAV Date</th>
                 <th>Selected Quotes</th>
                 <th>Source</th>
                 <th>Coverage</th>
@@ -1578,80 +1820,347 @@ function InstrumentsPage({
               </tr>
             </thead>
             <tbody>
-              {instruments.map((item) => (
-                <tr
-                  key={item.asset_id}
-                  className={item.lifecycle_state.status === 'archived' ? 'registry-row-archived' : undefined}
-                >
-                  <td>
-                    <div className="instrument-id-stack">
-                      <strong>{primaryIdentifier(item)}</strong>
-                      <span>{item.asset_id}</span>
-                    </div>
-                  </td>
-                  <td>{item.asset_name}</td>
-                  <td>{item.asset_type}</td>
-                  <td>{item.currency}</td>
-                  <td>
-                    <div className="instrument-metric-stack">
-                      {summaryQuoteChips(item).length ? (
-                        summaryQuoteChips(item).map(({ role, point }) => (
-                          <span
-                            key={`${item.asset_id}-${role}-${point.quote_basis}`}
-                            className="metric-chip"
-                          >
-                            {ROLE_LABELS[role]} {point.value} {point.currency}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="metric-chip metric-chip-muted">No market data</span>
-                      )}
-                    </div>
-                  </td>
-                  <td>
-                    <div className="instrument-id-stack">
-                      <strong>{formatSourceMode(item.source_settings.source_mode)}</strong>
-                      <span>{item.refresh_status.status}</span>
-                    </div>
-                  </td>
-                  <td>
-                    <span className={`coverage-badge coverage-badge-${item.coverage_state}`}>
-                      {formatCoverageLabel(item.coverage_state)}
-                    </span>
-                  </td>
-                  <td>
-                    <div className="instrument-id-stack">
-                      <span
-                        className={`lifecycle-badge lifecycle-badge-${item.lifecycle_state.status}`}
-                      >
-                        {formatLifecycleLabel(item.lifecycle_state.status)}
-                      </span>
-                      <span>{item.lifecycle_state.changed_at || 'Platform search default'}</span>
-                    </div>
-                  </td>
-                  <td>
-                    <div className="registry-row-actions">
-                      {item.lifecycle_state.status === 'archived' ? (
-                        <button
-                          type="button"
-                          className="registry-submit secondary"
-                          onClick={() => void handleRestoreClick(item.asset_id)}
-                        >
-                          Restore
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="registry-submit danger"
-                          onClick={() => void handleArchiveClick(item.asset_id)}
-                        >
-                          Archive
-                        </button>
-                      )}
-                    </div>
+              {!filteredInstruments.length ? (
+                <tr className="registry-empty-row">
+                  <td colSpan={12}>
+                    No assets match the current filters. Reset filters or broaden the search.
                   </td>
                 </tr>
-              ))}
+              ) : null}
+              {filteredInstruments.map((item) => {
+                const isSelected = item.asset_id === selectedAssetId
+                const quoteSummary = summaryQuoteChips(item)
+                const { officialNav, totalReturnNav, latestNavDate } = latestNavSnapshot(item)
+                return (
+                  <Fragment key={item.asset_id}>
+                    <tr
+                      className={`registry-row-summary${isSelected ? ' registry-row-selected' : ''}${
+                        item.lifecycle_state.status === 'archived' ? ' registry-row-archived' : ''
+                      }`}
+                    >
+                      <td>
+                        <button
+                          type="button"
+                          className={`registry-row-toggle${isSelected ? ' registry-row-toggle-active' : ''}`}
+                          onClick={() => toggleSelectedInstrument(item.asset_id)}
+                        >
+                          {isSelected ? 'Close' : 'Open'}
+                        </button>
+                      </td>
+                      <td>
+                        <div className="instrument-id-stack">
+                          <strong>{primaryIdentifier(item)}</strong>
+                          <span>{item.asset_id}</span>
+                        </div>
+                      </td>
+                      <td>{item.asset_name}</td>
+                      <td>{item.asset_type}</td>
+                      <td>{item.currency}</td>
+                      <td>
+                        <div className="instrument-id-stack">
+                          <strong>{formatPointValue(officialNav ?? totalReturnNav)}</strong>
+                          <span>
+                            {officialNav && totalReturnNav
+                              ? `TR ${formatPointValue(totalReturnNav)}`
+                              : officialNav
+                                ? 'Official NAV only'
+                                : totalReturnNav
+                                  ? 'Total return NAV only'
+                                  : item.asset_type === 'fund'
+                                    ? 'No NAV in shared data'
+                                    : 'Not NAV-based'}
+                          </span>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="instrument-id-stack">
+                          <strong>{latestNavDate || '—'}</strong>
+                          <span>
+                            {latestNavDate
+                              ? officialNav?.provider || totalReturnNav?.provider || 'Shared market data'
+                              : '—'}
+                          </span>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="instrument-metric-stack">
+                          {quoteSummary.length ? (
+                            quoteSummary.map(({ role, point }) => (
+                              <span
+                                key={`${item.asset_id}-${role}-${point.quote_basis}`}
+                                className="metric-chip"
+                              >
+                                {ROLE_LABELS[role]} {point.value} {point.currency}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="metric-chip metric-chip-muted">No market data</span>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="instrument-id-stack">
+                          <strong>{formatSourceMode(item.source_settings.source_mode)}</strong>
+                          <span>{item.refresh_status.status}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <span className={`coverage-badge coverage-badge-${item.coverage_state}`}>
+                          {formatCoverageLabel(item.coverage_state)}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="instrument-id-stack">
+                          <span
+                            className={`lifecycle-badge lifecycle-badge-${item.lifecycle_state.status}`}
+                          >
+                            {formatLifecycleLabel(item.lifecycle_state.status)}
+                          </span>
+                          <span>{item.lifecycle_state.changed_at || 'Platform search default'}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="registry-row-actions">
+                          <button
+                            type="button"
+                            className="registry-submit secondary"
+                            onClick={() => openActionPanel('quote', item.asset_id)}
+                          >
+                            Quote
+                          </button>
+                          {item.lifecycle_state.status === 'archived' ? (
+                            <button
+                              type="button"
+                              className="registry-submit secondary"
+                              onClick={() => void handleRestoreClick(item.asset_id)}
+                            >
+                              Restore
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="registry-submit danger"
+                              onClick={() => void handleArchiveClick(item.asset_id)}
+                            >
+                              Archive
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                    {isSelected ? (
+                      <tr className="registry-row-detail">
+                        <td colSpan={12}>
+                          <div className="registry-detail-panel">
+                            <div className="registry-detail-toolbar">
+                              <div>
+                                <div className="registry-form-title">Asset Detail</div>
+                                <div className="registry-table-meta">
+                                  {selectedInstrumentDetailLoading
+                                    ? 'Loading NAV sequence and shared market data...'
+                                    : `${selectedInstrumentNavHistory.length} NAV rows · ${selectedInstrumentMarketHistory.length} market-data points`}
+                                </div>
+                              </div>
+                              <div className="registry-toolbar-actions">
+                                <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('quote', item.asset_id)}>
+                                  Add Quote
+                                </button>
+                                <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('nav', item.asset_id)}>
+                                  Import NAV
+                                </button>
+                                <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('source', item.asset_id)}>
+                                  Source Settings
+                                </button>
+                                <button type="button" className="registry-submit secondary" onClick={() => void handleRefreshClick()}>
+                                  Refresh
+                                </button>
+                              </div>
+                            </div>
+
+                            {selectedInstrumentDetailError ? <div className="registry-error">{selectedInstrumentDetailError}</div> : null}
+
+                            <div className="registry-detail-grid">
+                              <div className="registry-detail-block">
+                                <div className="registry-form-title">Instrument Summary</div>
+                                <div className="registry-table-wrap">
+                                  <table className="registry-table registry-table-compact">
+                                    <thead>
+                                      <tr>
+                                        <th>Field</th>
+                                        <th>Value</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      <tr>
+                                        <td>Asset ID</td>
+                                        <td>{item.asset_id}</td>
+                                      </tr>
+                                      <tr>
+                                        <td>Primary Identifier</td>
+                                        <td>{primaryIdentifier(item)}</td>
+                                      </tr>
+                                      <tr>
+                                        <td>Source Mode</td>
+                                        <td>{formatSourceMode(item.source_settings.source_mode)}</td>
+                                      </tr>
+                                      <tr>
+                                        <td>Coverage</td>
+                                        <td>{formatCoverageLabel(item.coverage_state)}</td>
+                                      </tr>
+                                      <tr>
+                                        <td>Latest NAV Date</td>
+                                        <td>{latestNavDate || '—'}</td>
+                                      </tr>
+                                      <tr>
+                                        <td>Refresh Status</td>
+                                        <td>{item.refresh_status.status || '—'}</td>
+                                      </tr>
+                                      <tr>
+                                        <td>Valuation Path</td>
+                                        <td>{formatPolicyPath(item.quote_selection_policy.valuation)}</td>
+                                      </tr>
+                                      <tr>
+                                        <td>Total Return Path</td>
+                                        <td>{formatPolicyPath(item.quote_selection_policy.total_return)}</td>
+                                      </tr>
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+
+                              <div className="registry-detail-block">
+                                <div className="registry-form-title">Quote Snapshot</div>
+                                <div className="registry-table-wrap">
+                                  <table className="registry-table registry-table-compact">
+                                    <thead>
+                                      <tr>
+                                        <th>Role</th>
+                                        <th>Basis</th>
+                                        <th>Value</th>
+                                        <th>Date</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {selectedQuoteSummary.length ? (
+                                        selectedQuoteSummary.map(({ role, point }) => (
+                                          <tr key={`${item.asset_id}-${role}-${point.quote_basis}`}>
+                                            <td>{ROLE_LABELS[role]}</td>
+                                            <td>{formatBasisLabel(point.quote_basis)}</td>
+                                            <td>{point.value} {point.currency}</td>
+                                            <td>{point.as_of_date}</td>
+                                          </tr>
+                                        ))
+                                      ) : (
+                                        <tr>
+                                          <td colSpan={4}>No selected quotes for this asset.</td>
+                                        </tr>
+                                      )}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="registry-detail-stack">
+                              <div className="registry-detail-section">
+                                <div className="registry-detail-header">
+                                  <div>
+                                    <div className="registry-form-title">NAV Sequence</div>
+                                    <div className="registry-table-meta">
+                                      {selectedInstrumentNavHistory.length
+                                        ? `Showing ${Math.min(selectedInstrumentNavHistory.length, 16)} recent rows`
+                                        : 'No NAV history loaded for this asset'}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="registry-table-wrap">
+                                  <table className="registry-table registry-table-compact">
+                                    <thead>
+                                      <tr>
+                                        <th>Date</th>
+                                        <th>Official NAV</th>
+                                        <th>Total Return NAV</th>
+                                        <th>Currency</th>
+                                        <th>Status</th>
+                                        <th>Provider</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {selectedInstrumentNavHistory.length ? (
+                                        selectedInstrumentNavHistory.slice(0, 16).map((point) => (
+                                          <tr key={`${point.as_of_date}-${point.currency}`}>
+                                            <td>{point.as_of_date}</td>
+                                            <td>{point.nav || '—'}</td>
+                                            <td>{point.nav_with_dividend || '—'}</td>
+                                            <td>{point.currency}</td>
+                                            <td>{point.status}</td>
+                                            <td>{point.provider || '—'}</td>
+                                          </tr>
+                                        ))
+                                      ) : (
+                                        <tr>
+                                          <td colSpan={6}>No NAV history loaded for this asset.</td>
+                                        </tr>
+                                      )}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+
+                              <div className="registry-detail-section">
+                                <div className="registry-detail-header">
+                                  <div>
+                                    <div className="registry-form-title">All Shared Market Data</div>
+                                    <div className="registry-table-meta">
+                                      {selectedInstrumentMarketHistory.length
+                                        ? `Showing ${Math.min(selectedInstrumentMarketHistory.length, 24)} recent points`
+                                        : 'No shared market data loaded for this asset'}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="registry-table-wrap">
+                                  <table className="registry-table registry-table-compact">
+                                    <thead>
+                                      <tr>
+                                        <th>Date</th>
+                                        <th>Family</th>
+                                        <th>Basis</th>
+                                        <th>Value</th>
+                                        <th>Currency</th>
+                                        <th>Status</th>
+                                        <th>Provider</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {selectedInstrumentMarketHistory.length ? (
+                                        selectedInstrumentMarketHistory.slice(0, 24).map((point) => (
+                                          <tr key={`${point.metric_family}-${point.quote_basis}-${point.as_of_date}-${point.currency}`}>
+                                            <td>{point.as_of_date}</td>
+                                            <td>{point.metric_family}</td>
+                                            <td>{formatBasisLabel(point.quote_basis)}</td>
+                                            <td>{point.value}</td>
+                                            <td>{point.currency}</td>
+                                            <td>{point.status}</td>
+                                            <td>{point.provider || '—'}</td>
+                                          </tr>
+                                        ))
+                                      ) : (
+                                        <tr>
+                                          <td colSpan={7}>No shared market data loaded for this asset.</td>
+                                        </tr>
+                                      )}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -1667,6 +2176,7 @@ export default function App() {
   const [sourceLabel, setSourceLabel] = useState(fallbackSourceLabel)
   const [registryName, setRegistryName] = useState('Yungu Shared Instruments')
   const [instruments, setInstruments] = useState<PlatformInstrumentRecord[]>([])
+  const [allInstruments, setAllInstruments] = useState<PlatformInstrumentRecord[]>([])
   const [fxRates, setFxRates] = useState<PlatformFxRatesResponse | null>(null)
   const [loadingInstruments, setLoadingInstruments] = useState(false)
   const [registryError, setRegistryError] = useState<string | null>(null)
@@ -1703,16 +2213,18 @@ export default function App() {
   useEffect(() => {
     let cancelled = false
     setLoadingInstruments(true)
-    const instrumentPath = showInactive ? '/api/instruments?include_inactive=true' : '/api/instruments'
+    const visibleInstrumentPath = showInactive ? '/api/instruments?include_inactive=true' : '/api/instruments'
 
     Promise.all([
-      fetchJson<PlatformInstrumentsResponse>(instrumentPath),
+      fetchJson<PlatformInstrumentsResponse>(visibleInstrumentPath),
+      fetchJson<PlatformInstrumentsResponse>('/api/instruments?include_inactive=true'),
       fetchJson<PlatformFxRatesResponse>('/api/fx-rates'),
     ])
-      .then(([instrumentPayload, fxPayload]) => {
+      .then(([visibleInstrumentPayload, allInstrumentPayload, fxPayload]) => {
         if (!cancelled) {
-          setRegistryName(instrumentPayload.registry_name)
-          setInstruments(instrumentPayload.instruments)
+          setRegistryName(visibleInstrumentPayload.registry_name)
+          setInstruments(visibleInstrumentPayload.instruments)
+          setAllInstruments(allInstrumentPayload.instruments)
           setFxRates(fxPayload)
           setRegistryError(null)
         }
@@ -1737,9 +2249,26 @@ export default function App() {
     }
   }, [showInactive])
 
+  const registrySummary = useMemo<PlatformRegistrySummary>(() => {
+    const base = allInstruments.length ? allInstruments : instruments
+    const activeCount = base.filter((item) => item.lifecycle_state.status === 'active').length
+    const fundInstruments = base.filter((item) => item.asset_type === 'fund')
+    const fundsWithNavCount = fundInstruments.filter((item) => latestNavSnapshot(item).latestNavDate).length
+    return {
+      total_count: base.length,
+      active_count: activeCount,
+      archived_count: base.length - activeCount,
+      fund_count: fundInstruments.length,
+      fund_with_nav_count: fundsWithNavCount,
+    }
+  }, [allInstruments, instruments])
+
   const completeCount = useMemo(
-    () => instruments.filter((item) => item.coverage_state === 'complete').length,
-    [instruments],
+    () => {
+      const base = allInstruments.length ? allInstruments : instruments
+      return base.filter((item) => item.coverage_state === 'complete').length
+    },
+    [allInstruments, instruments],
   )
 
   async function handleCreateInstrument(payload: {
@@ -1754,6 +2283,7 @@ export default function App() {
         body: JSON.stringify(payload),
       })
       setInstruments((current) => upsertInstrumentRecord(current, created, showInactive))
+      setAllInstruments((current) => upsertInstrumentRecord(current, created, true))
       setRegistryNotice(`Created instrument "${created.asset_name}".`)
       setRegistryError(null)
     } catch (requestError) {
@@ -1813,6 +2343,7 @@ export default function App() {
         },
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
+      setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
       setRegistryNotice(`Updated ${formatBasisLabel(payload.quote_basis)} for "${updated.asset_name}".`)
       setRegistryError(null)
     } catch (requestError) {
@@ -1838,6 +2369,7 @@ export default function App() {
         },
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
+      setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
       setRegistryNotice(`Saved shared source settings for "${updated.asset_name}".`)
       setRegistryError(null)
     } catch (requestError) {
@@ -1857,6 +2389,7 @@ export default function App() {
         },
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
+      setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
       setRegistryNotice(updated.refresh_status.message || `Triggered refresh for "${updated.asset_name}".`)
       setRegistryError(null)
     } catch (requestError) {
@@ -1882,6 +2415,7 @@ export default function App() {
         },
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
+      setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
       setRegistryNotice(updated.refresh_status.message || `Imported NAV history for "${updated.asset_name}".`)
       setRegistryError(null)
     } catch (requestError) {
@@ -1908,6 +2442,7 @@ export default function App() {
         },
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
+      setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
       setRegistryNotice(updated.refresh_status.message || `Imported NAV history for "${updated.asset_name}".`)
       setRegistryError(null)
     } catch (requestError) {
@@ -1927,6 +2462,7 @@ export default function App() {
         },
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
+      setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
       setRegistryNotice(`Archived "${updated.asset_name}". Downstream search now hides it by default.`)
       setRegistryError(null)
     } catch (requestError) {
@@ -1946,6 +2482,7 @@ export default function App() {
         },
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
+      setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
       setRegistryNotice(`Restored "${updated.asset_name}" to downstream search.`)
       setRegistryError(null)
     } catch (requestError) {
@@ -1960,6 +2497,7 @@ export default function App() {
       <InstrumentsPage
         registryName={registryName}
         instruments={instruments}
+        registrySummary={registrySummary}
         fxRates={fxRates}
         loading={loadingInstruments}
         error={registryError}
@@ -1984,7 +2522,7 @@ export default function App() {
       platformName={platformName}
       apps={apps}
       sourceLabel={sourceLabel}
-      instrumentCount={instruments.length}
+      instrumentCount={registrySummary.total_count}
       completeCount={completeCount}
     />
   )

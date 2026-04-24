@@ -103,6 +103,11 @@ def _parse_nav_date(value: object) -> date | None:
     normalized = value.strip()
     if not normalized:
         return None
+    if re.fullmatch(r"\d{8}", normalized):
+        try:
+            return datetime.strptime(normalized, "%Y%m%d").date()
+        except ValueError:
+            pass
     if re.fullmatch(r"\d+(?:\.\d+)?", normalized):
         return _excel_serial_to_date(float(normalized))
     for fmt in (
@@ -424,39 +429,6 @@ def _extract_email_attachment_candidates(message) -> list[tuple[str, bytes]]:
 
 def _normalize_text_token(value: str) -> str:
     return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", value.lower())
-
-
-def _message_matches_instrument(
-    *,
-    instrument: dict[str, object],
-    subject: str,
-    body_text: str,
-    attachment_names: list[str],
-) -> bool:
-    corpus = " ".join([subject, body_text, *attachment_names]).lower()
-    normalized_corpus = _normalize_text_token(corpus)
-    raw_candidates: list[str] = []
-    normalized_candidates: list[str] = []
-    for value in [
-        str(instrument.get("asset_id") or ""),
-        str(instrument.get("asset_name") or ""),
-        *[
-            str(item.get("identifier_value") or "")
-            for item in list(instrument.get("identifiers", []))
-        ],
-    ]:
-        trimmed = value.strip()
-        if not trimmed:
-            continue
-        lowered = trimmed.lower()
-        normalized = _normalize_text_token(trimmed)
-        if len(lowered) >= 3:
-            raw_candidates.append(lowered)
-        if len(normalized) >= 3:
-            normalized_candidates.append(normalized)
-    return any(token in corpus for token in raw_candidates) or any(
-        token in normalized_corpus for token in normalized_candidates
-    )
 
 
 def _normalized_email_rules(source_settings: dict[str, object]) -> list[dict[str, object]]:
@@ -926,9 +898,16 @@ def _refresh_from_email(
         )
 
     mailbox: imaplib.IMAP4 | imaplib.IMAP4_SSL | None = None
-    expected_sender = str(source_settings.get("source_email", "")).strip().lower()
     preferred_folder = str(source_settings.get("source_location", "")).strip()
     email_rules = _normalized_email_rules(source_settings)
+    if not email_rules:
+        return update_refresh_status(
+            asset_id=asset_id,
+            status="blocked",
+            message="Email refresh requires at least one explicit product email rule.",
+            updated_by=updated_by,
+            mode="email",
+        )
     try:
         mailbox_cls = imaplib.IMAP4_SSL if settings.email_imap_use_ssl else imaplib.IMAP4
         mailbox = mailbox_cls(settings.email_imap_host, settings.email_imap_port, timeout=300)
@@ -984,74 +963,10 @@ def _refresh_from_email(
             if record is not None:
                 return record
 
-        for uid in reversed(pending_uids):
-            fetch_status, fetch_data = mailbox.uid("fetch", str(uid), "(RFC822)")
-            if fetch_status != "OK":
-                continue
-            raw_bytes = next(
-                (
-                    bytes(item[1])
-                    for item in fetch_data
-                    if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray))
-                ),
-                None,
-            )
-            if raw_bytes is None:
-                continue
-            message = BytesParser(policy=policy.default).parsebytes(raw_bytes)
-            subject = str(message.get("subject") or "")
-            sender = str(message.get("from") or "")
-            sender_email = parseaddr(sender)[1].strip().lower()
-            if expected_sender and sender_email != expected_sender:
-                continue
-
-            body_text = _extract_email_body_text(message)
-            attachment_candidates = _extract_email_attachment_candidates(message)
-            attachment_names = [name for name, _ in attachment_candidates]
-            if not _message_matches_instrument(
-                instrument=instrument,
-                subject=subject,
-                body_text=body_text,
-                attachment_names=attachment_names,
-            ):
-                continue
-
-            for attachment_name, attachment_bytes in attachment_candidates:
-                rows = _parse_nav_rows_from_attachment(
-                    attachment_name=attachment_name,
-                    attachment_bytes=attachment_bytes,
-                    parser_profile="generic_nav_table",
-                )
-                if not rows:
-                    continue
-                return replace_nav_history(
-                    asset_id=asset_id,
-                    rows=rows,
-                    provider=f"email:{attachment_name}",
-                    point_status=_normalize_import_status(rows, "complete"),
-                    refresh_status="imported",
-                    updated_by=updated_by,
-                    message=f"Imported {len(rows)} NAV rows from email attachment {attachment_name}.",
-                    mode="email",
-                )
-
-            body_rows = _parse_nav_rows_from_text(body_text)
-            if body_rows:
-                return replace_nav_history(
-                    asset_id=asset_id,
-                    rows=body_rows,
-                    provider="email:body",
-                    point_status=_normalize_import_status(body_rows, "complete"),
-                    refresh_status="imported",
-                    updated_by=updated_by,
-                    message=f"Imported {len(body_rows)} NAV rows from email body.",
-                    mode="email",
-                )
-
         return update_refresh_status(
             asset_id=asset_id,
             status="no_match",
-            message="No matching email NAV attachment or body table was found.",
+            message="No email attachment matched the explicit product rules.",
             updated_by=updated_by,
             mode="email",
         )

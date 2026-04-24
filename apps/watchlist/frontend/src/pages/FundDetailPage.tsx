@@ -22,10 +22,13 @@ import {
   type FundRiskResponse,
   type FundStrategyResponse,
   type FundSummaryResponse,
+  type FundTaxonomyTreeNode,
+  type FundTaxonomyTreeResponse,
   type FundExposureHoldingsResponse as FundPortfolioHoldingsResponse,
   type FundExposureResponse as FundPortfolioResponse,
   type InstrumentAttributeValuesResponse,
   type InstrumentAttributeDefinition,
+  getFundTaxonomyTree,
   getInstrumentAttributes,
   getInstrumentChart,
   getInstrumentDocuments,
@@ -41,8 +44,8 @@ import {
   getInstrumentRisk,
   getInstrumentSummary,
   getInstrumentStrategy,
+  updateFundTaxonomy,
   updateInstrumentAttributes,
-  updateInstrumentNavSettings,
   updateInstrumentDocuments,
   updateInstrumentPeople,
   updateInstrumentPrice,
@@ -107,17 +110,6 @@ type EditableTeamRow = {
   name: string
   role: string
   start_date: string
-}
-
-type EditableNavRow = {
-  id: string
-  as_of_date: string
-  nav: string
-  nav_with_dividend: string
-  currency: string
-  frequency: string
-  is_primary: boolean
-  deleted: boolean
 }
 
 type EditableDocumentRow = {
@@ -222,13 +214,8 @@ type ChartTimelineNoteContextMenu = {
 
 type PriceEditSection = 'ter' | 'fees' | 'policy'
 
-type NavDraft = {
-  basisPreference: 'auto' | 'nav_with_dividend' | 'nav'
-  rows: EditableNavRow[]
-}
-
 type DetailTab =
-  | 'quote'
+  | 'overview'
   | 'performance'
   | 'risk'
   | 'price'
@@ -244,7 +231,7 @@ type QuoteBasis = 'nav' | 'nav_with_dividend'
 type ChartFrequency = 'daily' | 'weekly' | 'monthly'
 type ChartDisplayStyle = 'mountain' | 'line' | 'dot'
 type ChartScale = 'linear' | 'logarithmic'
-type QuoteChartMenu = 'dataType' | 'events' | 'display' | 'peers'
+type QuoteChartMenu = 'settings'
 type ChartHoverPanel = 'primary' | 'drawdown'
 type ChartHoverCursor = {
   xRatio: number
@@ -306,7 +293,7 @@ const ROLLING_RETURN_WINDOW_OPTIONS: Array<{
 ]
 
 const TAB_ORDER: DetailTab[] = [
-  'quote',
+  'overview',
   'performance',
   'risk',
   'price',
@@ -318,10 +305,10 @@ const TAB_ORDER: DetailTab[] = [
   'monitoring',
 ]
 
-const CORE_TABS: DetailTab[] = ['quote', 'performance', 'risk', 'price', 'exposure', 'people', 'strategy']
+const CORE_TABS: DetailTab[] = ['overview', 'performance', 'risk', 'price', 'exposure', 'people', 'strategy']
 
 const TAB_LABELS: Record<DetailTab, string> = {
-  quote: 'Quote',
+  overview: 'Overview',
   performance: 'Performance',
   risk: 'Risk',
   price: 'Price',
@@ -525,6 +512,14 @@ function formatTimelineNoteImportance(importance: TimelineNoteImportance) {
     return 'Low'
   }
   return 'Medium'
+}
+
+function formatStarRating(rating: number | null | undefined) {
+  if (rating == null || !Number.isFinite(rating)) {
+    return '—'
+  }
+  const normalizedRating = Math.max(0, Math.min(5, Math.round(rating)))
+  return `${'★'.repeat(normalizedRating)}${'☆'.repeat(5 - normalizedRating)}`
 }
 
 function getNumber(value: unknown) {
@@ -804,50 +799,15 @@ function upsertKeyValueRows(rows: EditableKeyValueRow[], key: string, value: str
   return [...rows, { id: makeRowId('overview'), key, value }]
 }
 
-function toEditableNavDraft(navSeries: FundNavSeriesResponse): NavDraft {
-  return {
-    basisPreference:
-      navSeries.nav_basis_preference === 'nav_with_dividend' ||
-      navSeries.nav_basis_preference === 'nav' ||
-      navSeries.nav_basis_preference === 'auto'
-        ? navSeries.nav_basis_preference
-        : 'auto',
-    rows: navSeries.rows.map((row) => ({
-      id: makeRowId('nav'),
-      as_of_date: row.as_of_date,
-      nav: row.nav == null ? '' : String(row.nav),
-      nav_with_dividend: row.nav_with_dividend == null ? '' : String(row.nav_with_dividend),
-      currency: row.currency || 'USD',
-      frequency: row.frequency || 'daily',
-      is_primary: true,
-      deleted: false,
-    })),
-  }
-}
-
-function createEmptyImportedNavRow(): EditableNavRow {
-  return {
-    id: makeRowId('nav'),
-    as_of_date: '',
-    nav: '',
-    nav_with_dividend: '',
-    currency: 'USD',
-    frequency: 'daily',
-    is_primary: true,
-    deleted: false,
-  }
-}
-
 function normalizeTabs(sourceTabs: string[]): DetailTab[] {
   const set = new Set<DetailTab>(CORE_TABS)
 
-  sourceTabs
-    .map((tab) => (tab === 'summary' ? 'quote' : tab === 'portfolio' ? 'exposure' : tab))
-    .forEach((tab) => {
-      if (TAB_ORDER.includes(tab as DetailTab)) {
-        set.add(tab as DetailTab)
-      }
-    })
+  sourceTabs.forEach((tab) => {
+    const normalizedTab = tab === 'quote' || tab === 'summary' ? 'overview' : tab === 'portfolio' ? 'exposure' : tab
+    if (TAB_ORDER.includes(normalizedTab as DetailTab)) {
+      set.add(normalizedTab as DetailTab)
+    }
+  })
 
   return TAB_ORDER.filter((tab) => set.has(tab))
 }
@@ -1208,6 +1168,19 @@ function getSeriesChangeStats(points: FundChartPoint[]) {
   return {
     change,
     changePct: first.value !== 0 ? (change / first.value) * 100 : null,
+  }
+}
+
+function getLatestPointChangeStats(points: FundChartPoint[]) {
+  if (points.length < 2) {
+    return { change: null, changePct: null }
+  }
+  const latest = points[points.length - 1]
+  const previous = points[points.length - 2]
+  const change = latest.value - previous.value
+  return {
+    change,
+    changePct: previous.value !== 0 ? (change / previous.value) * 100 : null,
   }
 }
 
@@ -2321,10 +2294,12 @@ function buildNextFrameworkValue(
   return option
 }
 
-type AttributeFrameworkDomain = InstrumentAttributeDefinition['domain_code']
+type AttributeFrameworkDomain = Extract<
+  InstrumentAttributeDefinition['domain_code'],
+  'research' | 'monitoring'
+>
 
 const ATTRIBUTE_DOMAIN_ORDER: AttributeFrameworkDomain[] = [
-  'classification',
   'research',
   'monitoring',
 ]
@@ -2337,26 +2312,20 @@ const ATTRIBUTE_DOMAIN_META: Record<
     emptyState: string
   }
 > = {
-  classification: {
-    title: 'Classification',
-    note: '先定义产品属于什么池子，再做筛选和比较。这里是分类树，不是研究标签。',
-    emptyState: 'Classification definitions are unavailable.',
-  },
   research: {
     title: 'Research Tags',
-    note: '基于 FOF 定性研究框架的标准化研究标签，用来解释产品特点和管理人画像。',
-    emptyState: 'Complete product classification first to unlock category-specific research tags.',
+    note: '',
+    emptyState: 'Complete fund taxonomy first to unlock category-specific research tags.',
   },
   monitoring: {
     title: 'Monitoring Assessment',
-    note: '持续观察产品风险行为、风格稳定性和研究透明度，用于后续跟踪与复核。',
-    emptyState: 'Complete product classification first to unlock category-specific monitoring labels.',
+    note: '',
+    emptyState: 'Complete fund taxonomy first to unlock category-specific monitoring labels.',
   },
 }
 
 const ATTRIBUTE_GROUP_LABELS: Record<string, string> = {
-  taxonomy_identity: 'Identity',
-  taxonomy_path: 'Category Path',
+  overview_identity: 'Identity',
   research_coverage: 'Coverage',
   research_process: 'Process & Construction',
   research_style: 'Style Tags',
@@ -2407,9 +2376,10 @@ function definitionMatchesApplicability(
   })
 }
 
-function isClassificationComplete(values: Record<string, unknown>) {
-  return ['fund_regime', 'fund_category_l1', 'fund_category_l2', 'fund_category_l3'].every(
-    (attributeKey) => hasAttributeValue(values[attributeKey]),
+function isTaxonomyComplete(attributeValues: InstrumentAttributeValuesResponse | null) {
+  return Boolean(
+    hasAttributeValue(attributeValues?.taxonomy?.derived_values?.fund_regime) &&
+      hasAttributeValue(attributeValues?.taxonomy?.derived_values?.fund_taxonomy_leaf),
   )
 }
 
@@ -2420,15 +2390,17 @@ function buildAttributeFrameworkSections(
     return []
   }
 
-  const values = attributeValues.values || {}
-  const classificationReady = isClassificationComplete(values)
+  const values = {
+    ...(attributeValues.taxonomy?.derived_values || {}),
+    ...(attributeValues.values || {}),
+  }
+  const classificationReady = isTaxonomyComplete(attributeValues)
 
   return ATTRIBUTE_DOMAIN_ORDER.map((domain) => {
     const definitions = [...attributeValues.definitions]
       .filter((definition) => definition.domain_code === domain)
       .filter(
         (definition) =>
-          domain === 'classification' ||
           definitionMatchesApplicability(definition, values) ||
           definitionHasAssignedValue(values, definition),
       )
@@ -2454,11 +2426,11 @@ function buildAttributeFrameworkSections(
     }, [])
 
     const emptyState =
-      domain === 'classification' || classificationReady
+      classificationReady
         ? ATTRIBUTE_DOMAIN_META[domain].emptyState
         : domain === 'research'
-          ? 'Complete product classification first to unlock category-specific research tags.'
-          : 'Complete product classification first to unlock category-specific monitoring labels.'
+          ? 'Complete fund taxonomy first to unlock category-specific research tags.'
+          : 'Complete fund taxonomy first to unlock category-specific monitoring labels.'
 
     return {
       domain,
@@ -2493,17 +2465,19 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const fundId = propFundId || routeFundId
   const databaseDashboardUrl = `${PLATFORM_HOME_URL}/database-dashboard`
   const [bundle, setBundle] = useState<FundDetailBundle | null>(null)
-  const [activeTab, setActiveTab] = useState<DetailTab>('quote')
+  const [activeTab, setActiveTab] = useState<DetailTab>('overview')
   const [chartRange, setChartRange] = useState<ChartRange>('3Y')
   const [quoteBasis, setQuoteBasis] = useState<QuoteBasis>('nav_with_dividend')
   const [chartFrequency, setChartFrequency] = useState<ChartFrequency>('daily')
   const [selectedCurrency, setSelectedCurrency] = useState('USD')
   const [benchmarkFundId, setBenchmarkFundId] = useState('')
   const [benchmarkNavSeries, setBenchmarkNavSeries] = useState<FundNavSeriesResponse | null>(null)
+  const [metricBenchmarkFundId, setMetricBenchmarkFundId] = useState('')
+  const [metricBenchmarkNavSeries, setMetricBenchmarkNavSeries] =
+    useState<FundNavSeriesResponse | null>(null)
   const [rollingReturnWindowMonths, setRollingReturnWindowMonths] =
     useState<RollingReturnWindowMonths>(12)
   const [quoteActionNotice, setQuoteActionNotice] = useState<string | null>(null)
-  const [peerBaselineDraftIds, setPeerBaselineDraftIds] = useState<string[]>([])
   const [chartStartDate, setChartStartDate] = useState('')
   const [chartEndDate, setChartEndDate] = useState('')
   const [chartHoverIndex, setChartHoverIndex] = useState<number | null>(null)
@@ -2528,18 +2502,17 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [editingPriceSection, setEditingPriceSection] = useState<PriceEditSection | null>(null)
   const [editingDocuments, setEditingDocuments] = useState(false)
   const [editingResearch, setEditingResearch] = useState(false)
-  const [editingNav, setEditingNav] = useState(false)
-  const [navDraftSourceRecordId, setNavDraftSourceRecordId] = useState('manual_nav_editor')
   const [peopleDraft, setPeopleDraft] = useState<PeopleDraft | null>(null)
   const [strategyDraft, setStrategyDraft] = useState<StrategyDraft | null>(null)
   const [priceDraft, setPriceDraft] = useState<PriceDraft | null>(null)
   const [documentsDraft, setDocumentsDraft] = useState<DocumentsDraft | null>(null)
   const [researchDraft, setResearchDraft] = useState<ResearchDraft | null>(null)
-  const [navDraft, setNavDraft] = useState<NavDraft | null>(null)
   const [savingSection, setSavingSection] = useState<string | null>(null)
   const [sectionNotice, setSectionNotice] = useState<string | null>(null)
   const [sectionError, setSectionError] = useState<string | null>(null)
-  const benchmarkDefaultSeededRef = useRef(false)
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false)
+  const [taxonomyTree, setTaxonomyTree] = useState<FundTaxonomyTreeResponse | null>(null)
+  const [taxonomyDraftNodeId, setTaxonomyDraftNodeId] = useState('')
   const quoteChartMenuRef = useRef<HTMLDivElement | null>(null)
   const productFrameworkPickerRef = useRef<HTMLDivElement | null>(null)
   const timelineNoteContextMenuRef = useRef<HTMLDivElement | null>(null)
@@ -2617,7 +2590,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           navSeries,
         })
         startTransition(() => {
-          setActiveTab((current) => (nextTabs.includes(current) ? current : nextTabs[0] || 'quote'))
+          setActiveTab((current) => (nextTabs.includes(current) ? current : nextTabs[0] || 'overview'))
         })
       } catch (loadError) {
         if (!cancelled) {
@@ -2661,6 +2634,15 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             asset_id: fundId,
             definitions: [],
             values: {},
+            taxonomy: {
+              taxonomy_code: 'fund_taxonomy',
+              assigned_node_id: null,
+              assigned_label: null,
+              path_labels: [],
+              path_node_ids: [],
+              depth: 0,
+              derived_values: {},
+            },
           })
         }
       }
@@ -2674,6 +2656,40 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   }, [fundId, refreshToken])
 
   useEffect(() => {
+    const assignedNodeId =
+      productFrameworkAttributes?.taxonomy?.assigned_node_id ||
+      bundle?.summary.taxonomy?.assigned_node_id ||
+      ''
+    setTaxonomyDraftNodeId(assignedNodeId)
+  }, [bundle?.summary.taxonomy?.assigned_node_id, productFrameworkAttributes?.taxonomy?.assigned_node_id])
+
+  useEffect(() => {
+    if (!settingsModalOpen || taxonomyTree) {
+      return
+    }
+    let cancelled = false
+
+    async function loadTaxonomyTree() {
+      try {
+        const response = await getFundTaxonomyTree()
+        if (!cancelled) {
+          setTaxonomyTree(response)
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setSectionError(loadError instanceof Error ? loadError.message : 'Failed to load fund taxonomy.')
+        }
+      }
+    }
+
+    void loadTaxonomyTree()
+
+    return () => {
+      cancelled = true
+    }
+  }, [settingsModalOpen, taxonomyTree])
+
+  useEffect(() => {
     if (!bundle) {
       return
     }
@@ -2682,7 +2698,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setPriceDraft(toEditablePriceDraft(bundle.price))
     setDocumentsDraft(toEditableDocumentsDraft(bundle.documents))
     setResearchDraft(toEditableResearchDraft(bundle.research))
-    setNavDraft(toEditableNavDraft(bundle.navSeries))
   }, [bundle])
 
   useEffect(() => {
@@ -2747,47 +2762,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   }, [bundle, selectedCurrency])
 
   useEffect(() => {
-    if (!bundle || benchmarkDefaultSeededRef.current) {
-      return
-    }
-
-    const persistedDefaultBenchmarkId = bundle.navSeries.compare_settings?.default_benchmark_asset_id || ''
-    const persistedDefaultBenchmark = bundle.library.find(
-      (item) => item.fund_id === persistedDefaultBenchmarkId && item.fund_id !== fundId,
-    )
-    if (persistedDefaultBenchmark) {
-      benchmarkDefaultSeededRef.current = true
-      if (benchmarkFundId !== persistedDefaultBenchmark.fund_id) {
-        startTransition(() => {
-          setBenchmarkFundId(persistedDefaultBenchmark.fund_id)
-        })
-      }
-      return
-    }
-
-    const hasValidSelection = bundle.library.some(
-      (item) => item.fund_id === benchmarkFundId && item.fund_id !== fundId,
-    )
-    if (hasValidSelection) {
-      benchmarkDefaultSeededRef.current = true
-      return
-    }
-
-    const preferredTargets = new Set(bundle.chart.available_compare_targets || [])
-    const nextDefault =
-      bundle.library.find((item) => item.fund_id !== fundId && preferredTargets.has(item.fund_id)) ||
-      bundle.library.find((item) => item.fund_id !== fundId) ||
-      null
-
-    benchmarkDefaultSeededRef.current = true
-    if (nextDefault) {
-      startTransition(() => {
-        setBenchmarkFundId(nextDefault.fund_id)
-      })
-    }
-  }, [benchmarkFundId, bundle, fundId])
-
-  useEffect(() => {
     let cancelled = false
 
     async function loadBenchmark() {
@@ -2816,10 +2790,38 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   }, [benchmarkFundId, fundId])
 
   useEffect(() => {
-    benchmarkDefaultSeededRef.current = false
+    let cancelled = false
+
+    async function loadMetricBenchmark() {
+      if (!metricBenchmarkFundId || metricBenchmarkFundId === fundId) {
+        setMetricBenchmarkNavSeries(null)
+        return
+      }
+
+      try {
+        const response = await getInstrumentNavSeries(metricBenchmarkFundId)
+        if (!cancelled) {
+          setMetricBenchmarkNavSeries(response)
+        }
+      } catch {
+        if (!cancelled) {
+          setMetricBenchmarkNavSeries(null)
+        }
+      }
+    }
+
+    void loadMetricBenchmark()
+
+    return () => {
+      cancelled = true
+    }
+  }, [metricBenchmarkFundId, fundId])
+
+  useEffect(() => {
     setBenchmarkFundId('')
     setBenchmarkNavSeries(null)
-    setPeerBaselineDraftIds([])
+    setMetricBenchmarkFundId('')
+    setMetricBenchmarkNavSeries(null)
     setQuoteActionNotice(null)
     setOpenQuoteChartMenu(null)
   }, [fundId])
@@ -3076,7 +3078,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   }
 
   function focusTimelineNoteInQuote(noteDate: string) {
-    setActiveTab('quote')
+    setActiveTab('overview')
     setChartRange('MAX')
     setChartStartDate('')
     setChartEndDate('')
@@ -3215,14 +3217,43 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     }
   }
 
-  async function handleSaveNavSeries() {
+  async function handleSaveFundSettings() {
+    setSavingSection('fund_settings')
     setSectionError(null)
     setSectionNotice(null)
-    setEditingNav(false)
-    setSectionError('Canonical NAV history is managed in Database Dashboard.')
-    setQuoteActionNotice(
-      'Watchlist detail is read-only for canonical NAV history. Use Database Dashboard to import or refresh shared market data.',
-    )
+    try {
+      const response = await updateFundTaxonomy(fundId, {
+        node_id: taxonomyDraftNodeId || null,
+        updated_by: 'terminal_ui',
+      })
+      setProductFrameworkAttributes((current) =>
+        current
+          ? {
+              ...current,
+              taxonomy: response,
+            }
+          : current,
+      )
+      setBundle((current) =>
+        current
+          ? {
+              ...current,
+              summary: {
+                ...current.summary,
+                category_name: response.assigned_label || 'Unclassified',
+                taxonomy: response,
+              },
+            }
+          : current,
+      )
+      setSettingsModalOpen(false)
+      setSectionNotice('Fund settings saved.')
+      setRefreshToken((value) => value + 1)
+    } catch (saveError) {
+      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save fund settings.')
+    } finally {
+      setSavingSection(null)
+    }
   }
 
   if (loading) {
@@ -3270,57 +3301,33 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const defaultWindow = getRangeWindow(navBasisSeries, chartRange)
   const effectiveStartDate = chartRange === 'CUSTOM' ? chartStartDate : defaultWindow.start
   const effectiveEndDate = chartRange === 'CUSTOM' ? chartEndDate : defaultWindow.end
+  const zoomMaxIndex = Math.max(navBasisSeries.length - 1, 0)
+  const rawZoomStartIndex = effectiveStartDate
+    ? findLastPointIndexOnOrBefore(navBasisSeries, effectiveStartDate)
+    : 0
+  const rawZoomEndIndex = effectiveEndDate
+    ? findLastPointIndexOnOrBefore(navBasisSeries, effectiveEndDate)
+    : zoomMaxIndex
+  const zoomStartIndex = Math.max(0, Math.min(rawZoomStartIndex < 0 ? 0 : rawZoomStartIndex, zoomMaxIndex))
+  const zoomEndIndex =
+    zoomMaxIndex <= 0
+      ? 0
+      : Math.max(
+          Math.min(zoomStartIndex + 1, zoomMaxIndex),
+          Math.min(rawZoomEndIndex < 0 ? zoomMaxIndex : rawZoomEndIndex, zoomMaxIndex),
+        )
+  const canUseZoom = navBasisSeries.length > 2
+  const zoomSelectionLeftPct = zoomMaxIndex > 0 ? (zoomStartIndex / zoomMaxIndex) * 100 : 0
+  const zoomSelectionRightPct =
+    zoomMaxIndex > 0 ? ((zoomMaxIndex - zoomEndIndex) / zoomMaxIndex) * 100 : 0
   const visibleNavSeries = resampleSeries(
     filterSeriesByDateWindow(navBasisSeries, effectiveStartDate, effectiveEndDate),
     chartFrequency,
   )
   const benchmarkOptions = bundle.library.filter((item) => item.fund_id !== fundId)
-  const defaultBenchmarkAssetId = navSeries.compare_settings?.default_benchmark_asset_id || ''
   const selectedBenchmark = benchmarkOptions.find((item) => item.fund_id === benchmarkFundId) || null
-  const defaultBenchmark =
-    benchmarkOptions.find((item) => item.fund_id === defaultBenchmarkAssetId) || null
-  const defaultBenchmarkLabel = defaultBenchmark
-    ? defaultBenchmark.ticker_or_isin || defaultBenchmark.fund_name
-    : defaultBenchmarkAssetId || 'Not set'
-  const peerBaselineAssetIds =
-    (navSeries.compare_settings?.peer_asset_ids || []).filter((assetId) => assetId !== fundId)
-  const peerBaselineFunds = peerBaselineAssetIds.map((assetId) => {
-    const match = benchmarkOptions.find((item) => item.fund_id === assetId)
-    return {
-      assetId,
-      label: match ? match.ticker_or_isin || match.fund_name : assetId,
-    }
-  })
-  const peerBaselineLabel = peerBaselineFunds.length
-    ? [
-        peerBaselineFunds
-          .slice(0, 3)
-          .map((item) => item.label)
-          .join(' · '),
-        peerBaselineFunds.length > 3 ? `+${peerBaselineFunds.length - 3}` : null,
-      ]
-        .filter(Boolean)
-        .join(' ')
-    : 'Not set'
-  const peerBaselineDraftLabel = peerBaselineDraftIds.length
-    ? [
-        peerBaselineDraftIds
-          .map((assetId) => {
-            const match = benchmarkOptions.find((item) => item.fund_id === assetId)
-            return match ? match.ticker_or_isin || match.fund_name : assetId
-          })
-          .slice(0, 3)
-          .join(' · '),
-        peerBaselineDraftIds.length > 3 ? `+${peerBaselineDraftIds.length - 3}` : null,
-      ]
-        .filter(Boolean)
-        .join(' ')
-    : 'Not set'
-  const peerBaselineDraftDirty =
-    peerBaselineDraftIds.length !== peerBaselineAssetIds.length ||
-    peerBaselineDraftIds.some((assetId, index) => assetId !== peerBaselineAssetIds[index])
-  const benchmarkMatchesDefault =
-    Boolean(benchmarkFundId) && Boolean(defaultBenchmarkAssetId) && benchmarkFundId === defaultBenchmarkAssetId
+  const selectedMetricBenchmark =
+    benchmarkOptions.find((item) => item.fund_id === metricBenchmarkFundId) || null
   const benchmarkRowsByCurrency =
     getRowsForCurrency(benchmarkNavSeries?.rows || [], effectiveCurrency)
   const benchmarkSourceRows = benchmarkRowsByCurrency.length > 0 ? benchmarkRowsByCurrency : benchmarkNavSeries?.rows || []
@@ -3333,32 +3340,51 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     filterSeriesByDateWindow(benchmarkNavBasisSeries, effectiveStartDate, effectiveEndDate),
     chartFrequency,
   )
+  const metricBenchmarkRowsByCurrency =
+    getRowsForCurrency(metricBenchmarkNavSeries?.rows || [], effectiveCurrency)
+  const metricBenchmarkSourceRows =
+    metricBenchmarkRowsByCurrency.length > 0
+      ? metricBenchmarkRowsByCurrency
+      : metricBenchmarkNavSeries?.rows || []
+  const metricBenchmarkAvailableBases = getAvailableQuoteBases(metricBenchmarkSourceRows)
+  const activeMetricBenchmarkBasis = metricBenchmarkAvailableBases.includes(activeQuoteBasis)
+    ? activeQuoteBasis
+    : metricBenchmarkAvailableBases[0] || null
+  const metricBenchmarkNavBasisSeries =
+    activeMetricBenchmarkBasis
+      ? buildBasisSeries(metricBenchmarkSourceRows, activeMetricBenchmarkBasis)
+      : []
+  const shouldIndexCompareSeries = Boolean(selectedBenchmark)
+  const indexedNavSeries = shouldIndexCompareSeries ? rebaseSeries(visibleNavSeries, 1) : []
+  const indexedBenchmarkSeries = shouldIndexCompareSeries ? rebaseSeries(benchmarkVisibleNavSeries, 1) : []
+  const chartNavSeries =
+    shouldIndexCompareSeries && indexedNavSeries.length ? indexedNavSeries : visibleNavSeries
+  const chartBenchmarkSeries = shouldIndexCompareSeries
+    ? indexedBenchmarkSeries
+    : benchmarkVisibleNavSeries
   const drawdownSeries = buildDrawdownSeries(visibleNavSeries)
   const benchmarkDrawdownSeries = buildDrawdownSeries(benchmarkVisibleNavSeries)
   const latestPoint = visibleNavSeries.length ? visibleNavSeries[visibleNavSeries.length - 1] : undefined
-  const previousPoint = visibleNavSeries.length > 1 ? visibleNavSeries[visibleNavSeries.length - 2] : undefined
   const periodLow =
     visibleNavSeries.length > 0 ? Math.min(...visibleNavSeries.map((point) => point.value)) : null
   const periodHigh =
     visibleNavSeries.length > 0 ? Math.max(...visibleNavSeries.map((point) => point.value)) : null
   const maxDrawdown =
     drawdownSeries.length > 0 ? Math.min(...drawdownSeries.map((point) => point.value)) : null
-  const quotePeriodStats = getSeriesChangeStats(visibleNavSeries)
-  const benchmarkPeriodStats = getSeriesChangeStats(benchmarkVisibleNavSeries)
-  const quoteChange =
-    latestPoint && previousPoint ? latestPoint.value - previousPoint.value : null
-  const quoteChangePct =
-    latestPoint && previousPoint && previousPoint.value !== 0
-      ? (quoteChange! / previousPoint.value) * 100
-      : null
+  const chartQuotePeriodStats = getSeriesChangeStats(chartNavSeries)
+  const chartBenchmarkPeriodStats = getSeriesChangeStats(chartBenchmarkSeries)
+  const latestSeriesPoint = navBasisSeries[navBasisSeries.length - 1]
+  const quoteLatestStats = getLatestPointChangeStats(navBasisSeries)
+  const quoteChange = quoteLatestStats.change
+  const quoteChangePct = quoteLatestStats.changePct
   const availableTabs = normalizeTabs(summary.tabs || [])
   const navBasisType = navSeries.nav_basis_type || summary.nav_snapshot?.nav_basis_type || 'auto'
   const navBasisLabel = NAV_BASIS_LABELS[navBasisType] || toTitleCase(navBasisType)
   const quoteBasisLabel = QUOTE_BASIS_LABELS[activeQuoteBasis]
+  const chartSeriesBasisLabel = shouldIndexCompareSeries ? 'Indexed to 1.00' : quoteBasisLabel
   const quoteBasisOptions = availableQuoteBases.length
     ? availableQuoteBases
     : [activeQuoteBasis]
-  const latestSeriesPoint = navBasisSeries[navBasisSeries.length - 1]
   const basisValue =
     activeQuoteBasis === 'nav_with_dividend'
       ? latestQuoteRow?.nav_with_dividend ??
@@ -3375,7 +3401,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       : quoteChange < 0
         ? 'instrument-quote-change instrument-quote-change-negative'
         : 'instrument-quote-change instrument-quote-change-positive'
-  const ratingDate = formatDate(summary.rating_as_of)
   const managementStats = people.overview || {}
   const peoplePrimaryOverviewFacts = PEOPLE_PRIMARY_OVERVIEW_FIELDS.map((field) => ({
     ...field,
@@ -3396,18 +3421,18 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   }))
   const peopleAdditionalDraftRows =
     peopleDraft?.overviewRows.filter((row) => !PEOPLE_PRIMARY_OVERVIEW_FIELD_KEYS.has(row.key.trim())) ?? []
-  const combinedVisibleSeries = [...visibleNavSeries, ...benchmarkVisibleNavSeries]
+  const combinedVisibleSeries = [...chartNavSeries, ...chartBenchmarkSeries]
   const canUseLogarithmicScale =
     combinedVisibleSeries.length > 0 && combinedVisibleSeries.every((point) => point.value > 0)
   const effectiveChartScale =
     chartScale === 'logarithmic' && canUseLogarithmicScale
       ? chartScale
       : 'linear'
-  const scaledVisibleSeries = applyChartScale(visibleNavSeries, effectiveChartScale)
-  const scaledBenchmarkVisibleSeries = applyChartScale(benchmarkVisibleNavSeries, effectiveChartScale)
+  const scaledVisibleSeries = applyChartScale(chartNavSeries, effectiveChartScale)
+  const scaledBenchmarkVisibleSeries = applyChartScale(chartBenchmarkSeries, effectiveChartScale)
   const combinedScaledSeries = [...scaledVisibleSeries, ...scaledBenchmarkVisibleSeries]
-  const chartTickDates = getChartTickDates(visibleNavSeries, 6)
-  const chartBands = buildChartBands(visibleNavSeries, PRIMARY_CHART_GEOMETRY, 10)
+  const chartTickDates = getChartTickDates(chartNavSeries, 6)
+  const chartBands = buildChartBands(chartNavSeries, PRIMARY_CHART_GEOMETRY, 10)
   const rawChartMin = combinedScaledSeries.length ? Math.min(...combinedScaledSeries.map((point) => point.value)) : 0
   const rawChartMax = combinedScaledSeries.length ? Math.max(...combinedScaledSeries.map((point) => point.value)) : 1
   const chartRenderBounds = getPaddedAxisBounds(rawChartMin, rawChartMax, 0.045, 0.01)
@@ -3482,7 +3507,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const displayIndex =
     !scaledVisibleSeries.length ? null : activeHoverIndex ?? scaledVisibleSeries.length - 1
   const displayedDrawdownPoint = displayIndex == null ? undefined : positionedDrawdownPoints[displayIndex]
-  const displayedNavPoint = displayIndex == null ? undefined : visibleNavSeries[displayIndex]
+  const displayedNavPoint = displayIndex == null ? undefined : chartNavSeries[displayIndex]
   const primaryHoverGuideX = chartHoverCursor ? getPlotXFromRatio(PRIMARY_CHART_GEOMETRY, chartHoverCursor.xRatio) : null
   const drawdownHoverGuideX = chartHoverCursor ? getPlotXFromRatio(DRAWDOWN_CHART_GEOMETRY, chartHoverCursor.xRatio) : null
   const activeChartGuidePoint = activeHoverIndex == null ? null : positionedChartPoints[activeHoverIndex]
@@ -3491,17 +3516,17 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const isDrawdownHoverActive = chartHoverPanel === 'drawdown' && chartHoverCursor != null && activeDrawdownGuidePoint != null
   const hoveredChartPoint = isPrimaryHoverActive ? activeChartGuidePoint : null
   const hoveredDrawdownPoint = isDrawdownHoverActive ? activeDrawdownGuidePoint : null
-  const hoveredNavPoint = activeHoverIndex == null ? null : visibleNavSeries[activeHoverIndex]
+  const hoveredNavPoint = activeHoverIndex == null ? null : chartNavSeries[activeHoverIndex]
   const displayedBenchmarkBasePoint = findNearestChartPoint(
-    benchmarkVisibleNavSeries,
-    displayedNavPoint?.date || visibleNavSeries[visibleNavSeries.length - 1]?.date,
+    chartBenchmarkSeries,
+    displayedNavPoint?.date || chartNavSeries[chartNavSeries.length - 1]?.date,
   )
   const displayedBenchmarkDrawdownBasePoint = findNearestChartPoint(
     benchmarkDrawdownSeries,
-    displayedNavPoint?.date || visibleNavSeries[visibleNavSeries.length - 1]?.date,
+    displayedNavPoint?.date || chartNavSeries[chartNavSeries.length - 1]?.date,
   )
   const hoveredBenchmarkBasePoint = activeHoverIndex == null ? null : findNearestChartPoint(
-    benchmarkVisibleNavSeries,
+    chartBenchmarkSeries,
     hoveredNavPoint?.date,
   )
   const hoveredBenchmarkDrawdownBasePoint = activeHoverIndex == null ? null : findNearestChartPoint(
@@ -3605,10 +3630,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const latestBenchmarkDrawdownPoint =
     positionedBenchmarkDrawdownPoints[positionedBenchmarkDrawdownPoints.length - 1] ?? null
   const latestChartValueLabel =
-    visibleNavSeries.length > 0 ? formatNumber(visibleNavSeries[visibleNavSeries.length - 1].value, 4) : null
+    chartNavSeries.length > 0 ? formatNumber(chartNavSeries[chartNavSeries.length - 1].value, 4) : null
   const latestBenchmarkChartValueLabel =
-    benchmarkVisibleNavSeries.length > 0
-      ? formatNumber(benchmarkVisibleNavSeries[benchmarkVisibleNavSeries.length - 1].value, 4)
+    chartBenchmarkSeries.length > 0
+      ? formatNumber(chartBenchmarkSeries[chartBenchmarkSeries.length - 1].value, 4)
       : null
   const latestDrawdownValueLabel =
     drawdownSeries.length > 0 ? formatPercent(drawdownSeries[drawdownSeries.length - 1].value) : null
@@ -3798,7 +3823,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const performancePeriodSnapshots = PERFORMANCE_METRIC_PERIODS.map((period) => {
     const fundWindow = getAnchoredWindow(navBasisSeries, period.key, performanceReferenceEndDate)
     const benchmarkWindow = getAnchoredWindow(
-      benchmarkNavBasisSeries,
+      metricBenchmarkNavBasisSeries,
       period.key,
       performanceReferenceEndDate,
     )
@@ -3812,8 +3837,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   })
   const rollingReturnSeries = buildRollingReturnSeries(navBasisSeries, rollingReturnWindowMonths).slice(-60)
   const rollingBenchmarkReturnSeries =
-    selectedBenchmark && benchmarkNavBasisSeries.length > 0
-      ? buildRollingReturnSeries(benchmarkNavBasisSeries, rollingReturnWindowMonths).slice(-60)
+    selectedMetricBenchmark && metricBenchmarkNavBasisSeries.length > 0
+      ? buildRollingReturnSeries(metricBenchmarkNavBasisSeries, rollingReturnWindowMonths).slice(-60)
       : []
   const combinedRollingReturnSeries = [...rollingReturnSeries, ...rollingBenchmarkReturnSeries]
   const rollingReturnBounds = combinedRollingReturnSeries.length
@@ -3877,12 +3902,13 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     }
     return `${formatNumber(snapshot.recoveryDays, 0)} d`
   }
-  const benchmarkMetricPrefix = selectedBenchmark ? 'BM' : null
+  const benchmarkMetricPrefix = selectedMetricBenchmark ? 'BM' : null
   const buildBenchmarkNote = (value: string | null) =>
     benchmarkMetricPrefix && value ? `${benchmarkMetricPrefix} ${value}` : null
   const performanceMetricMatrixRows = [
     {
       label: 'Period Return',
+      supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
         primary: fund.periodReturn == null ? '—' : formatPercent(fund.periodReturn),
         secondary:
@@ -3891,6 +3917,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Annualized Return',
+      supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
         primary: fund.annualizedReturn == null ? '—' : formatPercent(fund.annualizedReturn),
         secondary:
@@ -3901,6 +3928,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Ann. Volatility',
+      supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
         primary: fund.annualizedVolatility == null ? '—' : formatPercent(fund.annualizedVolatility),
         secondary:
@@ -3911,17 +3939,18 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Excess Return',
+      supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
         primary:
           fund.periodReturn == null || benchmark?.periodReturn == null
             ? '—'
             : formatPercent(fund.periodReturn - benchmark.periodReturn),
-        secondary:
-          benchmark?.periodReturn == null ? null : buildBenchmarkNote(formatPercent(benchmark.periodReturn)),
+        secondary: null,
       })),
     },
     {
       label: 'Sharpe Ratio',
+      supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
         primary: fund.sharpe == null ? '—' : formatNumber(fund.sharpe, 2),
         secondary: benchmark?.sharpe == null ? null : buildBenchmarkNote(formatNumber(benchmark.sharpe, 2)),
@@ -3929,6 +3958,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Sortino Ratio',
+      supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
         primary: fund.sortino == null ? '—' : formatNumber(fund.sortino, 2),
         secondary:
@@ -3937,6 +3967,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Calmar Ratio',
+      supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
         primary: fund.calmar == null ? '—' : formatNumber(fund.calmar, 2),
         secondary: benchmark?.calmar == null ? null : buildBenchmarkNote(formatNumber(benchmark.calmar, 2)),
@@ -3944,6 +3975,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Information Ratio',
+      supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
         primary: relative?.informationRatio == null ? '—' : formatNumber(relative.informationRatio, 2),
         secondary: null,
@@ -3951,6 +3983,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Tracking Error',
+      supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
         primary: relative?.trackingError == null ? '—' : formatPercent(relative.trackingError),
         secondary: null,
@@ -3958,6 +3991,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Beta',
+      supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
         primary: relative?.beta == null ? '—' : formatNumber(relative.beta, 2),
         secondary: null,
@@ -3965,6 +3999,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Max Drawdown',
+      supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
         primary: fund.maxDrawdown == null ? '—' : formatPercent(fund.maxDrawdown),
         secondary:
@@ -3975,6 +4010,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Recovery Days',
+      supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
         primary: formatRecoveryValue(fund) || '—',
         secondary: buildBenchmarkNote(formatRecoveryValue(benchmark)),
@@ -3982,6 +4018,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Upside Capture',
+      supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
         primary: relative?.upsideCapture == null ? '—' : formatPercent(relative.upsideCapture, 0),
         secondary: null,
@@ -3989,6 +4026,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Downside Capture',
+      supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
         primary: relative?.downsideCapture == null ? '—' : formatPercent(relative.downsideCapture, 0),
         secondary: null,
@@ -4041,8 +4079,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       RISK_SCATTER_GEOMETRY.paddingBottom -
       ((row.returnValue - riskReturnMin) / Math.max(riskReturnMax - riskReturnMin, 1)) * riskPlotHeight,
   }))
-  const riskBenchmarkLabel = selectedBenchmark
-    ? selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name
+  const riskBenchmarkLabel = selectedMetricBenchmark
+    ? selectedMetricBenchmark.ticker_or_isin || selectedMetricBenchmark.fund_name
     : 'Not selected'
   const riskMatrixSnapshots = performancePeriodSnapshots.filter(({ key }) => RISK_MATRIX_PERIOD_KEYS.has(key))
   const lifetimeRiskSnapshot =
@@ -4182,8 +4220,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     0,
   )
   const rollingBetaSeries =
-    selectedBenchmark && benchmarkNavBasisSeries.length > 0
-      ? buildRollingBetaSeries(navBasisSeries, benchmarkNavBasisSeries).slice(-60)
+    selectedMetricBenchmark && metricBenchmarkNavBasisSeries.length > 0
+      ? buildRollingBetaSeries(navBasisSeries, metricBenchmarkNavBasisSeries).slice(-60)
       : []
   const rollingBetaBounds = rollingBetaSeries.length
     ? getPaddedAxisBounds(
@@ -4228,7 +4266,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       value:
         rollingBetaSeries.length > 0
           ? formatNumber(rollingBetaSeries[rollingBetaSeries.length - 1].value, 2)
-          : selectedBenchmark
+          : selectedMetricBenchmark
             ? 'Insufficient overlap'
             : 'No benchmark selected',
     },
@@ -4352,10 +4390,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     }
   })()
   const betaDriftWatch = (() => {
-    if (!selectedBenchmark) {
+    if (!selectedMetricBenchmark) {
       return {
         level: 'N/A',
-        reading: 'N/A · Select a benchmark in Quote',
+        reading: 'N/A · Select a benchmark in Performance',
       }
     }
     if (latestRollingBetaValue == null || rollingBetaMedianValue == null || rollingBetaPercentile == null) {
@@ -4386,6 +4424,130 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     scoreWatchLevel(betaDriftWatch.level)
   const overallWatchLevel =
     watchScore >= 5 ? 'High' : watchScore >= 2 ? 'Elevated' : watchScore >= 0 ? 'Normal' : 'N/A'
+  const latestYtdReturn = performancePeriodSnapshots.find(({ key }) => key === 'YTD')?.fund.periodReturn ?? null
+  const lifetimePerformanceSnapshot =
+    performancePeriodSnapshots.find(({ key }) => key === 'SI')?.fund || buildPerformanceMetricSnapshot(navBasisSeries)
+  const overviewRatingValue =
+    ratings.overall_rating == null ? '—' : formatStarRating(ratings.overall_rating)
+  const overviewRatingNote =
+    ratings.overall_rating == null
+      ? 'Pending research'
+      : summary.rating_as_of
+        ? `As of ${formatDate(summary.rating_as_of)}`
+        : 'Research rating'
+  const overviewRankingValue =
+    performance.ranking
+      ? [
+          performance.ranking.quartile == null ? null : `Q${performance.ranking.quartile}`,
+          performance.ranking.percentile == null
+            ? null
+            : `${formatNumber(performance.ranking.percentile, 0)} pct`,
+          performance.ranking.sample_count == null
+            ? null
+            : `n=${formatNumber(performance.ranking.sample_count, 0)}`,
+        ]
+          .filter(Boolean)
+          .join(' / ') || '—'
+      : '—'
+  const overviewSideMetricRows = [
+    {
+      label: '1W Return',
+      value: latest1WReturn == null ? '—' : formatPercent(latest1WReturn),
+      note: 'Latest',
+    },
+    {
+      label: 'MTD Return',
+      value: latestMonthlyReturnValue == null ? '—' : formatPercent(latestMonthlyReturnValue),
+      note: 'Current month',
+    },
+    {
+      label: 'YTD Return',
+      value: latestYtdReturn == null ? '—' : formatPercent(latestYtdReturn),
+      note: 'Year to date',
+    },
+    {
+      label: 'Ann. Return',
+      value:
+        lifetimePerformanceSnapshot.annualizedReturn == null
+          ? '—'
+          : formatPercent(lifetimePerformanceSnapshot.annualizedReturn),
+      note: 'SI',
+    },
+    {
+      label: 'Ann. Vol',
+      value:
+        lifetimePerformanceSnapshot.annualizedVolatility == null
+          ? '—'
+          : formatPercent(lifetimePerformanceSnapshot.annualizedVolatility),
+      note: 'SI',
+    },
+    {
+      label: 'Max Drawdown',
+      value:
+        lifetimeRiskSnapshot.maxDrawdown == null ? '—' : formatPercent(lifetimeRiskSnapshot.maxDrawdown),
+      note: 'SI',
+    },
+    {
+      label: 'Current Drawdown',
+      value: currentDrawdownValue == null ? '—' : formatPercent(currentDrawdownValue),
+      note: drawdownPressureWatch.level,
+    },
+    {
+      label: 'SI Sharpe',
+      value: lifetimePerformanceSnapshot.sharpe == null ? '—' : formatNumber(lifetimePerformanceSnapshot.sharpe, 2),
+      note: 'rf = 0',
+    },
+    {
+      label: 'Peer Rank',
+      value: overviewRankingValue,
+      note: performance.ranking?.category_name || 'Category',
+    },
+    {
+      label: 'Watch Level',
+      value: overallWatchLevel,
+      note: `${String(watchScore)} signal point(s)`,
+    },
+  ]
+  const taxonomyPathLabel =
+    productFrameworkAttributes?.taxonomy?.path_labels?.length
+      ? productFrameworkAttributes.taxonomy.path_labels.join(' / ')
+      : summary.taxonomy?.path_labels?.length
+        ? summary.taxonomy.path_labels.join(' / ')
+        : summary.category_name || 'Unclassified'
+  const taxonomyNodes = taxonomyTree?.nodes || []
+  const taxonomyDraftNode =
+    taxonomyNodes.find((node) => node.node_id === taxonomyDraftNodeId) || null
+  const taxonomyDraftPathNodeIds = taxonomyDraftNode?.path_node_ids || []
+  const taxonomyLevelSelectors = (() => {
+    const selectors: Array<{
+      levelIndex: number
+      parentNodeId: string | null
+      selectedNodeId: string
+      options: FundTaxonomyTreeNode[]
+      disabled: boolean
+    }> = []
+    let parentNodeId: string | null = null
+    let chainActive = true
+    const maxDepth = Math.max(taxonomyTree?.max_depth || 3, taxonomyDraftPathNodeIds.length + 1)
+
+    for (let levelIndex = 1; levelIndex <= maxDepth; levelIndex += 1) {
+      const options = chainActive
+        ? taxonomyNodes.filter((node) => node.parent_node_id === parentNodeId)
+        : []
+      const selectedNodeId: string = chainActive ? taxonomyDraftPathNodeIds[levelIndex - 1] || '' : ''
+      selectors.push({
+        levelIndex,
+        parentNodeId,
+        selectedNodeId,
+        options,
+        disabled: !chainActive || options.length === 0,
+      })
+      chainActive = Boolean(selectedNodeId)
+      parentNodeId = selectedNodeId
+    }
+
+    return selectors
+  })()
   const localCurrentRiskWatchRows = [
     {
       label: 'Overall Watch',
@@ -4436,7 +4598,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           ? '—'
           : `${structuralRiskLabel} beta ${structuralRelativeSnapshot?.beta == null ? '—' : formatNumber(structuralRelativeSnapshot.beta, 2)} · TE ${structuralRelativeSnapshot?.trackingError == null ? '—' : formatPercent(structuralRelativeSnapshot.trackingError)}`,
       interpretation:
-        !selectedBenchmark
+        !selectedMetricBenchmark
           ? 'No benchmark selected, so benchmark dependence is not fully specified.'
           : structuralRelativeSnapshot?.beta == null || structuralRelativeSnapshot?.trackingError == null
             ? 'Need more overlap with the current benchmark to characterize sensitivity.'
@@ -4453,7 +4615,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           ? '—'
           : `${structuralRiskLabel} up ${structuralRelativeSnapshot?.upsideCapture == null ? '—' : formatPercent(structuralRelativeSnapshot.upsideCapture, 0)} · down ${structuralRelativeSnapshot?.downsideCapture == null ? '—' : formatPercent(structuralRelativeSnapshot.downsideCapture, 0)}`,
       interpretation:
-        !selectedBenchmark
+        !selectedMetricBenchmark
           ? 'Select a benchmark to interpret upside/downside participation.'
           : structuralRelativeSnapshot?.upsideCapture == null || structuralRelativeSnapshot?.downsideCapture == null
             ? 'Capture profile needs a longer overlapping benchmark history.'
@@ -4520,7 +4682,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       signal: 'Rolling Beta',
       current:
         latestRollingBetaValue == null
-          ? (selectedBenchmark ? '—' : 'No benchmark selected')
+          ? (selectedMetricBenchmark ? '—' : 'No benchmark selected')
           : formatNumber(latestRollingBetaValue, 2),
       baseline:
         rollingBetaMedianValue == null
@@ -4640,17 +4802,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const riskFallbackFacts = currentRiskWatchRows.length ? currentRiskWatchRows.slice(0, 4) : localRiskFallbackFacts
   const riskStructureRows = payloadRiskStructureRows.length ? payloadRiskStructureRows : localRiskStructureRows
   const riskChangeRows = payloadRiskChangeRows.length ? payloadRiskChangeRows : localRiskChangeRows
-  const currentRiskWatchNote =
-    getString(risk.current_watch?.note) !== '—'
-      ? getString(risk.current_watch?.note)
-      : 'Heuristic watch flags based on current drawdown, rolling vol, recent losses, and beta drift.'
-  const riskChangeNote =
-    getString(risk.change_monitor?.note) !== '—'
-      ? getString(risk.change_monitor?.note)
-      : 'Monthly volatility measures realized volatility inside each calendar month. Rolling volatility and beta use trailing 12 monthly returns. The watch column is a current-pressure heuristic, not a forecast.'
   const riskMatrixRows = [
     {
       label: 'Ann. Volatility',
+      supportsBenchmark: true,
       cells: riskMatrixSnapshots.map(({ fund, benchmark }) => ({
         primary: fund.annualizedVolatility == null ? '—' : formatPercent(fund.annualizedVolatility),
         secondary:
@@ -4661,6 +4816,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Downside Deviation',
+      supportsBenchmark: true,
       cells: riskMatrixSnapshots.map(({ fund, benchmark }) => ({
         primary:
           fund.annualizedDownsideDeviation == null ? '—' : formatPercent(fund.annualizedDownsideDeviation),
@@ -4672,6 +4828,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Tracking Error',
+      supportsBenchmark: false,
       cells: riskMatrixSnapshots.map(({ relative }) => ({
         primary: relative?.trackingError == null ? '—' : formatPercent(relative.trackingError),
         secondary: null,
@@ -4679,6 +4836,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Beta',
+      supportsBenchmark: false,
       cells: riskMatrixSnapshots.map(({ relative }) => ({
         primary: relative?.beta == null ? '—' : formatNumber(relative.beta, 2),
         secondary: null,
@@ -4686,6 +4844,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Max Drawdown',
+      supportsBenchmark: true,
       cells: riskMatrixSnapshots.map(({ fund, benchmark }) => ({
         primary: fund.maxDrawdown == null ? '—' : formatPercent(fund.maxDrawdown),
         secondary:
@@ -4696,6 +4855,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Recovery Days',
+      supportsBenchmark: true,
       cells: riskMatrixSnapshots.map(({ fund, benchmark }) => ({
         primary: formatRecoveryValue(fund) || '—',
         secondary: buildBenchmarkNote(formatRecoveryValue(benchmark)),
@@ -4703,6 +4863,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Upside Capture',
+      supportsBenchmark: false,
       cells: riskMatrixSnapshots.map(({ relative }) => ({
         primary: relative?.upsideCapture == null ? '—' : formatPercent(relative.upsideCapture, 0),
         secondary: null,
@@ -4710,6 +4871,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'Downside Capture',
+      supportsBenchmark: false,
       cells: riskMatrixSnapshots.map(({ relative }) => ({
         primary: relative?.downsideCapture == null ? '—' : formatPercent(relative.downsideCapture, 0),
         secondary: null,
@@ -4820,87 +4982,129 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     })
   }
 
-  function beginNavEditing() {
-    setSectionNotice(null)
-    setEditingNav(false)
-    setSectionError('Canonical NAV history is managed in Database Dashboard.')
-    setQuoteActionNotice(
-      'Watchlist detail is read-only for canonical NAV history. Use Database Dashboard to import or refresh shared market data.',
-    )
-  }
+  const chartSettingsMenu =
+    openQuoteChartMenu === 'settings' ? (
+      <div className="instrument-chart-menu-panel instrument-chart-settings-panel">
+        <div className="instrument-chart-settings-layout">
+          <section className="instrument-chart-settings-block">
+            <div className="instrument-chart-settings-block-head">
+              <span>Series</span>
+              <strong>{chartSeriesBasisLabel}</strong>
+            </div>
+            <div className="instrument-chart-settings-control-group">
+              <span>Data Type</span>
+              <div className="instrument-chart-settings-option-grid">
+                {quoteBasisOptions.map((basis) => (
+                  <button
+                    key={basis}
+                    type="button"
+                    className={
+                      activeQuoteBasis === basis
+                        ? 'instrument-chart-option instrument-chart-option-active'
+                        : 'instrument-chart-option'
+                    }
+                    onClick={() => setQuoteBasis(basis)}
+                  >
+                    {QUOTE_BASIS_LABELS[basis]}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
 
-  function createEmptyNavRow(): NavDraft['rows'][number] {
-    return createEmptyImportedNavRow()
-  }
+          <section className="instrument-chart-settings-block">
+            <div className="instrument-chart-settings-block-head">
+              <span>Display</span>
+              <strong>{effectiveCurrency}</strong>
+            </div>
+            <div className="instrument-chart-settings-field-grid">
+              <label className="instrument-chart-settings-field">
+                <span>Frequency</span>
+                <select
+                  value={chartFrequency}
+                  onChange={(event) => setChartFrequency(event.target.value as ChartFrequency)}
+                >
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </label>
+              <label className="instrument-chart-settings-field">
+                <span>Currency</span>
+                <select value={effectiveCurrency} onChange={(event) => setSelectedCurrency(event.target.value)}>
+                  {(availableCurrencies.length ? availableCurrencies : [effectiveCurrency]).map((currency) => (
+                    <option key={currency} value={currency}>
+                      {currency}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="instrument-chart-settings-control-group">
+              <span>Chart Style</span>
+              <div className="instrument-chart-settings-option-grid">
+                {(['mountain', 'line', 'dot'] as ChartDisplayStyle[]).map((style) => (
+                  <button
+                    key={style}
+                    type="button"
+                    className={
+                      chartDisplayStyle === style
+                        ? 'instrument-chart-option instrument-chart-option-active'
+                        : 'instrument-chart-option'
+                    }
+                    onClick={() => setChartDisplayStyle(style)}
+                  >
+                    {toTitleCase(style)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
 
-  function handleAddNavQuote() {
-    setSectionNotice(null)
-    setEditingNav(false)
-    setSectionError('Canonical NAV history is managed in Database Dashboard.')
-    setQuoteActionNotice(
-      'Watchlist detail is read-only for canonical NAV history. Use Database Dashboard to import or refresh shared market data.',
-    )
-  }
-
-  async function handleSaveDefaultBenchmark(nextBenchmarkAssetId: string | null) {
-    setSavingSection('benchmark_default')
-    setSectionError(null)
-    setSectionNotice(null)
-    try {
-      await updateInstrumentNavSettings(fundId, {
-        default_benchmark_asset_id: nextBenchmarkAssetId,
-        updated_by: 'terminal_ui',
-      })
-      setQuoteActionNotice(
-        nextBenchmarkAssetId ? 'Default benchmark saved.' : 'Default benchmark cleared.',
-      )
-      setRefreshToken((value) => value + 1)
-    } catch (saveError) {
-      setSectionError(
-        saveError instanceof Error ? saveError.message : 'Failed to update default benchmark.',
-      )
-    } finally {
-      setSavingSection(null)
-    }
-  }
-
-  function handleOpenPeerBaselineMenu() {
-    setPeerBaselineDraftIds(peerBaselineAssetIds)
-    setOpenQuoteChartMenu((current) => (current === 'peers' ? null : 'peers'))
-  }
-
-  function togglePeerBaselineDraft(assetId: string) {
-    setPeerBaselineDraftIds((current) =>
-      current.includes(assetId)
-        ? current.filter((value) => value !== assetId)
-        : [...current, assetId],
-    )
-  }
-
-  async function handleSavePeerBaseline(nextPeerAssetIds: string[]) {
-    setSavingSection('peer_baseline')
-    setSectionError(null)
-    setSectionNotice(null)
-    try {
-      await updateInstrumentNavSettings(fundId, {
-        peer_baseline_asset_ids: nextPeerAssetIds,
-        updated_by: 'terminal_ui',
-      })
-      setQuoteActionNotice(
-        nextPeerAssetIds.length
-          ? `Peer baseline saved (${nextPeerAssetIds.length}).`
-          : 'Peer baseline cleared.',
-      )
-      setOpenQuoteChartMenu(null)
-      setRefreshToken((value) => value + 1)
-    } catch (saveError) {
-      setSectionError(
-        saveError instanceof Error ? saveError.message : 'Failed to update peer baseline.',
-      )
-    } finally {
-      setSavingSection(null)
-    }
-  }
+          <section className="instrument-chart-settings-block instrument-chart-settings-block-data">
+            <div className="instrument-chart-settings-block-head">
+              <span>Events & Data</span>
+              <strong>Chart overlays</strong>
+            </div>
+            <div className="instrument-chart-settings-option-grid">
+              <button
+                type="button"
+                className={
+                  showDividendEvents
+                    ? 'instrument-chart-option instrument-chart-option-active'
+                    : 'instrument-chart-option'
+                }
+                onClick={() => setShowDividendEvents((current) => !current)}
+              >
+                Dividends
+              </button>
+              <button
+                type="button"
+                className={
+                  showTimelineNoteEvents
+                    ? 'instrument-chart-option instrument-chart-option-active'
+                    : 'instrument-chart-option'
+                }
+                onClick={() => setShowTimelineNoteEvents((current) => !current)}
+              >
+                Research Notes
+              </button>
+              <button
+                type="button"
+                className={
+                  showDrawdownPanel
+                    ? 'instrument-chart-option instrument-chart-option-active'
+                    : 'instrument-chart-option'
+                }
+                onClick={() => setShowDrawdownPanel((current) => !current)}
+              >
+                Drawdown
+              </button>
+            </div>
+          </section>
+        </div>
+      </div>
+    ) : null
 
   return (
     <div className="terminal-page">
@@ -4915,6 +5119,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             <span className="instrument-detail-breadcrumb-current">{summary.ticker_or_isin}</span>
           </div>
           <div className="instrument-detail-actions">
+            <button type="button" onClick={() => setSettingsModalOpen(true)}>
+              Settings
+            </button>
             <button type="button">Download PDF</button>
           </div>
         </div>
@@ -4924,7 +5131,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             <h1 className="instrument-detail-title">
               {summary.fund_name} <span>{summary.ticker_or_isin}</span>
             </h1>
-            <div className="instrument-detail-subtitle">Rating as of {ratingDate}</div>
             <div className="instrument-detail-badges">
               <span className="context-chip">{summary.category_name}</span>
               <span className="context-chip">Basis: {navBasisLabel}</span>
@@ -4952,442 +5158,172 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
         {sectionNotice ? <div className="inline-notice inline-notice-success">{sectionNotice}</div> : null}
       </section>
 
-      {activeTab === 'quote' ? (
+      {settingsModalOpen ? (
+        <div
+          className="instrument-modal-backdrop"
+          onClick={() => setSettingsModalOpen(false)}
+        >
+          <div
+            className="instrument-modal instrument-settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Fund Settings"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="instrument-modal-header">
+              <div>
+                <div className="panel-title">Settings</div>
+                <div className="instrument-quote-source-title">Taxonomy Settings</div>
+              </div>
+              <div className="toolbar">
+                <button type="button" onClick={() => setSettingsModalOpen(false)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="button-primary"
+                  onClick={() => void handleSaveFundSettings()}
+                  disabled={savingSection === 'fund_settings'}
+                >
+                  {savingSection === 'fund_settings' ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </div>
+            <div className="instrument-settings-body">
+              <section className="instrument-settings-section">
+                <div className="instrument-settings-section-header">
+                  <div>
+                    <div className="instrument-settings-title">Classification Path</div>
+                    <div className="instrument-settings-current-path">
+                      <span>Current Path</span>
+                      <strong>{taxonomyPathLabel}</strong>
+                    </div>
+                  </div>
+                  {taxonomyDraftNodeId ? (
+                    <button
+                      type="button"
+                      className="instrument-settings-text-action"
+                      onClick={() => setTaxonomyDraftNodeId('')}
+                      disabled={!taxonomyTree}
+                    >
+                      Unclassify
+                    </button>
+                  ) : null}
+                </div>
+                <div className="instrument-settings-taxonomy-stack">
+                  {taxonomyTree ? (
+                    taxonomyLevelSelectors.map((selector) => (
+                      <label key={`taxonomy-level-${selector.levelIndex}`} className="instrument-settings-taxonomy-row">
+                        <span className="instrument-settings-taxonomy-label">
+                          {selector.levelIndex === 1 ? 'Regime' : `Level ${selector.levelIndex - 1}`}
+                        </span>
+                        <select
+                          className="instrument-settings-taxonomy-select"
+                          value={selector.selectedNodeId}
+                          disabled={selector.disabled}
+                          onChange={(event) =>
+                            setTaxonomyDraftNodeId(event.target.value || selector.parentNodeId || '')
+                          }
+                        >
+                          <option value="">
+                            {selector.disabled
+                              ? 'Select parent first'
+                              : selector.parentNodeId
+                                ? 'Stop here'
+                                : 'Unclassified'}
+                          </option>
+                          {selector.options.map((node) => (
+                            <option key={node.node_id} value={node.node_id}>
+                              {node.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ))
+                  ) : (
+                    <div className="instrument-settings-loading">Loading taxonomy...</div>
+                  )}
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {activeTab === 'overview' ? (
         <>
           <section className="panel instrument-quote-panel">
             <div className="instrument-chart-shell">
               <div className="instrument-chart-header">
                 <div className="instrument-quote-summary-main instrument-quote-summary-main-compact">
-                  <div className="instrument-quote-primary-block">
-                    <div className="instrument-quote-value">
-                      {basisValue != null ? formatNumber(basisValue, 4) : '—'}
+                  <div className="instrument-quote-summary-topline">
+                    <div className="instrument-quote-primary-block">
+                      <div className="instrument-quote-value">
+                        {basisValue != null ? formatNumber(basisValue, 4) : '—'}
+                      </div>
+                      <div className={quoteToneClass}>
+                        {formatChangeSummary(quoteChange, quoteChangePct)}
+                      </div>
                     </div>
-                    <div className={quoteToneClass}>
-                      {formatChangeSummary(quoteChange, quoteChangePct)}
+                    <div className="instrument-quote-rating-block">
+                      <span>Rating</span>
+                      <strong>{overviewRatingValue}</strong>
+                      <em>{overviewRatingNote}</em>
                     </div>
                   </div>
                   <div className="instrument-quote-meta">
                     <div className="instrument-quote-asof">
-                      As of {formatDate(latestPoint?.date || navSeries.rows[navSeries.rows.length - 1]?.as_of_date)}
-                    </div>
-                    <div className="instrument-quote-caption">
-                      Displayed: {quoteBasisLabel} · Research: {navBasisLabel}
+                      As of {formatDate(latestSeriesPoint?.date || navSeries.rows[navSeries.rows.length - 1]?.as_of_date)}
                     </div>
                   </div>
                 </div>
                 <div className="instrument-quote-facts">
-                  <div className="instrument-quote-panel-toolbar">
-                    <div className="toolbar">
-                      <a href={databaseDashboardUrl} className="toolbar-link">
-                        Database Dashboard
-                      </a>
-                      <button
-                        type="button"
-                        className={timelineNoteCaptureMode ? 'button-primary' : undefined}
-                        onClick={() => {
-                          setTimelineNoteCaptureMode((current) => !current)
-                          setChartTimelineNoteContextMenu(null)
-                          setQuoteActionNotice(
-                            !timelineNoteCaptureMode
-                              ? 'Click a date on the chart to add a research note. Right-click also opens the note menu.'
-                              : null,
-                          )
-                        }}
-                      >
-                        {timelineNoteCaptureMode ? 'Cancel Add Note' : 'Add Note'}
-                      </button>
-                    </div>
-                  </div>
                   <div className="instrument-quote-facts-grid">
-                  <div className="instrument-quote-fact">
-                    <span>Last NAV</span>
-                    <strong>{formatNumber(latestQuoteRow?.nav ?? summary.nav_snapshot?.latest_nav, 4)}</strong>
-                  </div>
-                  <div className="instrument-quote-fact">
-                    <span>Last NAV with Dividend</span>
-                    <strong>{formatNumber(latestQuoteRow?.nav_with_dividend ?? summary.nav_snapshot?.latest_nav_with_dividend, 4)}</strong>
-                  </div>
-                  <div className="instrument-quote-fact">
-                    <span>NAV Date</span>
-                    <strong>{formatDate(latestPoint?.date || navSeries.rows[navSeries.rows.length - 1]?.as_of_date)}</strong>
-                  </div>
-                  <div className="instrument-quote-fact">
-                    <span>Period Range</span>
-                    <strong>
-                      {periodLow == null || periodHigh == null
-                        ? '—'
-                        : `${formatNumber(periodLow, 4)} - ${formatNumber(periodHigh, 4)}`}
-                    </strong>
-                  </div>
-                  <div className="instrument-quote-fact instrument-quote-fact-wrap">
-                    <span>Max Drawdown</span>
-                    <strong>{maxDrawdown == null ? '—' : formatPercent(maxDrawdown)}</strong>
-                  </div>
+                    {overviewSideMetricRows.map((row) => (
+                      <div key={row.label} className="instrument-quote-fact">
+                        <span>{row.label}</span>
+                        <strong>{row.value}</strong>
+                        <em>{row.note}</em>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
 
-                <div className="instrument-quote-control-bar" ref={quoteChartMenuRef}>
+              <div className="instrument-chart-main">
+                <div className="instrument-quote-control-bar">
                   <div className="instrument-quote-toolbar-primary">
                     <div className="instrument-chart-compare">
-                      <select
-                        aria-label="Compare benchmark"
-                        value={benchmarkFundId}
-                        onChange={(event) => setBenchmarkFundId(event.target.value)}
-                      >
-                        <option value="">Compare...</option>
-                        {benchmarkOptions.map((item) => (
-                          <option key={item.fund_id} value={item.fund_id}>
-                            {item.ticker_or_isin ? `${item.ticker_or_isin} · ${item.fund_name}` : item.fund_name}
-                          </option>
-                        ))}
-                      </select>
-                      <div className="instrument-chart-compare-meta">
-                        <span>
-                          Default: {defaultBenchmarkLabel}
-                        </span>
-                        {benchmarkMatchesDefault ? (
-                          <strong>Default</strong>
-                        ) : benchmarkFundId ? (
-                          <button
-                            type="button"
-                            className="table-action"
-                            onClick={() => {
-                              void handleSaveDefaultBenchmark(benchmarkFundId)
-                            }}
-                            disabled={savingSection === 'benchmark_default'}
-                          >
-                            {savingSection === 'benchmark_default' ? 'Saving…' : 'Set Default'}
-                          </button>
-                        ) : defaultBenchmarkAssetId ? (
-                          <button
-                            type="button"
-                            className="table-action"
-                            onClick={() => {
-                              void handleSaveDefaultBenchmark(null)
-                            }}
-                            disabled={savingSection === 'benchmark_default'}
-                          >
-                            {savingSection === 'benchmark_default' ? 'Saving…' : 'Clear Default'}
-                          </button>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    <div className="instrument-chart-menu-stack">
-                      <div className="instrument-chart-menu">
-                        <button
-                          type="button"
-                          className={
-                            openQuoteChartMenu === 'dataType'
-                              ? 'instrument-chart-menu-trigger instrument-chart-menu-trigger-active'
-                              : 'instrument-chart-menu-trigger'
-                          }
-                          onClick={() =>
-                            setOpenQuoteChartMenu((current) => (current === 'dataType' ? null : 'dataType'))
-                          }
-                        >
-                          Data Type
-                        </button>
-                        {openQuoteChartMenu === 'dataType' ? (
-                          <div className="instrument-chart-menu-panel">
-                            <div className="instrument-chart-menu-section">
-                              {quoteBasisOptions.map((basis) => (
-                                <button
-                                  key={basis}
-                                  type="button"
-                                  className={
-                                    activeQuoteBasis === basis
-                                      ? 'instrument-chart-option instrument-chart-option-active'
-                                      : 'instrument-chart-option'
-                                  }
-                                  onClick={() => {
-                                    setQuoteBasis(basis)
-                                    setOpenQuoteChartMenu(null)
-                                  }}
-                                >
-                                  {QUOTE_BASIS_LABELS[basis]}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-
-                      <div className="instrument-chart-menu">
-                        <button
-                          type="button"
-                          className={
-                            openQuoteChartMenu === 'peers'
-                              ? 'instrument-chart-menu-trigger instrument-chart-menu-trigger-active'
-                              : 'instrument-chart-menu-trigger'
-                          }
-                          onClick={handleOpenPeerBaselineMenu}
-                        >
-                          Peers
-                        </button>
-                        {openQuoteChartMenu === 'peers' ? (
-                          <div className="instrument-chart-menu-panel instrument-chart-menu-panel-wide instrument-chart-menu-panel-tall">
-                            <div className="instrument-chart-menu-section">
-                              <span>Peer Baseline</span>
-                              <div className="instrument-chart-menu-note">
-                                Current: {peerBaselineDraftLabel}
-                              </div>
-                              {benchmarkOptions.length ? (
-                                <div className="instrument-chart-options-scroll">
-                                  {benchmarkOptions.map((item) => {
-                                    const isSelected = peerBaselineDraftIds.includes(item.fund_id)
-                                    return (
-                                      <button
-                                        key={item.fund_id}
-                                        type="button"
-                                        className={
-                                          isSelected
-                                            ? 'instrument-chart-option instrument-chart-option-active'
-                                            : 'instrument-chart-option'
-                                        }
-                                        onClick={() => togglePeerBaselineDraft(item.fund_id)}
-                                      >
-                                        <span>
-                                          {item.ticker_or_isin
-                                            ? `${item.ticker_or_isin} · ${item.fund_name}`
-                                            : item.fund_name}
-                                        </span>
-                                        {isSelected ? (
-                                          <strong className="instrument-chart-option-tag">Selected</strong>
-                                        ) : null}
-                                      </button>
-                                    )
-                                  })}
-                                </div>
-                              ) : (
-                                <div className="instrument-chart-menu-empty">No peer candidates.</div>
-                              )}
-                            </div>
-                            <div className="instrument-chart-menu-section">
-                              <div className="instrument-chart-menu-actions">
-                                <button
-                                  type="button"
-                                  className="table-action"
-                                  onClick={() => {
-                                    setPeerBaselineDraftIds([])
-                                  }}
-                                  disabled={!peerBaselineDraftIds.length}
-                                >
-                                  Clear
-                                </button>
-                                <button
-                                  type="button"
-                                  className="table-action"
-                                  onClick={() => {
-                                    void handleSavePeerBaseline(peerBaselineDraftIds)
-                                  }}
-                                  disabled={!peerBaselineDraftDirty || savingSection === 'peer_baseline'}
-                                >
-                                  {savingSection === 'peer_baseline' ? 'Saving…' : 'Save'}
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-
-                      <div className="instrument-chart-menu">
-                        <button
-                          type="button"
-                          className={
-                            openQuoteChartMenu === 'events'
-                              ? 'instrument-chart-menu-trigger instrument-chart-menu-trigger-active'
-                              : 'instrument-chart-menu-trigger'
-                          }
-                          onClick={() =>
-                            setOpenQuoteChartMenu((current) => (current === 'events' ? null : 'events'))
-                          }
-                        >
-                          Events
-                        </button>
-                        {openQuoteChartMenu === 'events' ? (
-                          <div className="instrument-chart-menu-panel">
-                            <div className="instrument-chart-menu-section">
-                              <button
-                                type="button"
-                                className={
-                                  showDividendEvents
-                                    ? 'instrument-chart-option instrument-chart-option-active'
-                                    : 'instrument-chart-option'
-                                }
-                                onClick={() => setShowDividendEvents((current) => !current)}
-                              >
-                                Dividends
-                              </button>
-                              <button
-                                type="button"
-                                className={
-                                  showTimelineNoteEvents
-                                    ? 'instrument-chart-option instrument-chart-option-active'
-                                    : 'instrument-chart-option'
-                                }
-                                onClick={() => setShowTimelineNoteEvents((current) => !current)}
-                              >
-                                Research Notes
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-
-                      <div className="instrument-chart-menu">
-                        <button
-                          type="button"
-                          className={
-                            openQuoteChartMenu === 'display'
-                              ? 'instrument-chart-menu-trigger instrument-chart-menu-trigger-active'
-                              : 'instrument-chart-menu-trigger'
-                          }
-                          onClick={() =>
-                            setOpenQuoteChartMenu((current) => (current === 'display' ? null : 'display'))
-                          }
-                        >
-                          Display
-                        </button>
-                        {openQuoteChartMenu === 'display' ? (
-                          <div className="instrument-chart-menu-panel instrument-chart-menu-panel-wide">
-                            <div className="instrument-chart-menu-section">
-                              <span>Chart Style</span>
-                              {(['mountain', 'line', 'dot'] as ChartDisplayStyle[]).map((style) => (
-                                <button
-                                  key={style}
-                                  type="button"
-                                  className={
-                                    chartDisplayStyle === style
-                                      ? 'instrument-chart-option instrument-chart-option-active'
-                                      : 'instrument-chart-option'
-                                  }
-                                  onClick={() => setChartDisplayStyle(style)}
-                                >
-                                  {toTitleCase(style)}
-                                </button>
-                              ))}
-                            </div>
-                            <div className="instrument-chart-menu-section">
-                              <span>Vertical Scale</span>
-                              {(['linear', 'logarithmic'] as ChartScale[]).map((scale) => (
-                                <button
-                                  key={scale}
-                                  type="button"
-                                  disabled={scale === 'logarithmic' && !canUseLogarithmicScale}
-                                  className={
-                                    effectiveChartScale === scale
-                                      ? 'instrument-chart-option instrument-chart-option-active'
-                                      : 'instrument-chart-option'
-                                  }
-                                  onClick={() => setChartScale(scale)}
-                                >
-                                  {toTitleCase(scale)}
-                                </button>
-                              ))}
-                            </div>
-                            <div className="instrument-chart-menu-section">
-                              <span>Panels</span>
-                              <button
-                                type="button"
-                                className={
-                                  showDrawdownPanel
-                                    ? 'instrument-chart-option instrument-chart-option-active'
-                                    : 'instrument-chart-option'
-                                }
-                                onClick={() => setShowDrawdownPanel((current) => !current)}
-                              >
-                                Drawdown
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="instrument-quote-toolbar-secondary">
-                    <div className="instrument-range-switch instrument-range-switch-quote">
-                      {QUOTE_RANGE_OPTIONS.filter((option) => option.value !== 'CUSTOM' && option.value !== '6M' && option.value !== '10Y').map((option) => (
-                        <button
-                          key={option.value}
-                          type="button"
-                          className={
-                            chartRange === option.value
-                              ? 'instrument-range-button instrument-range-button-active'
-                              : 'instrument-range-button'
-                          }
-                          onClick={() => setChartRange(option.value as ChartRange)}
-                        >
-                          {option.label}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="instrument-chart-controls-inline">
-                      <label className="instrument-chart-control instrument-chart-control-inline instrument-chart-control-date">
-                        <span>Start Date</span>
-                        <input
-                          type="date"
-                          value={effectiveStartDate}
-                          onChange={(event) => {
-                            setChartRange('CUSTOM')
-                            setChartStartDate(event.target.value)
-                          }}
-                        />
-                      </label>
-                      <label className="instrument-chart-control instrument-chart-control-inline instrument-chart-control-date">
-                        <span>End Date</span>
-                        <input
-                          type="date"
-                          value={effectiveEndDate}
-                          onChange={(event) => {
-                            setChartRange('CUSTOM')
-                            setChartEndDate(event.target.value)
-                          }}
-                        />
-                      </label>
-                      <label className="instrument-chart-control instrument-chart-control-inline instrument-chart-control-short">
-                        <span>Frequency</span>
+                      <div className="instrument-chart-compare-select-wrap">
                         <select
-                          value={chartFrequency}
-                          onChange={(event) => setChartFrequency(event.target.value as ChartFrequency)}
+                          aria-label="Compare benchmark"
+                          value={benchmarkFundId}
+                          onChange={(event) => setBenchmarkFundId(event.target.value)}
                         >
-                          <option value="daily">Daily</option>
-                          <option value="weekly">Weekly</option>
-                          <option value="monthly">Monthly</option>
-                        </select>
-                      </label>
-                      <label className="instrument-chart-control instrument-chart-control-inline instrument-chart-control-short">
-                        <span>Currency</span>
-                        <select
-                          value={effectiveCurrency}
-                          onChange={(event) => setSelectedCurrency(event.target.value)}
-                        >
-                          {(availableCurrencies.length ? availableCurrencies : [effectiveCurrency]).map((currency) => (
-                            <option key={currency} value={currency}>
-                              {currency}
+                          <option value="">Compare...</option>
+                          {benchmarkOptions.map((item) => (
+                            <option key={item.fund_id} value={item.fund_id}>
+                              {item.ticker_or_isin ? `${item.ticker_or_isin} · ${item.fund_name}` : item.fund_name}
                             </option>
                           ))}
                         </select>
-                      </label>
+                      </div>
                     </div>
                   </div>
                 </div>
 
-              {quoteActionNotice ? <div className="instrument-quote-action-notice">{quoteActionNotice}</div> : null}
+                {quoteActionNotice ? <div className="instrument-quote-action-notice">{quoteActionNotice}</div> : null}
 
-              <div className="instrument-chart-stage instrument-chart-stage-interactive">
-                {scaledVisibleSeries.length > 1 ? (
-                  <>
+                <div className="instrument-chart-stage instrument-chart-stage-interactive">
+                  {scaledVisibleSeries.length > 1 ? (
+                    <>
                     <div className="instrument-chart-series-head">
                       <div className="instrument-series-legend">
                         <div className="instrument-series-label">
                           <strong>{summary.ticker_or_isin}</strong>
-                          <span>{quoteBasisLabel}</span>
+                          <span>{chartSeriesBasisLabel}</span>
                           <em>
-                            {formatChangeSummary(quotePeriodStats.change, quotePeriodStats.changePct)}
+                            {formatChangeSummary(chartQuotePeriodStats.change, chartQuotePeriodStats.changePct)}
                           </em>
                         </div>
                         {selectedBenchmark ? (
@@ -5395,14 +5331,37 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                             <strong>{selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name}</strong>
                             <span>Compare</span>
                             <em>
-                              {formatChangeSummary(benchmarkPeriodStats.change, benchmarkPeriodStats.changePct)}
+                              {formatChangeSummary(chartBenchmarkPeriodStats.change, chartBenchmarkPeriodStats.changePct)}
                             </em>
                           </div>
                         ) : null}
                       </div>
                       <div className="instrument-chart-series-meta">
                         <span>{effectiveCurrency}</span>
-                        <span>{toTitleCase(effectiveChartScale)}</span>
+                        <div className="instrument-chart-menu instrument-chart-settings-menu" ref={quoteChartMenuRef}>
+                          <button
+                            type="button"
+                            className={
+                              openQuoteChartMenu === 'settings'
+                                ? 'instrument-chart-settings-trigger instrument-chart-settings-trigger-active'
+                                : 'instrument-chart-settings-trigger'
+                            }
+                            aria-label="Chart settings"
+                            onClick={() =>
+                              setOpenQuoteChartMenu((current) => (current === 'settings' ? null : 'settings'))
+                            }
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                              <path d="M4 7h4" />
+                              <path d="M14 7h6" />
+                              <circle cx="11" cy="7" r="2.25" />
+                              <path d="M4 17h7" />
+                              <path d="M17 17h3" />
+                              <circle cx="14" cy="17" r="2.25" />
+                            </svg>
+                          </button>
+                          {chartSettingsMenu}
+                        </div>
                       </div>
                     </div>
 
@@ -5651,7 +5610,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                           <div className="instrument-chart-tooltip-row instrument-chart-tooltip-row-primary">
                             <span className="instrument-chart-tooltip-series-label">
                               <i className="instrument-chart-tooltip-swatch" />
-                              {quoteBasisLabel}
+                                {chartSeriesBasisLabel}
                             </span>
                             <strong>{formatNumber(hoverNavValue, 4)}</strong>
                           </div>
@@ -5988,7 +5947,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                               <div className="instrument-chart-tooltip-row instrument-chart-tooltip-row-primary">
                                 <span className="instrument-chart-tooltip-series-label">
                                   <i className="instrument-chart-tooltip-swatch" />
-                                  {quoteBasisLabel}
+                                    {chartSeriesBasisLabel}
                                 </span>
                                 <strong>{formatNumber(hoverNavValue, 4)}</strong>
                               </div>
@@ -6034,14 +5993,64 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                         </div>
                       </div>
                     ) : null}
-                  </>
-                ) : (
-                  <div className="instrument-placeholder">
-                    {navSeries.rows.length
-                      ? `${quoteBasisLabel} is unavailable for the current currency or date window. Switch Data Type, Currency, or range.`
-                      : 'No NAV history is available yet. Add shared market data in Database Dashboard to materialize the quote curve.'}
-                  </div>
-                )}
+                    {canUseZoom ? (
+                      <div className="instrument-chart-zoom">
+                        <div className="instrument-chart-zoom-meta">
+                          <span>Period</span>
+                          <strong>
+                            {formatDate(effectiveStartDate)} - {formatDate(effectiveEndDate)}
+                          </strong>
+                        </div>
+                        <div className="instrument-chart-zoom-track">
+                          <div
+                            className="instrument-chart-zoom-selection"
+                            style={{
+                              left: `${zoomSelectionLeftPct}%`,
+                              right: `${zoomSelectionRightPct}%`,
+                            }}
+                          />
+                          <input
+                            type="range"
+                            min={0}
+                            max={zoomMaxIndex}
+                            value={zoomStartIndex}
+                            aria-label="Chart period start"
+                            onChange={(event) => {
+                              const nextIndex = Math.min(Number(event.target.value), zoomEndIndex - 1)
+                              const nextPoint = navBasisSeries[Math.max(nextIndex, 0)]
+                              if (nextPoint) {
+                                setChartRange('CUSTOM')
+                                setChartStartDate(nextPoint.date)
+                              }
+                            }}
+                          />
+                          <input
+                            type="range"
+                            min={0}
+                            max={zoomMaxIndex}
+                            value={zoomEndIndex}
+                            aria-label="Chart period end"
+                            onChange={(event) => {
+                              const nextIndex = Math.max(Number(event.target.value), zoomStartIndex + 1)
+                              const nextPoint = navBasisSeries[Math.min(nextIndex, zoomMaxIndex)]
+                              if (nextPoint) {
+                                setChartRange('CUSTOM')
+                                setChartEndDate(nextPoint.date)
+                              }
+                            }}
+                          />
+                        </div>
+                      </div>
+                    ) : null}
+                    </>
+                  ) : (
+                    <div className="instrument-placeholder">
+                      {navSeries.rows.length
+                        ? `${quoteBasisLabel} is unavailable for the current currency or date window. Switch Data Type, Currency, or range.`
+                        : 'No NAV history is available yet. Add shared market data in Database Dashboard to materialize the quote curve.'}
+                    </div>
+                  )}
+                </div>
               </div>
 
             </div>
@@ -6202,333 +6211,37 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             </div>
           ) : null}
 
-          <section className="detail-grid detail-grid-quote">
-            <section className="panel">
-              <div className="instrument-section-header">
-                <div>
-                  <div className="panel-title">NAV Snapshot</div>
-                  <div className="instrument-section-title">Current Basis Status</div>
-                </div>
-              </div>
-              <div className="stack-list">
-                {navSnapshotRows.map((row) => (
-                  <div key={row.label} className="stack-item">
-                    <span>{row.label}</span>
-                    <strong>{row.value}</strong>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <section className="panel">
-              <div className="instrument-section-header">
-                <div>
-                  <div className="panel-title">Distributions</div>
-                  <div className="instrument-section-title">Cash Flow Context</div>
-                </div>
-              </div>
-              <div className="stack-list">
-                {distributionRowsSummary.map((row) => (
-                  <div key={row.label} className="stack-item">
-                    <span>{row.label}</span>
-                    <strong>{row.value}</strong>
-                  </div>
-                ))}
-              </div>
-              {distributionRows.length ? (
-                <div className="panel-note">
-                  <ul className="bullet-list">
-                    {distributionRows.slice(0, 3).map((row) => (
-                      <li key={row.as_of_date}>
-                        {formatDate(row.as_of_date)}: distribution {formatNumber(row.distribution_amount, 4)}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </section>
-
-            <section className="panel detail-span-2" id="nav-history-panel">
-              <div className="instrument-section-header">
-                <div>
-                  <div className="panel-title">NAV History</div>
-                  <div className="instrument-section-title">NAV / NAV with Dividend</div>
-                </div>
-                <div className="toolbar">
-                  <a href={databaseDashboardUrl} className="toolbar-link">
-                    Open Database Dashboard
-                  </a>
-                </div>
-              </div>
-              <div className="instrument-form-note nav-history-editor-note">
-                Canonical NAV history is managed in <a href={databaseDashboardUrl}>Database Dashboard</a>.
-                Watchlist detail stays read-only here; only local basis and comparison settings remain editable.
-              </div>
-
-              {editingNav && navDraft ? (
-                <div className="nav-history-inline-editor instrument-edit-surface">
-                  <div className="nav-history-inline-meta">
-                    <div className="instrument-form-note nav-history-editor-note">
-                      Maintain two clean series only: NAV and NAV with Dividend. Dividend analytics are derived after save.
-                    </div>
-                    <label className="form-field nav-history-basis-field">
-                      <span>Preferred NAV Basis</span>
-                      <select
-                        value={navDraft.basisPreference}
-                        onChange={(event) =>
-                          setNavDraft((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  basisPreference: event.target.value as NavDraft['basisPreference'],
-                                }
-                              : current,
-                          )
-                        }
-                      >
-                        <option value="auto">Auto</option>
-                        <option value="nav_with_dividend">NAV with Dividend</option>
-                        <option value="nav">NAV</option>
-                      </select>
-                    </label>
-                  </div>
-
-                  <div className="table-shell nav-history-table-shell">
-                    <table className="terminal-table terminal-table-compact nav-history-table">
-                      <thead>
-                        <tr>
-                          <th>Date</th>
-                          <th>NAV</th>
-                          <th>NAV with Dividend</th>
-                          <th>Cumulative Dividend</th>
-                          <th>Dividend Step</th>
-                          <th>Currency</th>
-                          <th>Frequency</th>
-                          <th className="instrument-table-action-col" aria-label="Row actions" />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {navDraft.rows.map((row) => (
-                          <tr key={row.id} className={row.deleted ? 'table-row-muted' : ''}>
-                            <td>
-                              <input
-                                className="table-input"
-                                type="date"
-                                value={row.as_of_date}
-                                disabled={row.deleted}
-                                onChange={(event) =>
-                                  setNavDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          rows: current.rows.map((item) =>
-                                            item.id === row.id ? { ...item, as_of_date: event.target.value } : item,
-                                          ),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              />
-                            </td>
-                            <td>
-                              <input
-                                className="table-input"
-                                type="number"
-                                step="0.0001"
-                                value={row.nav}
-                                disabled={row.deleted}
-                                onChange={(event) =>
-                                  setNavDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          rows: current.rows.map((item) =>
-                                            item.id === row.id ? { ...item, nav: event.target.value } : item,
-                                          ),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              />
-                            </td>
-                            <td>
-                              <input
-                                className="table-input"
-                                type="number"
-                                step="0.0001"
-                                value={row.nav_with_dividend}
-                                disabled={row.deleted}
-                                onChange={(event) =>
-                                  setNavDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          rows: current.rows.map((item) =>
-                                            item.id === row.id
-                                              ? { ...item, nav_with_dividend: event.target.value }
-                                              : item,
-                                          ),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              />
-                            </td>
-                          <td>
-                            <div className="instrument-table-readonly">
-                              {row.nav || row.nav_with_dividend ? 'Derived after save' : '—'}
-                            </div>
-                          </td>
-                          <td>
-                            <div className="instrument-table-readonly">—</div>
-                          </td>
-                          <td>
-                            <input
-                              className="table-input"
-                              value={row.currency}
-                                disabled={row.deleted}
-                                onChange={(event) =>
-                                  setNavDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          rows: current.rows.map((item) =>
-                                            item.id === row.id ? { ...item, currency: event.target.value } : item,
-                                          ),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              />
-                            </td>
-                            <td>
-                              <input
-                                className="table-input"
-                                value={row.frequency}
-                                disabled={row.deleted}
-                                onChange={(event) =>
-                                  setNavDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          rows: current.rows.map((item) =>
-                                            item.id === row.id ? { ...item, frequency: event.target.value } : item,
-                                          ),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              />
-                            </td>
-                            <td>
-                              <div className="instrument-table-row-action-cell">
-                                <button
-                                  type="button"
-                                  className="instrument-row-remove"
-                                  aria-label={row.deleted ? 'Restore quote row' : 'Delete quote row'}
-                                  title={row.deleted ? 'Restore row' : 'Delete row'}
-                                  onClick={() =>
-                                    setNavDraft((current) =>
-                                      current
-                                        ? {
-                                            ...current,
-                                            rows: current.rows.map((item) =>
-                                              item.id === row.id ? { ...item, deleted: !item.deleted } : item,
-                                            ),
-                                          }
-                                        : current,
-                                    )
-                                  }
-                                >
-                                  {row.deleted ? '↺' : '×'}
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              ) : (
-                <div className="table-shell nav-history-table-shell">
-                  <table className="terminal-table terminal-table-compact nav-history-table">
-                    <thead>
-                        <tr>
-                          <th>Date</th>
-                          <th>NAV</th>
-                          <th>NAV with Dividend</th>
-                          <th>Cumulative Distribution</th>
-                          <th>Distribution Step</th>
-                          <th>Adopted At</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                      {navSeries.rows.slice(-20).reverse().map((row) => (
-                        <tr key={row.as_of_date}>
-                          <td>{formatDate(row.as_of_date)}</td>
-                          <td>{formatNumber(row.nav, 4)}</td>
-                          <td>{formatNumber(row.nav_with_dividend, 4)}</td>
-                          <td>{formatNumber(row.cumulative_distribution, 4)}</td>
-                          <td>{formatNumber(row.distribution_amount, 4)}</td>
-                          <td>{formatDateTime(row.adopted_at)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </section>
-          </section>
         </>
       ) : null}
 
       {activeTab === 'performance' ? (
         <section className="panel instrument-performance-shell">
           <div className="instrument-price-topline" />
-          <div className="instrument-performance-page-header">
-            <div>
-              <div className="panel-title">Performance</div>
-              <div className="instrument-section-title">Performance</div>
-            </div>
-          </div>
 
-          <section className="instrument-performance-section">
+          <section className="instrument-performance-section instrument-performance-section-metrics">
             <div className="instrument-performance-section-header">
               <div>
                 <div className="panel-title">Performance</div>
                 <div className="instrument-section-title">Metrics Matrix</div>
               </div>
+              <div className="instrument-chart-compare instrument-performance-benchmark-select">
+                <div className="instrument-chart-compare-select-wrap">
+                  <select
+                    aria-label="Performance benchmark"
+                    value={metricBenchmarkFundId}
+                    onChange={(event) => setMetricBenchmarkFundId(event.target.value)}
+                  >
+                    <option value="">Compare...</option>
+                    {benchmarkOptions.map((item) => (
+                      <option key={item.fund_id} value={item.fund_id}>
+                        {item.ticker_or_isin ? `${item.ticker_or_isin} · ${item.fund_name}` : item.fund_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </div>
             <div className="instrument-performance-section-body">
-              <div className="instrument-performance-context-stack">
-                <div className="instrument-performance-context-row">
-                  <span>Current Benchmark</span>
-                  <strong>
-                    {selectedBenchmark
-                      ? selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name
-                      : 'Not selected'}
-                  </strong>
-                </div>
-                <div className="instrument-performance-context-row">
-                  <span>Default Benchmark</span>
-                  <strong>{defaultBenchmarkLabel}</strong>
-                </div>
-                <div className="instrument-performance-context-row">
-                  <span>Peer Baseline</span>
-                  <strong>{peerBaselineLabel}</strong>
-                </div>
-              </div>
-              <div className="instrument-chart-note">
-                Period return and annualized return are anchored to the latest NAV date and look back to
-                the nearest available observation on or before the target start date. Sharpe, Sortino,
-                Calmar, drawdown, and recovery use the full path inside each window. Information Ratio,
-                Tracking Error, Beta, and Capture ratios use aligned sub-period returns inside the same window. Risk-adjusted
-                metrics use rf = 0.
-                {selectedBenchmark
-                  ? ' Benchmark values are shown in smaller text inside each period cell.'
-                  : ' Select a benchmark in Quote to show benchmark values beneath each metric.'}
-              </div>
               <div className="table-shell instrument-performance-table-shell">
                 <table className="terminal-table terminal-table-compact instrument-metrics-table">
                   <thead>
@@ -6541,7 +6254,14 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   </thead>
                   <tbody>
                     {performanceMetricMatrixRows.map((row) => (
-                      <tr key={row.label}>
+                      <tr
+                        key={row.label}
+                        className={
+                          row.supportsBenchmark
+                            ? 'instrument-metrics-row-with-note'
+                            : 'instrument-metrics-row-single'
+                        }
+                      >
                         <td className="instrument-metrics-row-label">{row.label}</td>
                         {row.cells.map((cell, index) => (
                           <td key={`${row.label}-${PERFORMANCE_METRIC_PERIODS[index]?.key || index}`}>
@@ -6561,7 +6281,61 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             </div>
           </section>
 
-          <section className="instrument-performance-section">
+          <section className="instrument-performance-section instrument-performance-section-monthly">
+            <div className="instrument-performance-section-header">
+              <div>
+                <div className="panel-title">Performance</div>
+                <div className="instrument-section-title">Monthly Return Matrix</div>
+              </div>
+            </div>
+            <div className="instrument-performance-section-body">
+              {monthlyReturnMatrixRows.length ? (
+                <div className="table-shell instrument-performance-table-shell">
+                  <table className="terminal-table terminal-table-compact instrument-heatmap-table">
+                    <thead>
+                      <tr>
+                        <th>Year</th>
+                        {MONTH_SHORT_LABELS.map((label) => (
+                          <th key={label}>{label}</th>
+                        ))}
+                        <th>Yearly / YTD</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {monthlyReturnMatrixRows.map((row) => (
+                        <tr key={row.year}>
+                          <td className="instrument-heatmap-row-label">{row.year}</td>
+                          {row.months.map((value, index) => (
+                            <td
+                              key={`${row.year}-${MONTH_SHORT_LABELS[index]}`}
+                              className={`instrument-heatmap-cell${value == null ? ' instrument-heatmap-cell-empty' : ''}`}
+                              style={getHeatmapCellStyle(value, monthlyReturnMatrixMaxAbs)}
+                            >
+                              {value == null ? '—' : formatPercent(value, 1)}
+                            </td>
+                          ))}
+                          <td
+                            className={`instrument-heatmap-cell${row.ytd == null ? ' instrument-heatmap-cell-empty' : ''}`}
+                            style={getHeatmapCellStyle(row.ytd, monthlyReturnMatrixMaxAbs)}
+                          >
+                            {row.ytd == null ? '—' : formatPercent(row.ytd, 1)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="instrument-fallback-block">
+                  <div className="instrument-fallback-copy">
+                    Monthly return matrix will appear once month-end NAV history is available.
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="instrument-performance-section instrument-performance-section-rolling">
             <div className="instrument-performance-section-header">
               <div>
                 <div className="panel-title">Performance</div>
@@ -6651,75 +6425,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   </div>
                 </div>
               )}
-              <div className="instrument-chart-note">
-                <span className="instrument-chart-note-label">Current Benchmark:</span>{' '}
-                {selectedBenchmark
-                  ? selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name
-                  : 'Not selected'}.
-                {' '}
-                Windowed total return over the selected trailing horizon.
-                {selectedBenchmark
-                  ? ' Benchmark overlay follows the Quote selection.'
-                  : ' Select a benchmark in Quote to overlay benchmark rolling return.'}
-              </div>
-            </div>
-          </section>
-
-          <section className="instrument-performance-section">
-            <div className="instrument-performance-section-header">
-              <div>
-                <div className="panel-title">Performance</div>
-                <div className="instrument-section-title">Monthly Return Matrix</div>
-              </div>
-            </div>
-            <div className="instrument-performance-section-body">
-              {monthlyReturnMatrixRows.length ? (
-                <div className="table-shell instrument-performance-table-shell">
-                  <table className="terminal-table terminal-table-compact instrument-heatmap-table">
-                    <thead>
-                      <tr>
-                        <th>Year</th>
-                        {MONTH_SHORT_LABELS.map((label) => (
-                          <th key={label}>{label}</th>
-                        ))}
-                        <th>Yearly / YTD</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {monthlyReturnMatrixRows.map((row) => (
-                        <tr key={row.year}>
-                          <td className="instrument-heatmap-row-label">{row.year}</td>
-                          {row.months.map((value, index) => (
-                            <td
-                              key={`${row.year}-${MONTH_SHORT_LABELS[index]}`}
-                              className={`instrument-heatmap-cell${value == null ? ' instrument-heatmap-cell-empty' : ''}`}
-                              style={getHeatmapCellStyle(value, monthlyReturnMatrixMaxAbs)}
-                            >
-                              {value == null ? '—' : formatPercent(value, 1)}
-                            </td>
-                          ))}
-                          <td
-                            className={`instrument-heatmap-cell${row.ytd == null ? ' instrument-heatmap-cell-empty' : ''}`}
-                            style={getHeatmapCellStyle(row.ytd, monthlyReturnMatrixMaxAbs)}
-                          >
-                            {row.ytd == null ? '—' : formatPercent(row.ytd, 1)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div className="instrument-fallback-block">
-                  <div className="instrument-fallback-copy">
-                    Monthly return matrix will appear once month-end NAV history is available.
-                  </div>
-                </div>
-              )}
-              <div className="instrument-chart-note">
-                Green months indicate positive returns, red months indicate negative returns. The last
-                column shows full-year return for completed years and YTD for the current year.
-              </div>
             </div>
           </section>
         </section>
@@ -6769,13 +6474,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   </table>
                 </div>
               </div>
-              <div className="instrument-chart-note">
-                <span className="instrument-chart-note-label">Current Basis:</span> {navBasisLabel}.{' '}
-                <span className="instrument-chart-note-label">Current Benchmark:</span> {riskBenchmarkLabel}.{' '}
-                <span className="instrument-chart-note-label">Default Benchmark:</span> {defaultBenchmarkLabel}.{' '}
-                <span className="instrument-chart-note-label">Peer Baseline:</span> {peerBaselineLabel}. Benchmark-sensitive
-                metrics on this page follow the Quote selection. {currentRiskWatchNote}
-              </div>
             </div>
           </section>
 
@@ -6819,7 +6517,14 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   </thead>
                   <tbody>
                     {riskMatrixRows.map((row) => (
-                      <tr key={row.label}>
+                      <tr
+                        key={row.label}
+                        className={
+                          row.supportsBenchmark
+                            ? 'instrument-metrics-row-with-note'
+                            : 'instrument-metrics-row-single'
+                        }
+                      >
                         <td className="instrument-metrics-row-label">{row.label}</td>
                         {row.cells.map((cell, index) => (
                           <td key={`${row.label}-${riskMatrixSnapshots[index]?.key || index}`}>
@@ -6835,13 +6540,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                     ))}
                   </tbody>
                 </table>
-              </div>
-              <div className="instrument-chart-note">
-                <span className="instrument-chart-note-label">Current Benchmark:</span> {riskBenchmarkLabel}.{' '}
-                <span className="instrument-chart-note-label">Default Benchmark:</span> {defaultBenchmarkLabel}. Windows are
-                anchored to the latest NAV date and look back to the nearest available observation on or before the
-                target start date. Volatility, drawdown, and recovery use the full path inside each window. Tracking
-                Error, Beta, and Capture use aligned sub-period returns versus the selected benchmark.
               </div>
             </div>
           </section>
@@ -7230,9 +6928,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 ) : (
                   <div className="instrument-fallback-block">
                     <div className="instrument-fallback-copy">
-                      {selectedBenchmark
+                      {selectedMetricBenchmark
                         ? 'Rolling beta will appear once at least 12 overlapping monthly return observations are available.'
-                        : 'Select a benchmark in Quote to enable rolling beta.'}
+                        : 'Select a benchmark in Performance to enable rolling beta.'}
                     </div>
                   </div>
                 )}
@@ -7261,9 +6959,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                     ))}
                   </tbody>
                 </table>
-              </div>
-              <div className="instrument-chart-note">
-                {riskChangeNote}
               </div>
             </div>
           </section>
@@ -7360,10 +7055,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   ) : null}
                 </div>
               )}
-              <div className="instrument-chart-note">
-                <span className="instrument-chart-note-label">Peer Baseline:</span> {peerBaselineLabel}. This view places
-                the fund against category and index context using the current backend risk snapshot.
-              </div>
             </div>
           </section>
         </section>
@@ -9409,9 +9100,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 <div>
                   <div className="panel-title">Product Framework</div>
                   <div className="instrument-section-title">Classification</div>
-                  <div className="instrument-product-tags-note">
-                    Loading product framework...
-                  </div>
                 </div>
               </div>
               <div className="instrument-placeholder instrument-research-placeholder">
@@ -9425,9 +9113,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   <div>
                     <div className="panel-title">Product Framework</div>
                     <div className="instrument-section-title">{section.title}</div>
-                    <div className="instrument-product-tags-note">
-                      {section.note} Changes save automatically.
-                    </div>
                   </div>
                 </div>
                 {section.groups.length ? (
@@ -9698,7 +9383,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                               className="table-action"
                               onClick={() => focusTimelineNoteInQuote(note.note_date)}
                             >
-                              Open in Quote
+                              Open in Overview
                             </button>
                             <button
                               type="button"
@@ -9724,7 +9409,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
               </div>
             ) : (
               <div className="instrument-placeholder instrument-research-placeholder">
-                No timeline notes yet. Add one from Quote or create one here.
+                No timeline notes yet. Add one from Overview or create one here.
               </div>
             )}
           </section>

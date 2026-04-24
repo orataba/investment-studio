@@ -100,7 +100,7 @@ export default function PortfolioWorkspaceLayout({
   const resolvedSummary = summary ?? FALLBACK_SUMMARY
   const resolvedPortfolioId = portfolioId || resolvedSummary.portfolio_id
   const portfolioHomePath = resolvedPortfolioId
-    ? buildPortfolioSectionPath(resolvedPortfolioId, '/holdings')
+    ? buildPortfolioSectionPath(resolvedPortfolioId, '/overview')
     : '/portfolios'
   const changeClassName =
     (resolvedSummary.day_change_value ?? 0) < 0 ? 'portfolio-change-negative' : 'portfolio-change-positive'
@@ -113,7 +113,7 @@ export default function PortfolioWorkspaceLayout({
       if (action === 'copy') {
         const copied = await copyPortfolio(resolvedPortfolioId)
         setSelectorNotice(`Copied portfolio "${resolvedSummary.portfolio_name}".`)
-        navigate(buildPortfolioSectionPath(copied.portfolio_id, '/holdings'))
+        navigate(buildPortfolioSectionPath(copied.portfolio_id, '/overview'))
         return
       }
 

@@ -8,7 +8,7 @@ from watchlist_app.core.settings import get_settings
 from watchlist_app.db.session import get_session_factory
 from watchlist_app.repositories.sqlalchemy.assets import SQLAlchemyAssetRepository
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
-from watchlist_app.services.recalc_job_ids import make_recalc_job_id
+from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
 from watchlist_app.services.shared_instrument_registry import (
     SharedInstrumentRegistryError,
     get_shared_instrument,
@@ -184,6 +184,7 @@ def _enqueue_stale_recalc_job(
                 running_timeout_seconds=settings.recalc_worker_running_job_timeout_seconds,
             )
             if existing is not None:
+                session.commit()
                 return True
             recalc_repository.create(
                 session,
@@ -195,7 +196,13 @@ def _enqueue_stale_recalc_job(
                 trigger_ref_id=trigger_ref_id,
                 job_status="queued",
                 priority=95,
-                dedupe_key=f"all:{asset_id}:{make_recalc_job_id()}",
+                dedupe_key=make_recalc_dedupe_key(
+                    job_type="all",
+                    asset_id=asset_id,
+                    trigger_type="stale_read_repair",
+                    trigger_ref_type=trigger_ref_type,
+                    trigger_ref_id=trigger_ref_id,
+                ),
                 payload_json={"requested_by": "stale_read_repair"},
             )
             session.commit()

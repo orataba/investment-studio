@@ -1,6 +1,6 @@
 # 05 Information Architecture
 
-> 说明：这份 IA 文档保留目标态工作面设计。当前实际实现以 [README.md](../README.md) 为准，其中 `Snapshot` 仍未作为主导航工作面发布，当前路由会回退到 `Holdings`。
+> 说明：这份 IA 文档保留目标态工作面设计。当前实际实现以 [README.md](../README.md) 为准，其中当前状态总览已经以 `Overview` 形式发布，`Snapshot` 不再作为独立工作面保留。
 
 ## 1. Purpose
 
@@ -33,7 +33,7 @@
 
 每个一级工作面都必须有清晰的主问题：
 
-- `Snapshot`：现在整体怎样
+- `Overview`：现在整体怎样
 - `Holdings`：现在持有什么
 - `Performance`：这段时间赚了多少
 - `Risk`：现在风险在哪里、偏了多少
@@ -48,7 +48,7 @@
 
 首版页面分为五类：
 
-- 当前状态页：`Snapshot`、`Holdings`、`Risk`
+- 当前状态页：`Overview`、`Holdings`、`Risk`
 - 区间分析页：`Performance`、`Review`
 - 账本页：`Transactions`、`Accounts`
 - 运行页：`Research`

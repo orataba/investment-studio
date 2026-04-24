@@ -113,6 +113,59 @@ def test_deleting_transfer_leg_removes_entire_pair(client):
     assert deleted_payload["transfer_group_id"] == transfer_payload["transfer_group_id"]
 
 
+def test_create_transactions_rolls_back_whole_batch_on_later_failure(client):
+    from portfolio_app.services.portfolio_store import create_transactions, list_transactions
+
+    before_ids = {item["transaction_id"] for item in list_transactions("yungu")}
+
+    with pytest.raises(KeyError, match="gross_amount"):
+        create_transactions(
+            portfolio_id="yungu",
+            records=[
+                {
+                    "transaction_type": "deposit",
+                    "trade_date": date(2026, 4, 20),
+                    "trade_time": None,
+                    "settlement_date": date(2026, 4, 20),
+                    "entitlement_date": None,
+                    "acquisition_date": None,
+                    "account_id": "cash-usd-main",
+                    "settlement_cash_account_id": None,
+                    "asset_id": None,
+                    "instrument_ref": None,
+                    "quantity": None,
+                    "price": None,
+                    "gross_amount": 100.0,
+                    "counter_amount": None,
+                    "fx_rate": None,
+                    "fees": 0.0,
+                    "taxes": 0.0,
+                    "currency": "USD",
+                    "transfer_scope": None,
+                    "transfer_object_type": None,
+                    "transfer_group_id": None,
+                    "counterparty_account_id": None,
+                    "note": "batch rollback sentinel",
+                    "created_at": "2026-04-20T00:00:00Z",
+                },
+                {
+                    "transaction_type": "deposit",
+                    "trade_date": date(2026, 4, 20),
+                    "trade_time": None,
+                    "settlement_date": date(2026, 4, 20),
+                    "account_id": "cash-usd-main",
+                    "fees": 0.0,
+                    "taxes": 0.0,
+                    "currency": "USD",
+                },
+            ],
+        )
+
+    after = list_transactions("yungu")
+    assert {item["transaction_id"] for item in after} == before_ids
+    assert all(item["note"] != "batch rollback sentinel" for item in after)
+
+
 def test_rejects_cross_currency_security_facts(client):
     buy_response = client.post(
         "/api/portfolios/yungu/transactions",
@@ -284,6 +337,25 @@ def test_asset_price_chart_endpoint_returns_filtered_shared_history(client):
     assert payload["summary"]["change_value"] == pytest.approx(-3.73)
     assert payload["summary"]["high"] == pytest.approx(210.20)
     assert payload["summary"]["low"] == pytest.approx(206.47)
+
+
+def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client):
+    response = client.get(
+        "/api/portfolios/yungu/transactions/position-preview",
+        params={
+            "account_id": "broker-us-core",
+            "asset_id": "equity-us-abbv",
+            "as_of_date": "2026-04-15",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["portfolio_id"] == "yungu"
+    assert payload["account_id"] == "broker-us-core"
+    assert payload["asset_id"] == "equity-us-abbv"
+    assert payload["as_of_date"] == "2026-04-15"
+    assert payload["quantity"] == pytest.approx(880.0)
 
 
 def test_position_lots_support_historical_as_of_date(client):

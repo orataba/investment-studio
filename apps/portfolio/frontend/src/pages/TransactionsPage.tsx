@@ -1,4 +1,4 @@
-import { FormEvent, useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { FormEvent, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom'
 
 import CalculationStatus from '../components/CalculationStatus'
@@ -8,12 +8,15 @@ import {
   createPortfolioTransaction,
   deletePortfolioTransaction,
   getPortfolioAccounts,
+  getPortfolioAssetPriceChart,
   getPortfolioFxRates,
   getPortfolioInstruments,
+  getPortfolioTransactionPositionPreview,
   getPortfolioTransactionsWorkspace,
   type PortfolioAccountRecord,
   type PortfolioPositionLotRecord,
   type PortfolioSharedFxRateRecord,
+  type PortfolioTransactionPositionPreviewResponse,
   type SharedInstrumentRecord,
   type PortfolioTransactionCreatePayload,
   type PortfolioTransactionFilters,
@@ -76,6 +79,10 @@ function primaryIdentifier(
   )
 }
 
+function instrumentSearchLabel(instrument: SharedInstrumentRecord) {
+  return `${primaryIdentifier(instrument)} · ${instrument.asset_name}`
+}
+
 function isTransferTransaction(transactionType: string) {
   return transactionType === 'transfer_in' || transactionType === 'transfer_out'
 }
@@ -102,6 +109,18 @@ function formatFormNumber(
     return ''
   }
   return String(value)
+}
+
+function parsePositiveFormNumber(value: string) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+function formatCalculatedFormNumber(value: number, decimals: number) {
+  if (!Number.isFinite(value)) {
+    return ''
+  }
+  return value.toFixed(decimals).replace(/\.?0+$/, '')
 }
 
 function accountAllowsAssetType(
@@ -386,7 +405,7 @@ function grossAmountLabel(transactionType: string) {
     return 'Opening Amount'
   }
 
-  return 'Gross Amount'
+  return 'Amount'
 }
 
 function showsFeeField(transactionType: string) {
@@ -411,6 +430,89 @@ function showsTaxField(transactionType: string) {
   )
 }
 
+function parseNonNegativeFormNumber(value: string) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+}
+
+function previewNetCashEffect(
+  transactionType: string,
+  grossAmount: number | null,
+  fees: number,
+  taxes: number,
+  transferObjectType?: string | null,
+) {
+  if (grossAmount == null || !Number.isFinite(grossAmount)) {
+    return null
+  }
+
+  if (transactionType === 'buy') {
+    return -(grossAmount + fees + taxes)
+  }
+  if (
+    transactionType === 'sell' ||
+    transactionType === 'dividend' ||
+    transactionType === 'coupon' ||
+    transactionType === 'return_of_capital' ||
+    transactionType === 'maturity_redemption'
+  ) {
+    return grossAmount - fees - taxes
+  }
+  if (transactionType === 'interest' || transactionType === 'deposit') {
+    return grossAmount
+  }
+  if (transactionType === 'dividend_reinvestment') {
+    return 0
+  }
+  if (transactionType === 'fee' || transactionType === 'tax' || transactionType === 'withdrawal') {
+    return -grossAmount
+  }
+  if (transactionType === 'transfer_out' && transferObjectType === 'cash') {
+    return -grossAmount
+  }
+  if (transactionType === 'transfer_in' && transferObjectType === 'cash') {
+    return grossAmount
+  }
+  return null
+}
+
+function quantityDeltaForPreview(
+  transactionType: string,
+  transferObjectType: string | null | undefined,
+  quantity: number | null,
+  previewAccountRole: 'selected' | 'source' = 'selected',
+) {
+  if (quantity == null || !Number.isFinite(quantity)) {
+    return null
+  }
+  if (previewAccountRole === 'source' && transactionType === 'transfer_in' && transferObjectType === 'position') {
+    return -quantity
+  }
+  if (
+    transactionType === 'buy' ||
+    transactionType === 'dividend_reinvestment' ||
+    (transactionType === 'transfer_in' && transferObjectType === 'position') ||
+    transactionType === 'opening_balance'
+  ) {
+    return quantity
+  }
+  if (
+    transactionType === 'sell' ||
+    transactionType === 'maturity_redemption' ||
+    (transactionType === 'transfer_out' && transferObjectType === 'position')
+  ) {
+    return -quantity
+  }
+  return 0
+}
+
+function summarizeHistoricalQuote(
+  points: Array<{ date: string; value: number }>,
+  tradeDate: string,
+) {
+  return [...points].reverse().find((point) => point.date <= tradeDate) ?? null
+}
+
 type TransactionFormState = {
   transaction_type: string
   trade_date: string
@@ -433,6 +535,8 @@ type TransactionFormState = {
   note: string
   instrument_search: string
 }
+
+type PricingAnchor = 'price' | 'gross_amount'
 
 function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionFormState {
   const defaultFormDate = localTodayIso()
@@ -548,6 +652,10 @@ function resolvePositionLotImpactKinds(
 export default function TransactionsPage() {
   const { portfolioId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
+  const securitySearchRef = useRef<HTMLInputElement | null>(null)
+  const accountSelectRef = useRef<HTMLSelectElement | null>(null)
+  const autoQuoteKeyRef = useRef<string | null>(null)
+  const autoQuantityKeyRef = useRef<string | null>(null)
   const [accounts, setAccounts] = useState<PortfolioAccountRecord[]>([])
   const [instruments, setInstruments] = useState<SharedInstrumentRecord[]>([])
   const [fxRates, setFxRates] = useState<PortfolioSharedFxRateRecord[]>([])
@@ -560,6 +668,18 @@ export default function TransactionsPage() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null)
   const [form, setForm] = useState<TransactionFormState>(() => buildInitialFormState([]))
+  const [pricingAnchor, setPricingAnchor] = useState<PricingAnchor>('price')
+  const [historicalQuote, setHistoricalQuote] = useState<{
+    price: number
+    asOfDate: string
+    currency: string
+    exactDate: boolean
+  } | null>(null)
+  const [historicalQuoteLoading, setHistoricalQuoteLoading] = useState(false)
+  const [historicalQuoteError, setHistoricalQuoteError] = useState<string | null>(null)
+  const [positionPreview, setPositionPreview] = useState<PortfolioTransactionPositionPreviewResponse | null>(null)
+  const [positionPreviewLoading, setPositionPreviewLoading] = useState(false)
+  const [positionPreviewError, setPositionPreviewError] = useState<string | null>(null)
 
   const filters: PortfolioTransactionFilters = {
     account_id: searchParams.get('account_id') ?? '',
@@ -719,6 +839,12 @@ export default function TransactionsPage() {
   const shouldShowFees = showsFeeField(form.transaction_type)
   const shouldShowTaxes = showsTaxField(form.transaction_type)
   const selectedInstrument = instruments.find((instrument) => instrument.asset_id === form.asset_id) ?? null
+  const positionPreviewAccountRole: 'selected' | 'source' =
+    form.transaction_type === 'transfer_in' && form.transfer_object_type === 'position' ? 'source' : 'selected'
+  const positionPreviewAccountId =
+    positionPreviewAccountRole === 'source'
+      ? selectedCounterparty?.account_id ?? ''
+      : selectedAccount?.account_id ?? form.account_id
   const resolvedTransactionCurrency =
     selectedInstrument?.currency?.toUpperCase() ?? selectedAccount?.currency?.toUpperCase() ?? 'USD'
   const resolvedCounterpartyCurrency = selectedCounterparty?.currency?.toUpperCase() ?? ''
@@ -741,9 +867,15 @@ export default function TransactionsPage() {
       .sort((left, right) => left.account_name.localeCompare(right.account_name))
   }, [cashAccounts, resolvedTransactionCurrency])
   const deferredInstrumentSearch = useDeferredValue(form.instrument_search)
+  const instrumentInputValue = selectedInstrument && !form.instrument_search
+    ? instrumentSearchLabel(selectedInstrument)
+    : form.instrument_search
 
   const filteredInstrumentOptions = useMemo(() => {
     const normalizedSearch = deferredInstrumentSearch.trim().toLowerCase()
+    if (!normalizedSearch) {
+      return []
+    }
     return instruments
       .filter((instrument) =>
         isSelectableInstrument(
@@ -764,6 +896,7 @@ export default function TransactionsPage() {
           instrument.asset_type,
           instrument.currency,
           primaryIdentifier(instrument),
+          instrumentSearchLabel(instrument),
         ]
           .join(' ')
           .toLowerCase()
@@ -778,7 +911,25 @@ export default function TransactionsPage() {
     selectedAccount,
     selectedAccount?.currency,
   ])
+  const selectedInstrumentLabel = selectedInstrument ? instrumentSearchLabel(selectedInstrument) : ''
+  const showInstrumentResults =
+    shouldAllowInstrument &&
+    form.instrument_search.trim() !== '' &&
+    (!selectedInstrument || form.instrument_search.trim() !== selectedInstrumentLabel)
 
+  const computedUnitPrice =
+    form.price.trim() ||
+    (() => {
+      if (!shouldUseQuantity || !shouldUsePrice) {
+        return ''
+      }
+      const quantity = Number(form.quantity)
+      const grossAmount = Number(form.gross_amount)
+      if (!Number.isFinite(quantity) || !Number.isFinite(grossAmount) || quantity <= 0 || grossAmount <= 0) {
+        return ''
+      }
+      return formatCalculatedFormNumber(grossAmount / quantity, 6)
+    })()
   const computedGrossAmount =
     form.gross_amount.trim() ||
     (() => {
@@ -796,7 +947,7 @@ export default function TransactionsPage() {
         quantity,
         price,
       )
-      return resolved == null ? '' : resolved.toFixed(2)
+      return resolved == null ? '' : formatCalculatedFormNumber(resolved, 2)
     })()
   const resolvedFxRate = form.fx_rate.trim() || (sharedFxRate?.rate ? sharedFxRate.rate.toFixed(6) : '')
   const computedCounterAmount =
@@ -812,6 +963,344 @@ export default function TransactionsPage() {
       }
       return (sourceAmount * fxRate).toFixed(2)
     })()
+
+  useEffect(() => {
+    if (!drawerOpen || !portfolioId || !shouldUsePrice || !selectedInstrument || !form.trade_date) {
+      autoQuoteKeyRef.current = null
+      setHistoricalQuote(null)
+      setHistoricalQuoteError(null)
+      setHistoricalQuoteLoading(false)
+      return
+    }
+
+    let cancelled = false
+    const assetId = selectedInstrument.asset_id
+    const assetType = selectedInstrument.asset_type
+    const tradeDate = form.trade_date
+    const quoteKey = `${assetId}:${tradeDate}`
+    setHistoricalQuoteLoading(true)
+    setHistoricalQuoteError(null)
+
+    getPortfolioAssetPriceChart(portfolioId, assetId, {
+      as_of_date: tradeDate,
+      range: 'all',
+    })
+      .then((response) => {
+        if (cancelled) {
+          return
+        }
+
+        const quotePoint = summarizeHistoricalQuote(response.points, tradeDate)
+        if (!quotePoint) {
+          const shouldClearAutoQuote = autoQuoteKeyRef.current !== null
+          if (shouldClearAutoQuote) {
+            setForm((current) =>
+              current.asset_id === assetId && current.trade_date === tradeDate
+                ? {
+                    ...current,
+                    price: '',
+                    gross_amount: '',
+                  }
+                : current,
+            )
+          }
+          autoQuoteKeyRef.current = null
+          setHistoricalQuote(null)
+          setHistoricalQuoteError('No historical quote before this trade date.')
+          return
+        }
+
+        setHistoricalQuote({
+          price: quotePoint.value,
+          asOfDate: quotePoint.date,
+          currency: response.currency,
+          exactDate: quotePoint.date === tradeDate,
+        })
+        setForm((current) => {
+          const canApplyQuote = !current.price.trim() || autoQuoteKeyRef.current !== null
+          if (
+            current.asset_id !== assetId ||
+            current.trade_date !== tradeDate ||
+            !canApplyQuote ||
+            !usesPrice(current.transaction_type)
+          ) {
+            return current
+          }
+
+          const next = {
+            ...current,
+            price: formatCalculatedFormNumber(quotePoint.value, 6),
+          }
+          const quantity = parsePositiveFormNumber(next.quantity)
+          if (quantity && !next.gross_amount.trim()) {
+            const resolved = autoGrossAmountFromTrade(
+              current.transaction_type,
+              assetType,
+              quantity,
+              quotePoint.value,
+            )
+            if (resolved != null) {
+              next.gross_amount = formatCalculatedFormNumber(resolved, 2)
+            }
+          }
+          autoQuoteKeyRef.current = quoteKey
+          return next
+        })
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          const shouldClearAutoQuote = autoQuoteKeyRef.current !== null
+          if (shouldClearAutoQuote) {
+            setForm((current) =>
+              current.asset_id === assetId && current.trade_date === tradeDate
+                ? {
+                    ...current,
+                    price: '',
+                    gross_amount: '',
+                  }
+                : current,
+            )
+          }
+          autoQuoteKeyRef.current = null
+          setHistoricalQuote(null)
+          setHistoricalQuoteError(error instanceof Error ? error.message : 'Failed to load historical quote.')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setHistoricalQuoteLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    drawerOpen,
+    form.trade_date,
+    portfolioId,
+    selectedInstrument?.asset_id,
+    selectedInstrument?.asset_type,
+    shouldUsePrice,
+  ])
+
+  useEffect(() => {
+    if (
+      !drawerOpen ||
+      !portfolioId ||
+      !shouldUseQuantity ||
+      !selectedInstrument ||
+      !positionPreviewAccountId ||
+      !form.trade_date
+    ) {
+      autoQuantityKeyRef.current = null
+      setPositionPreview(null)
+      setPositionPreviewError(null)
+      setPositionPreviewLoading(false)
+      return
+    }
+
+    let cancelled = false
+    const assetId = selectedInstrument.asset_id
+    const assetType = selectedInstrument.asset_type
+    const accountId = positionPreviewAccountId
+    const tradeDate = form.trade_date
+    setPositionPreviewLoading(true)
+    setPositionPreviewError(null)
+
+    getPortfolioTransactionPositionPreview(portfolioId, {
+      account_id: accountId,
+      asset_id: assetId,
+      as_of_date: tradeDate,
+      trade_time: form.trade_time || undefined,
+      exclude_transaction_id: editingTransactionId || undefined,
+    })
+      .then((response) => {
+        if (!cancelled) {
+          setPositionPreview(response)
+          if (form.transaction_type === 'sell') {
+            const availableQuantity = Math.max(0, response.quantity)
+            const quantityKey = `sell:${response.account_id}:${response.asset_id}:${response.as_of_date}`
+            setForm((current) => {
+              const canApplyQuantity = !current.quantity.trim() || autoQuantityKeyRef.current !== null
+              if (
+                current.transaction_type !== 'sell' ||
+                current.asset_id !== response.asset_id ||
+                current.account_id !== response.account_id ||
+                current.trade_date !== response.as_of_date ||
+                !canApplyQuantity
+              ) {
+                return current
+              }
+
+              const next = {
+                ...current,
+                quantity: formatCalculatedFormNumber(availableQuantity, 6),
+              }
+              if (availableQuantity <= 0) {
+                next.gross_amount = ''
+                autoQuantityKeyRef.current = quantityKey
+                return next
+              }
+              const nextQuantity = parsePositiveFormNumber(next.quantity)
+              const nextPrice = parsePositiveFormNumber(next.price)
+              const nextGrossAmount = parsePositiveFormNumber(next.gross_amount)
+              if (nextQuantity && nextPrice) {
+                const resolved = autoGrossAmountFromTrade(
+                  current.transaction_type,
+                  assetType,
+                  nextQuantity,
+                  nextPrice,
+                )
+                if (resolved != null) {
+                  next.gross_amount = formatCalculatedFormNumber(resolved, 2)
+                }
+              } else if (nextQuantity && nextGrossAmount) {
+                next.price = formatCalculatedFormNumber(nextGrossAmount / nextQuantity, 6)
+              }
+              autoQuantityKeyRef.current = quantityKey
+              return next
+            })
+          }
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setPositionPreview(null)
+          setPositionPreviewError(error instanceof Error ? error.message : 'Failed to load account holding.')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setPositionPreviewLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    drawerOpen,
+    editingTransactionId,
+    form.trade_date,
+    form.trade_time,
+    form.transaction_type,
+    portfolioId,
+    positionPreviewAccountId,
+    selectedInstrument?.asset_id,
+    selectedInstrument?.asset_type,
+    shouldUseQuantity,
+  ])
+
+  function selectInstrument(instrument: SharedInstrumentRecord) {
+    setForm((current) => {
+      const isChangingInstrument = Boolean(current.asset_id && current.asset_id !== instrument.asset_id)
+      if (isChangingInstrument) {
+        autoQuoteKeyRef.current = null
+        autoQuantityKeyRef.current = null
+      }
+      return {
+        ...current,
+        asset_id: instrument.asset_id,
+        instrument_search: instrumentSearchLabel(instrument),
+        price: isChangingInstrument ? '' : current.price,
+        quantity: isChangingInstrument ? '' : current.quantity,
+        gross_amount: isChangingInstrument && pricingAnchor === 'price' ? '' : current.gross_amount,
+      }
+    })
+    window.setTimeout(() => accountSelectRef.current?.focus(), 0)
+  }
+
+  function updatePricingField(
+    field: 'quantity' | 'price' | 'gross_amount',
+    value: string,
+  ) {
+    if (field === 'price') {
+      autoQuoteKeyRef.current = null
+      setPricingAnchor('price')
+    } else if (field === 'gross_amount') {
+      autoQuoteKeyRef.current = null
+      setPricingAnchor('gross_amount')
+    } else if (field === 'quantity') {
+      autoQuantityKeyRef.current = null
+    }
+
+    setForm((current) => {
+      let nextValue = value
+      if (
+        field === 'quantity' &&
+        current.transaction_type === 'sell' &&
+        positionPreview &&
+        positionPreview.account_id === current.account_id &&
+        positionPreview.asset_id === current.asset_id &&
+        positionPreview.as_of_date === current.trade_date
+      ) {
+        const requestedQuantity = parsePositiveFormNumber(value)
+        const availableQuantity = Math.max(0, positionPreview.quantity)
+        if (requestedQuantity && requestedQuantity > availableQuantity) {
+          nextValue = formatCalculatedFormNumber(availableQuantity, 6)
+        }
+      }
+      const next = {
+        ...current,
+        [field]: nextValue,
+      }
+
+      if (field === 'quantity') {
+        const parsedQuantity = Number(next.quantity)
+        if (Number.isFinite(parsedQuantity) && parsedQuantity <= 0) {
+          next.gross_amount = ''
+          return next
+        }
+      }
+
+      if (!shouldUseQuantity || !shouldUsePrice) {
+        return next
+      }
+
+      const nextQuantity = parsePositiveFormNumber(next.quantity)
+      const nextPrice = parsePositiveFormNumber(next.price)
+      const nextGrossAmount = parsePositiveFormNumber(next.gross_amount)
+
+      if (field === 'gross_amount' && nextQuantity && nextGrossAmount) {
+        next.price = formatCalculatedFormNumber(nextGrossAmount / nextQuantity, 6)
+        return next
+      }
+
+      if (field === 'price' && nextQuantity && nextPrice) {
+        const resolved = autoGrossAmountFromTrade(
+          current.transaction_type,
+          selectedInstrument?.asset_type,
+          nextQuantity,
+          nextPrice,
+        )
+        if (resolved != null) {
+          next.gross_amount = formatCalculatedFormNumber(resolved, 2)
+        }
+        return next
+      }
+
+      if (field === 'quantity' && nextQuantity) {
+        if (pricingAnchor === 'gross_amount' && nextGrossAmount) {
+          next.price = formatCalculatedFormNumber(nextGrossAmount / nextQuantity, 6)
+          return next
+        }
+        if (nextPrice) {
+          const resolved = autoGrossAmountFromTrade(
+            current.transaction_type,
+            selectedInstrument?.asset_type,
+            nextQuantity,
+            nextPrice,
+          )
+          if (resolved != null) {
+            next.gross_amount = formatCalculatedFormNumber(resolved, 2)
+          }
+        }
+      }
+
+      return next
+    })
+  }
 
   useEffect(() => {
     const nextEligibleAccounts = eligibleAccounts(form.transaction_type, accounts, form.transfer_object_type)
@@ -891,6 +1380,7 @@ export default function TransactionsPage() {
       setForm((current) => ({
         ...current,
         asset_id: '',
+        instrument_search: '',
       }))
     }
   }, [form.asset_id, shouldAllowInstrument])
@@ -915,6 +1405,7 @@ export default function TransactionsPage() {
     setForm((current) => ({
       ...current,
       asset_id: '',
+      instrument_search: '',
     }))
   }, [
     form.transaction_type,
@@ -1039,6 +1530,9 @@ export default function TransactionsPage() {
   function openCreateDrawer() {
     setEditingTransactionId(null)
     setForm(buildInitialFormState(accounts))
+    setPricingAnchor('price')
+    autoQuoteKeyRef.current = null
+    autoQuantityKeyRef.current = null
     setFormError(null)
     setNotice(null)
     setDrawerOpen(true)
@@ -1047,10 +1541,32 @@ export default function TransactionsPage() {
   function openEditDrawer(transaction: PortfolioTransactionRecord) {
     setEditingTransactionId(transaction.transaction_id)
     setForm(buildFormStateFromTransaction(transaction))
+    setPricingAnchor('price')
+    autoQuoteKeyRef.current = null
+    autoQuantityKeyRef.current = null
     setFormError(null)
     setNotice(null)
     setDrawerOpen(true)
   }
+
+  useEffect(() => {
+    if (!drawerOpen) {
+      return
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return
+      }
+      setDrawerOpen(false)
+      setEditingTransactionId(null)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    window.setTimeout(() => {
+      const firstControl = securitySearchRef.current ?? accountSelectRef.current
+      firstControl?.focus()
+    }, 0)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [drawerOpen])
 
   async function handleCreateTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -1091,10 +1607,14 @@ export default function TransactionsPage() {
         setFormError('Enter a positive quantity.')
         return
       }
+      if (enteredQuantityExceedsPosition) {
+        setFormError('Entered shares exceed the account holding as of the trade date.')
+        return
+      }
     }
 
     if (shouldUsePrice) {
-      const price = Number(form.price)
+      const price = Number(computedUnitPrice)
       if (!Number.isFinite(price) || price <= 0) {
         setFormError('Enter a positive price.')
         return
@@ -1255,7 +1775,7 @@ export default function TransactionsPage() {
       settlement_cash_account_id: shouldRequireSettlement ? form.settlement_cash_account_id || null : null,
       asset_id: shouldAllowInstrument ? selectedInstrument?.asset_id ?? null : null,
       quantity: shouldUseQuantity && form.quantity ? Number(form.quantity) : null,
-      price: shouldUsePrice && form.price ? Number(form.price) : null,
+      price: shouldUsePrice && computedUnitPrice ? Number(computedUnitPrice) : null,
       gross_amount: grossAmount,
       counter_amount: null,
       fx_rate: null,
@@ -1349,6 +1869,53 @@ export default function TransactionsPage() {
     [accounts],
   )
   const relatedPositionLots = transactionsWorkspace?.related_position_lots ?? []
+  const ticketGrossNumber = Number(computedGrossAmount)
+  const ticketGrossAmount =
+    computedGrossAmount.trim() && Number.isFinite(ticketGrossNumber) && ticketGrossNumber >= 0
+      ? ticketGrossNumber
+      : null
+  const ticketFeeAmount = shouldShowFees ? parseNonNegativeFormNumber(form.fees) : 0
+  const ticketTaxAmount = shouldShowTaxes ? parseNonNegativeFormNumber(form.taxes) : 0
+  const ticketNetCashEffect = previewNetCashEffect(
+    form.transaction_type,
+    ticketGrossAmount,
+    ticketFeeAmount,
+    ticketTaxAmount,
+    form.transfer_object_type,
+  )
+  const ticketQuantity = parsePositiveFormNumber(form.quantity)
+  const ticketQuantityDelta = quantityDeltaForPreview(
+    form.transaction_type,
+    form.transfer_object_type,
+    ticketQuantity,
+    positionPreviewAccountRole,
+  )
+  const projectedPositionQuantity =
+    positionPreview && ticketQuantityDelta != null ? positionPreview.quantity + ticketQuantityDelta : null
+  const enteredQuantityExceedsPosition =
+    Boolean(positionPreview) &&
+    ticketQuantityDelta != null &&
+    ticketQuantityDelta < 0 &&
+    projectedPositionQuantity != null &&
+    projectedPositionQuantity < -1e-9
+  const previewCurrency = resolvedTransactionCurrency || selectedAccount?.currency || 'USD'
+  const amountField = (
+    <label className="transaction-ticket-field">
+      <span>{grossAmountLabel(form.transaction_type)}</span>
+      <input
+        type="number"
+        min="0"
+        step="0.01"
+        value={form.gross_amount}
+        placeholder={
+          isTransferTransaction(form.transaction_type) && form.transfer_object_type === 'position'
+            ? computedGrossAmount || 'Optional carrying cost'
+            : computedGrossAmount || '0.00'
+        }
+        onChange={(event) => updatePricingField('gross_amount', event.target.value)}
+      />
+    </label>
+  )
 
   return (
     <PortfolioWorkspaceLayout
@@ -1906,7 +2473,7 @@ export default function TransactionsPage() {
 
       {drawerOpen ? (
         <div
-          className="transaction-drawer-backdrop"
+          className="transaction-entry-backdrop"
           role="presentation"
           onClick={() => {
             setDrawerOpen(false)
@@ -1914,20 +2481,15 @@ export default function TransactionsPage() {
           }}
         >
           <aside
-            className="transaction-drawer"
+            className="transaction-entry-modal"
             role="dialog"
             aria-modal="true"
             aria-label={isEditingTransaction ? 'Edit transaction' : 'Add transaction'}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="transaction-drawer-header">
+            <div className="transaction-entry-modal-header">
               <div>
                 <div className="panel-title">{isEditingTransaction ? 'Edit Transaction' : 'Add Transaction'}</div>
-                <div className="portfolio-detail-meta">
-                  {isEditingTransaction
-                    ? 'Correct the canonical portfolio fact and replay downstream layers from this ledger entry.'
-                    : 'Portfolio-private fact entry with shared registry picker'}
-                </div>
               </div>
               <button
                 type="button"
@@ -1942,29 +2504,64 @@ export default function TransactionsPage() {
             </div>
 
             <form className="transaction-form" onSubmit={(event) => void handleCreateTransaction(event)}>
-              <div className="transaction-form-grid">
-                <label>
-                  <span>Transaction Type</span>
-                  <select
-                    value={form.transaction_type}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        transaction_type: event.target.value,
-                      }))
-                    }
-                  >
-                    {TRANSACTION_TYPES.map((transactionType) => (
-                      <option key={transactionType} value={transactionType}>
-                        {formatLabel(transactionType)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+              {shouldAllowInstrument ? (
+                <section className="transaction-instrument-search transaction-instrument-search-top">
+                  <label className="transaction-picker-search">
+                    <span>Security</span>
+                    <input
+                      ref={securitySearchRef}
+                      type="search"
+                      value={instrumentInputValue}
+                      placeholder="Search ticker or name"
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          asset_id: '',
+                          instrument_search: event.target.value,
+                        }))
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter') {
+                          return
+                        }
+                        if (filteredInstrumentOptions.length === 0) {
+                          return
+                        }
+                        event.preventDefault()
+                        selectInstrument(filteredInstrumentOptions[0])
+                      }}
+                    />
+                  </label>
 
-                <label>
+                  {showInstrumentResults ? (
+                    <div className="transaction-instrument-results">
+                      {filteredInstrumentOptions.map((instrument) => (
+                        <button
+                          type="button"
+                          key={instrument.asset_id}
+                          className="transaction-instrument-result"
+                          onClick={() => selectInstrument(instrument)}
+                        >
+                          <div className="holding-name-stack">
+                            <span>{primaryIdentifier(instrument)}</span>
+                            <span className="holding-secondary">{instrument.asset_name}</span>
+                          </div>
+                          <span className="transaction-picker-meta">{instrument.currency}</span>
+                        </button>
+                      ))}
+                      {!filteredInstrumentOptions.length ? (
+                        <div className="transaction-instrument-empty">No matching security.</div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+
+              <div className="transaction-form-grid transaction-ticket-grid">
+                <label className="transaction-ticket-field transaction-ticket-field-wide">
                   <span>Account</span>
                   <select
+                    ref={accountSelectRef}
                     value={form.account_id}
                     onChange={(event) =>
                       setForm((current) => ({
@@ -1972,117 +2569,17 @@ export default function TransactionsPage() {
                         account_id: event.target.value,
                       }))
                     }
-                    >
-                      {eligibleAccounts(form.transaction_type, accounts, form.transfer_object_type).map((account) => (
-                        <option key={account.account_id} value={account.account_id}>
-                          {account.account_name} · {formatLabel(account.account_type)}
-                          {account.cost_basis_method ? ` · ${formatLabel(account.cost_basis_method)}` : ''}
-                          {account.account_type === 'securities_account' && account.allowed_asset_types?.length
-                            ? ` · ${account.allowed_asset_types.map((assetType) => formatLabel(assetType)).join('/')}`
-                            : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                <label>
-                  <span>Trade Date</span>
-                  <input
-                    type="date"
-                    value={form.trade_date}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        trade_date: event.target.value,
-                      }))
-                    }
-                  />
+                  >
+                    {eligibleAccounts(form.transaction_type, accounts, form.transfer_object_type).map((account) => (
+                      <option key={account.account_id} value={account.account_id}>
+                        {account.account_name} · {account.currency}
+                      </option>
+                    ))}
+                  </select>
                 </label>
 
-                <label>
-                  <span>Trade Time</span>
-                  <input
-                    type="time"
-                    step={60}
-                    value={form.trade_time}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        trade_time: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
-
-                <label>
-                  <span>Settlement Date</span>
-                  <input
-                    type="date"
-                    value={form.settlement_date}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        settlement_date: event.target.value,
-                      }))
-                    }
-                  />
-                </label>
-
-                {supportsEntitlementDate(form.transaction_type) ? (
-                  <label>
-                    <span>Entitlement Date</span>
-                    <input
-                      type="date"
-                      value={form.entitlement_date}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          entitlement_date: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                ) : null}
-
-                {supportsAcquisitionDate(form.transaction_type, selectedAccount?.account_type) ? (
-                  <label>
-                    <span>Acquisition Date</span>
-                    <input
-                      type="date"
-                      value={form.acquisition_date}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          acquisition_date: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                ) : null}
-
-                <label>
-                  <span>Transaction Currency</span>
-                  <input value={resolvedTransactionCurrency} readOnly />
-                </label>
-
-                {isTransferTransaction(form.transaction_type) ? (
-                  <label>
-                    <span>Transfer Object</span>
-                    <select
-                      value={form.transfer_object_type}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          transfer_object_type: event.target.value,
-                        }))
-                      }
-                    >
-                      <option value="cash">Cash</option>
-                      <option value="position">Position</option>
-                    </select>
-                  </label>
-                ) : isFxConversion ? (
-                  <label>
+                {isFxConversion ? (
+                  <label className="transaction-ticket-field transaction-ticket-field-wide">
                     <span>Target Cash Account</span>
                     <select
                       value={form.counterparty_account_id}
@@ -2101,8 +2598,27 @@ export default function TransactionsPage() {
                       ))}
                     </select>
                   </label>
+                ) : isTransferTransaction(form.transaction_type) ? (
+                  <label className="transaction-ticket-field transaction-ticket-field-wide">
+                    <span>Counterparty Account</span>
+                    <select
+                      value={form.counterparty_account_id}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          counterparty_account_id: event.target.value,
+                        }))
+                      }
+                    >
+                      {counterpartyAccounts.map((account) => (
+                        <option key={account.account_id} value={account.account_id}>
+                          {account.account_name} · {account.currency}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 ) : shouldRequireSettlement ? (
-                  <label>
+                  <label className="transaction-ticket-field transaction-ticket-field-wide">
                     <span>Settlement Cash Account</span>
                     <select
                       value={form.settlement_cash_account_id}
@@ -2121,33 +2637,143 @@ export default function TransactionsPage() {
                       ))}
                     </select>
                   </label>
-                ) : (
-                  <div className="transaction-form-spacer" />
-                )}
+                ) : null}
 
-                <label>
-                  <span>{grossAmountLabel(form.transaction_type)}</span>
+                <label className="transaction-ticket-field">
+                  <span>Currency</span>
+                  <input value={resolvedTransactionCurrency} readOnly />
+                </label>
+
+                <label className="transaction-ticket-field">
+                  <span>Type</span>
+                  <select
+                    value={form.transaction_type}
+                    onChange={(event) => {
+                      const nextTransactionType = event.target.value
+                      setForm((current) => {
+                        const shouldClearAutoSellQuantity =
+                          autoQuantityKeyRef.current !== null &&
+                          current.transaction_type === 'sell' &&
+                          nextTransactionType !== 'sell'
+                        if (shouldClearAutoSellQuantity) {
+                          autoQuantityKeyRef.current = null
+                        }
+                        return {
+                          ...current,
+                          transaction_type: nextTransactionType,
+                          quantity: shouldClearAutoSellQuantity ? '' : current.quantity,
+                          gross_amount: shouldClearAutoSellQuantity ? '' : current.gross_amount,
+                        }
+                      })
+                    }}
+                  >
+                    {TRANSACTION_TYPES.map((transactionType) => (
+                      <option key={transactionType} value={transactionType}>
+                        {formatLabel(transactionType)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="transaction-ticket-field">
+                  <span>Trade Date</span>
                   <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={form.gross_amount}
-                    placeholder={
-                      isTransferTransaction(form.transaction_type) && form.transfer_object_type === 'position'
-                        ? computedGrossAmount || 'Optional: derive from current carrying cost'
-                        : computedGrossAmount || '0.00'
-                    }
+                    type="date"
+                    value={form.trade_date}
                     onChange={(event) =>
                       setForm((current) => ({
                         ...current,
-                        gross_amount: event.target.value,
+                        trade_date: event.target.value,
                       }))
                     }
                   />
                 </label>
 
+                <label className="transaction-ticket-field">
+                  <span>Settlement Date</span>
+                  <input
+                    type="date"
+                    value={form.settlement_date}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        settlement_date: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+
+                <label className="transaction-ticket-field">
+                  <span>Trade Time</span>
+                  <input
+                    type="time"
+                    step={60}
+                    value={form.trade_time}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        trade_time: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+
+                {supportsEntitlementDate(form.transaction_type) ? (
+                  <label className="transaction-ticket-field">
+                    <span>Entitlement Date</span>
+                    <input
+                      type="date"
+                      value={form.entitlement_date}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          entitlement_date: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                ) : null}
+
+                {supportsAcquisitionDate(form.transaction_type, selectedAccount?.account_type) ? (
+                  <label className="transaction-ticket-field">
+                    <span>Acquisition Date</span>
+                    <input
+                      type="date"
+                      value={form.acquisition_date}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          acquisition_date: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                ) : null}
+
+                {isTransferTransaction(form.transaction_type) ? (
+                  <label className="transaction-ticket-field">
+                    <span>Transfer Object</span>
+                    <select
+                      value={form.transfer_object_type}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          transfer_object_type: event.target.value,
+                        }))
+                      }
+                    >
+                      <option value="cash">Cash</option>
+                      <option value="position">Position</option>
+                    </select>
+                  </label>
+                ) : (
+                  <div className="transaction-form-spacer" />
+                )}
+
+                {isFxConversion || isTransferTransaction(form.transaction_type) || !shouldUsePrice ? amountField : null}
+
                 {isFxConversion ? (
-                  <label>
+                  <label className="transaction-ticket-field">
                     <span>Received Amount ({resolvedCounterpartyCurrency || 'Target'})</span>
                     <input
                       type="number"
@@ -2164,27 +2790,41 @@ export default function TransactionsPage() {
                     />
                   </label>
                 ) : shouldUseQuantity ? (
-                  <label>
-                    <span>Quantity</span>
+                  <label className="transaction-ticket-field">
+                    <span>Shares</span>
                     <input
                       type="number"
                       min="0"
                       step="0.01"
+                      max={ticketQuantityDelta != null && ticketQuantityDelta < 0 ? positionPreview?.quantity : undefined}
                       value={form.quantity}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          quantity: event.target.value,
-                        }))
-                      }
+                      onChange={(event) => updatePricingField('quantity', event.target.value)}
                     />
+                    {positionPreviewLoading ? (
+                      <span className="transaction-ticket-hint">Loading holding...</span>
+                    ) : positionPreview ? (
+                      <span
+                        className={
+                          enteredQuantityExceedsPosition
+                            ? 'transaction-ticket-hint transaction-ticket-hint-warning'
+                            : 'transaction-ticket-hint'
+                        }
+                      >
+                        {positionPreviewAccountRole === 'source' ? 'Source holding' : 'Holding'}:{' '}
+                        {formatQuantity(positionPreview.quantity)}
+                        {projectedPositionQuantity != null ? ` · After: ${formatQuantity(projectedPositionQuantity)}` : ''}
+                        {enteredQuantityExceedsPosition ? ' · Exceeds available shares' : ''}
+                      </span>
+                    ) : positionPreviewError ? (
+                      <span className="transaction-ticket-hint">{positionPreviewError}</span>
+                    ) : null}
                   </label>
                 ) : (
                   <div className="transaction-form-spacer" />
                 )}
 
                 {isFxConversion ? (
-                  <label>
+                  <label className="transaction-ticket-field">
                     <span>FX Rate ({resolvedTransactionCurrency}/{resolvedCounterpartyCurrency || 'Target'})</span>
                     <input
                       type="number"
@@ -2200,48 +2840,37 @@ export default function TransactionsPage() {
                       }
                     />
                   </label>
-                ) : isTransferTransaction(form.transaction_type) ? (
-                  <label>
-                    <span>Counterparty Account</span>
-                    <select
-                      value={form.counterparty_account_id}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          counterparty_account_id: event.target.value,
-                        }))
-                      }
-                    >
-                      {counterpartyAccounts.map((account) => (
-                        <option key={account.account_id} value={account.account_id}>
-                          {account.account_name} · {formatLabel(account.account_type)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
                 ) : shouldUsePrice ? (
-                  <label>
-                    <span>Price</span>
+                  <label className="transaction-ticket-field">
+                    <span>Quote</span>
                     <input
                       type="number"
                       min="0"
                       step="0.0001"
                       value={form.price}
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          price: event.target.value,
-                        }))
-                      }
+                      placeholder={computedUnitPrice || '0.0000'}
+                      onChange={(event) => updatePricingField('price', event.target.value)}
                     />
+                    {historicalQuoteLoading ? (
+                      <span className="transaction-ticket-hint">Loading quote...</span>
+                    ) : historicalQuote ? (
+                      <span className="transaction-ticket-hint">
+                        {historicalQuote.exactDate ? 'Close' : 'Prior close'}:{' '}
+                        {formatUnitPrice(historicalQuote.price, historicalQuote.currency)} · {historicalQuote.asOfDate}
+                      </span>
+                    ) : historicalQuoteError ? (
+                      <span className="transaction-ticket-hint">{historicalQuoteError}</span>
+                    ) : null}
                   </label>
                 ) : (
                   <div className="transaction-form-spacer" />
                 )}
 
+                {!isFxConversion && !isTransferTransaction(form.transaction_type) && shouldUsePrice ? amountField : null}
+
                 {shouldShowFees ? (
-                  <label>
-                    <span>Fees</span>
+                  <label className="transaction-ticket-field">
+                    <span>Fee</span>
                     <input
                       type="number"
                       min="0"
@@ -2260,8 +2889,8 @@ export default function TransactionsPage() {
                 )}
 
                 {shouldShowTaxes ? (
-                  <label>
-                    <span>Taxes</span>
+                  <label className="transaction-ticket-field">
+                    <span>Tax</span>
                     <input
                       type="number"
                       min="0"
@@ -2277,6 +2906,62 @@ export default function TransactionsPage() {
                   </label>
                 ) : (
                   <div className="transaction-form-spacer" />
+                )}
+              </div>
+
+              <div className="transaction-ticket-summary" aria-live="polite">
+                {isFxConversion ? (
+                  <>
+                    <div className="transaction-ticket-summary-row">
+                      <span>Source Amount</span>
+                      <strong>
+                        {ticketGrossAmount == null
+                          ? '—'
+                          : formatCurrency(ticketGrossAmount, resolvedTransactionCurrency)}
+                      </strong>
+                    </div>
+                    <div className="transaction-ticket-summary-row">
+                      <span>FX Rate</span>
+                      <strong>{resolvedFxRate ? formatNumber(Number(resolvedFxRate), 6) : '—'}</strong>
+                    </div>
+                    <div className="transaction-ticket-summary-row transaction-ticket-summary-total">
+                      <span>Received Amount</span>
+                      <strong>
+                        {computedCounterAmount
+                          ? formatCurrency(Number(computedCounterAmount), resolvedCounterpartyCurrency || 'USD')
+                          : '—'}
+                      </strong>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="transaction-ticket-summary-row">
+                      <span>Pre-fee Amount</span>
+                      <strong>
+                        {ticketGrossAmount == null ? '—' : formatCurrency(ticketGrossAmount, previewCurrency)}
+                      </strong>
+                    </div>
+                    {shouldShowFees ? (
+                      <div className="transaction-ticket-summary-row">
+                        <span>Fee</span>
+                        <strong>{formatCurrency(ticketFeeAmount, previewCurrency)}</strong>
+                      </div>
+                    ) : null}
+                    {shouldShowTaxes ? (
+                      <div className="transaction-ticket-summary-row">
+                        <span>Tax</span>
+                        <strong>{formatCurrency(ticketTaxAmount, previewCurrency)}</strong>
+                      </div>
+                    ) : null}
+                    <div className="transaction-ticket-summary-row transaction-ticket-summary-total">
+                      <span>Net Cash Effect</span>
+                      <strong>
+                        {ticketNetCashEffect == null
+                          ? '—'
+                          : formatSignedCurrency(ticketNetCashEffect, previewCurrency)}
+                      </strong>
+                    </div>
+                  </>
                 )}
               </div>
 
@@ -2300,79 +2985,6 @@ export default function TransactionsPage() {
                 </div>
               ) : null}
 
-              <div className="portfolio-detail-meta">
-                Trade time uses portfolio default timezone {DEFAULT_TRADE_TIMEZONE}. Leave the default if exact
-                intraday sequencing is not material.
-              </div>
-
-              {shouldAllowInstrument ? (
-                <section className="transaction-picker">
-                  <div className="transaction-picker-header">
-                    <div className="panel-title">Instrument Picker</div>
-                    <div className="portfolio-detail-meta">
-                      Source: shared asset registry · filtered to {selectedAccount?.currency || resolvedTransactionCurrency}
-                    </div>
-                  </div>
-
-                  <label className="transaction-picker-search">
-                    <span>Search Registry</span>
-                    <input
-                      type="search"
-                      value={form.instrument_search}
-                      placeholder="Ticker, name, or asset type"
-                      onChange={(event) =>
-                        setForm((current) => ({
-                          ...current,
-                          instrument_search: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-
-                  {selectedInstrument ? (
-                    <div className="transaction-selected-instrument">
-                      <span className="ticker-pill">{primaryIdentifier(selectedInstrument)}</span>
-                      <span>{selectedInstrument.asset_name}</span>
-                      <span className="holding-secondary">
-                        {selectedInstrument.currency} · {formatLabel(selectedInstrument.asset_type)}
-                      </span>
-                    </div>
-                  ) : null}
-
-                  <div className="transaction-picker-list">
-                    {filteredInstrumentOptions.map((instrument) => (
-                      <button
-                        type="button"
-                        key={instrument.asset_id}
-                        className={`transaction-picker-row ${
-                          form.asset_id === instrument.asset_id ? 'transaction-picker-row-active' : ''
-                        }`}
-                        onClick={() =>
-                          setForm((current) => ({
-                            ...current,
-                            asset_id: instrument.asset_id,
-                          }))
-                        }
-                      >
-                        <div className="holding-name-stack">
-                          <span>{primaryIdentifier(instrument)}</span>
-                          <span className="holding-secondary">{instrument.asset_name}</span>
-                        </div>
-                        <div className="transaction-picker-meta">
-                          <span>{formatLabel(instrument.asset_type)}</span>
-                          <span>{instrument.coverage_state}</span>
-                        </div>
-                      </button>
-                    ))}
-                    {!filteredInstrumentOptions.length ? (
-                      <div className="empty-state">
-                        No registry instruments match the current search. Manage master data in Database Dashboard.
-                      </div>
-                    ) : null}
-                  </div>
-                </section>
-              ) : null}
-
               <label className="transaction-notes-field">
                 <span>Note</span>
                 <textarea
@@ -2390,26 +3002,6 @@ export default function TransactionsPage() {
               {formError ? <div className="error-state transaction-form-error">{formError}</div> : null}
 
               <div className="transaction-form-footer">
-                <div className="portfolio-detail-meta">
-                  {isFxConversion
-                    ? `Source ${
-                        computedGrossAmount
-                          ? formatCurrency(Number(computedGrossAmount), resolvedTransactionCurrency)
-                          : '—'
-                      } · Receive ${
-                        computedCounterAmount
-                          ? formatCurrency(Number(computedCounterAmount), resolvedCounterpartyCurrency || 'USD')
-                          : '—'
-                      }`
-                    : `Gross ${
-                        computedGrossAmount
-                          ? formatCurrency(
-                              Number(computedGrossAmount),
-                              selectedInstrument?.currency ?? selectedAccount?.currency ?? 'USD',
-                            )
-                          : '—'
-                      }`}
-                </div>
                 <button type="submit" className="toolbar-link button-primary">
                   {isEditingTransaction ? 'Save Changes' : 'Save Transaction'}
                 </button>

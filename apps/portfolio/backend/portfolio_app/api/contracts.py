@@ -64,6 +64,7 @@ ResearchArtifactPreviewKind = Literal["text", "html", "binary"]
 ResearchTargetSetMode = Literal["saa", "taa_over_saa"]
 ResearchTargetDimension = Literal["scope_default", "weight", "risk_budget"]
 ResearchRebalanceFrequency = Literal["weekly", "monthly", "quarterly"]
+ResearchCapitalMode = Literal["unit_notional", "fixed_gross", "target_volatility"]
 TargetSetType = Literal["saa", "taa"]
 
 SUPPORTED_PORTFOLIO_CURRENCIES: tuple[SupportedCurrency, ...] = ("USD", "HKD", "CNY")
@@ -140,6 +141,27 @@ def _normalize_optional_text(value: object) -> object:
     if isinstance(value, str):
         normalized = value.strip()
         return normalized or None
+    return value
+
+
+def _normalize_optional_text_list(value: object) -> object:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        normalized = value.strip()
+        return [normalized] if normalized else []
+    if isinstance(value, (list, tuple, set)):
+        seen: set[str] = set()
+        resolved: list[str] = []
+        for item in value:
+            normalized = _normalize_optional_text(item)
+            if not isinstance(normalized, str):
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            resolved.append(normalized)
+        return resolved
     return value
 
 
@@ -462,6 +484,15 @@ class TransactionWorkspaceResponse(BaseModel):
     ledger_postings: list[LedgerPostingRecord]
     related_position_lot_summary: PositionLotListSummary
     related_position_lots: list[PositionLotRecord]
+
+
+class TransactionPositionPreviewResponse(BaseModel):
+    portfolio_id: str
+    account_id: str
+    asset_id: str
+    as_of_date: date
+    trade_at: str
+    quantity: float
 
 
 class DailySnapshotRecord(BaseModel):
@@ -805,6 +836,11 @@ class ResearchSettingsRecord(BaseModel):
     run_template: ResearchRunTemplate = "taxonomy_backtest"
     target_set_mode: ResearchTargetSetMode = "taa_over_saa"
     target_dimension: ResearchTargetDimension = "scope_default"
+    capital_mode: ResearchCapitalMode = "unit_notional"
+    gross_exposure: float | None = Field(default=None, gt=0)
+    target_volatility: float | None = Field(default=None, gt=0, le=1)
+    max_gross_exposure: float | None = Field(default=None, gt=0)
+    frozen_taxonomy_node_ids: list[str] = Field(default_factory=list)
     rebalance_frequency: ResearchRebalanceFrequency = "monthly"
     notes: str | None = None
     updated_at: str | None = None
@@ -820,6 +856,11 @@ class ResearchSettingsUpdateRequest(BaseModel):
     run_template: ResearchRunTemplate = "taxonomy_backtest"
     target_set_mode: ResearchTargetSetMode = "taa_over_saa"
     target_dimension: ResearchTargetDimension = "scope_default"
+    capital_mode: ResearchCapitalMode = "unit_notional"
+    gross_exposure: float | None = Field(default=None, gt=0)
+    target_volatility: float | None = Field(default=None, gt=0, le=1)
+    max_gross_exposure: float | None = Field(default=None, gt=0)
+    frozen_taxonomy_node_ids: list[str] = Field(default_factory=list)
     rebalance_frequency: ResearchRebalanceFrequency = "monthly"
     notes: str | None = None
 
@@ -828,10 +869,34 @@ class ResearchSettingsUpdateRequest(BaseModel):
     def validate_optional_text(cls, value: object) -> object:
         return _normalize_optional_text(value)
 
+    @field_validator("frozen_taxonomy_node_ids", mode="before")
+    @classmethod
+    def validate_frozen_taxonomy_node_ids(cls, value: object) -> object:
+        return _normalize_optional_text_list(value)
+
     @model_validator(mode="after")
     def validate_research_settings(self) -> "ResearchSettingsUpdateRequest":
         if self.start_date and self.as_of_date and self.as_of_date < self.start_date:
             raise ValueError("start_date must not be later than as_of_date.")
+        if self.capital_mode == "unit_notional":
+            if self.gross_exposure is not None or self.target_volatility is not None:
+                raise ValueError("unit_notional capital mode must not set gross_exposure or target_volatility.")
+        elif self.capital_mode == "fixed_gross":
+            if self.gross_exposure is None:
+                raise ValueError("fixed_gross capital mode requires gross_exposure.")
+            if self.target_volatility is not None:
+                raise ValueError("fixed_gross capital mode must not set target_volatility.")
+        elif self.capital_mode == "target_volatility":
+            if self.target_volatility is None:
+                raise ValueError("target_volatility capital mode requires target_volatility.")
+            if self.gross_exposure is not None:
+                raise ValueError("target_volatility capital mode must not set gross_exposure.")
+        if (
+            self.max_gross_exposure is not None
+            and self.gross_exposure is not None
+            and self.max_gross_exposure + 1e-12 < self.gross_exposure
+        ):
+            raise ValueError("max_gross_exposure cannot be smaller than gross_exposure.")
         return self
 
 

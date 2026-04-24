@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 
 import AccountsPage from './pages/AccountsPage'
+import OverviewPage from './pages/OverviewPage'
 import PortfolioHomePage from './pages/PortfolioHomePage'
 import PortfoliosPage from './pages/PortfoliosPage'
 import PerformancePage from './pages/PerformancePage'
@@ -17,8 +18,9 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate replace to="/portfolios" />} />
           <Route path="/portfolios" element={<PortfoliosPage />} />
-          <Route path="/portfolios/:portfolioId" element={<Navigate replace to="holdings" />} />
-          <Route path="/portfolios/:portfolioId/snapshot" element={<Navigate replace to="../holdings" />} />
+          <Route path="/portfolios/:portfolioId" element={<Navigate replace to="overview" />} />
+          <Route path="/portfolios/:portfolioId/snapshot" element={<Navigate replace to="../overview" />} />
+          <Route path="/portfolios/:portfolioId/overview" element={<OverviewPage />} />
           <Route path="/portfolios/:portfolioId/holdings" element={<PortfolioHomePage />} />
           <Route path="/portfolios/:portfolioId/performance" element={<PerformancePage />} />
           <Route path="/portfolios/:portfolioId/risk" element={<RiskPage />} />
@@ -28,6 +30,7 @@ export default function App() {
           <Route path="/portfolios/:portfolioId/research" element={<ResearchPage />} />
           <Route path="/portfolios/:portfolioId/taxonomies" element={<TaxonomiesPage />} />
           <Route path="/snapshot" element={<Navigate replace to="/portfolios" />} />
+          <Route path="/overview" element={<Navigate replace to="/portfolios" />} />
           <Route path="/holdings" element={<Navigate replace to="/portfolios" />} />
           <Route path="/performance" element={<Navigate replace to="/portfolios" />} />
           <Route path="/risk" element={<Navigate replace to="/portfolios" />} />
