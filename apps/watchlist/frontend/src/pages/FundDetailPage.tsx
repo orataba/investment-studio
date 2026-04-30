@@ -80,6 +80,10 @@ type FundDetailBundle = {
   navSeries: FundNavSeriesResponse
 }
 
+type PeerComparisonMetric = NonNullable<
+  NonNullable<FundPerformanceResponse['peer_comparison']>['metrics']
+>[number]
+
 type EditableKeyValueRow = {
   id: string
   key: string
@@ -239,6 +243,22 @@ type ChartHoverCursor = {
 }
 
 type PerformanceMetricPeriodKey = '1W' | '1M' | 'YTD' | '1Y' | '2Y' | '3Y' | '5Y' | 'SI'
+type PerformanceMatrixMode = 'values' | 'peer_percentile' | 'peer_rank' | 'peer_median_delta'
+type PerformanceMatrixRowKey =
+  | 'period_return'
+  | 'annualized_return'
+  | 'annualized_volatility'
+  | 'excess_return'
+  | 'sharpe_ratio'
+  | 'sortino_ratio'
+  | 'calmar_ratio'
+  | 'information_ratio'
+  | 'tracking_error'
+  | 'beta'
+  | 'max_drawdown'
+  | 'recovery_days'
+  | 'upside_capture'
+  | 'downside_capture'
 type RollingReturnWindowMonths = 12 | 24 | 36
 type PerformanceMetricSnapshot = {
   periodReturn: number | null
@@ -279,6 +299,16 @@ const PERFORMANCE_METRIC_PERIODS: Array<{
   { key: '3Y', label: '3Y' },
   { key: '5Y', label: '5Y' },
   { key: 'SI', label: 'SI' },
+]
+
+const PERFORMANCE_MATRIX_MODE_OPTIONS: Array<{
+  value: PerformanceMatrixMode
+  label: string
+}> = [
+  { value: 'values', label: 'Values' },
+  { value: 'peer_percentile', label: 'Peer Percentile' },
+  { value: 'peer_rank', label: 'Peer Rank' },
+  { value: 'peer_median_delta', label: 'vs Median' },
 ]
 
 const RISK_MATRIX_PERIOD_KEYS = new Set<PerformanceMetricPeriodKey>(['1Y', '3Y', '5Y', 'SI'])
@@ -528,6 +558,116 @@ function getNumber(value: unknown) {
 
 function getString(value: unknown) {
   return typeof value === 'string' && value ? value : '—'
+}
+
+function formatPeerMetricValue(metric: PeerComparisonMetric, value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) {
+    return '—'
+  }
+  return metric.format === 'percent' ? formatPercent(value) : formatNumber(value, 2)
+}
+
+function formatPeerRank(metric: PeerComparisonMetric) {
+  if (metric.rank == null || metric.sample_count == null) {
+    return '—'
+  }
+  return `${formatNumber(metric.rank, 0)} / ${formatNumber(metric.sample_count, 0)}`
+}
+
+function formatPeerMetricDelta(metric: PeerComparisonMetric) {
+  if (
+    metric.value == null ||
+    metric.peer_median == null ||
+    !Number.isFinite(metric.value) ||
+    !Number.isFinite(metric.peer_median)
+  ) {
+    return '—'
+  }
+  const delta = metric.value - metric.peer_median
+  const prefix = delta > 0 ? '+' : ''
+  return metric.format === 'percent'
+    ? `${prefix}${formatPercent(delta)}`
+    : `${prefix}${formatNumber(delta, 2)}`
+}
+
+function getSignedMetricTone(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) {
+    return 'empty'
+  }
+  if (value > 0) {
+    return 'positive'
+  }
+  if (value < 0) {
+    return 'negative'
+  }
+  return 'neutral'
+}
+
+function getPeerMetricTone(metric: PeerComparisonMetric, mode: PerformanceMatrixMode) {
+  if (mode === 'peer_percentile' || mode === 'peer_rank') {
+    if (metric.percentile == null || !Number.isFinite(metric.percentile)) {
+      return 'neutral'
+    }
+    if (metric.percentile >= 75) {
+      return 'positive'
+    }
+    if (metric.percentile < 25) {
+      return 'negative'
+    }
+    return 'neutral'
+  }
+  if (
+    mode === 'peer_median_delta' &&
+    metric.value != null &&
+    metric.peer_median != null &&
+    Number.isFinite(metric.value) &&
+    Number.isFinite(metric.peer_median)
+  ) {
+    const delta = metric.value - metric.peer_median
+    const isGood = metric.direction === 'lower' ? delta < 0 : delta > 0
+    const isBad = metric.direction === 'lower' ? delta > 0 : delta < 0
+    return isGood ? 'positive' : isBad ? 'negative' : 'neutral'
+  }
+  return 'neutral'
+}
+
+function getPeerMetricKeyForMatrixCell(
+  rowKey: PerformanceMatrixRowKey,
+  periodKey: PerformanceMetricPeriodKey,
+) {
+  if (rowKey === 'period_return') {
+    return (
+      {
+        '1W': 'return_1w',
+        '1M': 'return_1m',
+        YTD: 'return_ytd',
+        '1Y': 'return_1y',
+      } as Partial<Record<PerformanceMetricPeriodKey, string>>
+    )[periodKey] || null
+  }
+  if (rowKey === 'annualized_return') {
+    return (
+      {
+        '1Y': 'return_1y',
+        '3Y': 'return_3y_annualized',
+        '5Y': 'return_5y_annualized',
+        SI: 'annualized_return',
+      } as Partial<Record<PerformanceMetricPeriodKey, string>>
+    )[periodKey] || null
+  }
+  if (rowKey === 'annualized_volatility') {
+    return periodKey === 'SI' ? 'volatility' : null
+  }
+  if (rowKey === 'sharpe_ratio') {
+    return periodKey === 'SI' ? 'sharpe_ratio' : null
+  }
+  if (rowKey === 'calmar_ratio') {
+    return periodKey === 'SI' ? 'calmar' : null
+  }
+  if (rowKey === 'max_drawdown') {
+    return periodKey === 'SI' ? 'max_drawdown' : null
+  }
+  return null
 }
 
 function formatRiskComparisonValue(value: unknown) {
@@ -2475,6 +2615,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [metricBenchmarkFundId, setMetricBenchmarkFundId] = useState('')
   const [metricBenchmarkNavSeries, setMetricBenchmarkNavSeries] =
     useState<FundNavSeriesResponse | null>(null)
+  const [performanceMatrixMode, setPerformanceMatrixMode] =
+    useState<PerformanceMatrixMode>('values')
   const [rollingReturnWindowMonths, setRollingReturnWindowMonths] =
     useState<RollingReturnWindowMonths>(12)
   const [quoteActionNotice, setQuoteActionNotice] = useState<string | null>(null)
@@ -3398,9 +3540,11 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const quoteToneClass =
     quoteChange == null
       ? ''
-      : quoteChange < 0
+      : quoteChange > 0
+        ? 'instrument-quote-change instrument-quote-change-positive'
+        : quoteChange < 0
         ? 'instrument-quote-change instrument-quote-change-negative'
-        : 'instrument-quote-change instrument-quote-change-positive'
+        : 'instrument-quote-change instrument-quote-change-neutral'
   const managementStats = people.overview || {}
   const peoplePrimaryOverviewFacts = PEOPLE_PRIMARY_OVERVIEW_FIELDS.map((field) => ({
     ...field,
@@ -3887,6 +4031,15 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     )
     return Math.max(maxAbs, rowMax)
   }, 0)
+  const peerComparison = performance.peer_comparison?.status === 'ready' ? performance.peer_comparison : null
+  const peerComparisonPathLabel =
+    peerComparison?.peer_path?.filter(Boolean).join(' / ') ||
+    performance.ranking?.category_name ||
+    'Taxonomy peers'
+  const peerComparisonMetricByKey = new Map(
+    (peerComparison?.metrics || []).map((metric) => [metric.metric_key, metric]),
+  )
+  const activePerformanceMatrixMode = peerComparison ? performanceMatrixMode : 'values'
   const formatRecoveryValue = (snapshot: PerformanceMetricSnapshot | null) => {
     if (!snapshot || snapshot.maxDrawdown == null) {
       return null
@@ -3905,17 +4058,57 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const benchmarkMetricPrefix = selectedMetricBenchmark ? 'BM' : null
   const buildBenchmarkNote = (value: string | null) =>
     benchmarkMetricPrefix && value ? `${benchmarkMetricPrefix} ${value}` : null
-  const performanceMetricMatrixRows = [
+  const buildPeerPerformanceMatrixCell = (
+    rowKey: PerformanceMatrixRowKey,
+    periodKey: PerformanceMetricPeriodKey,
+  ) => {
+    const metricKey = getPeerMetricKeyForMatrixCell(rowKey, periodKey)
+    const metric = metricKey ? peerComparisonMetricByKey.get(metricKey) || null : null
+    if (!metric) {
+      return {
+        primary: '—',
+        secondary: null,
+        peerAvailable: false,
+        tone: 'empty',
+      }
+    }
+    if (activePerformanceMatrixMode === 'peer_percentile') {
+      return {
+        primary: metric.percentile == null ? '—' : `${formatNumber(metric.percentile, 0)} pct`,
+        secondary: metric.quartile == null ? null : `Q${formatNumber(metric.quartile, 0)}`,
+        peerAvailable: true,
+        tone: getPeerMetricTone(metric, activePerformanceMatrixMode),
+      }
+    }
+    if (activePerformanceMatrixMode === 'peer_rank') {
+      return {
+        primary: formatPeerRank(metric),
+        secondary: metric.percentile == null ? null : `${formatNumber(metric.percentile, 0)} pct`,
+        peerAvailable: true,
+        tone: getPeerMetricTone(metric, activePerformanceMatrixMode),
+      }
+    }
+    return {
+      primary: formatPeerMetricDelta(metric),
+      secondary: `median ${formatPeerMetricValue(metric, metric.peer_median)}`,
+      peerAvailable: true,
+      tone: getPeerMetricTone(metric, activePerformanceMatrixMode),
+    }
+  }
+  const performanceMetricMatrixBaseRows = [
     {
+      key: 'period_return' as const,
       label: 'Period Return',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
         primary: fund.periodReturn == null ? '—' : formatPercent(fund.periodReturn),
         secondary:
           benchmark?.periodReturn == null ? null : buildBenchmarkNote(formatPercent(benchmark.periodReturn)),
+        tone: getSignedMetricTone(fund.periodReturn),
       })),
     },
     {
+      key: 'annualized_return' as const,
       label: 'Annualized Return',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
@@ -3924,9 +4117,11 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           benchmark?.annualizedReturn == null
             ? null
             : buildBenchmarkNote(formatPercent(benchmark.annualizedReturn)),
+        tone: getSignedMetricTone(fund.annualizedReturn),
       })),
     },
     {
+      key: 'annualized_volatility' as const,
       label: 'Ann. Volatility',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
@@ -3938,6 +4133,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
     {
+      key: 'excess_return' as const,
       label: 'Excess Return',
       supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
@@ -3946,9 +4142,14 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             ? '—'
             : formatPercent(fund.periodReturn - benchmark.periodReturn),
         secondary: null,
+        tone:
+          fund.periodReturn == null || benchmark?.periodReturn == null
+            ? 'empty'
+            : getSignedMetricTone(fund.periodReturn - benchmark.periodReturn),
       })),
     },
     {
+      key: 'sharpe_ratio' as const,
       label: 'Sharpe Ratio',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
@@ -3957,6 +4158,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
     {
+      key: 'sortino_ratio' as const,
       label: 'Sortino Ratio',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
@@ -3966,6 +4168,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
     {
+      key: 'calmar_ratio' as const,
       label: 'Calmar Ratio',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
@@ -3974,6 +4177,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
     {
+      key: 'information_ratio' as const,
       label: 'Information Ratio',
       supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
@@ -3982,6 +4186,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
     {
+      key: 'tracking_error' as const,
       label: 'Tracking Error',
       supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
@@ -3990,6 +4195,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
     {
+      key: 'beta' as const,
       label: 'Beta',
       supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
@@ -3998,6 +4204,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
     {
+      key: 'max_drawdown' as const,
       label: 'Max Drawdown',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
@@ -4006,9 +4213,11 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           benchmark?.maxDrawdown == null
             ? null
             : buildBenchmarkNote(formatPercent(benchmark.maxDrawdown)),
+        tone: getSignedMetricTone(fund.maxDrawdown),
       })),
     },
     {
+      key: 'recovery_days' as const,
       label: 'Recovery Days',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
@@ -4017,6 +4226,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
     {
+      key: 'upside_capture' as const,
       label: 'Upside Capture',
       supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
@@ -4025,6 +4235,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
     {
+      key: 'downside_capture' as const,
       label: 'Downside Capture',
       supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
@@ -4033,6 +4244,24 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
   ]
+  const performanceMetricMatrixRows = performanceMetricMatrixBaseRows
+    .map((row) => {
+      if (activePerformanceMatrixMode === 'values') {
+        return row
+      }
+      return {
+        ...row,
+        supportsBenchmark: false,
+        cells: performancePeriodSnapshots.map((period) =>
+          buildPeerPerformanceMatrixCell(row.key, period.key),
+        ),
+      }
+    })
+    .filter(
+      (row) =>
+        activePerformanceMatrixMode === 'values' ||
+        row.cells.some((cell) => 'peerAvailable' in cell && cell.peerAvailable),
+    )
   const riskScatterRows = risk.scatter_points
     .map((row, index) => ({
       name: getString(row.name),
@@ -4438,13 +4667,13 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const overviewRankingValue =
     performance.ranking
       ? [
+          performance.ranking.rank == null || performance.ranking.sample_count == null
+            ? null
+            : `${formatNumber(performance.ranking.rank, 0)} / ${formatNumber(performance.ranking.sample_count, 0)}`,
           performance.ranking.quartile == null ? null : `Q${performance.ranking.quartile}`,
           performance.ranking.percentile == null
             ? null
             : `${formatNumber(performance.ranking.percentile, 0)} pct`,
-          performance.ranking.sample_count == null
-            ? null
-            : `n=${formatNumber(performance.ranking.sample_count, 0)}`,
         ]
           .filter(Boolean)
           .join(' / ') || '—'
@@ -4500,7 +4729,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     {
       label: 'Peer Rank',
       value: overviewRankingValue,
-      note: performance.ranking?.category_name || 'Category',
+      note: peerComparisonPathLabel,
     },
     {
       label: 'Watch Level',
@@ -4616,7 +4845,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           : `${structuralRiskLabel} up ${structuralRelativeSnapshot?.upsideCapture == null ? '—' : formatPercent(structuralRelativeSnapshot.upsideCapture, 0)} · down ${structuralRelativeSnapshot?.downsideCapture == null ? '—' : formatPercent(structuralRelativeSnapshot.downsideCapture, 0)}`,
       interpretation:
         !selectedMetricBenchmark
-          ? 'Select a benchmark to interpret upside/downside participation.'
+          ? '—'
           : structuralRelativeSnapshot?.upsideCapture == null || structuralRelativeSnapshot?.downsideCapture == null
             ? 'Capture profile needs a longer overlapping benchmark history.'
             : structuralRelativeSnapshot.downsideCapture < structuralRelativeSnapshot.upsideCapture - 15
@@ -6224,21 +6453,45 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 <div className="panel-title">Performance</div>
                 <div className="instrument-section-title">Metrics Matrix</div>
               </div>
-              <div className="instrument-chart-compare instrument-performance-benchmark-select">
-                <div className="instrument-chart-compare-select-wrap">
-                  <select
-                    aria-label="Performance benchmark"
-                    value={metricBenchmarkFundId}
-                    onChange={(event) => setMetricBenchmarkFundId(event.target.value)}
-                  >
-                    <option value="">Compare...</option>
-                    {benchmarkOptions.map((item) => (
-                      <option key={item.fund_id} value={item.fund_id}>
-                        {item.ticker_or_isin ? `${item.ticker_or_isin} · ${item.fund_name}` : item.fund_name}
-                      </option>
-                    ))}
-                  </select>
+              <div className="instrument-performance-matrix-controls">
+                <div className="instrument-performance-view-toggle" role="group" aria-label="Metrics matrix view">
+                  {PERFORMANCE_MATRIX_MODE_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={option.value === activePerformanceMatrixMode ? 'instrument-performance-toggle-active' : undefined}
+                      disabled={option.value !== 'values' && !peerComparison}
+                      onClick={() => setPerformanceMatrixMode(option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
                 </div>
+                {activePerformanceMatrixMode === 'values' ? (
+                  <div className="instrument-chart-compare instrument-performance-benchmark-select">
+                    <div className="instrument-chart-compare-select-wrap">
+                      <select
+                        aria-label="Performance benchmark"
+                        value={metricBenchmarkFundId}
+                        onChange={(event) => setMetricBenchmarkFundId(event.target.value)}
+                      >
+                        <option value="">Compare...</option>
+                        {benchmarkOptions.map((item) => (
+                          <option key={item.fund_id} value={item.fund_id}>
+                            {item.ticker_or_isin ? `${item.ticker_or_isin} · ${item.fund_name}` : item.fund_name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="instrument-peer-context">
+                    <span>{peerComparisonPathLabel}</span>
+                    {peerComparison?.sample_count ? (
+                      <strong>n={formatNumber(peerComparison.sample_count, 0)}</strong>
+                    ) : null}
+                  </div>
+                )}
               </div>
             </div>
             <div className="instrument-performance-section-body">
@@ -6255,7 +6508,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   <tbody>
                     {performanceMetricMatrixRows.map((row) => (
                       <tr
-                        key={row.label}
+                        key={row.key}
                         className={
                           row.supportsBenchmark
                             ? 'instrument-metrics-row-with-note'
@@ -6264,8 +6517,12 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                       >
                         <td className="instrument-metrics-row-label">{row.label}</td>
                         {row.cells.map((cell, index) => (
-                          <td key={`${row.label}-${PERFORMANCE_METRIC_PERIODS[index]?.key || index}`}>
-                            <div className="instrument-metrics-cell">
+                          <td key={`${row.key}-${PERFORMANCE_METRIC_PERIODS[index]?.key || index}`}>
+                            <div
+                              className={`instrument-metrics-cell${
+                                'tone' in cell ? ` instrument-metrics-cell-${cell.tone}` : ''
+                              }`}
+                            >
                               <strong>{cell.primary}</strong>
                               {cell.secondary ? (
                                 <span className="instrument-metrics-cell-note">{cell.secondary}</span>
@@ -6346,7 +6603,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   <button
                     key={option.months}
                     type="button"
-                    className={option.months === rollingReturnWindowMonths ? 'button-primary' : undefined}
+                    className={option.months === rollingReturnWindowMonths ? 'instrument-performance-toggle-active' : undefined}
                     onClick={() => setRollingReturnWindowMonths(option.months)}
                   >
                     {option.label}
@@ -6930,7 +7187,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                     <div className="instrument-fallback-copy">
                       {selectedMetricBenchmark
                         ? 'Rolling beta will appear once at least 12 overlapping monthly return observations are available.'
-                        : 'Select a benchmark in Performance to enable rolling beta.'}
+                        : '—'}
                     </div>
                   </div>
                 )}

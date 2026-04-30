@@ -216,8 +216,11 @@ def test_holdings_and_account_workspace_use_base_currency_valuation(client):
     assert holdings["totals"]["market_value"] == pytest.approx(expected_total_market_value)
 
     hkd_row = next(row for row in holdings["rows"] if row["asset_core"]["asset_id"] == "fund-hk-2800")
-    expected_hkd_allocation = (hkd_row["market_value"] * fx_to_usd["HKD"]) / expected_total_market_value
+    expected_total_nav = holdings["totals"]["nav"]
+    assert expected_total_nav != pytest.approx(expected_total_market_value)
+    expected_hkd_allocation = (hkd_row["market_value"] * fx_to_usd["HKD"]) / expected_total_nav
     assert hkd_row["allocation"] == pytest.approx(expected_hkd_allocation)
+    assert holdings["totals"]["allocation"] == pytest.approx(expected_total_market_value / expected_total_nav)
 
     accounts_response = client.get("/api/portfolios/yungu/accounts/workspace")
     assert accounts_response.status_code == 200
@@ -253,6 +256,10 @@ def test_holdings_workspace_replays_requested_as_of_date(client):
 
 
 def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
+    baseline_summary_response = client.get("/api/workspace/summary", params={"portfolio_id": "yungu"})
+    assert baseline_summary_response.status_code == 200
+    baseline_nav = baseline_summary_response.json()["nav"]
+
     baseline_response = client.get(
         "/api/portfolios/yungu/accounts/workspace",
         params={"as_of_date": "2026-04-15"},
@@ -295,6 +302,19 @@ def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
         if row["account"]["account_id"] == "cash-usd-main"
     )
     assert trade_date_cash_row["derived_cash_balance"] == pytest.approx(baseline_cash_balance)
+    assert trade_date_cash_row["pending_settlement"] == pytest.approx(-206.47)
+    assert trade_date_cash_row["pending_settlement_base"] == pytest.approx(-206.47)
+
+    trade_date_broker_row = next(
+        row
+        for row in trade_date_response.json()["accounts"]
+        if row["account"]["account_id"] == "broker-us-core"
+    )
+    assert trade_date_broker_row["position_market_value"] >= 206.47
+
+    post_buy_summary_response = client.get("/api/workspace/summary", params={"portfolio_id": "yungu"})
+    assert post_buy_summary_response.status_code == 200
+    assert post_buy_summary_response.json()["nav"] == pytest.approx(baseline_nav)
 
     settlement_date_response = client.get(
         "/api/portfolios/yungu/accounts/workspace",
@@ -307,6 +327,7 @@ def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
         if row["account"]["account_id"] == "cash-usd-main"
     )
     assert settlement_date_cash_row["derived_cash_balance"] == pytest.approx(baseline_cash_balance - 206.47)
+    assert settlement_date_cash_row["pending_settlement"] == pytest.approx(0.0)
 
 
 def test_holdings_workspace_includes_shared_price_sparklines(client):
@@ -1552,6 +1573,83 @@ def test_transfer_derivation_rejects_missing_source_lots():
         derive_ledger_postings("p", malformed_transactions, account_cost_methods={"src": "fifo", "dst": "fifo"})
 
     with pytest.raises(ValueError, match="source position lots|linked source position lots"):
+        build_position_lots("p", accounts, malformed_transactions)
+
+
+def test_lot_kernels_reject_oversell_when_route_validation_is_bypassed():
+    accounts = [
+        {
+            "account_id": "broker",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "cost_basis_method": "fifo",
+        },
+        {
+            "account_id": "cash",
+            "account_type": "deposit_account",
+            "currency": "USD",
+        },
+    ]
+    instrument_ref = {
+        "asset_id": "equity-us-abbv",
+        "asset_name": "AbbVie Inc",
+        "asset_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+    malformed_transactions = [
+        {
+            "transaction_id": "buy-1",
+            "portfolio_id": "p",
+            "transaction_type": "buy",
+            "trade_date": "2026-04-10",
+            "trade_at": "2026-04-10T04:00:00Z",
+            "settlement_date": "2026-04-10",
+            "account_id": "broker",
+            "settlement_cash_account_id": "cash",
+            "asset_id": "equity-us-abbv",
+            "instrument_ref": instrument_ref,
+            "quantity": 1.0,
+            "price": 100.0,
+            "gross_amount": 100.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "created_at": "2026-04-10T04:00:00Z",
+        },
+        {
+            "transaction_id": "sell-1",
+            "portfolio_id": "p",
+            "transaction_type": "sell",
+            "trade_date": "2026-04-11",
+            "trade_at": "2026-04-11T04:00:00Z",
+            "settlement_date": "2026-04-11",
+            "account_id": "broker",
+            "settlement_cash_account_id": "cash",
+            "asset_id": "equity-us-abbv",
+            "instrument_ref": instrument_ref,
+            "quantity": 2.0,
+            "price": 110.0,
+            "gross_amount": 220.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "created_at": "2026-04-11T04:00:00Z",
+        },
+    ]
+
+    with pytest.raises(ValueError, match="exceeds account position"):
+        _build_position_state(malformed_transactions, account_cost_methods={"broker": "fifo"})
+
+    with pytest.raises(ValueError, match="exceeds account position"):
+        derive_ledger_postings(
+            "p",
+            malformed_transactions,
+            account_cost_methods={"broker": "fifo"},
+            account_currency_map={"broker": "USD", "cash": "USD"},
+        )
+
+    with pytest.raises(ValueError, match="exceeds account position"):
         build_position_lots("p", accounts, malformed_transactions)
 
 

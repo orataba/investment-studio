@@ -1,4 +1,5 @@
 import { ChangeEvent, FormEvent, Fragment, useEffect, useMemo, useState } from 'react'
+import { LanguageSelector } from '../../../../packages/ui/src/i18n'
 import type {
   AssetIdentifier as PlatformAssetIdentifier,
   AssetType,
@@ -468,6 +469,7 @@ function HomePage({
         <a className="platform-nav-link" href={DATABASE_DASHBOARD_PATH}>
           Database Dashboard
         </a>
+        <LanguageSelector />
       </header>
 
       <section className="hero">
@@ -1138,6 +1140,7 @@ function InstrumentsPage({
         <a className="platform-nav-link platform-nav-link-active" href={DATABASE_DASHBOARD_PATH}>
           Database Dashboard
         </a>
+        <LanguageSelector />
       </header>
 
       <section className="registry-pagehead">

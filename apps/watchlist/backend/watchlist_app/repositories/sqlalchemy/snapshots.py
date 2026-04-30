@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -30,6 +31,19 @@ class SQLAlchemySnapshotRepository:
         )
         return session.scalars(stmt).first()
 
+    def list_current_performance(
+        self,
+        session: Session,
+        asset_ids: Sequence[str] | None = None,
+    ) -> Sequence[PerformanceSnapshot]:
+        stmt = select(PerformanceSnapshot).where(PerformanceSnapshot.is_current.is_(True))
+        if asset_ids is not None:
+            if not asset_ids:
+                return []
+            stmt = stmt.where(PerformanceSnapshot.asset_id.in_(asset_ids))
+        stmt = stmt.order_by(PerformanceSnapshot.asset_id, PerformanceSnapshot.as_of_date.desc())
+        return session.scalars(stmt).all()
+
     def get_current_risk(self, session: Session, asset_id: str) -> RiskSnapshot | None:
         stmt = (
             select(RiskSnapshot)
@@ -37,6 +51,19 @@ class SQLAlchemySnapshotRepository:
             .order_by(RiskSnapshot.as_of_date.desc())
         )
         return session.scalars(stmt).first()
+
+    def list_current_risk(
+        self,
+        session: Session,
+        asset_ids: Sequence[str] | None = None,
+    ) -> Sequence[RiskSnapshot]:
+        stmt = select(RiskSnapshot).where(RiskSnapshot.is_current.is_(True))
+        if asset_ids is not None:
+            if not asset_ids:
+                return []
+            stmt = stmt.where(RiskSnapshot.asset_id.in_(asset_ids))
+        stmt = stmt.order_by(RiskSnapshot.asset_id, RiskSnapshot.as_of_date.desc())
+        return session.scalars(stmt).all()
 
     def get_current_exposure(
         self,

@@ -24,3 +24,16 @@
 - 以仓库实现为准，不再维护“旧架构兼容说明”。
 - 描述当前真实运行方式，不用文档掩盖历史改造痕迹。
 - 历史阶段文档必须显式标记为历史记录，而不是当前操作手册。
+- `packages/ui` 已经进入当前路径，先承载语言选择与跨 app 前端共享上下文；不是纯占位目录。
+- `nav/`、runtime DB、构建产物和缓存都按本地工作产物处理，不作为文档或源码资产提交。
+
+提交前快速检查：
+
+```bash
+cd /home/shaw/yungu/apps/platform/backend && pytest
+cd /home/shaw/yungu/apps/portfolio/backend && pytest
+cd /home/shaw/yungu/apps/watchlist/backend && pytest
+cd /home/shaw/yungu/apps/platform/frontend && npm run build
+cd /home/shaw/yungu/apps/portfolio/frontend && npm run build
+cd /home/shaw/yungu/apps/watchlist/frontend && npm run build
+```

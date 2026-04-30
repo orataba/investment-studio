@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
-import { formatCurrency, formatPercent, formatSignedCurrency } from '../lib/format'
+import { formatCurrency, formatPercent, formatSignedCurrency, signedValueClass } from '../lib/format'
 import {
   copyPortfolio,
   deletePortfolio,
@@ -102,8 +102,10 @@ export default function PortfolioWorkspaceLayout({
   const portfolioHomePath = resolvedPortfolioId
     ? buildPortfolioSectionPath(resolvedPortfolioId, '/overview')
     : '/portfolios'
-  const changeClassName =
-    (resolvedSummary.day_change_value ?? 0) < 0 ? 'portfolio-change-negative' : 'portfolio-change-positive'
+  const changeToneClassName = signedValueClass(resolvedSummary.day_change_value)
+  const changeClassName = changeToneClassName
+    ? `portfolio-change-value ${changeToneClassName}`
+    : 'portfolio-change-value neutral-cell'
   const badges = summaryError
     ? [...resolvedSummary.badges, 'Workspace summary unavailable']
     : resolvedSummary.badges

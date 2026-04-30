@@ -4,6 +4,12 @@
     "useDefineForClassFields": true,
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
+    "baseUrl": ".",
+    "paths": {
+      "react": ["node_modules/@types/react"],
+      "react/jsx-runtime": ["node_modules/@types/react/jsx-runtime"],
+      "react/jsx-dev-runtime": ["node_modules/@types/react/jsx-dev-runtime"]
+    },
     "skipLibCheck": true,
     "moduleResolution": "Bundler",
     "allowImportingTsExtensions": false,
@@ -15,4 +21,3 @@
   },
   "include": ["src"]
 }
-

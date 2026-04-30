@@ -9,6 +9,18 @@ from watchlist_app.db.models.read_models import AssetChartReadModel, WatchlistRo
 from watchlist_app.db.models.watchlists import InstrumentAttributeValue, WatchlistView
 
 
+TAXONOMY_GROUP_BY_CODE = "taxonomy"
+TAXONOMY_GROUP_FIELDS = [
+    "attr.fund_regime",
+    "attr.fund_taxonomy_level_1",
+    "attr.fund_taxonomy_level_2",
+    "attr.fund_taxonomy_level_3",
+    "attr.fund_taxonomy_level_4",
+    "attr.fund_taxonomy_level_5",
+    "attr.fund_taxonomy_level_6",
+]
+
+
 def _serialize_scalar(value: object) -> object:
     if isinstance(value, datetime):
         return value.isoformat().replace("+00:00", "Z")
@@ -212,6 +224,54 @@ def _resolve_field_value(row: dict[str, object], field: str) -> object:
     return row.get(field)
 
 
+def _taxonomy_path_values(row: dict[str, object]) -> list[str]:
+    values: list[str] = []
+    for field in TAXONOMY_GROUP_FIELDS:
+        value = _resolve_field_value(row, field)
+        if value is None or value == "":
+            break
+        values.append(str(value))
+    return values
+
+
+def _taxonomy_group_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    buckets: dict[str, dict[str, object]] = {}
+    for row in rows:
+        path_values = _taxonomy_path_values(row)
+        if not path_values:
+            bucket = buckets.setdefault(
+                "Unspecified",
+                {
+                    "group_value": "Unspecified",
+                    "row_count": 0,
+                    "group_depth": 0,
+                    "group_path": [],
+                },
+            )
+            bucket["row_count"] = int(bucket["row_count"]) + 1
+            continue
+        for depth in range(1, len(path_values) + 1):
+            path = path_values[:depth]
+            group_value = " / ".join(path)
+            bucket = buckets.setdefault(
+                group_value,
+                {
+                    "group_value": group_value,
+                    "row_count": 0,
+                    "group_depth": depth - 1,
+                    "group_path": path,
+                },
+            )
+            bucket["row_count"] = int(bucket["row_count"]) + 1
+    return sorted(
+        buckets.values(),
+        key=lambda item: (
+            item["group_path"] == [],
+            [str(value) for value in item.get("group_path", [])],
+        ),
+    )
+
+
 def _normalize_string(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -389,6 +449,11 @@ def execute_watchlist_query(
     if not sort_rules_provided and view is not None:
         sort_rules = view.default_sort_json or []
 
+    group_by_provided = "group_by" in payload
+    group_by = payload.get("group_by")
+    if not group_by_provided and view is not None:
+        group_by = view.default_group_by or "none"
+
     filtered_rows = _apply_filters(serialized_rows, filters)
     filtered_rows = [
         row
@@ -407,6 +472,10 @@ def execute_watchlist_query(
         ]
     if not selected_fields:
         selected_fields = ["asset_name", "overall_rating", "category_name"]
+    if group_by == TAXONOMY_GROUP_BY_CODE:
+        for field in TAXONOMY_GROUP_FIELDS:
+            if field not in selected_fields:
+                selected_fields.append(field)
 
     projected_rows = [
         {
@@ -417,13 +486,10 @@ def execute_watchlist_query(
         for row in filtered_rows
     ]
 
-    group_by_provided = "group_by" in payload
-    group_by = payload.get("group_by")
-    if not group_by_provided and view is not None:
-        group_by = view.default_group_by or "none"
-
     groups: list[dict[str, object]] = []
-    if group_by and group_by != "none":
+    if group_by == TAXONOMY_GROUP_BY_CODE:
+        groups = _taxonomy_group_summary(filtered_rows)
+    elif group_by and group_by != "none":
         buckets: dict[str, int] = {}
         for row in filtered_rows:
             bucket = str(_resolve_field_value(row, group_by) or "Unspecified")
@@ -512,6 +578,7 @@ def default_fund_performance_payload() -> dict[str, object]:
         "annual_returns": [],
         "trailing_returns": [],
         "ranking": None,
+        "peer_comparison": None,
         "snapshot_metadata": None,
     }
 

@@ -417,6 +417,7 @@ def _consume_position_state(
     *,
     quantity: float,
     cost_basis_method: str,
+    error_message: str | None = None,
 ) -> tuple[float, list[dict[str, float]]]:
     bucket = _ensure_position_bucket(position_state, account_id, asset_id)
     if quantity <= 0:
@@ -424,8 +425,8 @@ def _consume_position_state(
 
     current_quantity = _safe_float(bucket.get("quantity")) or 0.0
     current_cost_basis = _safe_float(bucket.get("cost_basis")) or 0.0
-    if current_quantity <= 0 or current_cost_basis <= 0:
-        return 0.0, []
+    if current_quantity <= 1e-9 or quantity > current_quantity + 1e-9:
+        raise ValueError(error_message or "Position quantity exceeds available lots as of trade_date.")
 
     if cost_basis_method == "fifo":
         remaining = min(quantity, current_quantity)
@@ -572,6 +573,7 @@ def _build_position_state(
                 asset_id,
                 quantity=quantity or 0.0,
                 cost_basis_method=cost_basis_method,
+                error_message="Transaction quantity exceeds account position as of trade_date.",
             )
             continue
 
@@ -607,6 +609,7 @@ def _build_position_state(
                 asset_id,
                 quantity=quantity or 0.0,
                 cost_basis_method="fifo",
+                error_message="Position transfer requires source lots as of trade_date.",
             )
             if transferred_cost_basis <= 0 or not transferred_lots:
                 raise ValueError("Position transfer requires source lots as of trade_date.")
@@ -804,6 +807,7 @@ def derive_ledger_postings(
                 asset_id,
                 quantity=sold_quantity,
                 cost_basis_method=cost_basis_method,
+                error_message="Transaction quantity exceeds account position as of trade_date.",
             )
             append_posting(
                 transaction,
@@ -902,6 +906,7 @@ def derive_ledger_postings(
                 asset_id,
                 quantity=redeemed_quantity,
                 cost_basis_method=cost_basis_method,
+                error_message="Transaction quantity exceeds account position as of trade_date.",
             )
             append_posting(
                 transaction,
@@ -951,6 +956,7 @@ def derive_ledger_postings(
                     asset_id,
                     quantity=transferred_quantity,
                     cost_basis_method="fifo",
+                    error_message="Position transfer requires source lots as of trade_date.",
                 )
                 if transferred_cost_basis <= 0 or not transferred_lots:
                     raise ValueError("Position transfer requires source lots as of trade_date.")
@@ -1249,12 +1255,15 @@ def _consume_position_lots(
     asset_id: str,
     quantity: float,
     cost_basis_method: str,
+    error_message: str | None = None,
 ) -> list[dict[str, object]]:
     active_lots = _active_position_lots(position_lots_by_key, account_id, asset_id)
-    if quantity <= 0 or not active_lots:
+    if quantity <= 0:
         return []
 
     total_open_quantity = sum((_safe_float(lot.get("remaining_quantity")) or 0.0) for lot in active_lots)
+    if total_open_quantity <= 1e-9 or quantity > total_open_quantity + 1e-9:
+        raise ValueError(error_message or "Position quantity exceeds available position lots as of trade_date.")
     target_quantity = min(quantity, total_open_quantity)
     if target_quantity <= 1e-9:
         return []
@@ -1575,6 +1584,7 @@ def build_position_lots(
                 asset_id=resolved_asset_id,
                 quantity=quantity,
                 cost_basis_method=cost_basis_method,
+                error_message="Transaction quantity exceeds account position as of trade_date.",
             )
             net_proceeds = gross_amount - fees - taxes
             quantity_weights = [(_safe_float(slice_item.get("quantity")) or 0.0) for slice_item in disposal_slices]
@@ -1701,6 +1711,7 @@ def build_position_lots(
                 asset_id=resolved_asset_id,
                 quantity=quantity,
                 cost_basis_method="fifo",
+                error_message="Position transfer requires source position lots as of trade_date.",
             )
             if not disposal_slices:
                 raise ValueError("Position transfer requires source position lots as of trade_date.")
@@ -2059,6 +2070,7 @@ def build_account_workspace(
     linked_transaction_ids: dict[str, set[str]] = defaultdict(set)
     linked_posting_count: dict[str, int] = defaultdict(int)
     cash_balance: dict[str, float] = defaultdict(float)
+    pending_settlement: dict[str, float] = defaultdict(float)
 
     for posting in postings:
         account_id = str(posting.get("account_id") or "")
@@ -2066,8 +2078,12 @@ def build_account_workspace(
         linked_transaction_ids[account_id].add(str(posting.get("transaction_id") or ""))
 
         cash_delta = _safe_float(posting.get("cash_amount_delta"))
-        if cash_delta is not None and (as_of_iso is None or ledger_posting_effective_date_iso(posting) <= as_of_iso):
+        if cash_delta is None:
+            continue
+        if as_of_iso is None or ledger_posting_effective_date_iso(posting) <= as_of_iso:
             cash_balance[account_id] += cash_delta
+        else:
+            pending_settlement[account_id] += cash_delta
 
     position_lots = build_position_lots(
         portfolio_id,
@@ -2170,6 +2186,30 @@ def build_account_workspace(
             derived_cash_balance,
             from_currency=account_currency,
         )
+        pending_settlement_amount = pending_settlement[account_id]
+        pending_settlement_base = convert_to_base(
+            pending_settlement_amount,
+            from_currency=account_currency,
+        )
+        position_market_value = (
+            market_value_by_account[account_id]
+            if position_count_by_account[account_id] and valuation_complete_by_account[account_id]
+            else None
+        )
+        account_position_market_value = (
+            position_market_value
+            if position_count_by_account[account_id]
+            else 0.0
+        )
+        account_value_base = (
+            derived_cash_balance_base + pending_settlement_base + account_position_market_value
+            if (
+                derived_cash_balance_base is not None
+                and pending_settlement_base is not None
+                and account_position_market_value is not None
+            )
+            else None
+        )
         account_rows.append(
             {
                 "account": deepcopy(account),
@@ -2178,12 +2218,11 @@ def build_account_workspace(
                 "linked_posting_count": linked_posting_count[account_id],
                 "derived_cash_balance": derived_cash_balance,
                 "derived_cash_balance_base": derived_cash_balance_base,
+                "pending_settlement": pending_settlement_amount,
+                "pending_settlement_base": pending_settlement_base,
+                "account_value_base": account_value_base,
                 "position_line_count": position_count_by_account[account_id],
-                "position_market_value": (
-                    market_value_by_account[account_id]
-                    if position_count_by_account[account_id] and valuation_complete_by_account[account_id]
-                    else None
-                ),
+                "position_market_value": position_market_value,
                 "position_market_value_currency": base_currency if position_count_by_account[account_id] else None,
             }
         )

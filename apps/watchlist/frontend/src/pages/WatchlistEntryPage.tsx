@@ -11,6 +11,15 @@ import {
 } from '../lib/api'
 import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
 
+const ALL_COVERAGE_WATCHLIST_ID = 'all-coverage'
+
+function isAllCoverageWatchlist(watchlist: WatchlistRecord) {
+  return (
+    watchlist.watchlist_id === ALL_COVERAGE_WATCHLIST_ID ||
+    (watchlist.is_default && watchlist.owner_type === 'system')
+  )
+}
+
 export default function WatchlistEntryPage() {
   const navigate = useNavigate()
   const [watchlists, setWatchlists] = useState<WatchlistRecord[]>([])
@@ -53,7 +62,9 @@ export default function WatchlistEntryPage() {
     return () => document.removeEventListener('mousedown', handleClick)
   }, [menuOpenId])
 
-  const totalProducts = watchlists.reduce((sum, item) => sum + item.item_count, 0)
+  const allCoverageWatchlist = watchlists.find(isAllCoverageWatchlist)
+  const totalProducts =
+    allCoverageWatchlist?.item_count ?? watchlists.reduce((sum, item) => sum + item.item_count, 0)
 
   function moveWatchlist(sourceId: string, targetId: string) {
     if (sourceId === targetId) {
@@ -125,14 +136,6 @@ export default function WatchlistEntryPage() {
             {watchlists.length} Watchlists · {totalProducts} Securities
           </span>
         </div>
-        <div className="toolbar">
-          <Link to="/monitoring" className="toolbar-link">
-            Monitoring
-          </Link>
-          <a href={PLATFORM_HOME_URL} className="toolbar-link">
-            Platform Home
-          </a>
-        </div>
       </header>
 
       {error ? <div className="panel error-state">{error}</div> : null}
@@ -146,38 +149,63 @@ export default function WatchlistEntryPage() {
           </button>
         </div>
         <div className="watchlist-entry-grid">
-          {watchlists.map((watchlist) => (
+          {watchlists.map((watchlist) => {
+            const systemCoverage = isAllCoverageWatchlist(watchlist)
+            return (
             <article
               key={watchlist.watchlist_id}
-              className={`watchlist-entry-card ${draggingId === watchlist.watchlist_id ? 'entry-card-dragging' : ''}`}
-              draggable
-              onDragStart={() => setDraggingId(watchlist.watchlist_id)}
+              className={`watchlist-entry-card ${systemCoverage ? 'watchlist-entry-card-system' : ''} ${
+                draggingId === watchlist.watchlist_id ? 'entry-card-dragging' : ''
+              }`}
+              draggable={!systemCoverage}
+              onDragStart={() => {
+                if (!systemCoverage) {
+                  setDraggingId(watchlist.watchlist_id)
+                }
+              }}
               onDragEnd={() => setDraggingId(null)}
-              onDragOver={(event) => event.preventDefault()}
+              onDragOver={(event) => {
+                if (!systemCoverage) {
+                  event.preventDefault()
+                }
+              }}
               onDrop={() => {
-                if (draggingId) {
+                if (draggingId && !systemCoverage) {
                   moveWatchlist(draggingId, watchlist.watchlist_id)
                 }
                 setDraggingId(null)
               }}
             >
               <div className="watchlist-entry-card-leading">
-                <button
-                  type="button"
-                  className="watchlist-entry-grip"
-                  onClick={() => setNotice('Drag cards to reorder watchlists.')}
-                  aria-label={`Reorder ${watchlist.name}`}
-                  title="Drag to reorder"
-                >
-                  <svg viewBox="0 0 12 16">
-                    <circle cx="4" cy="4" r="1" fill="currentColor" />
-                    <circle cx="8" cy="4" r="1" fill="currentColor" />
-                    <circle cx="4" cy="8" r="1" fill="currentColor" />
-                    <circle cx="8" cy="8" r="1" fill="currentColor" />
-                    <circle cx="4" cy="12" r="1" fill="currentColor" />
-                    <circle cx="8" cy="12" r="1" fill="currentColor" />
-                  </svg>
-                </button>
+                {!systemCoverage ? (
+                  <button
+                    type="button"
+                    className="watchlist-entry-grip"
+                    onClick={() => setNotice('Drag rows to reorder watchlists.')}
+                    aria-label={`Reorder ${watchlist.name}`}
+                    title="Drag to reorder"
+                  >
+                    <svg viewBox="0 0 12 16">
+                      <circle cx="4" cy="4" r="1" fill="currentColor" />
+                      <circle cx="8" cy="4" r="1" fill="currentColor" />
+                      <circle cx="4" cy="8" r="1" fill="currentColor" />
+                      <circle cx="8" cy="8" r="1" fill="currentColor" />
+                      <circle cx="4" cy="12" r="1" fill="currentColor" />
+                      <circle cx="8" cy="12" r="1" fill="currentColor" />
+                    </svg>
+                  </button>
+                ) : (
+                  <span className="watchlist-entry-grip watchlist-entry-grip-placeholder" aria-hidden="true">
+                    <svg viewBox="0 0 12 16">
+                      <circle cx="4" cy="4" r="1" fill="currentColor" />
+                      <circle cx="8" cy="4" r="1" fill="currentColor" />
+                      <circle cx="4" cy="8" r="1" fill="currentColor" />
+                      <circle cx="8" cy="8" r="1" fill="currentColor" />
+                      <circle cx="4" cy="12" r="1" fill="currentColor" />
+                      <circle cx="8" cy="12" r="1" fill="currentColor" />
+                    </svg>
+                  </span>
+                )}
                 <div
                   className="watchlist-menu-shell"
                   ref={menuOpenId === watchlist.watchlist_id ? menuRef : null}
@@ -216,28 +244,30 @@ export default function WatchlistEntryPage() {
                       >
                         Copy Watchlist
                       </button>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            await deleteWatchlist(watchlist.watchlist_id)
-                            setWatchlists((current) =>
-                              current.filter((item) => item.watchlist_id !== watchlist.watchlist_id),
-                            )
-                            setNotice(`Deleted watchlist "${watchlist.name}".`)
-                          } catch (requestError) {
-                            setNotice(
-                              requestError instanceof Error
-                                ? requestError.message
-                                : 'Failed to delete watchlist.',
-                            )
-                          } finally {
-                            setMenuOpenId(null)
-                          }
-                        }}
-                      >
-                        Delete Watchlist
-                      </button>
+                      {!systemCoverage ? (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await deleteWatchlist(watchlist.watchlist_id)
+                              setWatchlists((current) =>
+                                current.filter((item) => item.watchlist_id !== watchlist.watchlist_id),
+                              )
+                              setNotice(`Deleted watchlist "${watchlist.name}".`)
+                            } catch (requestError) {
+                              setNotice(
+                                requestError instanceof Error
+                                  ? requestError.message
+                                  : 'Failed to delete watchlist.',
+                              )
+                            } finally {
+                              setMenuOpenId(null)
+                            }
+                          }}
+                        >
+                          Delete Watchlist
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
@@ -256,7 +286,9 @@ export default function WatchlistEntryPage() {
               <Link className="watchlist-entry-card-main" to={buildWatchlistPath(watchlist.watchlist_id)}>
                 <div className="watchlist-entry-card-title-stack">
                   <strong className="watchlist-entry-name">{watchlist.name}</strong>
-                  <span className="watchlist-entry-meta">Watchlist</span>
+                  <span className="watchlist-entry-meta">
+                    {systemCoverage ? 'System Coverage' : 'Watchlist'}
+                  </span>
                 </div>
                 <div className="watchlist-entry-card-metrics">
                   <strong>{watchlist.item_count}</strong>
@@ -267,7 +299,8 @@ export default function WatchlistEntryPage() {
                 </span>
               </Link>
             </article>
-          ))}
+            )
+          })}
         </div>
         <div className="watchlist-entry-create-card">
           <button

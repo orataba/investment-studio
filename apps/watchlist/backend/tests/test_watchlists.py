@@ -457,6 +457,126 @@ def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
     assert risk_payload["change_monitor"]["rows"]
 
 
+def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
+    client: TestClient,
+) -> None:
+    for asset_id, asset_name, ticker, values in (
+        (
+            "peer-strong",
+            "Peer Strong Fund",
+            "PSTR",
+            ["97.500000", "100.000000", "103.000000", "105.000000"],
+        ),
+        (
+            "peer-weak",
+            "Peer Weak Fund",
+            "PWK",
+            ["100.000000", "99.000000", "98.000000", "99.000000"],
+        ),
+    ):
+        seed_shared_instrument(
+            {
+                "asset_id": asset_id,
+                "asset_name": asset_name,
+                "asset_type": "fund",
+                "currency": "USD",
+                "identifiers": [
+                    {"identifier_type": "ticker", "identifier_value": ticker, "is_primary": True},
+                ],
+                "market_data": [
+                    {
+                        "metric_family": "nav",
+                        "quote_basis": "official_nav",
+                        "as_of_date": as_of_date,
+                        "value": value,
+                        "currency": "USD",
+                        "status": "complete",
+                    }
+                    for as_of_date, value in zip(
+                        ["2025-12-31", "2026-03-14", "2026-04-07", "2026-04-14"],
+                        values,
+                    )
+                ],
+                "lifecycle_state": {"status": "active"},
+            }
+        )
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Peer Ranking Coverage", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["sxv264", "peer-strong", "peer-weak"]},
+    )
+    assert add_response.status_code == 200
+
+    for asset_id in ("sxv264", "peer-strong", "peer-weak"):
+        update_response = client.put(
+            f"/api/taxonomies/fund-taxonomy/assets/{asset_id}",
+            json={"node_id": "fund-private-equity-quant-long-500", "updated_by": "test"},
+        )
+        assert update_response.status_code == 200
+
+    recalc_response = client.post(
+        "/api/recalc/assets/sxv264/execute",
+        json={
+            "job_type": "performance",
+            "trigger_type": "test",
+            "trigger_ref_type": "taxonomy_peer_ranking",
+            "trigger_ref_id": "sxv264",
+        },
+    )
+    assert recalc_response.status_code == 200
+
+    performance_response = client.get("/api/instruments/sxv264/performance")
+    assert performance_response.status_code == 200
+    payload = performance_response.json()
+    peer_comparison = payload["peer_comparison"]
+    assert peer_comparison["status"] == "ready"
+    assert peer_comparison["peer_node_id"] == "fund-private-equity-quant-long-500"
+    assert peer_comparison["sample_count"] == 3
+    assert payload["ranking"]["sample_count"] == 3
+    assert payload["ranking"]["rank"] == 2
+    assert payload["ranking"]["quartile"] == 2
+
+    metrics_by_key = {row["metric_key"]: row for row in peer_comparison["metrics"]}
+    assert metrics_by_key["annualized_return"]["rank"] == 2
+    assert metrics_by_key["annualized_return"]["percentile"] == pytest.approx(50.0)
+    trailing_by_window = {row["window"]: row for row in payload["trailing_returns"]}
+    assert trailing_by_window["Ann."]["category_nav"] is not None
+
+    screener_response = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "view_id": "fund-screening",
+            "selected_fields": [
+                "asset_name",
+                "attr.peer_group",
+                "attr.peer_sample_count",
+                "attr.peer_return_1w_percentile",
+                "attr.peer_return_1m_percentile",
+                "attr.peer_annualized_return_percentile",
+            ],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert screener_response.status_code == 200
+    sxv_row = next(
+        row
+        for row in screener_response.json()["rows"]
+        if row["asset_id"] == "sxv264"
+    )
+    assert sxv_row["attr.peer_group"] == "私募 / 股票策略 / 量化多头 / 500指增"
+    assert sxv_row["attr.peer_sample_count"] == 3
+    assert sxv_row["attr.peer_return_1w_percentile"] == pytest.approx(50.0)
+    assert sxv_row["attr.peer_return_1m_percentile"] == pytest.approx(50.0)
+    assert sxv_row["attr.peer_annualized_return_percentile"] == pytest.approx(50.0)
+
+
 def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
     client: TestClient,
 ) -> None:
@@ -1284,10 +1404,122 @@ def test_shared_registry_service_wraps_storage_errors_without_local_fallback(
         registry.resolve_shared_instrument(identifier_value="ARCH")
 
 
-def test_database_starts_without_seeded_watchlists(client: TestClient) -> None:
+def test_default_all_coverage_watchlist_syncs_active_shared_funds(
+    client: TestClient,
+) -> None:
     response = client.get("/api/watchlists")
     assert response.status_code == 200
-    assert response.json() == []
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["watchlist_id"] == "all-coverage"
+    assert payload[0]["name"] == "All Covered"
+    assert payload[0]["owner_type"] == "system"
+    assert payload[0]["is_default"] is True
+    assert payload[0]["is_shared"] is True
+    assert payload[0]["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+
+    detail = client.get("/api/watchlists/all-coverage")
+    assert detail.status_code == 200
+    detail_payload = detail.json()
+    assert detail_payload["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+    overview_view = next(
+        item for item in detail_payload["views"] if item["view_id"] == "overview"
+    )
+    assert overview_view["default_group_by"] == "taxonomy"
+
+    screener = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": "all-coverage",
+            "view_id": "overview",
+            "selected_fields": ["asset_name"],
+            "sort": [],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert screener.status_code == 200
+    screener_payload = screener.json()
+    assert screener_payload["total_rows"] == len(TEST_SHARED_INSTRUMENTS)
+    assert {row["asset_id"] for row in screener_payload["rows"]} == set(TEST_SHARED_INSTRUMENTS)
+
+
+def test_default_all_coverage_watchlist_resyncs_when_registry_grows(
+    client: TestClient,
+) -> None:
+    initial = client.get("/api/watchlists")
+    assert initial.status_code == 200
+    assert initial.json()[0]["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+
+    seed_shared_instrument(
+        {
+            **TEST_SHARED_INSTRUMENTS["savf63"],
+            "asset_id": "fund-new-income",
+            "asset_name": "New Income Fund",
+            "identifiers": [
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "NEWINC",
+                    "is_primary": True,
+                },
+            ],
+        }
+    )
+
+    detail = client.get("/api/watchlists/all-coverage")
+    assert detail.status_code == 200
+    assert detail.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS) + 1
+
+    screener = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": "all-coverage",
+            "view_id": "overview",
+            "selected_fields": ["asset_name"],
+            "sort": [],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert screener.status_code == 200
+    assert "fund-new-income" in {row["asset_id"] for row in screener.json()["rows"]}
+
+
+def test_default_all_coverage_watchlist_cannot_be_reduced_manually(
+    client: TestClient,
+) -> None:
+    list_response = client.get("/api/watchlists")
+    assert list_response.status_code == 200
+
+    delete_items = client.post(
+        "/api/watchlists/all-coverage/items/delete",
+        json={"asset_ids": ["sxv264"]},
+    )
+    assert delete_items.status_code == 400
+    assert "system-maintained" in delete_items.json()["detail"]
+
+    target = client.post(
+        "/api/watchlists",
+        json={"name": "Copy Target", "description": None},
+    )
+    target_watchlist_id = target.json()["watchlist_id"]
+    move_items = client.post(
+        "/api/watchlists/all-coverage/items/move",
+        json={"asset_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
+    )
+    assert move_items.status_code == 400
+    assert "system-maintained" in move_items.json()["detail"]
+
+    copy_items = client.post(
+        "/api/watchlists/all-coverage/items/copy",
+        json={"asset_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
+    )
+    assert copy_items.status_code == 200
+    assert copy_items.json()["added_count"] == 1
+
+    delete_watchlist = client.delete("/api/watchlists/all-coverage")
+    assert delete_watchlist.status_code == 400
+    assert "system-maintained" in delete_watchlist.json()["detail"]
 
 
 def test_duplicate_custom_view_name_returns_409(client: TestClient) -> None:
@@ -2094,6 +2326,17 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
     summary_payload = summary_response.json()
     assert summary_payload["taxonomy"]["path_labels"] == ["私募", "股票策略", "量化多头", "500指增"]
 
+    detail_response = client.get(f"/api/watchlists/{watchlist_id}")
+    assert detail_response.status_code == 200
+    assert [item["code"] for item in detail_response.json()["available_group_bys"]] == [
+        "none",
+        "taxonomy",
+        "management_firm_name",
+        "overall_rating",
+        "analyst_stance",
+        "data_freshness_status",
+    ]
+
     screener_response = client.post(
         "/api/screener/query",
         json={
@@ -2115,6 +2358,37 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
     assert screener_payload["rows"][0]["attr.fund_regime"] == "私募"
     assert screener_payload["rows"][0]["attr.fund_taxonomy_level_1"] == "股票策略"
     assert screener_payload["rows"][0]["attr.fund_taxonomy_leaf"] == "500指增"
+
+    taxonomy_group_response = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "view_id": "fund-screening",
+            "selected_fields": ["asset_name"],
+            "filters": {
+                "attr.fund_regime": ["私募"],
+                "attr.fund_taxonomy_level_1": ["股票策略"],
+                "attr.fund_taxonomy_level_2": ["量化多头"],
+            },
+            "group_by": "taxonomy",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert taxonomy_group_response.status_code == 200
+    taxonomy_group_payload = taxonomy_group_response.json()
+    assert taxonomy_group_payload["total_rows"] == 1
+    assert taxonomy_group_payload["rows"][0]["attr.fund_regime"] == "私募"
+    assert taxonomy_group_payload["rows"][0]["attr.fund_taxonomy_level_1"] == "股票策略"
+    assert taxonomy_group_payload["rows"][0]["attr.fund_taxonomy_level_2"] == "量化多头"
+    assert [
+        (item["group_value"], item["group_depth"], item["row_count"])
+        for item in taxonomy_group_payload["groups"]
+    ] == [
+        ("私募", 0, 1),
+        ("私募 / 股票策略", 1, 1),
+        ("私募 / 股票策略 / 量化多头", 2, 1),
+        ("私募 / 股票策略 / 量化多头 / 500指增", 3, 1),
+    ]
 
 
 def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_jobs(

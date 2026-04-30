@@ -12,6 +12,7 @@ import {
   formatQuantity,
   formatSignedCurrency,
   formatUnitPrice,
+  signedValueClass,
 } from '../lib/format'
 import {
   getHoldingsWorkspace,
@@ -29,12 +30,119 @@ import {
   type SparklinePoint,
 } from '../lib/api'
 
+type HoldingsSortField =
+  | 'ticker'
+  | 'name'
+  | 'asset_type'
+  | 'quantity'
+  | 'last_price'
+  | 'market_value'
+  | 'cost_basis'
+  | 'allocation'
+  | 'day_change'
+  | 'unrealized'
+  | 'accounts'
+  | 'lots'
+  | 'coverage'
+
+type HoldingsSortDirection = 'asc' | 'desc'
+
+const HOLDINGS_SORT_FIELDS: HoldingsSortField[] = [
+  'ticker',
+  'name',
+  'asset_type',
+  'quantity',
+  'last_price',
+  'market_value',
+  'cost_basis',
+  'allocation',
+  'day_change',
+  'unrealized',
+  'accounts',
+  'lots',
+  'coverage',
+]
+
+const TEXT_HOLDINGS_SORT_FIELDS = new Set<HoldingsSortField>(['ticker', 'name', 'asset_type', 'coverage'])
+
 function primaryIdentifier(row: PortfolioHoldingRow) {
   return (
     row.asset_core.identifiers.find((item) => item.is_primary)?.identifier_value ??
     row.asset_core.identifiers[0]?.identifier_value ??
     row.asset_core.asset_id
   )
+}
+
+function parseHoldingsSortField(value: string | null): HoldingsSortField {
+  return HOLDINGS_SORT_FIELDS.includes(value as HoldingsSortField) ? (value as HoldingsSortField) : 'market_value'
+}
+
+function parseHoldingsSortDirection(value: string | null, field: HoldingsSortField): HoldingsSortDirection {
+  if (value === 'asc' || value === 'desc') {
+    return value
+  }
+  return TEXT_HOLDINGS_SORT_FIELDS.has(field) ? 'asc' : 'desc'
+}
+
+function nullableNumber(value: number | null | undefined) {
+  return value ?? Number.NEGATIVE_INFINITY
+}
+
+function unrealizedBaseValue(row: PortfolioHoldingRow) {
+  if (row.market_value_base != null && row.cost_basis_base != null) {
+    return row.market_value_base - row.cost_basis_base
+  }
+  if (row.market_value != null && row.cost_basis != null) {
+    return row.market_value - row.cost_basis
+  }
+  return null
+}
+
+function compareText(left: string, right: string, direction: HoldingsSortDirection) {
+  const result = left.localeCompare(right, 'zh-Hans-CN')
+  return direction === 'asc' ? result : -result
+}
+
+function compareNumber(left: number | null | undefined, right: number | null | undefined, direction: HoldingsSortDirection) {
+  const result = nullableNumber(left) - nullableNumber(right)
+  return direction === 'asc' ? result : -result
+}
+
+function compareHoldings(
+  left: PortfolioHoldingRow,
+  right: PortfolioHoldingRow,
+  sortField: HoldingsSortField,
+  sortDirection: HoldingsSortDirection,
+) {
+  switch (sortField) {
+    case 'ticker':
+      return compareText(primaryIdentifier(left), primaryIdentifier(right), sortDirection)
+    case 'name':
+      return compareText(left.asset_core.asset_name, right.asset_core.asset_name, sortDirection)
+    case 'asset_type':
+      return compareText(left.asset_core.asset_type, right.asset_core.asset_type, sortDirection)
+    case 'quantity':
+      return compareNumber(left.quantity, right.quantity, sortDirection)
+    case 'last_price':
+      return compareNumber(left.last_price, right.last_price, sortDirection)
+    case 'cost_basis':
+      return compareNumber(left.cost_basis_base ?? left.cost_basis, right.cost_basis_base ?? right.cost_basis, sortDirection)
+    case 'allocation':
+      return compareNumber(left.allocation, right.allocation, sortDirection)
+    case 'day_change':
+      return compareNumber(left.day_change_value, right.day_change_value, sortDirection)
+    case 'unrealized':
+      return compareNumber(unrealizedBaseValue(left), unrealizedBaseValue(right), sortDirection)
+    case 'accounts':
+      return compareNumber(left.account_count, right.account_count, sortDirection)
+    case 'lots':
+      return compareNumber(left.open_position_lot_count, right.open_position_lot_count, sortDirection)
+    case 'coverage':
+      return compareText(left.coverage_status, right.coverage_status, sortDirection)
+    case 'market_value':
+    default:
+      return compareNumber(left.market_value_base ?? left.market_value, right.market_value_base ?? right.market_value, sortDirection)
+  }
 }
 
 function MiniSparkline({ values }: { values: SparklinePoint[] }) {
@@ -117,6 +225,11 @@ export default function PortfolioHomePage() {
   const requestedAsOfDate = searchParams.get('as_of_date') ?? ''
   const selectedAssetId = searchParams.get('asset_id')
   const selectedPositionLotId = searchParams.get('position_lot_id')
+  const holdingsSortField = parseHoldingsSortField(searchParams.get('holdings_sort_field') ?? searchParams.get('holdings_sort')?.replace(/_(asc|desc)$/, '') ?? null)
+  const holdingsSortDirection = parseHoldingsSortDirection(
+    searchParams.get('holdings_sort_direction') ?? searchParams.get('holdings_sort')?.match(/_(asc|desc)$/)?.[1] ?? null,
+    holdingsSortField,
+  )
   const chartRangeKey = (() => {
     const raw = searchParams.get('chart_range')
     if (raw === '1m' || raw === '3m' || raw === '6m' || raw === 'ytd' || raw === '1y' || raw === 'all') {
@@ -131,6 +244,13 @@ export default function PortfolioHomePage() {
     }
     return 'overview'
   })()
+  const sortedHoldingRows = useMemo(() => {
+    const rows = workspace?.rows ?? []
+    return rows.slice().sort((left, right) => {
+      const primary = compareHoldings(left, right, holdingsSortField, holdingsSortDirection)
+      return primary || primaryIdentifier(left).localeCompare(primaryIdentifier(right))
+    })
+  }, [workspace?.rows, holdingsSortField, holdingsSortDirection])
 
   function updateSearchParam(key: string, value: string | null) {
     setSearchParams((current) => {
@@ -147,6 +267,34 @@ export default function PortfolioHomePage() {
       }
       return next
     })
+  }
+
+  function handleHoldingsSort(field: HoldingsSortField) {
+    const defaultDirection = TEXT_HOLDINGS_SORT_FIELDS.has(field) ? 'asc' : 'desc'
+    const nextDirection =
+      holdingsSortField === field ? (holdingsSortDirection === 'asc' ? 'desc' : 'asc') : defaultDirection
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set('holdings_sort_field', field)
+      next.set('holdings_sort_direction', nextDirection)
+      next.delete('holdings_sort')
+      return next
+    })
+  }
+
+  function renderHoldingsSortHeader(field: HoldingsSortField, label: string) {
+    const active = holdingsSortField === field
+    return (
+      <button
+        type="button"
+        className={`holdings-th-sortable ${active ? 'holdings-th-sortable-active' : ''}`}
+        onClick={() => handleHoldingsSort(field)}
+        aria-sort={active ? (holdingsSortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
+      >
+        <span>{label}</span>
+        {active ? <span className="holdings-sort-indicator">{holdingsSortDirection === 'asc' ? '↑' : '↓'}</span> : null}
+      </button>
+    )
   }
 
   useEffect(() => {
@@ -190,12 +338,12 @@ export default function PortfolioHomePage() {
       return
     }
 
-    const firstAssetId = workspace.rows[0]?.asset_core.asset_id ?? null
+    const firstAssetId = sortedHoldingRows[0]?.asset_core.asset_id ?? null
     if (selectedAssetId && workspace.rows.some((row) => row.asset_core.asset_id === selectedAssetId)) {
       return
     }
     updateSearchParam('asset_id', firstAssetId)
-  }, [workspace, selectedAssetId])
+  }, [workspace, selectedAssetId, sortedHoldingRows])
 
   useEffect(() => {
     if (!selectedAssetId) {
@@ -350,7 +498,7 @@ export default function PortfolioHomePage() {
 
   const summaryCards = workspace?.summary_cards ?? []
   const selectedRow =
-    workspace?.rows.find((row) => row.asset_core.asset_id === selectedAssetId) ?? workspace?.rows[0] ?? null
+    workspace?.rows.find((row) => row.asset_core.asset_id === selectedAssetId) ?? sortedHoldingRows[0] ?? null
   const selectedPositionLots = positionLotsWorkspace?.position_lots ?? []
   const selectedTransactions = transactionsWorkspace?.transactions ?? []
   const selectedPositionLot =
@@ -422,10 +570,12 @@ export default function PortfolioHomePage() {
         {
           label: `Unrealized P/L (${selectedRow.asset_core.currency})`,
           value: formatSignedCurrency(selectedRowUnrealizedLocal, selectedRow.asset_core.currency),
+          toneClassName: signedValueClass(selectedRowUnrealizedLocal),
         },
         {
           label: `Unrealized P/L (${workspace?.base_currency ?? selectedRow.asset_core.currency})`,
           value: formatSignedCurrency(selectedRowUnrealizedBase, workspace?.base_currency ?? selectedRow.asset_core.currency),
+          toneClassName: signedValueClass(selectedRowUnrealizedBase),
         },
         {
           label: 'Accounts / Lots',
@@ -487,14 +637,8 @@ export default function PortfolioHomePage() {
       <section className="portfolio-detail-surface">
         <div className="portfolio-detail-toolbar">
           <div className="panel-title">Holdings</div>
-          <div className="portfolio-detail-meta">Canonical positions from transactions</div>
+          {workspace ? <span className="portfolio-subhead-meta">As of {workspace.as_of_date}</span> : null}
         </div>
-        {workspace ? (
-          <div className="holdings-meta-row">
-            <p className="coverage-note">{workspace.coverage_note}</p>
-            <span className="portfolio-subhead-meta">As of {workspace.as_of_date}</span>
-          </div>
-        ) : null}
         <div className="transaction-filter-bar holdings-filter-bar">
           <div className="transaction-filter-group holdings-filter-group">
             <label>
@@ -514,7 +658,7 @@ export default function PortfolioHomePage() {
                 onChange={(event) => updateSearchParam('asset_id', event.target.value || null)}
                 disabled={!workspace?.rows.length}
               >
-                {workspace?.rows.map((row) => (
+                {sortedHoldingRows.map((row) => (
                   <option key={row.asset_core.asset_id} value={row.asset_core.asset_id}>
                     {primaryIdentifier(row)} · {row.asset_core.asset_name}
                   </option>
@@ -527,8 +671,20 @@ export default function PortfolioHomePage() {
               type="button"
               className="toolbar-link"
               onClick={() => {
-                updateSearchParam('as_of_date', null)
-                updateSearchParam('asset_id', workspace?.rows[0]?.asset_core.asset_id ?? null)
+                setSearchParams((current) => {
+                  const next = new URLSearchParams(current)
+                  next.delete('as_of_date')
+                  next.delete('holdings_sort')
+                  next.delete('holdings_sort_field')
+                  next.delete('holdings_sort_direction')
+                  const firstAssetId = sortedHoldingRows[0]?.asset_core.asset_id ?? null
+                  if (firstAssetId) {
+                    next.set('asset_id', firstAssetId)
+                  } else {
+                    next.delete('asset_id')
+                  }
+                  return next
+                })
               }}
             >
               Reset View
@@ -544,22 +700,22 @@ export default function PortfolioHomePage() {
                 <thead>
                   <tr>
                     <th />
-                    <th>Ticker</th>
-                    <th>Name</th>
-                    <th>Asset Type</th>
-                    <th>Quantity</th>
-                    <th>Last Price</th>
-                    <th>Market Value</th>
-                    <th>Cost Basis</th>
-                    <th>Allocation</th>
-                    <th>Accounts</th>
-                    <th>Open PositionLots</th>
+                    <th>{renderHoldingsSortHeader('ticker', 'Ticker')}</th>
+                    <th>{renderHoldingsSortHeader('name', 'Name')}</th>
+                    <th>{renderHoldingsSortHeader('asset_type', 'Asset Type')}</th>
+                    <th>{renderHoldingsSortHeader('quantity', 'Quantity')}</th>
+                    <th>{renderHoldingsSortHeader('last_price', 'Last Price')}</th>
+                    <th>{renderHoldingsSortHeader('market_value', 'Market Value')}</th>
+                    <th>{renderHoldingsSortHeader('cost_basis', 'Cost Basis')}</th>
+                    <th>{renderHoldingsSortHeader('allocation', 'Allocation')}</th>
+                    <th>{renderHoldingsSortHeader('accounts', 'Accounts')}</th>
+                    <th>{renderHoldingsSortHeader('lots', 'Open PositionLots')}</th>
                     <th>Price Chart</th>
-                    <th>Coverage</th>
+                    <th>{renderHoldingsSortHeader('coverage', 'Coverage')}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {workspace.rows.map((row) => {
+                  {sortedHoldingRows.map((row) => {
                     const isActive = selectedRow?.asset_core.asset_id === row.asset_core.asset_id
                     return (
                       <tr
@@ -702,9 +858,9 @@ export default function PortfolioHomePage() {
                               {detailSummaryRows.map((metrics, index) => (
                                 <tr key={`summary-row-${index}`}>
                                   <th scope="row">{metrics[0]?.label ?? '—'}</th>
-                                  <td>{metrics[0]?.value ?? '—'}</td>
+                                  <td className={metrics[0]?.toneClassName}>{metrics[0]?.value ?? '—'}</td>
                                   <th scope="row">{metrics[1]?.label ?? '—'}</th>
-                                  <td>{metrics[1]?.value ?? '—'}</td>
+                                  <td className={metrics[1]?.toneClassName}>{metrics[1]?.value ?? '—'}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -892,8 +1048,12 @@ export default function PortfolioHomePage() {
                             <td>{formatCurrency(positionLot.entry_cost_basis, positionLot.currency)}</td>
                             <td>{formatCurrency(positionLot.remaining_cost_basis, positionLot.currency)}</td>
                             <td>{formatCurrency(positionLot.income_cash_amount, positionLot.currency)}</td>
-                            <td>{formatSignedCurrency(positionLot.realized_pnl, positionLot.currency)}</td>
-                            <td>{formatSignedCurrency(positionLot.unrealized_pnl, positionLot.currency)}</td>
+                            <td className={signedValueClass(positionLot.realized_pnl)}>
+                              {formatSignedCurrency(positionLot.realized_pnl, positionLot.currency)}
+                            </td>
+                            <td className={signedValueClass(positionLot.unrealized_pnl)}>
+                              {formatSignedCurrency(positionLot.unrealized_pnl, positionLot.currency)}
+                            </td>
                             <td>{formatNumber(positionLot.realization_count, 0)}</td>
                             <td>{formatNumber(positionLot.holding_period_days)}</td>
                             <td>{formatNumber(positionLot.linked_transaction_count)}</td>
@@ -957,7 +1117,9 @@ export default function PortfolioHomePage() {
                             <td>{formatUnitPrice(realization.price, selectedPositionLot.currency)}</td>
                             <td>{formatCurrency(realization.proceeds, selectedPositionLot.currency)}</td>
                             <td>{formatCurrency(realization.cost_basis_released, selectedPositionLot.currency)}</td>
-                            <td>{formatSignedCurrency(realization.realized_pnl, selectedPositionLot.currency)}</td>
+                            <td className={signedValueClass(realization.realized_pnl)}>
+                              {formatSignedCurrency(realization.realized_pnl, selectedPositionLot.currency)}
+                            </td>
                             <td>{formatQuantity(realization.remaining_quantity_after)}</td>
                             <td>{formatCurrency(realization.remaining_cost_basis_after, selectedPositionLot.currency)}</td>
                             <td>

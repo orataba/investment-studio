@@ -31,6 +31,7 @@ from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadMode
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
 from watchlist_app.repositories.sqlalchemy.snapshots import SQLAlchemySnapshotRepository
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
+from watchlist_app.reference_data.fund_taxonomy import FUND_TAXONOMY_CODE
 from watchlist_app.services.fund_taxonomy import (
     build_taxonomy_context,
     merge_taxonomy_attributes,
@@ -59,6 +60,126 @@ DEFAULT_TABS = [
 ]
 
 NAV_BASIS_PRIORITY = ("nav_with_dividend", "nav")
+PEER_METRIC_MIN_SAMPLE = 2
+PEER_COMPARISON_METRICS = [
+    {
+        "metric_key": "return_1w",
+        "label": "1W Return",
+        "source": "performance",
+        "attr": "return_1w",
+        "direction": "higher",
+        "domain": "return",
+        "format": "percent",
+    },
+    {
+        "metric_key": "return_1m",
+        "label": "1M Return",
+        "source": "performance",
+        "attr": "return_1m",
+        "direction": "higher",
+        "domain": "return",
+        "format": "percent",
+    },
+    {
+        "metric_key": "return_ytd",
+        "label": "YTD Return",
+        "source": "performance",
+        "attr": "return_ytd",
+        "direction": "higher",
+        "domain": "return",
+        "format": "percent",
+    },
+    {
+        "metric_key": "return_3m",
+        "label": "3M Return",
+        "source": "performance",
+        "attr": "return_3m",
+        "direction": "higher",
+        "domain": "return",
+        "format": "percent",
+    },
+    {
+        "metric_key": "return_6m",
+        "label": "6M Return",
+        "source": "performance",
+        "attr": "return_6m",
+        "direction": "higher",
+        "domain": "return",
+        "format": "percent",
+    },
+    {
+        "metric_key": "return_1y",
+        "label": "1Y Return",
+        "source": "performance",
+        "attr": "return_1y",
+        "direction": "higher",
+        "domain": "return",
+        "format": "percent",
+    },
+    {
+        "metric_key": "return_3y_annualized",
+        "label": "3Y Ann. Return",
+        "source": "performance",
+        "attr": "return_3y_annualized",
+        "direction": "higher",
+        "domain": "return",
+        "format": "percent",
+    },
+    {
+        "metric_key": "return_5y_annualized",
+        "label": "5Y Ann. Return",
+        "source": "performance",
+        "attr": "return_5y_annualized",
+        "direction": "higher",
+        "domain": "return",
+        "format": "percent",
+    },
+    {
+        "metric_key": "annualized_return",
+        "label": "Ann. Return",
+        "source": "performance",
+        "attr": "annualized_return",
+        "direction": "higher",
+        "domain": "return",
+        "format": "percent",
+    },
+    {
+        "metric_key": "volatility",
+        "label": "Ann. Vol",
+        "source": "risk",
+        "attr": "volatility",
+        "direction": "lower",
+        "domain": "risk",
+        "format": "percent",
+    },
+    {
+        "metric_key": "max_drawdown",
+        "label": "Max Drawdown",
+        "source": "performance",
+        "attr": "max_drawdown",
+        "direction": "higher",
+        "domain": "risk",
+        "format": "percent",
+    },
+    {
+        "metric_key": "sharpe_ratio",
+        "label": "Sharpe",
+        "source": "risk",
+        "attr": "sharpe_ratio",
+        "direction": "higher",
+        "domain": "risk_adjusted",
+        "format": "ratio",
+    },
+    {
+        "metric_key": "calmar",
+        "label": "Calmar",
+        "source": "performance",
+        "attr": "calmar",
+        "direction": "higher",
+        "domain": "risk_adjusted",
+        "format": "ratio",
+    },
+]
 
 
 def _default_nav_settings() -> dict[str, Any]:
@@ -119,7 +240,172 @@ def _safe_decimal(value: object) -> Decimal | None:
 
 def _safe_float(value: object) -> float | None:
     numeric = _safe_decimal(value)
-    return float(numeric) if numeric is not None else None
+    if numeric is None:
+        return None
+    result = float(numeric)
+    return result if math.isfinite(result) else None
+
+
+def _string_list(value: object) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def _node_path_node_ids(node: object | None) -> list[str]:
+    return _string_list(getattr(node, "path_node_ids_json", None))
+
+
+def _node_path_labels(node: object | None) -> list[str]:
+    return _string_list(getattr(node, "path_labels_json", None))
+
+
+def _quantile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    clamped = min(max(percentile, 0.0), 1.0)
+    index = (len(ordered) - 1) * clamped
+    lower = math.floor(index)
+    upper = math.ceil(index)
+    if lower == upper:
+        return ordered[int(index)]
+    weight = index - lower
+    return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+
+def _rank_metric_value(
+    *,
+    value: float,
+    samples: list[tuple[str, float]],
+    direction: str,
+) -> dict[str, object]:
+    if direction == "lower":
+        better_count = sum(1 for _, candidate in samples if candidate < value)
+    else:
+        better_count = sum(1 for _, candidate in samples if candidate > value)
+    rank = better_count + 1
+    sample_count = len(samples)
+    percentile = (
+        None
+        if sample_count < 2
+        else ((sample_count - rank) / (sample_count - 1)) * 100
+    )
+    if percentile is None:
+        quartile = None if sample_count == 0 else min(4, max(1, math.ceil(rank / sample_count * 4)))
+    elif percentile >= 75:
+        quartile = 1
+    elif percentile >= 50:
+        quartile = 2
+    elif percentile >= 25:
+        quartile = 3
+    else:
+        quartile = 4
+    return {
+        "rank": rank,
+        "percentile": percentile,
+        "quartile": quartile,
+        "sample_count": sample_count,
+    }
+
+
+def _mean_optional(values: list[float | None]) -> float | None:
+    valid = [value for value in values if value is not None]
+    return statistics.mean(valid) if valid else None
+
+
+def _primary_peer_ranking(peer_comparison: dict[str, object] | None) -> dict[str, object] | None:
+    if not isinstance(peer_comparison, dict) or peer_comparison.get("status") != "ready":
+        return None
+    metric_rows = peer_comparison.get("metrics")
+    if not isinstance(metric_rows, list):
+        return None
+    by_key = {
+        str(row.get("metric_key")): row
+        for row in metric_rows
+        if isinstance(row, dict)
+    }
+    for metric_key in ("annualized_return", "return_1y", "return_ytd", "return_1m"):
+        row = by_key.get(metric_key)
+        if not row:
+            continue
+        return {
+            "metric_key": metric_key,
+            "metric_label": row.get("label"),
+            "quartile": row.get("quartile"),
+            "percentile": row.get("percentile"),
+            "rank": row.get("rank"),
+            "sample_count": row.get("sample_count"),
+            "category_name": " / ".join(
+                str(item)
+                for item in (peer_comparison.get("peer_path") or [])
+                if str(item).strip()
+            )
+            or None,
+        }
+    return None
+
+
+PEER_WATCHLIST_PERCENTILE_ATTRIBUTE_KEYS = {
+    "return_1w": "peer_return_1w_percentile",
+    "return_1m": "peer_return_1m_percentile",
+    "return_ytd": "peer_return_ytd_percentile",
+    "return_1y": "peer_return_1y_percentile",
+    "return_3y_annualized": "peer_return_3y_percentile",
+    "return_5y_annualized": "peer_return_5y_percentile",
+    "annualized_return": "peer_annualized_return_percentile",
+    "volatility": "peer_volatility_percentile",
+    "max_drawdown": "peer_max_drawdown_percentile",
+    "sharpe_ratio": "peer_sharpe_percentile",
+    "calmar": "peer_calmar_percentile",
+}
+
+
+def _peer_watchlist_attributes(peer_comparison: dict[str, object] | None) -> dict[str, object]:
+    if not isinstance(peer_comparison, dict) or peer_comparison.get("status") != "ready":
+        return {}
+
+    attributes: dict[str, object] = {}
+    metrics = peer_comparison.get("metrics")
+    if isinstance(metrics, list):
+        for row in metrics:
+            if not isinstance(row, dict):
+                continue
+            metric_key = str(row.get("metric_key") or "")
+            attribute_key = PEER_WATCHLIST_PERCENTILE_ATTRIBUTE_KEYS.get(metric_key)
+            if attribute_key is None:
+                continue
+            percentile = _safe_float(row.get("percentile"))
+            if percentile is not None:
+                attributes[attribute_key] = percentile
+
+    summary = peer_comparison.get("summary")
+    if isinstance(summary, dict):
+        for source_key, attribute_key in (
+            ("overall_percentile", "peer_overall_percentile"),
+            ("return_percentile", "peer_return_percentile"),
+            ("risk_percentile", "peer_risk_percentile"),
+            ("risk_adjusted_percentile", "peer_risk_adjusted_percentile"),
+        ):
+            percentile = _safe_float(summary.get(source_key))
+            if percentile is not None:
+                attributes[attribute_key] = percentile
+
+    sample_count = _safe_float(peer_comparison.get("sample_count"))
+    if sample_count is not None:
+        attributes["peer_sample_count"] = sample_count
+
+    peer_path = [
+        str(item).strip()
+        for item in (peer_comparison.get("peer_path") or [])
+        if str(item).strip()
+    ]
+    if peer_path:
+        attributes["peer_group"] = " / ".join(peer_path)
+
+    return attributes
 
 
 def _hash_payload(payload: object) -> str:
@@ -1134,13 +1420,22 @@ class CanonicalRecalcService:
             nav_selection["points"],
             nav_selection["points"][-1]["currency"] if nav_selection["points"] else "USD",
         )
+        peer_comparison = self._peer_comparison_payload(
+            session,
+            asset_id=asset_id,
+            taxonomy_node=taxonomy_node,
+            performance_snapshot=performance_snapshot,
+            risk_snapshot=risk_snapshot,
+        )
         performance_payload = self._performance_payload(
             performance_snapshot=performance_snapshot,
+            peer_comparison=peer_comparison,
             nav_points=nav_selection["points"],
         )
         risk_payload = self._risk_payload(
             risk_snapshot=risk_snapshot,
             performance_snapshot=performance_snapshot,
+            peer_comparison=peer_comparison,
             nav_points=nav_selection["points"],
         )
         exposure_payload = self._exposure_payload(exposure_snapshot)
@@ -1173,12 +1468,13 @@ class CanonicalRecalcService:
 
         self._refresh_watchlist_rows(
             session,
-                asset=asset,
-                summary_payload=summary_payload,
-                attributes=watchlist_attributes,
-                performance_snapshot=performance_snapshot,
-                risk_snapshot=risk_snapshot,
-                exposure_snapshot=exposure_snapshot,
+            asset=asset,
+            summary_payload=summary_payload,
+            attributes=watchlist_attributes,
+            peer_comparison=peer_comparison,
+            performance_snapshot=performance_snapshot,
+            risk_snapshot=risk_snapshot,
+            exposure_snapshot=exposure_snapshot,
             score_snapshot=score_snapshot,
             now=now,
         )
@@ -1503,26 +1799,193 @@ class CanonicalRecalcService:
             "tabs": DEFAULT_TABS,
         }
 
+    def _peer_comparison_payload(
+        self,
+        session: Session,
+        *,
+        asset_id: str,
+        taxonomy_node,
+        performance_snapshot,
+        risk_snapshot,
+    ) -> dict[str, object]:
+        assigned_path_node_ids = _node_path_node_ids(taxonomy_node)
+        if taxonomy_node is None or not assigned_path_node_ids:
+            return {
+                "status": "missing_taxonomy",
+                "taxonomy_code": FUND_TAXONOMY_CODE,
+                "assigned_node_id": None,
+                "assigned_path": [],
+                "peer_node_id": None,
+                "peer_path": [],
+                "fallback_levels": 0,
+                "sample_count": 0,
+                "metrics": [],
+                "summary": {},
+            }
+
+        nodes = self.taxonomy_repository.list_nodes(session, taxonomy_code=FUND_TAXONOMY_CODE)
+        node_by_id = {str(node.node_id): node for node in nodes}
+        assignments = self.taxonomy_repository.list_assignments(
+            session,
+            taxonomy_code=FUND_TAXONOMY_CODE,
+        )
+        assigned_node_by_asset = {
+            str(assignment.asset_id): node_by_id.get(str(assignment.node_id))
+            for assignment in assignments
+            if assignment.node_id
+        }
+        performance_by_asset = {}
+        for snapshot in self.snapshot_repository.list_current_performance(session):
+            performance_by_asset.setdefault(str(snapshot.asset_id), snapshot)
+        if performance_snapshot is not None:
+            performance_by_asset[str(asset_id)] = performance_snapshot
+        risk_by_asset = {}
+        for snapshot in self.snapshot_repository.list_current_risk(session):
+            risk_by_asset.setdefault(str(snapshot.asset_id), snapshot)
+        if risk_snapshot is not None:
+            risk_by_asset[str(asset_id)] = risk_snapshot
+
+        selected_peer_node_id = assigned_path_node_ids[-1]
+        selected_asset_ids: list[str] = []
+        for candidate_node_id in reversed(assigned_path_node_ids):
+            candidate_asset_ids = [
+                candidate_asset_id
+                for candidate_asset_id, assigned_node in assigned_node_by_asset.items()
+                if candidate_node_id in _node_path_node_ids(assigned_node)
+                and candidate_asset_id in performance_by_asset
+            ]
+            selected_peer_node_id = candidate_node_id
+            selected_asset_ids = sorted(candidate_asset_ids)
+            if len(selected_asset_ids) >= PEER_METRIC_MIN_SAMPLE:
+                break
+
+        if asset_id not in selected_asset_ids and performance_snapshot is not None:
+            selected_asset_ids = sorted([*selected_asset_ids, asset_id])
+
+        peer_node = node_by_id.get(selected_peer_node_id) or taxonomy_node
+        fallback_levels = max(
+            0,
+            len(assigned_path_node_ids) - 1 - assigned_path_node_ids.index(selected_peer_node_id),
+        )
+        metric_rows: list[dict[str, object]] = []
+        for definition in PEER_COMPARISON_METRICS:
+            metric_key = str(definition["metric_key"])
+            attr = str(definition["attr"])
+            source = str(definition["source"])
+            direction = str(definition["direction"])
+            target_snapshot = performance_snapshot if source == "performance" else risk_snapshot
+            target_value = _safe_float(getattr(target_snapshot, attr, None))
+            if target_value is None:
+                continue
+
+            samples: list[tuple[str, float]] = []
+            for candidate_asset_id in selected_asset_ids:
+                candidate_snapshot = (
+                    performance_by_asset.get(candidate_asset_id)
+                    if source == "performance"
+                    else risk_by_asset.get(candidate_asset_id)
+                )
+                candidate_value = _safe_float(getattr(candidate_snapshot, attr, None))
+                if candidate_value is not None:
+                    samples.append((candidate_asset_id, candidate_value))
+            if len(samples) < PEER_METRIC_MIN_SAMPLE:
+                continue
+
+            ranking = _rank_metric_value(
+                value=target_value,
+                samples=samples,
+                direction=direction,
+            )
+            peer_values = [
+                value
+                for candidate_asset_id, value in samples
+                if candidate_asset_id != asset_id
+            ] or [value for _, value in samples]
+            metric_rows.append(
+                {
+                    "metric_key": metric_key,
+                    "label": definition["label"],
+                    "domain": definition["domain"],
+                    "format": definition["format"],
+                    "direction": direction,
+                    "value": target_value,
+                    "peer_median": _quantile(peer_values, 0.5),
+                    "peer_p25": _quantile(peer_values, 0.25),
+                    "peer_p75": _quantile(peer_values, 0.75),
+                    "peer_sample_count": len(peer_values),
+                    **ranking,
+                }
+            )
+
+        status = "ready" if metric_rows else "insufficient_data"
+        percentile_by_domain: dict[str, list[float | None]] = {}
+        for row in metric_rows:
+            domain = str(row.get("domain") or "")
+            percentile_by_domain.setdefault(domain, []).append(
+                _safe_float(row.get("percentile"))
+            )
+        return_percentile = _mean_optional(percentile_by_domain.get("return", []))
+        risk_percentile = _mean_optional(percentile_by_domain.get("risk", []))
+        risk_adjusted_percentile = _mean_optional(
+            percentile_by_domain.get("risk_adjusted", [])
+        )
+        return {
+            "status": status,
+            "taxonomy_code": FUND_TAXONOMY_CODE,
+            "assigned_node_id": getattr(taxonomy_node, "node_id", None),
+            "assigned_path": _node_path_labels(taxonomy_node),
+            "peer_node_id": selected_peer_node_id,
+            "peer_path": _node_path_labels(peer_node),
+            "fallback_levels": fallback_levels,
+            "sample_count": len(selected_asset_ids),
+            "metrics": metric_rows,
+            "summary": {
+                "return_percentile": return_percentile,
+                "risk_percentile": risk_percentile,
+                "risk_adjusted_percentile": risk_adjusted_percentile,
+                "overall_percentile": _mean_optional(
+                    [return_percentile, risk_percentile, risk_adjusted_percentile]
+                ),
+            },
+        }
+
     def _performance_payload(
         self,
         *,
         performance_snapshot,
+        peer_comparison: dict[str, object] | None,
         nav_points: list[dict[str, Any]],
     ) -> dict[str, object]:
         trailing_returns: list[dict[str, Any]] = []
         annual_returns = _compute_calendar_year_returns(nav_points)
         growth_chart_series: list[dict[str, Any]] = []
+        peer_metrics_by_key = {
+            str(row.get("metric_key")): row
+            for row in (peer_comparison or {}).get("metrics", [])
+            if isinstance(row, dict)
+        }
+        category_value_by_window = {
+            "1W": _safe_float(peer_metrics_by_key.get("return_1w", {}).get("peer_median")),
+            "1M": _safe_float(peer_metrics_by_key.get("return_1m", {}).get("peer_median")),
+            "YTD": _safe_float(peer_metrics_by_key.get("return_ytd", {}).get("peer_median")),
+            "3M": _safe_float(peer_metrics_by_key.get("return_3m", {}).get("peer_median")),
+            "6M": _safe_float(peer_metrics_by_key.get("return_6m", {}).get("peer_median")),
+            "1Y": _safe_float(peer_metrics_by_key.get("return_1y", {}).get("peer_median")),
+            "3Y": _safe_float(peer_metrics_by_key.get("return_3y_annualized", {}).get("peer_median")),
+            "5Y": _safe_float(peer_metrics_by_key.get("return_5y_annualized", {}).get("peer_median")),
+            "Ann.": _safe_float(peer_metrics_by_key.get("annualized_return", {}).get("peer_median")),
+        }
         if performance_snapshot is not None:
             trailing_returns = [
-                {"window": "1W", "investment_nav": _safe_float(performance_snapshot.return_1w), "category_nav": None, "index_nav": None},
-                {"window": "1M", "investment_nav": _safe_float(performance_snapshot.return_1m), "category_nav": None, "index_nav": None},
-                {"window": "YTD", "investment_nav": _safe_float(performance_snapshot.return_ytd), "category_nav": None, "index_nav": None},
-                {"window": "3M", "investment_nav": _safe_float(performance_snapshot.return_3m), "category_nav": None, "index_nav": None},
-                {"window": "6M", "investment_nav": _safe_float(performance_snapshot.return_6m), "category_nav": None, "index_nav": None},
-                {"window": "1Y", "investment_nav": _safe_float(performance_snapshot.return_1y), "category_nav": None, "index_nav": None},
-                {"window": "3Y", "investment_nav": _safe_float(performance_snapshot.return_3y_annualized), "category_nav": None, "index_nav": None},
-                {"window": "5Y", "investment_nav": _safe_float(performance_snapshot.return_5y_annualized), "category_nav": None, "index_nav": None},
-                {"window": "Ann.", "investment_nav": _safe_float(performance_snapshot.annualized_return), "category_nav": None, "index_nav": None},
+                {"window": "1W", "investment_nav": _safe_float(performance_snapshot.return_1w), "category_nav": category_value_by_window["1W"], "index_nav": None},
+                {"window": "1M", "investment_nav": _safe_float(performance_snapshot.return_1m), "category_nav": category_value_by_window["1M"], "index_nav": None},
+                {"window": "YTD", "investment_nav": _safe_float(performance_snapshot.return_ytd), "category_nav": category_value_by_window["YTD"], "index_nav": None},
+                {"window": "3M", "investment_nav": _safe_float(performance_snapshot.return_3m), "category_nav": category_value_by_window["3M"], "index_nav": None},
+                {"window": "6M", "investment_nav": _safe_float(performance_snapshot.return_6m), "category_nav": category_value_by_window["6M"], "index_nav": None},
+                {"window": "1Y", "investment_nav": _safe_float(performance_snapshot.return_1y), "category_nav": category_value_by_window["1Y"], "index_nav": None},
+                {"window": "3Y", "investment_nav": _safe_float(performance_snapshot.return_3y_annualized), "category_nav": category_value_by_window["3Y"], "index_nav": None},
+                {"window": "5Y", "investment_nav": _safe_float(performance_snapshot.return_5y_annualized), "category_nav": category_value_by_window["5Y"], "index_nav": None},
+                {"window": "Ann.", "investment_nav": _safe_float(performance_snapshot.annualized_return), "category_nav": category_value_by_window["Ann."], "index_nav": None},
             ]
             trailing_returns = [
                 row for row in trailing_returns if any(row[key] is not None for key in ("investment_nav", "category_nav", "index_nav"))
@@ -1534,7 +1997,8 @@ class CanonicalRecalcService:
             "growth_chart_series": growth_chart_series,
             "annual_returns": annual_returns,
             "trailing_returns": trailing_returns,
-            "ranking": None,
+            "ranking": _primary_peer_ranking(peer_comparison),
+            "peer_comparison": peer_comparison,
             "snapshot_metadata": _snapshot_metadata(performance_snapshot),
         }
 
@@ -1543,6 +2007,7 @@ class CanonicalRecalcService:
         *,
         risk_snapshot,
         performance_snapshot,
+        peer_comparison: dict[str, object] | None,
         nav_points: list[dict[str, Any]],
     ) -> dict[str, object]:
         volatility = _safe_float(getattr(risk_snapshot, "volatility", None))
@@ -1551,12 +2016,24 @@ class CanonicalRecalcService:
         current_watch = _build_current_risk_watch(nav_points, drawdown_summary)
         risk_structure = _build_risk_structure(nav_points, drawdown_summary, current_watch)
         change_monitor = _build_risk_change_monitor(nav_points, drawdown_summary, current_watch)
+        peer_metrics_by_key = {
+            str(row.get("metric_key")): row
+            for row in (peer_comparison or {}).get("metrics", [])
+            if isinstance(row, dict)
+        }
+        peer_summary = peer_comparison.get("summary") if isinstance(peer_comparison, dict) else {}
+        risk_percentile = (
+            _safe_float(peer_summary.get("risk_percentile")) if isinstance(peer_summary, dict) else None
+        )
+        return_percentile = (
+            _safe_float(peer_summary.get("return_percentile")) if isinstance(peer_summary, dict) else None
+        )
         return {
             "risk_overview": {
                 "exposure_risk_score": None,
                 "risk_level": _risk_level_label(volatility),
-                "risk_vs_category": "peer_set_pending",
-                "return_vs_category": "peer_set_pending",
+                "risk_vs_category": risk_percentile,
+                "return_vs_category": return_percentile,
             }
             if risk_snapshot is not None or performance_snapshot is not None
             else None,
@@ -1572,11 +2049,11 @@ class CanonicalRecalcService:
                 else []
             ),
             "risk_metrics": [
-                {"metric": "volatility", "investment": volatility, "category": None, "index": None},
-                {"metric": "sharpe_ratio", "investment": _safe_float(getattr(risk_snapshot, "sharpe_ratio", None)), "category": None, "index": None},
-                {"metric": "max_drawdown", "investment": _safe_float(getattr(performance_snapshot, "max_drawdown", None)), "category": None, "index": None},
-                {"metric": "calmar_ratio", "investment": _safe_float(getattr(performance_snapshot, "calmar", None)), "category": None, "index": None},
-                {"metric": "annualized_return", "investment": annualized_return, "category": None, "index": None},
+                {"metric": "volatility", "investment": volatility, "category": _safe_float(peer_metrics_by_key.get("volatility", {}).get("peer_median")), "index": None},
+                {"metric": "sharpe_ratio", "investment": _safe_float(getattr(risk_snapshot, "sharpe_ratio", None)), "category": _safe_float(peer_metrics_by_key.get("sharpe_ratio", {}).get("peer_median")), "index": None},
+                {"metric": "max_drawdown", "investment": _safe_float(getattr(performance_snapshot, "max_drawdown", None)), "category": _safe_float(peer_metrics_by_key.get("max_drawdown", {}).get("peer_median")), "index": None},
+                {"metric": "calmar_ratio", "investment": _safe_float(getattr(performance_snapshot, "calmar", None)), "category": _safe_float(peer_metrics_by_key.get("calmar", {}).get("peer_median")), "index": None},
+                {"metric": "annualized_return", "investment": annualized_return, "category": _safe_float(peer_metrics_by_key.get("annualized_return", {}).get("peer_median")), "index": None},
             ],
             "drawdown_summary": drawdown_summary,
             "risk_structure": risk_structure,
@@ -1638,6 +2115,7 @@ class CanonicalRecalcService:
         asset,
         summary_payload: dict[str, object],
         attributes: dict[str, object],
+        peer_comparison: dict[str, object] | None,
         performance_snapshot,
         risk_snapshot,
         exposure_snapshot,
@@ -1648,6 +2126,7 @@ class CanonicalRecalcService:
         if not existing_rows:
             return
         freshness = summary_payload.get("freshness", {})
+        row_attributes = {**attributes, **_peer_watchlist_attributes(peer_comparison)}
         for row in existing_rows:
             self.read_model_repository.upsert_watchlist_row(
                 session,
@@ -1665,7 +2144,7 @@ class CanonicalRecalcService:
                     category_name=summary_payload.get("category_name"),
                     overall_rating=getattr(score_snapshot, "overall_rating", None),
                     analyst_stance=getattr(score_snapshot, "analyst_stance", None),
-                    attributes=attributes,
+                    attributes=row_attributes,
                     freshness_status=str(freshness.get("data_freshness_status") or "fresh"),
                     last_fact_update_at=_coerce_utc(
                         datetime.fromisoformat(str(freshness["last_fact_update_at"]).replace("Z", "+00:00"))

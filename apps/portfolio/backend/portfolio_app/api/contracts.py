@@ -860,7 +860,7 @@ class ResearchSettingsUpdateRequest(BaseModel):
     gross_exposure: float | None = Field(default=None, gt=0)
     target_volatility: float | None = Field(default=None, gt=0, le=1)
     max_gross_exposure: float | None = Field(default=None, gt=0)
-    frozen_taxonomy_node_ids: list[str] = Field(default_factory=list)
+    frozen_taxonomy_node_ids: list[str] | None = None
     rebalance_frequency: ResearchRebalanceFrequency = "monthly"
     notes: str | None = None
 
@@ -872,6 +872,8 @@ class ResearchSettingsUpdateRequest(BaseModel):
     @field_validator("frozen_taxonomy_node_ids", mode="before")
     @classmethod
     def validate_frozen_taxonomy_node_ids(cls, value: object) -> object:
+        if value is None:
+            return None
         return _normalize_optional_text_list(value)
 
     @model_validator(mode="after")
@@ -2022,6 +2024,9 @@ class AccountWorkspaceAccount(BaseModel):
     linked_posting_count: int
     derived_cash_balance: float
     derived_cash_balance_base: float | None = None
+    pending_settlement: float = 0.0
+    pending_settlement_base: float | None = None
+    account_value_base: float | None = None
     position_line_count: int
     position_market_value: float | None = None
     position_market_value_currency: SupportedCurrency | None = None

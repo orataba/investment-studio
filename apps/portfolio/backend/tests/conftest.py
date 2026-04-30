@@ -21,6 +21,8 @@ from tests.store_fixture import TEST_PORTFOLIO_STORE
 
 from portfolio_app.api.routes import transactions as transaction_routes
 from portfolio_app.services import asset_charts, ledger, performance, portfolio_store
+from yungu_asset_core import instrument_store as shared_store
+from yungu_asset_core.db_models import SharedAssetBase
 
 
 def _market_point(
@@ -251,7 +253,15 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     session_module.get_session_factory.cache_clear()
 
     _run_alembic_upgrade(database_url)
+    SharedAssetBase.metadata.create_all(bind=session_module.get_engine())
     portfolio_store.reset_store(deepcopy(TEST_PORTFOLIO_STORE))
+    shared_store.reset_store(
+        session_module.get_session_factory(),
+        {
+            "registry_name": "Test Shared Instruments",
+            "instruments": deepcopy(REGISTRY_INSTRUMENT_DETAILS),
+        },
+    )
 
     monkeypatch.setattr(transaction_routes, "get_registry_instrument", _get_registry_instrument)
     monkeypatch.setattr(transaction_routes, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))

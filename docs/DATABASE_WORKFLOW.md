@@ -99,3 +99,5 @@ cd /home/shaw/yungu/apps/watchlist/backend && pytest tests/test_postgres_shared_
 - 仓库不再保存任何运行时 SQLite 数据文件。
 - 如果目录里出现 `*.db / *.sqlite / *.sqlite3`，应视为临时本地产物并删除，而不是提交。
 - SQLite 仅保留在测试夹具中，通过 `tmp_path` 动态生成。
+- `nav/` 是本机 NAV / Excel 导入暂存目录，脚本会从这里读取文件，但目录内容不属于源码。
+- `node_modules/` 与 frontend `dist/` 只由本地 install/build 生成，不作为提交内容。

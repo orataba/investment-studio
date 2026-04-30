@@ -97,9 +97,10 @@ def _basis_points(detail: dict[str, object]) -> dict[str, list[dict[str, object]
 
 def _candidate_chart_bases(detail: dict[str, object]) -> list[str]:
     candidate_bases = [
+        *_normalized_policy_bases(detail, "total_return"),
         *_normalized_policy_bases(detail, "chart"),
-        *_normalized_policy_bases(detail, "reference"),
         *_normalized_policy_bases(detail, "valuation"),
+        *_normalized_policy_bases(detail, "reference"),
     ]
     normalized: list[str] = []
     for quote_basis in candidate_bases:

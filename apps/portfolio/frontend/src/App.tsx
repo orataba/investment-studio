@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
+import { LanguageSelector } from '../../../../packages/ui/src/i18n'
 
 import AccountsPage from './pages/AccountsPage'
 import OverviewPage from './pages/OverviewPage'
@@ -14,6 +15,9 @@ import TransactionsPage from './pages/TransactionsPage'
 export default function App() {
   return (
     <div className="app-shell">
+      <div className="app-utility-bar">
+        <LanguageSelector />
+      </div>
       <main className="page-shell page-shell-terminal">
         <Routes>
           <Route path="/" element={<Navigate replace to="/portfolios" />} />

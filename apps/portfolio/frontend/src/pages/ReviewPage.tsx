@@ -32,6 +32,7 @@ import {
   formatPercent,
   formatQuantity,
   formatSignedCurrency,
+  signedValueClass,
 } from '../lib/format'
 
 const DEFAULT_REVIEW_LOOKBACK_DAYS = 30
@@ -579,8 +580,16 @@ export default function ReviewPage() {
     },
     { label: 'Start NAV', value: formatCurrency(performanceWorkspace?.summary.start_nav, baseCurrency) },
     { label: 'End NAV', value: formatCurrency(performanceWorkspace?.summary.end_nav, baseCurrency) },
-    { label: 'Cumulative Return', value: signedPercent(performanceWorkspace?.summary.cumulative_ttwror) },
-    { label: 'Total P&L', value: formatSignedCurrency(performanceWorkspace?.summary.total_pnl, baseCurrency) },
+    {
+      label: 'Cumulative Return',
+      value: signedPercent(performanceWorkspace?.summary.cumulative_ttwror),
+      toneClassName: signedValueClass(performanceWorkspace?.summary.cumulative_ttwror),
+    },
+    {
+      label: 'Total P&L',
+      value: formatSignedCurrency(performanceWorkspace?.summary.total_pnl, baseCurrency),
+      toneClassName: signedValueClass(performanceWorkspace?.summary.total_pnl),
+    },
     { label: 'Net External Inflow', value: formatSignedCurrency(performanceWorkspace?.summary.net_external_inflow, baseCurrency) },
     { label: 'Observation Count', value: String(realizedRiskMetrics.observationCount) },
   ]
@@ -601,15 +610,27 @@ export default function ReviewPage() {
 
   const riskSummaryLeft = [
     { label: 'Annualized Volatility', value: signedPercent(performanceWorkspace?.summary.annualized_volatility) },
-    { label: 'Current Drawdown', value: signedPercent(performanceWorkspace?.summary.current_drawdown) },
-    { label: 'Max Drawdown', value: signedPercent(performanceWorkspace?.summary.max_drawdown) },
+    {
+      label: 'Current Drawdown',
+      value: signedPercent(performanceWorkspace?.summary.current_drawdown),
+      toneClassName: signedValueClass(performanceWorkspace?.summary.current_drawdown),
+    },
+    {
+      label: 'Max Drawdown',
+      value: signedPercent(performanceWorkspace?.summary.max_drawdown),
+      toneClassName: signedValueClass(performanceWorkspace?.summary.max_drawdown),
+    },
     { label: 'Sortino Ratio', value: formatNumber(performanceWorkspace?.summary.sortino_ratio, 2) },
     { label: 'Down Days', value: String(realizedRiskMetrics.downDays) },
     { label: 'Stale Days', value: String(realizedRiskMetrics.staleDays) },
   ]
 
   const riskSummaryRight = [
-    { label: 'Worst Day', value: signedPercent(realizedRiskMetrics.worstDay?.daily_ttwror, 3) },
+    {
+      label: 'Worst Day',
+      value: signedPercent(realizedRiskMetrics.worstDay?.daily_ttwror, 3),
+      toneClassName: signedValueClass(realizedRiskMetrics.worstDay?.daily_ttwror),
+    },
     { label: 'Worst Day Date', value: realizedRiskMetrics.worstDay?.as_of_date ?? '—' },
     { label: 'Deepest Drawdown Date', value: realizedRiskMetrics.deepestDrawdown?.as_of_date ?? '—' },
     { label: 'Sharpe Ratio', value: formatNumber(performanceWorkspace?.summary.sharpe_ratio, 2) },
@@ -622,9 +643,6 @@ export default function ReviewPage() {
       <section className="portfolio-detail-surface">
         <div className="portfolio-detail-toolbar">
           <div className="panel-title">Review</div>
-          <div className="portfolio-detail-meta">
-            Period pack for results, realized risk, target context, and research handoff
-          </div>
         </div>
 
         <form className="performance-filter-bar" onSubmit={handleApplyFilters}>
@@ -698,7 +716,7 @@ export default function ReviewPage() {
                     {reviewSummaryLeft.map((row) => (
                       <tr key={row.label}>
                         <th>{row.label}</th>
-                        <td>{row.value}</td>
+                        <td className={row.toneClassName}>{row.value}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -727,7 +745,6 @@ export default function ReviewPage() {
             <section className="performance-section-block">
               <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                 <div className="panel-title">NAV Trend</div>
-                <div className="portfolio-detail-meta">Actual portfolio path across the active review window</div>
               </div>
               <PerformanceNavChart points={navChartPoints} currency={baseCurrency} />
             </section>
@@ -736,7 +753,6 @@ export default function ReviewPage() {
               <section className="performance-section-block">
                 <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                   <div className="panel-title">Period Calculation</div>
-                  <div className="portfolio-detail-meta">Waterfall view of value change, flows, and P&amp;L components</div>
                 </div>
                 <div className="table-shell">
                   <table className="transactions-table">
@@ -755,7 +771,7 @@ export default function ReviewPage() {
                               {line.label}
                             </td>
                             <td>{formatLabel(line.line_kind)}</td>
-                            <td className={line.amount != null && line.amount < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(line.amount)}>
                               {formatSignedCurrency(line.amount, calculationWorkspace.base_currency)}
                             </td>
                           </tr>
@@ -771,7 +787,6 @@ export default function ReviewPage() {
               <section className="performance-section-block">
                 <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                   <div className="panel-title">Monthly Return Tape</div>
-                  <div className="portfolio-detail-meta">Month buckets built from the active review window</div>
                 </div>
                 <div className="table-shell">
                   <table className="transactions-table">
@@ -798,13 +813,13 @@ export default function ReviewPage() {
                             </td>
                             <td>{bucket.observationCount}</td>
                             <td>{bucket.staleCount}</td>
-                            <td className={bucket.cumulativeReturn != null && bucket.cumulativeReturn < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(bucket.cumulativeReturn)}>
                               {signedPercent(bucket.cumulativeReturn)}
                             </td>
-                            <td className={bucket.absoluteChange != null && bucket.absoluteChange < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(bucket.absoluteChange)}>
                               {formatSignedCurrency(bucket.absoluteChange, baseCurrency)}
                             </td>
-                            <td className={bucket.maxDrawdown != null && bucket.maxDrawdown < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(bucket.maxDrawdown)}>
                               {signedPercent(bucket.maxDrawdown)}
                             </td>
                           </tr>
@@ -886,7 +901,7 @@ export default function ReviewPage() {
                     {riskSummaryLeft.map((row) => (
                       <tr key={row.label}>
                         <th>{row.label}</th>
-                        <td>{row.value}</td>
+                        <td className={row.toneClassName}>{row.value}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -904,7 +919,7 @@ export default function ReviewPage() {
                     {riskSummaryRight.map((row) => (
                       <tr key={row.label}>
                         <th>{row.label}</th>
-                        <td>{row.value}</td>
+                        <td className={row.toneClassName}>{row.value}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -915,7 +930,6 @@ export default function ReviewPage() {
             <section className="performance-section-block">
               <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                 <div className="panel-title">Worst Days</div>
-                <div className="portfolio-detail-meta">Largest negative sessions inside the active review window</div>
               </div>
               <div className="table-shell">
                 <table className="transactions-table">
@@ -941,13 +955,13 @@ export default function ReviewPage() {
                             </span>
                           </td>
                           <td>{formatCurrency(point.ending_nav, baseCurrency)}</td>
-                          <td className={point.daily_ttwror != null && point.daily_ttwror < 0 ? 'negative-cell' : ''}>
+                          <td className={signedValueClass(point.daily_ttwror)}>
                             {signedPercent(point.daily_ttwror, 3)}
                           </td>
-                          <td className={point.drawdown != null && point.drawdown < 0 ? 'negative-cell' : ''}>
+                          <td className={signedValueClass(point.drawdown)}>
                             {signedPercent(point.drawdown)}
                           </td>
-                          <td className={point.delta != null && point.delta < 0 ? 'negative-cell' : ''}>
+                          <td className={signedValueClass(point.delta)}>
                             {formatSignedCurrency(point.delta, baseCurrency)}
                           </td>
                           <td>{point.stale_price_flag || point.stale_fx_flag ? 'Observed' : 'Clean'}</td>
@@ -964,7 +978,6 @@ export default function ReviewPage() {
             <section className="performance-section-block">
               <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                 <div className="panel-title">Boundary Composition</div>
-                <div className="portfolio-detail-meta">How the portfolio started and ended over the selected period</div>
               </div>
               <div className="performance-summary-grid">
                 <div className="table-shell">
@@ -1022,7 +1035,6 @@ export default function ReviewPage() {
             <section className="performance-section-block">
               <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                 <div className="panel-title">Research Handoff</div>
-                <div className="portfolio-detail-meta">Backtest context, findings, and proposed follow-up actions</div>
               </div>
 
               {selectedResearchRun ? (
@@ -1164,7 +1176,6 @@ export default function ReviewPage() {
             <section className="performance-section-block">
               <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                 <div className="panel-title">Action Items</div>
-                <div className="portfolio-detail-meta">Carry-forward items from performance, risk, and research</div>
               </div>
               <div className="table-shell">
                 <table className="transactions-table">
@@ -1195,7 +1206,6 @@ export default function ReviewPage() {
             <section className="performance-section-block">
               <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                 <div className="panel-title">Recent Monitoring Tape</div>
-                <div className="portfolio-detail-meta">Latest daily observations that informed this review period</div>
               </div>
               <div className="table-shell">
                 <table className="transactions-table">
@@ -1222,13 +1232,13 @@ export default function ReviewPage() {
                             </span>
                           </td>
                           <td>{formatCurrency(point.ending_nav, baseCurrency)}</td>
-                          <td className={point.daily_ttwror != null && point.daily_ttwror < 0 ? 'negative-cell' : ''}>
+                          <td className={signedValueClass(point.daily_ttwror)}>
                             {signedPercent(point.daily_ttwror, 3)}
                           </td>
-                          <td className={point.cumulative_ttwror != null && point.cumulative_ttwror < 0 ? 'negative-cell' : ''}>
+                          <td className={signedValueClass(point.cumulative_ttwror)}>
                             {signedPercent(point.cumulative_ttwror)}
                           </td>
-                          <td className={point.drawdown != null && point.drawdown < 0 ? 'negative-cell' : ''}>
+                          <td className={signedValueClass(point.drawdown)}>
                             {signedPercent(point.drawdown)}
                           </td>
                           <td>{point.stale_price_flag ? 'Yes' : 'No'}</td>
@@ -1266,10 +1276,10 @@ function ReviewContributionRow({
       <td>{line.group_label}</td>
       <td>{formatPercent(line.average_weight)}</td>
       <td>{formatPercent(line.ending_weight)}</td>
-      <td className={line.total_pnl != null && line.total_pnl < 0 ? 'negative-cell' : ''}>
+      <td className={signedValueClass(line.total_pnl)}>
         {formatSignedCurrency(line.total_pnl, currency)}
       </td>
-      <td className={line.period_contribution != null && line.period_contribution < 0 ? 'negative-cell' : ''}>
+      <td className={signedValueClass(line.period_contribution)}>
         {signedPercent(line.period_contribution)}
       </td>
       <td>{formatCurrency(line.end_value_base, currency)}</td>

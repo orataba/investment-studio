@@ -4,6 +4,7 @@ from datetime import date
 
 import pytest
 
+from portfolio_app.services.asset_charts import _candidate_chart_bases
 from portfolio_app.services.research_backtest import _selected_price_points
 
 def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "weight") -> tuple[str, dict[str, str]]:
@@ -210,6 +211,7 @@ def test_research_workbench_returns_backtest_defaults(client):
     assert payload["selected_run"] is None
     assert payload["current_context"]["holdings_count"] == 3
     assert payload["current_context"]["planning_group_count"] == 0
+    assert payload["current_context"]["nav"] == payload["current_context"]["summary"]["end_nav"]
 
 
 def test_research_series_prefers_total_return_nav_for_funds() -> None:
@@ -265,6 +267,18 @@ def test_research_series_prefers_total_return_nav_for_funds() -> None:
         ("2026-04-14", 1.12),
         ("2026-04-15", 1.135),
     ]
+
+
+def test_asset_chart_bases_prefer_total_return_role() -> None:
+    detail = {
+        "quote_selection_policy": {
+            "valuation": ["official_nav"],
+            "reference": ["official_nav"],
+            "total_return": ["total_return_nav", "official_nav"],
+        },
+    }
+
+    assert _candidate_chart_bases(detail) == ["total_return_nav", "official_nav"]
 
 
 def test_research_series_prefers_adjusted_close_for_equities() -> None:
@@ -385,6 +399,10 @@ def test_research_run_creates_recursive_backtest_outputs(client):
     signal_labels = {item["label"] for item in run_payload["detail"]["signals"]}
     assert "Scope Default" in signal_labels
     assert "Solver" in signal_labels
+    reference_tape_artifact = next(item for item in run_payload["artifacts"] if item["artifact_id"] == "reference_tape")
+    assert reference_tape_artifact["label"] == "Reference Tape CSV"
+    assert reference_tape_artifact["path"].endswith("/reference_tape.csv")
+    assert all(item["label"] != "Daily NAV CSV" for item in run_payload["artifacts"])
 
     report_artifact = next(item for item in run_payload["artifacts"] if item["artifact_id"] == "report")
     artifact_response = client.get(
@@ -406,7 +424,7 @@ def test_research_run_creates_recursive_backtest_outputs(client):
     assert selected_workbench_payload["selected_run"]["research_run_id"] == run_payload["research_run_id"]
 
 
-def test_research_backtest_actuals_keep_cash_until_security_settlement(client):
+def test_research_backtest_actuals_include_pending_security_settlement(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
     _create_target_sets(client, taxonomy_id, node_ids)
 
@@ -467,7 +485,7 @@ def test_research_backtest_actuals_keep_cash_until_security_settlement(client):
         for item in run_payload["detail"]["construction_rows"]
         if item["label"] == "Cash Reserve"
     )
-    assert cash_row["current_value_base"] == pytest.approx(baseline_cash_value)
+    assert cash_row["current_value_base"] == pytest.approx(baseline_cash_value - 206.47)
 
 
 def test_research_scope_default_respects_taxonomy_root_default_dimension(client):
@@ -529,6 +547,40 @@ def test_deleting_selected_research_taxonomy_clears_settings(client):
     assert workbench_payload["default_planning_taxonomy_id"] is None
     assert workbench_payload["settings"]["planning_taxonomy_id"] is None
     assert workbench_payload["settings"]["comparator_taxonomy_node_id"] is None
+
+
+def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
+    taxonomy_id, node_ids = _create_planning_taxonomy(client)
+    payload = {
+        "planning_taxonomy_id": taxonomy_id,
+        "comparator_taxonomy_node_id": None,
+        "as_of_date": "2026-04-15",
+        "start_date": "2026-03-20",
+        "lookback_days": 90,
+        "benchmark_mode": "none",
+        "run_template": "taxonomy_backtest",
+        "target_set_mode": "taa_over_saa",
+        "target_dimension": "scope_default",
+        "capital_mode": "unit_notional",
+        "frozen_taxonomy_node_ids": [node_ids["Risk Assets"]],
+        "rebalance_frequency": "monthly",
+    }
+    initial_response = client.put("/api/portfolios/yungu/research/settings", json=payload)
+    assert initial_response.status_code == 200
+    assert initial_response.json()["frozen_taxonomy_node_ids"] == [node_ids["Risk Assets"]]
+
+    omitted_payload = dict(payload)
+    omitted_payload.pop("frozen_taxonomy_node_ids")
+    omitted_payload["notes"] = "Preserve frozen sleeves"
+    omitted_response = client.put("/api/portfolios/yungu/research/settings", json=omitted_payload)
+    assert omitted_response.status_code == 200
+    assert omitted_response.json()["frozen_taxonomy_node_ids"] == [node_ids["Risk Assets"]]
+
+    clear_payload = dict(omitted_payload)
+    clear_payload["frozen_taxonomy_node_ids"] = []
+    clear_response = client.put("/api/portfolios/yungu/research/settings", json=clear_payload)
+    assert clear_response.status_code == 200
+    assert clear_response.json()["frozen_taxonomy_node_ids"] == []
 
 
 def test_research_target_volatility_scales_risk_assets_into_cash(client):

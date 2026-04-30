@@ -432,14 +432,14 @@ def _build_planning_group_snapshot(
         for account_row in account_rows
         if str((account_row.get("account") or {}).get("account_type") or "") == "deposit_account"
         and (
-            abs(_safe_float(account_row.get("derived_cash_balance_base")) or 0.0) > 1e-9
+            abs(_safe_float(account_row.get("account_value_base")) or 0.0) > 1e-9
             or ("cash_bucket", str((account_row.get("account") or {}).get("account_id") or "")) in assignment_by_entity
         )
     ]
 
     total_entity_value_base = sum(_safe_float(position.get("market_value_base")) or 0.0 for position in statement_positions)
     total_entity_value_base += sum(
-        _safe_float(account_row.get("derived_cash_balance_base")) or 0.0 for account_row in visible_cash_accounts
+        _safe_float(account_row.get("account_value_base")) or 0.0 for account_row in visible_cash_accounts
     )
 
     buckets: dict[str, dict[str, object]] = {}
@@ -502,7 +502,7 @@ def _build_planning_group_snapshot(
                 "position_count": 0,
             },
         )
-        cash_value_base = _safe_float(account_row.get("derived_cash_balance_base")) or 0.0
+        cash_value_base = _safe_float(account_row.get("account_value_base")) or 0.0
         bucket["end_value_base"] = float(bucket["end_value_base"] or 0.0) + cash_value_base
         bucket["position_count"] = int(bucket["position_count"] or 0) + 1
 
@@ -611,6 +611,10 @@ def _build_research_context(
             "until a cheaper portfolio daily tape is wired into the research workbench."
         )
 
+    statement_nav_base = _safe_float(statement.get("total_nav_base"))
+    portfolio_nav_base = _safe_float(portfolio.get("nav"))
+    resolved_nav_base = statement_nav_base if statement_nav_base is not None else portfolio_nav_base
+
     return {
         "portfolio_id": portfolio_id,
         "portfolio_name": str(portfolio.get("portfolio_name") or portfolio_id),
@@ -618,7 +622,7 @@ def _build_research_context(
         "as_of_date": as_of_date.isoformat(),
         "lookback_start": lookback_start.isoformat(),
         "lookback_end": as_of_date.isoformat(),
-        "nav": _safe_float(portfolio.get("nav")) or _safe_float(statement.get("total_market_value_base")),
+        "nav": resolved_nav_base,
         "holdings_count": len(statement_positions),
         "planning_group_count": len(planning_groups),
         "chart_label": chart_label,
@@ -630,7 +634,7 @@ def _build_research_context(
             "current_drawdown": None,
             "max_drawdown": None,
             "start_nav": None,
-            "end_nav": _safe_float(statement.get("total_market_value_base")) or _safe_float(portfolio.get("nav")),
+            "end_nav": resolved_nav_base,
         },
         "planning_target_summary": planning_target_summary,
         "chart_points": daily_points,
@@ -1057,7 +1061,7 @@ def _write_artifacts(
     settings_path = run_root / "request.json"
     holdings_path = run_root / "top_holdings.csv"
     groups_path = run_root / "planning_groups.csv"
-    chart_path = run_root / "daily_nav.csv"
+    reference_tape_path = run_root / "reference_tape.csv"
     backtest_curve_path = run_root / "backtest_curve.csv"
     member_weights_path = run_root / "member_weights.csv"
     rebalance_events_path = run_root / "rebalance_events.csv"
@@ -1102,7 +1106,7 @@ def _write_artifacts(
     )
     _write_csv(holdings_path, list(detail.get("top_holdings") or []))
     _write_csv(groups_path, list(detail.get("planning_groups") or []))
-    _write_csv(chart_path, list(context.get("chart_points") or []))
+    _write_csv(reference_tape_path, list(context.get("chart_points") or []))
     _write_csv(backtest_curve_path, list(detail.get("backtest_curve") or []))
     _write_csv(member_weights_path, list(detail.get("member_summaries") or []))
     _write_csv(rebalance_events_path, list(detail.get("rebalance_events") or []))
@@ -1115,7 +1119,7 @@ def _write_artifacts(
         ("request", "Run Request", settings_path),
         ("holdings", "Top Holdings CSV", holdings_path),
         ("groups", "Planning Groups CSV", groups_path),
-        ("chart", "Daily NAV CSV", chart_path),
+        ("reference_tape", "Reference Tape CSV", reference_tape_path),
         ("backtest_curve", "Backtest Curve CSV", backtest_curve_path),
         ("member_weights", "Member Weights CSV", member_weights_path),
         ("rebalance_events", "Rebalance Events CSV", rebalance_events_path),
@@ -1233,7 +1237,14 @@ def update_research_settings(
             default_planning_taxonomy_id=str(portfolio.get("default_planning_taxonomy_id") or "").strip() or None,
             default_as_of_date=_default_as_of_date(portfolio),
         )
-        resolved_frozen_ids = list(dict.fromkeys(str(item).strip() for item in (frozen_taxonomy_node_ids or []) if str(item).strip()))
+        resolved_planning_taxonomy_id = str(planning_taxonomy_id or "").strip() or None
+        existing_planning_taxonomy_id = str(row.planning_taxonomy_id or "").strip() or None
+        if frozen_taxonomy_node_ids is None:
+            resolved_frozen_ids = [] if resolved_planning_taxonomy_id != existing_planning_taxonomy_id else None
+        else:
+            resolved_frozen_ids = list(
+                dict.fromkeys(str(item).strip() for item in frozen_taxonomy_node_ids if str(item).strip())
+            )
         if taxonomy is None and resolved_frozen_ids:
             raise ValueError("Frozen taxonomy nodes require a selected planning taxonomy.")
         if taxonomy is not None and resolved_frozen_ids:
@@ -1245,7 +1256,7 @@ def update_research_settings(
             unknown = [item for item in resolved_frozen_ids if item not in valid_node_ids]
             if unknown:
                 raise ValueError("Frozen taxonomy nodes must belong to the selected planning taxonomy.")
-        row.planning_taxonomy_id = str(planning_taxonomy_id or "").strip() or None
+        row.planning_taxonomy_id = resolved_planning_taxonomy_id
         row.as_of_date = as_of_date or _default_as_of_date(portfolio)
         row.comparator_taxonomy_node_id = resolved_scope_node_id
         row.start_date = start_date or (row.as_of_date - timedelta(days=180) if row.as_of_date else None)
@@ -1258,7 +1269,8 @@ def update_research_settings(
         row.gross_exposure = gross_exposure
         row.target_volatility = target_volatility
         row.max_gross_exposure = max_gross_exposure
-        row.frozen_taxonomy_node_ids_json = resolved_frozen_ids
+        if resolved_frozen_ids is not None:
+            row.frozen_taxonomy_node_ids_json = resolved_frozen_ids
         row.rebalance_frequency = (rebalance_frequency or "monthly").strip() or "monthly"
         row.notes = notes
         row.updated_at = _utc_now_iso()

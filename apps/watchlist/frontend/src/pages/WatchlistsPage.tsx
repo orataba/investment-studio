@@ -7,6 +7,8 @@ import {
   type FieldCategory,
   type FieldRegistryRecord,
   type FundChartPoint,
+  type FundTaxonomyTreeNode,
+  type FundTaxonomyTreeResponse,
   type ScreenerResponse,
   type SharedInstrumentRecord,
   type WatchlistDetail,
@@ -18,6 +20,7 @@ import {
   deleteWatchlist,
   deleteWatchlistItems,
   getFieldRegistry,
+  getFundTaxonomyTree,
   getInstrumentChart,
   getSharedInstruments,
   getWatchlistDetail,
@@ -40,6 +43,7 @@ import {
   formatLabel,
   formatNumber,
   formatPercent,
+  signedValueClass,
 } from '../lib/format'
 
 type ModalKind =
@@ -53,8 +57,59 @@ type ModalKind =
 type SparklineCacheEntry = { requestKey: string; points: FundChartPoint[] }
 type FilterState = Record<string, unknown[]>
 type FilterOption = { key: string; label: string; value: unknown }
+type WatchlistRowGroup = {
+  label: string | null
+  rows: Array<Record<string, unknown>>
+  rowCount: number
+  depth: number
+}
+type ActiveFilterEntry = {
+  fieldKey: string
+  value: unknown
+  label: string
+  valueLabel: string
+  isTaxonomy: boolean
+}
 const WATCHLIST_PAGE_SIZE = 50
 const SCREENER_BULK_PAGE_SIZE = 500
+const ALL_COVERAGE_WATCHLIST_ID = 'all-coverage'
+const TAXONOMY_FILTER_FIELD_KEY = 'taxonomy'
+const TAXONOMY_GROUP_BY_CODE = 'taxonomy'
+const TAXONOMY_GROUP_FIELD_KEYS = [
+  'attr.fund_regime',
+  'attr.fund_taxonomy_level_1',
+  'attr.fund_taxonomy_level_2',
+  'attr.fund_taxonomy_level_3',
+  'attr.fund_taxonomy_level_4',
+  'attr.fund_taxonomy_level_5',
+  'attr.fund_taxonomy_level_6',
+]
+const TAXONOMY_FILTER_FIELD: FieldRegistryRecord = {
+  field_key: TAXONOMY_FILTER_FIELD_KEY,
+  label: 'Taxonomy',
+  description: 'Choose one taxonomy node; descendants under that node remain included.',
+  category_code: 'product_taxonomy',
+  data_type: 'string',
+  formatter_code: 'text',
+  sort_mode: 'none',
+  filter_mode: 'multi_select',
+  group_mode: 'none',
+  asset_scope_json: ['fund'],
+  product_scope_json: [],
+  availability_rule_json: {},
+  source_domain: 'taxonomy',
+  source_metric_code: 'fund_taxonomy.tree',
+  default_width: null,
+  default_visible: false,
+}
+
+function isAllCoverageWatchlist(watchlist?: WatchlistRecord | WatchlistDetail | null) {
+  return Boolean(
+    watchlist &&
+      (watchlist.watchlist_id === ALL_COVERAGE_WATCHLIST_ID ||
+        (watchlist.is_default && watchlist.owner_type === 'system')),
+  )
+}
 
 function filterValueKey(value: unknown) {
   if (typeof value === 'string') {
@@ -97,6 +152,50 @@ function serializeFilterState(filters: FilterState) {
         ),
       })),
   )
+}
+
+function isTaxonomyFieldKey(fieldKey: string) {
+  return TAXONOMY_GROUP_FIELD_KEYS.includes(fieldKey)
+}
+
+function taxonomyFieldKeyForPathIndex(index: number) {
+  return index === 0 ? 'attr.fund_regime' : `attr.fund_taxonomy_level_${index}`
+}
+
+function taxonomyPathKey(pathLabels: string[]) {
+  return pathLabels.join(' / ')
+}
+
+function taxonomyPathFromFilters(filters: FilterState) {
+  const path: string[] = []
+  for (let index = 0; index < TAXONOMY_GROUP_FIELD_KEYS.length; index += 1) {
+    const values = filters[taxonomyFieldKeyForPathIndex(index)] || []
+    if (values.length !== 1 || typeof values[0] !== 'string' || !values[0].trim()) {
+      break
+    }
+    path.push(values[0])
+  }
+  return path
+}
+
+function taxonomyPathFromRow(row: Record<string, unknown>) {
+  const path: string[] = []
+  for (const fieldKey of TAXONOMY_GROUP_FIELD_KEYS) {
+    const value = row[fieldKey]
+    if (value == null || value === '') {
+      break
+    }
+    path.push(String(value))
+  }
+  return path
+}
+
+function removeTaxonomyFilters(filters: FilterState) {
+  const next = { ...filters }
+  TAXONOMY_GROUP_FIELD_KEYS.forEach((fieldKey) => {
+    delete next[fieldKey]
+  })
+  return next
 }
 
 function formatFilterOptionLabel(value: unknown) {
@@ -193,6 +292,21 @@ function asNumber(value: unknown) {
   return null
 }
 
+function isReturnMetricField(fieldKey: string) {
+  return (
+    fieldKey.startsWith('return_') ||
+    fieldKey === 'annualized_return' ||
+    fieldKey === 'max_drawdown' ||
+    fieldKey === 'ytd' ||
+    fieldKey === 'oneYear' ||
+    fieldKey === 'threeYear' ||
+    fieldKey === 'fiveYear' ||
+    fieldKey.endsWith('_return') ||
+    fieldKey.endsWith('_return_pct') ||
+    fieldKey.endsWith('_change_pct')
+  )
+}
+
 function renderCell(
   fieldKey: string,
   value: unknown,
@@ -202,7 +316,7 @@ function renderCell(
 ) {
   if (fieldKey === 'asset_name') {
     return (
-      <Link to={buildInstrumentDetailPath(assetId, watchlistId)} className="table-link">
+      <Link to={buildInstrumentDetailPath(assetId, watchlistId)} className="table-link watchlists-asset-link">
         {typeof value === 'string' && value ? value : assetId.toUpperCase()}
       </Link>
     )
@@ -239,17 +353,21 @@ function renderCell(
     const max = Math.max(...sliced.map((point) => point.value))
     const span = max - min || 1
     const width = 88
-    const height = 26
-    const areaBottom = height - 1
+    const height = 24
+    const areaBottom = height
     const points = sliced
       .map((point, index) => {
-        const x = (index / (sliced.length - 1)) * width
-        const y = height - ((point.value - min) / span) * height
+        const x = (index / (sliced.length - 1)) * (width - 1)
+        const y = height - ((point.value - min) / span) * (height - 6) - 2
         return `${x.toFixed(1)},${y.toFixed(1)}`
       })
       .join(' ')
     const areaPoints = `0,${areaBottom} ${points} ${width},${areaBottom}`
-    const gradientId = `sparklineFill-${assetId.replace(/[^a-zA-Z0-9_-]/g, '')}`
+    const firstValue = sliced[0]?.value ?? 0
+    const lastValue = sliced[sliced.length - 1]?.value ?? firstValue
+    const isPositive = lastValue >= firstValue
+    const stroke = isPositive ? '#0f766e' : '#b42318'
+    const fill = isPositive ? 'rgba(15, 118, 110, 0.12)' : 'rgba(180, 35, 24, 0.12)'
 
     return (
       <span className="sparkline-cell">
@@ -257,14 +375,8 @@ function renderCell(
           viewBox={`0 0 ${width} ${height}`}
           className="sparkline"
           >
-          <defs>
-            <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor="#e24b3b" stopOpacity="0.35" />
-              <stop offset="100%" stopColor="#e24b3b" stopOpacity="0.04" />
-            </linearGradient>
-          </defs>
-          <polygon points={areaPoints} fill={`url(#${gradientId})`} />
-          <polyline points={points} className="sparkline-path" />
+          <polygon points={areaPoints} fill={fill} />
+          <polyline points={points} className="sparkline-path" style={{ stroke }} />
         </svg>
       </span>
     )
@@ -278,17 +390,22 @@ function renderCell(
     return formatNumber(asNumber(value), 4)
   }
 
+  if (fieldKey.includes('_percentile')) {
+    const numericValue = asNumber(value)
+    return numericValue == null ? '—' : `${formatNumber(numericValue, 0)} pct`
+  }
+
   if (
-    fieldKey.startsWith('return_') ||
-    fieldKey === 'annualized_return' ||
-    fieldKey === 'max_drawdown' ||
-    fieldKey.endsWith('_ratio') ||
-    fieldKey === 'ytd' ||
-    fieldKey === 'oneYear' ||
-    fieldKey === 'threeYear' ||
-    fieldKey === 'fiveYear'
+    isReturnMetricField(fieldKey) ||
+    fieldKey.endsWith('_ratio')
   ) {
-    return formatPercent(asNumber(value))
+    const numericValue = asNumber(value)
+    const renderedValue = formatPercent(numericValue)
+    return isReturnMetricField(fieldKey) ? (
+      <span className={signedValueClass(numericValue)}>{renderedValue}</span>
+    ) : (
+      renderedValue
+    )
   }
 
   if (fieldKey === 'duration' || fieldKey === 'volatility' || fieldKey === 'sharpe_ratio') {
@@ -431,6 +548,7 @@ export default function WatchlistsPage() {
   const [watchlists, setWatchlists] = useState<WatchlistRecord[]>([])
   const [fieldCategories, setFieldCategories] = useState<FieldCategory[]>([])
   const [fieldRegistry, setFieldRegistry] = useState<FieldRegistryRecord[]>([])
+  const [fundTaxonomy, setFundTaxonomy] = useState<FundTaxonomyTreeResponse | null>(null)
   const [activeViewId, setActiveViewId] = useState('')
   const [watchlistDetail, setWatchlistDetail] = useState<WatchlistDetail | null>(null)
   const [screenerResult, setScreenerResult] = useState<ScreenerResponse | null>(null)
@@ -491,7 +609,13 @@ export default function WatchlistsPage() {
     }
 
     const requestedFields = workingColumns.length ? [...workingColumns] : [primaryDisplayColumn]
-    if (workingGroupBy && workingGroupBy !== 'none' && !requestedFields.includes(workingGroupBy)) {
+    if (workingGroupBy === TAXONOMY_GROUP_BY_CODE) {
+      TAXONOMY_GROUP_FIELD_KEYS.forEach((fieldKey) => {
+        if (!requestedFields.includes(fieldKey)) {
+          requestedFields.push(fieldKey)
+        }
+      })
+    } else if (workingGroupBy && workingGroupBy !== 'none' && !requestedFields.includes(workingGroupBy)) {
       requestedFields.push(workingGroupBy)
     }
 
@@ -517,9 +641,10 @@ export default function WatchlistsPage() {
       setError(null)
 
       try {
-        const [watchlistData, fieldRegistryData] = await Promise.all([
+        const [watchlistData, fieldRegistryData, taxonomyData] = await Promise.all([
           getWatchlists(),
           getFieldRegistry(),
+          getFundTaxonomyTree(),
         ])
 
         if (cancelled) {
@@ -529,6 +654,7 @@ export default function WatchlistsPage() {
         setWatchlists(watchlistData)
         setFieldCategories(fieldRegistryData.categories)
         setFieldRegistry(fieldRegistryData.fields)
+        setFundTaxonomy(taxonomyData)
         const resolvedWatchlistId = watchlistData.some((item) => item.watchlist_id === watchlistId)
           ? watchlistId
           : watchlistData[0]?.watchlist_id || ''
@@ -871,8 +997,9 @@ export default function WatchlistsPage() {
   }
 
   const activeWatchlist = watchlists.find((item) => item.watchlist_id === watchlistId) || null
+  const activeWatchlistIsAllCoverage = isAllCoverageWatchlist(activeWatchlist || watchlistDetail)
   const moveTargetOptions = useMemo(
-    () => watchlists.filter((item) => item.watchlist_id !== watchlistId),
+    () => watchlists.filter((item) => item.watchlist_id !== watchlistId && !isAllCoverageWatchlist(item)),
     [watchlists, watchlistId],
   )
   const copyTargetWatchlist =
@@ -1000,12 +1127,43 @@ export default function WatchlistsPage() {
     () => mergedFieldRegistry.filter((field) => supportsAnyAssetScope(field)),
     [mergedFieldRegistry, activeAssetTypes],
   )
+  const taxonomyNodesByParent = useMemo(() => {
+    const map = new Map<string | null, FundTaxonomyTreeNode[]>()
+    ;(fundTaxonomy?.nodes || []).forEach((node) => {
+      const key = node.parent_node_id || null
+      map.set(key, [...(map.get(key) || []), node])
+    })
+    map.forEach((nodes) => {
+      nodes.sort((left, right) => left.display_order - right.display_order || left.label.localeCompare(right.label, 'zh-Hans-CN'))
+    })
+    return map
+  }, [fundTaxonomy])
+  const taxonomyNodeByPath = useMemo(() => {
+    const map = new Map<string, FundTaxonomyTreeNode>()
+    ;(fundTaxonomy?.nodes || []).forEach((node) => {
+      map.set(taxonomyPathKey(node.path_labels), node)
+    })
+    return map
+  }, [fundTaxonomy])
+  const taxonomyDisplayOrderByPath = useMemo(() => {
+    const map = new Map<string, number>()
+    let index = 0
+    const visit = (parentId: string | null) => {
+      ;(taxonomyNodesByParent.get(parentId) || []).forEach((node) => {
+        map.set(taxonomyPathKey(node.path_labels), index)
+        index += 1
+        visit(node.node_id)
+      })
+    }
+    visit(null)
+    return map
+  }, [taxonomyNodesByParent])
   const ensureRequiredColumns = (columns: string[]) => {
     const rest = columns.filter((field) => !requiredColumns.includes(field))
     return [...requiredColumns, ...rest]
   }
   const fieldLabelByKey = useMemo(
-    () => new Map(mergedFieldRegistry.map((field) => [field.field_key, field.label])),
+    () => new Map([...mergedFieldRegistry.map((field) => [field.field_key, field.label] as const), [TAXONOMY_GROUP_BY_CODE, 'Taxonomy']]),
     [mergedFieldRegistry],
   )
   const defaultWidthByKey = useMemo(() => {
@@ -1091,11 +1249,17 @@ export default function WatchlistsPage() {
   }, [watchlistDetail?.available_group_bys, mergedFieldRegistry, activeAssetTypes])
 
   const filterableFields = useMemo(
-    () =>
-      mergedFieldRegistry
-        .filter((field) => field.filter_mode === 'multi_select')
-        .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN')),
-    [mergedFieldRegistry],
+    () => {
+      const fields = mergedFieldRegistry
+        .filter((field) => field.filter_mode === 'multi_select' && !isTaxonomyFieldKey(field.field_key))
+        .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'))
+      return supportsAnyAssetScope(TAXONOMY_FILTER_FIELD) ? [TAXONOMY_FILTER_FIELD, ...fields] : fields
+    },
+    [mergedFieldRegistry, activeAssetTypes],
+  )
+  const optionFilterFields = useMemo(
+    () => filterableFields.filter((field) => field.field_key !== TAXONOMY_FILTER_FIELD_KEY),
+    [filterableFields],
   )
 
   useEffect(() => {
@@ -1119,7 +1283,12 @@ export default function WatchlistsPage() {
     let cancelled = false
     loadAllScreenerRows({
       watchlist_id: watchlistId,
-      selected_fields: filterableFields.map((field) => field.field_key),
+      selected_fields: Array.from(
+        new Set([
+          ...optionFilterFields.map((field) => field.field_key),
+          ...TAXONOMY_GROUP_FIELD_KEYS,
+        ]),
+      ),
       filters: {},
       advanced_filters: null,
       sort: [],
@@ -1139,36 +1308,74 @@ export default function WatchlistsPage() {
     return () => {
       cancelled = true
     }
-  }, [watchlistId, filterFieldKeySignature, reloadToken])
+  }, [watchlistId, filterFieldKeySignature, reloadToken, optionFilterFields])
 
   const filterOptionsByField = useMemo(() => {
     const options = new Map<string, FilterOption[]>()
-    filterableFields.forEach((field) => {
+    optionFilterFields.forEach((field) => {
       options.set(
         field.field_key,
         buildFilterOptions(field.field_key, filterOptionRows, workingFilters[field.field_key] || []),
       )
     })
     return options
-  }, [filterOptionRows, filterableFields, workingFilters])
+  }, [filterOptionRows, optionFilterFields, workingFilters])
 
-  const activeFilterCount = useMemo(
-    () => Object.values(workingFilters).filter((values) => values.length).length,
+  const activeTaxonomyFilterPath = useMemo(
+    () => taxonomyPathFromFilters(workingFilters),
     [workingFilters],
   )
+  const activeTaxonomyFilterNode = activeTaxonomyFilterPath.length
+    ? taxonomyNodeByPath.get(taxonomyPathKey(activeTaxonomyFilterPath)) || null
+    : null
+  const activeTaxonomyFilterLabel = activeTaxonomyFilterPath.length
+    ? taxonomyPathKey(activeTaxonomyFilterPath)
+    : null
+  const activeFilterCount = useMemo(() => {
+    const nonTaxonomyCount = Object.entries(workingFilters).filter(
+      ([fieldKey, values]) => !isTaxonomyFieldKey(fieldKey) && values.length,
+    ).length
+    return nonTaxonomyCount + (activeTaxonomyFilterPath.length ? 1 : 0)
+  }, [workingFilters, activeTaxonomyFilterPath])
 
   const activeFilterEntries = useMemo(
-    () =>
-      Object.entries(workingFilters).flatMap(([fieldKey, values]) =>
-        values.map((value) => ({
+    () => {
+      const entries: ActiveFilterEntry[] = Object.entries(workingFilters).flatMap(([fieldKey, values]) => {
+        if (isTaxonomyFieldKey(fieldKey)) {
+          return []
+        }
+        return values.map((value) => ({
           fieldKey,
           value,
           label: fieldLabelByKey.get(fieldKey) || formatLabel(fieldKey),
           valueLabel: formatFilterOptionLabel(value),
-        })),
-      ),
-    [fieldLabelByKey, workingFilters],
+          isTaxonomy: false,
+        }))
+      })
+      if (activeTaxonomyFilterLabel) {
+        entries.unshift({
+          fieldKey: TAXONOMY_FILTER_FIELD_KEY,
+          value: activeTaxonomyFilterNode?.node_id || activeTaxonomyFilterLabel,
+          label: 'Taxonomy',
+          valueLabel: activeTaxonomyFilterLabel,
+          isTaxonomy: true,
+        })
+      }
+      return entries
+    },
+    [activeTaxonomyFilterLabel, activeTaxonomyFilterNode, fieldLabelByKey, workingFilters],
   )
+  const taxonomyFilterCountByPath = useMemo(() => {
+    const counts = new Map<string, number>()
+    filterOptionRows.forEach((row) => {
+      const path = taxonomyPathFromRow(row)
+      path.forEach((_, index) => {
+        const key = taxonomyPathKey(path.slice(0, index + 1))
+        counts.set(key, (counts.get(key) || 0) + 1)
+      })
+    })
+    return counts
+  }, [filterOptionRows])
   const selectedFilterFieldRecord =
     filterableFields.find((field) => field.field_key === selectedFilterField) || null
   const selectedFilterOptions = selectedFilterField
@@ -1187,7 +1394,87 @@ export default function WatchlistsPage() {
   const groupedRows = useMemo(() => {
     const rows = screenerResult?.rows || []
     if (!activeGroupBy) {
-      return [{ label: null, rows, rowCount: rows.length }]
+      return [{ label: null, rows, rowCount: rows.length, depth: 0 }]
+    }
+    if (activeGroupBy === TAXONOMY_GROUP_BY_CODE) {
+      type TreeNode = {
+        key: string
+        label: string
+        depth: number
+        rowCount: number
+        rows: Array<Record<string, unknown>>
+        children: Map<string, TreeNode>
+      }
+      const root = new Map<string, TreeNode>()
+      const getOrCreate = (
+        map: Map<string, TreeNode>,
+        path: string[],
+        label: string,
+        depth: number,
+      ) => {
+        const key = taxonomyPathKey(path)
+        const existing = map.get(key)
+        if (existing) {
+          return existing
+        }
+        const node = {
+          key,
+          label,
+          depth,
+          rowCount: 0,
+          rows: [],
+          children: new Map<string, TreeNode>(),
+        }
+        map.set(key, node)
+        return node
+      }
+
+      rows.forEach((row) => {
+        const path = taxonomyPathFromRow(row)
+        if (!path.length) {
+          const node = getOrCreate(root, ['Unspecified'], 'Unspecified', 0)
+          node.rowCount += 1
+          node.rows.push(row)
+          return
+        }
+        let currentMap = root
+        let currentNode: TreeNode | null = null
+        for (const [index, label] of path.entries()) {
+          currentNode = getOrCreate(currentMap, path.slice(0, index + 1), label, index)
+          currentNode.rowCount += 1
+          currentMap = currentNode.children
+        }
+        currentNode?.rows.push(row)
+      })
+
+      const sortNodes = (nodes: TreeNode[]) =>
+        nodes.sort((left, right) => {
+          const leftOrder = taxonomyDisplayOrderByPath.get(left.key) ?? Number.MAX_SAFE_INTEGER
+          const rightOrder = taxonomyDisplayOrderByPath.get(right.key) ?? Number.MAX_SAFE_INTEGER
+          return leftOrder - rightOrder || left.label.localeCompare(right.label, 'zh-Hans-CN')
+        })
+      const flattened: WatchlistRowGroup[] = []
+      const visit = (nodes: TreeNode[]) => {
+        sortNodes(nodes).forEach((node) => {
+          flattened.push({
+            label: node.label,
+            rows: node.children.size ? [] : node.rows,
+            rowCount: node.rowCount,
+            depth: node.depth,
+          })
+          visit([...node.children.values()])
+          if (node.children.size && node.rows.length) {
+            flattened.push({
+              label: `${node.label} · Direct`,
+              rows: node.rows,
+              rowCount: node.rows.length,
+              depth: node.depth + 1,
+            })
+          }
+        })
+      }
+      visit([...root.values()])
+      return flattened.length ? flattened : [{ label: null, rows, rowCount: rows.length, depth: 0 }]
     }
     const bucketMap = new Map<string, Array<Record<string, unknown>>>()
     rows.forEach((row) => {
@@ -1213,14 +1500,15 @@ export default function WatchlistsPage() {
         label: key,
         rows: bucketMap.get(key) || [],
         rowCount: bucketMap.get(key)?.length || 0,
+        depth: 0,
       }))
     bucketMap.forEach((value, key) => {
       if (!seen.has(key)) {
-        groups.push({ label: key, rows: value, rowCount: value.length })
+        groups.push({ label: key, rows: value, rowCount: value.length, depth: 0 })
       }
     })
     return groups
-  }, [screenerResult, activeGroupBy])
+  }, [activeGroupBy, screenerResult, taxonomyDisplayOrderByPath])
 
   const sortabilityByKey = useMemo(() => {
     const map = new Map<string, string>()
@@ -1326,7 +1614,25 @@ export default function WatchlistsPage() {
     })
   }
 
+  function setTaxonomyFilter(node: FundTaxonomyTreeNode) {
+    setWorkingFilters((current) => {
+      const next = removeTaxonomyFilters(current)
+      node.path_labels.forEach((label, index) => {
+        next[taxonomyFieldKeyForPathIndex(index)] = [label]
+      })
+      return next
+    })
+  }
+
+  function clearTaxonomyFilter() {
+    setWorkingFilters((current) => removeTaxonomyFilters(current))
+  }
+
   function clearFilterField(fieldKey: string) {
+    if (fieldKey === TAXONOMY_FILTER_FIELD_KEY) {
+      clearTaxonomyFilter()
+      return
+    }
     setWorkingFilters((current) => {
       if (!(fieldKey in current)) {
         return current
@@ -1334,6 +1640,44 @@ export default function WatchlistsPage() {
       const next = { ...current }
       delete next[fieldKey]
       return next
+    })
+  }
+
+  function renderTaxonomyFilterNodes(parentNodeId: string | null = null): React.ReactNode {
+    const nodes = taxonomyNodesByParent.get(parentNodeId) || []
+    if (!nodes.length) {
+      return null
+    }
+    return nodes.map((node) => {
+      const pathKey = taxonomyPathKey(node.path_labels)
+      const selected = activeTaxonomyFilterNode?.node_id === node.node_id
+      const ancestor =
+        !!activeTaxonomyFilterNode &&
+        activeTaxonomyFilterNode.path_node_ids.includes(node.node_id) &&
+        !selected
+      const count = taxonomyFilterCountByPath.get(pathKey)
+      return (
+        <React.Fragment key={node.node_id}>
+          <button
+            type="button"
+            className={[
+              'watchlists-taxonomy-node',
+              selected ? 'watchlists-taxonomy-node-active' : '',
+              ancestor ? 'watchlists-taxonomy-node-ancestor' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+            style={{ paddingLeft: `${10 + node.level_index * 18}px` }}
+            onClick={() => setTaxonomyFilter(node)}
+          >
+            <span className="watchlists-taxonomy-node-label">{node.label}</span>
+            {typeof count === 'number' ? (
+              <span className="watchlists-taxonomy-node-count">{count}</span>
+            ) : null}
+          </button>
+          {renderTaxonomyFilterNodes(node.node_id)}
+        </React.Fragment>
+      )
     })
   }
 
@@ -1464,29 +1808,31 @@ export default function WatchlistsPage() {
                     >
                       Copy Watchlist
                     </button>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          await deleteWatchlist(watchlist.watchlist_id)
-                          setWatchlists((current) =>
-                            current.filter((item) => item.watchlist_id !== watchlist.watchlist_id),
-                          )
-                          setNotice(`Deleted watchlist "${watchlist.name}".`)
-                          navigate('/watchlists')
-                        } catch (requestError) {
-                          setError(
-                            requestError instanceof Error
-                              ? requestError.message
-                              : 'Failed to delete watchlist.',
-                          )
-                        } finally {
-                          setSelectorMenuOpen(false)
-                        }
-                      }}
-                    >
-                      Delete Watchlist
-                    </button>
+                    {!isAllCoverageWatchlist(watchlist) ? (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await deleteWatchlist(watchlist.watchlist_id)
+                            setWatchlists((current) =>
+                              current.filter((item) => item.watchlist_id !== watchlist.watchlist_id),
+                            )
+                            setNotice(`Deleted watchlist "${watchlist.name}".`)
+                            navigate('/watchlists')
+                          } catch (requestError) {
+                            setError(
+                              requestError instanceof Error
+                                ? requestError.message
+                                : 'Failed to delete watchlist.',
+                            )
+                          } finally {
+                            setSelectorMenuOpen(false)
+                          }
+                        }}
+                      >
+                        Delete Watchlist
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -1521,23 +1867,25 @@ export default function WatchlistsPage() {
       <section className="watchlists-main panel">
         <div className="watchlists-toolbar">
           <div className="watchlists-toolbar-left">
-            <button
-              type="button"
-              className="button-primary watchlists-toolbar-button"
-              onClick={() => {
-                setInstrumentSearch('')
-                setSharedInstrumentResults([])
-                setSelectedInstrumentId('')
-                setModalKind('add')
-                setFilterMenuOpen(false)
-                setMoreMenuOpen(false)
-                setGroupMenuOpen(false)
-                setNotice(null)
-                setError(null)
-              }}
-            >
-              Add Funds
-            </button>
+            {!activeWatchlistIsAllCoverage ? (
+              <button
+                type="button"
+                className="button-primary watchlists-toolbar-button"
+                onClick={() => {
+                  setInstrumentSearch('')
+                  setSharedInstrumentResults([])
+                  setSelectedInstrumentId('')
+                  setModalKind('add')
+                  setFilterMenuOpen(false)
+                  setMoreMenuOpen(false)
+                  setGroupMenuOpen(false)
+                  setNotice(null)
+                  setError(null)
+                }}
+              >
+                Add Funds
+              </button>
+            ) : null}
 
             <div className="watchlists-view-group">
               <select
@@ -1748,36 +2096,62 @@ export default function WatchlistsPage() {
                               <button
                                 type="button"
                                 className="watchlists-filter-clear"
-                                disabled={!workingFilters[selectedFilterFieldRecord.field_key]?.length}
+                                disabled={
+                                  selectedFilterFieldRecord.field_key === TAXONOMY_FILTER_FIELD_KEY
+                                    ? !activeTaxonomyFilterPath.length
+                                    : !workingFilters[selectedFilterFieldRecord.field_key]?.length
+                                }
                                 onClick={() => clearFilterField(selectedFilterFieldRecord.field_key)}
                               >
                                 Clear
                               </button>
                             </div>
 
-                            <div className="watchlists-filter-option-list">
-                              {selectedFilterOptions.length ? (
-                                selectedFilterOptions.map((option) => {
-                                  const checked = (workingFilters[selectedFilterFieldRecord.field_key] || []).some(
-                                    (item) => filterValueKey(item) === option.key,
-                                  )
-                                  return (
-                                    <label key={option.key} className="watchlists-filter-option">
-                                      <input
-                                        type="checkbox"
-                                        checked={checked}
-                                        onChange={() =>
-                                          toggleFilterValue(selectedFilterFieldRecord.field_key, option.value)
-                                        }
-                                      />
-                                      <span>{option.label}</span>
-                                    </label>
-                                  )
-                                })
-                              ) : (
-                                <div className="watchlists-filter-empty">No values available for this field.</div>
-                              )}
-                            </div>
+                            {selectedFilterFieldRecord.field_key === TAXONOMY_FILTER_FIELD_KEY ? (
+                              <div className="watchlists-taxonomy-filter-list">
+                                <button
+                                  type="button"
+                                  className={
+                                    activeTaxonomyFilterPath.length
+                                      ? 'watchlists-taxonomy-node'
+                                      : 'watchlists-taxonomy-node watchlists-taxonomy-node-active'
+                                  }
+                                  onClick={clearTaxonomyFilter}
+                                >
+                                  <span className="watchlists-taxonomy-node-label">All Taxonomy</span>
+                                  <span className="watchlists-taxonomy-node-count">{filterOptionRows.length}</span>
+                                </button>
+                                {fundTaxonomy?.nodes.length ? (
+                                  renderTaxonomyFilterNodes()
+                                ) : (
+                                  <div className="watchlists-filter-empty">No taxonomy tree is available.</div>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="watchlists-filter-option-list">
+                                {selectedFilterOptions.length ? (
+                                  selectedFilterOptions.map((option) => {
+                                    const checked = (workingFilters[selectedFilterFieldRecord.field_key] || []).some(
+                                      (item) => filterValueKey(item) === option.key,
+                                    )
+                                    return (
+                                      <label key={option.key} className="watchlists-filter-option">
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={() =>
+                                            toggleFilterValue(selectedFilterFieldRecord.field_key, option.value)
+                                          }
+                                        />
+                                        <span>{option.label}</span>
+                                      </label>
+                                    )
+                                  })
+                                ) : (
+                                  <div className="watchlists-filter-empty">No values available for this field.</div>
+                                )}
+                              </div>
+                            )}
                           </>
                         ) : (
                           <div className="watchlists-filter-empty">No filterable fields are available in this view.</div>
@@ -1834,7 +2208,7 @@ export default function WatchlistsPage() {
                 Copy
               </button>
             ) : null}
-            {selectedRows.length ? (
+            {selectedRows.length && !activeWatchlistIsAllCoverage ? (
               <button
                 type="button"
                 className="watchlists-toolbar-button"
@@ -1851,7 +2225,7 @@ export default function WatchlistsPage() {
                 Move
               </button>
             ) : null}
-            {selectedRows.length ? (
+            {selectedRows.length && !activeWatchlistIsAllCoverage ? (
               <button
                 type="button"
                 className="watchlists-toolbar-button watchlists-danger"
@@ -1883,7 +2257,9 @@ export default function WatchlistsPage() {
                 key={`${entry.fieldKey}:${filterValueKey(entry.value)}`}
                 type="button"
                 className="watchlists-filter-chip"
-                onClick={() => toggleFilterValue(entry.fieldKey, entry.value)}
+                onClick={() =>
+                  entry.isTaxonomy ? clearTaxonomyFilter() : toggleFilterValue(entry.fieldKey, entry.value)
+                }
               >
                 <span className="watchlists-filter-chip-label">{entry.label}</span>
                 <span className="watchlists-filter-chip-value">{entry.valueLabel}</span>
@@ -1997,7 +2373,10 @@ export default function WatchlistsPage() {
                     {activeGroupBy ? (
                       <tr className="watchlists-group-row">
                         <td colSpan={Math.max(visibleColumns.length + 1, 1)}>
-                          <div className="watchlists-group-header">
+                          <div
+                            className="watchlists-group-header"
+                            style={{ paddingLeft: `${group.depth * 18}px` }}
+                          >
                             <span className="watchlists-group-caret">▾</span>
                             <span className="watchlists-group-title">
                               {group.label || 'Unspecified'}

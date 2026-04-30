@@ -52,6 +52,19 @@ class SQLAlchemyTaxonomyRepository:
         )
         return session.scalars(stmt).first()
 
+    def list_assignments(
+        self,
+        session: Session,
+        *,
+        taxonomy_code: str = FUND_TAXONOMY_CODE,
+    ) -> Sequence[InstrumentTaxonomyAssignment]:
+        stmt = (
+            select(InstrumentTaxonomyAssignment)
+            .where(InstrumentTaxonomyAssignment.taxonomy_code == taxonomy_code)
+            .order_by(InstrumentTaxonomyAssignment.asset_id)
+        )
+        return session.scalars(stmt).all()
+
     def upsert_assignment(
         self,
         session: Session,

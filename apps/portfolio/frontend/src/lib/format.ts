@@ -61,6 +61,19 @@ export function formatSignedCurrency(value: number | null | undefined, currency 
   return value > 0 ? `+${absolute}` : value < 0 ? `-${absolute}` : absolute
 }
 
+export function signedValueClass(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) {
+    return ''
+  }
+  if (value > 0) {
+    return 'positive-cell'
+  }
+  if (value < 0) {
+    return 'negative-cell'
+  }
+  return 'neutral-cell'
+}
+
 export function formatLabel(value: string) {
   return value
     .replace(/[_-]+/g, ' ')

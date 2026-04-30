@@ -1947,15 +1947,6 @@ export default function TransactionsPage() {
       <section className="portfolio-detail-surface">
         <div className="portfolio-detail-toolbar">
           <div className="panel-title">Transactions</div>
-          <div className="portfolio-detail-meta">Portfolio fact ledger</div>
-        </div>
-
-        <div className="holdings-meta-row">
-          <p className="coverage-note">
-            Transaction entry now uses portfolio-private accounts and facts, while instrument selection reads
-            directly from the platform-owned registry. `ledger_postings`, `positions`, and holdings stay as
-            the next derivation layers.
-          </p>
         </div>
 
         <section className="transaction-filter-bar">
@@ -2967,14 +2958,13 @@ export default function TransactionsPage() {
 
               {shouldRequireSettlement && settlementAccountOptions.length === 0 ? (
                 <div className="portfolio-detail-meta">
-                  No same-currency settlement cash account is available for {resolvedTransactionCurrency}. Add one in
-                  `Accounts` first.
+                  Settlement cash account required for {resolvedTransactionCurrency}.
                 </div>
               ) : null}
 
               {isFxConversion && counterpartyAccounts.length === 0 ? (
                 <div className="portfolio-detail-meta">
-                  Add another deposit account in a different currency before recording an FX conversion.
+                  Counterparty deposit account required.
                 </div>
               ) : null}
 

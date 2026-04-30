@@ -14,6 +14,7 @@ from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
 from watchlist_app.reference_data.fund_taxonomy import FUND_TAXONOMY_CODE
+from watchlist_app.services.canonical_recalc import CanonicalRecalcService
 from watchlist_app.services.fund_taxonomy import (
     build_taxonomy_context,
     merge_taxonomy_attributes,
@@ -27,6 +28,7 @@ asset_repository = SQLAlchemyAssetRepository()
 attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 read_model_repository = SQLAlchemyReadModelRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
+canonical_recalc_service = CanonicalRecalcService()
 
 
 def _require_fund_asset(session: Session, asset_id: str):
@@ -123,5 +125,18 @@ def update_fund_taxonomy_assignment(
     )
     taxonomy_context = _taxonomy_context_for_asset(session, asset_id=asset_id)
     _sync_asset_context(session, asset_id=asset_id, taxonomy_context=taxonomy_context)
+    execution = canonical_recalc_service.execute_recalc(
+        session,
+        asset_id=asset_id,
+        job_type="performance",
+        trigger_type="taxonomy_assignment",
+        trigger_ref_type="instrument_taxonomy_assignment",
+        trigger_ref_id=node_id,
+    )
     session.commit()
-    return taxonomy_context | {"asset_id": asset_id, "updated": True}
+    return taxonomy_context | {
+        "asset_id": asset_id,
+        "updated": True,
+        "recalculated": True,
+        "execution": execution,
+    }

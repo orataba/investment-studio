@@ -1358,7 +1358,7 @@ def _current_scope_actuals(
     ]
     cash_value_by_account = {
         str((account_row.get("account") or {}).get("account_id") or ""): float(
-            _safe_float(account_row.get("derived_cash_balance_base")) or 0.0
+            _safe_float(account_row.get("account_value_base")) or 0.0
         )
         for account_row in visible_cash_accounts
         if str((account_row.get("account") or {}).get("account_id") or "")

@@ -24,6 +24,7 @@ import {
   formatPercent,
   formatQuantity,
   formatSignedCurrency,
+  signedValueClass,
 } from '../lib/format'
 
 type PerformanceDetailTab = 'daily' | 'calculation' | 'contribution' | 'boundary'
@@ -496,20 +497,44 @@ export default function PerformancePage() {
     { label: 'Start NAV', value: formatCurrency(summary?.start_nav, baseCurrency) },
     { label: 'End NAV', value: formatCurrency(summary?.end_nav, baseCurrency) },
     { label: 'Net External Inflow', value: formatSignedCurrency(summary?.net_external_inflow, baseCurrency) },
-    { label: 'Absolute Change', value: formatSignedCurrency(summary?.absolute_change, baseCurrency) },
-    { label: 'P&L Ex Flows', value: formatSignedCurrency(summary?.delta, baseCurrency) },
-    { label: 'Total P&L', value: formatSignedCurrency(summary?.total_pnl, baseCurrency) },
+    {
+      label: 'Absolute Change',
+      value: formatSignedCurrency(summary?.absolute_change, baseCurrency),
+      toneClassName: signedValueClass(summary?.absolute_change),
+    },
+    {
+      label: 'P&L Ex Flows',
+      value: formatSignedCurrency(summary?.delta, baseCurrency),
+      toneClassName: signedValueClass(summary?.delta),
+    },
+    {
+      label: 'Total P&L',
+      value: formatSignedCurrency(summary?.total_pnl, baseCurrency),
+      toneClassName: signedValueClass(summary?.total_pnl),
+    },
   ]
 
   const rightSummaryRows = [
-    { label: 'Cumulative TTWROR', value: signedPercent(summary?.cumulative_ttwror) },
-    { label: 'Annualized TTWROR', value: signedPercent(summary?.annualized_ttwror) },
-    { label: 'IRR / MWROR', value: signedPercent(summary?.irr) },
-    { label: 'Mean Daily Return', value: signedPercent(summary?.mean_daily_return, 3) },
+    {
+      label: 'Cumulative TTWROR',
+      value: signedPercent(summary?.cumulative_ttwror),
+      toneClassName: signedValueClass(summary?.cumulative_ttwror),
+    },
+    {
+      label: 'Annualized TTWROR',
+      value: signedPercent(summary?.annualized_ttwror),
+      toneClassName: signedValueClass(summary?.annualized_ttwror),
+    },
+    { label: 'IRR / MWROR', value: signedPercent(summary?.irr), toneClassName: signedValueClass(summary?.irr) },
+    {
+      label: 'Mean Daily Return',
+      value: signedPercent(summary?.mean_daily_return, 3),
+      toneClassName: signedValueClass(summary?.mean_daily_return),
+    },
     { label: 'Annualized Volatility', value: signedPercent(summary?.annualized_volatility) },
     { label: 'Sharpe Ratio', value: formatNumber(summary?.sharpe_ratio, 2) },
     { label: 'Sortino Ratio', value: formatNumber(summary?.sortino_ratio, 2) },
-    { label: 'Max Drawdown', value: signedPercent(summary?.max_drawdown) },
+    { label: 'Max Drawdown', value: signedPercent(summary?.max_drawdown), toneClassName: signedValueClass(summary?.max_drawdown) },
   ]
 
   return (
@@ -517,14 +542,6 @@ export default function PerformancePage() {
       <section className="portfolio-detail-surface">
         <div className="portfolio-detail-toolbar">
           <div className="panel-title">Performance</div>
-          <div className="portfolio-detail-meta">Derived return, NAV path, and period decomposition</div>
-        </div>
-
-        <div className="holdings-meta-row">
-          <p className="coverage-note">
-            Performance is built from <code>transaction -&gt; daily valuation -&gt; return decomposition</code>.
-            Wider date windows are materially slower because the current backend recomputes the daily path on demand.
-          </p>
         </div>
 
         <form className="performance-filter-bar" onSubmit={handleApplyFilters}>
@@ -585,7 +602,7 @@ export default function PerformancePage() {
                     {leftSummaryRows.map((row) => (
                       <tr key={row.label}>
                         <th>{row.label}</th>
-                        <td>{row.value}</td>
+                        <td className={row.toneClassName}>{row.value}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -603,7 +620,7 @@ export default function PerformancePage() {
                     {rightSummaryRows.map((row) => (
                       <tr key={row.label}>
                         <th>{row.label}</th>
-                        <td>{row.value}</td>
+                        <td className={row.toneClassName}>{row.value}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -627,7 +644,6 @@ export default function PerformancePage() {
               <section className="performance-section-block">
                 <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                   <div className="panel-title">Monthly Return Table</div>
-                  <div className="portfolio-detail-meta">Latest 12 monthly buckets derived on the client from daily series</div>
                 </div>
                 <div className="table-shell">
                   <table className="transactions-table">
@@ -657,10 +673,10 @@ export default function PerformancePage() {
                             <td>{formatCurrency(bucket.start_nav, baseCurrency)}</td>
                             <td>{formatCurrency(bucket.end_nav, baseCurrency)}</td>
                             <td>{formatSignedCurrency(bucket.net_external_inflow, baseCurrency)}</td>
-                            <td className={bucket.delta != null && bucket.delta < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(bucket.delta)}>
                               {formatSignedCurrency(bucket.delta, baseCurrency)}
                             </td>
-                            <td className={bucket.cumulative_ttwror != null && bucket.cumulative_ttwror < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(bucket.cumulative_ttwror)}>
                               {signedPercent(bucket.cumulative_ttwror)}
                             </td>
                           </tr>
@@ -697,7 +713,6 @@ export default function PerformancePage() {
               <section className="performance-section-block">
                 <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                   <div className="panel-title">Daily Series</div>
-                  <div className="portfolio-detail-meta">Latest 30 rows from the active performance window</div>
                 </div>
                 <div className="table-shell">
                   <table className="transactions-table">
@@ -725,16 +740,16 @@ export default function PerformancePage() {
                             </td>
                             <td>{formatCurrency(point.ending_nav, baseCurrency)}</td>
                             <td>{formatSignedCurrency(point.net_external_inflow, baseCurrency)}</td>
-                            <td className={point.daily_ttwror != null && point.daily_ttwror < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(point.daily_ttwror)}>
                               {signedPercent(point.daily_ttwror, 3)}
                             </td>
-                            <td className={point.cumulative_ttwror != null && point.cumulative_ttwror < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(point.cumulative_ttwror)}>
                               {signedPercent(point.cumulative_ttwror)}
                             </td>
-                            <td className={point.drawdown != null && point.drawdown < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(point.drawdown)}>
                               {signedPercent(point.drawdown)}
                             </td>
-                            <td className={point.delta != null && point.delta < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(point.delta)}>
                               {formatSignedCurrency(point.delta, baseCurrency)}
                             </td>
                           </tr>
@@ -752,9 +767,6 @@ export default function PerformancePage() {
               <section className="performance-section-block">
                 <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                   <div className="panel-title">Period Calculation</div>
-                  <div className="portfolio-detail-meta">
-                    Waterfall view of value change, external flows, and P&amp;L components
-                  </div>
                 </div>
                 {calculationLoading && !calculationWorkspace ? <CalculationStatus label="Building period calculation lines…" /> : null}
                 {calculationError ? <div className="inline-notice inline-notice-error">{calculationError}</div> : null}
@@ -775,7 +787,7 @@ export default function PerformancePage() {
                               {line.label}
                             </td>
                             <td>{formatLabel(line.line_kind)}</td>
-                            <td className={line.amount != null && line.amount < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(line.amount)}>
                               {formatSignedCurrency(line.amount, calculationWorkspace.base_currency)}
                             </td>
                           </tr>
@@ -797,9 +809,6 @@ export default function PerformancePage() {
               <section className="performance-section-block">
                 <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                   <div className="panel-title">Contribution</div>
-                  <div className="portfolio-detail-meta">
-                    Sorted by absolute period contribution. Taxonomy view can be added after taxonomy page is live.
-                  </div>
                 </div>
                 <div className="performance-inline-tabs">
                   {[
@@ -838,19 +847,19 @@ export default function PerformancePage() {
                             <td>{line.group_label}</td>
                             <td>{formatPercent(line.average_weight)}</td>
                             <td>{formatPercent(line.ending_weight)}</td>
-                            <td className={line.realized_pnl != null && line.realized_pnl < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(line.realized_pnl)}>
                               {formatSignedCurrency(line.realized_pnl, contributionWorkspace?.base_currency ?? baseCurrency)}
                             </td>
-                            <td className={line.unrealized_pnl_change != null && line.unrealized_pnl_change < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(line.unrealized_pnl_change)}>
                               {formatSignedCurrency(
                                 line.unrealized_pnl_change,
                                 contributionWorkspace?.base_currency ?? baseCurrency,
                               )}
                             </td>
-                            <td className={line.total_pnl != null && line.total_pnl < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(line.total_pnl)}>
                               {formatSignedCurrency(line.total_pnl, contributionWorkspace?.base_currency ?? baseCurrency)}
                             </td>
-                            <td className={line.period_contribution != null && line.period_contribution < 0 ? 'negative-cell' : ''}>
+                            <td className={signedValueClass(line.period_contribution)}>
                               {signedPercent(line.period_contribution)}
                             </td>
                           </tr>
@@ -872,9 +881,6 @@ export default function PerformancePage() {
               <section className="performance-section-block">
                 <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                   <div className="panel-title">Boundary Holdings</div>
-                  <div className="portfolio-detail-meta">
-                    Starting and ending composition across the active performance window
-                  </div>
                 </div>
                 {boundaryLoading && !boundaryWorkspace ? <CalculationStatus label="Resolving period boundary holdings…" /> : null}
                 {boundaryError ? <div className="inline-notice inline-notice-error">{boundaryError}</div> : null}

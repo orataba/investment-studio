@@ -14,6 +14,18 @@ from watchlist_app.db.models.watchlists import (
 )
 
 
+TAXONOMY_GROUP_BY_CODE = "taxonomy"
+GROUP_BY_FIELD_ORDER = (
+    "management_firm_name",
+    "overall_rating",
+    "analyst_stance",
+    "data_freshness_status",
+)
+GROUP_BY_FIELD_ORDER_INDEX = {
+    field_key: index for index, field_key in enumerate(GROUP_BY_FIELD_ORDER)
+}
+
+
 def _local_view_id(record: WatchlistView) -> str:
     prefix = f"{record.watchlist_id}::"
     if record.watchlist_view_id.startswith(prefix):
@@ -32,6 +44,8 @@ def present_watchlist(record: Watchlist) -> dict[str, object]:
         "item_count": len(record.items),
         "owner_type": record.owner_type,
         "owner_id": record.owner_id,
+        "is_default": record.is_default,
+        "is_shared": record.is_shared,
         "default_view_id": _local_view_id(default_view) if default_view else None,
     }
 
@@ -151,9 +165,26 @@ def present_recalc_job(record: RecalcJob) -> dict[str, object]:
 
 def present_group_by_options(fields: Sequence[FieldRegistry]) -> list[dict[str, str]]:
     options = [{"code": "none", "label": "None"}]
-    for field in fields:
-        if field.group_mode != "none":
-            options.append({"code": field.field_key, "label": field.label})
+    has_taxonomy_fields = any(
+        field.field_key in {"attr.fund_regime", "attr.fund_taxonomy_level_1"}
+        for field in fields
+    )
+    if has_taxonomy_fields:
+        options.append({"code": TAXONOMY_GROUP_BY_CODE, "label": "Taxonomy"})
+    groupable_fields = [
+        field
+        for field in fields
+        if field.group_mode != "none"
+        and field.field_key in GROUP_BY_FIELD_ORDER_INDEX
+    ]
+    for field in sorted(
+        groupable_fields,
+        key=lambda item: (
+            GROUP_BY_FIELD_ORDER_INDEX[item.field_key],
+            item.label,
+        ),
+    ):
+        options.append({"code": field.field_key, "label": field.label})
     return options
 
 

@@ -270,15 +270,6 @@ export default function AccountsPage() {
       <section className="portfolio-detail-surface">
         <div className="portfolio-detail-toolbar">
           <div className="panel-title">Accounts</div>
-          <div className="portfolio-detail-meta">Account ledger workspace</div>
-        </div>
-
-        <div className="holdings-meta-row">
-          <p className="coverage-note">
-            Accounts now combines account fact entry with `LedgerPosting`-driven derived slices. Cash balances,
-            settlement mappings, and account-level positions stay here; portfolio-level holdings and review
-            surfaces remain downstream views.
-          </p>
         </div>
 
         {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}
@@ -558,7 +549,6 @@ export default function AccountsPage() {
             <div className="transaction-drawer-header">
               <div>
                 <div className="panel-title">Add Account</div>
-                <div className="portfolio-detail-meta">Portfolio-private account fact with settlement mapping</div>
               </div>
               <button type="button" className="toolbar-link" onClick={() => setDrawerOpen(false)}>
                 Close
@@ -758,14 +748,13 @@ export default function AccountsPage() {
 
               {form.account_type === 'securities_account' && compatibleDepositAccounts.length === 0 ? (
                 <div className="portfolio-detail-meta">
-                  Add a same-currency deposit account first. Securities accounts still require one settlement cash account per currency.
+                  Settlement cash account required.
                 </div>
               ) : null}
 
               {formError ? <div className="error-state transaction-form-error">{formError}</div> : null}
 
               <div className="transaction-form-footer">
-                <div className="portfolio-detail-meta">Account facts remain portfolio-private.</div>
                 <button type="button" className="toolbar-link button-primary" onClick={() => void handleCreateAccount()}>
                   Save Account
                 </button>

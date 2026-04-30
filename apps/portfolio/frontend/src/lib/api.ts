@@ -541,6 +541,7 @@ export type PortfolioResearchSettingsRecord = {
   gross_exposure?: number | null
   target_volatility?: number | null
   max_gross_exposure?: number | null
+  frozen_taxonomy_node_ids: string[]
   rebalance_frequency: PortfolioResearchRebalanceFrequency
   notes?: string | null
   updated_at?: string | null
@@ -560,6 +561,7 @@ export type PortfolioResearchSettingsUpdatePayload = {
   gross_exposure?: number | null
   target_volatility?: number | null
   max_gross_exposure?: number | null
+  frozen_taxonomy_node_ids?: string[] | null
   rebalance_frequency?: PortfolioResearchRebalanceFrequency
   notes?: string | null
 }
@@ -979,6 +981,9 @@ export type PortfolioAccountWorkspaceAccount = {
   linked_posting_count: number
   derived_cash_balance: number
   derived_cash_balance_base?: number | null
+  pending_settlement: number
+  pending_settlement_base?: number | null
+  account_value_base?: number | null
   position_line_count: number
   position_market_value?: number | null
   position_market_value_currency?: string | null

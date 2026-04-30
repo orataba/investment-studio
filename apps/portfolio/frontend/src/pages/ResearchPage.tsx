@@ -7,6 +7,7 @@ import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
   createPortfolioResearchRun,
   getPortfolioResearchArtifactContent,
+  getPortfolioTaxonomyCatalog,
   getPortfolioResearchWorkbench,
   updatePortfolioResearchSettings,
   type PortfolioResearchArtifactContentResponse,
@@ -19,6 +20,8 @@ import {
   type PortfolioResearchTargetDimension,
   type PortfolioResearchWeightSchedulePointRecord,
   type PortfolioResearchWorkbenchResponse,
+  type PortfolioTaxonomyNodeRecord,
+  type PortfolioTaxonomyRecord,
 } from '../lib/api'
 import {
   formatCurrency,
@@ -119,6 +122,64 @@ function formatSolverKind(value: string | null | undefined) {
   return formatLabel(value.replace(/-/g, '_'))
 }
 
+function sortTaxonomyNodes(nodes: PortfolioTaxonomyNodeRecord[]) {
+  return [...nodes].sort((left, right) => {
+    if (left.sort_order !== right.sort_order) {
+      return left.sort_order - right.sort_order
+    }
+    return left.node_name.localeCompare(right.node_name) || left.taxonomy_node_id.localeCompare(right.taxonomy_node_id)
+  })
+}
+
+function buildPlanningScopeOptions(
+  taxonomy: PortfolioTaxonomyRecord,
+  nodes: PortfolioTaxonomyNodeRecord[],
+): PortfolioResearchPlanningScopeOption[] {
+  const activeNodes = sortTaxonomyNodes(
+    nodes.filter((node) => node.taxonomy_id === taxonomy.taxonomy_id && node.status === 'active'),
+  )
+  const childrenByParent = new Map<string | null, PortfolioTaxonomyNodeRecord[]>()
+  activeNodes.forEach((node) => {
+    const parentKey = node.parent_taxonomy_node_id ?? null
+    const currentChildren = childrenByParent.get(parentKey) ?? []
+    currentChildren.push(node)
+    childrenByParent.set(parentKey, currentChildren)
+  })
+
+  const options: PortfolioResearchPlanningScopeOption[] = [
+    {
+      taxonomy_node_id: null,
+      label: 'Top Level',
+      path: 'Top Level',
+      depth: 0,
+      default_target_dimension: taxonomy.root_default_target_dimension ?? 'weight',
+      has_children: Boolean(childrenByParent.get(null)?.length),
+    },
+  ]
+  const visited = new Set<string>()
+
+  function appendNode(node: PortfolioTaxonomyNodeRecord, parentPath: string, depth: number) {
+    if (visited.has(node.taxonomy_node_id)) {
+      return
+    }
+    visited.add(node.taxonomy_node_id)
+    const path = `${parentPath} / ${node.node_name}`
+    options.push({
+      taxonomy_node_id: node.taxonomy_node_id,
+      label: node.node_name,
+      path,
+      depth,
+      default_target_dimension: node.default_target_dimension ?? 'weight',
+      has_children: Boolean(childrenByParent.get(node.taxonomy_node_id)?.length),
+    })
+    ;(childrenByParent.get(node.taxonomy_node_id) ?? []).forEach((child) => appendNode(child, path, depth + 1))
+  }
+
+  ;(childrenByParent.get(null) ?? []).forEach((node) => appendNode(node, 'Top Level', 1))
+  activeNodes.forEach((node) => appendNode(node, 'Top Level', 1))
+  return options
+}
+
 function renderBacktestMetric(metric: PortfolioResearchBacktestMetricRecord) {
   if (metric.metric_id === 'observations') {
     return formatNumber(metric.value, 0)
@@ -149,6 +210,9 @@ export default function ResearchPage() {
   const [artifactContent, setArtifactContent] = useState<PortfolioResearchArtifactContentResponse | null>(null)
   const [artifactLoading, setArtifactLoading] = useState(false)
   const [artifactError, setArtifactError] = useState<string | null>(null)
+  const [dynamicScopeOptions, setDynamicScopeOptions] = useState<PortfolioResearchPlanningScopeOption[] | null>(null)
+  const [scopeOptionsLoading, setScopeOptionsLoading] = useState(false)
+  const [scopeOptionsError, setScopeOptionsError] = useState<string | null>(null)
 
   const selectedRunId = searchParams.get('run_id') ?? ''
   const selectedArtifactPath = searchParams.get('artifact_path') ?? ''
@@ -250,6 +314,49 @@ export default function ResearchPage() {
     }
   }, [planningTaxonomyId, workbench])
 
+  useEffect(() => {
+    const savedPlanningTaxonomyId = workbench?.settings.planning_taxonomy_id ?? ''
+    if (!portfolioId || !workbench || !planningTaxonomyId || planningTaxonomyId === savedPlanningTaxonomyId) {
+      setDynamicScopeOptions(null)
+      setScopeOptionsLoading(false)
+      setScopeOptionsError(null)
+      return
+    }
+
+    let cancelled = false
+    setScopeOptionsLoading(true)
+    setScopeOptionsError(null)
+
+    getPortfolioTaxonomyCatalog(portfolioId)
+      .then((catalog) => {
+        if (cancelled) {
+          return
+        }
+        const taxonomy = catalog.taxonomies.find(
+          (item) => item.taxonomy_id === planningTaxonomyId && item.planning_enabled,
+        )
+        if (!taxonomy) {
+          throw new Error('Selected planning taxonomy is unavailable.')
+        }
+        setDynamicScopeOptions(buildPlanningScopeOptions(taxonomy, catalog.taxonomy_nodes))
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setDynamicScopeOptions(null)
+          setScopeOptionsError(extractErrorMessage(error))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setScopeOptionsLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [planningTaxonomyId, portfolioId, workbench])
+
   const selectedRun = workbench?.selected_run ?? null
   const selectedArtifact = useMemo(() => {
     if (!selectedRun) {
@@ -327,17 +434,8 @@ export default function ResearchPage() {
     if (planningTaxonomyId === (workbench.settings.planning_taxonomy_id ?? '')) {
       return workbench.planning_scope_options
     }
-    return [
-      {
-        taxonomy_node_id: null,
-        label: 'Top Level',
-        path: 'Top Level',
-        depth: 0,
-        default_target_dimension: 'weight',
-        has_children: false,
-      },
-    ]
-  }, [planningTaxonomyId, workbench])
+    return dynamicScopeOptions ?? []
+  }, [dynamicScopeOptions, planningTaxonomyId, workbench])
 
   const currentContext = workbench?.current_context ?? null
   const currentChartPoints = useMemo(
@@ -392,6 +490,11 @@ export default function ResearchPage() {
     () => selectedRun?.detail?.construction_rows ?? [],
     [selectedRun],
   )
+  const savedPlanningTaxonomyId = workbench?.settings.planning_taxonomy_id ?? ''
+  const scopeOptionsPending = Boolean(
+    planningTaxonomyId && planningTaxonomyId !== savedPlanningTaxonomyId && !dynamicScopeOptions && !scopeOptionsError,
+  )
+  const scopeActionBlocked = scopeOptionsLoading || scopeOptionsPending || Boolean(scopeOptionsError)
 
   const summaryPlanningName =
     workbench?.planning_taxonomy_options.find((item) => item.taxonomy_id === planningTaxonomyId)?.name ??
@@ -410,6 +513,8 @@ export default function ResearchPage() {
     const parsedGrossExposure = grossExposure.trim() ? Number(grossExposure) : null
     const parsedTargetVolatility = targetVolatilityPct.trim() ? Number(targetVolatilityPct) / 100 : null
     const parsedMaxGrossExposure = maxGrossExposure.trim() ? Number(maxGrossExposure) : null
+    const frozenTaxonomyNodeIds =
+      planningTaxonomyId === savedPlanningTaxonomyId ? (workbench?.settings.frozen_taxonomy_node_ids ?? []) : []
     return updatePortfolioResearchSettings(portfolioId, {
       planning_taxonomy_id: planningTaxonomyId || null,
       comparator_taxonomy_node_id: comparatorScopeId || null,
@@ -424,6 +529,7 @@ export default function ResearchPage() {
       gross_exposure: capitalMode === 'fixed_gross' ? parsedGrossExposure : null,
       target_volatility: capitalMode === 'target_volatility' ? parsedTargetVolatility : null,
       max_gross_exposure: capitalMode === 'target_volatility' ? parsedMaxGrossExposure : null,
+      frozen_taxonomy_node_ids: frozenTaxonomyNodeIds,
       rebalance_frequency: rebalanceFrequency,
       notes: notes || null,
     })
@@ -553,7 +659,6 @@ export default function ResearchPage() {
               <div>
                 <div className="panel-title">Run Setup</div>
               </div>
-              <div className="portfolio-detail-meta">Select sleeve scope, target mode, and rebalance cadence before launching a run.</div>
             </div>
             <form className="transaction-form taxonomy-form-compact" onSubmit={(event) => void handleSaveSettings(event)}>
               <div className="taxonomy-form-grid taxonomy-form-grid-wide research-settings-grid">
@@ -561,7 +666,11 @@ export default function ResearchPage() {
                   <span>Planning Taxonomy</span>
                   <select
                     value={planningTaxonomyId}
-                    onChange={(event) => setPlanningTaxonomyId(event.target.value)}
+                    onChange={(event) => {
+                      setDynamicScopeOptions(null)
+                      setScopeOptionsError(null)
+                      setPlanningTaxonomyId(event.target.value)
+                    }}
                   >
                     <option value="">None</option>
                     {workbench.planning_taxonomy_options.map((taxonomy) => (
@@ -576,7 +685,7 @@ export default function ResearchPage() {
                   <select
                     value={comparatorScopeId}
                     onChange={(event) => setComparatorScopeId(event.target.value)}
-                    disabled={!planningTaxonomyId}
+                    disabled={!planningTaxonomyId || scopeOptionsLoading}
                   >
                     <option value="">Top Level</option>
                     {selectedScopeOptions
@@ -696,23 +805,26 @@ export default function ResearchPage() {
                   <textarea
                     value={notes}
                     onChange={(event) => setNotes(event.target.value)}
-                    placeholder="Optional notes for current research framing, overlay assumptions, or follow-up questions."
+                    placeholder=""
                   />
                 </label>
               </div>
+              {scopeOptionsError ? <div className="inline-notice inline-notice-error">{scopeOptionsError}</div> : null}
               <div className="transaction-form-footer">
                 <span className="portfolio-detail-meta">
-                  Research resolves sleeves recursively. Each scope uses local targets, then rolls realized member paths upward.
+                  {scopeOptionsLoading
+                    ? 'Loading scope tree for the selected planning taxonomy.'
+                    : 'Research resolves sleeves recursively. Each scope uses local targets, then rolls realized member paths upward.'}
                 </span>
                 <div className="toolbar">
-                  <button type="submit" className="toolbar-link" disabled={actionPending === 'save'}>
+                  <button type="submit" className="toolbar-link" disabled={actionPending === 'save' || scopeActionBlocked}>
                     {actionPending === 'save' ? 'Saving…' : 'Save Settings'}
                   </button>
                   <button
                     type="button"
                     className="toolbar-link button-primary"
                     onClick={() => void handleRunResearch()}
-                    disabled={actionPending === 'run'}
+                    disabled={actionPending === 'run' || scopeActionBlocked}
                   >
                     {actionPending === 'run' ? 'Running…' : 'Run Research'}
                   </button>
@@ -816,7 +928,6 @@ export default function ResearchPage() {
               <div>
                 <div className="panel-title">Run History</div>
               </div>
-              <div className="portfolio-detail-meta">Select a run to inspect backtest metrics, sleeve drift, and trade suggestions.</div>
             </div>
             <div className="table-shell">
               <table className="transactions-table">
@@ -995,7 +1106,6 @@ export default function ResearchPage() {
                           <div>
                             <div className="panel-title">Backtest Metrics</div>
                           </div>
-                          <div className="portfolio-detail-meta">Performance and risk diagnostics from the selected run</div>
                         </div>
                         <div className="table-shell">
                           <table className="transactions-table">
@@ -1026,7 +1136,6 @@ export default function ResearchPage() {
                           <div>
                             <div className="panel-title">Signals</div>
                           </div>
-                          <div className="portfolio-detail-meta">Resolved configuration for this run</div>
                         </div>
                         <div className="table-shell">
                           <table className="transactions-table">
@@ -1059,7 +1168,6 @@ export default function ResearchPage() {
                           <div>
                             <div className="panel-title">Findings</div>
                           </div>
-                          <div className="portfolio-detail-meta">Structured conclusions from the selected run</div>
                         </div>
                         <div className="table-shell">
                           <table className="transactions-table">
@@ -1090,7 +1198,6 @@ export default function ResearchPage() {
                           <div>
                             <div className="panel-title">Next Questions</div>
                           </div>
-                          <div className="portfolio-detail-meta">Follow-up prompts for review, risk, or deeper construction work</div>
                         </div>
                         <div className="table-shell">
                           <table className="transactions-table">
@@ -1125,7 +1232,6 @@ export default function ResearchPage() {
                           <div>
                             <div className="panel-title">Construction Summary</div>
                           </div>
-                          <div className="portfolio-detail-meta">Resolved local construction context for the selected scope</div>
                         </div>
                         <div className="table-shell">
                           <table className="performance-summary-table">
@@ -1164,7 +1270,6 @@ export default function ResearchPage() {
                           <div>
                             <div className="panel-title">Assumptions</div>
                           </div>
-                          <div className="portfolio-detail-meta">Current local construction and fallback rules</div>
                         </div>
                         <div className="table-shell">
                           <table className="transactions-table">
@@ -1194,7 +1299,6 @@ export default function ResearchPage() {
                         <div>
                           <div className="panel-title">Resolved Construction Rows</div>
                         </div>
-                        <div className="portfolio-detail-meta">Current weights, resolved targets, and implementation weights inside the selected scope</div>
                       </div>
                       <div className="table-shell">
                         <table className="transactions-table">
@@ -1532,7 +1636,7 @@ export default function ResearchPage() {
                         </div>
                       ) : null}
                       {!artifactLoading && !artifactError && !artifactContent ? (
-                        <div className="empty-state">Select an artifact to preview its content.</div>
+                        <div className="empty-state">No artifact selected.</div>
                       ) : null}
                     </div>
                   </div>

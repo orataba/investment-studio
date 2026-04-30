@@ -5,6 +5,8 @@ export type WatchlistRecord = {
   item_count: number
   owner_type: string
   owner_id: string
+  is_default: boolean
+  is_shared: boolean
   default_view_id: string | null
 }
 
@@ -221,6 +223,8 @@ export type InstrumentAttributeUpdatePayload = {
 export type ScreenerGroup = {
   group_value: string
   row_count: number
+  group_depth?: number
+  group_path?: string[]
 }
 
 export type ScreenerSnapshotMetadata = {
@@ -376,10 +380,45 @@ export type FundPerformanceResponse = {
   annual_returns: Array<Record<string, unknown>>
   trailing_returns: Array<Record<string, unknown>>
   ranking: {
+    metric_key?: string | null
+    metric_label?: string | null
     quartile?: number | null
     percentile?: number | null
+    rank?: number | null
     sample_count?: number | null
     category_name?: string | null
+  } | null
+  peer_comparison?: {
+    status: string
+    taxonomy_code: string
+    assigned_node_id: string | null
+    assigned_path: string[]
+    peer_node_id: string | null
+    peer_path: string[]
+    fallback_levels: number
+    sample_count: number
+    metrics: Array<{
+      metric_key: string
+      label: string
+      domain: string
+      format: 'percent' | 'ratio' | string
+      direction: 'higher' | 'lower' | string
+      value: number | null
+      peer_median: number | null
+      peer_p25: number | null
+      peer_p75: number | null
+      percentile: number | null
+      quartile: number | null
+      rank: number | null
+      sample_count: number | null
+      peer_sample_count: number | null
+    }>
+    summary: {
+      return_percentile?: number | null
+      risk_percentile?: number | null
+      risk_adjusted_percentile?: number | null
+      overall_percentile?: number | null
+    }
   } | null
   snapshot_metadata: {
     as_of_date: string | null

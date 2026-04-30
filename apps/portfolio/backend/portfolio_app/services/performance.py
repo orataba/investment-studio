@@ -1859,16 +1859,7 @@ def _build_boundary_holding_records(
         )
 
     resolved_total_market_value_base = total_market_value_base if total_market_value_complete else None
-    resolved_boundary_nav = boundary_nav
-    if resolved_boundary_nav is None:
-        resolved_boundary_nav = resolved_total_market_value_base
-    for rendered_position in rendered_positions:
-        market_value_base = _safe_float(rendered_position.get("market_value_base"))
-        rendered_position["portfolio_weight"] = (
-            market_value_base / resolved_boundary_nav
-            if market_value_base is not None and resolved_boundary_nav is not None and resolved_boundary_nav > 1e-9
-            else None
-        )
+    _apply_position_portfolio_weights(rendered_positions, boundary_nav)
 
     rendered_positions.sort(
         key=lambda item: (
@@ -1877,6 +1868,71 @@ def _build_boundary_holding_records(
         )
     )
     return rendered_positions, resolved_total_market_value_base
+
+
+def _apply_position_portfolio_weights(
+    positions: list[dict[str, object]],
+    denominator_nav: float | None,
+) -> None:
+    for rendered_position in positions:
+        market_value_base = _safe_float(rendered_position.get("market_value_base"))
+        rendered_position["portfolio_weight"] = (
+            market_value_base / denominator_nav
+            if market_value_base is not None and denominator_nav is not None and denominator_nav > 1e-9
+            else None
+        )
+
+
+def _statement_cash_nav_components(
+    *,
+    portfolio_id: str,
+    accounts: list[dict[str, object]],
+    transactions: list[dict[str, object]],
+    as_of_date: date,
+    base_currency: str,
+    direct_fx_assets: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+) -> dict[str, object]:
+    postings = derive_ledger_postings(
+        portfolio_id,
+        transactions,
+        account_cost_methods=_account_cost_methods(accounts),
+        account_currency_map=_account_currency_map(accounts),
+    )
+    as_of_iso = as_of_date.isoformat()
+    cash_balance_base = 0.0
+    pending_settlement_base = 0.0
+    cash_complete = True
+    pending_settlement_complete = True
+    for posting in postings:
+        cash_delta = _safe_float(posting.get("cash_amount_delta"))
+        if cash_delta is None:
+            continue
+        posting_currency = _normalized_currency(posting.get("currency"), fallback=base_currency)
+        posting_effective_date = ledger_posting_effective_date_iso(posting)
+        converted_cash_delta, _ = convert_amount_on(
+            cash_delta,
+            as_of_date=as_of_date,
+            from_currency=posting_currency,
+            to_currency=base_currency,
+            direct_fx_assets=direct_fx_assets,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        if converted_cash_delta is None:
+            if posting_effective_date <= as_of_iso:
+                cash_complete = False
+            else:
+                pending_settlement_complete = False
+            continue
+        if posting_effective_date <= as_of_iso:
+            cash_balance_base += converted_cash_delta
+        else:
+            pending_settlement_base += converted_cash_delta
+
+    return {
+        "cash_balance_base": cash_balance_base if cash_complete else None,
+        "pending_settlement_base": pending_settlement_base if pending_settlement_complete else None,
+    }
 
 
 def build_statement_of_assets_report(
@@ -1905,6 +1961,27 @@ def build_statement_of_assets_report(
         instrument_detail_cache=instrument_detail_cache,
         boundary_nav=None,
     )
+    cash_components = _statement_cash_nav_components(
+        portfolio_id=str(portfolio.get("portfolio_id") or ""),
+        accounts=accounts,
+        transactions=boundary_transactions,
+        as_of_date=as_of_date,
+        base_currency=base_currency,
+        direct_fx_assets=direct_fx_assets,
+        instrument_detail_cache=instrument_detail_cache,
+    )
+    cash_balance_base = _safe_float(cash_components.get("cash_balance_base"))
+    pending_settlement_base = _safe_float(cash_components.get("pending_settlement_base"))
+    total_nav_base = (
+        cash_balance_base + pending_settlement_base + total_market_value_base
+        if (
+            cash_balance_base is not None
+            and pending_settlement_base is not None
+            and total_market_value_base is not None
+        )
+        else None
+    )
+    _apply_position_portfolio_weights(positions, total_nav_base)
     return {
         "portfolio_id": str(portfolio.get("portfolio_id") or ""),
         "portfolio_name": str(portfolio.get("portfolio_name") or portfolio.get("portfolio_id") or ""),
@@ -1914,6 +1991,9 @@ def build_statement_of_assets_report(
         "as_of_date": as_of_date,
         "positions": positions,
         "total_market_value_base": total_market_value_base,
+        "cash_balance_base": cash_balance_base,
+        "pending_settlement_base": pending_settlement_base,
+        "total_nav_base": total_nav_base,
     }
 
 

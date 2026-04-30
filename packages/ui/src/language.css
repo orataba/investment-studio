@@ -1,0 +1,51 @@
+.app-utility-bar {
+  display: flex;
+  justify-content: flex-end;
+  width: min(1680px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: 12px 0 0;
+}
+
+.platform-masthead .language-switcher {
+  margin-left: auto;
+}
+
+.language-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid rgba(17, 24, 39, 0.18);
+  background: rgba(255, 255, 255, 0.84);
+  color: #1f2937;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.language-switcher span {
+  color: #5f6673;
+}
+
+.language-switcher select {
+  min-width: 104px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  outline: none;
+}
+
+@media (max-width: 640px) {
+  .app-utility-bar {
+    width: calc(100% - 28px);
+    padding-top: 10px;
+  }
+
+  .language-switcher {
+    width: 100%;
+    justify-content: space-between;
+  }
+}

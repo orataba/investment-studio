@@ -46,7 +46,7 @@
 
 ## Shared Layer
 
-当前共享层分成两部分：
+当前共享层分成三部分：
 
 ### `packages/asset-core`
 
@@ -60,6 +60,16 @@
 - typed market data / FX
 - quote selection policy
 - shared store helper / db models
+
+### `packages/ui`
+
+承载跨 app 的前端共享能力：
+
+- language context
+- language selector
+- shared frontend styles
+
+后续如果沉淀 layout、基础组件或设计系统，也优先放在这里，而不是复制到各 app。
 
 ### `shared_asset` schema
 

@@ -2669,7 +2669,7 @@ export default function TaxonomiesPage() {
                           )
                         }}
                       />
-                      <span>Use this taxonomy as a candidate planning axis.</span>
+                      <span>Planning Axis</span>
                     </div>
                   </label>
                 </div>

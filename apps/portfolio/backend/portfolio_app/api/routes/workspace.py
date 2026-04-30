@@ -119,6 +119,7 @@ def holdings_workspace(
         for position in positions
     ]
     total_market_value_base = statement.get("total_market_value_base")
+    total_nav_base = statement.get("total_nav_base")
     total_cost_basis_base = sum(
         float(row["cost_basis_base"])
         for row in rows
@@ -153,9 +154,16 @@ def holdings_workspace(
         "rows": rows,
         "totals": {
             "market_value": total_market_value_base,
+            "cash_balance": statement.get("cash_balance_base"),
+            "pending_settlement": statement.get("pending_settlement_base"),
+            "nav": total_nav_base,
             "day_change_pct": resolved_portfolio.get("day_change_pct", 0.0),
             "day_change_value": resolved_portfolio.get("day_change_value", 0.0),
             "cost_basis": total_cost_basis_base,
-            "allocation": 1.0 if total_market_value_base and total_market_value_base > 0 else None,
+            "allocation": (
+                total_market_value_base / total_nav_base
+                if total_market_value_base is not None and total_nav_base is not None and total_nav_base > 1e-9
+                else None
+            ),
         },
     }

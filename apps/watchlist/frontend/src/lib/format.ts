@@ -25,6 +25,19 @@ export function formatNumber(value: unknown, digits = 2) {
   return value.toFixed(digits)
 }
 
+export function signedValueClass(value: unknown) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return ''
+  }
+  if (value > 0) {
+    return 'positive-cell'
+  }
+  if (value < 0) {
+    return 'negative-cell'
+  }
+  return 'neutral-cell'
+}
+
 export function formatDate(value: unknown) {
   if (typeof value !== 'string' || !value) {
     return '—'

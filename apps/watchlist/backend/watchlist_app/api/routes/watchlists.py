@@ -30,7 +30,11 @@ from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
 )
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
 from watchlist_app.repositories.sqlalchemy.taxonomy import SQLAlchemyTaxonomyRepository
-from watchlist_app.repositories.sqlalchemy.watchlists import SQLAlchemyWatchlistRepository
+from watchlist_app.repositories.sqlalchemy.watchlists import (
+    ALL_COVERAGE_WATCHLIST_ID,
+    ALL_COVERAGE_WATCHLIST_NAME,
+    SQLAlchemyWatchlistRepository,
+)
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
 from watchlist_app.services.fund_taxonomy import (
     build_taxonomy_context,
@@ -44,6 +48,7 @@ from watchlist_app.services.instrument_resolution import resolve_watchlist_instr
 from watchlist_app.services.shared_instrument_registry import (
     SharedInstrumentRegistryError,
     get_shared_instrument,
+    list_shared_instruments,
 )
 
 
@@ -56,6 +61,10 @@ read_model_repository = SQLAlchemyReadModelRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
 canonical_recalc_service = CanonicalRecalcService()
 MAX_WATCHLIST_ID_ATTEMPTS = 10
+
+
+def _is_all_coverage_watchlist(watchlist_id: str) -> bool:
+    return watchlist_id == ALL_COVERAGE_WATCHLIST_ID
 
 
 def _slugify_watchlist_name(value: str) -> str:
@@ -242,6 +251,14 @@ def _assert_source_membership(
                 "Assets not found in source watchlist: "
                 f"{', '.join(missing_asset_ids)}."
             ),
+        )
+
+
+def _assert_mutable_watchlist(watchlist_id: str) -> None:
+    if _is_all_coverage_watchlist(watchlist_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{ALL_COVERAGE_WATCHLIST_NAME} is system-maintained and cannot be manually reduced.",
         )
 
 
@@ -472,8 +489,75 @@ def _materialize_watchlist_rows(
         )
 
 
+def _sync_all_coverage_watchlist(session: Session):
+    record = watchlist_repository.ensure_all_coverage_watchlist(session)
+    try:
+        shared_funds = list_shared_instruments(asset_type="fund", limit=None)
+    except SharedInstrumentRegistryError:
+        return record
+
+    active_asset_ids: list[str] = []
+    for shared_instrument in shared_funds:
+        detail_asset_id = _ensure_local_asset_detail(session, shared_instrument)
+        if detail_asset_id and detail_asset_id not in active_asset_ids:
+            active_asset_ids.append(detail_asset_id)
+
+    refreshed_record = watchlist_repository.get(session, ALL_COVERAGE_WATCHLIST_ID) or record
+    existing_asset_ids = {
+        str(item.asset_id).strip()
+        for item in refreshed_record.items
+        if str(item.asset_id).strip()
+    }
+    active_asset_id_set = set(active_asset_ids)
+    stale_asset_ids = [
+        asset_id for asset_id in existing_asset_ids if asset_id not in active_asset_id_set
+    ]
+    if stale_asset_ids:
+        watchlist_repository.delete_items(
+            session,
+            watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
+            asset_ids=stale_asset_ids,
+        )
+        read_model_repository.delete_watchlist_rows(
+            session,
+            watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
+            asset_ids=stale_asset_ids,
+        )
+
+    created = watchlist_repository.add_items(
+        session,
+        watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
+        asset_ids=active_asset_ids,
+        added_by="system",
+    )
+    existing_rows = {
+        row.asset_id
+        for row in read_model_repository.list_watchlist_rows(
+            session,
+            ALL_COVERAGE_WATCHLIST_ID,
+        )
+    }
+    created_asset_ids = {item.asset_id for item in created}
+    materialize_asset_ids = [
+        asset_id
+        for asset_id in active_asset_ids
+        if asset_id not in existing_rows or asset_id in created_asset_ids
+    ]
+    try:
+        _materialize_watchlist_rows(
+            session,
+            watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
+            asset_ids=materialize_asset_ids,
+        )
+    except SharedInstrumentRegistryError:
+        return record
+    return watchlist_repository.get(session, ALL_COVERAGE_WATCHLIST_ID) or record
+
+
 @router.get("")
 def list_watchlists(session: Session = Depends(get_db_session)) -> list[dict[str, object]]:
+    _sync_all_coverage_watchlist(session)
+    session.commit()
     records = watchlist_repository.list(session)
     return [present_watchlist(item) for item in records]
 
@@ -504,9 +588,18 @@ def reorder_watchlist_records(
     payload: WatchlistReorderRequest,
     session: Session = Depends(get_db_session),
 ) -> list[dict[str, object]]:
+    _sync_all_coverage_watchlist(session)
+    ordered_watchlist_ids = [
+        ALL_COVERAGE_WATCHLIST_ID,
+        *[
+            watchlist_id
+            for watchlist_id in payload.watchlist_ids
+            if watchlist_id != ALL_COVERAGE_WATCHLIST_ID
+        ],
+    ]
     records = watchlist_repository.reorder(
         session,
-        watchlist_ids=payload.watchlist_ids,
+        watchlist_ids=ordered_watchlist_ids,
     )
     session.commit()
     return [present_watchlist(item) for item in records]
@@ -527,6 +620,11 @@ def copy_watchlist_record(
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Watchlist not found")
+    if _is_all_coverage_watchlist(watchlist_id):
+        record.owner_type = "team"
+        record.owner_id = "investment-team"
+        record.is_default = False
+        record.is_shared = False
 
     try:
         _materialize_watchlist_rows(
@@ -546,6 +644,7 @@ def delete_watchlist_record(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _require_watchlist(session, watchlist_id)
+    _assert_mutable_watchlist(watchlist_id)
     read_model_repository.delete_all_watchlist_rows(
         session,
         watchlist_id=watchlist_id,
@@ -562,6 +661,9 @@ def get_watchlist(
     watchlist_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
+    if _is_all_coverage_watchlist(watchlist_id):
+        _sync_all_coverage_watchlist(session)
+        session.commit()
     record = _require_watchlist(session, watchlist_id)
     fields = field_registry_repository.list_fields(session)
     watchlist_rows = read_model_repository.list_watchlist_rows(session, watchlist_id)
@@ -707,6 +809,7 @@ def delete_items_from_watchlist(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _require_watchlist(session, watchlist_id)
+    _assert_mutable_watchlist(watchlist_id)
     deleted_count = watchlist_repository.delete_items(
         session,
         watchlist_id=watchlist_id,
@@ -731,6 +834,7 @@ def move_items_to_watchlist(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     source_watchlist = _require_watchlist(session, watchlist_id)
+    _assert_mutable_watchlist(watchlist_id)
     target_watchlist_id = payload.target_watchlist_id.strip()
     if not target_watchlist_id:
         raise HTTPException(status_code=400, detail="Target watchlist is required.")

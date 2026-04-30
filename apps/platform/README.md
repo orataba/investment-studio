@@ -37,6 +37,12 @@
 
 跨 app 的数据库和平台边界说明见 [../../docs/README.md](../../docs/README.md)。
 
+## Local NAV Imports
+
+仓库根目录的 `nav/` 只作为本机 NAV / Excel 文件导入暂存目录，供 [backend/scripts/import_coverage_nav_from_folder.py](./backend/scripts/import_coverage_nav_from_folder.py) 读取。
+
+这些文件通常包含外部导出的运行数据，目录已加入 `.gitignore`，不再作为源码资产提交。
+
 ## 快速启动
 
 ### 1. 后端

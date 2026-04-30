@@ -54,7 +54,7 @@ yungu/
 - `packages/asset-core`
   当前承载共享资产 contract、持久化 model 与 shared store helper：`asset_id`、`name`、identifiers、`asset_type`、`currency`、typed `market_data` 与最小 `quote_selection_policy`。
 - `packages/ui`
-  未来放统一设计系统和通用 UI primitives。
+  当前承载跨 app 的前端共享能力：语言上下文、语言选择器和通用样式；后续再扩展统一设计系统和 UI primitives。
 - `packages/copilot`
   预留的平台级 copilot plumbing 目录；当前主路径不依赖它。
 
@@ -143,3 +143,9 @@ cd /home/shaw/yungu/apps/platform/frontend && npm run build
 cd /home/shaw/yungu/apps/portfolio/frontend && npm run build
 cd /home/shaw/yungu/apps/watchlist/frontend && npm run build
 ```
+
+## 仓库卫生
+
+- `nav/` 是本地 NAV / Excel 导入落盘目录，不再作为源码提交；需要导入时临时放入本机目录。
+- `node_modules/`、`dist/`、`*.db`、`*.sqlite*`、`__pycache__/`、`.pytest_cache/` 都是本地产物，不应进入提交。
+- 提交前至少跑一次三个后端测试和三个前端 build；PostgreSQL cross-schema 行为按需补跑 [docs/DATABASE_WORKFLOW.md](./docs/DATABASE_WORKFLOW.md) 里的 integration tests。

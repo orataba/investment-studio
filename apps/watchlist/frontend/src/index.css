@@ -1,10 +1,24 @@
 :root {
   color-scheme: light;
-  font-family: "Bahnschrift SemiCondensed", "Aptos Narrow", "Arial Narrow", "PingFang SC", "Noto Sans SC", sans-serif;
+  font-family: "Aptos", "Inter", "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
   line-height: 1.5;
   font-weight: 400;
   color: #111111;
   background: #ffffff;
+  --surface: #ffffff;
+  --ink: #111827;
+  --muted: #5f6673;
+  --faint: #8a9099;
+  --line: #e6e2d8;
+  --line-strong: #cfc7b8;
+  --band: #faf9f6;
+  --accent: #0b5cab;
+  --accent-soft: #f4f8fc;
+  --positive: #0f766e;
+  --negative: #b42318;
+  --warning: #9a6a16;
+  --violet: #6d5bd0;
+  --teal: #0f766e;
 }
 
 * {
@@ -14,7 +28,7 @@
 body {
   margin: 0;
   min-width: 320px;
-  background: #ffffff;
+  background: #fbfbf8;
 }
 
 a {
@@ -45,13 +59,14 @@ select {
 
 .terminal-page {
   display: grid;
-  gap: 16px;
+  gap: 18px;
   min-width: 0;
 }
 
 .panel {
-  border: 1px solid #dddddd;
-  background: #ffffff;
+  border: none;
+  background: transparent;
+  box-shadow: none;
 }
 
 .stub-body {
@@ -70,15 +85,23 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 18px;
-  border-bottom: 1px solid #ececec;
+  padding: 12px 0;
+  border-top: 1px solid var(--line-strong);
+  border-bottom: none;
+}
+
+.terminal-page > .panel:first-child > .panel-header,
+.terminal-page > .watchlists-main:first-child > .watchlists-toolbar {
+  border-top-color: var(--ink);
+  border-top-width: 2px;
 }
 
 .panel-title {
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  color: #4b5563;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+  text-transform: uppercase;
 }
 
 .toolbar {
@@ -90,19 +113,19 @@ select {
 .toolbar button,
 .toolbar span,
 .toolbar-link {
-  padding: 8px 12px;
+  padding: 6px 10px;
   border: 1px solid #cfcfcf;
-  border-radius: 999px;
-  background: #fff;
+  border-radius: 0;
+  background: transparent;
   color: #111827;
   font-size: 13px;
 }
 
 .toolbar-select {
-  padding: 8px 12px;
+  padding: 6px 10px;
   border: 1px solid #cfcfcf;
-  border-radius: 999px;
-  background: #fff;
+  border-radius: 0;
+  background: transparent;
   color: #111827;
   font-size: 13px;
 }
@@ -120,9 +143,9 @@ select {
 
 .context-chip {
   padding: 5px 10px;
-  border: 1px solid #e2e0d8;
-  border-radius: 999px;
-  background: #f7f7f4;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: var(--band);
   color: #525866;
   font-size: 12px;
 }
@@ -225,11 +248,27 @@ table {
 
 th,
 td {
-  padding: 13px 18px;
-  border-bottom: 1px solid #ececec;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
   text-align: left;
-  font-size: 14px;
+  font-size: 13px;
   white-space: nowrap;
+}
+
+.watchlists-table thead th,
+.monitoring-table thead th,
+.nav-history-table thead th,
+.instrument-data-table th,
+.instrument-people-table th,
+.instrument-monitoring-table th,
+.instrument-documents-table th,
+.instrument-research-table th,
+.instrument-metrics-table th,
+.instrument-heatmap-table th,
+.instrument-product-tags-table th {
+  border-bottom: 1px solid var(--line-strong);
+  background: var(--band);
+  color: var(--ink);
 }
 
 .watchlists-table thead th {
@@ -245,10 +284,10 @@ td {
 }
 
 th {
-  color: #4b5563;
+  color: var(--muted);
   font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
+  font-weight: 800;
+  letter-spacing: 0.02em;
   position: relative;
 }
 
@@ -256,7 +295,7 @@ th {
   display: inline-flex;
   align-items: center;
   padding: 4px 9px;
-  border-radius: 999px;
+  border-radius: 0;
   background: #eff3f8;
   color: #0f335d;
   font-size: 12px;
@@ -266,7 +305,7 @@ th {
 .ticker-pill {
   display: inline-flex;
   padding: 3px 10px;
-  border-radius: 999px;
+  border-radius: 0;
   background: #f0f0ec;
   color: #243042;
   font-size: 12px;
@@ -276,7 +315,7 @@ th {
   display: inline-flex;
   align-items: center;
   padding: 4px 9px;
-  border-radius: 999px;
+  border-radius: 0;
   font-size: 12px;
   font-weight: 700;
 }
@@ -338,7 +377,8 @@ th {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0 24px;
-  padding: 0 18px 18px;
+  padding: 0;
+  border-top: 1px solid var(--line-strong);
 }
 
 .monitoring-overview-stat {
@@ -350,7 +390,7 @@ th {
 }
 
 .monitoring-overview-stat:nth-child(n + 4) {
-  border-top: 1px solid #ececec;
+  border-top: 1px solid var(--line);
 }
 
 .monitoring-overview-stat > span:first-child {
@@ -408,7 +448,7 @@ th {
   align-items: center;
   padding: 4px 8px;
   border: 1px solid #e5e7eb;
-  border-radius: 999px;
+  border-radius: 0;
   color: #374151;
   font-size: 12px;
 }
@@ -549,11 +589,12 @@ th {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 38px;
-  padding: 7px 10px 7px 12px;
-  border: 1px solid #d7d7d7;
-  border-radius: 8px;
-  background: #ffffff;
+  min-height: 28px;
+  padding: 6px 0;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
   color: #111827;
   font-size: 13px;
 }
@@ -563,13 +604,13 @@ th {
 }
 
 .watchlist-switcher-chip-inactive:hover {
-  border-color: #c5cbd3;
+  border-bottom-color: var(--line-strong);
 }
 
 .watchlist-switcher-chip-active {
-  background: #2f3134;
-  border-color: #2f3134;
-  color: #ffffff;
+  border-bottom-color: var(--accent);
+  background: transparent;
+  color: var(--ink);
 }
 
 .watchlist-switcher-chip-label {
@@ -580,7 +621,7 @@ th {
 }
 
 .watchlist-switcher-chip-label-active {
-  color: #ffffff;
+  color: var(--ink);
 }
 
 .watchlist-switcher-home-icon {
@@ -598,21 +639,19 @@ th {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  border: 1px solid #cfd5de;
-  border-radius: 999px;
-  background: #ffffff;
-  color: #111827;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
   font-size: 11px;
   line-height: 1;
 }
 
 .watchlist-menu-trigger-active {
-  border-color: rgba(255, 255, 255, 0.32);
-  background: rgba(255, 255, 255, 0.14);
-  color: #ffffff;
+  color: var(--ink);
 }
 
 .watchlist-menu {
@@ -623,8 +662,8 @@ th {
   display: grid;
   min-width: 172px;
   padding: 8px;
-  border: 1px solid #d7d7d7;
-  border-radius: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
   background: #ffffff;
   box-shadow: 0 10px 30px rgba(17, 24, 39, 0.12);
 }
@@ -632,7 +671,7 @@ th {
 .watchlist-menu button {
   padding: 9px 10px;
   border: none;
-  border-radius: 8px;
+  border-radius: 0;
   background: transparent;
   text-align: left;
 }
@@ -653,7 +692,7 @@ th {
 .watchlist-entry-shell,
 .watchlist-entry-list-shell {
   display: grid;
-  gap: 16px;
+  gap: 0;
 }
 
 .watchlist-entry-shell {
@@ -691,11 +730,11 @@ th {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  height: 32px;
-  padding: 0 14px;
-  border: 1px solid #cfcfcf;
-  border-radius: 999px;
-  background: #ffffff;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
   color: #374151;
   font-size: 13px;
 }
@@ -710,7 +749,8 @@ th {
 
 .watchlist-entry-grid {
   display: grid;
-  gap: 12px;
+  gap: 0;
+  border-top: 1px solid var(--line-strong);
 }
 
 .watchlist-entry-list-shell {
@@ -718,6 +758,7 @@ th {
   max-width: 1460px;
   margin-left: auto;
   margin-right: auto;
+  border-bottom: 1px solid var(--line-strong);
 }
 
 .watchlist-entry-card {
@@ -725,16 +766,22 @@ th {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 18px;
   align-items: center;
-  padding: 20px 22px;
-  border: 1px solid #d7d7d7;
-  border-radius: 10px;
-  background: #ffffff;
+  padding: 14px 0;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   text-decoration: none;
   color: inherit;
 }
 
 .watchlist-entry-card:hover {
-  border-color: #c5cbd3;
+  background: #fcfbf8;
+}
+
+.watchlist-entry-card-system {
+  background: transparent;
 }
 
 .watchlist-entry-card-leading {
@@ -770,12 +817,26 @@ th {
   height: 16px;
 }
 
+.watchlist-entry-system-badge {
+  display: inline-flex;
+  align-items: center;
+  height: auto;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+}
+
 .watchlist-entry-card-menu {
-  width: 24px;
-  height: 24px;
-  border: 1px solid #d7d7d7;
-  border-radius: 999px;
-  background: #ffffff;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
   font-size: 11px;
   color: #6b7280;
 }
@@ -784,16 +845,16 @@ th {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 52px;
-  height: 52px;
-  border-radius: 10px;
-  background: #f3f4f6;
-  color: #6b7280;
+  width: 34px;
+  height: 34px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
 }
 
 .watchlist-entry-card-icon svg {
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
 }
 
 .watchlist-entry-card-main {
@@ -849,7 +910,7 @@ th {
 }
 
 .watchlist-entry-create-card {
-  padding: 24px 22px;
+  padding: 18px 0;
   border-top: 1px solid #d8d3c9;
   background: transparent;
 }
@@ -902,8 +963,8 @@ th {
   min-height: 32px;
   padding: 0 12px;
   border: 1px solid #d7d7d7;
-  border-radius: 999px;
-  background: #ffffff;
+  border-radius: 0;
+  background: transparent;
   color: #111827;
   font-size: 13px;
 }
@@ -937,17 +998,17 @@ th {
 }
 
 .watchlists-toolbar-button {
-  height: 36px;
-  padding: 0 14px;
-  border: 1px solid #cfcfcf;
-  border-radius: 999px;
-  background: #ffffff;
-  font-size: 14px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  font-size: 13px;
 }
 
 .watchlists-toolbar-button-active {
-  border-color: #8fb5dc;
-  background: #eef5fb;
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .watchlists-toolbar-count {
@@ -958,7 +1019,7 @@ th {
   height: 18px;
   margin-left: 8px;
   padding: 0 6px;
-  border-radius: 999px;
+  border-radius: 0;
   background: #1f2937;
   color: #ffffff;
   font-size: 11px;
@@ -979,11 +1040,11 @@ th {
   display: inline-flex;
   position: relative;
   align-items: stretch;
-  border: 1px solid #cfcfcf;
-  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
   overflow: hidden;
-  background: #ffffff;
-  height: 36px;
+  background: transparent;
+  height: 30px;
 }
 
 .watchlists-view-group::after {
@@ -1001,12 +1062,12 @@ th {
 
 .watchlists-inline-select {
   min-width: 210px;
-  height: 36px;
-  padding: 0 14px;
-  border: 1px solid #cfcfcf;
-  border-radius: 999px;
-  background: #ffffff;
-  font-size: 14px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  font-size: 13px;
   appearance: none;
   -webkit-appearance: none;
   -moz-appearance: none;
@@ -1020,16 +1081,16 @@ th {
 
 .watchlists-inline-select-group {
   border: none;
-  border-radius: 999px 0 0 999px;
+  border-radius: 0;
   padding-right: 34px;
 }
 
 .watchlists-plus-button {
-  width: 42px;
-  height: 36px;
+  width: 34px;
+  height: 30px;
   border: none;
-  border-left: 1px solid #cfcfcf;
-  background: #ffffff;
+  border-left: 1px solid var(--line-strong);
+  background: transparent;
   font-size: 20px;
   color: #111111;
   display: inline-flex;
@@ -1053,12 +1114,12 @@ th {
 }
 
 .watchlists-square-button {
-  width: 36px;
-  height: 36px;
-  border: 1px solid #cfcfcf;
-  border-radius: 999px;
-  background: #ffffff;
-  font-size: 20px;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  font-size: 18px;
 }
 
 
@@ -1073,8 +1134,8 @@ th {
   z-index: 30;
   min-width: 220px;
   padding: 8px;
-  border: 1px solid #cfcfcf;
-  border-radius: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
   background: #ffffff;
   box-shadow: 0 12px 28px rgba(17, 17, 17, 0.09);
 }
@@ -1084,7 +1145,7 @@ th {
   width: 100%;
   padding: 10px 12px;
   border: none;
-  border-radius: 8px;
+  border-radius: 0;
   background: transparent;
   color: #111111;
   text-align: left;
@@ -1137,7 +1198,7 @@ th {
   max-height: 360px;
   overflow: auto;
   border: 1px solid #d8d3c9;
-  border-radius: 10px;
+  border-radius: 0;
   background: #faf8f3;
 }
 
@@ -1170,7 +1231,7 @@ th {
   min-width: 18px;
   height: 18px;
   padding: 0 6px;
-  border-radius: 999px;
+  border-radius: 0;
   background: #1f2937;
   color: #ffffff;
   font-size: 11px;
@@ -1193,13 +1254,70 @@ th {
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: 0;
   background: #faf8f3;
   font-size: 13px;
 }
 
 .watchlists-filter-option input {
   margin: 0;
+}
+
+.watchlists-taxonomy-filter-list {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+}
+
+.watchlists-taxonomy-node {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: #374151;
+  text-align: left;
+  font-size: 13px;
+}
+
+.watchlists-taxonomy-node:hover,
+.watchlists-taxonomy-node-ancestor {
+  background: #f7f4ed;
+}
+
+.watchlists-taxonomy-node-active {
+  background: #eef5fb;
+  color: #111827;
+  font-weight: 700;
+}
+
+.watchlists-taxonomy-node-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watchlists-taxonomy-node-count {
+  flex: 0 0 auto;
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 0;
+  background: #ece7dc;
+  color: #4b5563;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.watchlists-taxonomy-node-active .watchlists-taxonomy-node-count {
+  background: #1f2937;
+  color: #ffffff;
 }
 
 .watchlists-filter-clear {
@@ -1233,7 +1351,7 @@ th {
   gap: 8px;
   padding: 7px 12px;
   border: 1px solid #cbd6e2;
-  border-radius: 999px;
+  border-radius: 0;
   background: #eef5fb;
   font-size: 12px;
 }
@@ -1365,10 +1483,11 @@ th {
   width: min(1080px, 100%);
   max-height: min(88vh, 920px);
   overflow: auto;
-  border: 1px solid #cfcfcf;
-  border-radius: 12px;
+  border: 1px solid var(--line-strong);
+  border-top: 2px solid var(--ink);
+  border-radius: 0;
   background: #ffffff;
-  box-shadow: 0 18px 48px rgba(17, 17, 17, 0.16);
+  box-shadow: 0 18px 42px rgba(17, 17, 17, 0.14);
   display: flex;
   flex-direction: column;
 }
@@ -1399,10 +1518,10 @@ th {
 .watchlists-arrange-actions button,
 .watchlists-modal-actions button,
 .watchlists-add-filters button {
-  padding: 8px 12px;
-  border: 1px solid #cfcfcf;
-  border-radius: 999px;
-  background: #ffffff;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
 }
 
 .watchlists-modal-search {
@@ -1424,10 +1543,12 @@ th {
 
 .watchlists-move-summary,
 .watchlists-move-note {
-  padding: 12px 14px;
-  border: 1px solid #e4e4e4;
-  border-radius: 10px;
-  background: #fbfbfb;
+  padding: 10px 0;
+  border: none;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
   color: #4b5563;
   font-size: 13px;
   line-height: 1.5;
@@ -1436,10 +1557,12 @@ th {
 .watchlists-registry-selected {
   display: grid;
   gap: 4px;
-  padding: 12px 14px;
-  border: 1px solid #e4e4e4;
-  border-radius: 10px;
-  background: #fbfbfb;
+  padding: 10px 0;
+  border: none;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
 }
 
 .watchlists-registry-name {
@@ -1454,10 +1577,11 @@ th {
 
 .watchlists-registry-list {
   display: grid;
-  gap: 10px;
+  gap: 0;
   max-height: 320px;
   overflow: auto;
   padding-right: 4px;
+  border-top: 1px solid var(--line-strong);
 }
 
 .watchlists-registry-row {
@@ -1466,16 +1590,17 @@ th {
   justify-content: space-between;
   gap: 16px;
   width: 100%;
-  padding: 12px 14px;
-  border: 1px solid #e4e4e4;
-  border-radius: 10px;
-  background: #ffffff;
+  padding: 12px 0;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
   text-align: left;
 }
 
 .watchlists-registry-row-active {
-  border-color: #0b72d7;
-  box-shadow: inset 0 0 0 1px rgba(11, 114, 215, 0.18);
+  color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .watchlists-registry-row-main,
@@ -1507,8 +1632,8 @@ th {
 .watchlists-modal-fields,
 .watchlists-modal-arrange {
   min-height: 420px;
-  border: 1px solid #ececec;
-  background: #fbfbfb;
+  border: 1px solid var(--line);
+  background: transparent;
 }
 
 .watchlists-modal-categories {
@@ -1534,14 +1659,14 @@ th {
 
 .watchlists-category-item-active {
   border-left-color: #0b72d7;
-  background: #eef5fb;
+  background: var(--accent-soft);
 }
 
 .watchlists-modal-fields {
   display: grid;
   align-content: start;
-  gap: 1px;
-  padding: 10px;
+  gap: 0;
+  padding: 0 10px;
 }
 
 .watchlists-field-item {
@@ -1549,8 +1674,9 @@ th {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   align-items: start;
-  padding: 10px 12px;
-  background: #ffffff;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
 }
 
 .watchlists-field-label {
@@ -1586,8 +1712,8 @@ th {
 
 .watchlists-arrange-list {
   display: grid;
-  gap: 1px;
-  padding: 10px;
+  gap: 0;
+  padding: 0 10px;
 }
 
 .watchlists-columns-modal .watchlists-arrange-list {
@@ -1600,14 +1726,15 @@ th {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 14px;
-  background: #ffffff;
+  padding: 12px 0;
+  background: transparent;
   font-size: 14px;
-  border: 1px solid #e7e7e7;
+  border: none;
+  border-bottom: 1px solid var(--line);
 }
 
 .watchlists-arrange-item + .watchlists-arrange-item {
-  margin-top: 6px;
+  margin-top: 0;
 }
 
 .watchlists-arrange-handle {
@@ -1695,14 +1822,17 @@ th {
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-  padding: 18px;
+  gap: 0 20px;
+  padding: 0;
+  border-top: 1px solid var(--line-strong);
 }
 
 .metric-card {
-  border: 1px solid #ecebe5;
-  background: #fcfcfa;
-  padding: 16px;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  padding: 12px 0;
 }
 
 .metric-label {
@@ -1933,21 +2063,23 @@ th {
 .instrument-library-shell {
   display: grid;
   gap: 16px;
-  padding: 18px;
+  padding: 0;
 }
 
 .instrument-library-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 0 20px;
+  border-top: 1px solid var(--line-strong);
 }
 
 .instrument-library-stat {
   display: grid;
   gap: 6px;
-  padding: 14px 16px;
-  border: 1px solid #e6e4dc;
-  background: #faf9f6;
+  padding: 12px 0;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
 }
 
 .instrument-library-stat strong {
@@ -2471,7 +2603,7 @@ td:last-child {
   content: "⌕";
   position: absolute;
   top: 50%;
-  left: 15px;
+  left: 12px;
   transform: translateY(-50%);
   color: #8a8377;
   font-size: 15px;
@@ -2480,14 +2612,14 @@ td:last-child {
 
 .instrument-chart-compare select {
   width: 100%;
-  height: 40px;
-  padding: 0 16px 0 40px;
+  height: 32px;
+  padding: 0 12px 0 34px;
   border: 1px solid #d9d5ca;
-  border-radius: 999px;
+  border-radius: 0;
   border-color: #b8b1a5;
-  background: #fff;
+  background: transparent;
   color: #111827;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   outline: none;
   appearance: none;
@@ -3323,7 +3455,7 @@ td:last-child {
   max-width: min(240px, calc(100% - 24px));
   padding: 12px 14px;
   border: 1px solid #d9d6cd;
-  border-radius: 10px;
+  border-radius: 0;
   background: rgba(255, 255, 255, 0.88);
   box-shadow: 0 12px 26px rgba(17, 24, 39, 0.1);
   pointer-events: none;
@@ -3354,7 +3486,7 @@ td:last-child {
 .instrument-chart-tooltip-swatch {
   width: 8px;
   height: 8px;
-  border-radius: 999px;
+  border-radius: 0;
   background: currentColor;
   flex: 0 0 auto;
 }
@@ -3780,9 +3912,93 @@ td:last-child {
   justify-content: flex-end;
 }
 
+.instrument-performance-matrix-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.instrument-performance-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  flex: 0 0 auto;
+  padding: 0;
+  overflow: hidden;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.instrument-performance-view-toggle button {
+  min-height: 30px;
+  padding: 6px 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.instrument-performance-view-toggle button:not(:disabled):hover {
+  background: transparent;
+  border-bottom-color: var(--line-strong);
+  color: #111827;
+}
+
+.instrument-performance-view-toggle button.instrument-performance-toggle-active,
+.instrument-performance-window-toolbar button.instrument-performance-toggle-active {
+  border-bottom-color: var(--accent);
+  background: transparent;
+  color: var(--ink);
+  box-shadow: none;
+}
+
+.instrument-performance-view-toggle button:disabled {
+  color: #a8a29b;
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
 .instrument-performance-benchmark-select {
   flex: 0 1 360px;
   margin-left: auto;
+}
+
+.instrument-peer-context {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+  max-width: 460px;
+  margin-left: auto;
+  color: #4b5563;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.instrument-peer-context span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.instrument-peer-context strong {
+  flex: 0 0 auto;
+  font-weight: 700;
+  color: #111827;
 }
 
 .instrument-visual-summary-grid {
@@ -3909,6 +4125,18 @@ td:last-child {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.instrument-metrics-cell-positive strong {
+  color: #047857;
+}
+
+.instrument-metrics-cell-negative strong {
+  color: #b42318;
+}
+
+.instrument-metrics-cell-empty strong {
+  color: #9ca3af;
 }
 
 .instrument-metrics-table-risk {
@@ -5081,8 +5309,29 @@ td:last-child {
     justify-content: flex-start;
   }
 
-  .instrument-performance-benchmark-select {
+  .instrument-performance-matrix-controls {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
     margin-left: 0;
+  }
+
+  .instrument-performance-view-toggle {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .instrument-performance-benchmark-select {
+    flex-basis: min(360px, 100%);
+    margin-left: 0;
+  }
+
+  .instrument-peer-context {
+    width: 100%;
+    max-width: none;
+    margin-left: 0;
+    justify-content: flex-start;
+    text-align: left;
   }
 
   .instrument-price-columns {
@@ -5379,4 +5628,651 @@ td:last-child {
     min-width: 140px;
   }
 
+}
+
+/* Unified portfolio/watchlist terminal style, aligned to Morningstar-like data tables. */
+:root {
+  --surface: #ffffff;
+  --ink: #111111;
+  --muted: #5f6673;
+  --faint: #8a9099;
+  --line: #e7e2d7;
+  --line-strong: #d2cabd;
+  --band: #fbfaf6;
+  --band-strong: #f3f0e8;
+  --accent: #0b66b2;
+  --accent-soft: #eef5fb;
+  --accent-warm: #b88112;
+  --positive: #0f766e;
+  --negative: #b42318;
+  --warning: #8a5a0a;
+}
+
+body {
+  background: #fbfaf7;
+  color: var(--ink);
+  font-size: 13px;
+  letter-spacing: 0;
+}
+
+button,
+select,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+.page-shell {
+  padding: 18px 18px 32px;
+}
+
+.terminal-page,
+.watchlists-page {
+  gap: 16px;
+}
+
+.panel,
+.watchlists-main,
+.watchlist-entry-shell,
+.instrument-detail-shell {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.panel-header,
+.watchlists-toolbar,
+.watchlist-entry-hero,
+.instrument-detail-topbar,
+.instrument-detail-hero {
+  padding: 12px 0;
+  border-top: 2px solid var(--ink);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.instrument-detail-hero {
+  border-top-width: 1px;
+}
+
+.panel-header {
+  background: transparent;
+}
+
+.panel-title {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.page-title,
+.watchlist-app-title,
+.watchlist-entry-title,
+.watchlists-title,
+.section-heading,
+.instrument-detail-title,
+.instrument-section-title {
+  color: var(--ink);
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.page-title,
+.watchlist-entry-title {
+  font-size: 25px;
+}
+
+.watchlist-app-title {
+  font-size: 24px;
+}
+
+.watchlists-title {
+  font-size: 22px;
+}
+
+.section-heading {
+  font-size: 24px;
+}
+
+.instrument-detail-title {
+  font-size: 36px;
+}
+
+.watchlist-entry-hero-meta,
+.watchlist-entry-meta,
+.watchlist-breadcrumbs,
+.monitoring-secondary-text,
+.portfolio-detail-meta,
+.muted {
+  color: var(--muted);
+}
+
+.watchlist-breadcrumbs,
+.watchlist-entry-meta,
+.watchlists-pagination-summary,
+.watchlists-pagination-status {
+  font-size: 12px;
+}
+
+.watchlist-breadcrumb-link:hover,
+.watchlist-create-link:hover,
+.table-link:hover,
+.table-action:hover,
+.instrument-detail-actions button:hover {
+  color: var(--accent);
+}
+
+.toolbar,
+.watchlists-toolbar,
+.watchlists-toolbar-left,
+.watchlists-pagination-actions,
+.instrument-detail-actions {
+  gap: 10px;
+}
+
+.toolbar button,
+.toolbar span,
+.toolbar-link,
+.toolbar-select,
+.watchlist-switcher-chip,
+.watchlist-menu-trigger,
+.watchlist-entry-sort-button,
+.watchlists-toolbar-button,
+.watchlists-pagination-button,
+.watchlists-square-button,
+.watchlists-plus-button,
+.watchlists-modal-header button,
+.watchlists-arrange-head button,
+.watchlists-arrange-actions button,
+.watchlists-modal-actions button,
+.watchlists-add-filters button,
+.instrument-detail-actions button,
+.editor-actions button,
+.table-action {
+  min-height: 30px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.2;
+  box-shadow: none;
+}
+
+.toolbar button,
+.toolbar span,
+.toolbar-link,
+.toolbar-select,
+.watchlists-toolbar-button,
+.watchlists-pagination-button,
+.watchlists-modal-header button,
+.watchlists-arrange-head button,
+.watchlists-arrange-actions button,
+.watchlists-modal-actions button,
+.watchlists-add-filters button,
+.editor-actions button,
+.table-action {
+  padding: 6px 10px;
+}
+
+.watchlist-switcher-chip,
+.watchlist-menu-trigger,
+.instrument-detail-actions button {
+  border-color: transparent;
+}
+
+.toolbar button:hover,
+.toolbar-link:hover,
+.watchlist-switcher-chip-inactive:hover,
+.watchlist-menu-trigger:hover,
+.watchlist-entry-sort-button:hover,
+.watchlists-toolbar-button:hover,
+.watchlists-pagination-button:hover:not(:disabled),
+.watchlists-square-button:hover,
+.watchlists-plus-button:hover,
+.watchlists-modal-header button:hover,
+.watchlists-arrange-head button:hover,
+.watchlists-arrange-actions button:hover,
+.watchlists-modal-actions button:hover,
+.watchlists-add-filters button:hover,
+.editor-actions button:hover,
+.table-action:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.button-primary,
+.toolbar-link-active,
+.watchlist-switcher-chip-active,
+.watchlists-toolbar-button-active {
+  border-color: var(--accent) !important;
+  background: var(--accent) !important;
+  color: #ffffff !important;
+}
+
+.watchlist-switcher-chip-active .watchlist-menu-trigger {
+  color: #ffffff;
+}
+
+.watchlist-create-link,
+.table-link,
+.watchlists-filter-clear,
+.watchlists-filter-reset {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.watchlist-entry-list-shell {
+  gap: 0;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.watchlist-entry-list-toolbar {
+  padding: 0 0 10px;
+}
+
+.watchlist-entry-grid {
+  border-top: 1px solid var(--line-strong);
+}
+
+.watchlist-entry-card {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  box-shadow: none;
+}
+
+.watchlist-entry-card:hover {
+  background: #fffefb;
+}
+
+.watchlist-entry-card-icon {
+  width: 34px;
+  height: 34px;
+  color: var(--accent);
+}
+
+.watchlist-entry-card-icon svg {
+  width: 23px;
+  height: 23px;
+}
+
+.watchlist-entry-name {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.watchlist-entry-card-metrics strong {
+  font-size: 17px;
+}
+
+.watchlist-entry-card-metrics span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.watchlist-entry-create-card {
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+}
+
+.table-shell,
+.nav-history-table-shell {
+  border-top: 1px solid var(--line-strong);
+  background: transparent;
+}
+
+table {
+  border-collapse: collapse;
+  background: transparent;
+}
+
+th,
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+th {
+  border-bottom-color: var(--line-strong);
+  background: var(--band);
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.watchlists-table thead th,
+.monitoring-table thead th,
+.nav-history-table thead th,
+.instrument-data-table th,
+.instrument-people-table th,
+.instrument-monitoring-table th,
+.instrument-documents-table th,
+.instrument-research-table th,
+.instrument-metrics-table th,
+.instrument-heatmap-table th,
+.instrument-product-tags-table th {
+  background: var(--band);
+  color: #4b5563;
+}
+
+.watchlists-table tbody tr:hover td,
+.monitoring-table tbody tr:hover td,
+.instrument-data-table tbody tr:hover td,
+.instrument-monitoring-table tbody tr:hover td,
+.instrument-documents-table tbody tr:hover td,
+.instrument-research-table tbody tr:hover td {
+  background: #fffdf8;
+}
+
+.watchlists-group-row td {
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line);
+  background: var(--band);
+}
+
+.watchlists-toolbar-count,
+.watchlists-filter-field-count,
+.watchlists-taxonomy-node-active .watchlists-taxonomy-node-count {
+  border-radius: 0;
+  background: var(--ink);
+}
+
+.rating-pill,
+.ticker-pill,
+.status-badge,
+.context-chip,
+.watchlists-filter-chip,
+.watchlists-taxonomy-node-count,
+.monitoring-membership-link {
+  border-radius: 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ticker-pill {
+  background: #f4f2ec;
+  color: #243042;
+}
+
+.rating-pill,
+.status-attribute {
+  background: var(--accent-soft);
+  color: #0f335d;
+}
+
+.status-fresh,
+.quote-change-up {
+  background: #edf8f4;
+  color: var(--positive);
+}
+
+.status-pending {
+  background: #fbf3df;
+  color: var(--warning);
+}
+
+.status-error,
+.quote-change-down,
+.error-state,
+.inline-notice-error {
+  color: #8f1d1d;
+}
+
+input[type='checkbox'] {
+  border-radius: 0;
+  accent-color: var(--accent);
+}
+
+.form-input,
+.form-textarea,
+.table-input,
+.form-field select,
+.watchlists-inline-select,
+.instrument-chart-compare select,
+.instrument-chart-settings-field select {
+  border-radius: 0;
+  border-color: var(--line-strong);
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.form-input:focus,
+.form-textarea:focus,
+.table-input:focus,
+.form-field select:focus,
+.watchlists-inline-select:focus,
+.instrument-chart-compare select:focus,
+.instrument-chart-settings-field select:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.watchlists-menu,
+.watchlist-menu,
+.watchlists-modal,
+.instrument-chart-menu-panel {
+  border: 1px solid var(--line-strong);
+  border-top: 2px solid var(--ink);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: 0 18px 42px rgba(17, 17, 17, 0.12);
+}
+
+.watchlist-menu {
+  border-top-width: 1px;
+  box-shadow: 0 12px 28px rgba(17, 17, 17, 0.10);
+}
+
+.watchlists-modal-backdrop {
+  background: rgba(17, 17, 17, 0.24);
+}
+
+.watchlists-menu-item,
+.watchlist-menu button,
+.watchlists-filter-field,
+.watchlists-taxonomy-node,
+.watchlists-category-item {
+  border-radius: 0;
+}
+
+.watchlists-menu-item:hover,
+.watchlists-menu-item-active,
+.watchlist-menu button:hover,
+.watchlists-filter-field-active,
+.watchlists-taxonomy-node-active,
+.watchlists-category-item-active {
+  background: var(--accent-soft);
+}
+
+.watchlists-filter-fields,
+.watchlists-filter-values,
+.watchlists-modal-categories,
+.watchlists-modal-fields,
+.watchlists-modal-arrange,
+.watchlists-move-summary,
+.watchlists-move-note,
+.watchlists-registry-selected {
+  border-color: var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+}
+
+.metric-grid,
+.instrument-library-summary,
+.monitoring-overview-grid,
+.quote-metrics {
+  border-top: 1px solid var(--line-strong);
+}
+
+.metric-card,
+.instrument-library-stat,
+.quote-metric,
+.monitoring-overview-stat {
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.metric-label,
+.instrument-library-stat-label,
+.quote-metric span,
+.monitoring-overview-stat > span:first-child {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.metric-value,
+.instrument-library-stat strong,
+.quote-metric strong,
+.monitoring-overview-stat strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.sparkline-path,
+.line-chart-path {
+  stroke: var(--accent);
+}
+
+.sparkline .sparkline-path {
+  stroke-width: 1.8;
+}
+
+.line-chart {
+  border-color: var(--line);
+  background:
+    linear-gradient(180deg, rgba(11, 102, 178, 0.06) 0%, rgba(11, 102, 178, 0.01) 100%),
+    #fffefb;
+}
+
+.loading-state,
+.error-state,
+.empty-state {
+  background: transparent;
+}
+
+.inline-notice {
+  padding: 8px 0 0;
+}
+
+@media (max-width: 960px) {
+  .watchlist-entry-card {
+    grid-template-columns: 1fr;
+  }
+
+  .watchlist-entry-card-main {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .watchlist-entry-card-title-stack,
+  .watchlist-entry-card-metrics {
+    grid-column: 1;
+  }
+
+  .watchlist-entry-card-arrow {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+  }
+}
+
+/* Watchlist selection and table alignment overrides. */
+.watchlist-entry-shell .toolbar {
+  display: none;
+}
+
+.watchlist-entry-grip-placeholder {
+  cursor: default;
+  opacity: 0.28;
+  pointer-events: none;
+}
+
+.watchlists-page .watchlist-switcher-chip {
+  min-height: 28px;
+  padding: 6px 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent !important;
+  color: #111827;
+  box-shadow: none;
+}
+
+.watchlists-page .watchlist-switcher-chip-active {
+  border-color: transparent !important;
+  border-bottom-color: var(--accent) !important;
+  background: transparent !important;
+  color: var(--ink) !important;
+}
+
+.watchlists-page .watchlist-switcher-chip-label-active {
+  color: var(--ink) !important;
+}
+
+.watchlists-page .watchlist-switcher-chip-active .watchlist-menu-trigger {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.watchlists-page .watchlist-switcher-chip-active .watchlist-menu-trigger:hover {
+  color: var(--accent);
+}
+
+.watchlists-table .watchlists-asset-link {
+  color: #111827;
+  font-weight: 700;
+}
+
+.watchlists-table .watchlists-asset-link:hover {
+  color: #111827;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.watchlists-table .sparkline {
+  width: 88px;
+  height: 24px;
+  display: block;
+}
+
+.positive-cell,
+.positive-cell strong {
+  color: var(--positive);
+}
+
+.negative-cell,
+.negative-cell strong {
+  color: var(--negative);
+}
+
+.neutral-cell,
+.neutral-cell strong,
+.instrument-quote-change-neutral,
+.instrument-metrics-cell-neutral strong {
+  color: var(--ink);
+}
+
+.positive-cell,
+.negative-cell {
+  font-weight: 700;
 }

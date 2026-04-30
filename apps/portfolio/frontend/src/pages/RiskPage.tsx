@@ -27,6 +27,7 @@ import {
   formatQuantity,
   formatSignedCurrency,
   formatUnitPrice,
+  signedValueClass,
 } from '../lib/format'
 
 type RiskMode = 'current' | 'realized'
@@ -556,10 +557,22 @@ export default function RiskPage() {
       value: riskWindowEndDate ? `${riskWindowStartDate} to ${riskWindowEndDate}` : '—',
     },
     { label: 'Observations', value: String(realizedRiskMetrics.observationCount) },
-    { label: 'Cumulative Return', value: signedPercent(performanceWorkspace?.summary.cumulative_ttwror) },
+    {
+      label: 'Cumulative Return',
+      value: signedPercent(performanceWorkspace?.summary.cumulative_ttwror),
+      toneClassName: signedValueClass(performanceWorkspace?.summary.cumulative_ttwror),
+    },
     { label: 'Annualized Volatility', value: signedPercent(performanceWorkspace?.summary.annualized_volatility) },
-    { label: 'Current Drawdown', value: signedPercent(performanceWorkspace?.summary.current_drawdown) },
-    { label: 'Max Drawdown', value: signedPercent(performanceWorkspace?.summary.max_drawdown) },
+    {
+      label: 'Current Drawdown',
+      value: signedPercent(performanceWorkspace?.summary.current_drawdown),
+      toneClassName: signedValueClass(performanceWorkspace?.summary.current_drawdown),
+    },
+    {
+      label: 'Max Drawdown',
+      value: signedPercent(performanceWorkspace?.summary.max_drawdown),
+      toneClassName: signedValueClass(performanceWorkspace?.summary.max_drawdown),
+    },
     { label: 'Down Days', value: String(realizedRiskMetrics.downDays) },
     { label: 'Stale Days', value: String(realizedRiskMetrics.staleDays) },
   ]
@@ -568,8 +581,16 @@ export default function RiskPage() {
     { label: 'Start NAV', value: formatCurrency(performanceWorkspace?.summary.start_nav, performanceWorkspace?.base_currency ?? holdingsWorkspace?.base_currency ?? 'USD') },
     { label: 'End NAV', value: formatCurrency(performanceWorkspace?.summary.end_nav, performanceWorkspace?.base_currency ?? holdingsWorkspace?.base_currency ?? 'USD') },
     { label: 'Net External Inflow', value: formatSignedCurrency(performanceWorkspace?.summary.net_external_inflow, performanceWorkspace?.base_currency ?? holdingsWorkspace?.base_currency ?? 'USD') },
-    { label: 'Total P&L', value: formatSignedCurrency(performanceWorkspace?.summary.total_pnl, performanceWorkspace?.base_currency ?? holdingsWorkspace?.base_currency ?? 'USD') },
-    { label: 'Worst Day', value: signedPercent(realizedRiskMetrics.worstDay?.daily_ttwror, 3) },
+    {
+      label: 'Total P&L',
+      value: formatSignedCurrency(performanceWorkspace?.summary.total_pnl, performanceWorkspace?.base_currency ?? holdingsWorkspace?.base_currency ?? 'USD'),
+      toneClassName: signedValueClass(performanceWorkspace?.summary.total_pnl),
+    },
+    {
+      label: 'Worst Day',
+      value: signedPercent(realizedRiskMetrics.worstDay?.daily_ttwror, 3),
+      toneClassName: signedValueClass(realizedRiskMetrics.worstDay?.daily_ttwror),
+    },
     { label: 'Worst Day Date', value: realizedRiskMetrics.worstDay?.as_of_date ?? '—' },
     { label: 'Deepest Drawdown Date', value: realizedRiskMetrics.deepestDrawdown?.as_of_date ?? '—' },
     { label: 'Sortino Ratio', value: formatNumber(performanceWorkspace?.summary.sortino_ratio, 2) },
@@ -583,19 +604,6 @@ export default function RiskPage() {
       <section className="portfolio-detail-surface">
         <div className="portfolio-detail-toolbar">
           <div className="panel-title">Risk</div>
-          <div className="portfolio-detail-meta">
-            {riskMode === 'realized'
-              ? 'Past window risk path, drawdown, volatility, and monitoring tape'
-              : 'Current exposure structure, concentration, drift context, and live monitoring'}
-          </div>
-        </div>
-
-        <div className="holdings-meta-row">
-          <p className="coverage-note">
-            Risk is split between <code>Current</code> and <code>Realized</code>. Current risk stays anchored to the
-            selected as-of date; realized risk explains how the recent path was produced without collapsing into the
-            period review pack.
-          </p>
         </div>
 
         <form className="performance-filter-bar" onSubmit={handleApplyFilters}>
@@ -746,7 +754,7 @@ export default function RiskPage() {
                                 <td>{formatUnitPrice(row.last_price, row.asset_core.currency)}</td>
                                 <td>{formatCurrency(row.market_value_base ?? row.market_value, holdingsWorkspace.base_currency)}</td>
                                 <td>{formatCurrency(row.cost_basis_base ?? row.cost_basis, holdingsWorkspace.base_currency)}</td>
-                                <td className={unrealizedPnl != null && unrealizedPnl < 0 ? 'negative-cell' : ''}>
+                                <td className={signedValueClass(unrealizedPnl)}>
                                   {formatSignedCurrency(unrealizedPnl, holdingsWorkspace.base_currency)}
                                 </td>
                                 <td>{formatPercent(row.allocation)}</td>
@@ -836,7 +844,6 @@ export default function RiskPage() {
                 <section className="performance-section-block">
                   <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                     <div className="panel-title">Account And Cash Location</div>
-                    <div className="portfolio-detail-meta">Where current exposure and settlement cash sit by account</div>
                   </div>
                   <RiskAccountBars
                     items={accountExposureChartItems}
@@ -882,7 +889,6 @@ export default function RiskPage() {
                 <section className="performance-section-block">
                   <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                     <div className="panel-title">Configuration Coverage</div>
-                    <div className="portfolio-detail-meta">Current risk stays explicit about what is and is not configured</div>
                   </div>
                   <div className="table-shell">
                     <table className="transactions-table">
@@ -909,7 +915,7 @@ export default function RiskPage() {
                           <td>
                             {defaultPlanningTaxonomy
                               ? `${defaultPlanningTaxonomy.name} drives default drift and target context`
-                              : 'Current drift stays provisional until a default planning taxonomy is selected'}
+                              : '—'}
                           </td>
                         </tr>
                         <tr>
@@ -962,7 +968,7 @@ export default function RiskPage() {
                         {realizedSummaryLeft.map((row) => (
                           <tr key={row.label}>
                             <th>{row.label}</th>
-                            <td>{row.value}</td>
+                            <td className={row.toneClassName}>{row.value}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -980,7 +986,7 @@ export default function RiskPage() {
                         {realizedSummaryRight.map((row) => (
                           <tr key={row.label}>
                             <th>{row.label}</th>
-                            <td>{row.value}</td>
+                            <td className={row.toneClassName}>{row.value}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1009,7 +1015,6 @@ export default function RiskPage() {
                   <section className="performance-section-block">
                     <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                       <div className="panel-title">Monthly Risk Buckets</div>
-                      <div className="portfolio-detail-meta">Latest monthly buckets derived from the realized-risk window</div>
                     </div>
                     <div className="table-shell">
                       <table className="transactions-table">
@@ -1035,10 +1040,10 @@ export default function RiskPage() {
                                 </td>
                                 <td>{bucket.observationCount}</td>
                                 <td>{bucket.staleCount}</td>
-                                <td className={bucket.cumulativeReturn != null && bucket.cumulativeReturn < 0 ? 'negative-cell' : ''}>
+                                <td className={signedValueClass(bucket.cumulativeReturn)}>
                                   {signedPercent(bucket.cumulativeReturn)}
                                 </td>
-                                <td className={bucket.maxDrawdown != null && bucket.maxDrawdown < 0 ? 'negative-cell' : ''}>
+                                <td className={signedValueClass(bucket.maxDrawdown)}>
                                   {signedPercent(bucket.maxDrawdown)}
                                 </td>
                               </tr>
@@ -1055,7 +1060,6 @@ export default function RiskPage() {
                 <section className="performance-section-block">
                   <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                     <div className="panel-title">Worst Days</div>
-                    <div className="portfolio-detail-meta">Largest negative daily moves in the active realized-risk window</div>
                   </div>
                   <div className="table-shell">
                     <table className="transactions-table">
@@ -1081,13 +1085,13 @@ export default function RiskPage() {
                                 </span>
                               </td>
                               <td>{formatCurrency(point.ending_nav, performanceWorkspace?.base_currency ?? holdingsWorkspace.base_currency)}</td>
-                              <td className={point.daily_ttwror != null && point.daily_ttwror < 0 ? 'negative-cell' : ''}>
+                              <td className={signedValueClass(point.daily_ttwror)}>
                                 {signedPercent(point.daily_ttwror, 3)}
                               </td>
-                              <td className={point.drawdown != null && point.drawdown < 0 ? 'negative-cell' : ''}>
+                              <td className={signedValueClass(point.drawdown)}>
                                 {signedPercent(point.drawdown)}
                               </td>
-                              <td className={point.delta != null && point.delta < 0 ? 'negative-cell' : ''}>
+                              <td className={signedValueClass(point.delta)}>
                                 {formatSignedCurrency(point.delta, performanceWorkspace?.base_currency ?? holdingsWorkspace.base_currency)}
                               </td>
                               <td>{point.stale_price_flag || point.stale_fx_flag ? 'Observed' : 'Clean'}</td>
@@ -1104,7 +1108,6 @@ export default function RiskPage() {
                 <section className="performance-section-block">
                   <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                     <div className="panel-title">Recent Monitoring Tape</div>
-                    <div className="portfolio-detail-meta">Latest realized-risk observations used for current monitoring</div>
                   </div>
                   <div className="table-shell">
                     <table className="transactions-table">
@@ -1131,13 +1134,13 @@ export default function RiskPage() {
                                 </span>
                               </td>
                               <td>{formatCurrency(point.ending_nav, performanceWorkspace?.base_currency ?? holdingsWorkspace.base_currency)}</td>
-                              <td className={point.daily_ttwror != null && point.daily_ttwror < 0 ? 'negative-cell' : ''}>
+                              <td className={signedValueClass(point.daily_ttwror)}>
                                 {signedPercent(point.daily_ttwror, 3)}
                               </td>
-                              <td className={point.cumulative_ttwror != null && point.cumulative_ttwror < 0 ? 'negative-cell' : ''}>
+                              <td className={signedValueClass(point.cumulative_ttwror)}>
                                 {signedPercent(point.cumulative_ttwror)}
                               </td>
-                              <td className={point.drawdown != null && point.drawdown < 0 ? 'negative-cell' : ''}>
+                              <td className={signedValueClass(point.drawdown)}>
                                 {signedPercent(point.drawdown)}
                               </td>
                               <td>{point.stale_price_flag ? 'Yes' : 'No'}</td>

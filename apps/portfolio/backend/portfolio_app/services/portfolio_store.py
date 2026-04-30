@@ -7,6 +7,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Integer, and_, cast, delete, func, or_, select
+from yungu_asset_core.db_models import InstrumentMarketData
 
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
@@ -21,7 +22,7 @@ from portfolio_app.db.models import (
     TransactionRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.ledger import build_account_workspace
+from portfolio_app.services.ledger import build_account_workspace, build_position_lots
 
 EMPTY_STORE: dict[str, list[dict[str, Any]]] = {
     "portfolios": [],
@@ -689,14 +690,108 @@ def _safe_float(value: object) -> float | None:
         return None
 
 
+def _safe_date(value: object) -> date | None:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return date.fromisoformat(value.strip()[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _max_transaction_trade_date(transactions: list[TransactionRecordModel]) -> date | None:
+    return max((transaction.trade_date for transaction in transactions if transaction.trade_date is not None), default=None)
+
+
+def _latest_market_data_date_for_assets(session, asset_ids: set[str]) -> date | None:
+    normalized_asset_ids = {asset_id for asset_id in asset_ids if asset_id}
+    if not normalized_asset_ids:
+        return None
+
+    return session.scalar(
+        select(func.max(InstrumentMarketData.as_of_date)).where(
+            InstrumentMarketData.asset_id.in_(normalized_asset_ids),
+            InstrumentMarketData.metric_family.in_(("price", "nav")),
+            InstrumentMarketData.status != "error",
+        )
+    )
+
+
+def _resolve_live_portfolio_as_of_date(
+    session,
+    item: PortfolioRecordModel,
+    *,
+    accounts: list[AccountRecordModel],
+    transactions: list[TransactionRecordModel],
+) -> date:
+    transaction_rows = [_serialize_transaction_row(transaction) for transaction in transactions]
+    portfolio_as_of_date = item.as_of_date
+    latest_trade_date = _max_transaction_trade_date(transactions)
+    transacted_asset_ids = {
+        str(transaction.asset_id or "")
+        for transaction in transactions
+        if str(transaction.asset_id or "")
+    }
+
+    candidate_dates = [
+        candidate
+        for candidate in (
+            portfolio_as_of_date,
+            latest_trade_date,
+            _latest_market_data_date_for_assets(session, transacted_asset_ids),
+        )
+        if candidate is not None
+    ]
+    candidate_as_of_date = max(candidate_dates, default=date.today())
+
+    boundary_transactions = [
+        transaction
+        for transaction in transaction_rows
+        if (_safe_date(transaction.get("trade_date")) or date.min) <= candidate_as_of_date
+    ]
+    open_asset_ids = {
+        str(position_lot.get("asset_id") or "")
+        for position_lot in build_position_lots(
+            item.portfolio_id,
+            [_serialize_account_row(account) for account in accounts],
+            boundary_transactions,
+            status="open",
+            as_of_date=candidate_as_of_date,
+        )
+        if str(position_lot.get("asset_id") or "")
+    }
+    latest_open_market_date = _latest_market_data_date_for_assets(session, open_asset_ids)
+    return max(
+        (
+            candidate
+            for candidate in (
+                portfolio_as_of_date,
+                latest_trade_date,
+                latest_open_market_date,
+            )
+            if candidate is not None
+        ),
+        default=candidate_as_of_date,
+    )
+
+
 def _build_live_portfolio_rollup(
+    session,
     item: PortfolioRecordModel,
     *,
     accounts: list[AccountRecordModel],
     transactions: list[TransactionRecordModel],
 ) -> dict[str, object]:
     base_payload = _serialize_portfolio_row(item)
-    as_of_date = item.as_of_date or date.today()
+    as_of_date = _resolve_live_portfolio_as_of_date(
+        session,
+        item,
+        accounts=accounts,
+        transactions=transactions,
+    )
+    base_payload["as_of_date"] = as_of_date.isoformat()
     if not accounts and not transactions:
         return base_payload
 
@@ -710,8 +805,7 @@ def _build_live_portfolio_rollup(
     )
     account_rollups = workspace.get("accounts", [])
     nav = sum(
-        (_safe_float(account.get("derived_cash_balance_base")) or 0.0)
-        + (_safe_float(account.get("position_market_value")) or 0.0)
+        _safe_float(account.get("account_value_base")) or 0.0
         for account in account_rollups
         if isinstance(account, dict)
     )
@@ -743,7 +837,7 @@ def _serialize_portfolio_row_with_live_summary(
             TransactionRecordModel.settlement_date,
         )
     ).all()
-    return _build_live_portfolio_rollup(item, accounts=accounts, transactions=transactions)
+    return _build_live_portfolio_rollup(session, item, accounts=accounts, transactions=transactions)
 
 
 def _serialize_account_row(item: AccountRecordModel) -> dict[str, object]:
