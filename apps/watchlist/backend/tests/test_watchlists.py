@@ -1,12 +1,134 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+import math
+import statistics
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from .conftest import TEST_SHARED_INSTRUMENTS, seed_shared_instrument
+
+
+def test_peer_metric_percentile_uses_midrank_for_ties() -> None:
+    from watchlist_app.services.canonical_recalc import _rank_metric_value
+
+    tied = _rank_metric_value(
+        value=1.0,
+        samples=[("a", 1.0), ("b", 1.0), ("c", 1.0)],
+        direction="higher",
+    )
+    assert tied["rank"] == 1
+    assert tied["percentile"] == pytest.approx(50.0)
+    assert tied["quartile"] == 2
+
+    unique_best = _rank_metric_value(
+        value=3.0,
+        samples=[("a", 3.0), ("b", 2.0), ("c", 1.0)],
+        direction="higher",
+    )
+    assert unique_best["rank"] == 1
+    assert unique_best["percentile"] == pytest.approx(100.0)
+
+    lower_is_better_tied = _rank_metric_value(
+        value=1.0,
+        samples=[("a", 1.0), ("b", 1.0), ("c", 1.0)],
+        direction="lower",
+    )
+    assert lower_is_better_tied["percentile"] == pytest.approx(50.0)
+
+
+def test_risk_metrics_annualize_from_actual_observation_spacing() -> None:
+    from watchlist_app.services.canonical_recalc import _compute_sharpe, _compute_volatility
+
+    nav_points = [
+        {"as_of_date": date(2026, 1, 1), "value": 100.0},
+        {"as_of_date": date(2026, 1, 8), "value": 101.0},
+        {"as_of_date": date(2026, 1, 15), "value": 99.0},
+        {"as_of_date": date(2026, 1, 22), "value": 102.0},
+    ]
+    returns = [
+        nav_points[index]["value"] / nav_points[index - 1]["value"] - 1
+        for index in range(1, len(nav_points))
+    ]
+    periods_per_year = len(returns) / 21 * 365.25
+    expected_volatility = statistics.stdev(returns) * math.sqrt(periods_per_year) * 100
+    expected_sharpe = statistics.fmean(returns) / statistics.stdev(returns) * math.sqrt(periods_per_year)
+
+    assert _compute_volatility(nav_points) == pytest.approx(expected_volatility, abs=1e-12)
+    assert _compute_sharpe(nav_points) == pytest.approx(expected_sharpe, abs=1e-12)
+
+
+def test_return_nav_basis_prefers_cumulative_nav_when_available() -> None:
+    from watchlist_app.services.canonical_recalc import _group_shared_nav_rows, _select_nav_basis_rows
+
+    rows = _group_shared_nav_rows(
+        [
+            {
+                "quote_basis": "official_nav",
+                "as_of_date": "2026-01-01",
+                "value": "1.000000",
+                "currency": "CNY",
+            },
+            {
+                "quote_basis": "CUMULATIVE_NAV",
+                "as_of_date": "2026-01-01",
+                "value": "1.250000",
+                "currency": "CNY",
+            },
+            {
+                "quote_basis": "official_nav",
+                "as_of_date": "2026-01-08",
+                "value": "1.010000",
+                "currency": "CNY",
+            },
+            {
+                "quote_basis": "CUMULATIVE_NAV",
+                "as_of_date": "2026-01-08",
+                "value": "1.262500",
+                "currency": "CNY",
+            },
+        ]
+    )
+
+    selection = _select_nav_basis_rows(rows, preference="auto")
+
+    assert selection["nav_basis_type"] == "nav_with_dividend"
+    assert [point["value"] for point in selection["points"]] == [1.25, 1.2625]
+
+
+def test_return_nav_basis_does_not_fallback_to_ordinary_nav() -> None:
+    from watchlist_app.services.canonical_recalc import _group_shared_nav_rows, _select_nav_basis_rows
+
+    rows = _group_shared_nav_rows(
+        [
+            {
+                "quote_basis": "official_nav",
+                "as_of_date": "2026-01-01",
+                "value": "1.000000",
+                "currency": "CNY",
+            },
+            {
+                "quote_basis": "official_nav",
+                "as_of_date": "2026-01-08",
+                "value": "1.010000",
+                "currency": "CNY",
+            },
+        ]
+    )
+
+    auto_selection = _select_nav_basis_rows(rows, preference="auto")
+    explicit_nav_selection = _select_nav_basis_rows(rows, preference="nav")
+    quote_selection = _select_nav_basis_rows(rows, preference="auto", allow_ordinary_nav=True)
+
+    assert auto_selection["nav_basis_type"] is None
+    assert auto_selection["points"] == []
+    assert explicit_nav_selection["nav_basis_type"] is None
+    assert explicit_nav_selection["points"] == []
+    assert quote_selection["nav_basis_type"] == "nav"
+    assert [point["value"] for point in quote_selection["points"]] == [1.0, 1.01]
 
 
 def test_create_watchlist_generates_unique_ids_and_required_columns(
@@ -37,16 +159,15 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
     )
     assert overview_view["columns"] == [
         "asset_name",
-        "attr.fund_regime",
-        "attr.fund_taxonomy_level_1",
-        "attr.fund_taxonomy_level_2",
+        "attr.coverage_status",
         "price_chart_1m",
         "latest_quote",
         "latest_quote_date",
         "return_1w",
-        "return_1m",
+        "return_mtd",
         "return_ytd",
-        "ticker_or_isin",
+        "attr.current_drawdown",
+        "attr.peer_overall_percentile",
         "data_freshness_status",
     ]
     fund_screening_view = next(
@@ -61,10 +182,6 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
     }
     assert fund_screening_view["columns"] == [
         "asset_name",
-        "attr.fund_regime",
-        "attr.fund_taxonomy_level_1",
-        "attr.fund_taxonomy_level_2",
-        "attr.fund_taxonomy_level_3",
         "attr.implementation_style",
         "attr.style_profile",
         "attr.manager_assessment",
@@ -384,7 +501,7 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
                 "last_nav_date",
                 "data_freshness_status",
                 "return_1w",
-                "return_1m",
+                "return_mtd",
                 "annualized_return",
             ],
             "sort": [],
@@ -401,9 +518,71 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
     assert payload["rows"][0]["last_nav_date"] == "2026-04-14"
     assert payload["rows"][0]["data_freshness_status"] == "fresh"
     assert payload["rows"][0]["return_1w"] == pytest.approx(1.236476, abs=1e-6)
-    assert payload["rows"][0]["return_1m"] == pytest.approx(2.259067, abs=1e-6)
+    assert payload["rows"][0]["return_mtd"] == pytest.approx(2.259067, abs=1e-6)
     assert payload["rows"][0]["annualized_return"] == pytest.approx(14.119462, abs=1e-6)
     assert payload["snapshot_metadata"]["as_of_date"] == "2026-04-14"
+
+
+def test_calendar_period_returns_use_prior_close_as_base(
+    client: TestClient,
+) -> None:
+    seed_shared_instrument(
+        {
+            "asset_id": "calendar-boundary-fund",
+            "asset_name": "Calendar Boundary Fund",
+            "asset_type": "fund",
+            "currency": "USD",
+            "identifiers": [
+                {"identifier_type": "ticker", "identifier_value": "CBF", "is_primary": True},
+            ],
+            "market_data": [
+                {
+                    "metric_family": "nav",
+                    "quote_basis": "cumulative_nav",
+                    "as_of_date": as_of_date,
+                    "value": value,
+                    "currency": "USD",
+                    "status": "complete",
+                }
+                for as_of_date, value in (
+                    ("2025-12-31", "100.000000"),
+                    ("2026-01-01", "110.000000"),
+                    ("2026-03-31", "120.000000"),
+                    ("2026-04-01", "130.000000"),
+                    ("2026-04-14", "156.000000"),
+                )
+            ],
+            "lifecycle_state": {"status": "active"},
+        }
+    )
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Calendar Return Coverage", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["calendar-boundary-fund"]},
+    )
+    assert add_response.status_code == 200
+
+    screener = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "view_id": "overview",
+            "selected_fields": ["ticker_or_isin", "return_mtd", "return_ytd"],
+            "sort": [],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert screener.status_code == 200
+    row = screener.json()["rows"][0]
+    assert row["ticker_or_isin"] == "CBF"
+    assert row["return_mtd"] == pytest.approx(30.0, abs=1e-6)
+    assert row["return_ytd"] == pytest.approx(56.0, abs=1e-6)
 
 
 def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
@@ -429,7 +608,7 @@ def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
         for row in performance_payload["trailing_returns"]
     }
     assert performance_payload["snapshot_metadata"]["as_of_date"] == "2026-04-14"
-    assert trailing_by_window["1M"]["investment_nav"] == pytest.approx(2.259067, abs=1e-6)
+    assert trailing_by_window["MTD"]["investment_nav"] == pytest.approx(2.259067, abs=1e-6)
     assert trailing_by_window["YTD"]["investment_nav"] == pytest.approx(3.832283, abs=1e-6)
     assert trailing_by_window["Ann."]["investment_nav"] == pytest.approx(14.119462, abs=1e-6)
 
@@ -473,6 +652,12 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
             "PWK",
             ["100.000000", "99.000000", "98.000000", "99.000000"],
         ),
+        (
+            "peer-archived",
+            "Peer Archived Fund",
+            "POLD",
+            ["90.000000", "110.000000", "125.000000", "140.000000"],
+        ),
     ):
         seed_shared_instrument(
             {
@@ -486,7 +671,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
                 "market_data": [
                     {
                         "metric_family": "nav",
-                        "quote_basis": "official_nav",
+                        "quote_basis": "cumulative_nav",
                         "as_of_date": as_of_date,
                         "value": value,
                         "currency": "USD",
@@ -508,16 +693,47 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     watchlist_id = created_watchlist.json()["watchlist_id"]
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264", "peer-strong", "peer-weak"]},
+        json={"asset_ids": ["sxv264", "peer-strong", "peer-weak", "peer-archived"]},
     )
     assert add_response.status_code == 200
 
-    for asset_id in ("sxv264", "peer-strong", "peer-weak"):
+    for asset_id in ("sxv264", "peer-strong", "peer-weak", "peer-archived"):
         update_response = client.put(
             f"/api/taxonomies/fund-taxonomy/assets/{asset_id}",
             json={"node_id": "fund-private-equity-quant-long-500", "updated_by": "test"},
         )
         assert update_response.status_code == 200
+
+    recalc_archived_peer_response = client.post(
+        "/api/recalc/assets/peer-archived/execute",
+        json={
+            "job_type": "performance",
+            "trigger_type": "test",
+            "trigger_ref_type": "taxonomy_peer_ranking",
+            "trigger_ref_id": "peer-archived",
+        },
+    )
+    assert recalc_archived_peer_response.status_code == 200
+
+    from yungu_asset_core import instrument_store as shared_store
+    from watchlist_app.db import session as session_module
+
+    shared_store.archive_instrument(
+        session_module.get_session_factory(),
+        asset_id="peer-archived",
+        updated_by="test",
+    )
+    with session_module.get_session_factory()() as session:
+        session.execute(
+            text(
+                """
+                UPDATE asset_detail
+                   SET is_active = false
+                 WHERE asset_id = 'peer-archived'
+                """
+            )
+        )
+        session.commit()
 
     recalc_response = client.post(
         "/api/recalc/assets/sxv264/execute",
@@ -602,7 +818,7 @@ def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
     update_response = client.put(
         "/api/instruments/sxv264/nav-settings",
         json={
-            "nav_basis_preference": "nav",
+            "nav_basis_preference": "nav_with_dividend",
             "default_benchmark_asset_id": "savf63",
             "peer_baseline_asset_ids": ["fund-us-agg", "savf63", "sxv264", "fund-us-agg"],
             "updated_by": "test-suite",
@@ -610,7 +826,7 @@ def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
     )
     assert update_response.status_code == 200
     assert update_response.json() == {
-        "nav_basis_preference": "nav",
+        "nav_basis_preference": "nav_with_dividend",
         "default_benchmark_asset_id": "savf63",
         "peer_baseline_asset_ids": ["fund-us-agg", "savf63"],
     }
@@ -618,7 +834,7 @@ def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
     nav_series_response = client.get("/api/instruments/sxv264/nav-series")
     assert nav_series_response.status_code == 200
     nav_series_payload = nav_series_response.json()
-    assert nav_series_payload["nav_basis_preference"] == "nav"
+    assert nav_series_payload["nav_basis_preference"] == "nav_with_dividend"
     assert nav_series_payload["compare_settings"] == {
         "default_benchmark_asset_id": "savf63",
         "peer_asset_ids": ["fund-us-agg", "savf63"],
@@ -2139,12 +2355,22 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
         "implementation_style",
         "trading_universe",
         "alpha_source",
+        "research_evidence_level",
+        "investment_edge_quality",
+        "process_repeatability",
+        "decision_discipline",
         "style_profile",
+        "style_drift_risk",
         "manager_assessment",
         "team_stability_assessment",
         "portfolio_construction",
+        "risk_management_quality",
         "capacity_bucket",
+        "liquidity_terms_fit",
+        "fee_value_assessment",
+        "alignment_quality",
         "historical_delivery",
+        "portfolio_role",
         "volatility_bucket",
         "drawdown_control",
         "equity_correlation_bucket",
@@ -2156,7 +2382,23 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     assert expected_keys.issubset(definitions_by_key.keys())
     assert definitions_by_key["fund_vehicle"]["domain_code"] == "overview"
     assert definitions_by_key["fund_vehicle"]["required_for_monitoring"] is True
+    assert definitions_by_key["coverage_status"]["label"] == "Status"
+    assert definitions_by_key["coverage_status"]["options"] == [
+        "Watch",
+        "Proposed",
+        "Invested",
+        "Paused",
+        "Exited",
+    ]
+    assert definitions_by_key["investment_edge_quality"]["group_code"] == "research_edge"
+    assert definitions_by_key["process_repeatability"]["options"] == [
+        "可重复",
+        "部分可重复",
+        "关键人驱动",
+        "不透明",
+    ]
     assert definitions_by_key["style_profile"]["group_code"] == "research_style"
+    assert definitions_by_key["risk_management_quality"]["group_code"] == "research_risk"
     assert definitions_by_key["preferred_regime"]["data_type"] == "multi_select"
 
     field_registry_response = client.get("/api/field-registry")
@@ -2174,9 +2416,13 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
         == "product_taxonomy"
     )
     assert fields_by_key["attr.coverage_status"]["product_scope_json"] == []
+    assert fields_by_key["attr.coverage_status"]["label"] == "Status"
+    assert fields_by_key["attr.investment_edge_quality"]["category_code"] == "research_framework"
     assert fields_by_key["latest_quote"]["asset_scope_json"] == []
     assert fields_by_key["latest_quote"]["source_metric_code"] == "asset_chart_read_model.series.latest_quote"
     assert fields_by_key["latest_quote_date"]["data_type"] == "date"
+    assert fields_by_key["return_mtd"]["label"] == "MTD"
+    assert fields_by_key["return_ytd"]["label"] == "YTD"
 
 
 def test_adding_funds_does_not_inject_product_framework_values(client: TestClient) -> None:
@@ -2206,6 +2452,106 @@ def test_adding_funds_does_not_inject_product_framework_values(client: TestClien
     assert "fund_vehicle" not in private_values
     assert "alpha_source" not in private_values
     assert private_payload["taxonomy"]["assigned_node_id"] is None
+
+
+def test_fund_research_profile_normalizes_research_notes_and_manual_rating(client: TestClient) -> None:
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Research Profile", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["sxv264"]},
+    )
+    assert add_response.status_code == 200
+
+    default_response = client.get("/api/instruments/sxv264/research")
+    assert default_response.status_code == 200
+    default_payload = default_response.json()
+    assert default_payload["manual_rating"] is None
+    assert "research_view" in default_payload["overview"]
+    assert "research_status" not in default_payload["overview"]
+    assert default_payload["timeline_notes"] == []
+    assert "thesis" not in default_payload
+    assert "conclusions" not in default_payload
+    assert "notes" not in default_payload
+
+    upsert_response = client.put(
+        "/api/instruments/sxv264/research",
+        json={
+            "payload": {
+                "overview": {
+                    "current_view": "Constructive",
+                    "research_view": "Constructive research view",
+                },
+                "manual_rating": 9,
+                "timeline_notes": [
+                    {
+                        "note_id": "n1",
+                        "note_date": "2026-04-30",
+                        "title": "Manager call",
+                        "summary": "Capacity now needs review.",
+                    }
+                ],
+                "notes": ["discarded old note channel"],
+            },
+            "updated_by": "test",
+        },
+    )
+    assert upsert_response.status_code == 200
+    payload = upsert_response.json()
+    assert payload["manual_rating"] == 5
+    assert payload["overview"]["research_view"] == "Constructive research view"
+    assert "research_status" not in payload["overview"]
+    assert payload["timeline_notes"][0]["note_id"] == "n1"
+    assert "thesis" not in payload
+    assert "conclusions" not in payload
+    assert "notes" not in payload
+
+
+def test_fund_document_upload_adds_profile_row_and_allows_download(client: TestClient) -> None:
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Document Upload", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["sxv264"]},
+    )
+    assert add_response.status_code == 200
+
+    upload_response = client.post(
+        "/api/instruments/sxv264/documents/upload",
+        files={"file": ("../Manager DD.pdf", b"manager diligence packet", "application/pdf")},
+        data={
+            "title": "Manager DD",
+            "document_type": "due_diligence",
+            "as_of_date": "2026-04-30",
+            "source": "manager",
+            "status": "uploaded",
+            "updated_by": "test",
+        },
+    )
+    assert upload_response.status_code == 200
+    payload = upload_response.json()
+    document = payload["current_documents"][0]
+    assert document["title"] == "Manager DD"
+    assert document["file_name"] == "Manager_DD.pdf"
+    assert document["file_size"] == len(b"manager diligence packet")
+    assert document["download_url"].startswith("/api/instruments/sxv264/documents/files/")
+    assert payload["recent_imports"][0]["file_name"] == "Manager_DD.pdf"
+
+    download_response = client.get(document["download_url"])
+    assert download_response.status_code == 200
+    assert download_response.content == b"manager diligence packet"
+
+    empty_upload = client.post(
+        "/api/instruments/sxv264/documents/upload",
+        files={"file": ("empty.txt", b"", "text/plain")},
+    )
+    assert empty_upload.status_code == 400
 
 
 def test_instrument_attributes_can_be_cleared_with_null_and_empty_list(client: TestClient) -> None:

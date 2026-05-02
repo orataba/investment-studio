@@ -8,8 +8,10 @@ import math
 import statistics
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from watchlist_app.db.models.assets import AssetDetail
 from watchlist_app.db.models.read_models import (
     AssetChartReadModel,
     AssetExposureHoldingsReadModel,
@@ -42,7 +44,10 @@ from watchlist_app.services.read_models import (
     serialize_payload,
 )
 from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
-from watchlist_app.services.shared_instrument_registry import get_shared_instrument
+from watchlist_app.services.shared_instrument_registry import (
+    get_shared_instrument,
+    list_shared_instruments,
+)
 
 
 DEFAULT_TABS = [
@@ -59,7 +64,8 @@ DEFAULT_TABS = [
     "monitoring",
 ]
 
-NAV_BASIS_PRIORITY = ("nav_with_dividend", "nav")
+RETURN_NAV_BASIS_PRIORITY = ("nav_with_dividend",)
+QUOTE_NAV_BASIS_PRIORITY = ("nav_with_dividend", "nav")
 PEER_METRIC_MIN_SAMPLE = 2
 PEER_COMPARISON_METRICS = [
     {
@@ -76,6 +82,15 @@ PEER_COMPARISON_METRICS = [
         "label": "1M Return",
         "source": "performance",
         "attr": "return_1m",
+        "direction": "higher",
+        "domain": "return",
+        "format": "percent",
+    },
+    {
+        "metric_key": "return_mtd",
+        "label": "MTD Return",
+        "source": "performance",
+        "attr": "return_mtd",
         "direction": "higher",
         "domain": "return",
         "format": "percent",
@@ -195,7 +210,7 @@ def _normalize_nav_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
         **_default_nav_settings(),
         **(payload or {}),
     }
-    if normalized.get("nav_basis_preference") not in {"auto", "nav_with_dividend", "nav"}:
+    if normalized.get("nav_basis_preference") not in {"auto", "nav_with_dividend"}:
         normalized["nav_basis_preference"] = "auto"
     normalized["default_benchmark_asset_id"] = (
         str(normalized.get("default_benchmark_asset_id")).strip() or None
@@ -260,6 +275,24 @@ def _node_path_labels(node: object | None) -> list[str]:
     return _string_list(getattr(node, "path_labels_json", None))
 
 
+def _active_fund_asset_ids(session: Session) -> set[str]:
+    local_active_asset_ids = {
+        str(asset_id)
+        for asset_id in session.scalars(
+            select(AssetDetail.asset_id).where(
+                AssetDetail.asset_type == "fund",
+                AssetDetail.is_active.is_(True),
+            )
+        ).all()
+    }
+    shared_active_asset_ids = {
+        str(item.get("asset_id"))
+        for item in list_shared_instruments(asset_type="fund", limit=None)
+        if str(item.get("asset_id") or "").strip()
+    }
+    return local_active_asset_ids & shared_active_asset_ids
+
+
 def _quantile(values: list[float], percentile: float) -> float | None:
     if not values:
         return None
@@ -284,14 +317,17 @@ def _rank_metric_value(
 ) -> dict[str, object]:
     if direction == "lower":
         better_count = sum(1 for _, candidate in samples if candidate < value)
+        equal_count = sum(1 for _, candidate in samples if candidate == value)
     else:
         better_count = sum(1 for _, candidate in samples if candidate > value)
+        equal_count = sum(1 for _, candidate in samples if candidate == value)
     rank = better_count + 1
     sample_count = len(samples)
+    tie_adjusted_rank = better_count + ((equal_count + 1) / 2)
     percentile = (
         None
         if sample_count < 2
-        else ((sample_count - rank) / (sample_count - 1)) * 100
+        else ((sample_count - tie_adjusted_rank) / (sample_count - 1)) * 100
     )
     if percentile is None:
         quartile = None if sample_count == 0 else min(4, max(1, math.ceil(rank / sample_count * 4)))
@@ -338,7 +374,7 @@ def _primary_peer_ranking(peer_comparison: dict[str, object] | None) -> dict[str
             "percentile": row.get("percentile"),
             "rank": row.get("rank"),
             "sample_count": row.get("sample_count"),
-            "category_name": " / ".join(
+            "peer_group": " / ".join(
                 str(item)
                 for item in (peer_comparison.get("peer_path") or [])
                 if str(item).strip()
@@ -459,6 +495,11 @@ def _value_at_or_before(nav_points: list[dict[str, Any]], target_date: date) -> 
     return candidates[-1] if candidates else None
 
 
+def _value_before(nav_points: list[dict[str, Any]], target_date: date) -> dict[str, Any] | None:
+    candidates = [point for point in nav_points if point["as_of_date"] < target_date]
+    return candidates[-1] if candidates else None
+
+
 def _compute_drawdown(nav_points: list[dict[str, Any]]) -> float | None:
     if len(nav_points) < 2:
         return None
@@ -527,32 +568,25 @@ def _compute_drawdown_summary(nav_points: list[dict[str, Any]]) -> dict[str, Any
 
 
 def _compute_volatility(nav_points: list[dict[str, Any]]) -> float | None:
-    if len(nav_points) < 3:
-        return None
-    returns: list[float] = []
-    for previous, current in zip(nav_points, nav_points[1:]):
-        if previous["value"] <= 0:
-            continue
-        returns.append(current["value"] / previous["value"] - 1)
+    returns = _periodic_returns(nav_points)
     if len(returns) < 2:
         return None
-    return statistics.stdev(returns) * math.sqrt(252) * 100
+    periods_per_year = _annualization_periods_per_year(nav_points, len(returns))
+    if periods_per_year is None:
+        return None
+    return statistics.stdev(returns) * math.sqrt(periods_per_year) * 100
 
 
 def _compute_sharpe(nav_points: list[dict[str, Any]]) -> float | None:
-    volatility = _compute_volatility(nav_points)
-    if volatility in {None, 0}:
+    returns = _periodic_returns(nav_points)
+    if len(returns) < 2:
         return None
-    latest = nav_points[-1]
-    first = nav_points[0]
-    annualized = _annualized_return(
-        latest["value"],
-        first["value"],
-        max((latest["as_of_date"] - first["as_of_date"]).days, 1),
-    )
-    if annualized is None:
+    stdev = statistics.stdev(returns)
+    periods_per_year = _annualization_periods_per_year(nav_points, len(returns))
+    if stdev == 0 or periods_per_year is None:
         return None
-    return annualized / volatility
+    mean_return = statistics.fmean(returns)
+    return (mean_return / stdev) * math.sqrt(periods_per_year)
 
 
 def _periodic_returns(nav_points: list[dict[str, Any]]) -> list[float]:
@@ -564,12 +598,41 @@ def _periodic_returns(nav_points: list[dict[str, Any]]) -> list[float]:
     return returns
 
 
-def _compute_downside_deviation(nav_points: list[dict[str, Any]]) -> float | None:
-    returns = [value for value in _periodic_returns(nav_points) if value < 0]
-    if len(returns) < 2:
+def _annualization_periods_per_year(nav_points: list[dict[str, Any]], return_count: int) -> float | None:
+    if len(nav_points) < 2 or return_count < 1:
         return None
-    downside_variance = sum(value ** 2 for value in returns) / len(returns)
-    return math.sqrt(max(downside_variance, 0)) * math.sqrt(252) * 100
+    elapsed_days = (nav_points[-1]["as_of_date"] - nav_points[0]["as_of_date"]).days
+    if elapsed_days <= 0:
+        return None
+    return return_count / elapsed_days * 365.25
+
+
+def _compute_downside_deviation(nav_points: list[dict[str, Any]]) -> float | None:
+    periodic_returns = _periodic_returns(nav_points)
+    downside_returns = [value for value in periodic_returns if value < 0]
+    if len(periodic_returns) < 2 or not downside_returns:
+        return None
+    periods_per_year = _annualization_periods_per_year(nav_points, len(periodic_returns))
+    if periods_per_year is None:
+        return None
+    downside_variance = sum(value ** 2 for value in downside_returns) / len(downside_returns)
+    return math.sqrt(max(downside_variance, 0)) * math.sqrt(periods_per_year) * 100
+
+
+def _compute_sortino(nav_points: list[dict[str, Any]]) -> float | None:
+    periodic_returns = _periodic_returns(nav_points)
+    downside_returns = [value for value in periodic_returns if value < 0]
+    if len(periodic_returns) < 2 or not downside_returns:
+        return None
+    periods_per_year = _annualization_periods_per_year(nav_points, len(periodic_returns))
+    if periods_per_year is None:
+        return None
+    downside_variance = sum(value ** 2 for value in downside_returns) / len(downside_returns)
+    downside_deviation = math.sqrt(max(downside_variance, 0))
+    if downside_deviation == 0:
+        return None
+    mean_return = statistics.fmean(periodic_returns)
+    return (mean_return / downside_deviation) * math.sqrt(periods_per_year)
 
 
 def _monthly_close_points(nav_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -981,17 +1044,25 @@ def _group_shared_nav_rows(market_data: list[dict[str, object]]) -> list[dict[st
     quote_basis_map = {
         "official_nav": "nav",
         "nav": "nav",
+        "unit_nav": "nav",
+        "net_asset_value": "nav",
         "close": "nav",
         "last": "nav",
         "total_return_nav": "nav_with_dividend",
         "nav_with_dividend": "nav_with_dividend",
+        "cumulative_nav": "nav_with_dividend",
+        "accumulated_nav": "nav_with_dividend",
+        "cum_nav": "nav_with_dividend",
+        "dividend_adjusted_nav": "nav_with_dividend",
+        "reinvested_nav": "nav_with_dividend",
         "adjusted_close": "nav_with_dividend",
     }
     grouped: dict[date, dict[str, Any]] = {}
     for item in market_data:
         if not isinstance(item, dict):
             continue
-        target_key = quote_basis_map.get(str(item.get("quote_basis") or "").strip())
+        quote_basis = str(item.get("quote_basis") or "").strip().lower()
+        target_key = quote_basis_map.get(quote_basis)
         value = _safe_decimal(item.get("value"))
         as_of_date_raw = str(item.get("as_of_date") or "").strip()
         if target_key is None or value is None or not as_of_date_raw:
@@ -1040,12 +1111,15 @@ def _select_nav_basis_rows(
     rows: list[dict[str, Any]],
     *,
     preference: str,
+    allow_ordinary_nav: bool = False,
 ) -> dict[str, object]:
     normalized_preference = (preference or "auto").strip().lower()
-    if normalized_preference in {"nav", "nav_with_dividend"}:
+    if normalized_preference == "nav_with_dividend":
         basis_order = (normalized_preference,)
+    elif normalized_preference == "nav":
+        basis_order = ("nav",) if allow_ordinary_nav else ()
     else:
-        basis_order = NAV_BASIS_PRIORITY
+        basis_order = QUOTE_NAV_BASIS_PRIORITY if allow_ordinary_nav else RETURN_NAV_BASIS_PRIORITY
 
     for basis in basis_order:
         points = [
@@ -1343,10 +1417,18 @@ class CanonicalRecalcService:
         nav_settings = _normalize_nav_settings(
             manual_profile.nav_settings_json if manual_profile is not None else None
         )
-        nav_selection = _select_nav_basis_rows(
+        nav_rows = (
             _group_shared_nav_rows(list((shared_instrument or {}).get("market_data", [])))
-            or _group_local_nav_rows(nav_facts),
+            or _group_local_nav_rows(nav_facts)
+        )
+        nav_selection = _select_nav_basis_rows(
+            nav_rows,
             preference=str(nav_settings.get("nav_basis_preference", "auto")),
+        )
+        quote_selection = _select_nav_basis_rows(
+            nav_rows,
+            preference=str(nav_settings.get("nav_basis_preference", "auto")),
+            allow_ordinary_nav=True,
         )
         holding_snapshot = self.facts_repository.get_current_holding_snapshot(
             session,
@@ -1366,25 +1448,34 @@ class CanonicalRecalcService:
             taxonomy_context=taxonomy_context,
             instrument_attributes=raw_attributes,
         )
+        current_drawdown = _current_drawdown(nav_selection["points"])
+        if current_drawdown is not None:
+            watchlist_attributes["current_drawdown"] = current_drawdown
 
         performance_snapshot = self.snapshot_repository.get_current_performance(session, asset_id)
         risk_snapshot = self.snapshot_repository.get_current_risk(session, asset_id)
         exposure_snapshot = self.snapshot_repository.get_current_exposure(session, asset_id)
         score_snapshot = self.snapshot_repository.get_current_score(session, asset_id)
 
-        if job_type in {"performance", "all"} and nav_selection["points"]:
-            performance_snapshot = self._replace_performance_snapshot(
-                session,
-                asset_id=asset_id,
-                nav_points=nav_selection["points"],
-                now=now,
-            )
-            risk_snapshot = self._replace_risk_snapshot(
-                session,
-                asset_id=asset_id,
-                nav_points=nav_selection["points"],
-                now=now,
-            )
+        if job_type in {"performance", "all"}:
+            if nav_selection["points"]:
+                performance_snapshot = self._replace_performance_snapshot(
+                    session,
+                    asset_id=asset_id,
+                    nav_points=nav_selection["points"],
+                    now=now,
+                )
+                risk_snapshot = self._replace_risk_snapshot(
+                    session,
+                    asset_id=asset_id,
+                    nav_points=nav_selection["points"],
+                    now=now,
+                )
+            else:
+                self.snapshot_repository.clear_performance(session, asset_id=asset_id)
+                self.snapshot_repository.clear_risk(session, asset_id=asset_id)
+                performance_snapshot = None
+                risk_snapshot = None
 
         if job_type in {"exposure", "all"} and holding_snapshot is not None:
             exposure_snapshot = self._replace_exposure_snapshot(
@@ -1417,8 +1508,8 @@ class CanonicalRecalcService:
         )
         chart_payload = _build_chart_payload(
             asset_id,
-            nav_selection["points"],
-            nav_selection["points"][-1]["currency"] if nav_selection["points"] else "USD",
+            quote_selection["points"],
+            quote_selection["points"][-1]["currency"] if quote_selection["points"] else "USD",
         )
         peer_comparison = self._peer_comparison_payload(
             session,
@@ -1502,6 +1593,7 @@ class CanonicalRecalcService:
         windows = {
             "return_ytd": date(as_of_date.year, 1, 1),
             "return_1w": as_of_date - timedelta(days=7),
+            "return_mtd": date(as_of_date.year, as_of_date.month, 1),
             "return_1m": as_of_date - timedelta(days=30),
             "return_3m": as_of_date - timedelta(days=90),
             "return_6m": as_of_date - timedelta(days=180),
@@ -1509,7 +1601,11 @@ class CanonicalRecalcService:
         }
         returns: dict[str, Decimal | None] = {}
         for key, target_date in windows.items():
-            base = _value_at_or_before(nav_points, target_date)
+            base = (
+                _value_before(nav_points, target_date)
+                if key in {"return_ytd", "return_mtd"}
+                else _value_at_or_before(nav_points, target_date)
+            )
             if base is None:
                 returns[key] = None
                 continue
@@ -1557,6 +1653,7 @@ class CanonicalRecalcService:
                 "is_current": True,
                 "return_ytd": returns["return_ytd"],
                 "return_1w": returns["return_1w"],
+                "return_mtd": returns["return_mtd"],
                 "return_1m": returns["return_1m"],
                 "return_3m": returns["return_3m"],
                 "return_6m": returns["return_6m"],
@@ -1580,7 +1677,9 @@ class CanonicalRecalcService:
     ):
         latest = nav_points[-1]
         volatility = _compute_volatility(nav_points)
+        downside_volatility = _compute_downside_deviation(nav_points)
         sharpe_ratio = _compute_sharpe(nav_points)
+        sortino_ratio = _compute_sortino(nav_points)
         return self.snapshot_repository.replace_risk(
             session,
             snapshot_id=f"risk:{asset_id}:{latest['as_of_date'].isoformat()}:{make_recalc_job_id()}",
@@ -1594,9 +1693,9 @@ class CanonicalRecalcService:
                 "superseded_at": None,
                 "is_current": True,
                 "volatility": _safe_decimal(volatility),
-                "downside_volatility": None,
+                "downside_volatility": _safe_decimal(downside_volatility),
                 "sharpe_ratio": _safe_decimal(sharpe_ratio),
-                "sortino_ratio": None,
+                "sortino_ratio": _safe_decimal(sortino_ratio),
                 "alpha": None,
                 "beta": None,
                 "r_squared": None,
@@ -1747,7 +1846,6 @@ class CanonicalRecalcService:
             "fund_name": asset.asset_name,
             "ticker_or_isin": asset.primary_identifier_value or asset.asset_id.upper(),
             "rating_as_of": now.date().isoformat(),
-            "category_name": str(asset.metadata_json.get("category_name") or "Unclassified"),
             "management_firm_name": str(asset.metadata_json.get("management_firm_name") or "") or None,
             "overall_rating": getattr(score_snapshot, "overall_rating", None),
             "analyst_stance": getattr(score_snapshot, "analyst_stance", "Unrated"),
@@ -1756,10 +1854,10 @@ class CanonicalRecalcService:
             "key_stats": [
                 {"label": "Last NAV Date", "value": last_nav_date or "—"},
                 {
-                    "label": "1M Return",
+                    "label": "MTD Return",
                     "value": (
-                        f"{float(performance_snapshot.return_1m):.2f}%"
-                        if getattr(performance_snapshot, "return_1m", None) is not None
+                        f"{float(performance_snapshot.return_mtd):.2f}%"
+                        if getattr(performance_snapshot, "return_mtd", None) is not None
                         else "—"
                     ),
                 },
@@ -1829,20 +1927,27 @@ class CanonicalRecalcService:
             session,
             taxonomy_code=FUND_TAXONOMY_CODE,
         )
+        active_peer_asset_ids = _active_fund_asset_ids(session)
         assigned_node_by_asset = {
             str(assignment.asset_id): node_by_id.get(str(assignment.node_id))
             for assignment in assignments
-            if assignment.node_id
+            if assignment.node_id and str(assignment.asset_id) in active_peer_asset_ids
         }
         performance_by_asset = {}
-        for snapshot in self.snapshot_repository.list_current_performance(session):
+        for snapshot in self.snapshot_repository.list_current_performance(
+            session,
+            asset_ids=sorted(active_peer_asset_ids),
+        ):
             performance_by_asset.setdefault(str(snapshot.asset_id), snapshot)
-        if performance_snapshot is not None:
+        if performance_snapshot is not None and asset_id in active_peer_asset_ids:
             performance_by_asset[str(asset_id)] = performance_snapshot
         risk_by_asset = {}
-        for snapshot in self.snapshot_repository.list_current_risk(session):
+        for snapshot in self.snapshot_repository.list_current_risk(
+            session,
+            asset_ids=sorted(active_peer_asset_ids),
+        ):
             risk_by_asset.setdefault(str(snapshot.asset_id), snapshot)
-        if risk_snapshot is not None:
+        if risk_snapshot is not None and asset_id in active_peer_asset_ids:
             risk_by_asset[str(asset_id)] = risk_snapshot
 
         selected_peer_node_id = assigned_path_node_ids[-1]
@@ -1859,7 +1964,11 @@ class CanonicalRecalcService:
             if len(selected_asset_ids) >= PEER_METRIC_MIN_SAMPLE:
                 break
 
-        if asset_id not in selected_asset_ids and performance_snapshot is not None:
+        if (
+            asset_id not in selected_asset_ids
+            and performance_snapshot is not None
+            and asset_id in active_peer_asset_ids
+        ):
             selected_asset_ids = sorted([*selected_asset_ids, asset_id])
 
         peer_node = node_by_id.get(selected_peer_node_id) or taxonomy_node
@@ -1966,7 +2075,7 @@ class CanonicalRecalcService:
         }
         category_value_by_window = {
             "1W": _safe_float(peer_metrics_by_key.get("return_1w", {}).get("peer_median")),
-            "1M": _safe_float(peer_metrics_by_key.get("return_1m", {}).get("peer_median")),
+            "MTD": _safe_float(peer_metrics_by_key.get("return_mtd", {}).get("peer_median")),
             "YTD": _safe_float(peer_metrics_by_key.get("return_ytd", {}).get("peer_median")),
             "3M": _safe_float(peer_metrics_by_key.get("return_3m", {}).get("peer_median")),
             "6M": _safe_float(peer_metrics_by_key.get("return_6m", {}).get("peer_median")),
@@ -1978,7 +2087,7 @@ class CanonicalRecalcService:
         if performance_snapshot is not None:
             trailing_returns = [
                 {"window": "1W", "investment_nav": _safe_float(performance_snapshot.return_1w), "category_nav": category_value_by_window["1W"], "index_nav": None},
-                {"window": "1M", "investment_nav": _safe_float(performance_snapshot.return_1m), "category_nav": category_value_by_window["1M"], "index_nav": None},
+                {"window": "MTD", "investment_nav": _safe_float(performance_snapshot.return_mtd), "category_nav": category_value_by_window["MTD"], "index_nav": None},
                 {"window": "YTD", "investment_nav": _safe_float(performance_snapshot.return_ytd), "category_nav": category_value_by_window["YTD"], "index_nav": None},
                 {"window": "3M", "investment_nav": _safe_float(performance_snapshot.return_3m), "category_nav": category_value_by_window["3M"], "index_nav": None},
                 {"window": "6M", "investment_nav": _safe_float(performance_snapshot.return_6m), "category_nav": category_value_by_window["6M"], "index_nav": None},
@@ -2013,6 +2122,7 @@ class CanonicalRecalcService:
         volatility = _safe_float(getattr(risk_snapshot, "volatility", None))
         annualized_return = _safe_float(getattr(performance_snapshot, "annualized_return", None))
         drawdown_summary = _compute_drawdown_summary(nav_points)
+        current_drawdown = _current_drawdown(nav_points)
         current_watch = _build_current_risk_watch(nav_points, drawdown_summary)
         risk_structure = _build_risk_structure(nav_points, drawdown_summary, current_watch)
         change_monitor = _build_risk_change_monitor(nav_points, drawdown_summary, current_watch)
@@ -2056,6 +2166,7 @@ class CanonicalRecalcService:
                 {"metric": "annualized_return", "investment": annualized_return, "category": _safe_float(peer_metrics_by_key.get("annualized_return", {}).get("peer_median")), "index": None},
             ],
             "drawdown_summary": drawdown_summary,
+            "current_drawdown": current_drawdown,
             "risk_structure": risk_structure,
             "current_watch": current_watch,
             "change_monitor": change_monitor,
@@ -2141,7 +2252,6 @@ class CanonicalRecalcService:
                     share_class=None,
                     ticker_or_isin=asset.primary_identifier_value,
                     management_firm_name=str(asset.metadata_json.get("management_firm_name") or "") or None,
-                    category_name=summary_payload.get("category_name"),
                     overall_rating=getattr(score_snapshot, "overall_rating", None),
                     analyst_stance=getattr(score_snapshot, "analyst_stance", None),
                     attributes=row_attributes,
@@ -2156,6 +2266,7 @@ class CanonicalRecalcService:
                 | {
                     "return_ytd": getattr(performance_snapshot, "return_ytd", None),
                     "return_1w": getattr(performance_snapshot, "return_1w", None),
+                    "return_mtd": getattr(performance_snapshot, "return_mtd", None),
                     "return_1m": getattr(performance_snapshot, "return_1m", None),
                     "return_1y": getattr(performance_snapshot, "return_1y", None),
                     "annualized_return": getattr(performance_snapshot, "annualized_return", None),

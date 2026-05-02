@@ -116,6 +116,9 @@ class SQLAlchemySnapshotRepository:
         session.flush()
         return record
 
+    def clear_performance(self, session: Session, *, asset_id: str) -> None:
+        self._replace_current(session, PerformanceSnapshot, asset_id)
+
     def replace_risk(
         self,
         session: Session,
@@ -129,6 +132,9 @@ class SQLAlchemySnapshotRepository:
         session.add(record)
         session.flush()
         return record
+
+    def clear_risk(self, session: Session, *, asset_id: str) -> None:
+        self._replace_current(session, RiskSnapshot, asset_id)
 
     def replace_exposure(
         self,

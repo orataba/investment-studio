@@ -911,10 +911,10 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 回答：
 
-- 这个组合当前在所选 planning taxonomy / sleeve scope 下的回测结果是什么？
+- 这个组合当前在所选 planning taxonomy / sleeve scope 下应如何求解 target weights？
 - current context / construction rows 必须与所选 `as_of_date` 对齐，cash 口径不能混入晚于该日的交易或尚未到 `effective_date` 的 settled cash
 - 哪些结果需要更新、重跑或 handoff 到组合讨论？
-- 当前 research run 的指标、曲线、权重路径和调仓建议是什么？
+- 当前 research run 的 target weights、member targets、风险预算求解诊断和 target weight gaps 是什么？
 
 ### 12.11 Portfolio Configure
 

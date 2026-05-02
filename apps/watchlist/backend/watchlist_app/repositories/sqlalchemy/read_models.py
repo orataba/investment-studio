@@ -130,12 +130,12 @@ class SQLAlchemyReadModelRepository:
                 share_class=data.get("share_class"),
                 ticker_or_isin=data.get("ticker_or_isin"),
                 management_firm_name=data.get("management_firm_name"),
-                category_name=data.get("category_name"),
                 overall_rating=data.get("overall_rating"),
                 analyst_stance=data.get("analyst_stance"),
                 aum=data.get("aum"),
                 return_ytd=data.get("return_ytd"),
                 return_1w=data.get("return_1w"),
+                return_mtd=data.get("return_mtd"),
                 return_1m=data.get("return_1m"),
                 return_1y=data.get("return_1y"),
                 annualized_return=data.get("annualized_return"),
@@ -165,12 +165,12 @@ class SQLAlchemyReadModelRepository:
         record.share_class = data.get("share_class")
         record.ticker_or_isin = data.get("ticker_or_isin")
         record.management_firm_name = data.get("management_firm_name")
-        record.category_name = data.get("category_name")
         record.overall_rating = data.get("overall_rating")
         record.analyst_stance = data.get("analyst_stance")
         record.aum = data.get("aum")
         record.return_ytd = data.get("return_ytd")
         record.return_1w = data.get("return_1w")
+        record.return_mtd = data.get("return_mtd")
         record.return_1m = data.get("return_1m")
         record.return_1y = data.get("return_1y")
         record.annualized_return = data.get("annualized_return")

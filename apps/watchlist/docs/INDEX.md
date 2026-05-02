@@ -12,9 +12,11 @@
    当前 watchlist app 已经实现到哪里、哪些页面和接口是真实可用的。
 4. [FUND_PRODUCT_FRAMEWORK.md](./FUND_PRODUCT_FRAMEWORK.md)
    fund 产品框架的三层模型：`Fund Taxonomy / Research Tags / Monitoring Assessment`。
-5. [FUND_TERMINAL_V2_DATA_MODEL_AND_API.md](./FUND_TERMINAL_V2_DATA_MODEL_AND_API.md)
+5. [FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md](./FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md)
+   fund detail `Research` 页的定性研究标签、`timeline_notes` 和人工 rating 规则。
+6. [FUND_TERMINAL_V2_DATA_MODEL_AND_API.md](./FUND_TERMINAL_V2_DATA_MODEL_AND_API.md)
    当前后端数据分层、关键表、API 分组与路由边界。
-6. [FUND_TERMINAL_V2_AI_COPILOT.md](./FUND_TERMINAL_V2_AI_COPILOT.md)
+7. [FUND_TERMINAL_V2_AI_COPILOT.md](./FUND_TERMINAL_V2_AI_COPILOT.md)
    保留中的 Copilot 后端接口、上下文范围、返回协议与 provider 边界；当前 UI 默认关闭。
 
 ## 已移除的旧文档

@@ -142,12 +142,6 @@ export default function WatchlistEntryPage() {
       {notice ? <div className="inline-notice">{notice}</div> : null}
 
       <section className="watchlist-entry-list-shell">
-        <div className="watchlist-entry-list-toolbar">
-          <button type="button" className="watchlist-entry-sort-button">
-            Sort By: Name
-            <span className="watchlist-entry-sort-caret" aria-hidden="true" />
-          </button>
-        </div>
         <div className="watchlist-entry-grid">
           {watchlists.map((watchlist) => {
             const systemCoverage = isAllCoverageWatchlist(watchlist)
@@ -270,17 +264,6 @@ export default function WatchlistEntryPage() {
                       ) : null}
                     </div>
                   ) : null}
-                </div>
-                <div className="watchlist-entry-card-icon">
-                  <svg viewBox="0 0 24 24">
-                    <path
-                      d="M6 7.5h12M6 12h12M6 16.5h8"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                    />
-                  </svg>
                 </div>
               </div>
               <Link className="watchlist-entry-card-main" to={buildWatchlistPath(watchlist.watchlist_id)}>

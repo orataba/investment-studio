@@ -58,12 +58,12 @@ def watchlist_row_to_dict(record: WatchlistRowReadModel) -> dict[str, object]:
         "share_class": record.share_class,
         "ticker_or_isin": record.ticker_or_isin,
         "management_firm_name": record.management_firm_name,
-        "category_name": record.category_name,
         "overall_rating": _serialize_scalar(record.overall_rating),
         "analyst_stance": record.analyst_stance,
         "aum": _serialize_scalar(record.aum),
         "return_ytd": _serialize_scalar(record.return_ytd),
         "return_1w": _serialize_scalar(record.return_1w),
+        "return_mtd": _serialize_scalar(record.return_mtd),
         "return_1m": _serialize_scalar(record.return_1m),
         "return_1y": _serialize_scalar(record.return_1y),
         "annualized_return": _serialize_scalar(record.annualized_return),
@@ -135,7 +135,6 @@ def build_watchlist_row_materialization(
     share_class: str | None,
     ticker_or_isin: str | None,
     management_firm_name: str | None,
-    category_name: str | None,
     overall_rating: int | None,
     analyst_stance: str | None,
     attributes: dict[str, object],
@@ -151,12 +150,12 @@ def build_watchlist_row_materialization(
             "share_class": share_class,
             "ticker_or_isin": ticker_or_isin,
             "management_firm_name": management_firm_name,
-            "category_name": category_name,
             "overall_rating": overall_rating,
             "analyst_stance": analyst_stance or "Unrated",
             "aum": None,
             "return_ytd": None,
             "return_1w": None,
+            "return_mtd": None,
             "return_1m": None,
             "return_1y": None,
             "annualized_return": None,
@@ -177,12 +176,12 @@ def build_watchlist_row_materialization(
             "share_class": source_row.share_class,
             "ticker_or_isin": source_row.ticker_or_isin,
             "management_firm_name": source_row.management_firm_name,
-            "category_name": source_row.category_name,
             "overall_rating": source_row.overall_rating,
             "analyst_stance": source_row.analyst_stance,
             "aum": source_row.aum,
             "return_ytd": source_row.return_ytd,
             "return_1w": source_row.return_1w,
+            "return_mtd": source_row.return_mtd,
             "return_1m": source_row.return_1m,
             "return_1y": source_row.return_1y,
             "annualized_return": source_row.annualized_return,
@@ -205,7 +204,6 @@ def build_watchlist_row_materialization(
     payload["share_class"] = share_class or payload.get("share_class")
     payload["ticker_or_isin"] = ticker_or_isin or payload.get("ticker_or_isin")
     payload["management_firm_name"] = management_firm_name or payload.get("management_firm_name")
-    payload["category_name"] = category_name or payload.get("category_name")
     if payload.get("overall_rating") is None:
         payload["overall_rating"] = overall_rating
     payload["analyst_stance"] = payload.get("analyst_stance") or analyst_stance or "Unrated"
@@ -471,7 +469,7 @@ def execute_watchlist_query(
             if column.is_visible
         ]
     if not selected_fields:
-        selected_fields = ["asset_name", "overall_rating", "category_name"]
+        selected_fields = ["asset_name", "overall_rating", "attr.fund_taxonomy_path"]
     if group_by == TAXONOMY_GROUP_BY_CODE:
         for field in TAXONOMY_GROUP_FIELDS:
             if field not in selected_fields:
@@ -534,7 +532,6 @@ def default_fund_summary_payload(
         "fund_name": "Sample Fund",
         "ticker_or_isin": asset_id.upper(),
         "rating_as_of": "2026-04-10",
-        "category_name": "Unclassified",
         "management_firm_name": None,
         "overall_rating": None,
         "analyst_stance": "Unrated",

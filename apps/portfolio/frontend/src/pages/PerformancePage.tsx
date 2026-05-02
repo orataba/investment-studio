@@ -30,6 +30,15 @@ import {
 type PerformanceDetailTab = 'daily' | 'calculation' | 'contribution' | 'boundary'
 
 const DEFAULT_PERFORMANCE_LOOKBACK_DAYS = 30
+const DAYS_PER_YEAR = 365.25
+
+type ContributionLine = PortfolioContributionReportResponse['lines'][number]
+type ContributionSlice = PortfolioContributionReportResponse['daily_slices'][number]
+type AssetContributionRow = ContributionLine & {
+  periodReturn: number | null
+  annualizedVolatility: number | null
+  returnObservationCount: number
+}
 
 function localDateIso(input = new Date()) {
   const year = input.getFullYear()
@@ -75,6 +84,98 @@ function signedPercent(value: number | null | undefined, digits = 2) {
     return `-${absolute}`
   }
   return absolute
+}
+
+function finiteNumber(value: number | null | undefined) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function sampleStddev(values: number[]) {
+  if (values.length < 2) {
+    return null
+  }
+  const mean = values.reduce((total, value) => total + value, 0) / values.length
+  const variance =
+    values.reduce((total, value) => total + (value - mean) * (value - mean), 0) / (values.length - 1)
+  return Math.sqrt(Math.max(variance, 0))
+}
+
+function dayDiff(left: string, right: string) {
+  const leftTime = Date.parse(`${left}T00:00:00`)
+  const rightTime = Date.parse(`${right}T00:00:00`)
+  if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) {
+    return null
+  }
+  return Math.max(0, (rightTime - leftTime) / 86_400_000)
+}
+
+function annualizationPeriodsPerYear(dateKeys: string[], observationCount = dateKeys.length, startDate?: string | null) {
+  const sortedDates = [...dateKeys].sort()
+  if (observationCount < 1 || sortedDates.length < 2) {
+    return null
+  }
+  if (startDate) {
+    const elapsedDays = dayDiff(startDate, sortedDates[sortedDates.length - 1])
+    return elapsedDays != null && elapsedDays > 0 ? (observationCount / elapsedDays) * DAYS_PER_YEAR : null
+  }
+  const elapsedDays = dayDiff(sortedDates[0], sortedDates[sortedDates.length - 1])
+  if (elapsedDays == null) {
+    return null
+  }
+  const gaps = sortedDates
+    .slice(1)
+    .map((dateKey, index) => dayDiff(sortedDates[index], dateKey))
+    .filter((value): value is number => value != null && value > 0)
+    .sort((left, right) => left - right)
+  const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 1
+  const observationSpanDays = elapsedDays + medianGap
+  return observationSpanDays > 0 ? (observationCount / observationSpanDays) * DAYS_PER_YEAR : null
+}
+
+function annualizedVolatility(values: number[], dateKeys: string[] = [], startDate?: string | null) {
+  const stddev = sampleStddev(values)
+  const periodsPerYear = annualizationPeriodsPerYear(dateKeys, values.length, startDate)
+  return stddev == null || periodsPerYear == null ? null : stddev * Math.sqrt(periodsPerYear)
+}
+
+function compoundReturn(values: number[]) {
+  if (!values.length) {
+    return null
+  }
+  return values.reduce((growthIndex, value) => growthIndex * (1 + value), 1) - 1
+}
+
+function buildAssetContributionRows(lines: ContributionLine[], slices: ContributionSlice[]) {
+  const slicesByGroup = new Map<string, ContributionSlice[]>()
+  slices.forEach((slice) => {
+    const groupSlices = slicesByGroup.get(slice.group_key) ?? []
+    groupSlices.push(slice)
+    slicesByGroup.set(slice.group_key, groupSlices)
+  })
+
+  return lines.map((line) => {
+    const groupSlices = slicesByGroup.get(line.group_key) ?? []
+    const returns = groupSlices
+      .map((slice) => finiteNumber(slice.daily_return))
+      .filter((value): value is number => value != null)
+    const returnDates = groupSlices
+      .filter((slice) => finiteNumber(slice.daily_return) != null && slice.return_observation_eligible)
+      .map((slice) => slice.as_of_date)
+    const riskReturns = groupSlices
+      .filter((slice) => finiteNumber(slice.daily_return) != null && slice.return_observation_eligible)
+      .map((slice) => slice.daily_return as number)
+    const firstDate = groupSlices.reduce<string | null>(
+      (current, slice) => (current == null || slice.as_of_date < current ? slice.as_of_date : current),
+      null,
+    )
+
+    return {
+      ...line,
+      periodReturn: compoundReturn(returns),
+      annualizedVolatility: annualizedVolatility(riskReturns, returnDates, firstDate),
+      returnObservationCount: riskReturns.length,
+    } satisfies AssetContributionRow
+  })
 }
 
 function buildMonthlyBuckets(dailySeries: PortfolioDailyPerformancePoint[]) {
@@ -218,6 +319,10 @@ export default function PerformancePage() {
   const [contributionWorkspace, setContributionWorkspace] = useState<PortfolioContributionReportResponse | null>(null)
   const [contributionLoading, setContributionLoading] = useState(false)
   const [contributionError, setContributionError] = useState<string | null>(null)
+  const [assetContributionWorkspace, setAssetContributionWorkspace] =
+    useState<PortfolioContributionReportResponse | null>(null)
+  const [assetContributionLoading, setAssetContributionLoading] = useState(false)
+  const [assetContributionError, setAssetContributionError] = useState<string | null>(null)
   const [boundaryWorkspace, setBoundaryWorkspace] = useState<PortfolioPeriodBoundaryHoldingsResponse | null>(null)
   const [boundaryLoading, setBoundaryLoading] = useState(false)
   const [boundaryError, setBoundaryError] = useState<string | null>(null)
@@ -334,6 +439,47 @@ export default function PerformancePage() {
       .finally(() => {
         if (!cancelled) {
           setLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [effectiveEndDate, effectiveStartDate, portfolioId])
+
+  useEffect(() => {
+    if (!portfolioId) {
+      setAssetContributionWorkspace(null)
+      setAssetContributionLoading(false)
+      setAssetContributionError(null)
+      return
+    }
+
+    let cancelled = false
+    setAssetContributionLoading(true)
+    setAssetContributionError(null)
+
+    getPortfolioPerformanceContribution(portfolioId, {
+      start_date: effectiveStartDate || undefined,
+      end_date: effectiveEndDate || undefined,
+      axis: 'instrument',
+    })
+      .then((response) => {
+        if (!cancelled) {
+          setAssetContributionWorkspace(response)
+          setAssetContributionError(null)
+        }
+      })
+      .catch((requestError) => {
+        if (!cancelled) {
+          setAssetContributionError(
+            requestError instanceof Error ? requestError.message : 'Failed to load all-asset contribution.',
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAssetContributionLoading(false)
         }
       })
 
@@ -483,9 +629,16 @@ export default function PerformancePage() {
           (left, right) =>
             Math.abs(right.period_contribution ?? 0) - Math.abs(left.period_contribution ?? 0) ||
             Math.abs(right.total_pnl ?? 0) - Math.abs(left.total_pnl ?? 0),
-        )
-        .slice(0, 20),
+        ),
     [contributionWorkspace],
+  )
+  const allAssetContributionRows = useMemo(
+    () =>
+      buildAssetContributionRows(
+        assetContributionWorkspace?.lines ?? [],
+        assetContributionWorkspace?.daily_slices ?? [],
+      ),
+    [assetContributionWorkspace],
   )
 
   const summary = workspace?.summary
@@ -689,6 +842,70 @@ export default function PerformancePage() {
                 </div>
               </section>
             </div>
+
+            <section className="performance-section-block">
+              <div className="portfolio-detail-toolbar performance-subsection-toolbar">
+                <div className="panel-title">All-Asset Return Contribution</div>
+                <div className="portfolio-detail-meta">
+                  {assetContributionWorkspace?.summary.start_date && assetContributionWorkspace.summary.end_date
+                    ? `${assetContributionWorkspace.summary.start_date} to ${assetContributionWorkspace.summary.end_date}; ${allAssetContributionRows.length} assets`
+                    : 'Held or traded assets inside the selected window'}
+                </div>
+              </div>
+              {assetContributionLoading && !assetContributionWorkspace ? (
+                <CalculationStatus label="Building all-asset contribution rows…" />
+              ) : null}
+              {assetContributionError ? (
+                <div className="inline-notice inline-notice-error">{assetContributionError}</div>
+              ) : null}
+              <div className="table-shell">
+                <table className="transactions-table">
+                  <thead>
+                    <tr>
+                      <th>Asset</th>
+                      <th>Start Value</th>
+                      <th>End Value</th>
+                      <th>Avg Weight</th>
+                      <th>End Weight</th>
+                      <th>Interval Return</th>
+                      <th>Total P&amp;L</th>
+                      <th>Contribution</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allAssetContributionRows.length ? (
+                      allAssetContributionRows.map((line) => (
+                        <tr key={`asset-contribution:${line.group_key}`}>
+                          <td>{line.group_label}</td>
+                          <td>{formatCurrency(line.start_value_base, assetContributionWorkspace?.base_currency ?? baseCurrency)}</td>
+                          <td>{formatCurrency(line.end_value_base, assetContributionWorkspace?.base_currency ?? baseCurrency)}</td>
+                          <td>{formatPercent(line.average_weight)}</td>
+                          <td>{formatPercent(line.ending_weight)}</td>
+                          <td
+                            className={signedValueClass(line.periodReturn)}
+                            title={`${line.returnObservationCount} return observations`}
+                          >
+                            {signedPercent(line.periodReturn)}
+                          </td>
+                          <td className={signedValueClass(line.total_pnl)}>
+                            {formatSignedCurrency(line.total_pnl, assetContributionWorkspace?.base_currency ?? baseCurrency)}
+                          </td>
+                          <td className={signedValueClass(line.period_contribution)}>
+                            {signedPercent(line.period_contribution)}
+                          </td>
+                        </tr>
+                      ))
+                    ) : assetContributionLoading ? (
+                      <TableStatusRow colSpan={8} label="Loading all-asset contribution rows…" />
+                    ) : assetContributionError ? (
+                      <TableStatusRow colSpan={8} label={assetContributionError} tone="error" />
+                    ) : (
+                      <TableStatusRow colSpan={8} label="No held or traded assets are available in this window." />
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
 
             <div className="holdings-detail-tabbar">
               {[

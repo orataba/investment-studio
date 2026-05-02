@@ -11,7 +11,7 @@
   `Transactions` 当前支持 create / update / delete 原始事实；内部转仓仍按成对事实管理
 - `Risk` 已有真实工作台，分为 `Current` 与 `Realized` 两部分，分别回答当前风险结构与过去区间的风险路径
 - `Taxonomies` 已有真实配置工作台，支持层级 sleeve tree、assignment、`TargetSet`、`default planning taxonomy` 与 `cash_bucket` 维护
-- `Research` 已有真实工作台，支持 taxonomy-backed recursive sleeve backtest、run history、artifact viewer、回测指标/曲线/权重变化/调仓建议
+- `Research` 已有真实工作台，支持基于 planning taxonomy / TargetSet / 当前持仓的 target-weight solve、run history、target weights、member targets、风险预算求解诊断和调仓缺口
 - `Review` 已有真实 period review pack 页面
 - `Overview` 已作为组合默认首页发布，承载 NAV、收益、回撤、sleeve 结构和 top holdings 总览；`Snapshot` 不再作为独立工作面保留
 
@@ -30,7 +30,7 @@
 - 只依赖共享 `asset-core` contract 与 `shared_asset` schema，不通过 `platform` API 取数
 - 不复用 `Watchlist` 的业务模型
 - 维持 `portfolio / account / transaction / performance / risk / research` 的独立边界
-- `Taxonomy / TargetSet` 是组合 planning truth；`Research` 消费这套结构做 sleeve-level backtest，不反向创造另一套目标体系
+- `Taxonomy / TargetSet` 是组合 planning truth；`Research` 消费这套结构求解当前 target weights，不反向创造另一套目标体系
 - 运行时生成的 research artifacts 属于本地工作产物，不作为源码的一部分
 
 ## 快速启动
@@ -51,7 +51,7 @@ uvicorn portfolio_app.main:app --reload --host 127.0.0.1 --port 8001
 - 默认数据库连接为 PostgreSQL：`postgresql+psycopg://yungu:yungu@127.0.0.1:5432/yungu`
 - `portfolio` 使用 `portfolio` schema
 - 测试使用临时 SQLite，不会污染默认运行库
-- research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理
+- research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理；当前产物以 target weights、member targets、leaf targets、solve event 和 target weight gaps 为主
 - backend 顶层包名现在是 `portfolio_app`
 
 ### 2. 前端

@@ -121,10 +121,18 @@ def _default_documents_payload() -> dict[str, object]:
 
 def _default_research_payload() -> dict[str, object]:
     return {
-        "overview": {},
-        "thesis": "",
-        "conclusions": [],
-        "notes": [],
+        "overview": {
+            "current_view": "",
+            "research_view": "",
+            "dd_status": "",
+            "odd_status": "",
+            "ic_status": "",
+            "decision": "",
+            "next_review_date": None,
+            "primary_analyst": "",
+        },
+        "manual_rating": None,
+        "timeline_notes": [],
     }
 
 
@@ -263,7 +271,9 @@ class StubCopilotProvider:
         metric_map = {str(item.get("metric") or "").lower(): item for item in risk_metrics}
         team_rows = list(people.get("team") or [])
         document_rows = list(documents.get("current_documents") or [])
-        conclusion_rows = list(research.get("conclusions") or [])
+        research_notes = list(research.get("timeline_notes") or [])
+        research_overview = research.get("overview") if isinstance(research.get("overview"), dict) else {}
+        manual_rating = research.get("manual_rating")
         price_overview = price.get("overview") if isinstance(price.get("overview"), dict) else {}
 
         if active_tab == "performance":
@@ -302,12 +312,12 @@ class StubCopilotProvider:
         elif active_tab == "documents":
             body = [
                 f"Documents 视角下，当前 adopted documents 有 {len(document_rows)} 份，最近 extraction reviews 有 {len(documents.get('extraction_reviews') or [])} 条。",
-                "如果要继续，我可以帮你指出哪些文档还没有被 research 结论引用。",
+                "如果要继续，我可以帮你指出哪些文档还没有被 research notes 覆盖。",
             ]
         elif active_tab == "research":
             body = [
-                f"Research 视角下，当前记录的结论有 {len(conclusion_rows)} 条，Thesis {'已填写' if research.get('thesis') else '尚未填写'}。",
-                "如果要继续，我可以把 Documents、Quote、Monitoring 一起压成一版研究摘要。",
+                f"Research 视角下，当前 Research View 是 {research_overview.get('research_view') or '未填写'}，人工 rating 是 {manual_rating if manual_rating is not None else '未打分'}。",
+                f"当前已有 {len(research_notes)} 条 research notes；如果要继续，我可以把 Documents、Quote、Monitoring 一起压成一版研究摘要。",
             ]
         elif active_tab == "monitoring":
             freshness = summary.get("freshness") if isinstance(summary.get("freshness"), dict) else {}
@@ -319,7 +329,7 @@ class StubCopilotProvider:
             body = [
                 f"{fund_name}（{ticker}）当前最新净值日期是 {_format_date(latest_nav_date)}，研究主口径是 {nav_series.get('nav_basis_preference') or 'auto'}。",
                 f"1Y 回报约 {_format_percent(one_year.get('investment') if one_year else None)}，最大回撤约 {_format_percent(risk.get('drawdown_summary', {}).get('maximum') if isinstance(risk.get('drawdown_summary'), dict) else None)}。",
-                f"当前 adopted documents {len(document_rows)} 份、research conclusions {len(conclusion_rows)} 条、管理团队记录 {len(team_rows)} 人。",
+                f"当前 adopted documents {len(document_rows)} 份、research notes {len(research_notes)} 条、管理团队记录 {len(team_rows)} 人。",
             ]
 
         return {
@@ -349,7 +359,7 @@ class StubCopilotProvider:
                     "label": "Research profile",
                     "ref_type": "research",
                     "ref_id": asset_id,
-                    "note": f"{len(conclusion_rows)} conclusions, {len(document_rows)} adopted documents.",
+                    "note": f"{len(research_notes)} notes, {len(document_rows)} adopted documents.",
                 },
             ],
             "context_summary": {
@@ -359,7 +369,7 @@ class StubCopilotProvider:
                 "active_tab": active_tab,
                 "nav_rows": len(nav_rows),
                 "document_count": len(document_rows),
-                "conclusion_count": len(conclusion_rows),
+                "research_note_count": len(research_notes),
             },
             "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         }
@@ -403,7 +413,7 @@ class CopilotService:
         analysis_fields = [
             "asset_name",
             "ticker_or_isin",
-            "category_name",
+            "attr.fund_taxonomy_path",
             "overall_rating",
             "analyst_stance",
             "return_1y",

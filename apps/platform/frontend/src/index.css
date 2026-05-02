@@ -1,6 +1,6 @@
 :root {
   color-scheme: light;
-  font-family: "Bahnschrift SemiCondensed", "Aptos Narrow", "Arial Narrow", "PingFang SC", "Noto Sans SC", sans-serif;
+  font-family: var(--yungu-font-sans, "Aptos", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif);
   color: #111111;
   background: #f8f5ee;
 }
@@ -837,4 +837,56 @@ textarea {
   .registry-toolbar-actions {
     width: 100%;
   }
+}
+
+/* Minimal typography pass shared with the workspace apps. */
+.platform-shell :is(h1, h2, h3, h4, h5, h6, strong, b, th, button, select, input, textarea) {
+  letter-spacing: 0;
+}
+
+.platform-shell :is(.hero h1, .registry-pagehead h1) {
+  font-size: clamp(30px, 4vw, 46px);
+  font-weight: 500;
+  line-height: 1.04;
+}
+
+.platform-shell :is(.app-card h2, .registry-panel h2) {
+  font-size: 28px;
+  font-weight: 500;
+}
+
+.platform-shell :is(
+  .hero-kicker,
+  .registry-kicker,
+  .app-eyebrow,
+  .registry-stat-label,
+  .registry-form-title,
+  .registry-table-meta,
+  .registry-form label span,
+  .registry-op-meta span,
+  .registry-preview-header span,
+  .registry-table th
+) {
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.platform-shell :is(
+  .platform-nav-link,
+  .app-link,
+  .registry-submit,
+  .registry-row-toggle,
+  .metric-chip,
+  .coverage-badge,
+  .lifecycle-badge
+) {
+  font-weight: 500;
+}
+
+.platform-shell :is(th, td, td strong, td b) {
+  font-weight: 400;
+}
+
+.platform-shell :is(th, .registry-table th, .instrument-id-stack strong, .registry-stat strong) {
+  font-weight: 500;
 }

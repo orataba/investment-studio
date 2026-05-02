@@ -30,7 +30,8 @@ NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES = {
     "interest",
     "return_of_capital",
 }
-TRADING_DAYS_PER_YEAR = 252.0
+DAYS_PER_YEAR = 365.25
+TRADING_DAYS_PER_YEAR = DAYS_PER_YEAR
 
 
 def _safe_float(value: object) -> float | None:
@@ -475,6 +476,8 @@ def _build_single_date_snapshot(
         "stale_fx_flag": False,
         "nav": None,
         "unrealized_pnl": None,
+        "market_observation_count": 0,
+        "return_observation_eligible": False,
     }
 
 
@@ -521,6 +524,10 @@ def _transactions_as_of_end_date(
         for transaction in sorted(transactions, key=_transaction_sort_key)
         if str(transaction.get("trade_date") or "") <= end_iso
     ]
+
+
+def _initial_boundary_date(resolved_start_date: date, requested_start_date: date | None) -> date:
+    return resolved_start_date - timedelta(days=1) if requested_start_date is not None else resolved_start_date
 
 
 def _sum_period_transaction_buckets(
@@ -865,6 +872,7 @@ def build_daily_portfolio_snapshots(
         cost_basis_complete = True
         position_valuation_complete = True
         stale_price_flag = False
+        fresh_price_count = 0
         current_position_market_values_local_by_asset: dict[str, dict[str, object]] = {}
         for bucket in position_buckets:
             currency = _normalized_currency(bucket.get("currency"), fallback=base_currency)
@@ -916,6 +924,9 @@ def build_daily_portfolio_snapshots(
             if market_value_local is None or converted_market_value is None:
                 position_valuation_complete = False
                 continue
+            price_point_date = _parse_iso_date(price_point.get("as_of_date"))
+            if price_point_date == as_of_date:
+                fresh_price_count += 1
             current_position_market_values_local_by_asset[str(bucket.get("asset_id") or "")] = {
                 "currency": currency,
                 "market_value_local": market_value_local,
@@ -1072,6 +1083,12 @@ def build_daily_portfolio_snapshots(
                 "stale_fx_flag": stale_fx_flag,
                 "total_position_count": total_position_count,
                 "priced_position_count": priced_position_count,
+                "market_observation_count": fresh_price_count,
+                "return_observation_eligible": (
+                    daily_ttwror is not None
+                    and isfinite(daily_ttwror)
+                    and (fresh_price_count > 0 or abs(daily_ttwror) > 1e-12)
+                ),
                 "cash_balance": resolved_cash_balance,
                 "position_market_value": resolved_position_market_value,
                 "nav": nav,
@@ -1124,7 +1141,21 @@ def summarize_daily_snapshots(snapshots: list[dict[str, object]]) -> dict[str, o
 
 
 def _year_fraction(start_date: date, end_date: date) -> float:
-    return max((end_date - start_date).days / 365.25, 0.0)
+    return max((end_date - start_date).days / DAYS_PER_YEAR, 0.0)
+
+
+def _periods_per_year_from_observations(
+    *,
+    observation_count: int,
+    start_date: date | None,
+    end_date: date | None,
+) -> float | None:
+    if observation_count < 1 or start_date is None or end_date is None:
+        return None
+    elapsed_days = (end_date - start_date).days
+    if elapsed_days <= 0:
+        return None
+    return float(observation_count) / float(elapsed_days) * DAYS_PER_YEAR
 
 
 def _sample_stddev(values: list[float]) -> float | None:
@@ -1150,12 +1181,13 @@ def _downside_deviation(values: list[float], *, minimum_acceptable_return: float
 
 
 def _drawdown_stats(snapshots: list[dict[str, object]]) -> dict[str, int | float | None]:
-    growth_points: list[tuple[int, float]] = []
-    for index, snapshot in enumerate(snapshots):
+    growth_points: list[tuple[date, float]] = []
+    for snapshot in snapshots:
         cumulative_ttwror = _safe_float(snapshot.get("cumulative_ttwror"))
-        if cumulative_ttwror is None:
+        snapshot_date = snapshot.get("as_of_date")
+        if cumulative_ttwror is None or not isinstance(snapshot_date, date):
             continue
-        growth_points.append((index, 1.0 + cumulative_ttwror))
+        growth_points.append((snapshot_date, 1.0 + cumulative_ttwror))
     if not growth_points:
         return {
             "max_drawdown": None,
@@ -1164,45 +1196,43 @@ def _drawdown_stats(snapshots: list[dict[str, object]]) -> dict[str, int | float
         }
 
     running_peak = growth_points[0][1]
-    running_peak_index = growth_points[0][0]
+    running_peak_date = growth_points[0][0]
     max_drawdown = 0.0
-    max_drawdown_peak_index = running_peak_index
-    max_drawdown_trough_index = running_peak_index
+    max_drawdown_peak_date = running_peak_date
+    max_drawdown_trough_date = running_peak_date
     recovery_index = None
 
-    for index, growth_index in growth_points:
+    for point_date, growth_index in growth_points:
         if growth_index >= running_peak - 1e-12:
             running_peak = growth_index
-            running_peak_index = index
+            running_peak_date = point_date
         drawdown = (growth_index / running_peak) - 1.0 if running_peak > 1e-12 else None
         if drawdown is not None and drawdown < max_drawdown:
             max_drawdown = drawdown
-            max_drawdown_peak_index = running_peak_index
-            max_drawdown_trough_index = index
+            max_drawdown_peak_date = running_peak_date
+            max_drawdown_trough_date = point_date
             recovery_index = None
 
-    if max_drawdown_peak_index != max_drawdown_trough_index:
+    if max_drawdown_peak_date != max_drawdown_trough_date:
         required_recovery_growth = growth_points[
             next(
-                position
-                for position, (index, _) in enumerate(growth_points)
-                if index == max_drawdown_peak_index
+                position for position, (point_date, _) in enumerate(growth_points) if point_date == max_drawdown_peak_date
             )
         ][1]
-        for index, growth_index in growth_points:
-            if index <= max_drawdown_trough_index:
+        for point_date, growth_index in growth_points:
+            if point_date <= max_drawdown_trough_date:
                 continue
             if growth_index >= required_recovery_growth - 1e-12:
-                recovery_index = index
+                recovery_index = point_date
                 break
 
     return {
         "max_drawdown": max_drawdown,
-        "max_drawdown_days": max_drawdown_trough_index - max_drawdown_peak_index
-        if max_drawdown_peak_index != max_drawdown_trough_index
+        "max_drawdown_days": (max_drawdown_trough_date - max_drawdown_peak_date).days
+        if max_drawdown_peak_date != max_drawdown_trough_date
         else 0,
-        "drawdown_duration_days": recovery_index - max_drawdown_peak_index
-        if recovery_index is not None and max_drawdown_peak_index != max_drawdown_trough_index
+        "drawdown_duration_days": (recovery_index - max_drawdown_peak_date).days
+        if recovery_index is not None and max_drawdown_peak_date != max_drawdown_trough_date
         else None,
     }
 
@@ -1260,24 +1290,59 @@ def build_portfolio_performance_report(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> dict[str, object]:
+    calculation_start_date = start_date - timedelta(days=1) if start_date is not None else None
     snapshots = build_daily_portfolio_snapshots(
         portfolio,
         accounts,
         transactions,
-        start_date=start_date,
+        start_date=calculation_start_date,
         end_date=end_date,
     )
-    snapshot_summary = summarize_daily_snapshots(snapshots)
+    visible_snapshots = [
+        snapshot
+        for snapshot in snapshots
+        if start_date is None
+        or (isinstance(snapshot.get("as_of_date"), date) and snapshot["as_of_date"] >= start_date)
+    ]
+    snapshot_summary = summarize_daily_snapshots(visible_snapshots)
     complete_snapshots = [
         snapshot
         for snapshot in snapshots
         if snapshot.get("coverage_state") == "complete" and snapshot.get("nav") is not None
     ]
-    return_observation_count = sum(1 for snapshot in snapshots if snapshot.get("daily_ttwror") is not None)
+    if start_date is not None:
+        transaction_dates = [
+            parsed
+            for parsed in (_parse_iso_date(item.get("trade_date")) for item in transactions)
+            if parsed is not None
+        ]
+        first_transaction_date = min(transaction_dates) if transaction_dates else None
+        if first_transaction_date is not None:
+            complete_snapshots = [
+                snapshot
+                for snapshot in complete_snapshots
+                if isinstance(snapshot.get("as_of_date"), date)
+                and snapshot["as_of_date"] >= first_transaction_date
+            ]
+    visible_complete_snapshots = [
+        snapshot
+        for snapshot in visible_snapshots
+        if snapshot.get("coverage_state") == "complete" and snapshot.get("nav") is not None
+    ]
+    return_observation_count = sum(1 for snapshot in visible_snapshots if snapshot.get("daily_ttwror") is not None)
+    risk_return_snapshots = [
+        snapshot
+        for snapshot in visible_snapshots
+        if snapshot.get("daily_ttwror") is not None and bool(snapshot.get("return_observation_eligible"))
+    ]
+    risk_return_observation_count = len(risk_return_snapshots)
     start_snapshot = complete_snapshots[0] if complete_snapshots else None
-    end_snapshot = complete_snapshots[-1] if complete_snapshots else None
+    end_snapshot = visible_complete_snapshots[-1] if visible_complete_snapshots else (complete_snapshots[-1] if complete_snapshots else None)
     start_anchor_date = start_snapshot.get("as_of_date") if isinstance((start_snapshot or {}).get("as_of_date"), date) else None
     end_anchor_date = end_snapshot.get("as_of_date") if isinstance((end_snapshot or {}).get("as_of_date"), date) else None
+    display_start_date = start_anchor_date
+    if start_date is not None and start_anchor_date is not None and start_anchor_date < start_date:
+        display_start_date = start_date
 
     def snapshot_period_delta(field_name: str) -> float | None:
         end_value = _safe_float((end_snapshot or {}).get(field_name))
@@ -1303,11 +1368,11 @@ def build_portfolio_performance_report(
         if years > 1e-9:
             annualized_ttwror = (1.0 + cumulative_ttwror) ** (1.0 / years) - 1.0
 
-    flow_snapshots = snapshots
+    flow_snapshots = visible_snapshots
     if start_anchor_date is not None and end_anchor_date is not None:
         flow_snapshots = [
             snapshot
-            for snapshot in snapshots
+            for snapshot in visible_snapshots
             if isinstance(snapshot.get("as_of_date"), date)
             and start_anchor_date < snapshot["as_of_date"] <= end_anchor_date
         ]
@@ -1357,20 +1422,25 @@ def build_portfolio_performance_report(
 
     daily_returns = [
         _safe_float(snapshot.get("daily_ttwror"))
-        for snapshot in snapshots
+        for snapshot in risk_return_snapshots
         if snapshot.get("daily_ttwror") is not None
     ]
     daily_returns = [value for value in daily_returns if value is not None]
     mean_daily_return = (sum(daily_returns) / len(daily_returns)) if daily_returns else None
     volatility = _sample_stddev(daily_returns)
+    periods_per_year = _periods_per_year_from_observations(
+        observation_count=len(daily_returns),
+        start_date=start_anchor_date,
+        end_date=end_anchor_date,
+    )
     annualized_volatility = (
-        volatility * sqrt(TRADING_DAYS_PER_YEAR)
-        if volatility is not None
+        volatility * sqrt(periods_per_year)
+        if volatility is not None and periods_per_year is not None
         else None
     )
     annualized_return_from_daily_mean = (
-        mean_daily_return * TRADING_DAYS_PER_YEAR
-        if mean_daily_return is not None
+        mean_daily_return * periods_per_year
+        if mean_daily_return is not None and periods_per_year is not None
         else None
     )
     sharpe_ratio = (
@@ -1382,8 +1452,8 @@ def build_portfolio_performance_report(
     )
     downside_volatility = _downside_deviation(daily_returns)
     annualized_downside_volatility = (
-        downside_volatility * sqrt(TRADING_DAYS_PER_YEAR)
-        if downside_volatility is not None
+        downside_volatility * sqrt(periods_per_year)
+        if downside_volatility is not None and periods_per_year is not None
         else None
     )
     sortino_ratio = (
@@ -1394,13 +1464,13 @@ def build_portfolio_performance_report(
         else None
     )
 
-    drawdown_stats = _drawdown_stats(snapshots)
+    drawdown_stats = _drawdown_stats(visible_snapshots)
     max_drawdown = drawdown_stats["max_drawdown"]
     max_drawdown_days = drawdown_stats["max_drawdown_days"]
     drawdown_duration_days = drawdown_stats["drawdown_duration_days"]
 
     coverage_state = "unavailable"
-    if complete_snapshots:
+    if visible_complete_snapshots:
         coverage_state = "complete"
         if snapshot_summary["partial_count"] or snapshot_summary["unavailable_count"]:
             coverage_state = "partial"
@@ -1413,11 +1483,13 @@ def build_portfolio_performance_report(
         "valuation_timezone": _resolve_portfolio_valuation_timezone(portfolio),
         "valuation_cutoff_policy": _resolve_portfolio_valuation_cutoff_policy(portfolio),
         "summary": {
-            "start_date": start_anchor_date or (snapshots[0]["as_of_date"] if snapshots else None),
+            "start_date": display_start_date,
             "end_date": end_anchor_date or (snapshots[-1]["as_of_date"] if snapshots else None),
             "coverage_state": coverage_state,
-            "snapshot_count": len(snapshots),
+            "snapshot_count": len(visible_snapshots),
             "return_observation_count": return_observation_count,
+            "risk_return_observation_count": risk_return_observation_count,
+            "risk_annualization_periods_per_year": periods_per_year,
             "latest_complete_as_of_date": snapshot_summary["latest_complete_as_of_date"],
             "start_nav": start_nav,
             "end_nav": end_nav,
@@ -1455,6 +1527,8 @@ def build_portfolio_performance_report(
                 "coverage_state": snapshot["coverage_state"],
                 "stale_price_flag": snapshot["stale_price_flag"],
                 "stale_fx_flag": snapshot["stale_fx_flag"],
+                "market_observation_count": snapshot.get("market_observation_count", 0),
+                "return_observation_eligible": bool(snapshot.get("return_observation_eligible")),
                 "beginning_nav": snapshot["beginning_nav"],
                 "ending_nav": snapshot["ending_nav"],
                 "realized_pnl": snapshot.get("realized_pnl"),
@@ -1474,7 +1548,7 @@ def build_portfolio_performance_report(
                 "cumulative_ttwror": snapshot["cumulative_ttwror"],
                 "drawdown": snapshot["drawdown"],
             }
-            for snapshot in snapshots
+            for snapshot in visible_snapshots
         ],
     }
 
@@ -1526,10 +1600,11 @@ def build_period_calculation_report(
         }
 
     resolved_start_date, resolved_end_date = window
+    initial_boundary_date = _initial_boundary_date(resolved_start_date, start_date)
     sorted_transactions = sorted(transactions, key=_transaction_sort_key)
     start_boundary_transactions = _transactions_as_of_end_date(
         sorted_transactions,
-        end_date=resolved_start_date,
+        end_date=initial_boundary_date,
     )
     end_boundary_transactions = _transactions_as_of_end_date(
         sorted_transactions,
@@ -1545,7 +1620,7 @@ def build_period_calculation_report(
         portfolio,
         accounts,
         start_boundary_transactions,
-        as_of_date=resolved_start_date,
+        as_of_date=initial_boundary_date,
     )
     end_snapshot = _build_single_date_snapshot(
         portfolio,
@@ -1655,7 +1730,7 @@ def build_period_calculation_report(
     lines = [
         {
             "key": "initial_value",
-            "label": f"Initial value ({resolved_start_date.isoformat()})",
+            "label": f"Initial value ({initial_boundary_date.isoformat()})",
             "amount": initial_value,
             "line_kind": "boundary",
             "parent_key": None,
@@ -2115,6 +2190,7 @@ def build_period_boundary_holdings_report(
         }
 
     resolved_start_date, resolved_end_date = window
+    initial_boundary_date = _initial_boundary_date(resolved_start_date, start_date)
     resolved_axis = str(axis or "").strip() or None
     if resolved_axis not in {None, "instrument", "account", "taxonomy"}:
         raise ValueError("axis must be instrument, account, or taxonomy")
@@ -2128,7 +2204,7 @@ def build_period_boundary_holdings_report(
     sorted_transactions = sorted(transactions, key=_transaction_sort_key)
     start_boundary_transactions = _transactions_as_of_end_date(
         sorted_transactions,
-        end_date=resolved_start_date,
+        end_date=initial_boundary_date,
     )
     end_boundary_transactions = _transactions_as_of_end_date(
         sorted_transactions,
@@ -2142,7 +2218,7 @@ def build_period_boundary_holdings_report(
         portfolio,
         accounts,
         start_boundary_transactions,
-        as_of_date=resolved_start_date,
+        as_of_date=initial_boundary_date,
     )
     end_snapshot = _build_single_date_snapshot(
         portfolio,
@@ -2155,7 +2231,7 @@ def build_period_boundary_holdings_report(
         portfolio_id=str(portfolio.get("portfolio_id") or ""),
         accounts=accounts,
         transactions=start_boundary_transactions,
-        as_of_date=resolved_start_date,
+        as_of_date=initial_boundary_date,
         base_currency=base_currency,
         direct_fx_assets=direct_fx_assets,
         instrument_detail_cache=instrument_detail_cache,
@@ -2220,6 +2296,7 @@ def build_period_boundary_holdings_report(
             "group_key": resolved_group_key or None,
             "group_label": start_group_label or end_group_label,
             "start_date": resolved_start_date,
+            "start_boundary_date": initial_boundary_date,
             "end_date": resolved_end_date,
             "start_position_count": len(start_positions),
             "end_position_count": len(end_positions),
@@ -3827,6 +3904,8 @@ def build_contribution_report(
                     "group_key": candidate_group_key,
                     "group_label": group_label,
                     "coverage_state": slice_coverage_state,
+                    "market_observation_count": int((snapshot or {}).get("market_observation_count") or 0),
+                    "return_observation_eligible": bool((snapshot or {}).get("return_observation_eligible")),
                     "beginning_value_base": beginning_value_base,
                     "ending_value_base": ending_value_base,
                     "beginning_weight": (
@@ -4526,7 +4605,8 @@ def build_period_calculation_groups_report(
                 continue
             boundary_labels[slice_group_key] = str(item.get("group_label") or slice_group_key)
             if as_of_date == resolved_start_date:
-                boundary_start_values[slice_group_key] = _safe_float(item.get("ending_value_base"))
+                start_value_field = "beginning_value_base" if start_date is not None else "ending_value_base"
+                boundary_start_values[slice_group_key] = _safe_float(item.get(start_value_field))
             if as_of_date == resolved_end_date:
                 boundary_end_values[slice_group_key] = _safe_float(item.get("ending_value_base"))
 

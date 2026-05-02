@@ -400,6 +400,8 @@ def _materialize_watchlist_rows(
         )
         summary_record = read_model_repository.get_summary(session, canonical_asset_id)
         summary_payload = summary_record.payload_json if summary_record is not None else {}
+        risk_record = read_model_repository.get_risk(session, canonical_asset_id)
+        risk_payload = risk_record.payload_json if risk_record is not None else {}
         freshness = summary_payload.get("freshness", {})
         asset = asset_repository.get(session, canonical_asset_id)
         attributes = collapse_latest_attribute_values(
@@ -412,6 +414,12 @@ def _materialize_watchlist_rows(
             else None
         )
         taxonomy_context = build_taxonomy_context(node)
+        row_attributes = merge_taxonomy_attributes(
+            taxonomy_context=taxonomy_context,
+            instrument_attributes=attributes,
+        )
+        if isinstance(risk_payload, dict) and risk_payload.get("current_drawdown") is not None:
+            row_attributes["current_drawdown"] = risk_payload["current_drawdown"]
         display_name = (
             asset.asset_name
             if asset is not None
@@ -443,13 +451,9 @@ def _materialize_watchlist_rows(
                     )
                 ),
                 management_firm_name=None,
-                category_name=summary_payload.get("category_name") or asset_type.replace("_", " ").title(),
                 overall_rating=summary_payload.get("overall_rating"),
                 analyst_stance=summary_payload.get("analyst_stance"),
-                attributes=merge_taxonomy_attributes(
-                    taxonomy_context=taxonomy_context,
-                    instrument_attributes=attributes,
-                ),
+                attributes=row_attributes,
                 freshness_status=str(
                     (
                         freshness.get("data_freshness_status")

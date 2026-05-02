@@ -77,17 +77,32 @@ watchlist 的未来使用场景不是“在一堆平铺标签里找产品”，�
 回答的问题是：`这类产品在研究上有什么特征`
 
 它承载 FOF 研究里需要标准化的定性结论，但不是产品身份字段。
+当前受控词表和判定口径以 [FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md](./FUND_QUALITATIVE_RESEARCH_FRAMEWORK.md) 为准。
 
 当前主要分组包括：
 
 - `research_coverage`
-  `coverage_status`、`focus_bucket`
+  `focus_bucket`、`research_evidence_level`
+- `research_edge`
+  `investment_edge_quality`、`alpha_source`
 - `research_process`
-  `implementation_style`、`trading_universe`、`alpha_source`
+  `implementation_style`、`process_repeatability`、`decision_discipline`、`trading_universe`
 - `research_style`
-  `style_profile`、`portfolio_construction`
+  `style_profile`、`portfolio_construction`、`style_drift_risk`
 - `research_manager`
-  `manager_assessment`、`team_stability_assessment`、`historical_delivery`、`capacity_bucket`
+  `manager_assessment`、`team_stability_assessment`
+- `research_risk`
+  `risk_management_quality`
+- `research_terms`
+  `capacity_bucket`、`liquidity_terms_fit`、`fee_value_assessment`
+- `research_governance`
+  `alignment_quality`
+- `research_delivery`
+  `historical_delivery`
+- `research_role`
+  `portfolio_role`
+
+`coverage_status` 代表 watchlist / portfolio 生命周期状态，例如 `Watch / Proposed / Invested / Paused / Exited`，可以作为 watchlist 列和筛选字段使用，但不再被解释为 `Research Status`。Research 页里的当前研究观点字段使用 `Research View`，避免和生命周期状态混淆。
 
 这里允许按分类做适用范围控制：
 
@@ -170,7 +185,7 @@ Fund Detail 的第一页现在是 `Overview`，它承载两类内容：
 - `Overview`
   产品身份和分类
 - `Research`
-  `Research Tags` 和研究结论
+  `Qualitative Research Tags`、与 Overview chart 打通的 `Research Notes`、`Rating` 和 `Research View`
 - `Monitoring`
   `Monitoring Assessment` 和 freshness / open items
 

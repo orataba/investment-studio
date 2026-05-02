@@ -58,12 +58,8 @@ PostingRole = Literal[
 PositionLotStatus = Literal["open", "closed"]
 PositionLotCloseReason = Literal["disposed", "transferred"]
 ResearchRunStatus = Literal["running", "completed", "failed"]
-ResearchRunTemplate = Literal["taxonomy_backtest"]
-ResearchBenchmarkMode = Literal["none"]
 ResearchArtifactPreviewKind = Literal["text", "html", "binary"]
-ResearchTargetSetMode = Literal["saa", "taa_over_saa"]
 ResearchTargetDimension = Literal["scope_default", "weight", "risk_budget"]
-ResearchRebalanceFrequency = Literal["weekly", "monthly", "quarterly"]
 ResearchCapitalMode = Literal["unit_notional", "fixed_gross", "target_volatility"]
 TargetSetType = Literal["saa", "taa"]
 
@@ -505,6 +501,8 @@ class DailySnapshotRecord(BaseModel):
     stale_fx_flag: bool = False
     total_position_count: int = 0
     priced_position_count: int = 0
+    market_observation_count: int = 0
+    return_observation_eligible: bool = False
     cash_balance: float | None = None
     position_market_value: float | None = None
     nav: float | None = None
@@ -551,6 +549,8 @@ class DailyPerformancePoint(BaseModel):
     coverage_state: CoverageState
     stale_price_flag: bool = False
     stale_fx_flag: bool = False
+    market_observation_count: int = 0
+    return_observation_eligible: bool = False
     beginning_nav: float | None = None
     ending_nav: float | None = None
     realized_pnl: float | None = None
@@ -577,6 +577,8 @@ class PerformanceSummary(BaseModel):
     coverage_state: CoverageState
     snapshot_count: int
     return_observation_count: int
+    risk_return_observation_count: int = 0
+    risk_annualization_periods_per_year: float | None = None
     latest_complete_as_of_date: date | None = None
     start_nav: float | None = None
     end_nav: float | None = None
@@ -680,6 +682,7 @@ class PeriodBoundaryHoldingsSummary(BaseModel):
     group_key: str | None = None
     group_label: str | None = None
     start_date: date | None = None
+    start_boundary_date: date | None = None
     end_date: date | None = None
     start_position_count: int = 0
     end_position_count: int = 0
@@ -830,18 +833,13 @@ class ResearchSettingsRecord(BaseModel):
     comparator_taxonomy_node_id: str | None = None
     comparator_taxonomy_node_name: str | None = None
     as_of_date: date | None = None
-    start_date: date | None = None
     lookback_days: int = Field(default=90, ge=7, le=366)
-    benchmark_mode: ResearchBenchmarkMode = "none"
-    run_template: ResearchRunTemplate = "taxonomy_backtest"
-    target_set_mode: ResearchTargetSetMode = "taa_over_saa"
     target_dimension: ResearchTargetDimension = "scope_default"
     capital_mode: ResearchCapitalMode = "unit_notional"
     gross_exposure: float | None = Field(default=None, gt=0)
     target_volatility: float | None = Field(default=None, gt=0, le=1)
     max_gross_exposure: float | None = Field(default=None, gt=0)
     frozen_taxonomy_node_ids: list[str] = Field(default_factory=list)
-    rebalance_frequency: ResearchRebalanceFrequency = "monthly"
     notes: str | None = None
     updated_at: str | None = None
 
@@ -850,18 +848,13 @@ class ResearchSettingsUpdateRequest(BaseModel):
     planning_taxonomy_id: str | None = None
     comparator_taxonomy_node_id: str | None = None
     as_of_date: date | None = None
-    start_date: date | None = None
     lookback_days: int = Field(default=90, ge=7, le=366)
-    benchmark_mode: ResearchBenchmarkMode = "none"
-    run_template: ResearchRunTemplate = "taxonomy_backtest"
-    target_set_mode: ResearchTargetSetMode = "taa_over_saa"
     target_dimension: ResearchTargetDimension = "scope_default"
     capital_mode: ResearchCapitalMode = "unit_notional"
     gross_exposure: float | None = Field(default=None, gt=0)
     target_volatility: float | None = Field(default=None, gt=0, le=1)
     max_gross_exposure: float | None = Field(default=None, gt=0)
     frozen_taxonomy_node_ids: list[str] | None = None
-    rebalance_frequency: ResearchRebalanceFrequency = "monthly"
     notes: str | None = None
 
     @field_validator("planning_taxonomy_id", "comparator_taxonomy_node_id", "notes", mode="before")
@@ -878,8 +871,6 @@ class ResearchSettingsUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_research_settings(self) -> "ResearchSettingsUpdateRequest":
-        if self.start_date and self.as_of_date and self.as_of_date < self.start_date:
-            raise ValueError("start_date must not be later than as_of_date.")
         if self.capital_mode == "unit_notional":
             if self.gross_exposure is not None or self.target_volatility is not None:
                 raise ValueError("unit_notional capital mode must not set gross_exposure or target_volatility.")
@@ -988,61 +979,49 @@ class ResearchScopeSelectionRecord(BaseModel):
     member_source: str = "child_sleeves"
 
 
-class ResearchBacktestMetricRecord(BaseModel):
-    metric_id: str
-    label: str
-    value: float | None = None
-
-
-class ResearchBacktestCurvePointRecord(BaseModel):
-    date: str
-    nav: float
-    drawdown: float
-    portfolio_return: float
-    rebalance_flag: bool = False
-
-
-class ResearchWeightSchedulePointRecord(BaseModel):
-    date: str
-    rebalance_flag: bool = False
-    nav: float | None = None
-    weights: dict[str, float] = Field(default_factory=dict)
-
-
-class ResearchBacktestMemberSummaryRecord(BaseModel):
+class ResearchMemberTargetRecord(BaseModel):
     member_type: str
     member_id: str
     label: str
+    scope_path: str | None = None
+    member_path: str | None = None
     default_target_dimension: DefaultTargetDimension | None = None
     selected_target_dimension: ResearchTargetDimension | None = None
     source_target_set_type: TargetSetType | None = None
-    start_weight: float | None = None
-    end_weight: float | None = None
+    current_weight: float | None = None
+    current_risk_share: float | None = None
+    target_weight: float | None = None
     weight_change: float | None = None
-    average_weight: float | None = None
-    min_weight: float | None = None
-    max_weight: float | None = None
-    latest_target_weight: float | None = None
-    latest_target_risk_share: float | None = None
-    latest_implementation_weight: float | None = None
+    configured_weight: float | None = None
+    configured_risk_share: float | None = None
     selected_target_value: float | None = None
-    cumulative_return: float | None = None
 
 
-class ResearchRebalanceEventRecord(BaseModel):
-    rebalance_date: str
+class ResearchSolveEventRecord(BaseModel):
+    as_of_date: str
     scope_label: str
+    requested_target_dimension: str | None = None
+    taxonomy_default_target_dimension: DefaultTargetDimension | None = None
     target_dimension: ResearchTargetDimension | None = None
     solver_kind: str | None = None
-    turnover: float | None = None
-    pre_rebalance_weight_total: float | None = None
+    solver_detail: str | None = None
+    solver_message: str | None = None
+    covariance_model: str | None = None
+    covariance_observations: int | None = None
+    risk_contribution_mode: str | None = None
+    gap_turnover: float | None = None
+    current_weight_total: float | None = None
     target_weight_total: float | None = None
-    max_weight_gap_before_rebalance: float | None = None
+    max_weight_gap: float | None = None
     max_risk_share_gap: float | None = None
+    estimated_risk_sleeve_volatility: float | None = None
+    target_volatility: float | None = None
+    gross_exposure: float | None = None
+    risk_asset_scaling_factor: float | None = None
     member_count: int = 0
 
 
-class ResearchRebalanceSuggestionRecord(BaseModel):
+class ResearchTargetWeightGapRecord(BaseModel):
     member_type: str
     member_id: str
     label: str
@@ -1054,7 +1033,7 @@ class ResearchRebalanceSuggestionRecord(BaseModel):
     action: str
 
 
-class ResearchConstructionRowRecord(BaseModel):
+class ResearchTargetRowRecord(BaseModel):
     member_type: str
     member_id: str
     label: str
@@ -1082,14 +1061,12 @@ class ResearchRunDetailRecord(BaseModel):
     top_holdings: list[ResearchHoldingSnapshotRecord] = Field(default_factory=list)
     planning_groups: list[ResearchPlanningGroupSnapshotRecord] = Field(default_factory=list)
     selected_scope: ResearchScopeSelectionRecord | None = None
-    backtest_metrics: list[ResearchBacktestMetricRecord] = Field(default_factory=list)
-    backtest_curve: list[ResearchBacktestCurvePointRecord] = Field(default_factory=list)
-    weight_schedule: list[ResearchWeightSchedulePointRecord] = Field(default_factory=list)
-    member_summaries: list[ResearchBacktestMemberSummaryRecord] = Field(default_factory=list)
-    construction_assumptions: list[str] = Field(default_factory=list)
-    construction_rows: list[ResearchConstructionRowRecord] = Field(default_factory=list)
-    rebalance_events: list[ResearchRebalanceEventRecord] = Field(default_factory=list)
-    rebalance_suggestions: list[ResearchRebalanceSuggestionRecord] = Field(default_factory=list)
+    target_assumptions: list[str] = Field(default_factory=list)
+    target_rows: list[ResearchTargetRowRecord] = Field(default_factory=list)
+    member_targets: list[ResearchMemberTargetRecord] = Field(default_factory=list)
+    leaf_targets: list[ResearchMemberTargetRecord] = Field(default_factory=list)
+    solve_event: ResearchSolveEventRecord | None = None
+    target_weight_gaps: list[ResearchTargetWeightGapRecord] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -1113,8 +1090,6 @@ class ResearchRunRecord(BaseModel):
     planning_taxonomy_id: str | None = None
     planning_taxonomy_name: str | None = None
     lookback_days: int = 90
-    benchmark_mode: ResearchBenchmarkMode = "none"
-    run_template: ResearchRunTemplate = "taxonomy_backtest"
     requested_by: str | None = None
     headline: str | None = None
     error_message: str | None = None
@@ -1458,6 +1433,8 @@ class DailyContributionSliceRecord(BaseModel):
     group_key: str
     group_label: str
     coverage_state: CoverageState
+    market_observation_count: int = 0
+    return_observation_eligible: bool = False
     beginning_value_base: float | None = None
     ending_value_base: float | None = None
     beginning_weight: float | None = None

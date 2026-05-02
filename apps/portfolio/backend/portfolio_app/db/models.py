@@ -282,18 +282,13 @@ class ResearchSettingsRecordModel(Base):
     planning_taxonomy_id: Mapped[str | None] = mapped_column(String)
     comparator_taxonomy_node_id: Mapped[str | None] = mapped_column(String)
     as_of_date: Mapped[date | None] = mapped_column(Date)
-    start_date: Mapped[date | None] = mapped_column(Date)
     lookback_days: Mapped[int] = mapped_column(nullable=False, default=90)
-    benchmark_mode: Mapped[str] = mapped_column(String, nullable=False, default="none")
-    run_template: Mapped[str] = mapped_column(String, nullable=False, default="taxonomy_backtest")
-    target_set_mode: Mapped[str] = mapped_column(String, nullable=False, default="taa_over_saa")
     target_dimension: Mapped[str] = mapped_column(String, nullable=False, default="scope_default")
     capital_mode: Mapped[str] = mapped_column(String, nullable=False, default="unit_notional")
     gross_exposure: Mapped[float | None]
     target_volatility: Mapped[float | None]
     max_gross_exposure: Mapped[float | None]
     frozen_taxonomy_node_ids_json: Mapped[list[str] | None] = mapped_column(JSON)
-    rebalance_frequency: Mapped[str] = mapped_column(String, nullable=False, default="monthly")
     notes: Mapped[str | None] = mapped_column(String)
     updated_at: Mapped[str | None] = mapped_column(String)
 
@@ -311,7 +306,7 @@ class ResearchRunRecordModel(Base):
         ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
         nullable=False,
     )
-    job_type: Mapped[str] = mapped_column(String, nullable=False, default="taxonomy_backtest")
+    job_type: Mapped[str] = mapped_column(String, nullable=False, default="target_weight_solve")
     status: Mapped[str] = mapped_column(String, nullable=False, default="completed")
     requested_at: Mapped[str | None] = mapped_column(String)
     started_at: Mapped[str | None] = mapped_column(String)
@@ -319,8 +314,6 @@ class ResearchRunRecordModel(Base):
     as_of_date: Mapped[date | None] = mapped_column(Date)
     planning_taxonomy_id: Mapped[str | None] = mapped_column(String)
     lookback_days: Mapped[int] = mapped_column(nullable=False, default=90)
-    benchmark_mode: Mapped[str] = mapped_column(String, nullable=False, default="none")
-    run_template: Mapped[str] = mapped_column(String, nullable=False, default="taxonomy_backtest")
     requested_by: Mapped[str | None] = mapped_column(String)
     headline: Mapped[str | None] = mapped_column(String)
     detail_json: Mapped[dict[str, object] | None] = mapped_column(JSON)

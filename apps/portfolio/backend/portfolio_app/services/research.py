@@ -22,7 +22,7 @@ from portfolio_app.services.asset_charts import build_asset_sparkline
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_statement_of_assets_report
-from portfolio_app.services.research_backtest import build_research_scope_options, run_taxonomy_backtest
+from portfolio_app.services.research_solver import build_research_scope_options, solve_current_target_weights
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
     list_target_sets,
@@ -35,16 +35,7 @@ from portfolio_app.services.portfolio_store import (
 
 TEXT_SUFFIXES = {".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
 HTML_SUFFIXES = {".html"}
-BACKTEST_METRIC_LABELS = {
-    "cumulative_return": "Cumulative Return",
-    "annualized_return": "Annualized Return",
-    "annualized_volatility": "Annualized Volatility",
-    "sharpe_ratio": "Sharpe Ratio",
-    "sortino_ratio": "Sortino Ratio",
-    "max_drawdown": "Max Drawdown",
-    "calmar_ratio": "Calmar Ratio",
-    "observations": "Observations",
-}
+CURRENT_TARGET_RUN_TEMPLATE = "target_weight_solve"
 
 
 def _utc_now() -> datetime:
@@ -162,23 +153,11 @@ def _ensure_research_settings_record(
     record = session.get(ResearchSettingsRecordModel, portfolio_id)
     if record is not None:
         changed = False
-        if not record.start_date:
-            record.start_date = default_as_of_date - timedelta(days=180)
-            changed = True
-        if not record.run_template:
-            record.run_template = "taxonomy_backtest"
-            changed = True
-        if not record.target_set_mode:
-            record.target_set_mode = "taa_over_saa"
-            changed = True
         if not record.target_dimension:
             record.target_dimension = "scope_default"
             changed = True
         if not record.capital_mode:
             record.capital_mode = "unit_notional"
-            changed = True
-        if not record.rebalance_frequency:
-            record.rebalance_frequency = "monthly"
             changed = True
         if record.frozen_taxonomy_node_ids_json is None:
             record.frozen_taxonomy_node_ids_json = []
@@ -193,18 +172,13 @@ def _ensure_research_settings_record(
         planning_taxonomy_id=default_planning_taxonomy_id,
         comparator_taxonomy_node_id=None,
         as_of_date=default_as_of_date,
-        start_date=default_as_of_date - timedelta(days=180),
         lookback_days=90,
-        benchmark_mode="none",
-        run_template="taxonomy_backtest",
-        target_set_mode="taa_over_saa",
         target_dimension="scope_default",
         capital_mode="unit_notional",
         gross_exposure=None,
         target_volatility=None,
         max_gross_exposure=None,
         frozen_taxonomy_node_ids_json=[],
-        rebalance_frequency="monthly",
         notes=None,
         updated_at=_utc_now_iso(),
     )
@@ -311,18 +285,13 @@ def _serialize_settings_row(
             scope_name_map.get(comparator_taxonomy_node_id) if comparator_taxonomy_node_id else None
         ),
         "as_of_date": _iso_date(row.as_of_date),
-        "start_date": _iso_date(row.start_date),
         "lookback_days": int(row.lookback_days or 90),
-        "benchmark_mode": row.benchmark_mode or "none",
-        "run_template": "taxonomy_backtest",
-        "target_set_mode": row.target_set_mode or "taa_over_saa",
         "target_dimension": row.target_dimension or "scope_default",
         "capital_mode": row.capital_mode or "unit_notional",
         "gross_exposure": _safe_float(row.gross_exposure),
         "target_volatility": _safe_float(row.target_volatility),
         "max_gross_exposure": _safe_float(row.max_gross_exposure),
         "frozen_taxonomy_node_ids": deepcopy(row.frozen_taxonomy_node_ids_json or []),
-        "rebalance_frequency": row.rebalance_frequency or "monthly",
         "notes": row.notes,
         "updated_at": row.updated_at,
     }
@@ -347,8 +316,6 @@ def _serialize_run_row(
         "planning_taxonomy_id": planning_taxonomy_id,
         "planning_taxonomy_name": taxonomy_name_map.get(planning_taxonomy_id) if planning_taxonomy_id else None,
         "lookback_days": int(row.lookback_days or 90),
-        "benchmark_mode": row.benchmark_mode or "none",
-        "run_template": "taxonomy_backtest",
         "requested_by": row.requested_by,
         "headline": row.headline,
         "error_message": row.error_message,
@@ -642,88 +609,47 @@ def _build_research_context(
         "planning_groups": planning_groups,
     }
 
-def _metric_records_from_backtest(backtest: dict[str, object]) -> list[dict[str, object]]:
-    metrics = backtest.get("metrics") or {}
-    if not isinstance(metrics, dict):
-        return []
-    rendered: list[dict[str, object]] = []
-    for metric_id in [
-        "cumulative_return",
-        "annualized_return",
-        "annualized_volatility",
-        "sharpe_ratio",
-        "sortino_ratio",
-        "max_drawdown",
-        "calmar_ratio",
-        "observations",
-    ]:
-        rendered.append(
-            {
-                "metric_id": metric_id,
-                "label": BACKTEST_METRIC_LABELS.get(metric_id, metric_id),
-                "value": _safe_float(metrics.get(metric_id)),
-            }
-        )
-    return rendered
-
-
-def _build_backtest_findings(backtest: dict[str, object]) -> tuple[list[dict[str, str]], list[str]]:
-    metrics = backtest.get("metrics") or {}
-    scope = backtest.get("scope") or {}
-    warnings = list(backtest.get("warnings") or [])
-    member_summaries = list(backtest.get("member_summaries") or [])
-    rebalance_events = list(backtest.get("rebalance_events") or [])
-    rebalance_suggestions = list(backtest.get("rebalance_suggestions") or [])
+def _build_current_target_findings(solution: dict[str, object]) -> tuple[list[dict[str, str]], list[str]]:
+    scope = solution.get("scope") or {}
+    target_weight_gaps = list(solution.get("target_weight_gaps") or [])
+    solve_event = solution.get("solve_event") if isinstance(solution.get("solve_event"), dict) else None
+    warnings = list(solution.get("warnings") or [])
+    target_rows = _build_target_rows(solution)
 
     findings: list[dict[str, str]] = []
     questions: list[str] = []
-
     scope_label = str(scope.get("label") or "Selected Scope")
-    cumulative_return = _safe_float(metrics.get("cumulative_return"))
-    annualized_volatility = _safe_float(metrics.get("annualized_volatility"))
-    max_drawdown = _safe_float(metrics.get("max_drawdown"))
-    if cumulative_return is not None or annualized_volatility is not None or max_drawdown is not None:
+
+    if target_rows:
+        largest_gap = max(target_rows, key=lambda item: abs(_safe_float(item.get("gap_to_implementation")) or 0.0))
         findings.append(
             {
-                "title": "Backtest Summary",
+                "title": "Current Target Weights",
                 "detail": (
-                    f"{scope_label} returned {_format_pct(cumulative_return)} with volatility at "
-                    f"{_format_pct(annualized_volatility)} and max drawdown {_format_pct(max_drawdown)} over the selected window."
+                    f"{scope_label} target weights were solved from current holdings, active targets, and the selected "
+                    f"covariance lookback. Largest absolute gap is {largest_gap.get('label')} at "
+                    f"{_format_pct(abs(_safe_float(largest_gap.get('gap_to_implementation')) or 0.0), 3)}."
                 ),
             }
         )
 
-    if member_summaries:
-        best_member = max(member_summaries, key=lambda item: _safe_float(item.get("cumulative_return")) or float("-inf"))
-        worst_member = min(member_summaries, key=lambda item: _safe_float(item.get("cumulative_return")) or float("inf"))
+    if solve_event:
         findings.append(
             {
-                "title": "Best/Worst Sleeve Path",
+                "title": "Volatility Overlay",
                 "detail": (
-                    f"Best contributing member was {best_member.get('label')} at "
-                    f"{_format_pct(_safe_float(best_member.get('cumulative_return')), 3)}, while "
-                    f"{worst_member.get('label')} finished at {_format_pct(_safe_float(worst_member.get('cumulative_return')), 3)}."
+                    f"Estimated risky-sleeve volatility is {_format_pct(_safe_float(solve_event.get('estimated_risk_sleeve_volatility')))} "
+                    f"versus target volatility {_format_pct(_safe_float(solve_event.get('target_volatility')))}; gross exposure resolves to "
+                    f"{_format_number(_safe_float(solve_event.get('gross_exposure')), 3)}."
                 ),
             }
         )
 
-    if rebalance_events:
-        largest_turnover = max(rebalance_events, key=lambda item: _safe_float(item.get("turnover")) or float("-inf"))
-        findings.append(
-            {
-                "title": "Rebalance Pressure",
-                "detail": (
-                    f"The heaviest rebalance in scope landed on {largest_turnover.get('rebalance_date')} with "
-                    f"{_format_pct(_safe_float(largest_turnover.get('turnover')), 3)} turnover."
-                ),
-            }
-        )
-
-    if rebalance_suggestions:
-        top_gap = max(rebalance_suggestions, key=lambda item: abs(_safe_float(item.get("gap")) or 0.0))
+    if target_weight_gaps:
+        top_gap = max(target_weight_gaps, key=lambda item: abs(_safe_float(item.get("gap")) or 0.0))
         if abs(_safe_float(top_gap.get("gap")) or 0.0) > 0.01:
             questions.append(
-                f"Decide whether {top_gap.get('label')} should be {str(top_gap.get('action') or '').lower()}d by {_format_pct(abs(_safe_float(top_gap.get('gap')) or 0.0), 3)} versus the selected target."
+                f"Review whether {top_gap.get('label')} should be {str(top_gap.get('action') or '').lower()}d by {_format_pct(abs(_safe_float(top_gap.get('gap')) or 0.0), 3)} versus the solved target weight."
             )
 
     if warnings:
@@ -735,80 +661,21 @@ def _build_backtest_findings(backtest: dict[str, object]) -> tuple[list[dict[str
         )
 
     if not questions:
-        questions.append("Review whether the selected scope and target mode should stay active for the next rebalance cycle.")
-    if len(rebalance_events) >= 3:
-        questions.append("Check whether rebalance cadence is too frequent for this sleeve path relative to realized turnover.")
-    if _safe_float(metrics.get("max_drawdown")) and (_safe_float(metrics.get("max_drawdown")) or 0.0) < -0.1:
-        questions.append("Stress test whether the selected sleeve hierarchy still behaves acceptably under deeper drawdown conditions.")
-
+        questions.append("Review whether the active TAA target remains appropriate before translating solved weights into orders.")
     return findings[:4], questions[:3]
 
 
-def _build_weight_schedule(
-    rows: list[dict[str, object]],
-    *,
-    curve_points: list[dict[str, object]] | None = None,
-) -> list[dict[str, object]]:
-    if not rows:
-        return []
-    nav_by_date = {
-        str(item.get("asof_date") or item.get("date") or "").strip(): _safe_float(item.get("nav"))
-        for item in (curve_points or [])
-        if str(item.get("asof_date") or item.get("date") or "").strip()
-    }
-    by_date: dict[str, dict[str, object]] = {}
-    for row in rows:
-        date_value = str(row.get("asof_date") or row.get("date") or "").strip()
-        if not date_value:
-            continue
-        bucket = by_date.setdefault(
-            date_value,
-            {
-                "date": date_value,
-                "rebalance_flag": bool(row.get("rebalance_flag")),
-                "nav": nav_by_date.get(date_value),
-                "weights": {},
-            },
-        )
-        bucket["rebalance_flag"] = bool(bucket.get("rebalance_flag")) or bool(row.get("rebalance_flag"))
-        if bucket.get("nav") is None and nav_by_date.get(date_value) is not None:
-            bucket["nav"] = nav_by_date.get(date_value)
-        label = str(row.get("label") or "").strip()
-        weight = _safe_float(row.get("weight"))
-        if label and weight is not None:
-            bucket["weights"][label] = weight
-    return sorted(by_date.values(), key=lambda item: str(item.get("date") or ""))
-
-
-def _build_backtest_signals(
+def _build_current_target_signals(
     *,
     settings_payload: dict[str, object],
-    metrics: dict[str, object],
     scope: dict[str, object],
-    rebalance_events: list[dict[str, object]],
+    solve_event: dict[str, object] | None,
 ) -> list[dict[str, object]]:
-    solver_labels = [
-        _format_solver_kind(item.get("solver_kind"))
-        for item in rebalance_events
-        if str(item.get("solver_kind") or "").strip()
-    ]
-    unique_solver_labels: list[str] = []
-    for label in solver_labels:
-        if label not in unique_solver_labels:
-            unique_solver_labels.append(label)
-
-    max_turnover = max((_safe_float(item.get("turnover")) for item in rebalance_events), default=None)
-    max_risk_gap = max(
-        (_safe_float(item.get("max_risk_share_gap")) for item in rebalance_events if _safe_float(item.get("max_risk_share_gap")) is not None),
-        default=None,
-    )
-    signals = [
-        {"label": "Template", "value": "Taxonomy Backtest", "tone": "neutral"},
-        {
-            "label": "Target Layer",
-            "value": "TAA over SAA" if settings_payload.get("target_set_mode") == "taa_over_saa" else "SAA",
-            "tone": "neutral",
-        },
+    event = solve_event or {}
+    solver_label = _format_solver_kind(event.get("solver_kind")) if str(event.get("solver_kind") or "").strip() else "—"
+    return [
+        {"label": "Template", "value": "Current Target Weight Solve", "tone": "neutral"},
+        {"label": "Target Layer", "value": "Active TAA", "tone": "neutral"},
         {
             "label": "Capital Mode",
             "value": str(settings_payload.get("capital_mode") or "unit_notional").replace("_", " ").title(),
@@ -825,8 +692,8 @@ def _build_backtest_signals(
             "tone": "neutral",
         },
         {
-            "label": "Rebalance",
-            "value": str(settings_payload.get("rebalance_frequency") or "monthly").title(),
+            "label": "Lookback",
+            "value": f"{int(settings_payload.get('lookback_days') or 90)}D",
             "tone": "neutral",
         },
         {
@@ -836,12 +703,17 @@ def _build_backtest_signals(
         },
         {
             "label": "Solver",
-            "value": ", ".join(unique_solver_labels[:2]) if unique_solver_labels else "—",
+            "value": solver_label,
             "tone": "neutral",
         },
         {
-            "label": "Largest Turnover",
-            "value": _format_pct(max_turnover, 3),
+            "label": "Covariance Model",
+            "value": str(event.get("covariance_model") or "—").replace("_", " ").title(),
+            "tone": "neutral",
+        },
+        {
+            "label": "Risk Contribution",
+            "value": str(event.get("risk_contribution_mode") or "—").upper(),
             "tone": "neutral",
         },
         {
@@ -850,25 +722,29 @@ def _build_backtest_signals(
             "tone": "neutral",
         },
         {
+            "label": "Estimated Volatility",
+            "value": _format_pct(_safe_float(event.get("estimated_risk_sleeve_volatility"))),
+            "tone": "neutral",
+        },
+        {
+            "label": "Gross Exposure",
+            "value": _format_number(_safe_float(event.get("gross_exposure")), 3),
+            "tone": "neutral",
+        },
+        {
+            "label": "Largest Weight Gap",
+            "value": _format_pct(_safe_float(event.get("max_weight_gap")), 3),
+            "tone": "neutral",
+        },
+        {
             "label": "Largest Risk Gap",
-            "value": _format_pct(max_risk_gap, 3),
-            "tone": "neutral",
-        },
-        {
-            "label": "Return",
-            "value": _format_pct(_safe_float(metrics.get("cumulative_return"))),
-            "tone": "neutral",
-        },
-        {
-            "label": "Max Drawdown",
-            "value": _format_pct(_safe_float(metrics.get("max_drawdown"))),
+            "value": _format_pct(_safe_float(event.get("max_risk_share_gap")), 3),
             "tone": "neutral",
         },
     ]
-    return signals
 
 
-def _construction_source_label(target_row: dict[str, object] | None) -> str:
+def _target_source_label(target_row: dict[str, object] | None) -> str:
     if not target_row:
         return "—"
     target_set_type = str(target_row.get("source_target_set_type") or "").strip()
@@ -882,10 +758,10 @@ def _construction_source_label(target_row: dict[str, object] | None) -> str:
     return "Fallback"
 
 
-def _build_construction_rows(backtest: dict[str, object]) -> list[dict[str, object]]:
-    actual_rows = list(backtest.get("actual_rows") or [])
-    target_rows = list(backtest.get("latest_target_rows") or [])
-    suggestion_rows = list(backtest.get("rebalance_suggestions") or [])
+def _build_target_rows(solution: dict[str, object]) -> list[dict[str, object]]:
+    actual_rows = list(solution.get("actual_rows") or [])
+    target_rows = list(solution.get("resolved_target_rows") or [])
+    gap_rows = list(solution.get("target_weight_gaps") or [])
     actual_by_key = {
         (str(row.get("member_type") or ""), str(row.get("member_id") or "")): row
         for row in actual_rows
@@ -894,9 +770,9 @@ def _build_construction_rows(backtest: dict[str, object]) -> list[dict[str, obje
         (str(row.get("member_type") or ""), str(row.get("member_id") or "")): row
         for row in target_rows
     }
-    suggestion_by_key = {
+    gap_by_key = {
         (str(row.get("member_type") or ""), str(row.get("member_id") or "")): row
-        for row in suggestion_rows
+        for row in gap_rows
     }
 
     ordered_keys: list[tuple[str, str]] = []
@@ -913,7 +789,7 @@ def _build_construction_rows(backtest: dict[str, object]) -> list[dict[str, obje
     for key in ordered_keys:
         target_row = target_by_key.get(key)
         actual_row = actual_by_key.get(key)
-        suggestion = suggestion_by_key.get(key)
+        target_gap = gap_by_key.get(key)
         implementation_weight = _safe_float((target_row or {}).get("implementation_weight"))
         current_weight = _safe_float((actual_row or {}).get("current_weight"))
         gap_to_implementation = (
@@ -928,7 +804,7 @@ def _build_construction_rows(backtest: dict[str, object]) -> list[dict[str, obje
                 "label": str(
                     (target_row or {}).get("label")
                     or (actual_row or {}).get("label")
-                    or (suggestion or {}).get("label")
+                    or (target_gap or {}).get("label")
                     or key[1]
                 ),
                 "current_weight": current_weight,
@@ -937,74 +813,72 @@ def _build_construction_rows(backtest: dict[str, object]) -> list[dict[str, obje
                 "selected_target_dimension": (target_row or {}).get("selected_dimension"),
                 "source_target_set_type": (target_row or {}).get("source_target_set_type"),
                 "source_target_set_id": (target_row or {}).get("source_target_set_id"),
-                "source_label": _construction_source_label(target_row),
+                "source_label": _target_source_label(target_row),
                 "selected_target_value": _safe_float((target_row or {}).get("selected_value")),
                 "target_weight": _safe_float((target_row or {}).get("target_weight")),
                 "target_risk_share": _safe_float((target_row or {}).get("target_risk_share")),
                 "implementation_weight": implementation_weight,
                 "gap_to_implementation": gap_to_implementation,
-                "action": str((suggestion or {}).get("action") or "").strip() or None,
+                "action": str((target_gap or {}).get("action") or "").strip() or None,
             }
         )
     return rendered
 
 
-def _build_construction_assumptions(
+def _build_target_assumptions(
     *,
     settings_payload: dict[str, object],
     target_rows: list[dict[str, object]],
-    rebalance_events: list[dict[str, object]],
+    solve_event: dict[str, object] | None,
 ) -> list[str]:
     assumptions = [
-        "Local construction is long-only and fully invested within each selected scope; member weights are bounded between 0% and 100%.",
+        "Local target solves are long-only and fully invested within each selected scope; member weights are bounded between 0% and 100%.",
     ]
     if str(settings_payload.get("target_dimension") or "") == "scope_default":
         assumptions.append("Scope Default resolves each sleeve using that sleeve's own default target dimension before rolling results upward.")
-    if any(str(item.get("target_dimension") or "") == "risk_budget" for item in rebalance_events):
-        assumptions.append("Risk-budget sleeves solve implementation weights from the trailing local covariance window over the selected lookback horizon.")
+    if str((solve_event or {}).get("target_dimension") or "") == "risk_budget":
+        covariance_model = str((solve_event or {}).get("covariance_model") or "research covariance").replace("_", " ")
+        contribution_mode = str((solve_event or {}).get("risk_contribution_mode") or "risk").upper()
+        assumptions.append(
+            f"Risk-budget sleeves solve current implementation weights from the trailing local {covariance_model} window using {contribution_mode} risk contributions."
+        )
     if str(settings_payload.get("capital_mode") or "unit_notional") == "target_volatility":
-        assumptions.append("After recursive sleeve targets are resolved, Research applies a PMW-style capital overlay: estimate risky-sleeve volatility, scale gross exposure toward target volatility, and send the residual into cash.")
+        assumptions.append("After recursive sleeve targets are resolved, Research estimates risky-sleeve volatility, scales gross exposure toward target volatility, and sends the residual into cash.")
     elif str(settings_payload.get("capital_mode") or "unit_notional") == "fixed_gross":
         assumptions.append("After recursive sleeve targets are resolved, Research applies a fixed gross-exposure overlay and leaves the residual in cash.")
-    if any(str(item.get("solver_kind") or "").startswith("fallback") for item in rebalance_events):
+    if str((solve_event or {}).get("solver_kind") or "").startswith("fallback"):
         assumptions.append("If local covariance is weak or history is too short, the solver falls back to target shares instead of forcing an unstable optimization.")
     if any(not item.get("source_target_set_id") for item in target_rows):
         assumptions.append("Missing scoped target sets resolve to equal local defaults inside the affected sleeve until an explicit SAA/TAA set is configured.")
     return assumptions[:4]
 
 
-def _build_taxonomy_backtest_detail(
+def _build_current_target_detail(
     context: dict[str, object],
     *,
     planning_taxonomy_name: str | None,
     settings_payload: dict[str, object],
-    backtest: dict[str, object],
-    ) -> dict[str, object]:
-    metrics = backtest.get("metrics") or {}
-    findings, questions = _build_backtest_findings(backtest)
-    scope = backtest.get("scope") or {}
-    rebalance_events = list(backtest.get("rebalance_events") or [])
-    latest_target_rows = list(backtest.get("latest_target_rows") or [])
-    weight_schedule = _build_weight_schedule(
-        list(backtest.get("weight_schedule_rows") or []),
-        curve_points=list(backtest.get("curve_points") or []),
-    )
-    construction_rows = _build_construction_rows(backtest)
-    signals = _build_backtest_signals(
+    solution: dict[str, object],
+) -> dict[str, object]:
+    findings, questions = _build_current_target_findings(solution)
+    scope = solution.get("scope") or {}
+    solve_event = solution.get("solve_event") if isinstance(solution.get("solve_event"), dict) else None
+    resolved_target_rows = list(solution.get("resolved_target_rows") or [])
+    target_rows = _build_target_rows(solution)
+    signals = _build_current_target_signals(
         settings_payload=settings_payload,
-        metrics=metrics,
         scope=scope,
-        rebalance_events=rebalance_events,
+        solve_event=solve_event,
     )
     headline = (
-        f"{scope.get('label') or 'Selected Scope'} backtest through {context.get('as_of_date')} "
+        f"{scope.get('label') or 'Selected Scope'} target weights solved as of {context.get('as_of_date')} "
         f"under {planning_taxonomy_name or 'the selected planning taxonomy'}."
     )
     return {
         "headline": headline,
         "coverage_note": (
-            "This run uses the current planning taxonomy as a recursive sleeve tree. "
-            "Each sleeve resolves its own default target dimension locally, then rolls its realized return path upward."
+            "This run resolves current target weights from current holdings, the selected planning taxonomy, "
+            "active TAA, the covariance lookback, and the configured capital overlay."
         ),
         "signals": signals,
         "findings": findings,
@@ -1012,19 +886,17 @@ def _build_taxonomy_backtest_detail(
         "top_holdings": deepcopy(context.get("top_holdings") or []),
         "planning_groups": deepcopy(context.get("planning_groups") or []),
         "selected_scope": deepcopy(scope),
-        "backtest_metrics": _metric_records_from_backtest(backtest),
-        "backtest_curve": deepcopy(backtest.get("curve_points") or []),
-        "weight_schedule": weight_schedule,
-        "member_summaries": deepcopy(backtest.get("member_summaries") or []),
-        "construction_assumptions": _build_construction_assumptions(
+        "target_assumptions": _build_target_assumptions(
             settings_payload=settings_payload,
-            target_rows=latest_target_rows,
-            rebalance_events=rebalance_events,
+            target_rows=resolved_target_rows,
+            solve_event=solve_event,
         ),
-        "construction_rows": construction_rows,
-        "rebalance_events": deepcopy(rebalance_events),
-        "rebalance_suggestions": deepcopy(backtest.get("rebalance_suggestions") or []),
-        "warnings": deepcopy(backtest.get("warnings") or []),
+        "target_rows": target_rows,
+        "member_targets": deepcopy(solution.get("member_targets") or []),
+        "leaf_targets": deepcopy(solution.get("leaf_targets") or []),
+        "solve_event": deepcopy(solve_event),
+        "target_weight_gaps": deepcopy(solution.get("target_weight_gaps") or []),
+        "warnings": deepcopy(solution.get("warnings") or []),
     }
 
 
@@ -1062,10 +934,11 @@ def _write_artifacts(
     holdings_path = run_root / "top_holdings.csv"
     groups_path = run_root / "planning_groups.csv"
     reference_tape_path = run_root / "reference_tape.csv"
-    backtest_curve_path = run_root / "backtest_curve.csv"
-    member_weights_path = run_root / "member_weights.csv"
-    rebalance_events_path = run_root / "rebalance_events.csv"
-    rebalance_suggestions_path = run_root / "rebalance_suggestions.csv"
+    target_weights_path = run_root / "target_weights.csv"
+    member_targets_path = run_root / "member_targets.csv"
+    leaf_targets_path = run_root / "leaf_targets.csv"
+    solve_event_path = run_root / "solve_event.csv"
+    target_weight_gaps_path = run_root / "target_weight_gaps.csv"
 
     report_path.write_text(
         "\n".join(
@@ -1107,10 +980,12 @@ def _write_artifacts(
     _write_csv(holdings_path, list(detail.get("top_holdings") or []))
     _write_csv(groups_path, list(detail.get("planning_groups") or []))
     _write_csv(reference_tape_path, list(context.get("chart_points") or []))
-    _write_csv(backtest_curve_path, list(detail.get("backtest_curve") or []))
-    _write_csv(member_weights_path, list(detail.get("member_summaries") or []))
-    _write_csv(rebalance_events_path, list(detail.get("rebalance_events") or []))
-    _write_csv(rebalance_suggestions_path, list(detail.get("rebalance_suggestions") or []))
+    _write_csv(target_weights_path, list(detail.get("target_rows") or []))
+    _write_csv(member_targets_path, list(detail.get("member_targets") or []))
+    _write_csv(leaf_targets_path, list(detail.get("leaf_targets") or []))
+    solve_event = detail.get("solve_event") if isinstance(detail.get("solve_event"), dict) else None
+    _write_csv(solve_event_path, [solve_event] if solve_event else [])
+    _write_csv(target_weight_gaps_path, list(detail.get("target_weight_gaps") or []))
 
     artifacts = []
     for artifact_id, label, path in [
@@ -1120,10 +995,11 @@ def _write_artifacts(
         ("holdings", "Top Holdings CSV", holdings_path),
         ("groups", "Planning Groups CSV", groups_path),
         ("reference_tape", "Reference Tape CSV", reference_tape_path),
-        ("backtest_curve", "Backtest Curve CSV", backtest_curve_path),
-        ("member_weights", "Member Weights CSV", member_weights_path),
-        ("rebalance_events", "Rebalance Events CSV", rebalance_events_path),
-        ("rebalance_suggestions", "Rebalance Suggestions CSV", rebalance_suggestions_path),
+        ("target_weights", "Target Weights CSV", target_weights_path),
+        ("member_targets", "Member Targets CSV", member_targets_path),
+        ("leaf_targets", "Leaf Targets CSV", leaf_targets_path),
+        ("solve_event", "Solve Event CSV", solve_event_path),
+        ("target_weight_gaps", "Target Weight Gaps CSV", target_weight_gaps_path),
     ]:
         artifacts.append(
             {
@@ -1205,18 +1081,13 @@ def update_research_settings(
     planning_taxonomy_id: str | None,
     comparator_taxonomy_node_id: str | None,
     as_of_date: date | None,
-    start_date: date | None,
     lookback_days: int,
-    benchmark_mode: str,
-    run_template: str,
-    target_set_mode: str,
     target_dimension: str,
     capital_mode: str,
     gross_exposure: float | None,
     target_volatility: float | None,
     max_gross_exposure: float | None,
     frozen_taxonomy_node_ids: list[str] | None,
-    rebalance_frequency: str,
     notes: str | None,
 ) -> dict[str, object] | None:
     portfolio = get_portfolio(portfolio_id)
@@ -1259,11 +1130,7 @@ def update_research_settings(
         row.planning_taxonomy_id = resolved_planning_taxonomy_id
         row.as_of_date = as_of_date or _default_as_of_date(portfolio)
         row.comparator_taxonomy_node_id = resolved_scope_node_id
-        row.start_date = start_date or (row.as_of_date - timedelta(days=180) if row.as_of_date else None)
         row.lookback_days = int(lookback_days or 90)
-        row.benchmark_mode = (benchmark_mode or "none").strip() or "none"
-        row.run_template = "taxonomy_backtest"
-        row.target_set_mode = (target_set_mode or "taa_over_saa").strip() or "taa_over_saa"
         row.target_dimension = (target_dimension or "scope_default").strip() or "scope_default"
         row.capital_mode = (capital_mode or "unit_notional").strip() or "unit_notional"
         row.gross_exposure = gross_exposure
@@ -1271,11 +1138,8 @@ def update_research_settings(
         row.max_gross_exposure = max_gross_exposure
         if resolved_frozen_ids is not None:
             row.frozen_taxonomy_node_ids_json = resolved_frozen_ids
-        row.rebalance_frequency = (rebalance_frequency or "monthly").strip() or "monthly"
         row.notes = notes
         row.updated_at = _utc_now_iso()
-        if row.start_date and row.as_of_date and row.as_of_date < row.start_date:
-            raise ValueError("start_date must not be later than as_of_date.")
         session.commit()
         taxonomy_name_map = _taxonomy_name_map(portfolio_id)
         scope_name_map = _scope_name_map(
@@ -1316,7 +1180,7 @@ def run_portfolio_research(
         run_row = ResearchRunRecordModel(
             research_run_id=run_id,
             portfolio_id=portfolio_id,
-            job_type=settings_row.run_template or "taxonomy_backtest",
+            job_type=CURRENT_TARGET_RUN_TEMPLATE,
             status="running",
             requested_at=requested_at,
             started_at=requested_at,
@@ -1324,8 +1188,6 @@ def run_portfolio_research(
             as_of_date=effective_as_of_date,
             planning_taxonomy_id=settings_row.planning_taxonomy_id,
             lookback_days=int(settings_row.lookback_days or 90),
-            benchmark_mode=settings_row.benchmark_mode or "none",
-            run_template=settings_row.run_template or "taxonomy_backtest",
             requested_by=requested_by,
             headline=None,
             detail_json=None,
@@ -1335,18 +1197,13 @@ def run_portfolio_research(
                 "planning_taxonomy_id": settings_row.planning_taxonomy_id,
                 "comparator_taxonomy_node_id": resolved_scope_node_id,
                 "as_of_date": _iso_date(effective_as_of_date),
-                "start_date": _iso_date(settings_row.start_date),
                 "lookback_days": int(settings_row.lookback_days or 90),
-                "benchmark_mode": settings_row.benchmark_mode or "none",
-                "run_template": settings_row.run_template or "taxonomy_backtest",
-                "target_set_mode": settings_row.target_set_mode or "taa_over_saa",
                 "target_dimension": settings_row.target_dimension or "scope_default",
                 "capital_mode": settings_row.capital_mode or "unit_notional",
                 "gross_exposure": _safe_float(settings_row.gross_exposure),
                 "target_volatility": _safe_float(settings_row.target_volatility),
                 "max_gross_exposure": _safe_float(settings_row.max_gross_exposure),
                 "frozen_taxonomy_node_ids": deepcopy(settings_row.frozen_taxonomy_node_ids_json or []),
-                "rebalance_frequency": settings_row.rebalance_frequency or "monthly",
                 "notes": settings_row.notes,
             },
             error_message=None,
@@ -1362,28 +1219,24 @@ def run_portfolio_research(
                 lookback_days=int(settings_row.lookback_days or 90),
             )
             planning_taxonomy_name = taxonomy_name_map.get(str(settings_row.planning_taxonomy_id or "").strip() or "")
-            resolved_start_date = settings_row.start_date or (effective_as_of_date - timedelta(days=180))
-            backtest = run_taxonomy_backtest(
+            solution = solve_current_target_weights(
                 portfolio_id,
                 planning_taxonomy_id=str(settings_row.planning_taxonomy_id or "").strip(),
                 comparator_taxonomy_node_id=resolved_scope_node_id,
-                start_date=resolved_start_date,
-                end_date=effective_as_of_date,
+                as_of_date=effective_as_of_date,
                 lookback_days=int(settings_row.lookback_days or 90),
-                target_set_mode=settings_row.target_set_mode or "taa_over_saa",
                 target_dimension=settings_row.target_dimension or "scope_default",
                 capital_mode=settings_row.capital_mode or "unit_notional",
                 gross_exposure=_safe_float(settings_row.gross_exposure),
                 target_volatility=_safe_float(settings_row.target_volatility),
                 max_gross_exposure=_safe_float(settings_row.max_gross_exposure),
                 frozen_taxonomy_node_ids=deepcopy(settings_row.frozen_taxonomy_node_ids_json or []),
-                rebalance_frequency=settings_row.rebalance_frequency or "monthly",
             )
-            detail = _build_taxonomy_backtest_detail(
+            detail = _build_current_target_detail(
                 context,
                 planning_taxonomy_name=planning_taxonomy_name,
                 settings_payload=deepcopy(run_row.request_payload_json or {}),
-                backtest=backtest,
+                solution=solution,
             )
             artifacts = _write_artifacts(
                 portfolio_id,

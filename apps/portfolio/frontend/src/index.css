@@ -1,6 +1,6 @@
 :root {
   color-scheme: light;
-  font-family: "Aptos", "Inter", "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  font-family: var(--yungu-font-sans, "Aptos", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif);
   line-height: 1.5;
   font-weight: 400;
   color: #111111;
@@ -369,32 +369,6 @@ select {
   margin-right: auto;
 }
 
-.portfolio-entry-list-toolbar {
-  display: flex;
-  justify-content: flex-start;
-}
-
-.portfolio-entry-sort-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--portfolio-line-strong);
-  border-radius: 2px;
-  background: #ffffff;
-  color: var(--portfolio-ink);
-  font-size: 13px;
-}
-
-.portfolio-entry-sort-caret {
-  width: 9px;
-  height: 9px;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: rotate(45deg) translateY(-1px);
-}
-
 .portfolio-entry-card {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -452,22 +426,6 @@ select {
   background: #ffffff;
   font-size: 11px;
   color: #6b7280;
-}
-
-.portfolio-entry-card-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 3px;
-  background: var(--portfolio-band);
-  color: var(--portfolio-muted);
-}
-
-.portfolio-entry-card-icon svg {
-  width: 28px;
-  height: 28px;
 }
 
 .portfolio-entry-card-main {
@@ -605,7 +563,7 @@ select {
 }
 
 .holding-name-cell {
-  font-weight: 700;
+  font-weight: 500;
   min-width: 220px;
 }
 
@@ -671,7 +629,6 @@ select {
 
 .negative-cell {
   color: var(--portfolio-negative);
-  font-weight: 700;
 }
 
 .mini-sparkline {
@@ -1346,6 +1303,247 @@ select {
 
 .performance-subsection-toolbar {
   margin-top: 16px;
+}
+
+.risk-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.rolling-vol-chart {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--portfolio-line);
+  padding-top: 12px;
+}
+
+.rolling-vol-chart-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--portfolio-muted);
+}
+
+.rolling-vol-chart-summary strong {
+  font-size: 18px;
+  color: var(--portfolio-ink);
+}
+
+.rolling-vol-chart-svg {
+  width: 100%;
+  height: 260px;
+  display: block;
+}
+
+.rolling-vol-guide {
+  stroke: #e5e7eb;
+  stroke-width: 1;
+}
+
+.rolling-vol-area {
+  fill: url("#rolling-vol-area");
+}
+
+.rolling-vol-line {
+  fill: none;
+  stroke: #0f4c81;
+  stroke-width: 2.2;
+  vector-effect: non-scaling-stroke;
+}
+
+.rolling-vol-endpoint {
+  fill: #ffffff;
+  stroke: #0f4c81;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.rolling-vol-axis-label {
+  fill: #6b7280;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.risk-matrix-scroll {
+  width: 100%;
+  overflow-x: auto;
+  border-top: 1px solid var(--portfolio-line);
+  padding-top: 12px;
+}
+
+.risk-heatmap-table {
+  width: 100%;
+  min-width: 840px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.risk-covariance-table {
+  min-width: 980px;
+}
+
+.risk-contribution-table {
+  min-width: 1040px;
+}
+
+.risk-heatmap-table th,
+.risk-heatmap-table td {
+  border: 1px solid var(--portfolio-line);
+  padding: 8px 9px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.risk-heatmap-table thead th,
+.risk-heatmap-table tbody th {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--portfolio-band);
+  color: var(--portfolio-ink);
+  text-align: left;
+}
+
+.risk-heatmap-table thead th {
+  position: static;
+  text-align: right;
+}
+
+.risk-heatmap-table thead th:first-child {
+  text-align: left;
+}
+
+.risk-heatmap-cell {
+  font-weight: 700;
+  color: #111827;
+}
+
+.risk-heatmap-cell-summary {
+  color: #0f4c81;
+}
+
+.risk-covariance-grid,
+.risk-target-grid {
+  display: grid;
+  gap: 18px;
+}
+
+.risk-target-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.risk-matrix-panel,
+.risk-target-panel {
+  min-width: 0;
+}
+
+.risk-matrix-panel-title {
+  margin: 12px 0 0;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--portfolio-ink);
+}
+
+.risk-target-gap-chart {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--portfolio-line);
+  padding-top: 12px;
+}
+
+.risk-target-gap-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--portfolio-muted);
+}
+
+.risk-target-gap-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.risk-target-gap-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+}
+
+.risk-target-gap-swatch-current,
+.risk-target-gap-fill-current {
+  background: #0f4c81;
+}
+
+.risk-target-gap-swatch-target,
+.risk-target-gap-fill-target {
+  background: #d4b269;
+}
+
+.risk-target-gap-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) minmax(104px, auto);
+  gap: 12px;
+  align-items: center;
+}
+
+.risk-target-gap-label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.risk-target-gap-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--portfolio-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.risk-target-gap-meta {
+  font-size: 12px;
+  color: var(--portfolio-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.risk-target-gap-bars {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.risk-target-gap-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  overflow: hidden;
+}
+
+.risk-target-gap-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.risk-target-gap-values {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 7px;
+  justify-content: end;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .performance-line-label {
@@ -2290,14 +2488,22 @@ select {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .risk-filter-grid,
+  .risk-target-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .risk-ranked-row,
-  .risk-account-row {
+  .risk-account-row,
+  .risk-target-gap-row {
     grid-template-columns: minmax(0, 1fr);
   }
 
   .risk-ranked-value,
-  .risk-account-value {
+  .risk-account-value,
+  .risk-target-gap-values {
     justify-items: start;
+    justify-content: start;
     text-align: left;
   }
 
@@ -4108,7 +4314,6 @@ button:disabled {
 .toolbar-link,
 .workspace-selector-chip,
 .workspace-selector-menu-trigger,
-.portfolio-entry-sort-button,
 .performance-filter-actions button,
 .overview-columns-button,
 .overview-columns-modal-header button,
@@ -4153,7 +4358,6 @@ button:disabled {
 .toolbar-link:hover,
 .workspace-selector-chip-inactive:hover,
 .workspace-selector-menu-trigger:hover,
-.portfolio-entry-sort-button:hover,
 .performance-filter-actions button:hover,
 .overview-columns-button:hover,
 .overview-columns-modal-header button:hover,
@@ -4227,10 +4431,6 @@ button:disabled {
   border-bottom: 1px solid var(--portfolio-line-strong);
 }
 
-.portfolio-entry-list-toolbar {
-  padding: 0 0 10px;
-}
-
 .portfolio-entry-card {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 18px;
@@ -4250,19 +4450,6 @@ button:disabled {
   border-color: var(--portfolio-line);
   background: #fffefb;
   box-shadow: none;
-}
-
-.portfolio-entry-card-icon {
-  width: 34px;
-  height: 34px;
-  border-radius: 0;
-  background: transparent;
-  color: var(--portfolio-accent);
-}
-
-.portfolio-entry-card-icon svg {
-  width: 23px;
-  height: 23px;
 }
 
 .portfolio-entry-card-title-stack strong {
@@ -4628,7 +4815,64 @@ input[type='checkbox'] {
 
 .positive-cell,
 .negative-cell {
-  font-weight: 700;
+  font-weight: inherit;
+}
+
+.holdings-main-table tbody td,
+.position-lots-table tbody td,
+.position-lot-realizations-table tbody td,
+.transactions-table tbody td,
+.accounts-table tbody td,
+.performance-summary-table tbody td,
+.holdings-summary-matrix tbody td,
+.holdings-summary-table tbody td,
+.overview-key-metrics-table tbody td,
+.risk-heatmap-table tbody td,
+.taxonomy-levels-table tbody td,
+.taxonomy-tree-table tbody td {
+  font-weight: 400;
+}
+
+.holdings-main-table tbody td strong,
+.position-lots-table tbody td strong,
+.position-lot-realizations-table tbody td strong,
+.transactions-table tbody td strong,
+.accounts-table tbody td strong,
+.performance-summary-table tbody td strong,
+.holdings-summary-matrix tbody td strong,
+.holdings-summary-table tbody td strong,
+.overview-key-metrics-table tbody td strong,
+.risk-heatmap-table tbody td strong,
+.taxonomy-levels-table tbody td strong,
+.taxonomy-tree-table tbody td strong,
+.positive-cell strong,
+.negative-cell strong,
+.neutral-cell strong {
+  font-weight: inherit;
+}
+
+.holding-name-cell,
+.taxonomy-levels-table .holding-name-cell,
+.taxonomy-tree-table .holding-name-cell,
+.table-inline-link,
+.table-inline-button {
+  font-weight: 500;
+}
+
+.overview-key-metrics-table tbody th,
+.performance-summary-table tbody th,
+.holdings-summary-table tbody th,
+.risk-heatmap-table tbody th {
+  font-weight: 500;
+}
+
+.total-row td,
+.risk-heatmap-cell {
+  font-weight: 500;
+}
+
+.overview-key-metrics-table tbody td small {
+  font-weight: 400;
 }
 
 @media (max-width: 960px) {
@@ -4650,4 +4894,143 @@ input[type='checkbox'] {
     grid-row: 1 / span 2;
     align-self: center;
   }
+}
+
+/* Minimal typography pass: reserve emphasis for hierarchy, not every value. */
+.app-shell :is(h1, h2, h3, h4, h5, h6, strong, b, th, button, select, input, textarea) {
+  letter-spacing: 0;
+}
+
+.app-shell :is(
+  .page-title,
+  .panel-title,
+  .workspace-app-title,
+  .portfolio-entry-title,
+  .portfolio-name,
+  .section-heading,
+  .risk-matrix-panel-title,
+  .risk-target-gap-title
+) {
+  font-weight: 500;
+}
+
+.app-shell :is(
+  th,
+  .summary-card-label,
+  .portfolio-nav-chart-stats span,
+  .transaction-ticket-summary-row span,
+  .metric-label,
+  .overview-key-metrics-header span,
+  .overview-key-metrics-table thead th,
+  .overview-key-metrics-table tbody th,
+  .overview-sleeve-donut-center span,
+  .performance-filter-group span,
+  .review-filter-grid span,
+  .account-toolbar-label span,
+  .transaction-filter-group span,
+  .transaction-form span,
+  .transaction-picker-search span,
+  .transaction-notes-field span,
+  .transaction-form-fieldset legend,
+  .taxonomy-inline-toggle,
+  .taxonomy-subsection-row th,
+  .taxonomy-subsection-row td,
+  .taxonomy-collapsed-summary,
+  .placeholder-row-header,
+  .portfolio-nav-chart-currency,
+  .research-artifact-meta
+) {
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.app-shell :is(
+  .toolbar button,
+  .toolbar span,
+  .toolbar-link,
+  .workspace-selector-chip,
+  .workspace-selector-menu-trigger,
+  .performance-filter-actions button,
+  .overview-columns-button,
+  .overview-columns-modal-header button,
+  .overview-columns-modal-actions button,
+  .overview-columns-arrange-head button,
+  .overview-columns-arrange-item button,
+  .transaction-form-footer button,
+  .transaction-entry-modal-header button,
+  .transaction-picker-results button,
+  .transaction-picker-selected button,
+  .table-action,
+  .editor-actions button,
+  .workspace-create-link,
+  .table-inline-button,
+  .table-inline-link
+) {
+  font-weight: 500;
+}
+
+.app-shell :is(
+  .portfolio-tab,
+  .holdings-detail-tab,
+  .holdings-detail-tab-label,
+  .performance-inline-tab,
+  .price-chart-range-button,
+  .portfolio-nav-range-button,
+  .ticker-pill,
+  .transaction-type-pill,
+  .coverage-pill,
+  .context-chip,
+  .rating-pill,
+  .status-badge,
+  .taxonomy-filter-pill,
+  .taxonomy-crumb
+) {
+  font-weight: 500;
+}
+
+.app-shell :is(
+  .summary-card-value,
+  .metric-value,
+  .overview-key-metrics-header strong,
+  .portfolio-entry-card-title-stack strong,
+  .portfolio-entry-nav,
+  .portfolio-nav-value,
+  .portfolio-entry-change-positive,
+  .portfolio-entry-change-negative,
+  .portfolio-change-positive,
+  .portfolio-change-negative,
+  .portfolio-change-value,
+  .risk-target-gap-values,
+  .risk-ranked-title,
+  .risk-ranked-value,
+  .risk-account-title,
+  .risk-account-value,
+  .risk-ribbon-label,
+  .risk-ribbon-value,
+  .overview-sleeve-donut-row em,
+  .taxonomy-target-status,
+  .taxonomy-target-validation-label,
+  .transaction-ticket-hint-warning
+) {
+  font-weight: 500;
+}
+
+.app-shell :is(td, td strong, td b) {
+  font-weight: 400;
+}
+
+.app-shell :is(
+  .holding-name-cell,
+  .taxonomy-levels-table .holding-name-cell,
+  .taxonomy-tree-table .holding-name-cell,
+  .total-row td,
+  .risk-heatmap-cell
+) {
+  font-weight: 500;
+}
+
+.positive-cell strong,
+.negative-cell strong,
+.neutral-cell strong {
+  font-weight: inherit;
 }

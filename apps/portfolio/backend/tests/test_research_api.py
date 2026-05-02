@@ -5,7 +5,15 @@ from datetime import date
 import pytest
 
 from portfolio_app.services.asset_charts import _candidate_chart_bases
-from portfolio_app.services.research_backtest import _selected_price_points
+import pandas as pd
+
+from portfolio_app.services.research_solver import (
+    TARGET_MEMBER_INSTRUMENT,
+    ScopeMemberRecord,
+    _align_member_series,
+    _infer_periods_per_year,
+    _selected_price_points,
+)
 
 def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "weight") -> tuple[str, dict[str, str]]:
     taxonomy_response = client.post(
@@ -189,22 +197,22 @@ def _create_target_sets(client, taxonomy_id: str, node_ids: dict[str, str]) -> N
         assert target_set_response.status_code == 200
 
 
-def test_research_workbench_returns_backtest_defaults(client):
+def test_research_workbench_returns_target_solve_defaults(client):
     response = client.get("/api/portfolios/yungu/research/workbench")
     assert response.status_code == 200
 
     payload = response.json()
     assert payload["portfolio_id"] == "yungu"
     assert payload["settings"]["planning_taxonomy_id"] is None
-    assert payload["settings"]["run_template"] == "taxonomy_backtest"
-    assert payload["settings"]["target_set_mode"] == "taa_over_saa"
     assert payload["settings"]["target_dimension"] == "scope_default"
     assert payload["settings"]["capital_mode"] == "unit_notional"
     assert payload["settings"]["gross_exposure"] is None
     assert payload["settings"]["target_volatility"] is None
     assert payload["settings"]["max_gross_exposure"] is None
-    assert payload["settings"]["rebalance_frequency"] == "monthly"
-    assert payload["settings"]["start_date"] is not None
+    assert "run_template" not in payload["settings"]
+    assert "target_set_mode" not in payload["settings"]
+    assert "rebalance_frequency" not in payload["settings"]
+    assert "start_date" not in payload["settings"]
     assert payload["planning_taxonomy_options"] == []
     assert payload["planning_scope_options"] == []
     assert payload["runs"] == []
@@ -336,7 +344,53 @@ def test_research_series_prefers_adjusted_close_for_equities() -> None:
     ]
 
 
-def test_research_run_creates_recursive_backtest_outputs(client):
+def test_research_returns_do_not_create_zero_observations_from_stale_prices() -> None:
+    members = [
+        ScopeMemberRecord(
+            member_type=TARGET_MEMBER_INSTRUMENT,
+            member_id="asset-a",
+            label="Asset A",
+        ),
+        ScopeMemberRecord(
+            member_type=TARGET_MEMBER_INSTRUMENT,
+            member_id="asset-b",
+            label="Asset B",
+        ),
+    ]
+    nav_series_by_member = {
+        (TARGET_MEMBER_INSTRUMENT, "asset-a"): pd.Series(
+            {
+                date(2026, 1, 1): 100.0,
+                date(2026, 1, 5): 110.0,
+            },
+            dtype="float64",
+        ),
+        (TARGET_MEMBER_INSTRUMENT, "asset-b"): pd.Series(
+            {
+                date(2026, 1, 1): 100.0,
+                date(2026, 1, 2): 102.0,
+                date(2026, 1, 5): 101.0,
+            },
+            dtype="float64",
+        ),
+    }
+
+    aligned_members, calendar, _warnings = _align_member_series(
+        members,
+        nav_series_by_member,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 5),
+    )
+
+    returns_by_member = {item.member.member_id: item.returns for item in aligned_members}
+    assert calendar == [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 5)]
+    assert pd.isna(returns_by_member["asset-a"].loc[date(2026, 1, 2)])
+    assert returns_by_member["asset-a"].loc[date(2026, 1, 5)] == pytest.approx(0.1)
+    assert returns_by_member["asset-b"].loc[date(2026, 1, 2)] == pytest.approx(0.02)
+    assert _infer_periods_per_year([date(2026, 1, 2), date(2026, 1, 5)]) == pytest.approx(2 / 3 * 365.25)
+
+
+def test_research_run_creates_current_target_weight_outputs(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
     _create_target_sets(client, taxonomy_id, node_ids)
 
@@ -346,14 +400,9 @@ def test_research_run_creates_recursive_backtest_outputs(client):
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
             "as_of_date": "2026-04-15",
-            "start_date": "2026-03-20",
             "lookback_days": 7,
-            "benchmark_mode": "none",
-            "run_template": "taxonomy_backtest",
-            "target_set_mode": "taa_over_saa",
             "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
-            "rebalance_frequency": "weekly",
             "notes": "Research regression test",
         },
     )
@@ -380,28 +429,34 @@ def test_research_run_creates_recursive_backtest_outputs(client):
     run_payload = run_response.json()
     assert run_payload["status"] == "completed"
     assert run_payload["planning_taxonomy_id"] == taxonomy_id
-    assert run_payload["run_template"] == "taxonomy_backtest"
-    assert run_payload["artifact_count"] == 10
+    assert "run_template" not in run_payload
+    assert run_payload["artifact_count"] == 11
     assert run_payload["detail"]["selected_scope"]["taxonomy_node_id"] == node_ids["Risk Assets"]
     assert run_payload["detail"]["selected_scope"]["label"] == "Risk Assets"
-    assert len(run_payload["detail"]["backtest_metrics"]) >= 8
-    assert len(run_payload["detail"]["backtest_curve"]) >= 2
-    assert len(run_payload["detail"]["weight_schedule"]) >= 2
-    assert run_payload["detail"]["weight_schedule"][0]["nav"] is not None
-    assert len(run_payload["detail"]["member_summaries"]) == 2
-    assert len(run_payload["detail"]["construction_assumptions"]) >= 1
-    assert len(run_payload["detail"]["construction_rows"]) == 2
-    assert any(item["label"] == "Defensive Equity" for item in run_payload["detail"]["member_summaries"])
-    assert any(item["label"] == "Hong Kong Beta" for item in run_payload["detail"]["member_summaries"])
-    assert any(item["source_label"] in {"TAA", "SAA", "Fallback Weight", "Fallback Risk Budget"} for item in run_payload["detail"]["construction_rows"])
-    assert len(run_payload["detail"]["rebalance_events"]) >= 1
-    assert len(run_payload["detail"]["rebalance_suggestions"]) >= 1
+    assert "backtest_metrics" not in run_payload["detail"]
+    assert "backtest_curve" not in run_payload["detail"]
+    assert "weight_schedule" not in run_payload["detail"]
+    assert len(run_payload["detail"]["member_targets"]) == 2
+    assert len(run_payload["detail"]["leaf_targets"]) == 2
+    assert len(run_payload["detail"]["target_assumptions"]) >= 1
+    assert len(run_payload["detail"]["target_rows"]) == 2
+    assert any(item["label"] == "Defensive Equity" for item in run_payload["detail"]["member_targets"])
+    assert any(item["label"] == "Hong Kong Beta" for item in run_payload["detail"]["member_targets"])
+    assert any(item["source_label"] in {"TAA", "SAA", "Fallback Weight", "Fallback Risk Budget"} for item in run_payload["detail"]["target_rows"])
+    assert run_payload["detail"]["solve_event"]["as_of_date"] == "2026-04-15"
+    assert len(run_payload["detail"]["target_weight_gaps"]) >= 1
     signal_labels = {item["label"] for item in run_payload["detail"]["signals"]}
     assert "Scope Default" in signal_labels
     assert "Solver" in signal_labels
+    assert "Estimated Volatility" in signal_labels
     reference_tape_artifact = next(item for item in run_payload["artifacts"] if item["artifact_id"] == "reference_tape")
     assert reference_tape_artifact["label"] == "Reference Tape CSV"
     assert reference_tape_artifact["path"].endswith("/reference_tape.csv")
+    assert any(item["artifact_id"] == "target_weights" for item in run_payload["artifacts"])
+    assert any(item["artifact_id"] == "leaf_targets" for item in run_payload["artifacts"])
+    assert all(item["artifact_id"] != "backtest_curve" for item in run_payload["artifacts"])
+    assert any(item["artifact_id"] == "solve_event" for item in run_payload["artifacts"])
+    assert any(item["artifact_id"] == "target_weight_gaps" for item in run_payload["artifacts"])
     assert all(item["label"] != "Daily NAV CSV" for item in run_payload["artifacts"])
 
     report_artifact = next(item for item in run_payload["artifacts"] if item["artifact_id"] == "report")
@@ -413,7 +468,7 @@ def test_research_run_creates_recursive_backtest_outputs(client):
     artifact_payload = artifact_response.json()
     assert artifact_payload["preview_kind"] == "text"
     assert "# Research Run" in artifact_payload["content"]
-    assert "Backtest Summary" in artifact_payload["content"]
+    assert "Current Target Weights" in artifact_payload["content"]
 
     selected_workbench_response = client.get(
         "/api/portfolios/yungu/research/workbench",
@@ -424,7 +479,7 @@ def test_research_run_creates_recursive_backtest_outputs(client):
     assert selected_workbench_payload["selected_run"]["research_run_id"] == run_payload["research_run_id"]
 
 
-def test_research_backtest_actuals_include_pending_security_settlement(client):
+def test_research_target_solve_actuals_include_pending_security_settlement(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
     _create_target_sets(client, taxonomy_id, node_ids)
 
@@ -434,14 +489,9 @@ def test_research_backtest_actuals_include_pending_security_settlement(client):
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
-            "start_date": "2026-03-20",
             "lookback_days": 7,
-            "benchmark_mode": "none",
-            "run_template": "taxonomy_backtest",
-            "target_set_mode": "taa_over_saa",
             "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
-            "rebalance_frequency": "weekly",
             "notes": "Delayed settlement actuals regression",
         },
     )
@@ -482,7 +532,7 @@ def test_research_backtest_actuals_include_pending_security_settlement(client):
     run_payload = run_response.json()
     cash_row = next(
         item
-        for item in run_payload["detail"]["construction_rows"]
+        for item in run_payload["detail"]["target_rows"]
         if item["label"] == "Cash Reserve"
     )
     assert cash_row["current_value_base"] == pytest.approx(baseline_cash_value - 206.47)
@@ -497,14 +547,9 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
-            "start_date": "2026-03-20",
             "lookback_days": 7,
-            "benchmark_mode": "none",
-            "run_template": "taxonomy_backtest",
-            "target_set_mode": "taa_over_saa",
             "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
-            "rebalance_frequency": "weekly",
         },
     )
     assert settings_response.status_code == 200
@@ -526,14 +571,9 @@ def test_deleting_selected_research_taxonomy_clears_settings(client):
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
             "as_of_date": "2026-04-15",
-            "start_date": "2026-03-20",
             "lookback_days": 90,
-            "benchmark_mode": "none",
-            "run_template": "taxonomy_backtest",
-            "target_set_mode": "taa_over_saa",
             "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
-            "rebalance_frequency": "monthly",
         },
     )
     assert settings_response.status_code == 200
@@ -555,15 +595,10 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
         "planning_taxonomy_id": taxonomy_id,
         "comparator_taxonomy_node_id": None,
         "as_of_date": "2026-04-15",
-        "start_date": "2026-03-20",
         "lookback_days": 90,
-        "benchmark_mode": "none",
-        "run_template": "taxonomy_backtest",
-        "target_set_mode": "taa_over_saa",
         "target_dimension": "scope_default",
         "capital_mode": "unit_notional",
         "frozen_taxonomy_node_ids": [node_ids["Risk Assets"]],
-        "rebalance_frequency": "monthly",
     }
     initial_response = client.put("/api/portfolios/yungu/research/settings", json=payload)
     assert initial_response.status_code == 200
@@ -593,16 +628,11 @@ def test_research_target_volatility_scales_risk_assets_into_cash(client):
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
-            "start_date": "2026-03-20",
             "lookback_days": 7,
-            "benchmark_mode": "none",
-            "run_template": "taxonomy_backtest",
-            "target_set_mode": "taa_over_saa",
             "target_dimension": "weight",
             "capital_mode": "target_volatility",
             "target_volatility": 0.01,
             "max_gross_exposure": 1.0,
-            "rebalance_frequency": "weekly",
         },
     )
     assert settings_response.status_code == 200
@@ -623,14 +653,14 @@ def test_research_target_volatility_scales_risk_assets_into_cash(client):
 
     cash_row = next(
         item
-        for item in run_payload["detail"]["construction_rows"]
+        for item in run_payload["detail"]["target_rows"]
         if item["label"] == "Cash Reserve"
     )
     assert cash_row["implementation_weight"] is not None
     assert cash_row["implementation_weight"] > (cash_row["target_weight"] or 0.0)
 
 
-def test_research_run_rejects_incomplete_full_lookback_for_risk_budget(client):
+def test_research_run_allows_sparse_current_covariance_window(client):
     taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
     _create_target_sets(client, taxonomy_id, _node_ids)
 
@@ -640,14 +670,9 @@ def test_research_run_rejects_incomplete_full_lookback_for_risk_budget(client):
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
-            "start_date": "2026-03-20",
             "lookback_days": 180,
-            "benchmark_mode": "none",
-            "run_template": "taxonomy_backtest",
-            "target_set_mode": "taa_over_saa",
             "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
-            "rebalance_frequency": "monthly",
         },
     )
     assert settings_response.status_code == 200
@@ -656,5 +681,16 @@ def test_research_run_rejects_incomplete_full_lookback_for_risk_budget(client):
         "/api/portfolios/yungu/research/runs",
         json={"requested_by": "pytest"},
     )
-    assert run_response.status_code == 400
-    assert "full 180-day lookback" in run_response.json()["detail"]
+    assert run_response.status_code == 200, run_response.json()
+    run_payload = run_response.json()
+    assert run_payload["status"] == "completed"
+    assert "backtest_curve" not in run_payload["detail"]
+    solve_event = run_payload["detail"]["solve_event"]
+    assert solve_event["requested_target_dimension"] == "scope_default"
+    assert solve_event["taxonomy_default_target_dimension"] == "risk_budget"
+    assert solve_event["target_dimension"] == "risk_budget"
+    assert solve_event["solver_kind"] == "risk-budget"
+    assert solve_event["covariance_model"] == "ewma_vol_shrinkage_corr_covariance"
+    assert solve_event["risk_contribution_mode"] in {"signed", "abs"}
+    assert solve_event["covariance_observations"] >= 2
+    assert len(run_payload["detail"]["target_rows"]) >= 1

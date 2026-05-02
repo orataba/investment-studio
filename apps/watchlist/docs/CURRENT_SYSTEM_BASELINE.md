@@ -29,7 +29,7 @@
 ### 2.2 仍是轻量页的一级路由
 
 - `/research`
-- `/documents`
+- `/documents` 轻量入口保留；fund detail 已接入 instrument-level documents profile，后端支持手工文件上传与下载
 
 它们现在只是轻量入口，不是假装完整 workspace 的壳页。
 

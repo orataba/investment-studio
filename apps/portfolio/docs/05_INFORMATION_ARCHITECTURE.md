@@ -523,7 +523,7 @@
 
 **Primary question**
 
-- 当前 sleeve research/backtest 结果是什么，哪些需要 handoff？
+- 当前 sleeve target solve 结果是什么，哪些需要 handoff？
 
 **Primary objects**
 
@@ -535,11 +535,12 @@
 - current context
 - run list
 - status / rerun / update
-- backtest metrics / curve
-- member weight path / rebalance suggestions
-- artifact viewer
+- target weights
+- member targets / leaf targets
+- solve event diagnostics
+- target weight gaps
 - handoff to portfolio context
-- current context 与 backtest actual rows 必须共享同一 `as_of_date` 边界；dated positions 不得配 undated cash
+- current context 与 target solve actual rows 必须共享同一 `as_of_date` 边界；dated positions 不得配 undated cash
 
 **Not this page**
 

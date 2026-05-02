@@ -50,18 +50,13 @@ def update_portfolio_research_settings(
             planning_taxonomy_id=payload.planning_taxonomy_id,
             comparator_taxonomy_node_id=payload.comparator_taxonomy_node_id,
             as_of_date=payload.as_of_date,
-            start_date=payload.start_date,
             lookback_days=payload.lookback_days,
-            benchmark_mode=payload.benchmark_mode,
-            run_template=payload.run_template,
-            target_set_mode=payload.target_set_mode,
             target_dimension=payload.target_dimension,
             capital_mode=payload.capital_mode,
             gross_exposure=payload.gross_exposure,
             target_volatility=payload.target_volatility,
             max_gross_exposure=payload.max_gross_exposure,
             frozen_taxonomy_node_ids=payload.frozen_taxonomy_node_ids,
-            rebalance_frequency=payload.rebalance_frequency,
             notes=payload.notes,
         )
     except ValueError as error:

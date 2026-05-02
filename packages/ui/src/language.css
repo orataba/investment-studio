@@ -1,3 +1,51 @@
+:root {
+  --yungu-font-sans-en: "Aptos", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --yungu-font-sans-zh: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Aptos", "Inter", "Segoe UI", sans-serif;
+  --yungu-font-mono: "Aptos Mono", "Cascadia Mono", "Consolas", "SFMono-Regular", monospace;
+  --yungu-font-sans: var(--yungu-font-sans-en);
+}
+
+:root[data-language='en'],
+:root[lang='en'] {
+  --yungu-font-sans: var(--yungu-font-sans-en);
+}
+
+:root[data-language='zh-Hans'],
+:root[lang^='zh'] {
+  --yungu-font-sans: var(--yungu-font-sans-zh);
+}
+
+:root,
+body,
+button,
+input,
+select,
+textarea {
+  font-family: var(--yungu-font-sans);
+}
+
+code,
+kbd,
+pre {
+  font-family: var(--yungu-font-mono);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+strong,
+b,
+th {
+  font-weight: 500;
+}
+
+th {
+  letter-spacing: 0.01em;
+}
+
 .app-utility-bar {
   display: flex;
   justify-content: flex-end;
@@ -20,7 +68,7 @@
   background: rgba(255, 255, 255, 0.84);
   color: #1f2937;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 500;
   line-height: 1;
   white-space: nowrap;
 }

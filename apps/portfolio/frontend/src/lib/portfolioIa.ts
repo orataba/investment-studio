@@ -262,7 +262,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
       { title: 'Performance summary', owner: 'PerformanceSnapshot', role: 'Explain return and benchmark-relative outcome for the period' },
       { title: 'Risk summary', owner: 'PeriodRiskSummary', role: 'Summarize realized risk, breaches, and key exposures over the period' },
       { title: 'Target summaries', owner: 'ResolvedTargetTimeline', role: 'Summarize drift and target risk budget over the selected period' },
-      { title: 'Research handoff', owner: 'ResearchRun', role: 'Carry the latest relevant research findings and rebalance ideas into the period pack' },
+      { title: 'Research handoff', owner: 'ResearchRun', role: 'Carry the latest relevant research findings and target weight gaps into the period pack' },
       { title: 'Commentary, actions, export artifacts', owner: 'ReviewPack + ActionItem + ExportArtifact', role: 'Capture narrative, next steps, and archived output' },
     ],
     comparator: ['Fixed order: absolute result -> primary benchmark -> resolved target timeline -> alert breaches'],
@@ -282,7 +282,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
     family: 'Period',
     toolbarLabel: 'Page: Research Runs',
     summary:
-      'Research is the portfolio workbench for run setup, current context, run history, and artifacts. It should stay compatible with heavier solver and backtest templates without losing portfolio context.',
+      'Research is the portfolio workbench for current target-weight solve setup, current context, run history, and artifacts.',
     primaryQuestion: '当前组合要按什么 planning 语境做研究，已经跑过哪些结果，下一步该 handoff 什么？',
     primaryObjects: ['ResearchSettings', 'ResearchRun', 'ResearchArtifact'],
     sharedContext: ['portfolio_id: current workspace portfolio', 'current default planning taxonomy', 'current portfolio facts'],

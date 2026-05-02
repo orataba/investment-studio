@@ -94,7 +94,7 @@ Copilot 不是独立产品，也不是当前已发布工作面里的聊天框。
 - canonical facts
 - NAV rows
 - ratings
-- research conclusions
+- research notes
 - manual profiles
 - product framework labels
 

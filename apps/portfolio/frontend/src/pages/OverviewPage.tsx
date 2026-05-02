@@ -153,6 +153,38 @@ function addDays(date: Date, days: number) {
   return nextDate
 }
 
+function dayDiff(left: string, right: string) {
+  const leftTime = Date.parse(`${left}T00:00:00`)
+  const rightTime = Date.parse(`${right}T00:00:00`)
+  if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) {
+    return null
+  }
+  return Math.max(0, (rightTime - leftTime) / 86_400_000)
+}
+
+function annualizationPeriodsPerYear(dateKeys: string[], observationCount = dateKeys.length, startDate?: string | null) {
+  const sortedDates = [...dateKeys].sort()
+  if (observationCount < 1 || sortedDates.length < 2) {
+    return null
+  }
+  if (startDate) {
+    const elapsedDays = dayDiff(startDate, sortedDates[sortedDates.length - 1])
+    return elapsedDays != null && elapsedDays > 0 ? (observationCount / elapsedDays) * 365.25 : null
+  }
+  const elapsedDays = dayDiff(sortedDates[0], sortedDates[sortedDates.length - 1])
+  if (elapsedDays == null) {
+    return null
+  }
+  const gaps = sortedDates
+    .slice(1)
+    .map((dateKey, index) => dayDiff(sortedDates[index], dateKey))
+    .filter((value): value is number => value != null && value > 0)
+    .sort((left, right) => left - right)
+  const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 1
+  const observationSpanDays = elapsedDays + medianGap
+  return observationSpanDays > 0 ? (observationCount / observationSpanDays) * 365.25 : null
+}
+
 function formatDateKey(date: Date) {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -173,6 +205,7 @@ function findAnchorPerformancePoint(points: PortfolioDailyPerformancePoint[], ta
 function periodReturnFromTtwror(
   points: PortfolioDailyPerformancePoint[],
   targetDate: string | null,
+  fallbackToFirst = true,
 ) {
   const sortedPoints = points
     .filter((point) => point.cumulative_ttwror != null || point.ending_nav != null)
@@ -183,7 +216,9 @@ function periodReturnFromTtwror(
   }
 
   const latestPoint = sortedPoints[sortedPoints.length - 1]
-  const anchorPoint = targetDate ? findAnchorPerformancePoint(sortedPoints, targetDate) : sortedPoints[0]
+  const anchorPoint = targetDate
+    ? findAnchorPerformancePoint(sortedPoints, targetDate) ?? (fallbackToFirst ? sortedPoints[0] : null)
+    : sortedPoints[0]
   if (!anchorPoint) {
     return null
   }
@@ -214,17 +249,20 @@ function buildPortfolioReturnMetrics(points: PortfolioDailyPerformancePoint[]) {
 
   const monthStart = new Date(latestDate.getFullYear(), latestDate.getMonth(), 1)
   const yearStart = new Date(latestDate.getFullYear(), 0, 1)
+  const priorMonthEnd = addDays(monthStart, -1)
+  const priorYearEnd = addDays(yearStart, -1)
 
   return {
     oneWeek: periodReturnFromTtwror(sortedPoints, formatDateKey(addDays(latestDate, -7))),
-    mtd: periodReturnFromTtwror(sortedPoints, formatDateKey(monthStart)),
-    ytd: periodReturnFromTtwror(sortedPoints, formatDateKey(yearStart)),
+    mtd: periodReturnFromTtwror(sortedPoints, formatDateKey(priorMonthEnd), false),
+    ytd: periodReturnFromTtwror(sortedPoints, formatDateKey(priorYearEnd), false),
   }
 }
 
 function periodReturnFromValuePoints(
   points: PortfolioAssetPriceChartPoint[],
   targetDate: string | null,
+  fallbackToFirst = true,
 ) {
   const sortedPoints = points
     .filter((point) => Number.isFinite(point.value))
@@ -239,9 +277,9 @@ function periodReturnFromValuePoints(
     ? sortedPoints.reduce<PortfolioAssetPriceChartPoint | null>(
         (current, point) => (point.date <= targetDate ? point : current),
         null,
-      ) ?? sortedPoints[0]
+      ) ?? (fallbackToFirst ? sortedPoints[0] : null)
     : sortedPoints[0]
-  return anchorPoint.value !== 0 ? latestPoint.value / anchorPoint.value - 1 : null
+  return anchorPoint && anchorPoint.value !== 0 ? latestPoint.value / anchorPoint.value - 1 : null
 }
 
 function sampleStandardDeviation(values: number[]) {
@@ -285,14 +323,21 @@ function buildBenchmarkMetrics(points: PortfolioAssetPriceChartPoint[]) {
 
   const monthStart = new Date(latestDate.getFullYear(), latestDate.getMonth(), 1)
   const yearStart = new Date(latestDate.getFullYear(), 0, 1)
+  const priorMonthEnd = addDays(monthStart, -1)
+  const priorYearEnd = addDays(yearStart, -1)
   const dailyReturns = sortedPoints
     .slice(1)
     .map((point, index) => {
       const previous = sortedPoints[index]
-      return previous.value !== 0 ? point.value / previous.value - 1 : null
+      return previous.value !== 0 ? { date: point.date, value: point.value / previous.value - 1 } : null
     })
-    .filter((value): value is number => value != null)
-  const volatility = sampleStandardDeviation(dailyReturns)
+    .filter((value): value is { date: string; value: number } => value != null)
+  const volatility = sampleStandardDeviation(dailyReturns.map((point) => point.value))
+  const periodsPerYear = annualizationPeriodsPerYear(
+    dailyReturns.map((point) => point.date),
+    dailyReturns.length,
+    firstPoint.date,
+  )
   const startDate = dateFromString(firstPoint.date)
   const daySpan = startDate ? Math.max(1, (latestDate.getTime() - startDate.getTime()) / 86_400_000) : null
   const sinceInception = firstPoint.value !== 0 ? latestPoint.value / firstPoint.value - 1 : null
@@ -300,13 +345,13 @@ function buildBenchmarkMetrics(points: PortfolioAssetPriceChartPoint[]) {
     sinceInception != null && daySpan != null
       ? (1 + sinceInception) ** (365.25 / daySpan) - 1
       : null
-  const annualizedVolatility = volatility == null ? null : volatility * Math.sqrt(252)
+  const annualizedVolatility = volatility == null || periodsPerYear == null ? null : volatility * Math.sqrt(periodsPerYear)
   const drawdowns = buildDrawdownMetrics(sortedPoints)
 
   return {
     oneWeek: periodReturnFromValuePoints(sortedPoints, formatDateKey(addDays(latestDate, -7))),
-    mtd: periodReturnFromValuePoints(sortedPoints, formatDateKey(monthStart)),
-    ytd: periodReturnFromValuePoints(sortedPoints, formatDateKey(yearStart)),
+    mtd: periodReturnFromValuePoints(sortedPoints, formatDateKey(priorMonthEnd), false),
+    ytd: periodReturnFromValuePoints(sortedPoints, formatDateKey(priorYearEnd), false),
     sinceInception,
     annualizedReturn,
     annualizedVolatility,

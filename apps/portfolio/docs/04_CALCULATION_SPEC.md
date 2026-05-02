@@ -118,13 +118,13 @@
 这里必须区分两种用途：
 
 - `valuation` role：服务组合 statement、持仓市值、NAV、ledger-driven performance
-- `total_return` / `chart` role：服务 research、backtest、资产风险序列与图表
+- `total_return` / `chart` role：服务 research target solve、资产风险序列与图表
 
 规范如下：
 
 - 组合账面估值不得静默切到 total-return basis；若分红或派息已作为交易/现金流入账，再用复权价会造成双算；
-- fund 的 research/backtest/risk 序列应优先使用 `total_return_nav`，只有缺失时才回退到 `official_nav`；
-- equity 的 research/backtest/risk 序列应优先使用 `adjusted_close`，只有缺失时才回退到 `close`；
+- fund 的 research/risk 序列应优先使用 `total_return_nav`，只有缺失时才回退到 `official_nav`；
+- equity 的 research/risk 序列应优先使用 `adjusted_close`，只有缺失时才回退到 `close`；
 - chart / sparkline 默认也应遵循 total-return-first 的顺序，避免把除权除息导致的机械跳空误当成真实损失。
 
 ### 2.2 组合基准货币

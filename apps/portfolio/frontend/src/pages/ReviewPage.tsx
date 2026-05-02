@@ -19,7 +19,6 @@ import {
   type PortfolioPerformanceResponse,
   type PortfolioPeriodBoundaryHoldingRecord,
   type PortfolioPeriodBoundaryHoldingsResponse,
-  type PortfolioResearchBacktestMetricRecord,
   type PortfolioResearchRunRecord,
   type PortfolioResearchWorkbenchResponse,
   type PortfolioTaxonomyCatalogResponse,
@@ -79,21 +78,6 @@ function signedPercent(value: number | null | undefined, digits = 2) {
     return `-${absolute}`
   }
   return absolute
-}
-
-function renderBacktestMetric(metric: PortfolioResearchBacktestMetricRecord) {
-  if (metric.metric_id === 'observations') {
-    return formatNumber(metric.value, 0)
-  }
-  if (
-    metric.metric_id === 'cumulative_return' ||
-    metric.metric_id === 'annualized_return' ||
-    metric.metric_id === 'annualized_volatility' ||
-    metric.metric_id === 'max_drawdown'
-  ) {
-    return formatPercent(metric.value)
-  }
-  return formatNumber(metric.value, 3)
 }
 
 function isPeriodOverlap(
@@ -525,17 +509,13 @@ export default function ReviewPage() {
       : researchWorkbench?.runs[0] ?? null)
 
   const selectedResearchRunValue = selectedResearchRun?.research_run_id ?? ''
-  const selectedRunCurvePoints = useMemo(
-    () => (selectedResearchRun?.detail?.backtest_curve ?? []).map((point) => ({ date: point.date, value: point.nav })),
-    [selectedResearchRun],
-  )
-  const selectedRunMetricMap = useMemo(() => {
-    const entries = (selectedResearchRun?.detail?.backtest_metrics ?? []).map((metric) => [metric.metric_id, metric] as const)
+  const selectedRunSignalMap = useMemo(() => {
+    const entries = (selectedResearchRun?.detail?.signals ?? []).map((signal) => [signal.label, signal.value] as const)
     return new Map(entries)
   }, [selectedResearchRun])
-  const rankedSuggestions = useMemo(
+  const rankedTargetGaps = useMemo(
     () =>
-      [...(selectedResearchRun?.detail?.rebalance_suggestions ?? [])].sort(
+      [...(selectedResearchRun?.detail?.target_weight_gaps ?? [])].sort(
         (left, right) => Math.abs(right.gap ?? 0) - Math.abs(left.gap ?? 0),
       ),
     [selectedResearchRun],
@@ -543,7 +523,7 @@ export default function ReviewPage() {
   const actionItems = useMemo(() => {
     const rows: Array<{ source: string; action: string; detail: string }> = []
 
-    rankedSuggestions.slice(0, 4).forEach((suggestion) => {
+    rankedTargetGaps.slice(0, 4).forEach((suggestion) => {
       rows.push({
         source: 'Research',
         action: `${formatLabel(suggestion.action)} ${suggestion.label}`,
@@ -565,12 +545,12 @@ export default function ReviewPage() {
       rows.push({
         source: 'Research Warning',
         action: warning,
-        detail: 'Backtest fallback or coverage issue should be reviewed before turning this into a rebalance decision.',
+        detail: 'Target solve coverage or solver issue should be reviewed before translating weights into orders.',
       })
     })
 
     return rows.slice(0, 10)
-  }, [baseCurrency, rankedSuggestions, selectedResearchRun, topDetractors])
+  }, [baseCurrency, rankedTargetGaps, selectedResearchRun, topDetractors])
 
   const reviewSummaryLeft = [
     { label: 'Window', value: `${effectiveStartDate} to ${effectiveEndDate}` },
@@ -1080,35 +1060,27 @@ export default function ReviewPage() {
                       <table className="performance-summary-table">
                         <thead>
                           <tr>
-                            <th colSpan={2}>Backtest Summary</th>
+                            <th colSpan={2}>Target Solve</th>
                           </tr>
                         </thead>
                         <tbody>
                           {[
-                            { label: 'Observations', metric: selectedRunMetricMap.get('observations') },
-                            { label: 'Cumulative Return', metric: selectedRunMetricMap.get('cumulative_return') },
-                            { label: 'Annualized Volatility', metric: selectedRunMetricMap.get('annualized_volatility') },
-                            { label: 'Max Drawdown', metric: selectedRunMetricMap.get('max_drawdown') },
+                            { label: 'Target Layer', value: selectedRunSignalMap.get('Target Layer') ?? '—' },
+                            { label: 'Target Volatility', value: selectedRunSignalMap.get('Target Volatility') ?? '—' },
+                            { label: 'Estimated Volatility', value: selectedRunSignalMap.get('Estimated Volatility') ?? '—' },
+                            { label: 'Gross Exposure', value: selectedRunSignalMap.get('Gross Exposure') ?? '—' },
+                            { label: 'Largest Weight Gap', value: selectedRunSignalMap.get('Largest Weight Gap') ?? '—' },
+                            { label: 'Largest Risk Gap', value: selectedRunSignalMap.get('Largest Risk Gap') ?? '—' },
                           ].map((row) => (
                             <tr key={row.label}>
                               <th>{row.label}</th>
-                              <td>{row.metric ? renderBacktestMetric(row.metric) : '—'}</td>
+                              <td>{row.value}</td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
                   </div>
-
-                  {selectedRunCurvePoints.length ? (
-                    <section className="performance-section-block">
-                      <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                        <div className="panel-title">Research Curve</div>
-                        <div className="portfolio-detail-meta">Backtest curve from the selected research handoff</div>
-                      </div>
-                      <PerformanceNavChart points={selectedRunCurvePoints} currency={researchWorkbench?.base_currency ?? baseCurrency} />
-                    </section>
-                  ) : null}
 
                   <div className="performance-summary-grid">
                     <div className="table-shell">
@@ -1141,7 +1113,7 @@ export default function ReviewPage() {
                       <table className="transactions-table">
                         <thead>
                           <tr>
-                            <th colSpan={4}>Rebalance Suggestions</th>
+                            <th colSpan={4}>Target Weight Gaps</th>
                           </tr>
                           <tr>
                             <th>Action</th>
@@ -1151,8 +1123,8 @@ export default function ReviewPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {rankedSuggestions.length ? (
-                            rankedSuggestions.slice(0, 8).map((suggestion) => (
+                          {rankedTargetGaps.length ? (
+                            rankedTargetGaps.slice(0, 8).map((suggestion) => (
                               <tr key={`${suggestion.member_type}:${suggestion.member_id}`}>
                                 <td>{formatLabel(suggestion.action)}</td>
                                 <td>{suggestion.label}</td>
@@ -1161,7 +1133,7 @@ export default function ReviewPage() {
                               </tr>
                             ))
                           ) : (
-                            <TableStatusRow colSpan={4} label="No rebalance suggestions on the selected research run." />
+                            <TableStatusRow colSpan={4} label="No target weight gaps on the selected research run." />
                           )}
                         </tbody>
                       </table>

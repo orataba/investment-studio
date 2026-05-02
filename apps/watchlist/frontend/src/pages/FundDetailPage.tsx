@@ -44,6 +44,7 @@ import {
   getInstrumentRisk,
   getInstrumentSummary,
   getInstrumentStrategy,
+  uploadInstrumentDocument,
   updateFundTaxonomy,
   updateInstrumentAttributes,
   updateInstrumentDocuments,
@@ -62,6 +63,7 @@ import {
   formatPercent,
 } from '../lib/format'
 import { PLATFORM_HOME_URL } from '../lib/navigation'
+import { useLanguage } from '../../../../../packages/ui/src/i18n'
 
 type FundDetailBundle = {
   summary: FundSummaryResponse
@@ -124,6 +126,13 @@ type EditableDocumentRow = {
   source: string
   status: string
   version_label: string
+  file_name: string
+  download_url: string
+  file_size: string
+  content_type: string
+  uploaded_at: string
+  notes: string
+  stored_file_name: string
 }
 
 type EditableImportRow = {
@@ -142,13 +151,6 @@ type EditableExtractionRow = {
   status: string
   adopted_version: string
   updated_at: string
-}
-
-type EditableConclusionRow = {
-  id: string
-  conclusion: string
-  evidence_ref: string
-  status: string
 }
 
 type TimelineNoteImportance = 'low' | 'medium' | 'high'
@@ -204,10 +206,6 @@ type DocumentsDraft = {
 
 type ResearchDraft = {
   overviewRows: EditableKeyValueRow[]
-  thesis: string
-  conclusionRows: EditableConclusionRow[]
-  timelineNotes: ResearchTimelineNote[]
-  noteRows: EditableListRow[]
 }
 
 type ChartTimelineNoteContextMenu = {
@@ -216,7 +214,7 @@ type ChartTimelineNoteContextMenu = {
   anchorDate: string
 }
 
-type PriceEditSection = 'ter' | 'fees' | 'policy'
+type PriceEditSection = 'table'
 
 type DetailTab =
   | 'overview'
@@ -241,8 +239,12 @@ type ChartHoverCursor = {
   xRatio: number
   y: number
 }
+type ChartAxisTick = {
+  date: string
+  xRatio: number
+}
 
-type PerformanceMetricPeriodKey = '1W' | '1M' | 'YTD' | '1Y' | '2Y' | '3Y' | '5Y' | 'SI'
+type PerformanceMetricPeriodKey = '1W' | 'MTD' | 'YTD' | '1Y' | '2Y' | '3Y' | '5Y' | 'SI'
 type PerformanceMatrixMode = 'values' | 'peer_percentile' | 'peer_rank' | 'peer_median_delta'
 type PerformanceMatrixRowKey =
   | 'period_return'
@@ -259,7 +261,7 @@ type PerformanceMatrixRowKey =
   | 'recovery_days'
   | 'upside_capture'
   | 'downside_capture'
-type RollingReturnWindowMonths = 12 | 24 | 36
+type RollingRiskWindowMonths = 6 | 12 | 24 | 36
 type PerformanceMetricSnapshot = {
   periodReturn: number | null
   annualizedReturn: number | null
@@ -292,7 +294,7 @@ const PERFORMANCE_METRIC_PERIODS: Array<{
   label: string
 }> = [
   { key: '1W', label: '1W' },
-  { key: '1M', label: '1M' },
+  { key: 'MTD', label: 'MTD' },
   { key: 'YTD', label: 'YTD' },
   { key: '1Y', label: '1Y' },
   { key: '2Y', label: '2Y' },
@@ -313,13 +315,14 @@ const PERFORMANCE_MATRIX_MODE_OPTIONS: Array<{
 
 const RISK_MATRIX_PERIOD_KEYS = new Set<PerformanceMetricPeriodKey>(['1Y', '3Y', '5Y', 'SI'])
 
-const ROLLING_RETURN_WINDOW_OPTIONS: Array<{
-  months: RollingReturnWindowMonths
+const ROLLING_RISK_WINDOW_OPTIONS: Array<{
+  months: RollingRiskWindowMonths
   label: string
 }> = [
-  { months: 12, label: 'Rolling 12M' },
-  { months: 24, label: 'Rolling 24M' },
-  { months: 36, label: 'Rolling 36M' },
+  { months: 6, label: '6M' },
+  { months: 12, label: '12M' },
+  { months: 24, label: '24M' },
+  { months: 36, label: '36M' },
 ]
 
 const TAB_ORDER: DetailTab[] = [
@@ -337,23 +340,28 @@ const TAB_ORDER: DetailTab[] = [
 
 const CORE_TABS: DetailTab[] = ['overview', 'performance', 'risk', 'price', 'exposure', 'people', 'strategy']
 
-const TAB_LABELS: Record<DetailTab, string> = {
-  overview: 'Overview',
-  performance: 'Performance',
-  risk: 'Risk',
-  price: 'Price',
-  exposure: 'Exposure',
-  people: 'People',
-  strategy: 'Strategy',
-  documents: 'Documents',
-  research: 'Research',
-  monitoring: 'Monitoring',
+type LocalizedText = {
+  en: string
+  zh: string
 }
 
-const NAV_BASIS_LABELS: Record<string, string> = {
-  auto: 'Auto',
-  nav_with_dividend: 'NAV with Dividends',
-  nav: 'NAV',
+const TAB_LABELS: Record<DetailTab, LocalizedText> = {
+  overview: { en: 'Overview', zh: '总览' },
+  performance: { en: 'Performance', zh: '业绩' },
+  risk: { en: 'Risk', zh: '风险' },
+  price: { en: 'Price', zh: '费用' },
+  exposure: { en: 'Exposure', zh: '持仓' },
+  people: { en: 'People', zh: '团队' },
+  strategy: { en: 'Strategy', zh: '策略' },
+  documents: { en: 'Documents', zh: '文档' },
+  research: { en: 'Research', zh: '研究' },
+  monitoring: { en: 'Monitoring', zh: '监控' },
+}
+
+const NAV_BASIS_LABELS: Record<string, LocalizedText> = {
+  auto: { en: 'Auto', zh: '自动' },
+  nav_with_dividend: { en: 'NAV with Dividends', zh: '累计净值' },
+  nav: { en: 'NAV', zh: '单位净值' },
 }
 
 const NAV_BASIS_SOURCE_LABELS: Record<string, string> = {
@@ -385,7 +393,7 @@ const RESEARCH_OVERVIEW_FIELDS: Array<{
   type: 'date' | 'text'
 }> = [
   { key: 'current_view', label: 'Current View', type: 'text' },
-  { key: 'research_status', label: 'Research Status', type: 'text' },
+  { key: 'research_view', label: 'Research View', type: 'text' },
   { key: 'dd_status', label: 'DD Status', type: 'text' },
   { key: 'odd_status', label: 'ODD Status', type: 'text' },
   { key: 'ic_status', label: 'IC Status', type: 'text' },
@@ -407,13 +415,202 @@ const QUOTE_RANGE_OPTIONS: Array<{ value: ChartRange | 'YTD' | 'CUSTOM'; label: 
   { value: 'CUSTOM', label: 'Custom' },
 ]
 
-const QUOTE_BASIS_LABELS: Record<QuoteBasis, string> = {
-  nav: 'NAV',
-  nav_with_dividend: 'NAV with Dividends',
+const QUOTE_BASIS_LABELS: Record<QuoteBasis, LocalizedText> = {
+  nav: { en: 'NAV', zh: '单位净值' },
+  nav_with_dividend: { en: 'NAV with Dividends', zh: '累计净值' },
+}
+
+const SYSTEM_LABELS: Record<string, LocalizedText> = {
+  analystStance: { en: 'Analyst Stance', zh: '投研观点' },
+  basis: { en: 'Basis', zh: '口径' },
+  cancel: { en: 'Cancel', zh: '取消' },
+  classificationPath: { en: 'Classification Path', zh: '分类路径' },
+  currentPath: { en: 'Current Path', zh: '当前路径' },
+  documentTitle: { en: 'Documents', zh: '文档' },
+  documentUploaded: { en: 'Document uploaded.', zh: '文档已上传。' },
+  downloadPdf: { en: 'Download PDF', zh: '下载 PDF' },
+  fileName: { en: 'File Name', zh: '文件名' },
+  indexed: { en: 'Indexed to 1.00', zh: '归一到 1.00' },
+  instrumentDetail: { en: 'Instrument Detail', zh: '标的详情' },
+  notes: { en: 'Notes', zh: '备注' },
+  noDocuments: { en: 'No documents yet.', zh: '暂无文档。' },
+  noNavHistory: {
+    en: 'No NAV history is available yet. Add shared market data in Database Dashboard to materialize the quote curve.',
+    zh: '暂无净值历史。请先在数据库面板补充共享行情数据，生成报价曲线。',
+  },
+  optionalNote: { en: 'Optional note', zh: '可选备注' },
+  peer: { en: 'Peer', zh: '同类' },
+  pickFile: { en: 'Please choose a file to upload.', zh: '请先选择要上传的文件。' },
+  regime: { en: 'Regime', zh: '体系' },
+  save: { en: 'Save', zh: '保存' },
+  saving: { en: 'Saving...', zh: '保存中...' },
+  selectParentFirst: { en: 'Select parent first', zh: '请先选择上一级' },
+  settings: { en: 'Settings', zh: '设置' },
+  stopHere: { en: 'Stop here', zh: '停在此级' },
+  taxonomySettings: { en: 'Taxonomy Settings', zh: '分类设置' },
+  unclassified: { en: 'Unclassified', zh: '未分类' },
+  unclassify: { en: 'Unclassify', zh: '取消分类' },
+  uploadFailed: { en: 'Failed to upload document.', zh: '文档上传失败。' },
+  unavailableBasis: {
+    en: 'is unavailable for the current currency or date window. Switch Data Type, Currency, or range.',
+    zh: '在当前币种或日期区间不可用。请切换数据类型、币种或区间。',
+  },
+  selectType: { en: 'Select type', zh: '选择类型' },
+  size: { en: 'Size', zh: '大小' },
+  status: { en: 'Status', zh: '状态' },
+  title: { en: 'Title', zh: '标题' },
+  type: { en: 'Type', zh: '类型' },
+  upload: { en: 'Upload', zh: '上传' },
+  uploading: { en: 'Uploading...', zh: '上传中...' },
+  uploaded: { en: 'Uploaded', zh: '已上传' },
+}
+
+const SYSTEM_VALUE_LABELS: Record<string, LocalizedText> = {
+  archived: { en: 'Archived', zh: '已归档' },
+  cautious: { en: 'Cautious', zh: '谨慎' },
+  current: { en: 'Current', zh: '当前' },
+  exited: { en: 'Exited', zh: '退出' },
+  fresh: { en: 'Fresh', zh: '新鲜' },
+  'high conviction': { en: 'High Conviction', zh: '高置信' },
+  invested: { en: 'Invested', zh: '在投' },
+  partial: { en: 'Partial', zh: '部分' },
+  paused: { en: 'Paused', zh: '暂停' },
+  pending: { en: 'Pending', zh: '待处理' },
+  pending_recalc: { en: 'Pending Recalc', zh: '待重算' },
+  positive: { en: 'Positive', zh: '积极' },
+  proposed: { en: 'Proposed', zh: '拟投' },
+  stale: { en: 'Stale', zh: '过期' },
+  unrated: { en: 'Unrated', zh: '未评级' },
+  uploaded: { en: 'Uploaded', zh: '已上传' },
+  watch: { en: 'Watch', zh: '观察' },
+  factsheet: { en: 'Fact Sheet', zh: '要素表' },
+  valuation_statement: { en: 'Valuation Statement', zh: '估值表' },
+  due_diligence_report: { en: 'Due Diligence Report', zh: '尽调报告' },
+  investment_memo: { en: 'Investment Memo', zh: '投资备忘录' },
+  fund_contract: { en: 'Fund Contract', zh: '基金合同' },
+  prospectus: { en: 'Prospectus', zh: '招募说明书' },
+  periodic_report: { en: 'Monthly / Quarterly Report', zh: '月报/季报' },
+  other: { en: 'Other', zh: '其他' },
+  要素表: { en: 'Fact Sheet', zh: '要素表' },
+  估值表: { en: 'Valuation Statement', zh: '估值表' },
+  尽调报告: { en: 'Due Diligence Report', zh: '尽调报告' },
+  投资备忘录: { en: 'Investment Memo', zh: '投资备忘录' },
+  基金合同: { en: 'Fund Contract', zh: '基金合同' },
+  招募说明书: { en: 'Prospectus', zh: '招募说明书' },
+  '月报/季报': { en: 'Monthly / Quarterly Report', zh: '月报/季报' },
+  公募: { en: 'Public Fund', zh: '公募' },
+  股票型: { en: 'Equity', zh: '股票型' },
+  标准股票型: { en: 'Standard Equity', zh: '标准股票型' },
+  指数股票型: { en: 'Equity Index', zh: '指数股票型' },
+  混合型: { en: 'Hybrid', zh: '混合型' },
+  偏股型: { en: 'Equity-biased', zh: '偏股型' },
+  灵活配置型: { en: 'Flexible Allocation', zh: '灵活配置型' },
+  股债平衡型: { en: 'Balanced', zh: '股债平衡型' },
+  偏债型: { en: 'Bond-biased', zh: '偏债型' },
+  策略型: { en: 'Strategy', zh: '策略型' },
+  债券型: { en: 'Bond', zh: '债券型' },
+  纯债型: { en: 'Pure Bond', zh: '纯债型' },
+  普通债券型: { en: 'Ordinary Bond', zh: '普通债券型' },
+  可转债型: { en: 'Convertible Bond', zh: '可转债型' },
+  指数债券型: { en: 'Bond Index', zh: '指数债券型' },
+  同业存单型: { en: 'Certificate of Deposit', zh: '同业存单型' },
+  QDII: { en: 'QDII', zh: 'QDII' },
+  QDII房地产信托: { en: 'QDII REIT', zh: 'QDII房地产信托' },
+  QDII股票型: { en: 'QDII Equity', zh: 'QDII股票型' },
+  QDII混合型: { en: 'QDII Hybrid', zh: 'QDII混合型' },
+  QDII商品型: { en: 'QDII Commodity', zh: 'QDII商品型' },
+  QDII债券型: { en: 'QDII Bond', zh: 'QDII债券型' },
+  商品型: { en: 'Commodity', zh: '商品型' },
+  贵金属基金: { en: 'Precious Metals Fund', zh: '贵金属基金' },
+  其他商品基金: { en: 'Other Commodity Fund', zh: '其他商品基金' },
+  REITS: { en: 'REITs', zh: 'REITS' },
+  FOF: { en: 'FOF', zh: 'FOF' },
+  股票型FOF: { en: 'Equity FOF', zh: '股票型FOF' },
+  债券型FOF: { en: 'Bond FOF', zh: '债券型FOF' },
+  混合型FOF: { en: 'Hybrid FOF', zh: '混合型FOF' },
+  养老目标FOF: { en: 'Pension Target FOF', zh: '养老目标FOF' },
+  私募: { en: 'Private Fund', zh: '私募' },
+  股票策略: { en: 'Equity Strategy', zh: '股票策略' },
+  主观多头: { en: 'Discretionary Long', zh: '主观多头' },
+  主观选股: { en: 'Discretionary Stock Picking', zh: '主观选股' },
+  定增打新: { en: 'Private Placement / IPO', zh: '定增打新' },
+  量化多头: { en: 'Quant Long', zh: '量化多头' },
+  '300指增': { en: 'CSI 300 Enhanced', zh: '300指增' },
+  '500指增': { en: 'CSI 500 Enhanced', zh: '500指增' },
+  '1000指增': { en: 'CSI 1000 Enhanced', zh: '1000指增' },
+  '2000指增': { en: 'CSI 2000 Enhanced', zh: '2000指增' },
+  红利指增: { en: 'Dividend Index Enhanced', zh: '红利指增' },
+  量化选股: { en: 'Quant Stock Selection', zh: '量化选股' },
+  其他指增: { en: 'Other Index Enhanced', zh: '其他指增' },
+  股票多空: { en: 'Equity Long/Short', zh: '股票多空' },
+  股票市场中性: { en: 'Equity Market Neutral', zh: '股票市场中性' },
+  债券策略: { en: 'Bond Strategy', zh: '债券策略' },
+  纯债策略: { en: 'Pure Bond Strategy', zh: '纯债策略' },
+  债券增强: { en: 'Bond Enhanced', zh: '债券增强' },
+  债券复合: { en: 'Bond Composite', zh: '债券复合' },
+  转债交易: { en: 'Convertible Bond Trading', zh: '转债交易' },
+  期货及衍生品策略: { en: 'Futures & Derivatives', zh: '期货及衍生品策略' },
+  主观CTA: { en: 'Discretionary CTA', zh: '主观CTA' },
+  主观趋势: { en: 'Discretionary Trend', zh: '主观趋势' },
+  主观套利: { en: 'Discretionary Arbitrage', zh: '主观套利' },
+  主观多策略: { en: 'Discretionary Multi-Strategy', zh: '主观多策略' },
+  量化CTA: { en: 'Quant CTA', zh: '量化CTA' },
+  量化趋势: { en: 'Quant Trend', zh: '量化趋势' },
+  量化套利: { en: 'Quant Arbitrage', zh: '量化套利' },
+  量化多策略: { en: 'Quant Multi-Strategy', zh: '量化多策略' },
+  期权策略: { en: 'Options Strategy', zh: '期权策略' },
+  其他衍生品策略: { en: 'Other Derivatives', zh: '其他衍生品策略' },
+  多资产策略: { en: 'Multi-Asset Strategy', zh: '多资产策略' },
+  宏观策略: { en: 'Macro Strategy', zh: '宏观策略' },
+  套利策略: { en: 'Arbitrage Strategy', zh: '套利策略' },
+  复合策略: { en: 'Composite Strategy', zh: '复合策略' },
+  组合基金: { en: 'Fund of Funds', zh: '组合基金' },
+  MOM: { en: 'MOM', zh: 'MOM' },
+  其他: { en: 'Other', zh: '其他' },
+}
+
+const DOCUMENT_TYPE_OPTIONS = [
+  'factsheet',
+  'valuation_statement',
+  'due_diligence_report',
+  'investment_memo',
+  'fund_contract',
+  'prospectus',
+  'periodic_report',
+  'other',
+]
+
+function localize(language: string, text: LocalizedText) {
+  return language === 'zh-Hans' ? text.zh : text.en
+}
+
+function localizeSystemValue(value: string | null | undefined, language: string) {
+  const normalized = String(value || '').trim()
+  if (!normalized) {
+    return '—'
+  }
+  const label = SYSTEM_VALUE_LABELS[normalized] || SYSTEM_VALUE_LABELS[normalized.toLowerCase()]
+  return label ? localize(language, label) : normalized
+}
+
+function localizeTaxonomyPath(value: string, language: string) {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return ''
+  }
+  if (SYSTEM_VALUE_LABELS[trimmed]) {
+    return localize(language, SYSTEM_VALUE_LABELS[trimmed])
+  }
+  return trimmed
+    .split(' / ')
+    .map((part) => localizeSystemValue(part, language))
+    .join(' / ')
 }
 
 const MONTH_SHORT_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const ROLLING_WINDOW_MONTHS = 12
+const MIN_ROLLING_RETURN_OBSERVATIONS = 3
+const ROLLING_CHART_MAX_POINTS = 520
 
 const PRIMARY_CHART_GEOMETRY: ChartGeometry = {
   width: 900,
@@ -451,7 +648,7 @@ const SECONDARY_SERIES_GEOMETRY: ChartGeometry = {
   paddingLeft: 58,
   paddingRight: 18,
   paddingTop: 18,
-  paddingBottom: 34,
+  paddingBottom: 40,
 }
 
 function toTitleCase(value: string) {
@@ -552,6 +749,13 @@ function formatStarRating(rating: number | null | undefined) {
   return `${'★'.repeat(normalizedRating)}${'☆'.repeat(5 - normalizedRating)}`
 }
 
+function parseManualRating(value: unknown) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null
+  }
+  return Math.max(1, Math.min(5, Math.round(value)))
+}
+
 function getNumber(value: unknown) {
   return typeof value === 'number' && !Number.isNaN(value) ? value : null
 }
@@ -639,7 +843,7 @@ function getPeerMetricKeyForMatrixCell(
     return (
       {
         '1W': 'return_1w',
-        '1M': 'return_1m',
+        MTD: 'return_mtd',
         YTD: 'return_ytd',
         '1Y': 'return_1y',
       } as Partial<Record<PerformanceMetricPeriodKey, string>>
@@ -774,7 +978,9 @@ function getDocumentStatusTone(value: unknown) {
   if (
     normalized.includes('adopt') ||
     normalized.includes('complete') ||
-    normalized.includes('current')
+    normalized.includes('current') ||
+    normalized.includes('upload') ||
+    normalized.includes('import')
   ) {
     return 'status-fresh'
   }
@@ -782,6 +988,22 @@ function getDocumentStatusTone(value: unknown) {
     return 'status-pending'
   }
   return 'status-attribute'
+}
+
+function formatFileSize(value: unknown) {
+  const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return '—'
+  }
+  const units = ['B', 'KB', 'MB', 'GB']
+  let size = numeric
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+  const digits = unitIndex === 0 || size >= 10 ? 0 : 1
+  return `${size.toFixed(digits)} ${units[unitIndex]}`
 }
 
 function formatNavBasisSource(value: string | null | undefined) {
@@ -793,6 +1015,17 @@ function formatNavBasisSource(value: string | null | undefined) {
 
 function cleanListRows(rows: EditableListRow[]) {
   return rows.map((row) => row.value.trim()).filter(Boolean)
+}
+
+function listRowsToTextareaValue(rows: EditableListRow[]) {
+  return rows.map((row) => row.value).join('\n')
+}
+
+function textareaValueToListRows(prefix: string, value: string) {
+  return value.split(/\r?\n/).map((line) => ({
+    id: makeRowId(prefix),
+    value: line,
+  }))
 }
 
 function parseOptionalNumber(value: string) {
@@ -873,6 +1106,13 @@ function toEditableDocumentsDraft(documents: FundDocumentsResponse): DocumentsDr
       source: typeof row.source === 'string' ? row.source : '',
       status: typeof row.status === 'string' ? row.status : '',
       version_label: typeof row.version_label === 'string' ? row.version_label : '',
+      file_name: typeof row.file_name === 'string' ? row.file_name : '',
+      download_url: typeof row.download_url === 'string' ? row.download_url : '',
+      file_size: row.file_size == null ? '' : String(row.file_size),
+      content_type: typeof row.content_type === 'string' ? row.content_type : '',
+      uploaded_at: typeof row.uploaded_at === 'string' ? row.uploaded_at.slice(0, 16) : '',
+      notes: typeof row.notes === 'string' ? row.notes : '',
+      stored_file_name: typeof row.stored_file_name === 'string' ? row.stored_file_name : '',
     })),
     importRows: (documents.recent_imports || []).map((row) => ({
       id: makeRowId('document-import'),
@@ -898,24 +1138,16 @@ function toEditableDocumentsDraft(documents: FundDocumentsResponse): DocumentsDr
 }
 
 function toEditableResearchDraft(research: FundResearchResponse): ResearchDraft {
+  const overview = research.overview || {}
   return {
-    overviewRows: Object.entries(research.overview || {}).map(([key, value]) => ({
-      id: makeRowId('research-overview'),
-      key,
-      value: value == null ? '' : String(value),
-    })),
-    thesis: research.thesis || '',
-    conclusionRows: (research.conclusions || []).map((row) => ({
-      id: makeRowId('research-conclusion'),
-      conclusion: typeof row.conclusion === 'string' ? row.conclusion : '',
-      evidence_ref: typeof row.evidence_ref === 'string' ? row.evidence_ref : '',
-      status: typeof row.status === 'string' ? row.status : '',
-    })),
-    timelineNotes: normalizeResearchTimelineNotes(research.timeline_notes),
-    noteRows: (research.notes || []).map((value) => ({
-      id: makeRowId('research-note'),
-      value,
-    })),
+    overviewRows: RESEARCH_OVERVIEW_FIELDS.map((field) => {
+      const value = overview[field.key]
+      return {
+        id: makeRowId('research-overview'),
+        key: field.key,
+        value: value == null ? '' : String(value),
+      }
+    }),
   }
 }
 
@@ -980,6 +1212,72 @@ function buildChartLinePath(
       return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`
     })
     .join(' ')
+}
+
+function getProjectedSeriesPoints(
+  points: FundChartPoint[],
+  geometry: ChartGeometry = PRIMARY_CHART_GEOMETRY,
+  min?: number,
+  max?: number,
+) {
+  const { width, height, paddingLeft, paddingRight, paddingTop, paddingBottom } = geometry
+  const values = points.map((point) => point.value)
+  const resolvedMin = min ?? Math.min(...values)
+  const resolvedMax = max ?? Math.max(...values)
+  const range = resolvedMax - resolvedMin || 1
+
+  return points.map((point, index) => {
+    const x =
+      paddingLeft +
+      (index / Math.max(points.length - 1, 1)) * (width - paddingLeft - paddingRight)
+    const y =
+      height -
+      paddingBottom -
+      ((point.value - resolvedMin) / range) * (height - paddingTop - paddingBottom)
+    return { x, y }
+  })
+}
+
+function buildSmoothChartLinePath(
+  points: FundChartPoint[],
+  geometry: ChartGeometry = PRIMARY_CHART_GEOMETRY,
+  min?: number,
+  max?: number,
+) {
+  if (points.length < 2) {
+    return ''
+  }
+
+  const projectedPoints = getProjectedSeriesPoints(points, geometry, min, max)
+  if (projectedPoints.length === 2) {
+    return projectedPoints
+      .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+      .join(' ')
+  }
+
+  const commands = [`M ${projectedPoints[0].x.toFixed(2)} ${projectedPoints[0].y.toFixed(2)}`]
+  for (let index = 0; index < projectedPoints.length - 1; index += 1) {
+    const previous = projectedPoints[Math.max(index - 1, 0)]
+    const current = projectedPoints[index]
+    const next = projectedPoints[index + 1]
+    const nextNext = projectedPoints[Math.min(index + 2, projectedPoints.length - 1)]
+    const control1X = current.x + (next.x - previous.x) / 6
+    const control1Y = current.y + (next.y - previous.y) / 6
+    const control2X = next.x - (nextNext.x - current.x) / 6
+    const control2Y = next.y - (nextNext.y - current.y) / 6
+    commands.push(
+      [
+        'C',
+        control1X.toFixed(2),
+        control1Y.toFixed(2),
+        control2X.toFixed(2),
+        control2Y.toFixed(2),
+        next.x.toFixed(2),
+        next.y.toFixed(2),
+      ].join(' '),
+    )
+  }
+  return commands.join(' ')
 }
 
 function buildChartAreaPath(
@@ -1086,6 +1384,21 @@ function toSelectedBasisPoints(series: FundNavSeriesResponse['series']) {
 
 function resolvePreferredQuoteBasis(value: string | null | undefined): QuoteBasis | null {
   return value === 'nav' || value === 'nav_with_dividend' ? value : null
+}
+
+function resolveReturnQuoteBasis(
+  rows: FundNavSeriesResponse['rows'],
+  preferredBasis: string | null | undefined,
+) {
+  const availableBases = getAvailableQuoteBases(rows)
+  const preferred = resolvePreferredQuoteBasis(preferredBasis)
+  if (preferred === 'nav_with_dividend' && availableBases.includes(preferred)) {
+    return preferred
+  }
+  if (availableBases.includes('nav_with_dividend')) {
+    return 'nav_with_dividend'
+  }
+  return null
 }
 
 function buildQuoteSeriesContext(
@@ -1248,6 +1561,14 @@ function getYAxisLabelTextY(lineY: number, geometry: ChartGeometry, placement: '
   return Math.min(lineY + 18, geometry.height - 4)
 }
 
+function getXAxisLabelY(geometry: ChartGeometry) {
+  return geometry.height - 10
+}
+
+function getXAxisTickTopY(geometry: ChartGeometry) {
+  return geometry.height - geometry.paddingBottom + 5
+}
+
 function getChartPlotBounds(geometry: ChartGeometry, inset = 0) {
   const left = geometry.paddingLeft + inset
   const right = geometry.width - geometry.paddingRight - inset
@@ -1385,15 +1706,6 @@ function getMonthBucket(value: string) {
   return value.slice(0, 7)
 }
 
-function formatMonthBucket(value: string) {
-  const year = Number(value.slice(0, 4))
-  const monthIndex = Number(value.slice(5, 7)) - 1
-  if (!Number.isFinite(year) || monthIndex < 0 || monthIndex > 11) {
-    return value
-  }
-  return `${MONTH_SHORT_LABELS[monthIndex]} ${String(year).slice(-2)}`
-}
-
 function buildMonthlyCloseSeries(points: FundChartPoint[]) {
   const sortedPoints = [...points].sort((left, right) => left.date.localeCompare(right.date))
   const monthlyPoints: FundChartPoint[] = []
@@ -1441,19 +1753,58 @@ function buildMonthlyReturnSeries(points: FundChartPoint[]) {
   return monthlyReturns
 }
 
-function buildRollingReturnSeries(points: FundChartPoint[], windowMonths = ROLLING_WINDOW_MONTHS) {
-  const monthlyCloses = buildMonthlyCloseSeries(points)
+function getRollingWindowPoints(
+  sortedPoints: FundChartPoint[],
+  endIndex: number,
+  windowMonths: number,
+) {
+  if (endIndex <= 0 || endIndex >= sortedPoints.length) {
+    return []
+  }
+
+  const endPoint = sortedPoints[endIndex]
+  const targetStartDate = shiftIsoDate(endPoint.date, { months: -windowMonths })
+  if (!targetStartDate) {
+    return []
+  }
+
+  const startIndex = findLastPointIndexOnOrBefore(sortedPoints, targetStartDate)
+  if (startIndex < 0 || startIndex >= endIndex) {
+    return []
+  }
+
+  const targetDays = getDateDifferenceInDays(targetStartDate, endPoint.date)
+  const actualDays = getDateDifferenceInDays(sortedPoints[startIndex].date, endPoint.date)
+  if (targetDays == null || actualDays == null || targetDays <= 0 || actualDays <= 0) {
+    return []
+  }
+
+  const maxActualDays = targetDays * 1.35 + 14
+  if (actualDays > maxActualDays) {
+    return []
+  }
+
+  return sortedPoints.slice(startIndex, endIndex + 1)
+}
+
+function buildRollingAnnualizedReturnSeries(points: FundChartPoint[], windowMonths = ROLLING_WINDOW_MONTHS) {
+  const sortedPoints = sortSeriesByDate(points)
   const rollingReturns: FundChartPoint[] = []
 
-  for (let index = windowMonths; index < monthlyCloses.length; index += 1) {
-    const basePoint = monthlyCloses[index - windowMonths]
-    const currentPoint = monthlyCloses[index]
-    if (basePoint.value === 0) {
+  for (let index = 1; index < sortedPoints.length; index += 1) {
+    const windowPoints = getRollingWindowPoints(sortedPoints, index, windowMonths)
+    if (windowPoints.length < 2) {
+      continue
+    }
+    const basePoint = windowPoints[0]
+    const currentPoint = windowPoints[windowPoints.length - 1]
+    const dayCount = getDateDifferenceInDays(basePoint.date, currentPoint.date)
+    if (basePoint.value <= 0 || currentPoint.value <= 0 || dayCount == null || dayCount <= 0) {
       continue
     }
     rollingReturns.push({
       date: currentPoint.date,
-      value: ((currentPoint.value / basePoint.value) - 1) * 100,
+      value: (Math.pow(currentPoint.value / basePoint.value, 365.25 / dayCount) - 1) * 100,
     })
   }
 
@@ -1461,21 +1812,23 @@ function buildRollingReturnSeries(points: FundChartPoint[], windowMonths = ROLLI
 }
 
 function buildRollingAnnualizedVolatilitySeries(points: FundChartPoint[], windowMonths = ROLLING_WINDOW_MONTHS) {
-  const monthlyReturns = buildMonthlyReturnSeries(points).map((point) => ({
-    date: point.date,
-    value: point.value / 100,
-  }))
+  const sortedPoints = sortSeriesByDate(points)
   const rollingVolatility: FundChartPoint[] = []
 
-  for (let index = windowMonths - 1; index < monthlyReturns.length; index += 1) {
-    const windowReturns = monthlyReturns.slice(index - windowMonths + 1, index + 1).map((point) => point.value)
+  for (let index = 1; index < sortedPoints.length; index += 1) {
+    const windowPoints = getRollingWindowPoints(sortedPoints, index, windowMonths)
+    const windowReturns = buildPeriodicReturnSeries(windowPoints).map((point) => point.value)
+    if (windowReturns.length < MIN_ROLLING_RETURN_OBSERVATIONS) {
+      continue
+    }
     const stdev = getSampleStandardDeviation(windowReturns)
-    if (stdev == null) {
+    const periodsPerYear = inferAnnualizationPeriodsPerYear(windowPoints, windowReturns.length)
+    if (stdev == null || periodsPerYear == null || periodsPerYear <= 0) {
       continue
     }
     rollingVolatility.push({
-      date: monthlyReturns[index].date,
-      value: stdev * Math.sqrt(12) * 100,
+      date: sortedPoints[index].date,
+      value: stdev * Math.sqrt(periodsPerYear) * 100,
     })
   }
 
@@ -1483,22 +1836,24 @@ function buildRollingAnnualizedVolatilitySeries(points: FundChartPoint[], window
 }
 
 function buildRollingSharpeSeries(points: FundChartPoint[], windowMonths = ROLLING_WINDOW_MONTHS) {
-  const monthlyReturns = buildMonthlyReturnSeries(points).map((point) => ({
-    date: point.date,
-    value: point.value / 100,
-  }))
+  const sortedPoints = sortSeriesByDate(points)
   const rollingSharpe: FundChartPoint[] = []
 
-  for (let index = windowMonths - 1; index < monthlyReturns.length; index += 1) {
-    const windowReturns = monthlyReturns.slice(index - windowMonths + 1, index + 1).map((point) => point.value)
+  for (let index = 1; index < sortedPoints.length; index += 1) {
+    const windowPoints = getRollingWindowPoints(sortedPoints, index, windowMonths)
+    const windowReturns = buildPeriodicReturnSeries(windowPoints).map((point) => point.value)
+    if (windowReturns.length < MIN_ROLLING_RETURN_OBSERVATIONS) {
+      continue
+    }
     const stdev = getSampleStandardDeviation(windowReturns)
-    if (stdev == null || stdev === 0) {
+    const periodsPerYear = inferAnnualizationPeriodsPerYear(windowPoints, windowReturns.length)
+    if (stdev == null || stdev === 0 || periodsPerYear == null || periodsPerYear <= 0) {
       continue
     }
     const mean = windowReturns.reduce((sum, value) => sum + value, 0) / windowReturns.length
     rollingSharpe.push({
-      date: monthlyReturns[index].date,
-      value: (mean / stdev) * Math.sqrt(12),
+      date: sortedPoints[index].date,
+      value: (mean / stdev) * Math.sqrt(periodsPerYear),
     })
   }
 
@@ -1587,37 +1942,20 @@ function buildMonthlyMinimumSeries(points: FundChartPoint[]) {
   return monthlyMinimums
 }
 
-function inferAnnualizationPeriodsPerYear(points: FundChartPoint[]) {
-  const diffs: number[] = []
-
-  for (let index = 1; index < points.length; index += 1) {
-    const previousDate = new Date(`${points[index - 1].date}T00:00:00`)
-    const currentDate = new Date(`${points[index].date}T00:00:00`)
-    if (Number.isNaN(previousDate.getTime()) || Number.isNaN(currentDate.getTime())) {
-      continue
-    }
-    const diffDays = (currentDate.getTime() - previousDate.getTime()) / 86_400_000
-    if (diffDays > 0) {
-      diffs.push(diffDays)
-    }
+function inferAnnualizationPeriodsPerYear(points: FundChartPoint[], returnCount?: number) {
+  const sortedPoints = sortSeriesByDate(points)
+  const realizedReturnCount = returnCount ?? Math.max(sortedPoints.length - 1, 0)
+  if (sortedPoints.length < 2 || realizedReturnCount < 1) {
+    return null
   }
-
-  if (!diffs.length) {
-    return 252
+  const elapsedDays = getDateDifferenceInDays(
+    sortedPoints[0].date,
+    sortedPoints[sortedPoints.length - 1].date,
+  )
+  if (elapsedDays == null || elapsedDays <= 0) {
+    return null
   }
-
-  const sortedDiffs = [...diffs].sort((left, right) => left - right)
-  const medianDiff = sortedDiffs[Math.floor(sortedDiffs.length / 2)]
-  if (medianDiff <= 3) {
-    return 252
-  }
-  if (medianDiff <= 10) {
-    return 52
-  }
-  if (medianDiff <= 20) {
-    return 24
-  }
-  return 12
+  return (realizedReturnCount / elapsedDays) * 365.25
 }
 
 function getSampleStandardDeviation(values: number[]) {
@@ -1632,7 +1970,11 @@ function getSampleStandardDeviation(values: number[]) {
 
 function buildMonthlyAnnualizedVolatilitySeries(points: FundChartPoint[]) {
   const sortedPoints = [...points].sort((left, right) => left.date.localeCompare(right.date))
-  const periodsPerYear = inferAnnualizationPeriodsPerYear(sortedPoints)
+  const returnCount = buildPeriodicReturnSeries(sortedPoints).length
+  const periodsPerYear = inferAnnualizationPeriodsPerYear(sortedPoints, returnCount)
+  if (periodsPerYear == null || periodsPerYear <= 0) {
+    return []
+  }
   const returnsByMonth = new Map<string, { date: string; returns: number[] }>()
 
   for (let index = 1; index < sortedPoints.length; index += 1) {
@@ -1745,6 +2087,15 @@ function findLastPointIndexOnOrBefore(points: FundChartPoint[], targetDate: stri
   return -1
 }
 
+function findLastPointIndexBefore(points: FundChartPoint[], targetDate: string) {
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    if (points[index].date < targetDate) {
+      return index
+    }
+  }
+  return -1
+}
+
 function getAnchoredWindow(
   points: FundChartPoint[],
   periodKey: PerformanceMetricPeriodKey,
@@ -1769,23 +2120,26 @@ function getAnchoredWindow(
   const targetStartDate =
     periodKey === 'YTD'
       ? `${endPoint.date.slice(0, 4)}-01-01`
+      : periodKey === 'MTD'
+        ? `${endPoint.date.slice(0, 7)}-01`
       : periodKey === '1W'
         ? shiftIsoDate(endPoint.date, { days: -7 })
-        : periodKey === '1M'
-          ? shiftIsoDate(endPoint.date, { months: -1 })
-          : periodKey === '1Y'
-            ? shiftIsoDate(endPoint.date, { years: -1 })
-            : periodKey === '2Y'
-              ? shiftIsoDate(endPoint.date, { years: -2 })
-              : periodKey === '3Y'
-                ? shiftIsoDate(endPoint.date, { years: -3 })
-                : shiftIsoDate(endPoint.date, { years: -5 })
+        : periodKey === '1Y'
+          ? shiftIsoDate(endPoint.date, { years: -1 })
+          : periodKey === '2Y'
+            ? shiftIsoDate(endPoint.date, { years: -2 })
+            : periodKey === '3Y'
+              ? shiftIsoDate(endPoint.date, { years: -3 })
+              : shiftIsoDate(endPoint.date, { years: -5 })
 
   if (!targetStartDate) {
     return []
   }
 
-  const startIndex = findLastPointIndexOnOrBefore(sortedPoints, targetStartDate)
+  const startIndex =
+    periodKey === 'YTD' || periodKey === 'MTD'
+      ? findLastPointIndexBefore(sortedPoints, targetStartDate)
+      : findLastPointIndexOnOrBefore(sortedPoints, targetStartDate)
   if (startIndex < 0 || startIndex >= endIndex) {
     return []
   }
@@ -1848,7 +2202,10 @@ function getAnnualizedVolatilityFromPoints(points: FundChartPoint[]) {
   if (stdev == null) {
     return null
   }
-  const periodsPerYear = inferAnnualizationPeriodsPerYear(sortSeriesByDate(points))
+  const periodsPerYear = inferAnnualizationPeriodsPerYear(points, periodicReturns.length)
+  if (periodsPerYear == null || periodsPerYear <= 0) {
+    return null
+  }
   return stdev * Math.sqrt(periodsPerYear) * 100
 }
 
@@ -1861,7 +2218,10 @@ function getAnnualizedDownsideDeviationFromPoints(points: FundChartPoint[]) {
   if (downsideDeviation == null) {
     return null
   }
-  const periodsPerYear = inferAnnualizationPeriodsPerYear(sortSeriesByDate(points))
+  const periodsPerYear = inferAnnualizationPeriodsPerYear(points, periodicReturns.length)
+  if (periodsPerYear == null || periodsPerYear <= 0) {
+    return null
+  }
   return downsideDeviation * Math.sqrt(periodsPerYear) * 100
 }
 
@@ -1875,7 +2235,10 @@ function getSharpeRatioFromPoints(points: FundChartPoint[]) {
     return null
   }
   const mean = periodicReturns.reduce((sum, value) => sum + value, 0) / periodicReturns.length
-  const periodsPerYear = inferAnnualizationPeriodsPerYear(sortSeriesByDate(points))
+  const periodsPerYear = inferAnnualizationPeriodsPerYear(points, periodicReturns.length)
+  if (periodsPerYear == null || periodsPerYear <= 0) {
+    return null
+  }
   return (mean / stdev) * Math.sqrt(periodsPerYear)
 }
 
@@ -1889,7 +2252,10 @@ function getSortinoRatioFromPoints(points: FundChartPoint[]) {
     return null
   }
   const mean = periodicReturns.reduce((sum, value) => sum + value, 0) / periodicReturns.length
-  const periodsPerYear = inferAnnualizationPeriodsPerYear(sortSeriesByDate(points))
+  const periodsPerYear = inferAnnualizationPeriodsPerYear(points, periodicReturns.length)
+  if (periodsPerYear == null || periodsPerYear <= 0) {
+    return null
+  }
   return (mean / downsideDeviation) * Math.sqrt(periodsPerYear)
 }
 
@@ -1912,6 +2278,7 @@ function alignPeriodicReturnPairs(
         return null
       }
       return {
+        startDate: point.startDate,
         date: point.endDate,
         left: point.value,
         right:
@@ -1924,6 +2291,7 @@ function alignPeriodicReturnPairs(
       (
         point,
       ): point is {
+        startDate: string
         date: string
         left: number
         right: number
@@ -1932,7 +2300,7 @@ function alignPeriodicReturnPairs(
 }
 
 function getAnnualizedReturnFromPeriodicValues(values: number[], periodsPerYear: number) {
-  if (!values.length) {
+  if (!values.length || periodsPerYear <= 0) {
     return null
   }
   const cumulative = values.reduce((product, value) => product * (1 + value), 1)
@@ -1988,14 +2356,20 @@ function buildPerformanceRelativeSnapshot(
     }
   }
 
-  const periodsPerYear = inferAnnualizationPeriodsPerYear(sortSeriesByDate(points))
+  const annualizationPoints = [
+    { date: alignedPairs[0].startDate, value: 1 },
+    ...alignedPairs.map((point) => ({ date: point.date, value: 1 })),
+  ]
+  const periodsPerYear = inferAnnualizationPeriodsPerYear(annualizationPoints, alignedPairs.length)
   const activeReturns = alignedPairs.map((point) => point.left - point.right)
   const activeReturnStdev = getSampleStandardDeviation(activeReturns)
   const activeReturnMean = activeReturns.reduce((sum, value) => sum + value, 0) / activeReturns.length
   const trackingError =
-    activeReturnStdev == null ? null : activeReturnStdev * Math.sqrt(periodsPerYear) * 100
+    activeReturnStdev == null || periodsPerYear == null || periodsPerYear <= 0
+      ? null
+      : activeReturnStdev * Math.sqrt(periodsPerYear) * 100
   const informationRatio =
-    activeReturnStdev == null || activeReturnStdev === 0
+    activeReturnStdev == null || activeReturnStdev === 0 || periodsPerYear == null || periodsPerYear <= 0
       ? null
       : (activeReturnMean / activeReturnStdev) * Math.sqrt(periodsPerYear)
 
@@ -2012,22 +2386,34 @@ function buildPerformanceRelativeSnapshot(
 
   const upPairs = alignedPairs.filter((point) => point.right > 0)
   const downPairs = alignedPairs.filter((point) => point.right < 0)
-  const upsideBenchmarkReturn = getAnnualizedReturnFromPeriodicValues(
-    upPairs.map((point) => point.right),
-    periodsPerYear,
-  )
-  const upsideFundReturn = getAnnualizedReturnFromPeriodicValues(
-    upPairs.map((point) => point.left),
-    periodsPerYear,
-  )
-  const downsideBenchmarkReturn = getAnnualizedReturnFromPeriodicValues(
-    downPairs.map((point) => point.right),
-    periodsPerYear,
-  )
-  const downsideFundReturn = getAnnualizedReturnFromPeriodicValues(
-    downPairs.map((point) => point.left),
-    periodsPerYear,
-  )
+  const upsideBenchmarkReturn =
+    periodsPerYear == null
+      ? null
+      : getAnnualizedReturnFromPeriodicValues(
+          upPairs.map((point) => point.right),
+          periodsPerYear,
+        )
+  const upsideFundReturn =
+    periodsPerYear == null
+      ? null
+      : getAnnualizedReturnFromPeriodicValues(
+          upPairs.map((point) => point.left),
+          periodsPerYear,
+        )
+  const downsideBenchmarkReturn =
+    periodsPerYear == null
+      ? null
+      : getAnnualizedReturnFromPeriodicValues(
+          downPairs.map((point) => point.right),
+          periodsPerYear,
+        )
+  const downsideFundReturn =
+    periodsPerYear == null
+      ? null
+      : getAnnualizedReturnFromPeriodicValues(
+          downPairs.map((point) => point.left),
+          periodsPerYear,
+        )
 
   return {
     informationRatio: Number.isFinite(informationRatio) ? informationRatio : null,
@@ -2260,31 +2646,161 @@ function formatAxisNumber(value: number) {
   return value.toFixed(digits)
 }
 
-function formatChartAxisDate(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
+function parseChartDateParts(value: string) {
+  const match = /^(\d{4})-(\d{2})(?:-(\d{2}))?/.exec(value)
+  if (!match) {
+    return null
   }
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    year: '2-digit',
-  })
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = match[3] ? Number(match[3]) : 1
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    return null
+  }
+  return {
+    year,
+    month,
+    day,
+    time: Date.UTC(year, month - 1, day),
+  }
 }
 
-function getChartTickDates(points: FundChartPoint[], count = 5) {
+function getChartDateSpanDays(points: FundChartPoint[]) {
+  if (points.length < 2) {
+    return 0
+  }
+  const first = parseChartDateParts(points[0].date)
+  const last = parseChartDateParts(points[points.length - 1].date)
+  if (!first || !last) {
+    return 0
+  }
+  return Math.max(0, Math.round((last.time - first.time) / 86_400_000))
+}
+
+function formatUtcChartDate(time: number) {
+  const date = new Date(time)
+  const year = date.getUTCFullYear()
+  const month = date.getUTCMonth() + 1
+  const day = date.getUTCDate()
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+function formatChartAxisTickLabel(value: string, spanDays: number, previousValue: string | null = null) {
+  const parts = parseChartDateParts(value)
+  if (!parts) {
+    return value
+  }
+  const previousParts = previousValue ? parseChartDateParts(previousValue) : null
+  const crossesYear = Boolean(previousParts && previousParts.year !== parts.year)
+  const isFirstTick = previousParts == null
+  const isYearStart = parts.month === 1 && (!previousParts || previousParts.year !== parts.year || previousParts.month !== 1)
+  const month = MONTH_SHORT_LABELS[parts.month - 1] || String(parts.month).padStart(2, '0')
+  if (crossesYear || (spanDays > 120 && (isFirstTick || isYearStart))) {
+    return String(parts.year)
+  }
+  if (spanDays <= 180) {
+    return `${parts.month}/${parts.day}`
+  }
+  return month
+}
+
+function renderChartXAxisTick(
+  tick: ChartAxisTick,
+  previousTick: ChartAxisTick | null,
+  x: number,
+  geometry: ChartGeometry,
+  spanDays: number,
+  keyPrefix: string,
+) {
+  const label = formatChartAxisTickLabel(tick.date, spanDays, previousTick?.date || null)
+  const y = getXAxisLabelY(geometry)
+  const tickTopY = getXAxisTickTopY(geometry)
+  return (
+    <g key={`${keyPrefix}-${tick.date}`}>
+      <line
+        className="instrument-x-axis-tick"
+        x1={x}
+        y1={tickTopY}
+        x2={x}
+        y2={tickTopY + 6}
+      />
+      <text className="instrument-x-axis-label" x={x} y={y}>
+        {label}
+      </text>
+    </g>
+  )
+}
+
+function getChartTickDates(points: FundChartPoint[], count = 7) {
   if (!points.length) {
     return []
   }
-  const step = Math.max(1, Math.floor((points.length - 1) / Math.max(count - 1, 1)))
-  const ticks = Array.from({ length: count }, (_, index) => {
-    const candidate = points[Math.min(points.length - 1, index * step)]
-    return candidate
-  })
-  const last = points[points.length - 1]
-  if (ticks[ticks.length - 1]?.date !== last.date) {
-    ticks[ticks.length - 1] = last
+  const sortedPoints = sortSeriesByDate(points)
+  const datedPoints = sortedPoints
+    .map((point) => {
+      const parsed = parseChartDateParts(point.date)
+      return parsed ? { point, time: parsed.time } : null
+    })
+    .filter((item): item is { point: FundChartPoint; time: number } => item !== null)
+  if (!datedPoints.length) {
+    return sortedPoints.slice(0, count)
   }
-  return ticks.filter((point, index, array) => array.findIndex((item) => item.date === point.date) === index)
+  const targetCount = Math.min(Math.max(count, 2), datedPoints.length)
+  const first = datedPoints[0]
+  const last = datedPoints[datedPoints.length - 1]
+  const spanDays = Math.max(0, Math.round((last.time - first.time) / 86_400_000))
+  const selected: FundChartPoint[] = []
+  const seenDates = new Set<string>()
+  for (let index = 0; index < targetCount; index += 1) {
+    const targetTime =
+      first.time + ((last.time - first.time) / Math.max(targetCount - 1, 1)) * index
+    const nearest = datedPoints.reduce((best, candidate) =>
+      Math.abs(candidate.time - targetTime) < Math.abs(best.time - targetTime) ? candidate : best,
+    )
+    if (!seenDates.has(nearest.point.date)) {
+      selected.push(nearest.point)
+      seenDates.add(nearest.point.date)
+    }
+  }
+  if (!seenDates.has(last.point.date)) {
+    selected.push(last.point)
+  }
+  return selected
+}
+
+function getChartAxisTicks(points: FundChartPoint[], count = 7): ChartAxisTick[] {
+  if (!points.length) {
+    return []
+  }
+  const sortedPoints = sortSeriesByDate(points)
+  const first = parseChartDateParts(sortedPoints[0].date)
+  const last = parseChartDateParts(sortedPoints[sortedPoints.length - 1].date)
+  if (!first || !last) {
+    const targetCount = Math.min(Math.max(count, 2), sortedPoints.length)
+    return Array.from({ length: targetCount }, (_, index) => {
+      const pointIndex = Math.round((index / Math.max(targetCount - 1, 1)) * (sortedPoints.length - 1))
+      return {
+        date: sortedPoints[pointIndex].date,
+        xRatio: targetCount <= 1 ? 0 : index / (targetCount - 1),
+      }
+    })
+  }
+  const targetCount = Math.min(Math.max(count, 2), Math.max(2, sortedPoints.length))
+  return Array.from({ length: targetCount }, (_, index) => {
+    const xRatio = targetCount <= 1 ? 0 : index / (targetCount - 1)
+    return {
+      date: formatUtcChartDate(first.time + (last.time - first.time) * xRatio),
+      xRatio,
+    }
+  })
 }
 
 function buildChartBands(
@@ -2406,6 +2922,18 @@ function formatFrameworkValue(value: unknown) {
   return text || '—'
 }
 
+function getDefinitionRubricText(definition: InstrumentAttributeDefinition) {
+  const rubric = definition.rubric_json || {}
+  const parts = [
+    definition.description,
+    typeof rubric.summary === 'string' ? rubric.summary : '',
+    typeof rubric.standard === 'string' ? rubric.standard : '',
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+  return parts.length ? parts.join(' ') : definition.attribute_key
+}
+
 function isFrameworkOptionSelected(
   attributeValues: InstrumentAttributeValuesResponse | null,
   definition: InstrumentAttributeDefinition,
@@ -2441,7 +2969,6 @@ type AttributeFrameworkDomain = Extract<
 
 const ATTRIBUTE_DOMAIN_ORDER: AttributeFrameworkDomain[] = [
   'research',
-  'monitoring',
 ]
 
 const ATTRIBUTE_DOMAIN_META: Record<
@@ -2453,7 +2980,7 @@ const ATTRIBUTE_DOMAIN_META: Record<
   }
 > = {
   research: {
-    title: 'Research Tags',
+    title: 'Qualitative Research Tags',
     note: '',
     emptyState: 'Complete fund taxonomy first to unlock category-specific research tags.',
   },
@@ -2466,10 +2993,16 @@ const ATTRIBUTE_DOMAIN_META: Record<
 
 const ATTRIBUTE_GROUP_LABELS: Record<string, string> = {
   overview_identity: 'Identity',
-  research_coverage: 'Coverage',
-  research_process: 'Process & Construction',
+  research_coverage: 'Research Governance',
+  research_edge: 'Edge & Philosophy',
+  research_process: 'Process Repeatability',
   research_style: 'Style Tags',
-  research_manager: 'Manager Assessment',
+  research_manager: 'People & Organization',
+  research_risk: 'Risk Management',
+  research_terms: 'Capacity, Liquidity & Terms',
+  research_governance: 'Governance & Alignment',
+  research_delivery: 'Historical Delivery',
+  research_role: 'Portfolio Role',
   monitoring_risk: 'Risk Profile',
   monitoring_regime: 'Regime Fit',
   monitoring_operational: 'Operational Coverage',
@@ -2539,6 +3072,7 @@ function buildAttributeFrameworkSections(
   return ATTRIBUTE_DOMAIN_ORDER.map((domain) => {
     const definitions = [...attributeValues.definitions]
       .filter((definition) => definition.domain_code === domain)
+      .filter((definition) => definition.attribute_key !== 'coverage_status')
       .filter(
         (definition) =>
           definitionMatchesApplicability(definition, values) ||
@@ -2601,6 +3135,7 @@ type FundDetailPageProps = {
 }
 
 export default function FundDetailPage({ fundId: propFundId }: FundDetailPageProps = {}) {
+  const { language } = useLanguage()
   const { fundId: routeFundId = 'fax' } = useParams()
   const fundId = propFundId || routeFundId
   const databaseDashboardUrl = `${PLATFORM_HOME_URL}/database-dashboard`
@@ -2617,8 +3152,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     useState<FundNavSeriesResponse | null>(null)
   const [performanceMatrixMode, setPerformanceMatrixMode] =
     useState<PerformanceMatrixMode>('values')
-  const [rollingReturnWindowMonths, setRollingReturnWindowMonths] =
-    useState<RollingReturnWindowMonths>(12)
+  const [rollingRiskWindowMonths, setRollingRiskWindowMonths] =
+    useState<RollingRiskWindowMonths>(12)
   const [quoteActionNotice, setQuoteActionNotice] = useState<string | null>(null)
   const [chartStartDate, setChartStartDate] = useState('')
   const [chartEndDate, setChartEndDate] = useState('')
@@ -2643,12 +3178,20 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [editingStrategy, setEditingStrategy] = useState(false)
   const [editingPriceSection, setEditingPriceSection] = useState<PriceEditSection | null>(null)
   const [editingDocuments, setEditingDocuments] = useState(false)
-  const [editingResearch, setEditingResearch] = useState(false)
+  const [editingResearchOverview, setEditingResearchOverview] = useState(false)
   const [peopleDraft, setPeopleDraft] = useState<PeopleDraft | null>(null)
   const [strategyDraft, setStrategyDraft] = useState<StrategyDraft | null>(null)
   const [priceDraft, setPriceDraft] = useState<PriceDraft | null>(null)
   const [documentsDraft, setDocumentsDraft] = useState<DocumentsDraft | null>(null)
+  const [documentUploadFile, setDocumentUploadFile] = useState<File | null>(null)
+  const [documentUploadTitle, setDocumentUploadTitle] = useState('')
+  const [documentUploadType, setDocumentUploadType] = useState('')
+  const [documentUploadAsOfDate, setDocumentUploadAsOfDate] = useState('')
+  const [documentUploadNotes, setDocumentUploadNotes] = useState('')
+  const [uploadingDocument, setUploadingDocument] = useState(false)
   const [researchDraft, setResearchDraft] = useState<ResearchDraft | null>(null)
+  const [manualRatingDraft, setManualRatingDraft] = useState<number | null>(null)
+  const [manualRatingDirty, setManualRatingDirty] = useState(false)
   const [savingSection, setSavingSection] = useState<string | null>(null)
   const [sectionNotice, setSectionNotice] = useState<string | null>(null)
   const [sectionError, setSectionError] = useState<string | null>(null)
@@ -2839,8 +3382,22 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setStrategyDraft(toEditableStrategyDraft(bundle.strategy))
     setPriceDraft(toEditablePriceDraft(bundle.price))
     setDocumentsDraft(toEditableDocumentsDraft(bundle.documents))
-    setResearchDraft(toEditableResearchDraft(bundle.research))
-  }, [bundle])
+    setResearchDraft((current) =>
+      editingResearchOverview && current ? current : toEditableResearchDraft(bundle.research),
+    )
+    if (!manualRatingDirty) {
+      setManualRatingDraft(parseManualRating(bundle.research.manual_rating))
+    }
+  }, [bundle, editingResearchOverview, manualRatingDirty])
+
+  useEffect(() => {
+    setDocumentUploadFile(null)
+    setDocumentUploadTitle('')
+    setDocumentUploadType('')
+    setDocumentUploadAsOfDate('')
+    setDocumentUploadNotes('')
+    setManualRatingDirty(false)
+  }, [fundId])
 
   useEffect(() => {
     if (!bundle) {
@@ -3107,7 +3664,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
               row.as_of_date.trim() ||
               row.source.trim() ||
               row.status.trim() ||
-              row.version_label.trim(),
+              row.version_label.trim() ||
+              row.file_name.trim() ||
+              row.notes.trim(),
             )
             .map((row) => ({
               title: row.title.trim(),
@@ -3116,6 +3675,13 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
               source: row.source.trim(),
               status: row.status.trim(),
               version_label: row.version_label.trim(),
+              file_name: row.file_name.trim(),
+              download_url: row.download_url.trim(),
+              file_size: row.file_size.trim() || null,
+              content_type: row.content_type.trim(),
+              uploaded_at: row.uploaded_at.trim() || null,
+              notes: row.notes.trim(),
+              stored_file_name: row.stored_file_name.trim(),
             })),
           recent_imports: documentsDraft.importRows
             .filter((row) =>
@@ -3161,39 +3727,97 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     }
   }
 
-  async function handleSaveResearch() {
-    if (!researchDraft) {
+  async function handleUploadDocument() {
+    if (!documentUploadFile) {
+      setSectionError(localize(language, SYSTEM_LABELS.pickFile))
       return
     }
-    setSavingSection('research')
+    setUploadingDocument(true)
     setSectionError(null)
     setSectionNotice(null)
     try {
-      await updateInstrumentResearch(fundId, {
+      const uploadedDocuments = await uploadInstrumentDocument(fundId, {
+        file: documentUploadFile,
+        title: documentUploadTitle.trim(),
+        document_type: documentUploadType.trim(),
+        as_of_date: documentUploadAsOfDate,
+        source: 'manual_upload',
+        status: 'uploaded',
+        notes: documentUploadNotes.trim(),
+        updated_by: 'terminal_ui',
+      })
+      setBundle((current) => (current ? { ...current, documents: uploadedDocuments } : current))
+      setDocumentsDraft(toEditableDocumentsDraft(uploadedDocuments))
+      setDocumentUploadFile(null)
+      setDocumentUploadTitle('')
+      setDocumentUploadType('')
+      setDocumentUploadAsOfDate('')
+      setDocumentUploadNotes('')
+      setSectionNotice(localize(language, SYSTEM_LABELS.documentUploaded))
+    } catch (uploadError) {
+      setSectionError(uploadError instanceof Error ? uploadError.message : localize(language, SYSTEM_LABELS.uploadFailed))
+    } finally {
+      setUploadingDocument(false)
+    }
+  }
+
+  async function handleSaveResearchOverview() {
+    if (!bundle || !researchDraft) {
+      return
+    }
+    setSavingSection('research_overview')
+    setSectionError(null)
+    setSectionNotice(null)
+    try {
+      const response = await updateInstrumentResearch(fundId, {
         payload: {
           overview: Object.fromEntries(
             researchDraft.overviewRows
               .map((row) => [row.key.trim(), row.value.trim()] as const)
               .filter(([key, value]) => key && value),
           ),
-          thesis: researchDraft.thesis.trim(),
-          conclusions: researchDraft.conclusionRows
-            .filter((row) => row.conclusion.trim() || row.evidence_ref.trim() || row.status.trim())
-            .map((row) => ({
-              conclusion: row.conclusion.trim(),
-              evidence_ref: row.evidence_ref.trim(),
-              status: row.status.trim(),
-            })),
-          timeline_notes: researchDraft.timelineNotes,
-          notes: cleanListRows(researchDraft.noteRows),
+          manual_rating: parseManualRating(bundle.research.manual_rating),
+          timeline_notes: normalizeResearchTimelineNotes(bundle.research.timeline_notes),
         },
         updated_by: 'terminal_ui',
       })
-      setEditingResearch(false)
-      setSectionNotice('Research profile saved.')
-      setRefreshToken((value) => value + 1)
+      setBundle((current) => (current ? { ...current, research: response } : current))
+      setResearchDraft(toEditableResearchDraft(response))
+      setEditingResearchOverview(false)
+      setSectionNotice('Research view saved.')
     } catch (saveError) {
-      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save research profile.')
+      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save research view.')
+    } finally {
+      setSavingSection(null)
+    }
+  }
+
+  async function handleSaveManualRating() {
+    if (!bundle) {
+      return
+    }
+    setSavingSection('manual_rating')
+    setSectionError(null)
+    setSectionNotice(null)
+    try {
+      const response = await updateInstrumentResearch(fundId, {
+        payload: {
+          overview: bundle.research.overview || {},
+          manual_rating: manualRatingDraft,
+          timeline_notes: normalizeResearchTimelineNotes(bundle.research.timeline_notes),
+        },
+        updated_by: 'terminal_ui',
+      })
+      const normalizedRating = parseManualRating(response.manual_rating)
+      setBundle((current) => (current ? { ...current, research: response } : current))
+      setManualRatingDraft(normalizedRating)
+      setManualRatingDirty(false)
+      if (!editingResearchOverview) {
+        setResearchDraft(toEditableResearchDraft(response))
+      }
+      setSectionNotice('Rating saved.')
+    } catch (saveError) {
+      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save rating.')
     } finally {
       setSavingSection(null)
     }
@@ -3202,10 +3826,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   function buildResearchPayloadWithTimelineNotes(nextTimelineNotes: ResearchTimelineNote[]) {
     return {
       overview: bundle?.research.overview || {},
-      thesis: bundle?.research.thesis || '',
-      conclusions: bundle?.research.conclusions || [],
+      manual_rating: bundle?.research.manual_rating ?? null,
       timeline_notes: nextTimelineNotes,
-      notes: bundle?.research.notes || [],
     }
   }
 
@@ -3382,7 +4004,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
               ...current,
               summary: {
                 ...current.summary,
-                category_name: response.assigned_label || 'Unclassified',
                 taxonomy: response,
               },
             }
@@ -3438,8 +4059,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const currencyFilteredRows = quoteSeriesContext.rows
   const availableQuoteBases = quoteSeriesContext.availableBases
   const activeQuoteBasis = quoteSeriesContext.activeBasis || resolvePreferredQuoteBasis(navSeries.nav_basis_type) || 'nav'
+  const returnQuoteBasis = resolveReturnQuoteBasis(currencyFilteredRows, navSeries.nav_basis_type)
   const latestQuoteRow = quoteSeriesContext.latestRow || navSeries.rows[navSeries.rows.length - 1]
   const navBasisSeries = quoteSeriesContext.basisSeries
+  const returnBasisSeries = returnQuoteBasis ? buildBasisSeries(currencyFilteredRows, returnQuoteBasis) : []
   const defaultWindow = getRangeWindow(navBasisSeries, chartRange)
   const effectiveStartDate = chartRange === 'CUSTOM' ? chartStartDate : defaultWindow.start
   const effectiveEndDate = chartRange === 'CUSTOM' ? chartEndDate : defaultWindow.end
@@ -3496,6 +4119,14 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     activeMetricBenchmarkBasis
       ? buildBasisSeries(metricBenchmarkSourceRows, activeMetricBenchmarkBasis)
       : []
+  const metricBenchmarkReturnBasis = resolveReturnQuoteBasis(
+    metricBenchmarkSourceRows,
+    metricBenchmarkNavSeries?.nav_basis_type,
+  )
+  const metricBenchmarkReturnBasisSeries =
+    metricBenchmarkReturnBasis
+      ? buildBasisSeries(metricBenchmarkSourceRows, metricBenchmarkReturnBasis)
+      : []
   const shouldIndexCompareSeries = Boolean(selectedBenchmark)
   const indexedNavSeries = shouldIndexCompareSeries ? rebaseSeries(visibleNavSeries, 1) : []
   const indexedBenchmarkSeries = shouldIndexCompareSeries ? rebaseSeries(benchmarkVisibleNavSeries, 1) : []
@@ -3521,9 +4152,13 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const quoteChangePct = quoteLatestStats.changePct
   const availableTabs = normalizeTabs(summary.tabs || [])
   const navBasisType = navSeries.nav_basis_type || summary.nav_snapshot?.nav_basis_type || 'auto'
-  const navBasisLabel = NAV_BASIS_LABELS[navBasisType] || toTitleCase(navBasisType)
-  const quoteBasisLabel = QUOTE_BASIS_LABELS[activeQuoteBasis]
-  const chartSeriesBasisLabel = shouldIndexCompareSeries ? 'Indexed to 1.00' : quoteBasisLabel
+  const navBasisLabel = NAV_BASIS_LABELS[navBasisType]
+    ? localize(language, NAV_BASIS_LABELS[navBasisType])
+    : toTitleCase(navBasisType)
+  const quoteBasisLabel = localize(language, QUOTE_BASIS_LABELS[activeQuoteBasis])
+  const chartSeriesBasisLabel = shouldIndexCompareSeries
+    ? localize(language, SYSTEM_LABELS.indexed)
+    : quoteBasisLabel
   const quoteBasisOptions = availableQuoteBases.length
     ? availableQuoteBases
     : [activeQuoteBasis]
@@ -3565,6 +4200,363 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   }))
   const peopleAdditionalDraftRows =
     peopleDraft?.overviewRows.filter((row) => !PEOPLE_PRIMARY_OVERVIEW_FIELD_KEYS.has(row.key.trim())) ?? []
+  const peopleManagementProfileFields = PEOPLE_PRIMARY_OVERVIEW_FIELDS.filter(
+    (field) => field.key !== 'advisor' && field.key !== 'sub_advisor',
+  )
+  const peopleManagementProfileRows = peopleManagementProfileFields.map((field) => ({
+    key: field.key,
+    label: field.label,
+    value: formatResearchOverviewValue(field.key, managementStats[field.key]),
+  }))
+  const formatProfileListValue = (items: string[]) =>
+    items.length ? (
+      <div className="instrument-profile-line-list">
+        {items.map((item, index) => (
+          <div key={`${item}-${index}`}>{item}</div>
+        ))}
+      </div>
+    ) : (
+      '—'
+    )
+  const formatProfileFactList = (rows: Array<{ label: string; value: string }>) => {
+    const visibleRows = rows.filter((row) => row.value && row.value !== '—')
+    return visibleRows.length ? (
+      <div className="instrument-profile-fact-list">
+        {visibleRows.map((row) => (
+          <div key={row.label}>
+            <span>{row.label}</span>
+            <strong>{row.value}</strong>
+          </div>
+        ))}
+      </div>
+    ) : (
+      '—'
+    )
+  }
+  const formatPeopleTeamValue = (rows: Array<Record<string, unknown>>) => {
+    const visibleRows = rows.filter(
+      (row) => getString(row.name) || getString(row.role) || getString(row.start_date),
+    )
+    return visibleRows.length ? (
+      <div className="instrument-profile-line-list instrument-profile-team-list">
+        {visibleRows.map((row, index) => {
+          const role = getString(row.role)
+          const startDate = formatDate(row.start_date)
+          const details = [role, startDate !== '—' ? `Start ${startDate}` : ''].filter(Boolean)
+          return (
+            <div key={`${getString(row.name) || 'team'}-${index}`}>
+              <strong>{getString(row.name) || '—'}</strong>
+              {details.length ? <span>{details.join(' · ')}</span> : null}
+            </div>
+          )
+        })}
+      </div>
+    ) : (
+      '—'
+    )
+  }
+  const renderPeopleOverviewValue = (
+    key: string,
+    fallbackValue: string,
+    type: 'date' | 'number' | 'text' = 'text',
+    step?: string,
+  ) =>
+    editingPeople && peopleDraft ? (
+      <input
+        className="table-input"
+        type={type === 'date' ? 'date' : type === 'number' ? 'number' : 'text'}
+        step={step}
+        value={getPeopleOverviewDraftValue(peopleDraft, key)}
+        onChange={(event) =>
+          setPeopleDraft((current) =>
+            current
+              ? {
+                  ...current,
+                  overviewRows: upsertKeyValueRows(current.overviewRows, key, event.target.value),
+                }
+              : current,
+          )
+        }
+      />
+    ) : (
+      fallbackValue || '—'
+    )
+  const renderPeopleManagementProfileValue = () =>
+    editingPeople && peopleDraft ? (
+      <div className="instrument-profile-field-grid">
+        {peopleManagementProfileFields.map((field) => (
+          <label key={field.key} className="instrument-profile-field">
+            <span>{field.label}</span>
+            <input
+              className="table-input"
+              type={field.type === 'date' ? 'date' : field.type === 'number' ? 'number' : 'text'}
+              step={field.key === 'number_of_managers' ? '1' : field.type === 'number' ? '0.1' : undefined}
+              value={getPeopleOverviewDraftValue(peopleDraft, field.key)}
+              onChange={(event) =>
+                setPeopleDraft((current) =>
+                  current
+                    ? {
+                        ...current,
+                        overviewRows: upsertKeyValueRows(current.overviewRows, field.key, event.target.value),
+                      }
+                    : current,
+                )
+              }
+            />
+          </label>
+        ))}
+      </div>
+    ) : (
+      formatProfileFactList(peopleManagementProfileRows)
+    )
+  const renderPeopleAdditionalFieldsValue = () =>
+    editingPeople && peopleDraft ? (
+      <div className="instrument-profile-inline-editor">
+        <table className="terminal-table terminal-table-compact instrument-data-table instrument-profile-inline-table">
+          <thead>
+            <tr>
+              <th>Field Key</th>
+              <th>Value</th>
+              <th className="instrument-table-action-col">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {peopleAdditionalDraftRows.length ? (
+              peopleAdditionalDraftRows.map((row) => (
+                <tr key={row.id}>
+                  <td>
+                    <input
+                      className="table-input"
+                      value={row.key}
+                      placeholder="field_key"
+                      onChange={(event) =>
+                        setPeopleDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                overviewRows: current.overviewRows.map((item) =>
+                                  item.id === row.id ? { ...item, key: event.target.value } : item,
+                                ),
+                              }
+                            : current,
+                        )
+                      }
+                    />
+                  </td>
+                  <td>
+                    <input
+                      className="table-input"
+                      value={row.value}
+                      placeholder="value"
+                      onChange={(event) =>
+                        setPeopleDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                overviewRows: current.overviewRows.map((item) =>
+                                  item.id === row.id ? { ...item, value: event.target.value } : item,
+                                ),
+                              }
+                            : current,
+                        )
+                      }
+                    />
+                  </td>
+                  <td className="instrument-table-row-action-cell">
+                    <button
+                      type="button"
+                      className="table-action"
+                      onClick={() =>
+                        setPeopleDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                overviewRows: current.overviewRows.filter((item) => item.id !== row.id),
+                              }
+                            : current,
+                        )
+                      }
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={3} className="empty-state">
+                  No additional people fields.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        <div className="editor-actions">
+          <button
+            type="button"
+            onClick={() =>
+              setPeopleDraft((current) =>
+                current
+                  ? {
+                      ...current,
+                      overviewRows: [...current.overviewRows, { id: makeRowId('overview'), key: '', value: '' }],
+                    }
+                  : current,
+              )
+            }
+          >
+            Add Field
+          </button>
+        </div>
+      </div>
+    ) : (
+      formatProfileFactList(peopleAdditionalOverviewRows)
+    )
+  const renderPeopleTeamValue = () =>
+    editingPeople && peopleDraft ? (
+      <div className="instrument-profile-inline-editor">
+        <table className="terminal-table terminal-table-compact instrument-data-table instrument-profile-inline-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Role</th>
+              <th>Start Date</th>
+              <th className="instrument-table-action-col">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {peopleDraft!.teamRows.length ? (
+              peopleDraft!.teamRows.map((row) => (
+                <tr key={row.id}>
+                  <td>
+                    <input
+                      className="table-input"
+                      value={row.name}
+                      onChange={(event) =>
+                        setPeopleDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                teamRows: current.teamRows.map((item) =>
+                                  item.id === row.id ? { ...item, name: event.target.value } : item,
+                                ),
+                              }
+                            : current,
+                        )
+                      }
+                    />
+                  </td>
+                  <td>
+                    <input
+                      className="table-input"
+                      value={row.role}
+                      onChange={(event) =>
+                        setPeopleDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                teamRows: current.teamRows.map((item) =>
+                                  item.id === row.id ? { ...item, role: event.target.value } : item,
+                                ),
+                              }
+                            : current,
+                        )
+                      }
+                    />
+                  </td>
+                  <td>
+                    <input
+                      className="table-input"
+                      type="date"
+                      value={row.start_date}
+                      onChange={(event) =>
+                        setPeopleDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                teamRows: current.teamRows.map((item) =>
+                                  item.id === row.id ? { ...item, start_date: event.target.value } : item,
+                                ),
+                              }
+                            : current,
+                        )
+                      }
+                    />
+                  </td>
+                  <td className="instrument-table-row-action-cell">
+                    <button
+                      type="button"
+                      className="table-action"
+                      onClick={() =>
+                        setPeopleDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                teamRows: current.teamRows.filter((item) => item.id !== row.id),
+                              }
+                            : current,
+                        )
+                      }
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={4} className="empty-state">
+                  No management team rows yet.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        <div className="editor-actions">
+          <button
+            type="button"
+            onClick={() =>
+              setPeopleDraft((current) =>
+                current
+                  ? {
+                      ...current,
+                      teamRows: [...current.teamRows, { id: makeRowId('team'), name: '', role: '', start_date: '' }],
+                    }
+                  : current,
+              )
+            }
+          >
+            Add Team Member
+          </button>
+        </div>
+      </div>
+    ) : (
+      formatPeopleTeamValue(people.team)
+    )
+  const renderStrategyTextValue = (
+    value: string,
+    onChange: (value: string) => void,
+    fallbackValue: string,
+    rows = 4,
+  ) =>
+    editingStrategy && strategyDraft ? (
+      <textarea
+        className="table-input instrument-data-table-textarea"
+        rows={rows}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    ) : (
+      fallbackValue || '—'
+    )
+  const getDocumentRecordText = (row: Record<string, unknown>, key: string) => {
+    const value = row[key]
+    return value == null ? '' : String(value)
+  }
+  const getDocumentRecordFileName = (row: Record<string, unknown>) =>
+    getDocumentRecordText(row, 'file_name') || getDocumentRecordText(row, 'title') || '—'
+  const getDocumentRecordNotes = (row: Record<string, unknown>) => getDocumentRecordText(row, 'notes')
+  const currentDocumentRows = documents.current_documents || []
   const combinedVisibleSeries = [...chartNavSeries, ...chartBenchmarkSeries]
   const canUseLogarithmicScale =
     combinedVisibleSeries.length > 0 && combinedVisibleSeries.every((point) => point.value > 0)
@@ -3575,7 +4567,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const scaledVisibleSeries = applyChartScale(chartNavSeries, effectiveChartScale)
   const scaledBenchmarkVisibleSeries = applyChartScale(chartBenchmarkSeries, effectiveChartScale)
   const combinedScaledSeries = [...scaledVisibleSeries, ...scaledBenchmarkVisibleSeries]
-  const chartTickDates = getChartTickDates(chartNavSeries, 6)
+  const chartTickDates = getChartAxisTicks(chartNavSeries, 8)
+  const chartTickSpanDays = getChartDateSpanDays(chartNavSeries)
   const chartBands = buildChartBands(chartNavSeries, PRIMARY_CHART_GEOMETRY, 10)
   const rawChartMin = combinedScaledSeries.length ? Math.min(...combinedScaledSeries.map((point) => point.value)) : 0
   const rawChartMax = combinedScaledSeries.length ? Math.max(...combinedScaledSeries.map((point) => point.value)) : 1
@@ -3838,20 +4831,58 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       value: formatPriceOverviewValue('minimum_initial_investment', priceOverviewMap.minimum_initial_investment),
     },
   ]
-  const priceFeeFieldDefinitions = [
-    ['management_fee', 'Management Fee'],
-    ['interest_expense_fees', 'Interest Expense Fees'],
-    ['redemption_fee', 'Redemption Fee'],
-    ['minimum_initial_investment', 'Minimum Initial Investment'],
-  ] as const
-  const priceTerRows = [
-    { label: 'Adjusted Expense Ratio', value: adjustedExpenseRatio },
-    { label: 'Reported Expense Ratio', value: reportedExpenseRatio },
-  ]
   const pricePolicyRows = [
     { label: 'Distribution Policy', value: getString(price.distribution_policy) },
     { label: 'Policy Text', value: getString(price.policy_text) },
   ]
+  const isEditingPrice = editingPriceSection === 'table'
+  const renderPriceOverviewValue = (key: string, fallbackValue: string) =>
+    isEditingPrice && priceDraft ? (
+      <input
+        className="table-input"
+        value={getOverviewDraftValue(priceDraft, key)}
+        onChange={(event) =>
+          setPriceDraft((current) =>
+            current
+              ? {
+                  ...current,
+                  overviewRows: current.overviewRows.map((row) =>
+                    row.key === key ? { ...row, value: event.target.value } : row,
+                  ),
+                }
+              : current,
+          )
+        }
+      />
+    ) : (
+      fallbackValue || '—'
+    )
+  const renderPriceTextValue = (
+    value: string,
+    onChange: (value: string) => void,
+    fallbackValue: string,
+    rows = 3,
+  ) =>
+    isEditingPrice && priceDraft ? (
+      <textarea
+        className="table-input instrument-data-table-textarea"
+        rows={rows}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    ) : (
+      fallbackValue || '—'
+    )
+  const formatPriceListValue = (items: string[]) =>
+    items.length ? (
+      <div className="instrument-price-line-list">
+        {items.map((item) => (
+          <div key={item}>{item}</div>
+        ))}
+      </div>
+    ) : (
+      '—'
+    )
   const latestNavRecord = navSeries.rows[navSeries.rows.length - 1]
   const navRefreshStatus = navSeries.refresh_status || null
   const monitoringOverviewRows = [
@@ -3963,11 +4994,11 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       value: latestDistribution ? formatDateTime(latestDistribution.adopted_at) : '—',
     },
   ]
-  const performanceReferenceEndDate = navBasisSeries[navBasisSeries.length - 1]?.date || null
+  const performanceReferenceEndDate = returnBasisSeries[returnBasisSeries.length - 1]?.date || null
   const performancePeriodSnapshots = PERFORMANCE_METRIC_PERIODS.map((period) => {
-    const fundWindow = getAnchoredWindow(navBasisSeries, period.key, performanceReferenceEndDate)
+    const fundWindow = getAnchoredWindow(returnBasisSeries, period.key, performanceReferenceEndDate)
     const benchmarkWindow = getAnchoredWindow(
-      metricBenchmarkNavBasisSeries,
+      metricBenchmarkReturnBasisSeries,
       period.key,
       performanceReferenceEndDate,
     )
@@ -3979,49 +5010,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
         benchmarkWindow.length >= 2 ? buildPerformanceRelativeSnapshot(fundWindow, benchmarkWindow) : null,
     }
   })
-  const rollingReturnSeries = buildRollingReturnSeries(navBasisSeries, rollingReturnWindowMonths).slice(-60)
-  const rollingBenchmarkReturnSeries =
-    selectedMetricBenchmark && metricBenchmarkNavBasisSeries.length > 0
-      ? buildRollingReturnSeries(metricBenchmarkNavBasisSeries, rollingReturnWindowMonths).slice(-60)
-      : []
-  const combinedRollingReturnSeries = [...rollingReturnSeries, ...rollingBenchmarkReturnSeries]
-  const rollingReturnBounds = combinedRollingReturnSeries.length
-    ? getPaddedAxisBounds(
-        Math.min(...combinedRollingReturnSeries.map((point) => point.value)),
-        Math.max(...combinedRollingReturnSeries.map((point) => point.value)),
-        0.12,
-        0.5,
-      )
-    : { min: -1, max: 1 }
-  const rollingReturnTickValues = getLinearTickValues(
-    rollingReturnBounds.min,
-    rollingReturnBounds.max,
-    5,
-  )
-  const rollingReturnTickDates = getChartTickDates(
-    rollingReturnSeries.length > 0 ? rollingReturnSeries : rollingBenchmarkReturnSeries,
-    6,
-  )
-  const rollingReturnLinePath = buildChartLinePath(
-    rollingReturnSeries,
-    SECONDARY_SERIES_GEOMETRY,
-    rollingReturnBounds.min,
-    rollingReturnBounds.max,
-  )
-  const rollingReturnAreaPath = buildChartAreaPath(
-    rollingReturnSeries,
-    SECONDARY_SERIES_GEOMETRY,
-    rollingReturnBounds.min,
-    rollingReturnBounds.max,
-    0,
-  )
-  const rollingBenchmarkReturnLinePath = buildChartLinePath(
-    rollingBenchmarkReturnSeries,
-    SECONDARY_SERIES_GEOMETRY,
-    rollingReturnBounds.min,
-    rollingReturnBounds.max,
-  )
-  const monthlyReturnMatrixRows = buildMonthlyReturnMatrix(navBasisSeries)
+  const monthlyReturnMatrixRows = buildMonthlyReturnMatrix(returnBasisSeries)
   const monthlyReturnMatrixMaxAbs = monthlyReturnMatrixRows.reduce((maxAbs, row) => {
     const rowMax = Math.max(
       ...[...row.months, row.ytd]
@@ -4034,7 +5023,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const peerComparison = performance.peer_comparison?.status === 'ready' ? performance.peer_comparison : null
   const peerComparisonPathLabel =
     peerComparison?.peer_path?.filter(Boolean).join(' / ') ||
-    performance.ranking?.category_name ||
+    performance.ranking?.peer_group ||
     'Taxonomy peers'
   const peerComparisonMetricByKey = new Map(
     (peerComparison?.metrics || []).map((metric) => [metric.metric_key, metric]),
@@ -4313,7 +5302,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     : 'Not selected'
   const riskMatrixSnapshots = performancePeriodSnapshots.filter(({ key }) => RISK_MATRIX_PERIOD_KEYS.has(key))
   const lifetimeRiskSnapshot =
-    riskMatrixSnapshots.find(({ key }) => key === 'SI')?.fund || buildPerformanceMetricSnapshot(navBasisSeries)
+    riskMatrixSnapshots.find(({ key }) => key === 'SI')?.fund || buildPerformanceMetricSnapshot(returnBasisSeries)
+  const returnDrawdownSeries = buildDrawdownSeries(returnBasisSeries)
   const formatRecoveryStatus = (snapshot: PerformanceMetricSnapshot | null) => {
     if (!snapshot || snapshot.maxDrawdown == null) {
       return '—'
@@ -4324,8 +5314,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     return snapshot.recoveryOpen ? 'In drawdown' : 'Recovered'
   }
   const riskProfileSeries = resampleSeries(
-    buildDrawdownSeries(navBasisSeries),
-    navBasisSeries.length > 260 ? 'weekly' : 'daily',
+    returnDrawdownSeries,
+    returnBasisSeries.length > 260 ? 'weekly' : 'daily',
   )
   const riskProfileBounds = getDrawdownAxisBounds(riskProfileSeries)
   const riskProfileTickValues = getLinearTickValues(riskProfileBounds.min, riskProfileBounds.max, 4)
@@ -4343,7 +5333,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     riskProfileBounds.min,
     riskProfileBounds.max,
   )
-  const monthlyDrawdownSeries = buildMonthlyMinimumSeries(buildDrawdownSeries(navBasisSeries)).slice(-36)
+  const monthlyDrawdownSeries = buildMonthlyMinimumSeries(returnDrawdownSeries).slice(-36)
   const monthlyDrawdownBounds = getDrawdownAxisBounds(monthlyDrawdownSeries)
   const monthlyDrawdownTickValues = getLinearTickValues(monthlyDrawdownBounds.min, monthlyDrawdownBounds.max, 4)
   const monthlyDrawdownTickDates = getChartTickDates(monthlyDrawdownSeries, 6)
@@ -4360,7 +5350,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     monthlyDrawdownBounds.min,
     monthlyDrawdownBounds.max,
   )
-  const monthlyVolatilitySeries = buildMonthlyAnnualizedVolatilitySeries(navBasisSeries).slice(-36)
+  const monthlyVolatilitySeries = buildMonthlyAnnualizedVolatilitySeries(returnBasisSeries).slice(-36)
   const monthlyVolatilityBounds = monthlyVolatilitySeries.length
     ? getPaddedAxisBounds(
         Math.min(0, ...monthlyVolatilitySeries.map((point) => point.value)),
@@ -4400,8 +5390,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     {
       label: 'Current Drawdown',
       value:
-        drawdownSeries.length > 0
-          ? formatPercent(drawdownSeries[drawdownSeries.length - 1].value)
+        returnDrawdownSeries.length > 0
+          ? formatPercent(returnDrawdownSeries[returnDrawdownSeries.length - 1].value)
           : '—',
     },
     {
@@ -4420,7 +5410,13 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       value: formatRecoveryValue(lifetimeRiskSnapshot) || '—',
     },
   ]
-  const rollingVolatilitySeries = buildRollingAnnualizedVolatilitySeries(navBasisSeries).slice(-60)
+  const rollingRiskWindowLabel =
+    ROLLING_RISK_WINDOW_OPTIONS.find((option) => option.months === rollingRiskWindowMonths)?.label ||
+    `${rollingRiskWindowMonths}M`
+  const rollingVolatilitySeries = buildRollingAnnualizedVolatilitySeries(
+    returnBasisSeries,
+    rollingRiskWindowMonths,
+  ).slice(-ROLLING_CHART_MAX_POINTS)
   const rollingVolatilityBounds = rollingVolatilitySeries.length
     ? getPaddedAxisBounds(
         Math.min(0, ...rollingVolatilitySeries.map((point) => point.value)),
@@ -4448,9 +5444,67 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     rollingVolatilityBounds.max,
     0,
   )
+  const rollingAnnualizedReturnSeries = buildRollingAnnualizedReturnSeries(
+    returnBasisSeries,
+    rollingRiskWindowMonths,
+  ).slice(-ROLLING_CHART_MAX_POINTS)
+  const rollingReturnVolSeries = [...rollingAnnualizedReturnSeries, ...rollingVolatilitySeries]
+  const rollingReturnVolBounds = rollingReturnVolSeries.length
+    ? getPaddedAxisBounds(
+        Math.min(0, ...rollingReturnVolSeries.map((point) => point.value)),
+        Math.max(...rollingReturnVolSeries.map((point) => point.value)),
+        0.12,
+        0.5,
+      )
+    : { min: -1, max: 1 }
+  const rollingReturnVolTickValues = getLinearTickValues(
+    rollingReturnVolBounds.min,
+    rollingReturnVolBounds.max,
+    4,
+  )
+  const rollingReturnVolDateSeries =
+    rollingAnnualizedReturnSeries.length > 0 ? rollingAnnualizedReturnSeries : rollingVolatilitySeries
+  const rollingReturnVolTickDates = getChartAxisTicks(rollingReturnVolDateSeries, 8)
+  const rollingReturnVolTickSpanDays = getChartDateSpanDays(rollingReturnVolDateSeries)
+  const rollingAnnualizedReturnLinePath = buildSmoothChartLinePath(
+    rollingAnnualizedReturnSeries,
+    SECONDARY_SERIES_GEOMETRY,
+    rollingReturnVolBounds.min,
+    rollingReturnVolBounds.max,
+  )
+  const rollingAnnualizedVolatilityLinePath = buildSmoothChartLinePath(
+    rollingVolatilitySeries,
+    SECONDARY_SERIES_GEOMETRY,
+    rollingReturnVolBounds.min,
+    rollingReturnVolBounds.max,
+  )
+  const rollingSharpeSeries = buildRollingSharpeSeries(returnBasisSeries, rollingRiskWindowMonths).slice(
+    -ROLLING_CHART_MAX_POINTS,
+  )
+  const rollingSharpeBounds = rollingSharpeSeries.length
+    ? getPaddedAxisBounds(
+        Math.min(0, ...rollingSharpeSeries.map((point) => point.value)),
+        Math.max(...rollingSharpeSeries.map((point) => point.value)),
+        0.15,
+        0.25,
+      )
+    : { min: -1, max: 1 }
+  const rollingSharpeTickValues = getLinearTickValues(
+    rollingSharpeBounds.min,
+    rollingSharpeBounds.max,
+    4,
+  )
+  const rollingSharpeTickDates = getChartAxisTicks(rollingSharpeSeries, 8)
+  const rollingSharpeTickSpanDays = getChartDateSpanDays(rollingSharpeSeries)
+  const rollingSharpeLinePath = buildSmoothChartLinePath(
+    rollingSharpeSeries,
+    SECONDARY_SERIES_GEOMETRY,
+    rollingSharpeBounds.min,
+    rollingSharpeBounds.max,
+  )
   const rollingBetaSeries =
-    selectedMetricBenchmark && metricBenchmarkNavBasisSeries.length > 0
-      ? buildRollingBetaSeries(navBasisSeries, metricBenchmarkNavBasisSeries).slice(-60)
+    selectedMetricBenchmark && metricBenchmarkReturnBasisSeries.length > 0
+      ? buildRollingBetaSeries(returnBasisSeries, metricBenchmarkReturnBasisSeries).slice(-60)
       : []
   const rollingBetaBounds = rollingBetaSeries.length
     ? getPaddedAxisBounds(
@@ -4504,7 +5558,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       value: riskBenchmarkLabel,
     },
   ]
-  const monthlyReturnSeries = buildMonthlyReturnSeries(navBasisSeries)
+  const monthlyReturnSeries = buildMonthlyReturnSeries(returnBasisSeries)
   const latestMonthlyReturnValue =
     monthlyReturnSeries.length > 0 ? monthlyReturnSeries[monthlyReturnSeries.length - 1].value : null
   const medianMonthlyReturnValue = getMedianValue(monthlyReturnSeries.map((point) => point.value))
@@ -4513,7 +5567,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     monthlyDrawdownSeries.length > 0 ? monthlyDrawdownSeries[monthlyDrawdownSeries.length - 1].value : null
   const worstMonthlyDrawdownValue =
     monthlyDrawdownSeries.length > 0 ? Math.min(...monthlyDrawdownSeries.map((point) => point.value)) : null
-  const currentDrawdownValue = drawdownSeries.length > 0 ? drawdownSeries[drawdownSeries.length - 1].value : null
+  const currentDrawdownValue =
+    returnDrawdownSeries.length > 0 ? returnDrawdownSeries[returnDrawdownSeries.length - 1].value : null
   const latestRollingVolValue =
     rollingVolatilitySeries.length > 0 ? rollingVolatilitySeries[rollingVolatilitySeries.length - 1].value : null
   const rollingVolMedianValue = getMedianValue(rollingVolatilitySeries.map((point) => point.value))
@@ -4535,7 +5590,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           latestRollingBetaValue,
         )
   const latest1WReturn = performancePeriodSnapshots.find(({ key }) => key === '1W')?.fund.periodReturn ?? null
-  const latest1MReturn = performancePeriodSnapshots.find(({ key }) => key === '1M')?.fund.periodReturn ?? null
+  const latestMtdReturn = performancePeriodSnapshots.find(({ key }) => key === 'MTD')?.fund.periodReturn ?? null
   const structuralRiskSnapshot =
     riskMatrixSnapshots.find(({ key }) => key === '3Y') ??
     riskMatrixSnapshots.find(({ key }) => key === 'SI') ??
@@ -4592,7 +5647,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     }
   })()
   const recentLossPressureWatch = (() => {
-    if (latestMonthlyReturnValue == null && latest1WReturn == null && latest1MReturn == null) {
+    if (latestMonthlyReturnValue == null && latest1WReturn == null && latestMtdReturn == null) {
       return {
         level: 'N/A',
         reading: 'N/A · Need recent return history',
@@ -4605,7 +5660,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
         ? 'High'
         : trailingNegativeMonthCount >= 2 ||
             (latestMonthlyReturnValue != null && latestMonthlyReturnValue <= -1.5) ||
-            (latest1MReturn != null && latest1MReturn <= -3)
+            (latestMtdReturn != null && latestMtdReturn <= -3)
           ? 'Elevated'
           : 'Normal'
     const recentMonthlyLabel =
@@ -4614,7 +5669,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       level,
       reading: buildWatchReading(
         level,
-        `1W ${latest1WReturn == null ? '—' : formatPercent(latest1WReturn)}, 1M ${latest1MReturn == null ? '—' : formatPercent(latest1MReturn)}, latest month ${recentMonthlyLabel}, ${String(trailingNegativeMonthCount)} down month(s)`,
+        `1W ${latest1WReturn == null ? '—' : formatPercent(latest1WReturn)}, MTD ${latestMtdReturn == null ? '—' : formatPercent(latestMtdReturn)}, latest month ${recentMonthlyLabel}, ${String(trailingNegativeMonthCount)} down month(s)`,
       ),
     }
   })()
@@ -4655,7 +5710,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     watchScore >= 5 ? 'High' : watchScore >= 2 ? 'Elevated' : watchScore >= 0 ? 'Normal' : 'N/A'
   const latestYtdReturn = performancePeriodSnapshots.find(({ key }) => key === 'YTD')?.fund.periodReturn ?? null
   const lifetimePerformanceSnapshot =
-    performancePeriodSnapshots.find(({ key }) => key === 'SI')?.fund || buildPerformanceMetricSnapshot(navBasisSeries)
+    performancePeriodSnapshots.find(({ key }) => key === 'SI')?.fund || buildPerformanceMetricSnapshot(returnBasisSeries)
   const overviewRatingValue =
     ratings.overall_rating == null ? '—' : formatStarRating(ratings.overall_rating)
   const overviewRatingNote =
@@ -4664,6 +5719,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       : summary.rating_as_of
         ? `As of ${formatDate(summary.rating_as_of)}`
         : 'Research rating'
+  const researchManualRating = parseManualRating(research.manual_rating)
+  const displayedManualRating = manualRatingDirty ? manualRatingDraft : researchManualRating
+  const manualRatingHasChanges = manualRatingDirty && displayedManualRating !== researchManualRating
   const overviewRankingValue =
     performance.ranking
       ? [
@@ -4686,7 +5744,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       label: 'MTD Return',
-      value: latestMonthlyReturnValue == null ? '—' : formatPercent(latestMonthlyReturnValue),
+      value: latestMtdReturn == null ? '—' : formatPercent(latestMtdReturn),
       note: 'Current month',
     },
     {
@@ -4737,12 +5795,15 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       note: `${String(watchScore)} signal point(s)`,
     },
   ]
-  const taxonomyPathLabel =
+  const rawTaxonomyPathLabel =
     productFrameworkAttributes?.taxonomy?.path_labels?.length
       ? productFrameworkAttributes.taxonomy.path_labels.join(' / ')
       : summary.taxonomy?.path_labels?.length
         ? summary.taxonomy.path_labels.join(' / ')
-        : summary.category_name || 'Unclassified'
+        : summary.taxonomy?.assigned_label || ''
+  const taxonomyPathLabel = localizeTaxonomyPath(rawTaxonomyPathLabel, language)
+  const detailClassificationLabel =
+    localizeTaxonomyPath(peerComparison?.peer_path?.filter(Boolean).join(' / ') || rawTaxonomyPathLabel, language)
   const taxonomyNodes = taxonomyTree?.nodes || []
   const taxonomyDraftNode =
     taxonomyNodes.find((node) => node.node_id === taxonomyDraftNodeId) || null
@@ -4951,7 +6012,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       signal: 'Recent Return Pressure',
-      current: `1W ${latest1WReturn == null ? '—' : formatPercent(latest1WReturn)} · 1M ${latest1MReturn == null ? '—' : formatPercent(latest1MReturn)}`,
+      current: `1W ${latest1WReturn == null ? '—' : formatPercent(latest1WReturn)} · MTD ${latestMtdReturn == null ? '—' : formatPercent(latestMtdReturn)}`,
       baseline:
         medianMonthlyReturnValue == null
           ? '—'
@@ -5107,24 +6168,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
   ]
-  const evidenceReferenceOptions = Array.from(
-    new Set(
-      [
-        ...documents.current_documents.map((row) =>
-          [getString(row.title), row.version_label ? getString(row.version_label) : '']
-            .filter((item) => item && item !== '—')
-            .join(' · '),
-        ),
-        ...documents.extraction_reviews.map((row) =>
-          [getString(row.document_title), row.adopted_version ? getString(row.adopted_version) : '']
-            .filter((item) => item && item !== '—')
-            .join(' · '),
-        ),
-      ].filter((item) => item && item !== '—'),
-    ),
-  )
-  const evidenceReferenceSet = new Set(evidenceReferenceOptions.map((item) => item.toLowerCase()))
-
   function resolveChartPointerSelection(
     event: ReactMouseEvent<SVGSVGElement>,
     geometry: ChartGeometry,
@@ -5234,7 +6277,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                     }
                     onClick={() => setQuoteBasis(basis)}
                   >
-                    {QUOTE_BASIS_LABELS[basis]}
+                    {localize(language, QUOTE_BASIS_LABELS[basis])}
                   </button>
                 ))}
               </div>
@@ -5349,26 +6392,35 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           </div>
           <div className="instrument-detail-actions">
             <button type="button" onClick={() => setSettingsModalOpen(true)}>
-              Settings
+              {localize(language, SYSTEM_LABELS.settings)}
             </button>
-            <button type="button">Download PDF</button>
+            <button type="button">{localize(language, SYSTEM_LABELS.downloadPdf)}</button>
           </div>
         </div>
         <div className="instrument-detail-hero">
           <div className="instrument-detail-headline">
-            <div className="instrument-detail-eyebrow">Instrument Detail</div>
+            <div className="instrument-detail-eyebrow">{localize(language, SYSTEM_LABELS.instrumentDetail)}</div>
             <h1 className="instrument-detail-title">
               {summary.fund_name} <span>{summary.ticker_or_isin}</span>
             </h1>
             <div className="instrument-detail-badges">
-              <span className="context-chip">{summary.category_name}</span>
-              <span className="context-chip">Basis: {navBasisLabel}</span>
-              <span className="context-chip">Analyst Stance: {summary.analyst_stance}</span>
+              {detailClassificationLabel ? (
+                <span className="context-chip" data-yungu-i18n-ignore="true">
+                  {localize(language, SYSTEM_LABELS.peer)}: {detailClassificationLabel}
+                </span>
+              ) : null}
+              <span className="context-chip" data-yungu-i18n-ignore="true">
+                {localize(language, SYSTEM_LABELS.basis)}: {navBasisLabel}
+              </span>
+              <span className="context-chip" data-yungu-i18n-ignore="true">
+                {localize(language, SYSTEM_LABELS.analystStance)}:{' '}
+                {localizeSystemValue(summary.analyst_stance, language)}
+              </span>
             </div>
           </div>
         </div>
 
-        <div className="instrument-detail-tabs-row">
+        <div className="instrument-detail-tabs-row" data-yungu-i18n-ignore="true">
           <div className="instrument-detail-tabs">
             {availableTabs.map((tab) => (
               <button
@@ -5377,7 +6429,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 className={tab === activeTab ? 'instrument-detail-tab instrument-detail-tab-active' : 'instrument-detail-tab'}
                 onClick={() => setActiveTab(tab)}
               >
-                {TAB_LABELS[tab]}
+                {localize(language, TAB_LABELS[tab])}
               </button>
             ))}
           </div>
@@ -5396,17 +6448,17 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             className="instrument-modal instrument-settings-modal"
             role="dialog"
             aria-modal="true"
-            aria-label="Fund Settings"
+            aria-label={localize(language, SYSTEM_LABELS.settings)}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="instrument-modal-header">
               <div>
-                <div className="panel-title">Settings</div>
-                <div className="instrument-quote-source-title">Taxonomy Settings</div>
+                <div className="panel-title">{localize(language, SYSTEM_LABELS.settings)}</div>
+                <div className="instrument-quote-source-title">{localize(language, SYSTEM_LABELS.taxonomySettings)}</div>
               </div>
               <div className="toolbar">
                 <button type="button" onClick={() => setSettingsModalOpen(false)}>
-                  Cancel
+                  {localize(language, SYSTEM_LABELS.cancel)}
                 </button>
                 <button
                   type="button"
@@ -5414,7 +6466,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   onClick={() => void handleSaveFundSettings()}
                   disabled={savingSection === 'fund_settings'}
                 >
-                  {savingSection === 'fund_settings' ? 'Saving...' : 'Save'}
+                  {savingSection === 'fund_settings'
+                    ? localize(language, SYSTEM_LABELS.saving)
+                    : localize(language, SYSTEM_LABELS.save)}
                 </button>
               </div>
             </div>
@@ -5422,9 +6476,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
               <section className="instrument-settings-section">
                 <div className="instrument-settings-section-header">
                   <div>
-                    <div className="instrument-settings-title">Classification Path</div>
+                    <div className="instrument-settings-title">{localize(language, SYSTEM_LABELS.classificationPath)}</div>
                     <div className="instrument-settings-current-path">
-                      <span>Current Path</span>
+                      <span>{localize(language, SYSTEM_LABELS.currentPath)}</span>
                       <strong>{taxonomyPathLabel}</strong>
                     </div>
                   </div>
@@ -5435,7 +6489,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                       onClick={() => setTaxonomyDraftNodeId('')}
                       disabled={!taxonomyTree}
                     >
-                      Unclassify
+                      {localize(language, SYSTEM_LABELS.unclassify)}
                     </button>
                   ) : null}
                 </div>
@@ -5444,7 +6498,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                     taxonomyLevelSelectors.map((selector) => (
                       <label key={`taxonomy-level-${selector.levelIndex}`} className="instrument-settings-taxonomy-row">
                         <span className="instrument-settings-taxonomy-label">
-                          {selector.levelIndex === 1 ? 'Regime' : `Level ${selector.levelIndex - 1}`}
+                          {selector.levelIndex === 1
+                            ? localize(language, SYSTEM_LABELS.regime)
+                            : `${language === 'zh-Hans' ? '层级' : 'Level'} ${selector.levelIndex - 1}`}
                         </span>
                         <select
                           className="instrument-settings-taxonomy-select"
@@ -5456,14 +6512,14 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                         >
                           <option value="">
                             {selector.disabled
-                              ? 'Select parent first'
+                              ? localize(language, SYSTEM_LABELS.selectParentFirst)
                               : selector.parentNodeId
-                                ? 'Stop here'
-                                : 'Unclassified'}
+                                ? localize(language, SYSTEM_LABELS.stopHere)
+                                : localize(language, SYSTEM_LABELS.unclassified)}
                           </option>
                           {selector.options.map((node) => (
                             <option key={node.node_id} value={node.node_id}>
-                              {node.label}
+                              {localizeSystemValue(node.label, language)}
                             </option>
                           ))}
                         </select>
@@ -5676,28 +6732,14 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                         )
                       })}
 
-                      {chartTickDates.map((point) => {
-                        const scaledPoint = scaledVisibleSeries.find((item) => item.date === point.date)
-                        const projected = scaledPoint && projectChartPoint(
-                          scaledPoint,
-                          scaledVisibleSeries,
-                          chartMin,
-                          chartMax,
+                      {chartTickDates.map((tick, index) => {
+                        return renderChartXAxisTick(
+                          tick,
+                          chartTickDates[index - 1] || null,
+                          getPlotXFromRatio(PRIMARY_CHART_GEOMETRY, tick.xRatio, 0),
                           PRIMARY_CHART_GEOMETRY,
-                        )
-                        if (!projected) {
-                          return null
-                        }
-                        return (
-                          <g key={`x-${point.date}`}>
-                            <text
-                              className="instrument-x-axis-label"
-                              x={projected.x}
-                              y={PRIMARY_CHART_GEOMETRY.height - 8}
-                            >
-                              {formatChartAxisDate(point.date)}
-                            </text>
-                          </g>
+                          chartTickSpanDays,
+                          'x',
                         )
                       })}
 
@@ -6275,8 +7317,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   ) : (
                     <div className="instrument-placeholder">
                       {navSeries.rows.length
-                        ? `${quoteBasisLabel} is unavailable for the current currency or date window. Switch Data Type, Currency, or range.`
-                        : 'No NAV history is available yet. Add shared market data in Database Dashboard to materialize the quote curve.'}
+                        ? `${quoteBasisLabel} ${localize(language, SYSTEM_LABELS.unavailableBasis)}`
+                        : localize(language, SYSTEM_LABELS.noNavHistory)}
                     </div>
                   )}
                 </div>
@@ -6449,25 +7491,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
 
           <section className="instrument-performance-section instrument-performance-section-metrics">
             <div className="instrument-performance-section-header">
-              <div>
+              <div className="instrument-performance-title-group">
                 <div className="panel-title">Performance</div>
-                <div className="instrument-section-title">Metrics Matrix</div>
-              </div>
-              <div className="instrument-performance-matrix-controls">
-                <div className="instrument-performance-view-toggle" role="group" aria-label="Metrics matrix view">
-                  {PERFORMANCE_MATRIX_MODE_OPTIONS.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={option.value === activePerformanceMatrixMode ? 'instrument-performance-toggle-active' : undefined}
-                      disabled={option.value !== 'values' && !peerComparison}
-                      onClick={() => setPerformanceMatrixMode(option.value)}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-                {activePerformanceMatrixMode === 'values' ? (
+                <div className="instrument-performance-title-row">
+                  <div className="instrument-section-title">Metrics Matrix</div>
                   <div className="instrument-chart-compare instrument-performance-benchmark-select">
                     <div className="instrument-chart-compare-select-wrap">
                       <select
@@ -6484,14 +7511,22 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                       </select>
                     </div>
                   </div>
-                ) : (
-                  <div className="instrument-peer-context">
-                    <span>{peerComparisonPathLabel}</span>
-                    {peerComparison?.sample_count ? (
-                      <strong>n={formatNumber(peerComparison.sample_count, 0)}</strong>
-                    ) : null}
-                  </div>
-                )}
+                </div>
+              </div>
+              <div className="instrument-performance-matrix-controls">
+                <div className="instrument-performance-view-toggle" role="group" aria-label="Metrics matrix view">
+                  {PERFORMANCE_MATRIX_MODE_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={option.value === activePerformanceMatrixMode ? 'instrument-performance-toggle-active' : undefined}
+                      disabled={option.value !== 'values' && !peerComparison}
+                      onClick={() => setPerformanceMatrixMode(option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
             <div className="instrument-performance-section-body">
@@ -6585,100 +7620,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
               ) : (
                 <div className="instrument-fallback-block">
                   <div className="instrument-fallback-copy">
-                    Monthly return matrix will appear once month-end NAV history is available.
-                  </div>
-                </div>
-              )}
-            </div>
-          </section>
-
-          <section className="instrument-performance-section instrument-performance-section-rolling">
-            <div className="instrument-performance-section-header">
-              <div>
-                <div className="panel-title">Performance</div>
-                <div className="instrument-section-title">Rolling Return</div>
-              </div>
-              <div className="toolbar instrument-performance-window-toolbar">
-                {ROLLING_RETURN_WINDOW_OPTIONS.map((option) => (
-                  <button
-                    key={option.months}
-                    type="button"
-                    className={option.months === rollingReturnWindowMonths ? 'instrument-performance-toggle-active' : undefined}
-                    onClick={() => setRollingReturnWindowMonths(option.months)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="instrument-performance-section-body">
-              {rollingReturnSeries.length > 1 ? (
-                <div className="instrument-chart-plot-shell instrument-performance-visual-shell">
-                  <svg
-                    viewBox={`0 0 ${SECONDARY_SERIES_GEOMETRY.width} ${SECONDARY_SERIES_GEOMETRY.height}`}
-                    className="instrument-line-chart"
-                    role="img"
-                    aria-label="Rolling return chart"
-                  >
-                    {rollingReturnTickValues.map((tick) => {
-                      const y = projectChartValue(
-                        tick,
-                        rollingReturnBounds.min,
-                        rollingReturnBounds.max,
-                        SECONDARY_SERIES_GEOMETRY,
-                      )
-                      return (
-                        <g key={`rolling-return-y-${tick.toFixed(4)}`}>
-                          <line
-                            x1={String(SECONDARY_SERIES_GEOMETRY.paddingLeft)}
-                            y1={String(y)}
-                            x2={String(SECONDARY_SERIES_GEOMETRY.width - SECONDARY_SERIES_GEOMETRY.paddingRight)}
-                            y2={String(y)}
-                            className="instrument-gridline"
-                          />
-                          <text
-                            className="instrument-y-axis-label"
-                            x={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
-                            y={getYAxisLabelTextY(y, SECONDARY_SERIES_GEOMETRY)}
-                          >
-                            {formatPercent(tick)}
-                          </text>
-                        </g>
-                      )
-                    })}
-                    {rollingReturnTickDates.map((point) => {
-                      const projected = projectChartPoint(
-                        point,
-                        rollingReturnSeries,
-                        rollingReturnBounds.min,
-                        rollingReturnBounds.max,
-                        SECONDARY_SERIES_GEOMETRY,
-                      )
-                      return (
-                        <text
-                          key={`rolling-return-x-${point.date}`}
-                          className="instrument-x-axis-label"
-                          x={projected.x}
-                          y={SECONDARY_SERIES_GEOMETRY.height - 8}
-                        >
-                          {formatMonthBucket(getMonthBucket(point.date))}
-                        </text>
-                      )
-                    })}
-                    <path d={rollingReturnAreaPath} className="instrument-line-area" />
-                    <path d={rollingReturnLinePath} className="instrument-line-path" />
-                    {rollingBenchmarkReturnSeries.length > 1 ? (
-                      <path
-                        d={rollingBenchmarkReturnLinePath}
-                        className="instrument-line-path instrument-line-path-benchmark"
-                      />
-                    ) : null}
-                  </svg>
-                </div>
-              ) : (
-                <div className="instrument-fallback-block">
-                  <div className="instrument-fallback-copy">
-                    Rolling return will appear once enough month-end NAV history is available for the selected window.
+                    Monthly return matrix will appear once month-end total-return NAV history is available.
                   </div>
                 </div>
               )}
@@ -6690,628 +7632,231 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       {activeTab === 'risk' ? (
         <section className="panel instrument-risk-shell">
           <div className="instrument-price-topline" />
-          <div className="instrument-risk-page-header">
-            <div>
-              <div className="panel-title">Risk</div>
-              <div className="instrument-section-title">Risk</div>
-            </div>
-          </div>
-
-          <section className="instrument-risk-section">
+          <section className="instrument-risk-section instrument-risk-section-rolling">
             <div className="instrument-risk-section-header">
-              <div>
+              <div className="instrument-performance-title-group">
                 <div className="panel-title">Risk</div>
-                <div className="instrument-section-title">Risk Summary</div>
-              </div>
-            </div>
-            <div className="instrument-risk-section-body">
-              <div className="instrument-risk-summary-grid">
-                <div className="table-shell instrument-risk-table-shell">
-                  <table className="terminal-table terminal-table-compact instrument-data-table">
-                    <tbody>
-                      {riskSummaryRows.map((row) => (
-                        <tr key={row.label}>
-                          <td>{row.label}</td>
-                          <td className="instrument-data-table-value">{row.value}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="table-shell instrument-risk-table-shell">
-                  <table className="terminal-table terminal-table-compact instrument-data-table">
-                    <tbody>
-                      {currentRiskWatchRows.map((row) => (
-                        <tr key={row.label}>
-                          <td>{row.label}</td>
-                          <td className="instrument-data-table-value">{row.value}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="instrument-performance-title-row">
+                  <div className="instrument-section-title">Rolling Annualized Return / Volatility</div>
                 </div>
               </div>
-            </div>
-          </section>
-
-          <section className="instrument-risk-section">
-            <div className="instrument-risk-section-header">
-              <div>
-                <div className="panel-title">Risk</div>
-                <div className="instrument-section-title">Risk Structure</div>
-              </div>
-            </div>
-            <div className="instrument-risk-section-body">
-              <div className="table-shell instrument-risk-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-data-table">
-                  <thead>
-                    <tr>
-                      <th>Characteristic</th>
-                      <th>Current Reading</th>
-                      <th>Interpretation</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {riskStructureRows.map((row) => (
-                      <tr key={row.characteristic}>
-                        <td>{row.characteristic}</td>
-                        <td>{row.reading}</td>
-                        <td>{row.interpretation}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="table-shell instrument-performance-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-metrics-table instrument-metrics-table-risk">
-                  <thead>
-                    <tr>
-                      <th>Metric</th>
-                      {riskMatrixSnapshots.map((period) => (
-                        <th key={`risk-metric-period-${period.key}`}>{period.label}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {riskMatrixRows.map((row) => (
-                      <tr
-                        key={row.label}
-                        className={
-                          row.supportsBenchmark
-                            ? 'instrument-metrics-row-with-note'
-                            : 'instrument-metrics-row-single'
-                        }
-                      >
-                        <td className="instrument-metrics-row-label">{row.label}</td>
-                        {row.cells.map((cell, index) => (
-                          <td key={`${row.label}-${riskMatrixSnapshots[index]?.key || index}`}>
-                            <div className="instrument-metrics-cell">
-                              <strong>{cell.primary}</strong>
-                              {cell.secondary ? (
-                                <span className="instrument-metrics-cell-note">{cell.secondary}</span>
-                              ) : null}
-                            </div>
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
-
-          <section className="instrument-risk-section">
-            <div className="instrument-risk-section-header">
-              <div>
-                <div className="panel-title">Risk</div>
-                <div className="instrument-section-title">Drawdown &amp; Recovery</div>
-              </div>
-            </div>
-            <div className="instrument-risk-section-body">
-              <div className="instrument-risk-visual-grid">
-                <section className="instrument-risk-series-block">
-                  <div className="instrument-risk-visual-column-header">
-                    <div className="panel-title">Risk</div>
-                    <div className="instrument-section-title">Drawdown Profile</div>
-                  </div>
-                  {riskProfileSeries.length > 1 ? (
-                    <div className="instrument-chart-plot-shell instrument-performance-visual-shell">
-                      <svg
-                        viewBox={`0 0 ${SECONDARY_SERIES_GEOMETRY.width} ${SECONDARY_SERIES_GEOMETRY.height}`}
-                        className="instrument-drawdown-chart"
-                        role="img"
-                        aria-label="Risk drawdown profile chart"
-                      >
-                        {riskProfileTickValues.map((tick) => {
-                          const y = projectChartValue(
-                            tick,
-                            riskProfileBounds.min,
-                            riskProfileBounds.max,
-                            SECONDARY_SERIES_GEOMETRY,
-                          )
-                          return (
-                            <g key={`risk-profile-y-${tick.toFixed(4)}`}>
-                              <line
-                                x1={String(SECONDARY_SERIES_GEOMETRY.paddingLeft)}
-                                y1={String(y)}
-                                x2={String(SECONDARY_SERIES_GEOMETRY.width - SECONDARY_SERIES_GEOMETRY.paddingRight)}
-                                y2={String(y)}
-                                className="instrument-gridline"
-                              />
-                              <text
-                                className="instrument-y-axis-label"
-                                x={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
-                                y={getYAxisLabelTextY(y, SECONDARY_SERIES_GEOMETRY)}
-                              >
-                                {formatPercent(tick)}
-                              </text>
-                            </g>
-                          )
-                        })}
-                        {riskProfileTickDates.map((point) => {
-                          const projected = projectChartPoint(
-                            point,
-                            riskProfileSeries,
-                            riskProfileBounds.min,
-                            riskProfileBounds.max,
-                            SECONDARY_SERIES_GEOMETRY,
-                          )
-                          return (
-                            <text
-                              key={`risk-profile-x-${point.date}`}
-                              className="instrument-x-axis-label"
-                              x={projected.x}
-                              y={SECONDARY_SERIES_GEOMETRY.height - 8}
-                            >
-                              {formatChartAxisDate(point.date)}
-                            </text>
-                          )
-                        })}
-                        <path d={riskProfileAreaPath} className="instrument-drawdown-area" />
-                        <path d={riskProfileLinePath} className="instrument-drawdown-line" />
-                      </svg>
-                    </div>
-                  ) : (
-                    <div className="instrument-fallback-block">
-                      <div className="instrument-fallback-copy">
-                        Drawdown profile will appear once a continuous NAV history is available.
-                      </div>
-                    </div>
-                  )}
-                </section>
-
-                <section className="instrument-risk-series-block">
-                  <div className="instrument-risk-visual-column-header">
-                    <div className="panel-title">Risk</div>
-                    <div className="instrument-section-title">Monthly Drawdown</div>
-                  </div>
-                  {monthlyDrawdownSeries.length > 1 ? (
-                    <div className="instrument-chart-plot-shell instrument-performance-visual-shell">
-                      <svg
-                        viewBox={`0 0 ${SECONDARY_SERIES_GEOMETRY.width} ${SECONDARY_SERIES_GEOMETRY.height}`}
-                        className="instrument-drawdown-chart"
-                        role="img"
-                        aria-label="Monthly drawdown chart"
-                      >
-                        {monthlyDrawdownTickValues.map((tick) => {
-                          const y = projectChartValue(
-                            tick,
-                            monthlyDrawdownBounds.min,
-                            monthlyDrawdownBounds.max,
-                            SECONDARY_SERIES_GEOMETRY,
-                          )
-                          return (
-                            <g key={`monthly-dd-y-${tick.toFixed(4)}`}>
-                              <line
-                                x1={String(SECONDARY_SERIES_GEOMETRY.paddingLeft)}
-                                y1={String(y)}
-                                x2={String(SECONDARY_SERIES_GEOMETRY.width - SECONDARY_SERIES_GEOMETRY.paddingRight)}
-                                y2={String(y)}
-                                className="instrument-gridline"
-                              />
-                              <text
-                                className="instrument-y-axis-label"
-                                x={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
-                                y={getYAxisLabelTextY(y, SECONDARY_SERIES_GEOMETRY)}
-                              >
-                                {formatPercent(tick)}
-                              </text>
-                            </g>
-                          )
-                        })}
-                        {monthlyDrawdownTickDates.map((point) => {
-                          const projected = projectChartPoint(
-                            point,
-                            monthlyDrawdownSeries,
-                            monthlyDrawdownBounds.min,
-                            monthlyDrawdownBounds.max,
-                            SECONDARY_SERIES_GEOMETRY,
-                          )
-                          return (
-                            <text
-                              key={`monthly-dd-x-${point.date}`}
-                              className="instrument-x-axis-label"
-                              x={projected.x}
-                              y={SECONDARY_SERIES_GEOMETRY.height - 8}
-                            >
-                              {formatMonthBucket(getMonthBucket(point.date))}
-                            </text>
-                          )
-                        })}
-                        <path d={monthlyDrawdownAreaPath} className="instrument-drawdown-area" />
-                        <path d={monthlyDrawdownLinePath} className="instrument-drawdown-line" />
-                      </svg>
-                    </div>
-                  ) : (
-                    <div className="instrument-fallback-block">
-                      <div className="instrument-fallback-copy">
-                        Monthly drawdown series will appear once enough month-level history is available.
-                      </div>
-                    </div>
-                  )}
-                </section>
-              </div>
-
-              <div className="table-shell instrument-risk-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-data-table">
-                  <tbody>
-                    {drawdownSummaryRows.map((row) => (
-                      <tr key={row.label}>
-                        <td>{row.label}</td>
-                        <td className="instrument-data-table-value">{row.value}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
-
-          <section className="instrument-risk-section">
-            <div className="instrument-risk-section-header">
-              <div>
-                <div className="panel-title">Risk</div>
-                <div className="instrument-section-title">Risk Change &amp; Sensitivity</div>
-              </div>
-            </div>
-            <div className="instrument-risk-section-body">
-              <div className="instrument-risk-visual-grid">
-                <section className="instrument-risk-series-block">
-                  <div className="instrument-risk-visual-column-header">
-                    <div className="panel-title">Risk</div>
-                    <div className="instrument-section-title">Monthly Annualized Volatility</div>
-                  </div>
-                  {monthlyVolatilitySeries.length > 1 ? (
-                    <div className="instrument-chart-plot-shell instrument-performance-visual-shell">
-                      <svg
-                        viewBox={`0 0 ${SECONDARY_SERIES_GEOMETRY.width} ${SECONDARY_SERIES_GEOMETRY.height}`}
-                        className="instrument-line-chart"
-                        role="img"
-                        aria-label="Monthly annualized volatility chart"
-                      >
-                        {monthlyVolatilityTickValues.map((tick) => {
-                          const y = projectChartValue(
-                            tick,
-                            monthlyVolatilityBounds.min,
-                            monthlyVolatilityBounds.max,
-                            SECONDARY_SERIES_GEOMETRY,
-                          )
-                          return (
-                            <g key={`monthly-vol-y-${tick.toFixed(4)}`}>
-                              <line
-                                x1={String(SECONDARY_SERIES_GEOMETRY.paddingLeft)}
-                                y1={String(y)}
-                                x2={String(SECONDARY_SERIES_GEOMETRY.width - SECONDARY_SERIES_GEOMETRY.paddingRight)}
-                                y2={String(y)}
-                                className="instrument-gridline"
-                              />
-                              <text
-                                className="instrument-y-axis-label"
-                                x={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
-                                y={getYAxisLabelTextY(y, SECONDARY_SERIES_GEOMETRY)}
-                              >
-                                {formatPercent(tick)}
-                              </text>
-                            </g>
-                          )
-                        })}
-                        {monthlyVolatilityTickDates.map((point) => {
-                          const projected = projectChartPoint(
-                            point,
-                            monthlyVolatilitySeries,
-                            monthlyVolatilityBounds.min,
-                            monthlyVolatilityBounds.max,
-                            SECONDARY_SERIES_GEOMETRY,
-                          )
-                          return (
-                            <text
-                              key={`monthly-vol-x-${point.date}`}
-                              className="instrument-x-axis-label"
-                              x={projected.x}
-                              y={SECONDARY_SERIES_GEOMETRY.height - 8}
-                            >
-                              {formatMonthBucket(getMonthBucket(point.date))}
-                            </text>
-                          )
-                        })}
-                        <path d={monthlyVolatilityAreaPath} className="instrument-line-area" />
-                        <path d={monthlyVolatilityLinePath} className="instrument-line-path" />
-                      </svg>
-                    </div>
-                  ) : (
-                    <div className="instrument-fallback-block">
-                      <div className="instrument-fallback-copy">
-                        Monthly annualized volatility will appear once enough NAV observations are available.
-                      </div>
-                    </div>
-                  )}
-                </section>
-
-                <section className="instrument-risk-series-block">
-                  <div className="instrument-risk-visual-column-header">
-                    <div className="panel-title">Risk</div>
-                    <div className="instrument-section-title">Rolling Annualized Volatility</div>
-                  </div>
-                  {rollingVolatilitySeries.length > 1 ? (
-                    <div className="instrument-chart-plot-shell instrument-performance-visual-shell">
-                      <svg
-                        viewBox={`0 0 ${SECONDARY_SERIES_GEOMETRY.width} ${SECONDARY_SERIES_GEOMETRY.height}`}
-                        className="instrument-line-chart"
-                        role="img"
-                        aria-label="Rolling annualized volatility chart"
-                      >
-                        {rollingVolatilityTickValues.map((tick) => {
-                          const y = projectChartValue(
-                            tick,
-                            rollingVolatilityBounds.min,
-                            rollingVolatilityBounds.max,
-                            SECONDARY_SERIES_GEOMETRY,
-                          )
-                          return (
-                            <g key={`rolling-vol-y-${tick.toFixed(4)}`}>
-                              <line
-                                x1={String(SECONDARY_SERIES_GEOMETRY.paddingLeft)}
-                                y1={String(y)}
-                                x2={String(SECONDARY_SERIES_GEOMETRY.width - SECONDARY_SERIES_GEOMETRY.paddingRight)}
-                                y2={String(y)}
-                                className="instrument-gridline"
-                              />
-                              <text
-                                className="instrument-y-axis-label"
-                                x={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
-                                y={getYAxisLabelTextY(y, SECONDARY_SERIES_GEOMETRY)}
-                              >
-                                {formatPercent(tick)}
-                              </text>
-                            </g>
-                          )
-                        })}
-                        {rollingVolatilityTickDates.map((point) => {
-                          const projected = projectChartPoint(
-                            point,
-                            rollingVolatilitySeries,
-                            rollingVolatilityBounds.min,
-                            rollingVolatilityBounds.max,
-                            SECONDARY_SERIES_GEOMETRY,
-                          )
-                          return (
-                            <text
-                              key={`rolling-vol-x-${point.date}`}
-                              className="instrument-x-axis-label"
-                              x={projected.x}
-                              y={SECONDARY_SERIES_GEOMETRY.height - 8}
-                            >
-                              {formatMonthBucket(getMonthBucket(point.date))}
-                            </text>
-                          )
-                        })}
-                        <path d={rollingVolatilityAreaPath} className="instrument-line-area" />
-                        <path d={rollingVolatilityLinePath} className="instrument-line-path" />
-                      </svg>
-                    </div>
-                  ) : (
-                    <div className="instrument-fallback-block">
-                      <div className="instrument-fallback-copy">
-                        Rolling volatility will appear once at least 12 monthly return observations are available.
-                      </div>
-                    </div>
-                  )}
-                </section>
-              </div>
-
-              <section className="instrument-risk-series-block instrument-risk-series-block-wide">
-                <div className="instrument-risk-visual-column-header">
-                  <div className="panel-title">Risk</div>
-                  <div className="instrument-section-title">Rolling Beta</div>
-                </div>
-                {rollingBetaSeries.length > 1 ? (
-                  <div className="instrument-chart-plot-shell instrument-performance-visual-shell">
-                    <svg
-                      viewBox={`0 0 ${SECONDARY_SERIES_GEOMETRY.width} ${SECONDARY_SERIES_GEOMETRY.height}`}
-                      className="instrument-line-chart"
-                      role="img"
-                      aria-label="Rolling beta chart"
+              <div className="instrument-performance-matrix-controls">
+                <div className="instrument-performance-view-toggle" role="group" aria-label="Rolling risk window">
+                  {ROLLING_RISK_WINDOW_OPTIONS.map((option) => (
+                    <button
+                      key={option.months}
+                      type="button"
+                      className={option.months === rollingRiskWindowMonths ? 'instrument-performance-toggle-active' : undefined}
+                      onClick={() => setRollingRiskWindowMonths(option.months)}
                     >
-                      {rollingBetaTickValues.map((tick) => {
-                        const y = projectChartValue(
-                          tick,
-                          rollingBetaBounds.min,
-                          rollingBetaBounds.max,
-                          SECONDARY_SERIES_GEOMETRY,
-                        )
-                        return (
-                          <g key={`rolling-beta-y-${tick.toFixed(4)}`}>
-                            <line
-                              x1={String(SECONDARY_SERIES_GEOMETRY.paddingLeft)}
-                              y1={String(y)}
-                              x2={String(SECONDARY_SERIES_GEOMETRY.width - SECONDARY_SERIES_GEOMETRY.paddingRight)}
-                              y2={String(y)}
-                              className="instrument-gridline"
-                            />
-                            <text
-                              className="instrument-y-axis-label"
-                              x={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
-                              y={getYAxisLabelTextY(y, SECONDARY_SERIES_GEOMETRY)}
-                            >
-                              {formatNumber(tick, 2)}
-                            </text>
-                          </g>
-                        )
-                      })}
-                      {rollingBetaTickDates.map((point) => {
-                        const projected = projectChartPoint(
-                          point,
-                          rollingBetaSeries,
-                          rollingBetaBounds.min,
-                          rollingBetaBounds.max,
-                          SECONDARY_SERIES_GEOMETRY,
-                        )
-                        return (
-                          <text
-                            key={`rolling-beta-x-${point.date}`}
-                            className="instrument-x-axis-label"
-                            x={projected.x}
-                            y={SECONDARY_SERIES_GEOMETRY.height - 8}
-                          >
-                            {formatMonthBucket(getMonthBucket(point.date))}
-                          </text>
-                        )
-                      })}
-                      <path d={rollingBetaAreaPath} className="instrument-line-area" />
-                      <path d={rollingBetaLinePath} className="instrument-line-path" />
-                    </svg>
-                  </div>
-                ) : (
-                  <div className="instrument-fallback-block">
-                    <div className="instrument-fallback-copy">
-                      {selectedMetricBenchmark
-                        ? 'Rolling beta will appear once at least 12 overlapping monthly return observations are available.'
-                        : '—'}
-                    </div>
-                  </div>
-                )}
-              </section>
-
-              <div className="table-shell instrument-risk-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-data-table">
-                  <thead>
-                    <tr>
-                      <th>Signal</th>
-                      <th>Current</th>
-                      <th>Baseline</th>
-                      <th>Change</th>
-                      <th>Watch</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {riskChangeRows.map((row) => (
-                      <tr key={row.signal}>
-                        <td>{row.signal}</td>
-                        <td>{row.current}</td>
-                        <td>{row.baseline}</td>
-                        <td>{row.change}</td>
-                        <td className="instrument-data-table-value">{row.watch}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
-
-          <section className="instrument-risk-section">
-            <div className="instrument-risk-section-header">
-              <div>
-                <div className="panel-title">Risk</div>
-                <div className="instrument-section-title">Peer Context</div>
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
             <div className="instrument-risk-section-body">
-              {positionedRiskScatterRows.length ? (
-                <div className="instrument-chart-plot-shell instrument-performance-visual-shell">
-                  <svg
-                    viewBox={`0 0 ${RISK_SCATTER_GEOMETRY.width} ${RISK_SCATTER_GEOMETRY.height}`}
-                    className="instrument-risk-scatter"
-                    role="img"
-                    aria-label="Risk return scatter plot"
-                  >
-                    {riskYTickValues.map((tick) => {
-                      const y =
-                        RISK_SCATTER_GEOMETRY.height -
-                        RISK_SCATTER_GEOMETRY.paddingBottom -
-                        ((tick - riskReturnMin) / Math.max(riskReturnMax - riskReturnMin, 1)) * riskPlotHeight
-                      return (
-                        <g key={`risk-y-${tick}`}>
-                          <line
-                            x1={String(RISK_SCATTER_GEOMETRY.paddingLeft)}
-                            y1={String(y)}
-                            x2={String(RISK_SCATTER_GEOMETRY.width - RISK_SCATTER_GEOMETRY.paddingRight)}
-                            y2={String(y)}
-                            className="instrument-gridline"
-                          />
-                          <text x={8} y={y + 4} className="instrument-axis-label">
-                            {formatNumber(tick, 2)}
-                          </text>
-                        </g>
-                      )
-                    })}
-                    {riskXTickValues.map((tick) => {
-                      const x =
-                        RISK_SCATTER_GEOMETRY.paddingLeft +
-                        ((tick - riskVolMin) / Math.max(riskVolMax - riskVolMin, 1)) * riskPlotWidth
-                      return (
-                        <g key={`risk-x-${tick}`}>
-                          <line
-                            x1={String(x)}
-                            y1={String(RISK_SCATTER_GEOMETRY.paddingTop)}
-                            x2={String(x)}
-                            y2={String(RISK_SCATTER_GEOMETRY.height - RISK_SCATTER_GEOMETRY.paddingBottom)}
-                            className="instrument-gridline instrument-gridline-vertical"
-                          />
-                          <text
-                            x={x}
-                            y={RISK_SCATTER_GEOMETRY.height - 8}
-                            textAnchor="middle"
-                            className="instrument-axis-label"
-                          >
-                            {formatNumber(tick, 2)}
-                          </text>
-                        </g>
-                      )
-                    })}
-                    {positionedRiskScatterRows.map((row) => (
-                      <g key={row.name}>
-                        <circle
-                          cx={row.x}
-                          cy={row.y}
-                          r={8}
-                          className={`instrument-risk-point instrument-risk-point-${row.tone}`}
-                        />
-                        <text x={row.x + 12} y={row.y + 4} className="instrument-risk-point-label">
-                          {row.name}
-                        </text>
-                      </g>
-                    ))}
-                  </svg>
-                </div>
-              ) : (
-                <div className="instrument-fallback-block">
-                  <div className="instrument-fallback-copy">
-                    Risk map will appear once peer comparison coordinates are available.
-                  </div>
-                  {riskFallbackFacts.length ? (
-                    <div className="stack-list stack-list-compact">
-                      {riskFallbackFacts.map((row) => (
-                        <div key={row.label} className="stack-item">
-                          <span>{row.label}</span>
-                          <strong>{row.value}</strong>
-                        </div>
-                      ))}
+              <div className="instrument-risk-visual-grid instrument-risk-rolling-grid">
+                <section className="instrument-risk-series-block">
+                  <div className="instrument-risk-visual-column-header instrument-risk-legend-header">
+                    <div className="instrument-series-legend">
+                      <div className="instrument-series-label">
+                        <strong>Return</strong>
+                        <span>{rollingRiskWindowLabel}</span>
+                        <span>
+                          {rollingAnnualizedReturnSeries.length > 0
+                            ? formatPercent(rollingAnnualizedReturnSeries[rollingAnnualizedReturnSeries.length - 1].value)
+                            : '—'}
+                        </span>
+                      </div>
+                      <div className="instrument-series-label instrument-series-label-benchmark-row">
+                        <strong>Volatility</strong>
+                        <span>{rollingRiskWindowLabel}</span>
+                        <span>
+                          {rollingVolatilitySeries.length > 0
+                            ? formatPercent(rollingVolatilitySeries[rollingVolatilitySeries.length - 1].value)
+                            : '—'}
+                        </span>
+                      </div>
                     </div>
-                  ) : null}
-                </div>
-              )}
+                  </div>
+                  {rollingAnnualizedReturnSeries.length > 1 || rollingVolatilitySeries.length > 1 ? (
+                    <div className="instrument-chart-plot-shell instrument-performance-visual-shell">
+                      <svg
+                        viewBox={`0 0 ${SECONDARY_SERIES_GEOMETRY.width} ${SECONDARY_SERIES_GEOMETRY.height}`}
+                        className="instrument-line-chart"
+                        role="img"
+                        aria-label="Rolling annualized return and volatility chart"
+                      >
+                        {rollingReturnVolTickValues.map((tick, index) => {
+                          const y = projectChartValue(
+                            tick,
+                            rollingReturnVolBounds.min,
+                            rollingReturnVolBounds.max,
+                            SECONDARY_SERIES_GEOMETRY,
+                          )
+                          const isBottomTick = index === 0
+                          return (
+                            <g key={`rolling-return-vol-y-${tick.toFixed(4)}`}>
+                              <line
+                                x1="8"
+                                y1={String(y)}
+                                x2={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
+                                y2={String(y)}
+                                className={
+                                  isBottomTick
+                                    ? 'instrument-gridline instrument-gridline-axis-stub instrument-gridline-emphasis'
+                                    : 'instrument-gridline instrument-gridline-axis-stub'
+                                }
+                              />
+                              <line
+                                x1={String(SECONDARY_SERIES_GEOMETRY.paddingLeft)}
+                                y1={String(y)}
+                                x2={String(SECONDARY_SERIES_GEOMETRY.width - SECONDARY_SERIES_GEOMETRY.paddingRight)}
+                                y2={String(y)}
+                                className={
+                                  isBottomTick
+                                    ? 'instrument-gridline instrument-gridline-emphasis'
+                                    : 'instrument-gridline'
+                                }
+                              />
+                              <text
+                                className="instrument-y-axis-label"
+                                x={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
+                                y={getYAxisLabelTextY(
+                                  y,
+                                  SECONDARY_SERIES_GEOMETRY,
+                                  isBottomTick ? 'above' : 'below',
+                                )}
+                              >
+                                {formatPercent(tick)}
+                              </text>
+                            </g>
+                          )
+                        })}
+                        {rollingReturnVolTickDates.map((tick, index) => {
+                          return renderChartXAxisTick(
+                            tick,
+                            rollingReturnVolTickDates[index - 1] || null,
+                            getPlotXFromRatio(SECONDARY_SERIES_GEOMETRY, tick.xRatio, 0),
+                            SECONDARY_SERIES_GEOMETRY,
+                            rollingReturnVolTickSpanDays,
+                            'rolling-return-vol-x',
+                          )
+                        })}
+                        {rollingAnnualizedReturnSeries.length > 1 ? (
+                          <path d={rollingAnnualizedReturnLinePath} className="instrument-line-path" />
+                        ) : null}
+                        {rollingVolatilitySeries.length > 1 ? (
+                          <path
+                            d={rollingAnnualizedVolatilityLinePath}
+                            className="instrument-line-path instrument-line-path-benchmark"
+                          />
+                        ) : null}
+                      </svg>
+                    </div>
+                  ) : (
+                    <div className="instrument-fallback-block">
+                      <div className="instrument-fallback-copy">
+                        Rolling return and volatility will appear once enough total-return NAV observations are available for {rollingRiskWindowLabel}.
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                <section className="instrument-risk-series-block">
+                  <div className="instrument-risk-visual-column-header">
+                    <div className="panel-title">Risk</div>
+                    <div className="instrument-section-title">Rolling Sharpe</div>
+                    <div className="instrument-series-legend">
+                      <div className="instrument-series-label">
+                        <strong>Sharpe</strong>
+                        <span>{rollingRiskWindowLabel}</span>
+                        <span>rf=0</span>
+                        <em>
+                          {rollingSharpeSeries.length > 0
+                            ? formatNumber(rollingSharpeSeries[rollingSharpeSeries.length - 1].value, 2)
+                            : '—'}
+                        </em>
+                      </div>
+                    </div>
+                  </div>
+                  {rollingSharpeSeries.length > 1 ? (
+                    <div className="instrument-chart-plot-shell instrument-performance-visual-shell">
+                      <svg
+                        viewBox={`0 0 ${SECONDARY_SERIES_GEOMETRY.width} ${SECONDARY_SERIES_GEOMETRY.height}`}
+                        className="instrument-line-chart"
+                        role="img"
+                        aria-label="Rolling Sharpe chart"
+                      >
+                        {rollingSharpeTickValues.map((tick, index) => {
+                          const y = projectChartValue(
+                            tick,
+                            rollingSharpeBounds.min,
+                            rollingSharpeBounds.max,
+                            SECONDARY_SERIES_GEOMETRY,
+                          )
+                          const isBottomTick = index === 0
+                          return (
+                            <g key={`rolling-sharpe-y-${tick.toFixed(4)}`}>
+                              <line
+                                x1="8"
+                                y1={String(y)}
+                                x2={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
+                                y2={String(y)}
+                                className={
+                                  isBottomTick
+                                    ? 'instrument-gridline instrument-gridline-axis-stub instrument-gridline-emphasis'
+                                    : 'instrument-gridline instrument-gridline-axis-stub'
+                                }
+                              />
+                              <line
+                                x1={String(SECONDARY_SERIES_GEOMETRY.paddingLeft)}
+                                y1={String(y)}
+                                x2={String(SECONDARY_SERIES_GEOMETRY.width - SECONDARY_SERIES_GEOMETRY.paddingRight)}
+                                y2={String(y)}
+                                className={
+                                  isBottomTick
+                                    ? 'instrument-gridline instrument-gridline-emphasis'
+                                    : 'instrument-gridline'
+                                }
+                              />
+                              <text
+                                className="instrument-y-axis-label"
+                                x={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
+                                y={getYAxisLabelTextY(
+                                  y,
+                                  SECONDARY_SERIES_GEOMETRY,
+                                  isBottomTick ? 'above' : 'below',
+                                )}
+                              >
+                                {formatNumber(tick, 2)}
+                              </text>
+                            </g>
+                          )
+                        })}
+                        {rollingSharpeTickDates.map((tick, index) => {
+                          return renderChartXAxisTick(
+                            tick,
+                            rollingSharpeTickDates[index - 1] || null,
+                            getPlotXFromRatio(SECONDARY_SERIES_GEOMETRY, tick.xRatio, 0),
+                            SECONDARY_SERIES_GEOMETRY,
+                            rollingSharpeTickSpanDays,
+                            'rolling-sharpe-x',
+                          )
+                        })}
+                        <path d={rollingSharpeLinePath} className="instrument-line-path" />
+                      </svg>
+                    </div>
+                  ) : (
+                    <div className="instrument-fallback-block">
+                      <div className="instrument-fallback-copy">
+                        Rolling Sharpe will appear once enough total-return NAV observations are available for {rollingRiskWindowLabel}.
+                      </div>
+                    </div>
+                  )}
+                </section>
+              </div>
             </div>
           </section>
         </section>
@@ -7320,21 +7865,14 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       {activeTab === 'price' ? (
         <section className="panel instrument-price-shell instrument-edit-surface">
           <div className="instrument-price-topline" />
-          <div className="instrument-price-page-header">
-            <div>
-              <div className="panel-title">Price</div>
-              <div className="instrument-section-title">Price</div>
-            </div>
-          </div>
 
           <section className="instrument-price-section">
             <div className="instrument-price-section-header">
               <div>
-                <div className="panel-title">Price</div>
-                <div className="instrument-section-title">Expense Ratios</div>
+                <div className="instrument-section-title">Expense Ratios &amp; Fees</div>
               </div>
               <div className="toolbar">
-                {editingPriceSection === 'ter' ? (
+                {isEditingPrice ? (
                   <>
                     <button
                       type="button"
@@ -7361,11 +7899,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                     type="button"
                     onClick={() => {
                       setPriceDraft(toEditablePriceDraft(bundle.price))
-                      setEditingPriceSection('ter')
+                      setEditingPriceSection('table')
                       setSectionError(null)
                       setSectionNotice(null)
                     }}
-                    disabled={editingPriceSection !== null}
                   >
                     Edit
                   </button>
@@ -7374,458 +7911,130 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             </div>
             <div className="instrument-price-section-body">
               <div className="table-shell instrument-price-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-data-table">
-                  <thead>
-                    <tr>
-                      <th>Field</th>
-                      <th>Value</th>
-                    </tr>
-                  </thead>
+                <table className="terminal-table terminal-table-compact instrument-data-table instrument-price-schedule-table">
                   <tbody>
                     <tr>
-                      <td>Adjusted Expense Ratio</td>
-                      <td className="instrument-data-table-value">
-                        {editingPriceSection === 'ter' && priceDraft ? (
-                          <input
-                            className="table-input"
-                            value={getOverviewDraftValue(priceDraft, 'adjusted_expense_ratio')}
-                            onChange={(event) =>
-                              setPriceDraft((current) =>
-                                current
-                                  ? {
-                                      ...current,
-                                      overviewRows: current.overviewRows.map((row) =>
-                                        row.key === 'adjusted_expense_ratio'
-                                          ? { ...row, value: event.target.value }
-                                          : row,
-                                      ),
-                                    }
-                                  : current,
-                              )
-                            }
-                          />
-                        ) : (
-                          priceTerRows[0].value
+                      <td className="instrument-price-schedule-label">Adjusted Expense Ratio</td>
+                      <td className="instrument-price-schedule-value">
+                        {renderPriceOverviewValue('adjusted_expense_ratio', adjustedExpenseRatio)}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-price-schedule-label">Reported Expense Ratio</td>
+                      <td className="instrument-price-schedule-value">
+                        {renderPriceOverviewValue('total_expense_ratio', reportedExpenseRatio)}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-price-schedule-label">Management Fee</td>
+                      <td className="instrument-price-schedule-value">
+                        {renderPriceOverviewValue('management_fee', feesAndTermsRows[0]?.value || '—')}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-price-schedule-label">Interest Expense Fees</td>
+                      <td className="instrument-price-schedule-value">
+                        {renderPriceOverviewValue('interest_expense_fees', feesAndTermsRows[1]?.value || '—')}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-price-schedule-label">Redemption Fee</td>
+                      <td className="instrument-price-schedule-value">
+                        {renderPriceOverviewValue('redemption_fee', feesAndTermsRows[2]?.value || '—')}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-price-schedule-label">Minimum Initial Investment</td>
+                      <td className="instrument-price-schedule-value">
+                        {renderPriceOverviewValue('minimum_initial_investment', feesAndTermsRows[3]?.value || '—')}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-price-schedule-label">Distribution Policy</td>
+                      <td
+                        className={
+                          isEditingPrice
+                            ? 'instrument-price-schedule-value instrument-price-schedule-prose'
+                            : 'instrument-price-schedule-value instrument-data-table-prose instrument-price-schedule-prose'
+                        }
+                      >
+                        {renderPriceTextValue(
+                          priceDraft?.distribution_policy ?? '',
+                          (value) =>
+                            setPriceDraft((current) =>
+                              current ? { ...current, distribution_policy: value } : current,
+                            ),
+                          pricePolicyRows[0].value,
+                          2,
                         )}
                       </td>
                     </tr>
                     <tr>
-                      <td>Reported Expense Ratio</td>
-                      <td className="instrument-data-table-value">
-                        {editingPriceSection === 'ter' && priceDraft ? (
-                          <input
-                            className="table-input"
-                            value={getOverviewDraftValue(priceDraft, 'total_expense_ratio')}
-                            onChange={(event) =>
-                              setPriceDraft((current) =>
-                                current
-                                  ? {
-                                      ...current,
-                                      overviewRows: current.overviewRows.map((row) =>
-                                        row.key === 'total_expense_ratio'
-                                          ? { ...row, value: event.target.value }
-                                          : row,
-                                      ),
-                                    }
-                                  : current,
-                              )
-                            }
-                          />
-                        ) : (
-                          priceTerRows[1].value
-                        )}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
-
-          <section className="instrument-price-section">
-            <div className="instrument-price-section-header">
-              <div>
-                <div className="panel-title">Price</div>
-                <div className="instrument-section-title">Fees &amp; Terms</div>
-              </div>
-              <div className="toolbar">
-                {editingPriceSection === 'fees' ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPriceDraft(toEditablePriceDraft(bundle.price))
-                        setEditingPriceSection(null)
-                        setSectionError(null)
-                        setSectionNotice(null)
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      className="button-primary"
-                      onClick={() => void handleSavePrice()}
-                      disabled={savingSection === 'price'}
-                    >
-                      {savingSection === 'price' ? 'Saving...' : 'Save'}
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPriceDraft(toEditablePriceDraft(bundle.price))
-                      setEditingPriceSection('fees')
-                      setSectionError(null)
-                      setSectionNotice(null)
-                    }}
-                    disabled={editingPriceSection !== null}
-                  >
-                    Edit
-                  </button>
-                )}
-              </div>
-            </div>
-            <div className="instrument-price-section-body">
-              <div className="table-shell instrument-price-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-data-table">
-                  <thead>
-                    <tr>
-                      <th>Field</th>
-                      <th>Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {priceFeeFieldDefinitions.map(([key, label], index) => (
-                      <tr key={key}>
-                        <td>{label}</td>
-                        <td className="instrument-data-table-value">
-                          {editingPriceSection === 'fees' && priceDraft ? (
-                            <input
-                              className="table-input"
-                              value={getOverviewDraftValue(priceDraft, key)}
-                              onChange={(event) =>
-                                setPriceDraft((current) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        overviewRows: current.overviewRows.map((row) =>
-                                          row.key === key ? { ...row, value: event.target.value } : row,
-                                        ),
-                                      }
-                                    : current,
-                                )
-                              }
-                            />
-                          ) : (
-                            feesAndTermsRows[index]?.value || '—'
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="table-shell instrument-price-table-shell">
-                {editingPriceSection === 'fees' && priceDraft ? (
-                  <table className="terminal-table terminal-table-compact instrument-data-table">
-                    <thead>
-                      <tr>
-                        <th>Fee Note</th>
-                        <th className="instrument-table-action-col">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {priceDraft.feeNoteRows.length ? (
-                        priceDraft.feeNoteRows.map((row) => (
-                          <tr key={row.id}>
-                            <td>
-                              <input
-                                className="table-input"
-                                value={row.value}
-                                onChange={(event) =>
-                                  setPriceDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          feeNoteRows: current.feeNoteRows.map((item) =>
-                                            item.id === row.id ? { ...item, value: event.target.value } : item,
-                                          ),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              />
-                            </td>
-                            <td className="instrument-table-row-action-cell">
-                              <button
-                                type="button"
-                                className="table-action"
-                                onClick={() =>
-                                  setPriceDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          feeNoteRows: current.feeNoteRows.filter((item) => item.id !== row.id),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              >
-                                Remove
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={2} className="empty-state">
-                            No fee notes yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                ) : price.fee_notes.length ? (
-                  <table className="terminal-table terminal-table-compact instrument-data-table">
-                    <thead>
-                      <tr>
-                        <th>Fee Note</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {price.fee_notes.map((item) => (
-                        <tr key={item}>
-                          <td className="instrument-data-table-prose">{item}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <div className="instrument-placeholder instrument-price-placeholder">No fee notes yet.</div>
-                )}
-              </div>
-
-              {editingPriceSection === 'fees' && priceDraft ? (
-                <div className="editor-actions">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPriceDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              feeNoteRows: [...current.feeNoteRows, { id: makeRowId('price-fee-note'), value: '' }],
-                            }
-                          : current,
-                      )
-                    }
-                  >
-                    Add Fee Note
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </section>
-
-          <section className="instrument-price-section">
-            <div className="instrument-price-section-header">
-              <div>
-                <div className="panel-title">Price</div>
-                <div className="instrument-section-title">Distribution Policy</div>
-              </div>
-              <div className="toolbar">
-                {editingPriceSection === 'policy' ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPriceDraft(toEditablePriceDraft(bundle.price))
-                        setEditingPriceSection(null)
-                        setSectionError(null)
-                        setSectionNotice(null)
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      className="button-primary"
-                      onClick={() => void handleSavePrice()}
-                      disabled={savingSection === 'price'}
-                    >
-                      {savingSection === 'price' ? 'Saving...' : 'Save'}
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPriceDraft(toEditablePriceDraft(bundle.price))
-                      setEditingPriceSection('policy')
-                      setSectionError(null)
-                      setSectionNotice(null)
-                    }}
-                    disabled={editingPriceSection !== null}
-                  >
-                    Edit
-                  </button>
-                )}
-              </div>
-            </div>
-            <div className="instrument-price-section-body">
-              <div className="table-shell instrument-price-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-data-table">
-                  <thead>
-                    <tr>
-                      <th>Field</th>
-                      <th>Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td>Distribution Policy</td>
-                      <td className={editingPriceSection === 'policy' ? '' : 'instrument-data-table-prose'}>
-                        {editingPriceSection === 'policy' && priceDraft ? (
-                          <input
-                            className="table-input"
-                            value={priceDraft.distribution_policy}
-                            onChange={(event) =>
-                              setPriceDraft((current) =>
-                                current ? { ...current, distribution_policy: event.target.value } : current,
-                              )
-                            }
-                          />
-                        ) : (
-                          pricePolicyRows[0].value
+                      <td className="instrument-price-schedule-label">Policy Text</td>
+                      <td
+                        className={
+                          isEditingPrice
+                            ? 'instrument-price-schedule-value instrument-price-schedule-prose'
+                            : 'instrument-price-schedule-value instrument-data-table-prose instrument-price-schedule-prose'
+                        }
+                      >
+                        {renderPriceTextValue(
+                          priceDraft?.policy_text ?? '',
+                          (value) =>
+                            setPriceDraft((current) => (current ? { ...current, policy_text: value } : current)),
+                          pricePolicyRows[1].value,
+                          5,
                         )}
                       </td>
                     </tr>
                     <tr>
-                      <td>Policy Text</td>
-                      <td className={editingPriceSection === 'policy' ? '' : 'instrument-data-table-prose'}>
-                        {editingPriceSection === 'policy' && priceDraft ? (
+                      <td className="instrument-price-schedule-label">Fee Notes</td>
+                      <td className="instrument-price-schedule-value instrument-price-schedule-prose">
+                        {isEditingPrice && priceDraft ? (
                           <textarea
                             className="table-input instrument-data-table-textarea"
-                            rows={5}
-                            value={priceDraft.policy_text}
+                            rows={4}
+                            value={listRowsToTextareaValue(priceDraft.feeNoteRows)}
                             onChange={(event) =>
                               setPriceDraft((current) =>
-                                current ? { ...current, policy_text: event.target.value } : current,
+                                current
+                                  ? {
+                                      ...current,
+                                      feeNoteRows: textareaValueToListRows('price-fee-note', event.target.value),
+                                    }
+                                  : current,
                               )
                             }
                           />
                         ) : (
-                          pricePolicyRows[1].value
+                          formatPriceListValue(price.fee_notes)
+                        )}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-price-schedule-label">Notes</td>
+                      <td className="instrument-price-schedule-value instrument-price-schedule-prose">
+                        {isEditingPrice && priceDraft ? (
+                          <textarea
+                            className="table-input instrument-data-table-textarea"
+                            rows={4}
+                            value={listRowsToTextareaValue(priceDraft.noteRows)}
+                            onChange={(event) =>
+                              setPriceDraft((current) =>
+                                current
+                                  ? { ...current, noteRows: textareaValueToListRows('price-note', event.target.value) }
+                                  : current,
+                              )
+                            }
+                          />
+                        ) : (
+                          formatPriceListValue(price.notes)
                         )}
                       </td>
                     </tr>
                   </tbody>
                 </table>
               </div>
-
-              <div className="table-shell instrument-price-table-shell">
-                {editingPriceSection === 'policy' && priceDraft ? (
-                  <table className="terminal-table terminal-table-compact instrument-data-table">
-                    <thead>
-                      <tr>
-                        <th>Note</th>
-                        <th className="instrument-table-action-col">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {priceDraft.noteRows.length ? (
-                        priceDraft.noteRows.map((row) => (
-                          <tr key={row.id}>
-                            <td>
-                              <textarea
-                                className="table-input instrument-data-table-textarea"
-                                rows={2}
-                                value={row.value}
-                                onChange={(event) =>
-                                  setPriceDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          noteRows: current.noteRows.map((item) =>
-                                            item.id === row.id ? { ...item, value: event.target.value } : item,
-                                          ),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              />
-                            </td>
-                            <td className="instrument-table-row-action-cell">
-                              <button
-                                type="button"
-                                className="table-action"
-                                onClick={() =>
-                                  setPriceDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          noteRows: current.noteRows.filter((item) => item.id !== row.id),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              >
-                                Remove
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={2} className="empty-state">
-                            No policy notes yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                ) : price.notes.length ? (
-                  <table className="terminal-table terminal-table-compact instrument-data-table">
-                    <thead>
-                      <tr>
-                        <th>Note</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {price.notes.map((item) => (
-                        <tr key={item}>
-                          <td className="instrument-data-table-prose">{item}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <div className="instrument-placeholder instrument-price-placeholder">No policy notes yet.</div>
-                )}
-              </div>
-
-              {editingPriceSection === 'policy' && priceDraft ? (
-                <div className="editor-actions">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setPriceDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              noteRows: [...current.noteRows, { id: makeRowId('price-note'), value: '' }],
-                            }
-                          : current,
-                      )
-                    }
-                  >
-                    Add Note
-                  </button>
-                </div>
-              ) : null}
             </div>
           </section>
         </section>
@@ -7928,6 +8137,122 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       {activeTab === 'people' ? (
         <section className="instrument-people-shell instrument-edit-surface">
           <div className="instrument-price-topline" />
+
+          <section className="instrument-people-section">
+            <div className="instrument-people-section-header">
+              <div>
+                <div className="instrument-section-title">People</div>
+              </div>
+              <div className="toolbar">
+                {editingPeople ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPeopleDraft(toEditablePeopleDraft(bundle!.people))
+                        setEditingPeople(false)
+                        setSectionError(null)
+                        setSectionNotice(null)
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="button-primary"
+                      onClick={() => void handleSavePeople()}
+                      disabled={savingSection === 'people'}
+                    >
+                      {savingSection === 'people' ? 'Saving...' : 'Save'}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPeopleDraft(toEditablePeopleDraft(bundle!.people))
+                      setEditingPeople(true)
+                      setSectionError(null)
+                      setSectionNotice(null)
+                    }}
+                  >
+                    Edit
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="instrument-people-section-body">
+              <div className="table-shell instrument-profile-table-shell">
+                <table className="terminal-table terminal-table-compact instrument-data-table instrument-profile-table">
+                  <tbody>
+                    <tr>
+                      <td className="instrument-profile-label">Management Company</td>
+                      <td className="instrument-profile-value">
+                        {renderPeopleOverviewValue(
+                          'advisor',
+                          formatResearchOverviewValue('advisor', managementStats.advisor),
+                        )}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-profile-label">Sub-Advisor</td>
+                      <td className="instrument-profile-value">
+                        {renderPeopleOverviewValue(
+                          'sub_advisor',
+                          formatResearchOverviewValue('sub_advisor', managementStats.sub_advisor),
+                        )}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-profile-label">Management Profile</td>
+                      <td className="instrument-profile-value instrument-profile-prose">
+                        {renderPeopleManagementProfileValue()}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-profile-label">Fund Managers / Research Team</td>
+                      <td className="instrument-profile-value instrument-profile-prose">{renderPeopleTeamValue()}</td>
+                    </tr>
+                    {editingPeople || peopleAdditionalOverviewRows.length ? (
+                      <tr>
+                        <td className="instrument-profile-label">Additional Fields</td>
+                        <td className="instrument-profile-value instrument-profile-prose">
+                          {renderPeopleAdditionalFieldsValue()}
+                        </td>
+                      </tr>
+                    ) : null}
+                    <tr>
+                      <td className="instrument-profile-label">Notes</td>
+                      <td className="instrument-profile-value instrument-profile-prose">
+                        {editingPeople && peopleDraft ? (
+                          <textarea
+                            className="table-input instrument-data-table-textarea"
+                            rows={4}
+                            value={listRowsToTextareaValue(peopleDraft.noteRows)}
+                            onChange={(event) =>
+                              setPeopleDraft((current) =>
+                                current
+                                  ? { ...current, noteRows: textareaValueToListRows('people-note', event.target.value) }
+                                  : current,
+                              )
+                            }
+                          />
+                        ) : (
+                          formatProfileListValue(people.notes)
+                        )}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        </section>
+      ) : null}
+
+      {false && activeTab === 'people' ? (
+        <section className="instrument-people-shell instrument-edit-surface">
+          <div className="instrument-price-topline" />
           <div className="instrument-people-page-header">
             <div>
               <div className="panel-title">People</div>
@@ -7939,7 +8264,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   <button
                     type="button"
                     onClick={() => {
-                      setPeopleDraft(toEditablePeopleDraft(bundle.people))
+                      setPeopleDraft(toEditablePeopleDraft(bundle!.people))
                       setEditingPeople(false)
                       setSectionError(null)
                       setSectionNotice(null)
@@ -7960,7 +8285,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 <button
                   type="button"
                   onClick={() => {
-                    setPeopleDraft(toEditablePeopleDraft(bundle.people))
+                    setPeopleDraft(toEditablePeopleDraft(bundle!.people))
                     setEditingPeople(true)
                     setSectionError(null)
                     setSectionNotice(null)
@@ -8202,8 +8527,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 </thead>
                 <tbody>
                   {editingPeople && peopleDraft ? (
-                    peopleDraft.teamRows.length ? (
-                      peopleDraft.teamRows.map((row) => (
+                    peopleDraft!.teamRows.length ? (
+                      peopleDraft!.teamRows.map((row) => (
                         <tr key={row.id}>
                           <td>
                             <input
@@ -8343,8 +8668,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                     </tr>
                   </thead>
                   <tbody>
-                    {peopleDraft.noteRows.length ? (
-                      peopleDraft.noteRows.map((row) => (
+                    {peopleDraft!.noteRows.length ? (
+                      peopleDraft!.noteRows.map((row) => (
                         <tr key={row.id}>
                           <td>
                             <textarea
@@ -8420,6 +8745,160 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       {activeTab === 'strategy' ? (
         <section className="instrument-strategy-shell instrument-edit-surface">
           <div className="instrument-price-topline" />
+
+          <section className="instrument-strategy-section">
+            <div className="instrument-strategy-section-header">
+              <div>
+                <div className="instrument-section-title">Strategy</div>
+              </div>
+              <div className="toolbar">
+                {editingStrategy ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStrategyDraft(toEditableStrategyDraft(bundle!.strategy))
+                        setEditingStrategy(false)
+                        setSectionError(null)
+                        setSectionNotice(null)
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="button-primary"
+                      onClick={() => void handleSaveStrategy()}
+                      disabled={savingSection === 'strategy'}
+                    >
+                      {savingSection === 'strategy' ? 'Saving...' : 'Save'}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStrategyDraft(toEditableStrategyDraft(bundle!.strategy))
+                      setEditingStrategy(true)
+                      setSectionError(null)
+                      setSectionNotice(null)
+                    }}
+                  >
+                    Edit
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="instrument-strategy-section-body">
+              <div className="table-shell instrument-profile-table-shell">
+                <table className="terminal-table terminal-table-compact instrument-data-table instrument-profile-table">
+                  <tbody>
+                    <tr>
+                      <td className="instrument-profile-label">Investment Scope / Objective</td>
+                      <td className="instrument-profile-value instrument-profile-prose">
+                        {renderStrategyTextValue(
+                          strategyDraft?.investment_objective ?? '',
+                          (value) =>
+                            setStrategyDraft((current) =>
+                              current ? { ...current, investment_objective: value } : current,
+                            ),
+                          strategy.investment_objective,
+                          5,
+                        )}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-profile-label">Investment Strategy</td>
+                      <td className="instrument-profile-value instrument-profile-prose">
+                        {renderStrategyTextValue(
+                          strategyDraft?.summary ?? '',
+                          (value) =>
+                            setStrategyDraft((current) => (current ? { ...current, summary: value } : current)),
+                          strategy.summary,
+                          6,
+                        )}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-profile-label">Investment Process</td>
+                      <td className="instrument-profile-value instrument-profile-prose">
+                        {editingStrategy && strategyDraft ? (
+                          <textarea
+                            className="table-input instrument-data-table-textarea"
+                            rows={4}
+                            value={listRowsToTextareaValue(strategyDraft.processRows)}
+                            onChange={(event) =>
+                              setStrategyDraft((current) =>
+                                current
+                                  ? { ...current, processRows: textareaValueToListRows('process', event.target.value) }
+                                  : current,
+                              )
+                            }
+                          />
+                        ) : (
+                          formatProfileListValue(strategy.process_bullets)
+                        )}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-profile-label">Risk Controls</td>
+                      <td className="instrument-profile-value instrument-profile-prose">
+                        {editingStrategy && strategyDraft ? (
+                          <textarea
+                            className="table-input instrument-data-table-textarea"
+                            rows={4}
+                            value={listRowsToTextareaValue(strategyDraft.riskControlRows)}
+                            onChange={(event) =>
+                              setStrategyDraft((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      riskControlRows: textareaValueToListRows('risk-control', event.target.value),
+                                    }
+                                  : current,
+                              )
+                            }
+                          />
+                        ) : (
+                          formatProfileListValue(strategy.risk_controls)
+                        )}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="instrument-profile-label">Notes</td>
+                      <td className="instrument-profile-value instrument-profile-prose">
+                        {editingStrategy && strategyDraft ? (
+                          <textarea
+                            className="table-input instrument-data-table-textarea"
+                            rows={4}
+                            value={listRowsToTextareaValue(strategyDraft.noteRows)}
+                            onChange={(event) =>
+                              setStrategyDraft((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      noteRows: textareaValueToListRows('strategy-note', event.target.value),
+                                    }
+                                  : current,
+                              )
+                            }
+                          />
+                        ) : (
+                          formatProfileListValue(strategy.notes)
+                        )}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        </section>
+      ) : null}
+
+      {false && activeTab === 'strategy' ? (
+        <section className="instrument-strategy-shell instrument-edit-surface">
+          <div className="instrument-price-topline" />
           <div className="instrument-strategy-page-header">
             <div>
               <div className="panel-title">Strategy</div>
@@ -8431,7 +8910,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   <button
                     type="button"
                     onClick={() => {
-                      setStrategyDraft(toEditableStrategyDraft(bundle.strategy))
+                      setStrategyDraft(toEditableStrategyDraft(bundle!.strategy))
                       setEditingStrategy(false)
                       setSectionError(null)
                       setSectionNotice(null)
@@ -8452,7 +8931,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 <button
                   type="button"
                   onClick={() => {
-                    setStrategyDraft(toEditableStrategyDraft(bundle.strategy))
+                    setStrategyDraft(toEditableStrategyDraft(bundle!.strategy))
                     setEditingStrategy(true)
                     setSectionError(null)
                     setSectionNotice(null)
@@ -8488,7 +8967,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                           <textarea
                             className="table-input instrument-data-table-textarea"
                             rows={6}
-                            value={strategyDraft.summary}
+                            value={strategyDraft!.summary}
                             onChange={(event) =>
                               setStrategyDraft((current) =>
                                 current ? { ...current, summary: event.target.value } : current,
@@ -8507,7 +8986,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                           <textarea
                             className="table-input instrument-data-table-textarea"
                             rows={5}
-                            value={strategyDraft.investment_objective}
+                            value={strategyDraft!.investment_objective}
                             onChange={(event) =>
                               setStrategyDraft((current) =>
                                 current ? { ...current, investment_objective: event.target.value } : current,
@@ -8562,8 +9041,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                       </tr>
                     </thead>
                     <tbody>
-                      {strategyDraft.processRows.length ? (
-                        strategyDraft.processRows.map((row) => (
+                      {strategyDraft!.processRows.length ? (
+                        strategyDraft!.processRows.map((row) => (
                           <tr key={row.id}>
                             <td>
                               <textarea
@@ -8675,8 +9154,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                       </tr>
                     </thead>
                     <tbody>
-                      {strategyDraft.riskControlRows.length ? (
-                        strategyDraft.riskControlRows.map((row) => (
+                      {strategyDraft!.riskControlRows.length ? (
+                        strategyDraft!.riskControlRows.map((row) => (
                           <tr key={row.id}>
                             <td>
                               <textarea
@@ -8785,8 +9264,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                       </tr>
                     </thead>
                     <tbody>
-                      {strategyDraft.noteRows.length ? (
-                        strategyDraft.noteRows.map((row) => (
+                      {strategyDraft!.noteRows.length ? (
+                        strategyDraft!.noteRows.map((row) => (
                           <tr key={row.id}>
                             <td>
                               <textarea
@@ -8861,6 +9340,144 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       ) : null}
 
       {activeTab === 'documents' ? (
+        <section className="instrument-documents-shell instrument-edit-surface" data-yungu-i18n-ignore="true">
+          <div className="instrument-price-topline" />
+
+          <section className="instrument-documents-section">
+            <div className="instrument-documents-section-header">
+              <div>
+                <div className="instrument-section-title">{localize(language, SYSTEM_LABELS.documentTitle)}</div>
+              </div>
+              <div className="toolbar">
+                <label className="instrument-documents-header-upload">
+                  <input
+                    key={documentUploadFile ? 'document-header-upload-selected' : 'document-header-upload-empty'}
+                    type="file"
+                    onChange={(event) => {
+                      const nextFile = event.target.files?.[0] || null
+                      setDocumentUploadFile(nextFile)
+                      if (nextFile && !documentUploadTitle.trim()) {
+                        setDocumentUploadTitle(nextFile.name.replace(/\.[^.]+$/, ''))
+                      }
+                    }}
+                  />
+                  {localize(language, SYSTEM_LABELS.upload)}
+                </label>
+              </div>
+            </div>
+
+            {documentUploadFile ? (
+              <form
+                className="instrument-documents-upload instrument-documents-upload-active"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void handleUploadDocument()
+                }}
+              >
+                  <label>
+                    <span>{localize(language, SYSTEM_LABELS.title)}</span>
+                    <input
+                      className="table-input"
+                      value={documentUploadTitle}
+                      placeholder={localize(language, SYSTEM_LABELS.title)}
+                      onChange={(event) => setDocumentUploadTitle(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>{localize(language, SYSTEM_LABELS.type)}</span>
+                    <select
+                      className="table-input"
+                      value={documentUploadType}
+                      onChange={(event) => setDocumentUploadType(event.target.value)}
+                    >
+                      <option value="">{localize(language, SYSTEM_LABELS.selectType)}</option>
+                      {DOCUMENT_TYPE_OPTIONS.map((option) => (
+                        <option key={option} value={option}>
+                          {localizeSystemValue(option, language)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="instrument-documents-upload-notes">
+                    <span>{localize(language, SYSTEM_LABELS.notes)}</span>
+                    <input
+                      className="table-input"
+                      value={documentUploadNotes}
+                      placeholder={localize(language, SYSTEM_LABELS.optionalNote)}
+                      onChange={(event) => setDocumentUploadNotes(event.target.value)}
+                    />
+                  </label>
+                  <div className="instrument-documents-upload-actions">
+                    <div className="instrument-documents-upload-file" title={documentUploadFile.name}>
+                      {documentUploadFile.name}
+                    </div>
+                    <button type="submit" className="button-primary" disabled={uploadingDocument}>
+                      {uploadingDocument
+                        ? localize(language, SYSTEM_LABELS.uploading)
+                        : localize(language, SYSTEM_LABELS.upload)}
+                    </button>
+                  </div>
+              </form>
+            ) : null}
+
+            <div className="table-shell instrument-documents-list-shell">
+              <table className="terminal-table terminal-table-compact instrument-data-table instrument-documents-list-table">
+                <thead>
+                  <tr>
+                    <th>{localize(language, SYSTEM_LABELS.fileName)}</th>
+                    <th>{localize(language, SYSTEM_LABELS.title)}</th>
+                    <th>{localize(language, SYSTEM_LABELS.type)}</th>
+                    <th>{localize(language, SYSTEM_LABELS.notes)}</th>
+                    <th>{localize(language, SYSTEM_LABELS.status)}</th>
+                    <th>{localize(language, SYSTEM_LABELS.size)}</th>
+                    <th>{localize(language, SYSTEM_LABELS.uploaded)}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {currentDocumentRows.length ? (
+                    currentDocumentRows.map((row, index) => {
+                      const fileName = getDocumentRecordFileName(row)
+                      const downloadUrl = getDocumentRecordText(row, 'download_url')
+                      const notes = getDocumentRecordNotes(row)
+                      return (
+                        <tr key={`${fileName}-${index}`}>
+                          <td>
+                            {downloadUrl ? (
+                              <a href={downloadUrl} target="_blank" rel="noreferrer" className="table-link">
+                                {fileName}
+                              </a>
+                            ) : (
+                              fileName
+                            )}
+                          </td>
+                          <td>{getDocumentRecordText(row, 'title') || '—'}</td>
+                          <td>{localizeSystemValue(getDocumentRecordText(row, 'document_type'), language)}</td>
+                          <td className="instrument-data-table-prose">{notes || '—'}</td>
+                          <td>
+                            <span className={`status-badge ${getDocumentStatusTone(row.status)}`}>
+                              {localizeSystemValue(getDocumentRecordText(row, 'status'), language)}
+                            </span>
+                          </td>
+                          <td>{formatFileSize(row.file_size)}</td>
+                          <td>{formatDateTime(row.uploaded_at)}</td>
+                        </tr>
+                      )
+                    })
+                  ) : (
+                    <tr>
+                      <td colSpan={7} className="empty-state">
+                        {localize(language, SYSTEM_LABELS.noDocuments)}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      ) : null}
+
+      {false && activeTab === 'documents' ? (
         <section className="instrument-documents-shell instrument-edit-surface">
           <div className="instrument-price-topline" />
           <div className="instrument-section-header instrument-documents-page-header">
@@ -8873,7 +9490,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   <button
                     type="button"
                     onClick={() => {
-                      setDocumentsDraft(toEditableDocumentsDraft(bundle.documents))
+                      setDocumentsDraft(toEditableDocumentsDraft(bundle!.documents))
                       setEditingDocuments(false)
                       setSectionError(null)
                       setSectionNotice(null)
@@ -8894,7 +9511,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 <button
                   type="button"
                   onClick={() => {
-                    setDocumentsDraft(toEditableDocumentsDraft(bundle.documents))
+                    setDocumentsDraft(toEditableDocumentsDraft(bundle!.documents))
                     setEditingDocuments(true)
                     setSectionError(null)
                     setSectionNotice(null)
@@ -8928,8 +9545,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 </thead>
                 <tbody>
                   {editingDocuments && documentsDraft ? (
-                    documentsDraft.currentDocumentRows.length ? (
-                      documentsDraft.currentDocumentRows.map((row) => (
+                    documentsDraft!.currentDocumentRows.length ? (
+                      documentsDraft!.currentDocumentRows.map((row) => (
                         <tr key={row.id}>
                           <td><input className="table-input" value={row.title} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, currentDocumentRows: current.currentDocumentRows.map((item) => item.id === row.id ? { ...item, title: event.target.value } : item) } : current)} /></td>
                           <td><input className="table-input" value={row.document_type} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, currentDocumentRows: current.currentDocumentRows.map((item) => item.id === row.id ? { ...item, document_type: event.target.value } : item) } : current)} /></td>
@@ -8999,6 +9616,13 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                                 source: '',
                                 status: '',
                                 version_label: '',
+                                file_name: '',
+                                download_url: '',
+                                file_size: '',
+                                content_type: '',
+                                uploaded_at: '',
+                                notes: '',
+                                stored_file_name: '',
                               },
                             ],
                           }
@@ -9034,8 +9658,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   </thead>
                   <tbody>
                     {editingDocuments && documentsDraft ? (
-                      documentsDraft.importRows.length ? (
-                        documentsDraft.importRows.map((row) => (
+                      documentsDraft!.importRows.length ? (
+                        documentsDraft!.importRows.map((row) => (
                           <tr key={row.id}>
                             <td><input className="table-input" value={row.import_type} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, importRows: current.importRows.map((item) => item.id === row.id ? { ...item, import_type: event.target.value } : item) } : current)} /></td>
                             <td><input className="table-input" type="datetime-local" value={row.received_at} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, importRows: current.importRows.map((item) => item.id === row.id ? { ...item, received_at: event.target.value } : item) } : current)} /></td>
@@ -9136,8 +9760,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                   </thead>
                   <tbody>
                     {editingDocuments && documentsDraft ? (
-                      documentsDraft.extractionRows.length ? (
-                        documentsDraft.extractionRows.map((row) => (
+                      documentsDraft!.extractionRows.length ? (
+                        documentsDraft!.extractionRows.map((row) => (
                           <tr key={row.id}>
                             <td><input className="table-input" value={row.document_title} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, extractionRows: current.extractionRows.map((item) => item.id === row.id ? { ...item, document_title: event.target.value } : item) } : current)} /></td>
                             <td><input className="table-input" value={row.extract_type} onChange={(event) => setDocumentsDraft((current) => current ? { ...current, extractionRows: current.extractionRows.map((item) => item.id === row.id ? { ...item, extract_type: event.target.value } : item) } : current)} /></td>
@@ -9246,9 +9870,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             </div>
             {editingDocuments && documentsDraft ? (
               <div className="instrument-documents-notes-editor">
-                {documentsDraft.noteRows.length ? (
+                {documentsDraft!.noteRows.length ? (
                   <div className="instrument-documents-notes instrument-inline-list">
-                    {documentsDraft.noteRows.map((row) => (
+                    {documentsDraft!.noteRows.map((row) => (
                       <div key={row.id} className="instrument-inline-list-row">
                         <textarea
                           className="form-textarea instrument-inline-list-textarea"
@@ -9312,50 +9936,63 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             <div>
               <div className="panel-title">Research</div>
             </div>
-            <div className="toolbar">
-              {editingResearch ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setResearchDraft(toEditableResearchDraft(bundle.research))
-                      setEditingResearch(false)
-                      setSectionError(null)
-                      setSectionNotice(null)
-                    }}
-                  >
-                    Cancel
-                  </button>
+          </div>
+
+          <section className="instrument-research-section">
+            <div className="instrument-research-section-header">
+              <div>
+                <div className="instrument-section-title">Rating</div>
+              </div>
+              {manualRatingHasChanges ? (
+                <div className="toolbar">
                   <button
                     type="button"
                     className="button-primary"
-                    onClick={() => void handleSaveResearch()}
-                    disabled={savingSection === 'research'}
+                    onClick={() => void handleSaveManualRating()}
+                    disabled={savingSection === 'manual_rating'}
                   >
-                    {savingSection === 'research' ? 'Saving...' : 'Save Research'}
+                    {savingSection === 'manual_rating' ? 'Saving...' : 'Save'}
                   </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setResearchDraft(toEditableResearchDraft(bundle.research))
-                    setEditingResearch(true)
-                    setSectionError(null)
-                    setSectionNotice(null)
-                  }}
-                >
-                  Edit Research
-                </button>
-              )}
+                </div>
+              ) : null}
             </div>
-          </div>
+            <div className="instrument-manual-rating-row">
+              <div className="instrument-manual-rating-picker" role="radiogroup" aria-label="Manual rating">
+                {[1, 2, 3, 4, 5].map((value) => {
+                  const selected = displayedManualRating === value
+                  const active = displayedManualRating != null && value <= displayedManualRating
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      className={
+                        active
+                          ? 'instrument-manual-rating-star instrument-manual-rating-star-active'
+                          : 'instrument-manual-rating-star'
+                      }
+                      aria-checked={selected}
+                      role="radio"
+                      onClick={() => {
+                        const nextRating = selected ? null : value
+                        setManualRatingDraft(nextRating)
+                        setManualRatingDirty(nextRating !== researchManualRating)
+                        setSectionError(null)
+                        setSectionNotice(null)
+                      }}
+                    >
+                      {active ? '★' : '☆'}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </section>
 
           {productFrameworkAttributes === null ? (
             <section className="instrument-research-section">
               <div className="instrument-research-section-header">
                 <div>
-                  <div className="panel-title">Product Framework</div>
+                  <div className="panel-title">Research Framework</div>
                   <div className="instrument-section-title">Classification</div>
                 </div>
               </div>
@@ -9368,17 +10005,16 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
               <section key={section.domain} className="instrument-research-section">
                 <div className="instrument-research-section-header">
                   <div>
-                    <div className="panel-title">Product Framework</div>
+                    <div className="panel-title">Research Framework</div>
                     <div className="instrument-section-title">{section.title}</div>
                   </div>
                 </div>
                 {section.groups.length ? (
-                  <div className="table-shell instrument-research-table-shell">
+                  <div className="table-shell instrument-research-table-shell instrument-product-tags-table-shell">
                     <table className="terminal-table terminal-table-compact instrument-research-table instrument-product-tags-table">
                       <thead>
                         <tr>
                           <th>Field</th>
-                          <th>Notes</th>
                           <th>Value</th>
                         </tr>
                       </thead>
@@ -9386,128 +10022,138 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                         {section.groups.map((group) => (
                           <Fragment key={`${section.domain}-${group.groupCode}`}>
                             <tr className="instrument-product-tags-group-row">
-                              <td colSpan={3}>
+                              <td colSpan={2}>
                                 <div className="instrument-product-tags-group-label">
                                   {group.label}
                                 </div>
                               </td>
                             </tr>
-                            {group.definitions.map((definition) => (
-                              <tr key={definition.attribute_key}>
-                                <td className="instrument-product-tags-table-label-cell">
-                                  {definition.label}
-                                </td>
-                                <td className="instrument-product-tags-table-description-cell">
-                                  {definition.description || definition.attribute_key}
-                                </td>
-                                <td className="instrument-product-tags-table-value-cell">
-                                  <div
-                                    className="instrument-product-tags-picker"
-                                    ref={
-                                      openProductFrameworkPickerKey === definition.attribute_key
-                                        ? productFrameworkPickerRef
-                                        : undefined
-                                    }
-                                  >
-                                    <button
-                                      type="button"
-                                      className={`instrument-product-tags-picker-trigger${
+                            {group.definitions.map((definition) => {
+                              const rubricText = getDefinitionRubricText(definition)
+                              return (
+                                <tr key={definition.attribute_key}>
+                                  <td className="instrument-product-tags-table-label-cell">
+                                    <div className="instrument-product-tags-field">
+                                      <span>{definition.label}</span>
+                                      {rubricText ? (
+                                        <span className="instrument-product-tags-help" tabIndex={0}>
+                                          ?
+                                          <span className="instrument-product-tags-tooltip">
+                                            {rubricText}
+                                          </span>
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </td>
+                                  <td className="instrument-product-tags-table-value-cell">
+                                    <div
+                                      className="instrument-product-tags-picker"
+                                      ref={
                                         openProductFrameworkPickerKey === definition.attribute_key
-                                          ? ' instrument-product-tags-picker-trigger-active'
-                                          : ''
-                                      }`}
-                                      disabled={productFrameworkSavingKey === definition.attribute_key}
-                                      onClick={() =>
-                                        setOpenProductFrameworkPickerKey((current) =>
-                                          current === definition.attribute_key
-                                            ? null
-                                            : definition.attribute_key,
-                                        )
+                                          ? productFrameworkPickerRef
+                                          : undefined
                                       }
                                     >
-                                      <span>
-                                        {productFrameworkSavingKey === definition.attribute_key
-                                          ? 'Saving...'
-                                          : formatFrameworkValue(
-                                              productFrameworkAttributes.values[definition.attribute_key],
-                                            )}
-                                      </span>
-                                    </button>
-                                    {openProductFrameworkPickerKey === definition.attribute_key ? (
-                                      <div className="instrument-product-tags-picker-panel">
-                                        <div className="instrument-product-tags-picker-meta">
-                                          {definition.data_type === 'multi_select'
-                                            ? 'Select one or more'
-                                            : 'Select one'}
-                                        </div>
-                                        <div className="instrument-product-tags-picker-options">
-                                          <button
-                                            type="button"
-                                            className="instrument-product-tags-picker-option"
-                                            disabled={productFrameworkSavingKey === definition.attribute_key}
-                                            onClick={() =>
-                                              void handleSaveProductFrameworkValue(
+                                      <button
+                                        type="button"
+                                        className={`instrument-product-tags-picker-trigger${
+                                          openProductFrameworkPickerKey === definition.attribute_key
+                                            ? ' instrument-product-tags-picker-trigger-active'
+                                            : ''
+                                        }`}
+                                        disabled={productFrameworkSavingKey === definition.attribute_key}
+                                        onClick={() =>
+                                          setOpenProductFrameworkPickerKey((current) =>
+                                            current === definition.attribute_key
+                                              ? null
+                                              : definition.attribute_key,
+                                          )
+                                        }
+                                      >
+                                        <span>
+                                          {productFrameworkSavingKey === definition.attribute_key
+                                            ? 'Saving...'
+                                            : formatFrameworkValue(
+                                                productFrameworkAttributes.values[definition.attribute_key],
+                                              )}
+                                        </span>
+                                      </button>
+                                      {openProductFrameworkPickerKey === definition.attribute_key ? (
+                                        <div className="instrument-product-tags-picker-panel">
+                                          <div className="instrument-product-tags-picker-meta">
+                                            {definition.data_type === 'multi_select'
+                                              ? 'Select one or more'
+                                              : 'Select one'}
+                                          </div>
+                                          <div className="instrument-product-tags-picker-options">
+                                            <button
+                                              type="button"
+                                              className="instrument-product-tags-picker-option"
+                                              disabled={productFrameworkSavingKey === definition.attribute_key}
+                                              onClick={() =>
+                                                void handleSaveProductFrameworkValue(
+                                                  definition,
+                                                  definition.data_type === 'multi_select' ? [] : null,
+                                                  {
+                                                    closePicker:
+                                                      definition.data_type !== 'multi_select',
+                                                  },
+                                                )
+                                              }
+                                            >
+                                              <span className="instrument-product-tags-picker-check" />
+                                              <span className="instrument-product-tags-picker-label">
+                                                Clear
+                                              </span>
+                                            </button>
+                                            {definition.options.map((option) => {
+                                              const selected = isFrameworkOptionSelected(
+                                                productFrameworkAttributes,
                                                 definition,
-                                                definition.data_type === 'multi_select' ? [] : null,
-                                                {
-                                                  closePicker:
-                                                    definition.data_type !== 'multi_select',
-                                                },
+                                                option,
                                               )
-                                            }
-                                          >
-                                            <span className="instrument-product-tags-picker-check" />
-                                            <span className="instrument-product-tags-picker-label">
-                                              Clear
-                                            </span>
-                                          </button>
-                                          {definition.options.map((option) => {
-                                            const selected = isFrameworkOptionSelected(
-                                              productFrameworkAttributes,
-                                              definition,
-                                              option,
-                                            )
-                                            return (
-                                              <button
-                                                key={option}
-                                                type="button"
-                                                className={`instrument-product-tags-picker-option${
-                                                  selected
-                                                    ? ' instrument-product-tags-picker-option-selected'
-                                                    : ''
-                                                }`}
-                                                disabled={productFrameworkSavingKey === definition.attribute_key}
-                                                onClick={() =>
-                                                  void handleSaveProductFrameworkValue(
-                                                    definition,
-                                                    buildNextFrameworkValue(
-                                                      productFrameworkAttributes,
+                                              return (
+                                                <button
+                                                  key={option}
+                                                  type="button"
+                                                  className={`instrument-product-tags-picker-option${
+                                                    selected
+                                                      ? ' instrument-product-tags-picker-option-selected'
+                                                      : ''
+                                                  }`}
+                                                  disabled={productFrameworkSavingKey === definition.attribute_key}
+                                                  onClick={() =>
+                                                    void handleSaveProductFrameworkValue(
                                                       definition,
-                                                      option,
-                                                    ),
-                                                    {
-                                                      closePicker:
-                                                        definition.data_type !== 'multi_select',
-                                                    },
-                                                  )
-                                                }
-                                              >
-                                                <span className="instrument-product-tags-picker-check">
-                                                  {selected ? '✓' : ''}
-                                                </span>
-                                                <span className="instrument-product-tags-picker-label">
-                                                  {option}
-                                                </span>
-                                              </button>
-                                            )
-                                          })}
+                                                      buildNextFrameworkValue(
+                                                        productFrameworkAttributes,
+                                                        definition,
+                                                        option,
+                                                      ),
+                                                      {
+                                                        closePicker:
+                                                          definition.data_type !== 'multi_select',
+                                                      },
+                                                    )
+                                                  }
+                                                >
+                                                  <span className="instrument-product-tags-picker-check">
+                                                    {selected ? '✓' : ''}
+                                                  </span>
+                                                  <span className="instrument-product-tags-picker-label">
+                                                    {option}
+                                                  </span>
+                                                </button>
+                                              )
+                                            })}
+                                          </div>
                                         </div>
-                                      </div>
-                                    ) : null}
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
+                                      ) : null}
+                                    </div>
+                                  </td>
+                                </tr>
+                              )
+                            })}
                           </Fragment>
                         ))}
                       </tbody>
@@ -9528,8 +10174,45 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 <div className="panel-title">Research</div>
                 <div className="instrument-section-title">Current Research View</div>
               </div>
+              <div className="toolbar">
+                {editingResearchOverview ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setResearchDraft(toEditableResearchDraft(bundle.research))
+                        setEditingResearchOverview(false)
+                        setSectionError(null)
+                        setSectionNotice(null)
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="button-primary"
+                      onClick={() => void handleSaveResearchOverview()}
+                      disabled={savingSection === 'research_overview'}
+                    >
+                      {savingSection === 'research_overview' ? 'Saving...' : 'Save'}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResearchDraft(toEditableResearchDraft(bundle.research))
+                      setEditingResearchOverview(true)
+                      setSectionError(null)
+                      setSectionNotice(null)
+                    }}
+                  >
+                    Edit
+                  </button>
+                )}
+              </div>
             </div>
-            {editingResearch && researchDraft ? (
+            {editingResearchOverview && researchDraft ? (
               <div className="instrument-research-section-body">
                 <div className="instrument-research-facts-grid instrument-research-facts-grid-edit">
                   {RESEARCH_OVERVIEW_FIELDS.map((field) => (
@@ -9574,34 +10257,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
             <div className="instrument-research-section-header">
               <div>
                 <div className="panel-title">Research</div>
-                <div className="instrument-section-title">Thesis</div>
-              </div>
-            </div>
-            {editingResearch && researchDraft ? (
-              <div className="instrument-research-prose instrument-inline-prose-block">
-                <textarea
-                  className="form-textarea instrument-research-thesis-input instrument-inline-prose-textarea"
-                  rows={6}
-                  value={researchDraft.thesis}
-                  onChange={(event) =>
-                    setResearchDraft((current) =>
-                      current ? { ...current, thesis: event.target.value } : current,
-                    )
-                  }
-                />
-              </div>
-            ) : (
-              <div className="instrument-research-prose">
-                <p>{bundle.research.thesis || 'No thesis recorded yet.'}</p>
-              </div>
-            )}
-          </section>
-
-          <section className="instrument-research-section">
-            <div className="instrument-research-section-header">
-              <div>
-                <div className="panel-title">Research</div>
-                <div className="instrument-section-title">Timeline Notes</div>
+                <div className="instrument-section-title">Research Notes</div>
               </div>
               <div className="toolbar">
                 <button
@@ -9666,215 +10322,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
               </div>
             ) : (
               <div className="instrument-placeholder instrument-research-placeholder">
-                No timeline notes yet. Add one from Overview or create one here.
+                No research notes yet.
               </div>
             )}
           </section>
-
-          <div className="instrument-research-columns">
-            <section className="instrument-research-section">
-              <div className="instrument-research-section-header">
-                <div>
-                  <div className="panel-title">Research</div>
-                  <div className="instrument-section-title">Evidence-Linked Conclusions</div>
-                </div>
-              </div>
-              <div className="table-shell instrument-research-table-shell">
-                <table className="terminal-table terminal-table-compact instrument-research-table">
-                  <thead>
-                    <tr>
-                      <th>Conclusion</th>
-                      <th>Evidence Ref</th>
-                      <th>Status</th>
-                      {editingResearch ? <th className="instrument-table-action-col" aria-label="Row actions" /> : null}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {editingResearch && researchDraft ? (
-                      researchDraft.conclusionRows.length ? (
-                        researchDraft.conclusionRows.map((row) => (
-                          <tr key={row.id}>
-                            <td><textarea className="form-textarea instrument-research-table-textarea" rows={2} value={row.conclusion} onChange={(event) => setResearchDraft((current) => current ? { ...current, conclusionRows: current.conclusionRows.map((item) => item.id === row.id ? { ...item, conclusion: event.target.value } : item) } : current)} /></td>
-                            <td>
-                              <input
-                                className="table-input"
-                                list="research-evidence-options"
-                                value={row.evidence_ref}
-                                onChange={(event) =>
-                                  setResearchDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          conclusionRows: current.conclusionRows.map((item) =>
-                                            item.id === row.id ? { ...item, evidence_ref: event.target.value } : item,
-                                          ),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              />
-                            </td>
-                            <td><input className="table-input" value={row.status} onChange={(event) => setResearchDraft((current) => current ? { ...current, conclusionRows: current.conclusionRows.map((item) => item.id === row.id ? { ...item, status: event.target.value } : item) } : current)} /></td>
-                            <td className="instrument-table-row-action-cell">
-                              <button
-                                type="button"
-                                className="instrument-row-remove"
-                                aria-label="Remove conclusion row"
-                                title="Remove row"
-                                onClick={() =>
-                                  setResearchDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          conclusionRows: current.conclusionRows.filter((item) => item.id !== row.id),
-                                        }
-                                      : current,
-                                  )
-                                }
-                              >
-                                ×
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr><td colSpan={4} className="empty-state">No conclusions yet.</td></tr>
-                      )
-                    ) : bundle.research.conclusions.length ? (
-                      bundle.research.conclusions.map((row, index) => (
-                        <tr key={`${String(row.conclusion)}-${index}`}>
-                          <td>{getString(row.conclusion)}</td>
-                          <td>
-                            <span className={evidenceReferenceSet.has(String(row.evidence_ref || '').toLowerCase()) ? 'instrument-evidence-link' : ''}>
-                              {getString(row.evidence_ref)}
-                            </span>
-                          </td>
-                          <td><span className={`status-badge ${getDocumentStatusTone(row.status)}`}>{getString(row.status)}</span></td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr><td colSpan={3} className="empty-state">No conclusions yet.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-                {editingResearch && evidenceReferenceOptions.length ? (
-                  <datalist id="research-evidence-options">
-                    {evidenceReferenceOptions.map((item) => (
-                      <option key={item} value={item} />
-                    ))}
-                  </datalist>
-                ) : null}
-              </div>
-              {editingResearch ? (
-                <div className="instrument-table-inline-actions">
-                  <button
-                    type="button"
-                    className="table-action"
-                    onClick={() =>
-                      setResearchDraft((current) =>
-                        current
-                          ? {
-                              ...current,
-                              conclusionRows: [
-                                ...current.conclusionRows,
-                                { id: makeRowId('research-conclusion'), conclusion: '', evidence_ref: '', status: '' },
-                              ],
-                            }
-                          : current,
-                      )
-                    }
-                  >
-                    + Add conclusion row
-                  </button>
-                </div>
-              ) : null}
-            </section>
-
-            <section className="instrument-research-section">
-              <div className="instrument-research-section-header">
-                <div>
-                  <div className="panel-title">Research</div>
-                  <div className="instrument-section-title">Notes</div>
-                </div>
-                {editingResearch ? (
-                  <div className="toolbar">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setResearchDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                noteRows: [...current.noteRows, { id: makeRowId('research-note'), value: '' }],
-                              }
-                            : current,
-                        )
-                      }
-                    >
-                      Add Note
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            {editingResearch && researchDraft ? (
-              <div className="instrument-research-notes-editor">
-                {researchDraft.noteRows.length ? (
-                    <div className="instrument-research-notes instrument-inline-list">
-                      {researchDraft.noteRows.map((row) => (
-                        <div key={row.id} className="instrument-inline-list-row">
-                          <textarea
-                            className="form-textarea instrument-inline-list-textarea"
-                            rows={2}
-                            value={row.value}
-                            onChange={(event) =>
-                              setResearchDraft((current) =>
-                                current
-                                  ? {
-                                      ...current,
-                                      noteRows: current.noteRows.map((item) =>
-                                        item.id === row.id ? { ...item, value: event.target.value } : item,
-                                      ),
-                                    }
-                                  : current,
-                              )
-                            }
-                          />
-                          <button
-                            type="button"
-                            className="table-action"
-                            onClick={() =>
-                              setResearchDraft((current) =>
-                                current
-                                  ? {
-                                      ...current,
-                                      noteRows: current.noteRows.filter((item) => item.id !== row.id),
-                                    }
-                                  : current,
-                              )
-                            }
-                          >
-                            Remove
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="instrument-placeholder instrument-research-placeholder">No notes yet.</div>
-                  )}
-                </div>
-              ) : bundle.research.notes.length ? (
-                <div className="instrument-research-notes">
-                  <ul className="bullet-list">
-                    {bundle.research.notes.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : (
-                <div className="instrument-placeholder instrument-research-placeholder">No research notes yet.</div>
-              )}
-            </section>
-          </div>
         </section>
       ) : null}
 

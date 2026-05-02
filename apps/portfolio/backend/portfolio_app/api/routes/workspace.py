@@ -40,7 +40,7 @@ def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
         "badges": [
             "Ledger and performance kernel live",
             "Planning taxonomy and target sets live",
-            "Recursive research backtest live",
+            "Current research target-weight solve live",
         ],
         "sections": [
             {"label": "Holdings", "href": "/holdings", "status": "api-backed"},

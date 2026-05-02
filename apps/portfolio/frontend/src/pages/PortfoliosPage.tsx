@@ -147,12 +147,6 @@ export default function PortfoliosPage() {
       {notice ? <div className="inline-notice">{notice}</div> : null}
 
       <section className="portfolio-entry-list-shell">
-        <div className="portfolio-entry-list-toolbar">
-          <button type="button" className="portfolio-entry-sort-button">
-            Sort By: Name
-            <span className="portfolio-entry-sort-caret" aria-hidden="true" />
-          </button>
-        </div>
         {resolvedPortfolios.map((portfolio) => (
           <article
             key={portfolio.portfolio_id}
@@ -240,17 +234,6 @@ export default function PortfoliosPage() {
                     </button>
                   </div>
                 ) : null}
-              </div>
-              <div className="portfolio-entry-card-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path
-                    d="M6 7.5h12M6 12h12M6 16.5h8"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.6"
-                    strokeLinecap="round"
-                  />
-                </svg>
               </div>
             </div>
             <Link className="portfolio-entry-card-main" to={buildPortfolioSectionPath(portfolio.portfolio_id, '/overview')}>

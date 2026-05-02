@@ -56,35 +56,30 @@ TAXONOMY_GROUP_BY_CODE = "taxonomy"
 def _overview_view_columns() -> list[dict[str, object]]:
     return [
         {"field_key": "asset_name", "display_order": 1, "width": 320},
-        {"field_key": "attr.fund_regime", "display_order": 2, "width": 120},
-        {"field_key": "attr.fund_taxonomy_level_1", "display_order": 3, "width": 150},
-        {"field_key": "attr.fund_taxonomy_level_2", "display_order": 4, "width": 170},
-        {"field_key": "price_chart_1m", "display_order": 5, "width": 140},
-        {"field_key": "latest_quote", "display_order": 6, "width": 130},
-        {"field_key": "latest_quote_date", "display_order": 7, "width": 140},
-        {"field_key": "return_1w", "display_order": 8, "width": 150},
-        {"field_key": "return_1m", "display_order": 9, "width": 150},
-        {"field_key": "return_ytd", "display_order": 10, "width": 150},
-        {"field_key": "ticker_or_isin", "display_order": 11, "width": 140},
-        {"field_key": "data_freshness_status", "display_order": 12, "width": 140},
+        {"field_key": "attr.coverage_status", "display_order": 2, "width": 110},
+        {"field_key": "price_chart_1m", "display_order": 3, "width": 140},
+        {"field_key": "latest_quote", "display_order": 4, "width": 130},
+        {"field_key": "latest_quote_date", "display_order": 5, "width": 140},
+        {"field_key": "return_1w", "display_order": 6, "width": 150},
+        {"field_key": "return_mtd", "display_order": 7, "width": 120},
+        {"field_key": "return_ytd", "display_order": 8, "width": 150},
+        {"field_key": "attr.current_drawdown", "display_order": 9, "width": 120},
+        {"field_key": "attr.peer_overall_percentile", "display_order": 10, "width": 120},
+        {"field_key": "data_freshness_status", "display_order": 11, "width": 140},
     ]
 
 
 def _fund_screening_view_columns() -> list[dict[str, object]]:
     return [
         {"field_key": "asset_name", "display_order": 1, "width": 320},
-        {"field_key": "attr.fund_regime", "display_order": 2, "width": 120},
-        {"field_key": "attr.fund_taxonomy_level_1", "display_order": 3, "width": 150},
-        {"field_key": "attr.fund_taxonomy_level_2", "display_order": 4, "width": 170},
-        {"field_key": "attr.fund_taxonomy_level_3", "display_order": 5, "width": 180},
-        {"field_key": "attr.implementation_style", "display_order": 6, "width": 140},
-        {"field_key": "attr.style_profile", "display_order": 7, "width": 220},
-        {"field_key": "attr.manager_assessment", "display_order": 8, "width": 220},
-        {"field_key": "attr.volatility_bucket", "display_order": 9, "width": 120},
-        {"field_key": "attr.drawdown_control", "display_order": 10, "width": 120},
-        {"field_key": "attr.style_stability", "display_order": 11, "width": 120},
-        {"field_key": "attr.transparency_quality", "display_order": 12, "width": 120},
-        {"field_key": "data_freshness_status", "display_order": 13, "width": 140},
+        {"field_key": "attr.implementation_style", "display_order": 2, "width": 140},
+        {"field_key": "attr.style_profile", "display_order": 3, "width": 220},
+        {"field_key": "attr.manager_assessment", "display_order": 4, "width": 220},
+        {"field_key": "attr.volatility_bucket", "display_order": 5, "width": 120},
+        {"field_key": "attr.drawdown_control", "display_order": 6, "width": 120},
+        {"field_key": "attr.style_stability", "display_order": 7, "width": 120},
+        {"field_key": "attr.transparency_quality", "display_order": 8, "width": 120},
+        {"field_key": "data_freshness_status", "display_order": 9, "width": 140},
     ]
 
 

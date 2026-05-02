@@ -611,22 +611,24 @@ def test_performance_summary_reports_pnl_decomposition_and_risk_metrics(client, 
     payload = response.json()
     summary = payload["summary"]
     by_date = {item["as_of_date"]: item for item in payload["daily_series"]}
-    expected_daily_returns = [0.10000000000000009, 0.0]
+    expected_daily_returns = [0.10000000000000009]
     expected_mean_daily_return = sum(expected_daily_returns) / len(expected_daily_returns)
-    expected_annualized_mean = expected_mean_daily_return * performance.TRADING_DAYS_PER_YEAR
-    expected_daily_volatility = sqrt(((0.1 - 0.05) ** 2 + (0.0 - 0.05) ** 2) / 1)
-    expected_annualized_volatility = expected_daily_volatility * sqrt(performance.TRADING_DAYS_PER_YEAR)
+    expected_periods_per_year = 1 / 2 * performance.DAYS_PER_YEAR
+    expected_annualized_mean = expected_mean_daily_return * expected_periods_per_year
 
     assert summary["realized_pnl"] == 10.0
     assert summary["unrealized_pnl"] == 0.0
     assert summary["income_cash_amount"] == 0.0
     assert summary["expense_cash_amount"] == 0.0
     assert summary["total_pnl"] == 10.0
+    assert summary["return_observation_count"] == 2
+    assert summary["risk_return_observation_count"] == 1
+    assert isclose(summary["risk_annualization_periods_per_year"], expected_periods_per_year, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["mean_daily_return"], expected_mean_daily_return, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["annualized_return_from_daily_mean"], expected_annualized_mean, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["annualized_volatility"], expected_annualized_volatility, rel_tol=0.0, abs_tol=1e-12)
+    assert summary["annualized_volatility"] is None
     assert summary["annualized_downside_volatility"] is None
-    assert isclose(summary["sharpe_ratio"], expected_annualized_mean / expected_annualized_volatility, rel_tol=0.0, abs_tol=1e-12)
+    assert summary["sharpe_ratio"] is None
     assert summary["sortino_ratio"] is None
     assert summary["max_drawdown"] == 0.0
     assert summary["max_drawdown_days"] == 0
@@ -634,6 +636,121 @@ def test_performance_summary_reports_pnl_decomposition_and_risk_metrics(client, 
     assert by_date["2026-01-02"]["realized_pnl"] == 10.0
     assert by_date["2026-01-03"]["realized_pnl"] == 10.0
     assert by_date["2026-01-03"]["total_pnl"] == 10.0
+
+
+def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch):
+    instrument_detail = _test_instrument_detail(
+        asset_id="equity-us-test",
+        asset_name="Test Equity",
+        history=[
+            ("2026-01-02", "100.00"),
+            ("2026-01-05", "110.00"),
+            ("2026-01-06", "105.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+
+    store = _minimal_store(
+        portfolio_id="non-trading-risk-test",
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": "non-trading-risk-test",
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-02",
+                "settlement_date": "2026-01-02",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "asset_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Opening cash.",
+                "created_at": "2026-01-02T09:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": "non-trading-risk-test",
+                "transaction_type": "buy",
+                "trade_date": "2026-01-02",
+                "settlement_date": "2026-01-02",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "asset_id": "equity-us-test",
+                "instrument_ref": {
+                    "asset_id": "equity-us-test",
+                    "asset_name": "Test Equity",
+                    "asset_type": "equity",
+                    "currency": "USD",
+                    "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
+                },
+                "quantity": 1.0,
+                "price": 100.0,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Buy test equity.",
+                "created_at": "2026-01-02T09:30:00Z",
+            },
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-06"
+    _write_store(store)
+
+    response = client.get("/api/portfolios/non-trading-risk-test/performance")
+    assert response.status_code == 200
+    payload = response.json()
+    summary = payload["summary"]
+    by_date = {item["as_of_date"]: item for item in payload["daily_series"]}
+    risk_returns = [0.10, 105.0 / 110.0 - 1.0]
+    mean_return = sum(risk_returns) / len(risk_returns)
+    daily_stddev = sqrt(sum((value - mean_return) ** 2 for value in risk_returns) / (len(risk_returns) - 1))
+    expected_periods_per_year = 2 / 4 * performance.DAYS_PER_YEAR
+
+    assert by_date["2026-01-03"]["market_observation_count"] == 0
+    assert by_date["2026-01-03"]["return_observation_eligible"] is False
+    assert by_date["2026-01-04"]["market_observation_count"] == 0
+    assert by_date["2026-01-04"]["return_observation_eligible"] is False
+    assert by_date["2026-01-05"]["market_observation_count"] == 1
+    assert by_date["2026-01-05"]["return_observation_eligible"] is True
+    assert by_date["2026-01-06"]["market_observation_count"] == 1
+    assert by_date["2026-01-06"]["return_observation_eligible"] is True
+    assert summary["return_observation_count"] == 4
+    assert summary["risk_return_observation_count"] == 2
+    assert isclose(summary["risk_annualization_periods_per_year"], expected_periods_per_year, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["mean_daily_return"], sum(risk_returns) / len(risk_returns), rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["annualized_volatility"], daily_stddev * sqrt(expected_periods_per_year), rel_tol=0.0, abs_tol=1e-12)
+
+    window_response = client.get(
+        "/api/portfolios/non-trading-risk-test/performance?start_date=2026-01-05&end_date=2026-01-06"
+    )
+    assert window_response.status_code == 200
+    window_payload = window_response.json()
+    assert window_payload["summary"]["start_date"] == "2026-01-05"
+    assert window_payload["summary"]["start_nav"] == 100.0
+    assert isclose(window_payload["summary"]["cumulative_ttwror"], 0.05, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_period_calculation_report_reconciles_initial_delta_transfers_and_final_value(client, monkeypatch):
@@ -6478,17 +6595,17 @@ def test_performance_summary_custom_period_uses_period_deltas(client, monkeypatc
 
     assert summary["start_date"] == "2026-01-02"
     assert summary["end_date"] == "2026-01-03"
-    assert isclose(summary["start_nav"], 105.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["start_nav"], 100.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["end_nav"], 112.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["absolute_change"], 7.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["delta"], 7.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["income_cash_amount"], 7.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["absolute_change"], 12.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["delta"], 12.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["income_cash_amount"], 12.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["realized_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["unrealized_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["expense_cash_amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["external_cash_in"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["external_cash_out"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["total_pnl"], 7.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["total_pnl"], 12.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_performance_summary_ignores_flows_before_first_complete_snapshot(client, monkeypatch):

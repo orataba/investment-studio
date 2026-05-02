@@ -58,6 +58,7 @@ type SparklineCacheEntry = { requestKey: string; points: FundChartPoint[] }
 type FilterState = Record<string, unknown[]>
 type FilterOption = { key: string; label: string; value: unknown }
 type WatchlistRowGroup = {
+  key: string
   label: string | null
   rows: Array<Record<string, unknown>>
   rowCount: number
@@ -70,7 +71,6 @@ type ActiveFilterEntry = {
   valueLabel: string
   isTaxonomy: boolean
 }
-const WATCHLIST_PAGE_SIZE = 50
 const SCREENER_BULK_PAGE_SIZE = 500
 const ALL_COVERAGE_WATCHLIST_ID = 'all-coverage'
 const TAXONOMY_FILTER_FIELD_KEY = 'taxonomy'
@@ -84,6 +84,8 @@ const TAXONOMY_GROUP_FIELD_KEYS = [
   'attr.fund_taxonomy_level_5',
   'attr.fund_taxonomy_level_6',
 ]
+const TAXONOMY_GROUP_DEPTH_INDENT_PX = 18
+const TAXONOMY_GROUP_LABEL_OFFSET_PX = 26
 const TAXONOMY_FILTER_FIELD: FieldRegistryRecord = {
   field_key: TAXONOMY_FILTER_FIELD_KEY,
   label: 'Taxonomy',
@@ -245,12 +247,19 @@ async function loadAllScreenerRows(
   payload: Record<string, unknown>,
   pageSize: number = SCREENER_BULK_PAGE_SIZE,
 ) {
+  return (await loadCompleteScreenerResult(payload, pageSize)).rows
+}
+
+async function loadCompleteScreenerResult(
+  payload: Record<string, unknown>,
+  pageSize: number = SCREENER_BULK_PAGE_SIZE,
+): Promise<ScreenerResponse> {
   const firstPage = await runScreenerQuery({
     ...payload,
     pagination: { page: 1, page_size: pageSize },
   })
   if (firstPage.total_rows <= firstPage.rows.length) {
-    return firstPage.rows
+    return firstPage
   }
 
   const rows = [...firstPage.rows]
@@ -265,7 +274,11 @@ async function loadAllScreenerRows(
     }
     rows.push(...nextPage.rows)
   }
-  return rows.slice(0, firstPage.total_rows)
+  const completeRows = rows.slice(0, firstPage.total_rows)
+  return {
+    ...firstPage,
+    rows: completeRows,
+  }
 }
 
 function statusClass(value: unknown) {
@@ -297,6 +310,7 @@ function isReturnMetricField(fieldKey: string) {
     fieldKey.startsWith('return_') ||
     fieldKey === 'annualized_return' ||
     fieldKey === 'max_drawdown' ||
+    fieldKey === 'attr.current_drawdown' ||
     fieldKey === 'ytd' ||
     fieldKey === 'oneYear' ||
     fieldKey === 'threeYear' ||
@@ -305,6 +319,30 @@ function isReturnMetricField(fieldKey: string) {
     fieldKey.endsWith('_return_pct') ||
     fieldKey.endsWith('_change_pct')
   )
+}
+
+function priceChartWindowLabel(fieldKey: string) {
+  if (fieldKey.endsWith('1d')) {
+    return '1D'
+  }
+  if (fieldKey.endsWith('1w')) {
+    return '1W'
+  }
+  if (fieldKey.endsWith('1m')) {
+    return '1M'
+  }
+  if (fieldKey.endsWith('1y')) {
+    return '1Y'
+  }
+  return ''
+}
+
+function columnHeaderLabel(fieldKey: string, fallbackLabel: string) {
+  if (fieldKey.startsWith('price_chart_')) {
+    const windowLabel = priceChartWindowLabel(fieldKey)
+    return windowLabel ? `${fallbackLabel} (${windowLabel})` : fallbackLabel
+  }
+  return fallbackLabel
 }
 
 function renderCell(
@@ -328,6 +366,10 @@ function renderCell(
 
   if (fieldKey === 'overall_rating') {
     return value == null ? '—' : <span className="rating-pill">{String(value)}</span>
+  }
+
+  if (fieldKey === 'attr.coverage_status') {
+    return value == null || value === '' ? '—' : <span className="status-badge status-attribute">{String(value)}</span>
   }
 
   if (fieldKey === 'data_freshness_status') {
@@ -584,12 +626,12 @@ export default function WatchlistsPage() {
   const [isSearchingInstruments, setIsSearchingInstruments] = useState(false)
   const [isAdding, setIsAdding] = useState(false)
   const [isBatchAdding, setIsBatchAdding] = useState(false)
-  const [currentPage, setCurrentPage] = useState(1)
   const [sortRules, setSortRules] = useState<Array<{ field: string; direction: string }>>([])
   const [notice, setNotice] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [sparklineMap, setSparklineMap] = useState<Record<string, SparklineCacheEntry>>({})
+  const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(new Set())
   const [reloadToken, setReloadToken] = useState(0)
   const filterMenuRef = useRef<HTMLDivElement | null>(null)
   const groupMenuRef = useRef<HTMLDivElement | null>(null)
@@ -807,14 +849,11 @@ export default function WatchlistsPage() {
     }
 
     let cancelled = false
-    const watchlistId = watchlistDetail.watchlist_id
+    const payload = baseScreenerPayload
 
     async function loadRows() {
       try {
-        const result = await runScreenerQuery({
-          ...baseScreenerPayload,
-          pagination: { page: currentPage, page_size: WATCHLIST_PAGE_SIZE },
-        })
+        const result = await loadCompleteScreenerResult(payload)
 
         if (!cancelled) {
           setScreenerResult(result)
@@ -834,22 +873,10 @@ export default function WatchlistsPage() {
     return () => {
       cancelled = true
     }
-  }, [baseScreenerPayload, currentPage, reloadToken, watchlistDetail])
-
-  useEffect(() => {
-    setCurrentPage(1)
-  }, [screenerCriteriaKey])
+  }, [baseScreenerPayload, reloadToken, watchlistDetail])
 
   const activeView =
     watchlistDetail?.views.find((item) => item.view_id === activeViewId) || watchlistDetail?.views[0] || null
-  const totalPages = useMemo(
-    () => Math.max(1, Math.ceil((screenerResult?.total_rows || 0) / WATCHLIST_PAGE_SIZE)),
-    [screenerResult?.total_rows],
-  )
-  const pageStart = screenerResult?.total_rows ? (currentPage - 1) * WATCHLIST_PAGE_SIZE + 1 : 0
-  const pageEnd = screenerResult?.total_rows
-    ? Math.min(currentPage * WATCHLIST_PAGE_SIZE, screenerResult.total_rows)
-    : 0
   const visibleSparklineColumns = useMemo(
     () =>
       workingColumns.filter(
@@ -929,15 +956,6 @@ export default function WatchlistsPage() {
       cancelled = true
     }
   }, [screenerResult, sparklineMap, sparklineRequestKey, visibleSparklineColumns])
-
-  useEffect(() => {
-    if (!screenerResult) {
-      return
-    }
-    if (currentPage > totalPages) {
-      setCurrentPage(totalPages)
-    }
-  }, [currentPage, screenerResult, totalPages])
 
   async function handleBatchAddFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
@@ -1192,6 +1210,10 @@ export default function WatchlistsPage() {
   const sortField = sortRules[0]?.field || null
   const sortDirection = sortRules[0]?.direction || 'asc'
 
+  useEffect(() => {
+    setCollapsedGroupKeys(new Set())
+  }, [activeGroupBy, screenerCriteriaKey])
+
   const availableCategoryList = useMemo(() => {
     if (fieldCategories.length) {
       return [...fieldCategories]
@@ -1394,7 +1416,7 @@ export default function WatchlistsPage() {
   const groupedRows = useMemo(() => {
     const rows = screenerResult?.rows || []
     if (!activeGroupBy) {
-      return [{ label: null, rows, rowCount: rows.length, depth: 0 }]
+      return [{ key: 'all', label: null, rows, rowCount: rows.length, depth: 0 }]
     }
     if (activeGroupBy === TAXONOMY_GROUP_BY_CODE) {
       type TreeNode = {
@@ -1457,6 +1479,7 @@ export default function WatchlistsPage() {
       const visit = (nodes: TreeNode[]) => {
         sortNodes(nodes).forEach((node) => {
           flattened.push({
+            key: node.key,
             label: node.label,
             rows: node.children.size ? [] : node.rows,
             rowCount: node.rowCount,
@@ -1465,6 +1488,7 @@ export default function WatchlistsPage() {
           visit([...node.children.values()])
           if (node.children.size && node.rows.length) {
             flattened.push({
+              key: `${node.key}::direct`,
               label: `${node.label} · Direct`,
               rows: node.rows,
               rowCount: node.rows.length,
@@ -1474,7 +1498,7 @@ export default function WatchlistsPage() {
         })
       }
       visit([...root.values()])
-      return flattened.length ? flattened : [{ label: null, rows, rowCount: rows.length, depth: 0 }]
+      return flattened.length ? flattened : [{ key: 'all', label: null, rows, rowCount: rows.length, depth: 0 }]
     }
     const bucketMap = new Map<string, Array<Record<string, unknown>>>()
     rows.forEach((row) => {
@@ -1497,6 +1521,7 @@ export default function WatchlistsPage() {
         return true
       })
       .map((key) => ({
+        key,
         label: key,
         rows: bucketMap.get(key) || [],
         rowCount: bucketMap.get(key)?.length || 0,
@@ -1504,11 +1529,29 @@ export default function WatchlistsPage() {
       }))
     bucketMap.forEach((value, key) => {
       if (!seen.has(key)) {
-        groups.push({ label: key, rows: value, rowCount: value.length, depth: 0 })
+        groups.push({ key, label: key, rows: value, rowCount: value.length, depth: 0 })
       }
     })
     return groups
   }, [activeGroupBy, screenerResult, taxonomyDisplayOrderByPath])
+
+  const visibleGroupedRows = useMemo(() => {
+    let collapsedDepth: number | null = null
+    return groupedRows.flatMap((group) => {
+      if (collapsedDepth != null) {
+        if (group.depth > collapsedDepth) {
+          return []
+        }
+        collapsedDepth = null
+      }
+
+      const collapsed = collapsedGroupKeys.has(group.key)
+      if (collapsed) {
+        collapsedDepth = group.depth
+      }
+      return [{ ...group, rows: collapsed ? [] : group.rows }]
+    })
+  }, [collapsedGroupKeys, groupedRows])
 
   const sortabilityByKey = useMemo(() => {
     const map = new Map<string, string>()
@@ -2330,19 +2373,8 @@ export default function WatchlistsPage() {
                         <span>
                           {column === primaryDisplayColumn
                             ? 'Name'
-                            : fieldLabelByKey.get(column) || formatLabel(column)}
+                            : columnHeaderLabel(column, fieldLabelByKey.get(column) || formatLabel(column))}
                         </span>
-                        {column.startsWith('price_chart_') ? (
-                          <span className="watchlists-th-sub">
-                            {column.endsWith('1d')
-                              ? '1 Day'
-                              : column.endsWith('1w')
-                              ? '1 Week'
-                              : column.endsWith('1m')
-                              ? '1 Month'
-                              : '1 Year'}
-                          </span>
-                        ) : null}
                         {sortField === column ? (
                           <span className="watchlists-sort-indicator">
                             {sortDirection.toLowerCase() === 'desc' ? '↓' : '↑'}
@@ -2368,58 +2400,100 @@ export default function WatchlistsPage() {
             </thead>
             <tbody>
               {screenerResult?.rows.length ? (
-                groupedRows.map((group, groupIndex) => (
-                  <React.Fragment key={group.label || `group-${groupIndex}`}>
-                    {activeGroupBy ? (
-                      <tr className="watchlists-group-row">
-                        <td colSpan={Math.max(visibleColumns.length + 1, 1)}>
-                          <div
-                            className="watchlists-group-header"
-                            style={{ paddingLeft: `${group.depth * 18}px` }}
-                          >
-                            <span className="watchlists-group-caret">▾</span>
-                            <span className="watchlists-group-title">
-                              {group.label || 'Unspecified'}
-                            </span>
-                            <span className="watchlists-group-count">{group.rowCount}</span>
-                          </div>
-                        </td>
-                      </tr>
-                    ) : null}
-                    {group.rows.map((row, index) => {
-                      const assetId = String(row.asset_id || `row-${index}`)
-                      const checked = selectedRows.includes(assetId)
-                      return (
-                        <tr key={assetId}>
-                          <td className="watchlists-select-col">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(event) =>
-                                setSelectedRows((current) =>
-                                  event.target.checked
-                                    ? [...current, assetId]
-                                    : current.filter((item) => item !== assetId),
-                                )
+                visibleGroupedRows.map((group, groupIndex) => {
+                  const collapsed = collapsedGroupKeys.has(group.key)
+                  return (
+                    <React.Fragment key={group.key || `group-${groupIndex}`}>
+                      {activeGroupBy ? (
+                        <tr className="watchlists-group-row">
+                          <td className="watchlists-select-col watchlists-group-spacer" aria-hidden="true" />
+                          <td colSpan={Math.max(visibleColumns.length, 1)}>
+                            <button
+                              type="button"
+                              className="watchlists-group-header"
+                              style={{ paddingLeft: `${group.depth * TAXONOMY_GROUP_DEPTH_INDENT_PX}px` }}
+                              aria-expanded={!collapsed}
+                              onClick={() =>
+                                setCollapsedGroupKeys((current) => {
+                                  const next = new Set(current)
+                                  if (next.has(group.key)) {
+                                    next.delete(group.key)
+                                  } else {
+                                    next.add(group.key)
+                                  }
+                                  return next
+                                })
                               }
-                            />
+                            >
+                              <span
+                                className={
+                                  collapsed
+                                    ? 'watchlists-group-caret watchlists-group-caret-collapsed'
+                                    : 'watchlists-group-caret'
+                                }
+                              >
+                                ▾
+                              </span>
+                              <span className="watchlists-group-title">
+                                {group.label || 'Unspecified'}
+                              </span>
+                              <span className="watchlists-group-count">{group.rowCount}</span>
+                            </button>
                           </td>
-                          {visibleColumns.map((column) => (
-                            <td key={column}>
-                              {renderCell(
-                                column,
-                                row[column],
-                                assetId,
-                                watchlistId,
-                                sparklineMap[assetId]?.points,
-                              )}
-                            </td>
-                          ))}
                         </tr>
-                      )
-                    })}
-                  </React.Fragment>
-                ))
+                      ) : null}
+                      {group.rows.map((row, index) => {
+                        const assetId = String(row.asset_id || `row-${index}`)
+                        const checked = selectedRows.includes(assetId)
+                        return (
+                          <tr key={assetId}>
+                            <td className="watchlists-select-col">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(event) =>
+                                  setSelectedRows((current) =>
+                                    event.target.checked
+                                      ? [...current, assetId]
+                                      : current.filter((item) => item !== assetId),
+                                  )
+                                }
+                              />
+                            </td>
+                            {visibleColumns.map((column) => {
+                              const isGroupedAssetName =
+                                activeGroupBy === TAXONOMY_GROUP_BY_CODE && column === primaryDisplayColumn
+                              return (
+                                <td
+                                  key={column}
+                                  style={
+                                    isGroupedAssetName
+                                      ? {
+                                          paddingLeft: `${
+                                            12 +
+                                            TAXONOMY_GROUP_LABEL_OFFSET_PX +
+                                            group.depth * TAXONOMY_GROUP_DEPTH_INDENT_PX
+                                          }px`,
+                                        }
+                                      : undefined
+                                  }
+                                >
+                                  {renderCell(
+                                    column,
+                                    row[column],
+                                    assetId,
+                                    watchlistId,
+                                    sparklineMap[assetId]?.points,
+                                  )}
+                                </td>
+                              )
+                            })}
+                          </tr>
+                        )
+                      })}
+                    </React.Fragment>
+                  )
+                })
               ) : (
                 <tr>
                   <td colSpan={Math.max(visibleColumns.length + 1, 1)} className="empty-state">
@@ -2434,45 +2508,8 @@ export default function WatchlistsPage() {
           <div className="watchlists-pagination">
             <div className="watchlists-pagination-summary">
               {screenerResult.total_rows
-                ? `Showing ${pageStart}-${pageEnd} of ${screenerResult.total_rows} rows`
+                ? `Showing all ${screenerResult.total_rows} rows`
                 : 'No rows in this watchlist view'}
-            </div>
-            <div className="watchlists-pagination-actions">
-              <button
-                type="button"
-                className="watchlists-pagination-button"
-                disabled={currentPage <= 1}
-                onClick={() => setCurrentPage(1)}
-              >
-                First
-              </button>
-              <button
-                type="button"
-                className="watchlists-pagination-button"
-                disabled={currentPage <= 1}
-                onClick={() => setCurrentPage((page) => Math.max(page - 1, 1))}
-              >
-                Previous
-              </button>
-              <span className="watchlists-pagination-status">
-                {`Page ${currentPage} of ${totalPages}`}
-              </span>
-              <button
-                type="button"
-                className="watchlists-pagination-button"
-                disabled={currentPage >= totalPages}
-                onClick={() => setCurrentPage((page) => Math.min(page + 1, totalPages))}
-              >
-                Next
-              </button>
-              <button
-                type="button"
-                className="watchlists-pagination-button"
-                disabled={currentPage >= totalPages}
-                onClick={() => setCurrentPage(totalPages)}
-              >
-                Last
-              </button>
             </div>
           </div>
         ) : null}

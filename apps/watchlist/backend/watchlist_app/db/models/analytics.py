@@ -27,6 +27,7 @@ class PerformanceSnapshot(Base):
     is_current: Mapped[bool] = mapped_column(nullable=False, default=True)
     return_ytd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     return_1w: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    return_mtd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     return_1m: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     return_3m: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     return_6m: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))

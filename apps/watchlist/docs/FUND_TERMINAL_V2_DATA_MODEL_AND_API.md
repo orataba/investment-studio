@@ -80,8 +80,8 @@ shared instruments / manual ingest / facts ingest
   管 fund 分类树本身和当前叶子赋值
 - attribute tables
   管 `fund_vehicle`、研究标签、监控评估等非树形字段
-- `category_name`
-  仍然保留为外部 `peer category` 比较口径，不承担内部基金分类职责
+- fund peer 口径
+  由 taxonomy assignment / peer path 推导，不再通过 legacy category 字段维护
 
 `instrument_attribute_definition` 当前关键字段：
 
@@ -221,6 +221,8 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 - `PUT /api/instruments/{asset_id}/price`
 - `GET /api/instruments/{asset_id}/documents`
 - `PUT /api/instruments/{asset_id}/documents`
+- `POST /api/instruments/{asset_id}/documents/upload`
+- `GET /api/instruments/{asset_id}/documents/files/{stored_file_name}`
 - `GET /api/instruments/{asset_id}/research`
 - `PUT /api/instruments/{asset_id}/research`
 - `GET /api/instruments/{asset_id}/nav-series`

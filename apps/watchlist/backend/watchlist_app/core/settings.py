@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     recalc_worker_poll_interval_seconds: float = 1.0
     recalc_worker_shutdown_timeout_seconds: float = 5.0
     recalc_worker_running_job_timeout_seconds: float = 300.0
+    document_storage_root: Path = WORKSPACE_ROOT / "var" / "watchlist-documents"
     copilot_provider: str = "stub"
     copilot_openai_model: str = "gpt-5.4"
     copilot_openai_api_key: str | None = None

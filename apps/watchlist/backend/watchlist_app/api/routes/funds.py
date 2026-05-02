@@ -1,4 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime, timezone
+from pathlib import Path
+import re
+from typing import Any
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from watchlist_app.api.contracts import (
@@ -6,6 +13,7 @@ from watchlist_app.api.contracts import (
     ManualFundCreateRequest,
     NavSettingsUpsertRequest,
 )
+from watchlist_app.core.settings import get_settings
 from watchlist_app.db.session import get_db_session
 from watchlist_app.repositories.sqlalchemy.assets import SQLAlchemyAssetRepository
 from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
@@ -40,12 +48,27 @@ from watchlist_app.services.read_model_freshness import (
 
 
 router = APIRouter()
+settings = get_settings()
 read_model_repository = SQLAlchemyReadModelRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
 attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 manual_profile_repository = SQLAlchemyAssetManualProfileRepository()
 asset_repository = SQLAlchemyAssetRepository()
 canonical_recalc_service = CanonicalRecalcService()
+
+
+def _safe_file_segment(value: str | None, fallback: str = "file") -> str:
+    raw = Path(value or "").name.strip()
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._")
+    return normalized or fallback
+
+
+def _asset_document_dir(asset_id: str) -> Path:
+    return settings.document_storage_root / _safe_file_segment(asset_id, fallback="asset")
+
+
+def _asset_document_download_url(asset_id: str, stored_file_name: str) -> str:
+    return f"/api/instruments/{asset_id}/documents/files/{stored_file_name}"
 
 
 def _schedule_asset_refresh(
@@ -115,7 +138,7 @@ def _default_research_payload() -> dict[str, object]:
     return {
         "overview": {
             "current_view": "",
-            "research_status": "",
+            "research_view": "",
             "dd_status": "",
             "odd_status": "",
             "ic_status": "",
@@ -123,10 +146,36 @@ def _default_research_payload() -> dict[str, object]:
             "next_review_date": None,
             "primary_analyst": "",
         },
-        "thesis": "",
-        "conclusions": [],
+        "manual_rating": None,
         "timeline_notes": [],
-        "notes": ["Research is maintained at the instrument level."],
+    }
+
+
+def _normalize_manual_rating(value: Any) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    return max(1, min(5, value))
+
+
+def _normalize_research_payload(payload: dict[str, Any] | None) -> dict[str, object]:
+    defaults = _default_research_payload()
+    source = payload or {}
+    overview_source = source.get("overview")
+    default_overview = defaults["overview"]
+    overview_values = overview_source if isinstance(overview_source, dict) else {}
+    overview = {
+        key: overview_values.get(key, value)
+        for key, value in default_overview.items()
+    }
+
+    timeline_notes = source.get("timeline_notes")
+
+    return {
+        "overview": overview,
+        "manual_rating": _normalize_manual_rating(source.get("manual_rating")),
+        "timeline_notes": timeline_notes if isinstance(timeline_notes, list) else [],
     }
 
 
@@ -143,7 +192,7 @@ def _normalize_nav_settings_payload(payload: dict[str, object] | None) -> dict[s
         **_default_nav_settings_payload(),
         **(payload or {}),
     }
-    if normalized.get("nav_basis_preference") not in {"auto", "nav_with_dividend", "nav"}:
+    if normalized.get("nav_basis_preference") not in {"auto", "nav_with_dividend"}:
         normalized["nav_basis_preference"] = "auto"
     normalized["default_benchmark_asset_id"] = (
         str(normalized.get("default_benchmark_asset_id")).strip() or None
@@ -431,6 +480,100 @@ def upsert_fund_documents_profile(
     return serialize_payload(record.documents_payload_json)
 
 
+@router.post("/{asset_id}/documents/upload")
+async def upload_fund_document(
+    asset_id: str,
+    file: UploadFile = File(...),
+    title: str | None = Form(None),
+    document_type: str | None = Form(None),
+    as_of_date: str | None = Form(None),
+    source: str | None = Form(None),
+    status: str | None = Form(None),
+    version_label: str | None = Form(None),
+    notes: str | None = Form(None),
+    updated_by: str | None = Form(None),
+    session: Session = Depends(get_db_session),
+) -> dict[str, object]:
+    _ensure_asset_exists(session, asset_id)
+    original_file_name = _safe_file_segment(file.filename, fallback="uploaded-document")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    asset_dir = _asset_document_dir(asset_id)
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    stored_file_name = f"{uuid4().hex}-{original_file_name}"
+    stored_path = asset_dir / stored_file_name
+    stored_path.write_bytes(content)
+
+    uploaded_at = datetime.now(timezone.utc).isoformat()
+    download_url = _asset_document_download_url(asset_id, stored_file_name)
+    record = manual_profile_repository.get(session, asset_id)
+    payload = serialize_payload(record.documents_payload_json) if record is not None else _default_documents_payload()
+
+    current_documents = list(payload.get("current_documents") or [])
+    recent_imports = list(payload.get("recent_imports") or [])
+    extraction_reviews = list(payload.get("extraction_reviews") or [])
+    profile_notes = list(payload.get("notes") or [])
+
+    document_row = {
+        "title": (title or "").strip() or original_file_name,
+        "document_type": (document_type or "").strip(),
+        "as_of_date": (as_of_date or "").strip() or None,
+        "source": (source or "").strip() or "manual_upload",
+        "status": (status or "").strip() or "uploaded",
+        "version_label": (version_label or "").strip(),
+        "file_name": original_file_name,
+        "stored_file_name": stored_file_name,
+        "download_url": download_url,
+        "file_size": len(content),
+        "content_type": file.content_type or "",
+        "uploaded_at": uploaded_at,
+        "notes": (notes or "").strip(),
+    }
+    current_documents.insert(0, document_row)
+    recent_imports.insert(
+        0,
+        {
+            "import_type": "upload",
+            "received_at": uploaded_at,
+            "source": document_row["source"],
+            "status": document_row["status"],
+            "file_name": original_file_name,
+        },
+    )
+
+    next_payload: dict[str, object] = {
+        "current_documents": current_documents,
+        "recent_imports": recent_imports,
+        "extraction_reviews": extraction_reviews,
+        "notes": profile_notes,
+    }
+    updated_record = manual_profile_repository.upsert(
+        session,
+        asset_id=asset_id,
+        documents_payload_json=next_payload,
+        updated_by=updated_by,
+    )
+    session.commit()
+    return serialize_payload(updated_record.documents_payload_json)
+
+
+@router.get("/{asset_id}/documents/files/{stored_file_name}")
+def download_fund_document(
+    asset_id: str,
+    stored_file_name: str,
+    session: Session = Depends(get_db_session),
+) -> FileResponse:
+    _ensure_asset_exists(session, asset_id)
+    safe_stored_file_name = _safe_file_segment(stored_file_name)
+    stored_path = _asset_document_dir(asset_id) / safe_stored_file_name
+    if not stored_path.is_file():
+        raise HTTPException(status_code=404, detail="Document file not found.")
+    download_name = safe_stored_file_name.split("-", 1)[1] if "-" in safe_stored_file_name else safe_stored_file_name
+    return FileResponse(path=stored_path, filename=download_name)
+
+
 @router.get("/{asset_id}/research")
 def get_fund_research_profile(
     asset_id: str,
@@ -439,7 +582,7 @@ def get_fund_research_profile(
     _ensure_asset_exists(session, asset_id)
     record = manual_profile_repository.get(session, asset_id)
     payload = record.research_payload_json if record is not None else _default_research_payload()
-    return serialize_payload(payload)
+    return serialize_payload(_normalize_research_payload(payload))
 
 
 @router.put("/{asset_id}/research")
@@ -449,10 +592,11 @@ def upsert_fund_research_profile(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _ensure_asset_exists(session, asset_id)
+    normalized_payload = _normalize_research_payload(payload.payload)
     record = manual_profile_repository.upsert(
         session,
         asset_id=asset_id,
-        research_payload_json=payload.payload,
+        research_payload_json=normalized_payload,
         updated_by=payload.updated_by,
     )
     session.commit()

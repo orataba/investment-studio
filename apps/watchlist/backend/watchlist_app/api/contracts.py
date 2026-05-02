@@ -195,7 +195,7 @@ class ManualProfileUpsertRequest(BaseModel):
 
 
 class NavSettingsUpsertRequest(BaseModel):
-    nav_basis_preference: Literal["auto", "nav_with_dividend", "nav"] | None = None
+    nav_basis_preference: Literal["auto", "nav_with_dividend"] | None = None
     default_benchmark_asset_id: str | None = None
     peer_baseline_asset_ids: list[str] | None = None
     updated_by: str | None = None

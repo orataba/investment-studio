@@ -68,8 +68,28 @@ QUOTE_SELECTION_POLICY_DEFAULTS: dict[str, dict[str, list[str]]] = {
     "fund": {
         "trading": ["last", "close", "official_nav"],
         "valuation": ["official_nav", "close", "last"],
-        "total_return": ["total_return_nav", "adjusted_close", "official_nav", "close"],
-        "chart": ["total_return_nav", "adjusted_close", "official_nav", "close"],
+        "total_return": [
+            "total_return_nav",
+            "cumulative_nav",
+            "accumulated_nav",
+            "cum_nav",
+            "dividend_adjusted_nav",
+            "reinvested_nav",
+            "adjusted_close",
+            "official_nav",
+            "close",
+        ],
+        "chart": [
+            "total_return_nav",
+            "cumulative_nav",
+            "accumulated_nav",
+            "cum_nav",
+            "dividend_adjusted_nav",
+            "reinvested_nav",
+            "adjusted_close",
+            "official_nav",
+            "close",
+        ],
         "reference": ["official_nav", "close", "last"],
     },
     "equity": {
@@ -116,6 +136,11 @@ VALID_QUOTE_BASES = {
     "adjusted_close": "price",
     "official_nav": "nav",
     "total_return_nav": "nav",
+    "cumulative_nav": "nav",
+    "accumulated_nav": "nav",
+    "cum_nav": "nav",
+    "dividend_adjusted_nav": "nav",
+    "reinvested_nav": "nav",
     "spot": "fx",
     "clean_price": "price",
     "dirty_price": "price",
@@ -765,7 +790,17 @@ def replace_nav_history(
                 delete(InstrumentMarketData).where(
                     InstrumentMarketData.asset_id == asset_id,
                     InstrumentMarketData.metric_family == "nav",
-                    InstrumentMarketData.quote_basis.in_(["official_nav", "total_return_nav"]),
+                    InstrumentMarketData.quote_basis.in_(
+                        [
+                            "official_nav",
+                            "total_return_nav",
+                            "cumulative_nav",
+                            "accumulated_nav",
+                            "cum_nav",
+                            "dividend_adjusted_nav",
+                            "reinvested_nav",
+                        ]
+                    ),
                     InstrumentMarketData.as_of_date.in_(sorted(replaced_dates)),
                 )
             )

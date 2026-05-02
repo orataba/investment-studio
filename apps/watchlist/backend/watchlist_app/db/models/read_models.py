@@ -24,12 +24,12 @@ class WatchlistRowReadModel(Base):
     share_class: Mapped[str | None]
     ticker_or_isin: Mapped[str | None]
     management_firm_name: Mapped[str | None]
-    category_name: Mapped[str | None]
     overall_rating: Mapped[int | None]
     analyst_stance: Mapped[str | None]
     aum: Mapped[Decimal | None] = mapped_column(Numeric(20, 2))
     return_ytd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     return_1w: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    return_mtd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     return_1m: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     return_1y: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     annualized_return: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))

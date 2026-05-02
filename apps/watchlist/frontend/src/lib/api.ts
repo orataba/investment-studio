@@ -325,7 +325,6 @@ export type FundSummaryResponse = {
   fund_name: string
   ticker_or_isin: string
   rating_as_of: string | null
-  category_name: string
   management_firm_name: string | null
   overall_rating: number | null
   analyst_stance: string
@@ -386,7 +385,7 @@ export type FundPerformanceResponse = {
     percentile?: number | null
     rank?: number | null
     sample_count?: number | null
-    category_name?: string | null
+    peer_group?: string | null
   } | null
   peer_comparison?: {
     status: string
@@ -517,18 +516,28 @@ export type FundDocumentsResponse = {
   notes: string[]
 }
 
+export type InstrumentDocumentUploadPayload = {
+  file: File
+  title?: string
+  document_type?: string
+  as_of_date?: string
+  source?: string
+  status?: string
+  version_label?: string
+  notes?: string
+  updated_by?: string
+}
+
 export type FundResearchResponse = {
   overview: Record<string, unknown>
-  thesis: string
-  conclusions: Array<Record<string, unknown>>
-  timeline_notes?: Array<Record<string, unknown>>
-  notes: string[]
+  manual_rating: number | null
+  timeline_notes: Array<Record<string, unknown>>
 }
 
 export type FundNavSeriesResponse = {
   fund_id: string
   count: number
-  nav_basis_preference: 'auto' | 'nav_with_dividend' | 'nav'
+  nav_basis_preference: 'auto' | 'nav_with_dividend'
   nav_basis_type: string | null
   nav_basis_source: string
   nav_basis_status: string
@@ -559,7 +568,7 @@ export type FundNavSeriesResponse = {
 type RawFundNavSeriesResponse = {
   asset_id: string
   count: number
-  nav_basis_preference: 'auto' | 'nav_with_dividend' | 'nav'
+  nav_basis_preference: 'auto' | 'nav_with_dividend'
   nav_basis_type: string | null
   nav_basis_source: string
   nav_basis_status: string
@@ -605,6 +614,20 @@ async function fetchJson<T>(
     },
     ...init,
   })
+
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(body || `Request failed: ${response.status}`)
+  }
+
+  return (await response.json()) as T
+}
+
+async function fetchForm<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, init)
 
   if (!response.ok) {
     const body = await response.text()
@@ -1008,6 +1031,27 @@ export function updateInstrumentDocuments(
   return fetchJson<FundDocumentsResponse>(buildInstrumentDetailApiPath(assetId, 'documents'), {
     method: 'PUT',
     body: JSON.stringify(payload),
+  })
+}
+
+export function uploadInstrumentDocument(
+  assetId: string,
+  payload: InstrumentDocumentUploadPayload,
+) {
+  const formData = new FormData()
+  formData.append('file', payload.file)
+  if (payload.title) formData.append('title', payload.title)
+  if (payload.document_type) formData.append('document_type', payload.document_type)
+  if (payload.as_of_date) formData.append('as_of_date', payload.as_of_date)
+  if (payload.source) formData.append('source', payload.source)
+  if (payload.status) formData.append('status', payload.status)
+  if (payload.version_label) formData.append('version_label', payload.version_label)
+  if (payload.notes) formData.append('notes', payload.notes)
+  if (payload.updated_by) formData.append('updated_by', payload.updated_by)
+
+  return fetchForm<FundDocumentsResponse>(buildInstrumentDetailApiPath(assetId, 'documents/upload'), {
+    method: 'POST',
+    body: formData,
   })
 }
 

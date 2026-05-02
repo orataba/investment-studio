@@ -93,6 +93,8 @@ export type PortfolioDailyPerformancePoint = {
   coverage_state: PortfolioPerformanceCoverageState
   stale_price_flag: boolean
   stale_fx_flag: boolean
+  market_observation_count: number
+  return_observation_eligible: boolean
   beginning_nav: number | null
   ending_nav: number | null
   realized_pnl: number | null
@@ -119,6 +121,8 @@ export type PortfolioPerformanceSummary = {
   coverage_state: PortfolioPerformanceCoverageState
   snapshot_count: number
   return_observation_count: number
+  risk_return_observation_count: number
+  risk_annualization_periods_per_year: number | null
   latest_complete_as_of_date: string | null
   start_nav: number | null
   end_nav: number | null
@@ -222,6 +226,7 @@ export type PortfolioPeriodBoundaryHoldingsSummary = {
   group_key: string | null
   group_label: string | null
   start_date: string | null
+  start_boundary_date?: string | null
   end_date: string | null
   start_position_count: number
   end_position_count: number
@@ -293,6 +298,8 @@ export type PortfolioContributionReportResponse = {
     group_key: string
     group_label: string
     coverage_state: PortfolioPerformanceCoverageState
+    market_observation_count: number
+    return_observation_eligible: boolean
     beginning_value_base: number | null
     ending_value_base: number | null
     beginning_weight: number | null
@@ -500,11 +507,7 @@ export type PortfolioDefaultPlanningTaxonomyResponse = {
 }
 
 export type PortfolioResearchRunStatus = 'running' | 'completed' | 'failed'
-export type PortfolioResearchRunTemplate = 'taxonomy_backtest'
-export type PortfolioResearchBenchmarkMode = 'none'
-export type PortfolioResearchTargetSetMode = 'saa' | 'taa_over_saa'
 export type PortfolioResearchTargetDimension = 'scope_default' | 'weight' | 'risk_budget'
-export type PortfolioResearchRebalanceFrequency = 'weekly' | 'monthly' | 'quarterly'
 export type PortfolioResearchCapitalMode = 'unit_notional' | 'fixed_gross' | 'target_volatility'
 export type PortfolioResearchArtifactPreviewKind = 'text' | 'html' | 'binary'
 
@@ -531,18 +534,13 @@ export type PortfolioResearchSettingsRecord = {
   comparator_taxonomy_node_id?: string | null
   comparator_taxonomy_node_name?: string | null
   as_of_date?: string | null
-  start_date?: string | null
   lookback_days: number
-  benchmark_mode: PortfolioResearchBenchmarkMode
-  run_template: PortfolioResearchRunTemplate
-  target_set_mode: PortfolioResearchTargetSetMode
   target_dimension: PortfolioResearchTargetDimension
   capital_mode: PortfolioResearchCapitalMode
   gross_exposure?: number | null
   target_volatility?: number | null
   max_gross_exposure?: number | null
   frozen_taxonomy_node_ids: string[]
-  rebalance_frequency: PortfolioResearchRebalanceFrequency
   notes?: string | null
   updated_at?: string | null
 }
@@ -551,18 +549,13 @@ export type PortfolioResearchSettingsUpdatePayload = {
   planning_taxonomy_id?: string | null
   comparator_taxonomy_node_id?: string | null
   as_of_date?: string | null
-  start_date?: string | null
   lookback_days: number
-  benchmark_mode?: PortfolioResearchBenchmarkMode
-  run_template?: PortfolioResearchRunTemplate
-  target_set_mode?: PortfolioResearchTargetSetMode
   target_dimension?: PortfolioResearchTargetDimension
   capital_mode?: PortfolioResearchCapitalMode
   gross_exposure?: number | null
   target_volatility?: number | null
   max_gross_exposure?: number | null
   frozen_taxonomy_node_ids?: string[] | null
-  rebalance_frequency?: PortfolioResearchRebalanceFrequency
   notes?: string | null
 }
 
@@ -652,61 +645,49 @@ export type PortfolioResearchScopeSelectionRecord = {
   member_source: string
 }
 
-export type PortfolioResearchBacktestMetricRecord = {
-  metric_id: string
-  label: string
-  value?: number | null
-}
-
-export type PortfolioResearchBacktestCurvePointRecord = {
-  date: string
-  nav: number
-  drawdown: number
-  portfolio_return: number
-  rebalance_flag: boolean
-}
-
-export type PortfolioResearchWeightSchedulePointRecord = {
-  date: string
-  rebalance_flag: boolean
-  nav?: number | null
-  weights: Record<string, number>
-}
-
-export type PortfolioResearchBacktestMemberSummaryRecord = {
+export type PortfolioResearchMemberTargetRecord = {
   member_type: string
   member_id: string
   label: string
+  scope_path?: string | null
+  member_path?: string | null
   default_target_dimension?: 'weight' | 'risk_budget' | null
   selected_target_dimension?: PortfolioResearchTargetDimension | null
   source_target_set_type?: 'saa' | 'taa' | null
-  start_weight?: number | null
-  end_weight?: number | null
+  current_weight?: number | null
+  current_risk_share?: number | null
+  target_weight?: number | null
   weight_change?: number | null
-  average_weight?: number | null
-  min_weight?: number | null
-  max_weight?: number | null
-  latest_target_weight?: number | null
-  latest_target_risk_share?: number | null
-  latest_implementation_weight?: number | null
+  configured_weight?: number | null
+  configured_risk_share?: number | null
   selected_target_value?: number | null
-  cumulative_return?: number | null
 }
 
-export type PortfolioResearchRebalanceEventRecord = {
-  rebalance_date: string
+export type PortfolioResearchSolveEventRecord = {
+  as_of_date: string
   scope_label: string
+  requested_target_dimension?: string | null
+  taxonomy_default_target_dimension?: 'weight' | 'risk_budget' | null
   target_dimension?: PortfolioResearchTargetDimension | null
   solver_kind?: string | null
-  turnover?: number | null
-  pre_rebalance_weight_total?: number | null
+  solver_detail?: string | null
+  solver_message?: string | null
+  covariance_model?: string | null
+  covariance_observations?: number | null
+  risk_contribution_mode?: string | null
+  gap_turnover?: number | null
+  current_weight_total?: number | null
   target_weight_total?: number | null
-  max_weight_gap_before_rebalance?: number | null
+  max_weight_gap?: number | null
   max_risk_share_gap?: number | null
+  estimated_risk_sleeve_volatility?: number | null
+  target_volatility?: number | null
+  gross_exposure?: number | null
+  risk_asset_scaling_factor?: number | null
   member_count: number
 }
 
-export type PortfolioResearchRebalanceSuggestionRecord = {
+export type PortfolioResearchTargetWeightGapRecord = {
   member_type: string
   member_id: string
   label: string
@@ -718,7 +699,7 @@ export type PortfolioResearchRebalanceSuggestionRecord = {
   action: string
 }
 
-export type PortfolioResearchConstructionRowRecord = {
+export type PortfolioResearchTargetRowRecord = {
   member_type: string
   member_id: string
   label: string
@@ -746,14 +727,12 @@ export type PortfolioResearchRunDetailRecord = {
   top_holdings: PortfolioResearchHoldingSnapshotRecord[]
   planning_groups: PortfolioResearchPlanningGroupSnapshotRecord[]
   selected_scope?: PortfolioResearchScopeSelectionRecord | null
-  backtest_metrics: PortfolioResearchBacktestMetricRecord[]
-  backtest_curve: PortfolioResearchBacktestCurvePointRecord[]
-  weight_schedule: PortfolioResearchWeightSchedulePointRecord[]
-  member_summaries: PortfolioResearchBacktestMemberSummaryRecord[]
-  construction_assumptions: string[]
-  construction_rows: PortfolioResearchConstructionRowRecord[]
-  rebalance_events: PortfolioResearchRebalanceEventRecord[]
-  rebalance_suggestions: PortfolioResearchRebalanceSuggestionRecord[]
+  target_assumptions: string[]
+  target_rows: PortfolioResearchTargetRowRecord[]
+  member_targets: PortfolioResearchMemberTargetRecord[]
+  leaf_targets: PortfolioResearchMemberTargetRecord[]
+  solve_event?: PortfolioResearchSolveEventRecord | null
+  target_weight_gaps: PortfolioResearchTargetWeightGapRecord[]
   warnings: string[]
 }
 
@@ -777,8 +756,6 @@ export type PortfolioResearchRunRecord = {
   planning_taxonomy_id?: string | null
   planning_taxonomy_name?: string | null
   lookback_days: number
-  benchmark_mode: PortfolioResearchBenchmarkMode
-  run_template: PortfolioResearchRunTemplate
   requested_by?: string | null
   headline?: string | null
   error_message?: string | null
