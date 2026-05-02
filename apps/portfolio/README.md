@@ -86,3 +86,23 @@ npm run dev
 (cd apps/portfolio/backend && pytest tests/test_taxonomies_api.py tests/test_research_api.py -q)
 npm --prefix apps/portfolio/frontend run build
 ```
+
+## 加载速度排查记录
+
+2026-05-02 对 Portfolio 页面加载链路做了一次只读排查。当前本地 portfolio 数据量不大：`portfolio` 2 条、`transaction` 39 条、`taxonomy_node` 28 条、`target_set_line` 168 条；但共享资产库已有 `instrument_market_data` 约 27,439 条。因此加载慢主要不是 portfolio 私有表过大，而是页面首屏并行触发多条重计算链路，每条链路又独立重放交易、重建 position lots、读取 shared asset 行情。
+
+主要慢点：
+
+- `get_portfolio()` 不是轻量存在性查询。它会实时汇总 NAV 和证券数，内部调用 account workspace / pricing map；很多接口只是校验 portfolio 是否存在，也会触发这段重算。实测单次约 `0.5s - 1.8s`。
+- `build_daily_portfolio_snapshots()` 按日期窗口逐日重放交易，并在每天重新派生 ledger postings、position lots、估值和 FX。`/performance` 依赖它，portfolio `3` 实测 7 天约 `3.8s`，30 天约 `15s`。
+- `build_period_calculation_report()` 和 `build_period_boundary_holdings_report()` 会为起止边界再次构造 snapshot，其中 `_build_single_date_snapshot()` 为了一个日期也会从历史开始生成 daily snapshots。portfolio `3` 实测 7 天分别约 `25s` 和 `26s`。
+- `build_contribution_report()` 先生成 daily snapshots，又在日期循环中反复重建 group end states / position lots。portfolio `3` 实测 7 天约 `11s`。
+- shared asset 行情读取被重复放大。profile 显示慢链路的大头在 `list_registry_instruments()` / instrument detail 序列化和 market data 扫描上，而不是 portfolio 表查询本身。
+
+页面层的放大点：
+
+- `Overview` 首屏会并行请求 workspace summary、holdings、taxonomy catalog，并另起 performance 请求。
+- `Risk` 会并行请求 holdings、accounts、taxonomy，再请求 performance 和 contribution。
+- `Review` 一次加载 performance、calculation、contribution、boundary holdings、taxonomy、research workbench，其中多个接口都会触发上述重计算。
+
+后续优化优先级应先放在：把 portfolio 存在性查询与实时 rollup 分离；缓存或物化 daily snapshots / position lots；避免同一页面内重复拉 shared asset detail；让 Review / Risk 这类页面复用同一批 performance 中间结果。
