@@ -35,10 +35,12 @@
 
 ## 快速启动
 
+以下命令默认从仓库根目录执行；如果已经在 `apps/portfolio` 目录，可相应省略路径前缀。
+
 ### 1. 后端
 
 ```bash
-cd /home/shaw/yungu/apps/portfolio/backend
+cd apps/portfolio/backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -48,7 +50,7 @@ uvicorn portfolio_app.main:app --reload --host 127.0.0.1 --port 8001
 
 说明：
 
-- 默认数据库连接为 PostgreSQL：`postgresql+psycopg://yungu:yungu@127.0.0.1:5432/yungu`
+- 数据库连接通过 `YUNGU_PORTFOLIO_DATABASE_URL` 配置；本机账号和密码只应放在未提交的 `.env` 或 shell 环境里
 - `portfolio` 使用 `portfolio` schema
 - 测试使用临时 SQLite，不会污染默认运行库
 - research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理；当前产物以 target weights、member targets、leaf targets、solve event 和 target weight gaps 为主
@@ -57,7 +59,7 @@ uvicorn portfolio_app.main:app --reload --host 127.0.0.1 --port 8001
 ### 2. 前端
 
 ```bash
-cd /home/shaw/yungu/apps/portfolio/frontend
+cd apps/portfolio/frontend
 npm install
 npm run dev
 ```
@@ -80,7 +82,7 @@ npm run dev
 ## 常用校验命令
 
 ```bash
-cd /home/shaw/yungu/apps/portfolio/backend && pytest
-cd /home/shaw/yungu/apps/portfolio/backend && pytest tests/test_taxonomies_api.py tests/test_research_api.py -q
-cd /home/shaw/yungu/apps/portfolio/frontend && npm run build
+(cd apps/portfolio/backend && pytest)
+(cd apps/portfolio/backend && pytest tests/test_taxonomies_api.py tests/test_research_api.py -q)
+npm --prefix apps/portfolio/frontend run build
 ```

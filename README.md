@@ -68,11 +68,12 @@ yungu/
 
 ## 开发工作流
 
+以下命令默认从仓库根目录执行；如果你在其他目录，先进入自己的本地 clone。不要把本机绝对路径、用户名、密码或真实服务地址写入文档和提交信息。
+
 ### 数据库
 
 ```bash
-cd /home/shaw/yungu/infra/postgres
-docker compose up -d
+(cd infra/postgres && docker compose up -d)
 ```
 
 默认单库 schema 划分：
@@ -87,14 +88,9 @@ docker compose up -d
 ### 后端迁移
 
 ```bash
-cd /home/shaw/yungu/infra/shared_asset
-alembic upgrade head
-
-cd /home/shaw/yungu/apps/portfolio/backend
-PYTHONPATH=. alembic upgrade head
-
-cd /home/shaw/yungu/apps/watchlist/backend
-PYTHONPATH=. alembic upgrade head
+(cd infra/shared_asset && alembic upgrade head)
+(cd apps/portfolio/backend && PYTHONPATH=. alembic upgrade head)
+(cd apps/watchlist/backend && PYTHONPATH=. alembic upgrade head)
 ```
 
 说明：
@@ -105,7 +101,6 @@ PYTHONPATH=. alembic upgrade head
 如果本地库已经跑脏或迁移链断过，直接执行：
 
 ```bash
-cd /home/shaw/yungu
 ./infra/postgres/rebuild_local_schemas.sh
 ```
 
@@ -121,27 +116,22 @@ cd /home/shaw/yungu
 三个后端已经改成独立顶层包名，但测试和脚本仍建议在各自 backend 目录内执行，以复用本地 Alembic 配置和相对路径。
 
 ```bash
-cd /home/shaw/yungu/apps/platform/backend
-pytest
-
-cd /home/shaw/yungu/apps/portfolio/backend
-pytest
-
-cd /home/shaw/yungu/apps/watchlist/backend
-pytest
+(cd apps/platform/backend && pytest)
+(cd apps/portfolio/backend && pytest)
+(cd apps/watchlist/backend && pytest)
 ```
 
 补充：
 
 - 上面这组测试主要是快速 SQLite / isolated path。
-- `shared_asset` 的 cross-schema FK 和 search_path 需要额外用 PostgreSQL integration tests 验证，命令见 [docs/DATABASE_WORKFLOW.md](/home/shaw/yungu/docs/DATABASE_WORKFLOW.md:55)。
+- `shared_asset` 的 cross-schema FK 和 search_path 需要额外用 PostgreSQL integration tests 验证，命令见 [docs/DATABASE_WORKFLOW.md](./docs/DATABASE_WORKFLOW.md)。
 
 ### 前端构建
 
 ```bash
-cd /home/shaw/yungu/apps/platform/frontend && npm run build
-cd /home/shaw/yungu/apps/portfolio/frontend && npm run build
-cd /home/shaw/yungu/apps/watchlist/frontend && npm run build
+npm --prefix apps/platform/frontend run build
+npm --prefix apps/portfolio/frontend run build
+npm --prefix apps/watchlist/frontend run build
 ```
 
 ## 仓库卫生

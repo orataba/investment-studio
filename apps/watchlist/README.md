@@ -1,6 +1,6 @@
 # Yungu Watchlist
 
-`/home/shaw/yungu/apps/watchlist` 是当前 `Yungu / Watchlist` app 的工作区。
+这是当前 `Yungu / Watchlist` app 的工作区。
 
 它由原 `fof` 基线工程迁入，当前后端主语已经统一到 `instrument`，但产品可用范围明确收敛为 `fund-only watchlist`。
 
@@ -49,10 +49,12 @@
 
 ## 快速启动
 
+以下命令默认从仓库根目录执行；如果已经在 `apps/watchlist` 目录，可相应省略路径前缀。
+
 ### 1. 后端
 
 ```bash
-cd /home/shaw/yungu/apps/watchlist/backend
+cd apps/watchlist/backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -72,7 +74,7 @@ uvicorn watchlist_app.main:app --reload --host 127.0.0.1 --port 8000
 ### 2. 前端
 
 ```bash
-cd /home/shaw/yungu/apps/watchlist/frontend
+cd apps/watchlist/frontend
 npm install
 npm run dev
 ```
@@ -85,9 +87,9 @@ npm run dev
 ## 常用校验命令
 
 ```bash
-cd /home/shaw/yungu/apps/watchlist/frontend && npm run build
-cd /home/shaw/yungu/apps/watchlist/frontend && npx tsc --noEmit
-cd /home/shaw/yungu/apps/watchlist/backend && pytest
+npm --prefix apps/watchlist/frontend run build
+(cd apps/watchlist/frontend && npx tsc --noEmit)
+(cd apps/watchlist/backend && pytest)
 ```
 
 ## 当前行为边界

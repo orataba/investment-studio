@@ -45,10 +45,12 @@
 
 ## 快速启动
 
+以下命令默认从仓库根目录执行；如果已经在 `apps/platform` 目录，可相应省略路径前缀。
+
 ### 1. 后端
 
 ```bash
-cd /home/shaw/yungu/apps/platform/backend
+cd apps/platform/backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -57,7 +59,7 @@ uvicorn platform_app.main:app --reload --host 127.0.0.1 --port 8002
 
 说明：
 
-- 默认数据库连接是 `postgresql+psycopg://yungu:yungu@127.0.0.1:5432/yungu`
+- 数据库连接通过 `YUNGU_PLATFORM_DATABASE_URL` 配置；本机账号和密码只应放在未提交的 `.env` 或 shell 环境里
 - backend 顶层包名现在是 `platform_app`
 - `platform` 运行时默认使用 `shared_asset` schema
 - shared schema 的迁移请去 `infra/shared_asset`
@@ -65,7 +67,7 @@ uvicorn platform_app.main:app --reload --host 127.0.0.1 --port 8002
 ### 2. 前端
 
 ```bash
-cd /home/shaw/yungu/apps/platform/frontend
+cd apps/platform/frontend
 npm install
 npm run dev
 ```
@@ -95,7 +97,7 @@ platform frontend 不再把 backend / watchlist / portfolio 地址写死在代�
 ## 常用校验命令
 
 ```bash
-cd /home/shaw/yungu/apps/platform/backend && pytest
-cd /home/shaw/yungu/apps/platform/frontend && npm run build
-cd /home/shaw/yungu/infra/shared_asset && alembic upgrade head
+(cd apps/platform/backend && pytest)
+npm --prefix apps/platform/frontend run build
+(cd infra/shared_asset && alembic upgrade head)
 ```

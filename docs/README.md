@@ -30,10 +30,10 @@
 提交前快速检查：
 
 ```bash
-cd /home/shaw/yungu/apps/platform/backend && pytest
-cd /home/shaw/yungu/apps/portfolio/backend && pytest
-cd /home/shaw/yungu/apps/watchlist/backend && pytest
-cd /home/shaw/yungu/apps/platform/frontend && npm run build
-cd /home/shaw/yungu/apps/portfolio/frontend && npm run build
-cd /home/shaw/yungu/apps/watchlist/frontend && npm run build
+(cd apps/platform/backend && pytest)
+(cd apps/portfolio/backend && pytest)
+(cd apps/watchlist/backend && pytest)
+npm --prefix apps/platform/frontend run build
+npm --prefix apps/portfolio/frontend run build
+npm --prefix apps/watchlist/frontend run build
 ```

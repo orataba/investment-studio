@@ -105,16 +105,15 @@ Portfolio Performance（PP）是正式版最重要的**计算与领域模型参�
 
 ### 4.2 本地参考仓库
 
-已拉取本地参考仓库：
+参考仓库：
 
-- 本地路径：`/home/shaw/pmw/references/portfolio-performance`
 - 上游仓库：<https://github.com/portfolio-performance/portfolio>
 - 本地快照 commit：`85041a52fcad47d39b8c7540531af044cd28836b`
 
 说明：
 
-- 该仓库仅作为**本地参考代码库**，不纳入本项目版本控制。
-- 后续需要更新时，可在该目录内执行 `git pull`。
+- 如需本地参考代码库，可自行 clone 到任意未纳入版本控制的目录；不要在项目文档中记录个人机器路径。
+- 后续需要更新时，可在本机参考目录内执行 `git pull`。
 
 ### 4.3 优先阅读的代码模块
 

@@ -5,8 +5,7 @@
 常用命令：
 
 ```bash
-cd /home/shaw/yungu/infra/shared_asset
-alembic upgrade head
+(cd infra/shared_asset && alembic upgrade head)
 ```
 
 可选环境变量：

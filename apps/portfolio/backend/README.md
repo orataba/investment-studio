@@ -8,4 +8,4 @@
 - SQLAlchemy
 - Alembic
 
-运行与校验命令以 [apps/portfolio/README.md](/home/shaw/yungu/apps/portfolio/README.md) 为准。
+运行与校验命令以 [apps/portfolio/README.md](../README.md) 为准。
