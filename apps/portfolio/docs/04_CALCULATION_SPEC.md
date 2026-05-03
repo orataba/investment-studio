@@ -1,6 +1,6 @@
 # PMS 正式版计算口径规格
 
-更新时间：`2026-04-14`
+更新时间：`2026-05-03`
 关联文档：
 
 - [`01_PMS_REFERENCE_BASELINE.md`](./01_PMS_REFERENCE_BASELINE.md)
@@ -219,11 +219,11 @@
 默认采用以下年化约定：
 
 - Return / IRR：`ACT/365.25`
-- Daily volatility / tracking error：`252`
+- Daily volatility / tracking error：优先使用实际有效收益观察密度推断 `periods_per_year`
 - Weekly volatility：`52`
 - Monthly volatility：`12`
 
-若观察频率不是固定日频，系统应记录 `periods_per_year` 推断值，但默认展示仍以日频 `252` 为主。
+若观察频率是稳定交易日频，`periods_per_year` 通常接近 `252`；若存在节假日、缺价或非交易日 carry-forward，系统必须记录并使用实际有效收益观察密度，避免把无市场观察的 0 return 当作风险样本。
 
 ### 2.7 缺失数据与覆盖率
 
@@ -459,6 +459,8 @@ $$
 
 这是组合页面、绩效页和 review 中默认的区间收益口径。
 
+组合的 `TWR Index` 是把 `R_cum` 归一到 100 后得到的组合表现曲线。它在语义上类似基金的 total-return NAV / cumulative NAV，但不是组合会计单位净值；它只用于投资表现、回撤、波动和 benchmark comparison，不用于资产规模或账面 NAV 展示。
+
 ### 5.4 Annualized TTWROR
 
 若区间长度为 `Y` 年（按 `ACT/365.25` 计算）：
@@ -544,14 +546,20 @@ $$
 - `max_drawdown_days = peak -> trough`
 - `drawdown_duration_days = peak -> recovery`
 
+约束：
+
+- 组合级 drawdown 必须基于 `TTWROR` 复合后的 `G_t`，不得基于资产规模 `NAV_t` 直接计算；
+- 任何带 `start_date / end_date` 的区间 summary 都必须用区间内 `daily_ttwror` 重新复合并重算 drawdown，不能直接复用 inception-to-date 的 `cumulative_ttwror` 或 snapshot-level drawdown；
+- 若主图显示 `Portfolio Value`，下方 drawdown 仍然使用 `TWR Index`，因为外部出入金不应制造或稀释投资回撤。
+
 ### 5.8 Volatility / Sharpe / Sortino / Tracking Error
 
 ### Portfolio volatility
 
-默认使用日频 simple returns 构造风险统计；当需要对齐 PP 风格展示时，可额外输出 log-return 版本，但 canonical risk API 默认仍以 simple returns 为主。
+默认使用组合 `daily_ttwror` 的 simple returns 构造风险统计；当需要对齐 PP 风格展示时，可额外输出 log-return 版本，但 canonical risk API 默认仍以 simple returns 为主。资产规模 `NAV_t` 的变化不得作为组合级 volatility / Sharpe / Sortino 的输入。
 
 $$
-\sigma_{ann} = std(r_t) \times \sqrt{252}
+\sigma_{ann} = std(r_t) \times \sqrt{periods\_per\_year}
 $$
 
 ### Sharpe ratio

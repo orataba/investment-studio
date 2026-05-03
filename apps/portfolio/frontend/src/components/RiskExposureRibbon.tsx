@@ -1,6 +1,6 @@
 import { formatPercent } from '../lib/format'
 
-const SEGMENT_COLORS = ['#1f4b99', '#0b72d7', '#2a9d8f', '#7c5c3a', '#d2a94f', '#7a8a4f', '#8b5cf6', '#c26d2d']
+const SEGMENT_COLORS = ['#1f4b99', '#0b72d7', '#2a9d8f', '#64748b', '#14b8a6', '#7c3aed', '#db2777', '#475569']
 
 export type RiskExposureSegment = {
   id: string

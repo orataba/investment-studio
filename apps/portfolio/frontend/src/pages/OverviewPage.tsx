@@ -34,6 +34,7 @@ import {
   formatUnitPrice,
   signedValueClass,
 } from '../lib/format'
+import { buildTwrIndexPoints } from '../lib/performanceSeries'
 
 type AllocationBucket = {
   id: string
@@ -58,6 +59,9 @@ type TopHoldingColumnKey =
   | 'day_change'
   | 'weight'
   | 'coverage'
+  | 'return_1w'
+  | 'return_mtd'
+  | 'return_ytd'
 
 type TopHoldingColumnDefinition = {
   key: TopHoldingColumnKey
@@ -75,14 +79,13 @@ type OverviewMetricRow = {
 
 const DEFAULT_TOP_HOLDING_COLUMNS: TopHoldingColumnKey[] = [
   'asset',
-  'identifier',
-  'sleeve',
   'sparkline',
   'market_value',
-  'unrealized_pnl',
-  'day_change',
   'weight',
-  'coverage',
+  'unrealized_pnl',
+  'return_1w',
+  'return_mtd',
+  'return_ytd',
 ]
 
 const TOP_HOLDING_COLUMN_LABELS: Record<TopHoldingColumnKey, string> = {
@@ -98,15 +101,21 @@ const TOP_HOLDING_COLUMN_LABELS: Record<TopHoldingColumnKey, string> = {
   day_change: 'Day Change',
   weight: 'Weight',
   coverage: 'Coverage',
+  return_1w: '1W Return',
+  return_mtd: 'MTD',
+  return_ytd: 'YTD',
 }
 
 const TOP_HOLDING_COLUMN_GROUPS: Array<{ label: string; columns: TopHoldingColumnKey[] }> = [
   { label: 'Core', columns: ['asset', 'identifier', 'sleeve', 'coverage'] },
   { label: 'Market', columns: ['sparkline', 'last_price', 'market_value', 'weight', 'day_change'] },
   { label: 'Position', columns: ['quantity', 'cost_basis', 'unrealized_pnl'] },
+  { label: 'Return', columns: ['return_1w', 'return_mtd', 'return_ytd'] },
 ]
 
-const DONUT_COLORS = ['#0b72d7', '#0f766e', '#f59e0b', '#7c3aed', '#db2777', '#64748b', '#14b8a6']
+const TOP_HOLDINGS_LIMIT = 10
+
+const DONUT_COLORS = ['#0b72d7', '#0f766e', '#64748b', '#7c3aed', '#db2777', '#14b8a6', '#475569']
 
 function primaryIdentifier(row: PortfolioHoldingRow) {
   return (
@@ -260,7 +269,7 @@ function buildPortfolioReturnMetrics(points: PortfolioDailyPerformancePoint[]) {
 }
 
 function periodReturnFromValuePoints(
-  points: PortfolioAssetPriceChartPoint[],
+  points: Array<{ date: string; value: number }>,
   targetDate: string | null,
   fallbackToFirst = true,
 ) {
@@ -280,6 +289,31 @@ function periodReturnFromValuePoints(
       ) ?? (fallbackToFirst ? sortedPoints[0] : null)
     : sortedPoints[0]
   return anchorPoint && anchorPoint.value !== 0 ? latestPoint.value / anchorPoint.value - 1 : null
+}
+
+function buildPriceReturnMetrics(points: SparklinePoint[]) {
+  const sortedPoints = points
+    .filter((point) => Number.isFinite(point.value))
+    .slice()
+    .sort((left, right) => left.date.localeCompare(right.date))
+  const latestPoint = sortedPoints[sortedPoints.length - 1]
+  const latestDate = latestPoint ? dateFromString(latestPoint.date) : null
+  if (!latestPoint || !latestDate) {
+    return {
+      oneWeek: null,
+      mtd: null,
+      ytd: null,
+    }
+  }
+
+  const monthStart = new Date(latestDate.getFullYear(), latestDate.getMonth(), 1)
+  const yearStart = new Date(latestDate.getFullYear(), 0, 1)
+
+  return {
+    oneWeek: periodReturnFromValuePoints(sortedPoints, formatDateKey(addDays(latestDate, -7))),
+    mtd: periodReturnFromValuePoints(sortedPoints, formatDateKey(addDays(monthStart, -1)), false),
+    ytd: periodReturnFromValuePoints(sortedPoints, formatDateKey(addDays(yearStart, -1)), false),
+  }
 }
 
 function sampleStandardDeviation(values: number[]) {
@@ -384,30 +418,34 @@ function MiniSparkline({ values }: { values: SparklinePoint[] }) {
     return <span className="sparkline-empty">—</span>
   }
 
+  const sliced = values.length > 120 ? values.slice(-120) : values
   const width = 88
   const height = 24
-  const min = Math.min(...values.map((point) => point.value))
-  const max = Math.max(...values.map((point) => point.value))
+  const min = Math.min(...sliced.map((point) => point.value))
+  const max = Math.max(...sliced.map((point) => point.value))
   const span = max - min || 1
-  const line = values
+  const points = sliced
     .map((point, index) => {
-      const x = (index / (values.length - 1)) * (width - 1)
+      const x = (index / (sliced.length - 1)) * (width - 1)
       const y = height - ((point.value - min) / span) * (height - 6) - 2
-      return `${x.toFixed(1)} ${y.toFixed(1)}`
+      return `${x.toFixed(1)},${y.toFixed(1)}`
     })
-    .join(' L ')
+    .join(' ')
 
-  const firstValue = values[0]?.value ?? 0
-  const lastValue = values[values.length - 1]?.value ?? firstValue
-  const stroke = lastValue >= firstValue ? '#0f766e' : '#b42318'
-  const fill = lastValue >= firstValue ? 'rgba(15, 118, 110, 0.12)' : 'rgba(180, 35, 24, 0.12)'
-  const area = `${line} L ${width - 1} ${height} L 0 ${height} Z`
+  const firstValue = sliced[0]?.value ?? 0
+  const lastValue = sliced[sliced.length - 1]?.value ?? firstValue
+  const isPositive = lastValue >= firstValue
+  const stroke = isPositive ? '#0f766e' : '#b42318'
+  const fill = isPositive ? 'rgba(15, 118, 110, 0.12)' : 'rgba(180, 35, 24, 0.12)'
+  const areaPoints = `0,${height} ${points} ${width},${height}`
 
   return (
-    <svg className="mini-sparkline" viewBox="0 0 88 24" aria-hidden="true">
-      <path d={`M ${area}`} fill={fill} />
-      <path d={`M ${line}`} fill="none" stroke={stroke} strokeWidth="1.8" />
-    </svg>
+    <span className="sparkline-cell">
+      <svg className="sparkline" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+        <polygon points={areaPoints} fill={fill} />
+        <polyline points={points} className="sparkline-path" style={{ stroke }} />
+      </svg>
+    </span>
   )
 }
 
@@ -745,6 +783,20 @@ export default function OverviewPage() {
         })),
     [performanceWorkspace],
   )
+  const twrIndexChartPoints = useMemo(
+    () => buildTwrIndexPoints(performanceWorkspace?.daily_series ?? []),
+    [performanceWorkspace],
+  )
+  const benchmarkChartPoints = useMemo(
+    () =>
+      (benchmarkChart?.points ?? [])
+        .filter((point) => Number.isFinite(point.value))
+        .map((point) => ({
+          date: point.date,
+          value: point.value,
+        })),
+    [benchmarkChart],
+  )
 
   const defaultPlanningTaxonomyId =
     summary?.default_planning_taxonomy_id ?? taxonomyCatalog?.default_planning_taxonomy_id ?? null
@@ -852,7 +904,7 @@ export default function OverviewPage() {
     valueLabel: formatPercent(bucket.weight),
     detail: `${bucket.holdingsCount} lines · ${formatCurrency(bucket.value, resolvedBaseCurrency)}`,
   }))
-  const topHoldingBarItems = sortedHoldings.slice(0, 8).map((row) => ({
+  const topHoldingBarItems = sortedHoldings.slice(0, TOP_HOLDINGS_LIMIT).map((row) => ({
     id: row.line_id,
     label: row.asset_core.asset_name,
     subtitle: composition.assignedLabelByAssetId.get(row.asset_core.asset_id)?.leafLabel ?? formatLabel(row.asset_core.asset_type),
@@ -870,7 +922,18 @@ export default function OverviewPage() {
   const filteredBenchmarkOptions = useMemo(() => {
     const normalizedSearch = deferredBenchmarkSearch.trim().toLowerCase()
     if (!normalizedSearch) {
-      return []
+      return benchmarkInstruments
+        .slice()
+        .sort((left, right) => {
+          const typeRank = (type: string) =>
+            type === 'index' ? 0 : type === 'fund' ? 1 : type === 'etf' ? 2 : type === 'equity' ? 3 : 4
+          return (
+            typeRank(left.asset_type) - typeRank(right.asset_type) ||
+            instrumentPrimaryIdentifier(left).localeCompare(instrumentPrimaryIdentifier(right)) ||
+            left.asset_name.localeCompare(right.asset_name)
+          )
+        })
+        .slice(0, 12)
     }
 
     return benchmarkInstruments
@@ -889,10 +952,7 @@ export default function OverviewPage() {
       })
       .slice(0, 10)
   }, [benchmarkInstruments, deferredBenchmarkSearch])
-  const showBenchmarkResults =
-    benchmarkSearchFocused &&
-    benchmarkInputValue.trim() !== '' &&
-    (!selectedBenchmarkInstrument || benchmarkInputValue !== selectedBenchmarkLabel)
+  const showBenchmarkResults = benchmarkSearchFocused
   const benchmarkMetrics = useMemo(
     () => buildBenchmarkMetrics(benchmarkChart?.points ?? []) ?? null,
     [benchmarkChart],
@@ -1047,6 +1107,30 @@ export default function OverviewPage() {
         </span>
       ),
     },
+    {
+      key: 'return_1w',
+      label: TOP_HOLDING_COLUMN_LABELS.return_1w,
+      render: (row) => {
+        const value = buildPriceReturnMetrics(row.price_chart).oneWeek
+        return <span className={signedValueClass(value)}>{signedPercent(value)}</span>
+      },
+    },
+    {
+      key: 'return_mtd',
+      label: TOP_HOLDING_COLUMN_LABELS.return_mtd,
+      render: (row) => {
+        const value = buildPriceReturnMetrics(row.price_chart).mtd
+        return <span className={signedValueClass(value)}>{signedPercent(value)}</span>
+      },
+    },
+    {
+      key: 'return_ytd',
+      label: TOP_HOLDING_COLUMN_LABELS.return_ytd,
+      render: (row) => {
+        const value = buildPriceReturnMetrics(row.price_chart).ytd
+        return <span className={signedValueClass(value)}>{signedPercent(value)}</span>
+      },
+    },
   ]
   const topHoldingColumnDefinitionByKey = new Map(
     topHoldingColumnDefinitions.map((definition) => [definition.key, definition]),
@@ -1057,11 +1141,7 @@ export default function OverviewPage() {
 
   return (
     <PortfolioWorkspaceLayout activeSection="Overview" toolbarLabel="View: Portfolio Overview">
-      <section className="portfolio-detail-surface">
-        <div className="portfolio-detail-toolbar">
-          <div className="panel-title">Overview</div>
-        </div>
-
+      <section className="portfolio-detail-surface portfolio-overview-surface">
         {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
         {performanceError ? <div className="inline-notice inline-notice-error">{performanceError}</div> : null}
 
@@ -1074,95 +1154,104 @@ export default function OverviewPage() {
         {!workspaceLoading && holdingsWorkspace ? (
           <>
             <div className="performance-block-grid">
-              <section className="performance-section-block">
-                <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                  <div className="panel-title">Portfolio NAV</div>
-                  <div className="overview-chart-controls">
-                    <label className="overview-benchmark-search">
-                      <span>Benchmark</span>
-                      <div className="overview-benchmark-search-box">
-                        <input
-                          type="search"
-                          placeholder="Search database benchmark"
-                          value={benchmarkInputValue}
-                          onFocus={() => setBenchmarkSearchFocused(true)}
-                          onBlur={() => window.setTimeout(() => setBenchmarkSearchFocused(false), 140)}
-                          onChange={(event) => {
-                            const nextValue = event.target.value
-                            setBenchmarkSearch(nextValue)
-                            if (selectedBenchmarkInstrument && nextValue !== selectedBenchmarkLabel) {
-                              setBenchmarkAssetId('')
-                              setBenchmarkChart(null)
-                            }
-                          }}
-                        />
-                        {selectedBenchmarkInstrument ? (
-                          <button
-                            type="button"
-                            aria-label="Clear benchmark"
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => {
-                              setBenchmarkAssetId('')
-                              setBenchmarkSearch('')
-                              setBenchmarkChart(null)
-                              setBenchmarkError(null)
-                            }}
-                          >
-                            Clear
-                          </button>
-                        ) : null}
-                        {showBenchmarkResults ? (
-                          <div className="overview-benchmark-results">
-                            {filteredBenchmarkOptions.length ? (
-                              filteredBenchmarkOptions.map((instrument) => (
-                                <button
-                                  type="button"
-                                  key={instrument.asset_id}
-                                  onMouseDown={(event) => event.preventDefault()}
-                                  onClick={() => {
-                                    setBenchmarkAssetId(instrument.asset_id)
-                                    setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
-                                    setBenchmarkSearchFocused(false)
-                                  }}
-                                >
-                                  <strong>{instrument.asset_name}</strong>
-                                  <span>
-                                    {instrumentPrimaryIdentifier(instrument)} · {formatLabel(instrument.asset_type)} · {instrument.currency}
-                                  </span>
-                                </button>
-                              ))
-                            ) : (
-                              <div className="overview-benchmark-empty">No database match</div>
-                            )}
-                          </div>
-                        ) : null}
-                      </div>
-                    </label>
-                  </div>
-                </div>
+              <section className="performance-section-block overview-performance-block">
                 <div className="overview-nav-grid">
                   <div className="overview-nav-chart-panel">
+                    <div className="overview-chart-controls">
+                      <label className="overview-benchmark-search">
+                        <div className="overview-benchmark-search-box">
+                          <input
+                            type="search"
+                            aria-label="Compare benchmark"
+                            placeholder="Compare..."
+                            value={benchmarkInputValue}
+                            onFocus={() => setBenchmarkSearchFocused(true)}
+                            onBlur={() => window.setTimeout(() => setBenchmarkSearchFocused(false), 140)}
+                            onChange={(event) => {
+                              const nextValue = event.target.value
+                              setBenchmarkSearch(nextValue)
+                              if (selectedBenchmarkInstrument && nextValue !== selectedBenchmarkLabel) {
+                                setBenchmarkAssetId('')
+                                setBenchmarkChart(null)
+                              }
+                            }}
+                          />
+                          {selectedBenchmarkInstrument ? (
+                            <button
+                              type="button"
+                              className="overview-benchmark-clear"
+                              aria-label="Clear benchmark"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                setBenchmarkAssetId('')
+                                setBenchmarkSearch('')
+                                setBenchmarkChart(null)
+                                setBenchmarkError(null)
+                              }}
+                            >
+                              ×
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="overview-benchmark-toggle"
+                              aria-label="Show benchmark choices"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => setBenchmarkSearchFocused((current) => !current)}
+                            >
+                              <span aria-hidden="true" />
+                            </button>
+                          )}
+                          {showBenchmarkResults ? (
+                            <div className="overview-benchmark-results">
+                              {filteredBenchmarkOptions.length ? (
+                                filteredBenchmarkOptions.map((instrument) => (
+                                  <button
+                                    type="button"
+                                    key={instrument.asset_id}
+                                    onMouseDown={(event) => event.preventDefault()}
+                                    onClick={() => {
+                                      setBenchmarkAssetId(instrument.asset_id)
+                                      setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
+                                      setBenchmarkSearchFocused(false)
+                                    }}
+                                  >
+                                    <strong>{instrument.asset_name}</strong>
+                                    <span>
+                                      {instrumentPrimaryIdentifier(instrument)} · {formatLabel(instrument.asset_type)} · {instrument.currency}
+                                    </span>
+                                  </button>
+                                ))
+                              ) : (
+                                <div className="overview-benchmark-empty">No database match</div>
+                              )}
+                            </div>
+                          ) : null}
+                        </div>
+                      </label>
+                    </div>
+                    {benchmarkError ? <div className="overview-benchmark-error">{benchmarkError}</div> : null}
                     {performanceLoading && !performanceWorkspace ? (
                       <CalculationStatus label="Building NAV path and drawdown summary…" />
                     ) : null}
                     {!performanceLoading && performanceWorkspace ? (
                       <PerformanceNavChart
                         points={navChartPoints}
+                        twrPoints={twrIndexChartPoints}
+                        benchmarkPoints={benchmarkChartPoints}
+                        benchmarkLabel={
+                          selectedBenchmarkInstrument
+                            ? instrumentPrimaryIdentifier(selectedBenchmarkInstrument)
+                            : null
+                        }
                         currency={resolvedBaseCurrency}
-                        showRangeControls={false}
+                        showRangeControls
+                        variant="overview"
                       />
                     ) : null}
                   </div>
 
                   <aside className="overview-key-metrics" aria-label="Portfolio overview key metrics">
-                    <div className="overview-key-metrics-header">
-                      <div>
-                        <span>Key Metrics</span>
-                        <strong>{formatCurrency(summary?.nav, resolvedBaseCurrency)}</strong>
-                      </div>
-                      <span>{selectedBenchmarkInstrument ? `BM ${instrumentPrimaryIdentifier(selectedBenchmarkInstrument)}` : 'No benchmark'}</span>
-                    </div>
-                    {benchmarkError ? <div className="overview-benchmark-error">{benchmarkError}</div> : null}
                     <div className="overview-key-metric-groups">
                       {overviewMetricGroups.map((group) => (
                         <table className="overview-key-metrics-table" key={group.label}>
@@ -1241,7 +1330,7 @@ export default function OverviewPage() {
                     </thead>
                     <tbody>
                       {sortedHoldings.length ? (
-                        sortedHoldings.slice(0, 12).map((row) => (
+                        sortedHoldings.slice(0, TOP_HOLDINGS_LIMIT).map((row) => (
                           <tr key={row.line_id}>
                             {visibleTopHoldingColumns.map((column) => (
                               <td key={column.key}>{column.render(row)}</td>

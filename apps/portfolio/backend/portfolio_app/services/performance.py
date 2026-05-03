@@ -1381,23 +1381,39 @@ def _downside_deviation(values: list[float], *, minimum_acceptable_return: float
     return sqrt(sum(downside_squares) / len(downside_squares))
 
 
+def _compound_daily_ttwror(snapshots: list[dict[str, object]]) -> float | None:
+    growth_index = 1.0
+    has_return = False
+    for snapshot in snapshots:
+        daily_ttwror = _safe_float(snapshot.get("daily_ttwror"))
+        if daily_ttwror is None or not isfinite(daily_ttwror):
+            continue
+        growth_index *= 1.0 + daily_ttwror
+        has_return = True
+    return (growth_index - 1.0) if has_return else None
+
+
 def _drawdown_stats(snapshots: list[dict[str, object]]) -> dict[str, int | float | None]:
     growth_points: list[tuple[date, float]] = []
+    growth_index = 1.0
     for snapshot in snapshots:
-        cumulative_ttwror = _safe_float(snapshot.get("cumulative_ttwror"))
+        daily_ttwror = _safe_float(snapshot.get("daily_ttwror"))
         snapshot_date = snapshot.get("as_of_date")
-        if cumulative_ttwror is None or not isinstance(snapshot_date, date):
+        if daily_ttwror is None or not isfinite(daily_ttwror) or not isinstance(snapshot_date, date):
             continue
-        growth_points.append((snapshot_date, 1.0 + cumulative_ttwror))
+        growth_index *= 1.0 + daily_ttwror
+        growth_points.append((snapshot_date, growth_index))
     if not growth_points:
         return {
+            "current_drawdown": None,
             "max_drawdown": None,
             "max_drawdown_days": None,
             "drawdown_duration_days": None,
         }
 
-    running_peak = growth_points[0][1]
+    running_peak = 1.0
     running_peak_date = growth_points[0][0]
+    current_drawdown = 0.0
     max_drawdown = 0.0
     max_drawdown_peak_date = running_peak_date
     max_drawdown_trough_date = running_peak_date
@@ -1408,6 +1424,8 @@ def _drawdown_stats(snapshots: list[dict[str, object]]) -> dict[str, int | float
             running_peak = growth_index
             running_peak_date = point_date
         drawdown = (growth_index / running_peak) - 1.0 if running_peak > 1e-12 else None
+        if drawdown is not None:
+            current_drawdown = drawdown
         if drawdown is not None and drawdown < max_drawdown:
             max_drawdown = drawdown
             max_drawdown_peak_date = running_peak_date
@@ -1428,6 +1446,7 @@ def _drawdown_stats(snapshots: list[dict[str, object]]) -> dict[str, int | float
                 break
 
     return {
+        "current_drawdown": current_drawdown,
         "max_drawdown": max_drawdown,
         "max_drawdown_days": (max_drawdown_trough_date - max_drawdown_peak_date).days
         if max_drawdown_peak_date != max_drawdown_trough_date
@@ -1584,7 +1603,7 @@ def build_portfolio_performance_report_from_snapshots(
             return None
         return end_value - start_value
 
-    cumulative_ttwror = end_snapshot.get("cumulative_ttwror") if end_snapshot and return_observation_count > 0 else None
+    cumulative_ttwror = _compound_daily_ttwror(visible_snapshots) if end_snapshot and return_observation_count > 0 else None
     annualized_ttwror = None
     if (
         cumulative_ttwror is not None
@@ -1694,6 +1713,7 @@ def build_portfolio_performance_report_from_snapshots(
     )
 
     drawdown_stats = _drawdown_stats(visible_snapshots)
+    current_drawdown = drawdown_stats["current_drawdown"]
     max_drawdown = drawdown_stats["max_drawdown"]
     max_drawdown_days = drawdown_stats["max_drawdown_days"]
     drawdown_duration_days = drawdown_stats["drawdown_duration_days"]
@@ -1745,7 +1765,7 @@ def build_portfolio_performance_report_from_snapshots(
             "annualized_downside_volatility": annualized_downside_volatility,
             "sharpe_ratio": sharpe_ratio,
             "sortino_ratio": sortino_ratio,
-            "current_drawdown": _safe_float((end_snapshot or {}).get("drawdown")),
+            "current_drawdown": current_drawdown,
             "max_drawdown": max_drawdown,
             "max_drawdown_days": max_drawdown_days,
             "drawdown_duration_days": drawdown_duration_days,

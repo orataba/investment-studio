@@ -1,7 +1,9 @@
 import {
   Fragment,
   startTransition,
+  useDeferredValue,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
@@ -659,6 +661,14 @@ function toTitleCase(value: string) {
 
 function makeRowId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function benchmarkLibraryLabel(item: FundLibraryItem) {
+  return item.ticker_or_isin ? `${item.ticker_or_isin} · ${item.fund_name}` : item.fund_name
+}
+
+function benchmarkTypeRank(type: string) {
+  return type === 'index' ? 0 : type === 'fund' ? 1 : type === 'etf' ? 2 : type === 'equity' ? 3 : 4
 }
 
 function parseTimelineNoteImportance(value: unknown): TimelineNoteImportance {
@@ -3146,6 +3156,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [chartFrequency, setChartFrequency] = useState<ChartFrequency>('daily')
   const [selectedCurrency, setSelectedCurrency] = useState('USD')
   const [benchmarkFundId, setBenchmarkFundId] = useState('')
+  const [benchmarkSearch, setBenchmarkSearch] = useState('')
+  const [benchmarkSearchFocused, setBenchmarkSearchFocused] = useState(false)
   const [benchmarkNavSeries, setBenchmarkNavSeries] = useState<FundNavSeriesResponse | null>(null)
   const [metricBenchmarkFundId, setMetricBenchmarkFundId] = useState('')
   const [metricBenchmarkNavSeries, setMetricBenchmarkNavSeries] =
@@ -3206,6 +3218,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [productFrameworkSavingKey, setProductFrameworkSavingKey] = useState<string | null>(null)
   const [openProductFrameworkPickerKey, setOpenProductFrameworkPickerKey] =
     useState<string | null>(null)
+  const deferredBenchmarkSearch = useDeferredValue(benchmarkSearch)
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
@@ -3518,6 +3531,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
 
   useEffect(() => {
     setBenchmarkFundId('')
+    setBenchmarkSearch('')
+    setBenchmarkSearchFocused(false)
     setBenchmarkNavSeries(null)
     setMetricBenchmarkFundId('')
     setMetricBenchmarkNavSeries(null)
@@ -4019,6 +4034,43 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     }
   }
 
+  const benchmarkOptions = useMemo(
+    () => (bundle?.library ?? []).filter((item) => item.fund_id !== fundId),
+    [bundle?.library, fundId],
+  )
+  const selectedBenchmark = benchmarkOptions.find((item) => item.fund_id === benchmarkFundId) || null
+  const selectedBenchmarkLabel = selectedBenchmark ? benchmarkLibraryLabel(selectedBenchmark) : ''
+  const benchmarkInputValue = selectedBenchmark && !benchmarkSearch ? selectedBenchmarkLabel : benchmarkSearch
+  const filteredBenchmarkOptions = useMemo(() => {
+    const normalizedSearch = deferredBenchmarkSearch.trim().toLowerCase()
+    if (!normalizedSearch) {
+      return benchmarkOptions
+        .slice()
+        .sort((left, right) => {
+          const leftIdentifier = left.ticker_or_isin || left.fund_id
+          const rightIdentifier = right.ticker_or_isin || right.fund_id
+          return (
+            benchmarkTypeRank(left.product_type) - benchmarkTypeRank(right.product_type) ||
+            leftIdentifier.localeCompare(rightIdentifier) ||
+            left.fund_name.localeCompare(right.fund_name)
+          )
+        })
+        .slice(0, 12)
+    }
+
+    return benchmarkOptions
+      .filter((item) =>
+        [item.fund_name, item.ticker_or_isin, item.product_type, item.fund_id, benchmarkLibraryLabel(item)]
+          .join(' ')
+          .toLowerCase()
+          .includes(normalizedSearch),
+      )
+      .slice(0, 10)
+  }, [benchmarkOptions, deferredBenchmarkSearch])
+  const showBenchmarkResults = benchmarkSearchFocused
+  const selectedMetricBenchmark =
+    benchmarkOptions.find((item) => item.fund_id === metricBenchmarkFundId) || null
+
   if (loading) {
     return (
       <div className="terminal-page">
@@ -4089,10 +4141,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     filterSeriesByDateWindow(navBasisSeries, effectiveStartDate, effectiveEndDate),
     chartFrequency,
   )
-  const benchmarkOptions = bundle.library.filter((item) => item.fund_id !== fundId)
-  const selectedBenchmark = benchmarkOptions.find((item) => item.fund_id === benchmarkFundId) || null
-  const selectedMetricBenchmark =
-    benchmarkOptions.find((item) => item.fund_id === metricBenchmarkFundId) || null
   const benchmarkRowsByCurrency =
     getRowsForCurrency(benchmarkNavSeries?.rows || [], effectiveCurrency)
   const benchmarkSourceRows = benchmarkRowsByCurrency.length > 0 ? benchmarkRowsByCurrency : benchmarkNavSeries?.rows || []
@@ -6379,7 +6427,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     ) : null
 
   return (
-    <div className="terminal-page">
+    <div className="terminal-page instrument-detail-page">
       <section className="panel instrument-detail-shell">
         <div className="instrument-detail-topbar">
           <div className="instrument-detail-breadcrumbs">
@@ -6579,20 +6627,76 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 <div className="instrument-quote-control-bar">
                   <div className="instrument-quote-toolbar-primary">
                     <div className="instrument-chart-compare">
-                      <div className="instrument-chart-compare-select-wrap">
-                        <select
-                          aria-label="Compare benchmark"
-                          value={benchmarkFundId}
-                          onChange={(event) => setBenchmarkFundId(event.target.value)}
-                        >
-                          <option value="">Compare...</option>
-                          {benchmarkOptions.map((item) => (
-                            <option key={item.fund_id} value={item.fund_id}>
-                              {item.ticker_or_isin ? `${item.ticker_or_isin} · ${item.fund_name}` : item.fund_name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                      <label className="instrument-chart-compare-search">
+                        <div className="instrument-chart-compare-search-box">
+                          <input
+                            type="search"
+                            aria-label="Compare benchmark"
+                            placeholder="Compare..."
+                            value={benchmarkInputValue}
+                            onFocus={() => setBenchmarkSearchFocused(true)}
+                            onBlur={() => window.setTimeout(() => setBenchmarkSearchFocused(false), 140)}
+                            onChange={(event) => {
+                              const nextValue = event.target.value
+                              setBenchmarkSearch(nextValue)
+                              if (selectedBenchmark && nextValue !== selectedBenchmarkLabel) {
+                                setBenchmarkFundId('')
+                                setBenchmarkNavSeries(null)
+                              }
+                            }}
+                          />
+                          {selectedBenchmark ? (
+                            <button
+                              type="button"
+                              className="instrument-chart-compare-clear"
+                              aria-label="Clear benchmark"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                setBenchmarkFundId('')
+                                setBenchmarkSearch('')
+                                setBenchmarkNavSeries(null)
+                              }}
+                            >
+                              ×
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="instrument-chart-compare-toggle"
+                              aria-label="Show benchmark choices"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => setBenchmarkSearchFocused((current) => !current)}
+                            >
+                              <span aria-hidden="true" />
+                            </button>
+                          )}
+                          {showBenchmarkResults ? (
+                            <div className="instrument-chart-compare-results">
+                              {filteredBenchmarkOptions.length ? (
+                                filteredBenchmarkOptions.map((item) => (
+                                  <button
+                                    type="button"
+                                    key={item.fund_id}
+                                    onMouseDown={(event) => event.preventDefault()}
+                                    onClick={() => {
+                                      setBenchmarkFundId(item.fund_id)
+                                      setBenchmarkSearch(benchmarkLibraryLabel(item))
+                                      setBenchmarkSearchFocused(false)
+                                    }}
+                                  >
+                                    <strong>{item.fund_name}</strong>
+                                    <span>
+                                      {item.ticker_or_isin || item.fund_id} · {formatLabel(item.product_type)}
+                                    </span>
+                                  </button>
+                                ))
+                              ) : (
+                                <div className="instrument-chart-compare-empty">No database match</div>
+                              )}
+                            </div>
+                          ) : null}
+                        </div>
+                      </label>
                     </div>
                   </div>
                 </div>
@@ -6607,7 +6711,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                         <div className="instrument-series-label">
                           <strong>{summary.ticker_or_isin}</strong>
                           <span>{chartSeriesBasisLabel}</span>
-                          <em>
+                          <em className={`instrument-series-change-${getSignedMetricTone(chartQuotePeriodStats.changePct ?? chartQuotePeriodStats.change)}`}>
                             {formatChangeSummary(chartQuotePeriodStats.change, chartQuotePeriodStats.changePct)}
                           </em>
                         </div>
@@ -6615,7 +6719,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                           <div className="instrument-series-label instrument-series-label-benchmark-row">
                             <strong>{selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name}</strong>
                             <span>Compare</span>
-                            <em>
+                            <em className={`instrument-series-change-${getSignedMetricTone(chartBenchmarkPeriodStats.changePct ?? chartBenchmarkPeriodStats.change)}`}>
                               {formatChangeSummary(chartBenchmarkPeriodStats.change, chartBenchmarkPeriodStats.changePct)}
                             </em>
                           </div>

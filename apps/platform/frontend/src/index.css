@@ -1,8 +1,19 @@
 :root {
   color-scheme: light;
   font-family: var(--yungu-font-sans, "Aptos", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif);
-  color: #111111;
-  background: #f8f5ee;
+  color: #111827;
+  background: #ffffff;
+  --platform-ink: #111827;
+  --platform-muted: #3f4652;
+  --platform-faint: #667085;
+  --platform-line: #e5e7eb;
+  --platform-line-strong: #cbd5e1;
+  --platform-band: #f8fafc;
+  --platform-band-strong: #f1f5f9;
+  --platform-accent: #0b66b2;
+  --platform-positive: #0f766e;
+  --platform-negative: #b42318;
+  --platform-warning: #92400e;
 }
 
 * {
@@ -12,9 +23,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at top left, rgba(148, 126, 84, 0.12), transparent 30%),
-    linear-gradient(180deg, #fcfaf5 0%, #f2ece1 100%);
+  background: #ffffff;
 }
 
 a {
@@ -48,16 +57,16 @@ textarea {
   align-items: center;
   min-height: 36px;
   padding: 0 14px;
-  border: 1px solid #d3cec2;
+  border: 1px solid var(--platform-line-strong);
   border-radius: 999px;
   background: #ffffff;
-  color: #4b5563;
+  color: var(--platform-muted);
   font-size: 13px;
 }
 
 .platform-nav-link-active {
-  border-color: #2f3134;
-  background: #2f3134;
+  border-color: var(--platform-ink);
+  background: var(--platform-ink);
   color: #ffffff;
 }
 
@@ -82,7 +91,7 @@ textarea {
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: #8a7353;
+  color: var(--platform-accent);
 }
 
 .hero h1,
@@ -119,8 +128,8 @@ textarea {
 .registry-panel,
 .registry-form,
 .registry-table-shell {
-  border: 1px solid #ddd6c9;
-  background: rgba(255, 252, 247, 0.94);
+  border: 1px solid var(--platform-line);
+  background: #ffffff;
 }
 
 .app-card {
@@ -167,9 +176,9 @@ textarea {
   justify-content: center;
   min-height: 36px;
   padding: 0 14px;
-  border: 1px solid #d3cec2;
-  background: #f8f3ea;
-  color: #111111;
+  border: 1px solid var(--platform-line-strong);
+  background: #ffffff;
+  color: var(--platform-ink);
   font-size: 13px;
 }
 
@@ -240,8 +249,8 @@ textarea {
   flex-wrap: wrap;
   margin-top: 18px;
   padding: 10px 0 8px;
-  border-top: 2px solid #2f3134;
-  border-bottom: 1px solid #b7aa94;
+  border-top: 2px solid var(--platform-ink);
+  border-bottom: 1px solid var(--platform-line-strong);
 }
 
 .registry-summary-inline {
@@ -264,15 +273,15 @@ textarea {
   right: 0;
   width: 1px;
   height: 12px;
-  background: #cbbfae;
+  background: var(--platform-line-strong);
   transform: translateY(-50%);
 }
 
 .registry-control-shell {
   margin-top: 18px;
   padding: 16px 0 4px;
-  border-top: 1px solid #c8bba6;
-  border-bottom: 1px solid #d8d0c2;
+  border-top: 1px solid var(--platform-line-strong);
+  border-bottom: 1px solid var(--platform-line);
 }
 
 .registry-control-grid {
@@ -286,13 +295,12 @@ textarea {
   display: grid;
   gap: 12px;
   padding: 16px 18px;
-  border: 1px solid #ddd6c9;
-  background: rgba(255, 252, 247, 0.82);
+  border: 1px solid var(--platform-line);
+  background: #ffffff;
 }
 
 .registry-control-block-accent {
-  background:
-    linear-gradient(180deg, rgba(255, 252, 247, 0.96) 0%, rgba(248, 243, 234, 0.96) 100%);
+  background: var(--platform-band);
 }
 
 .registry-filter-grid {
@@ -402,14 +410,14 @@ textarea {
 .registry-form select {
   height: 38px;
   padding: 0 12px;
-  border: 1px solid #d3cec2;
+  border: 1px solid var(--platform-line-strong);
   background: #ffffff;
 }
 
 .registry-form textarea {
   min-height: 168px;
   padding: 12px;
-  border: 1px solid #d3cec2;
+  border: 1px solid var(--platform-line-strong);
   background: #ffffff;
   resize: vertical;
   font: inherit;
@@ -424,27 +432,27 @@ textarea {
 
 .registry-submit {
   width: fit-content;
-  background: #2f3134;
-  border-color: #2f3134;
+  background: var(--platform-ink);
+  border-color: var(--platform-ink);
   color: #ffffff;
   cursor: pointer;
 }
 
 .registry-submit.secondary {
   background: #ffffff;
-  border-color: #d3cec2;
-  color: #111111;
+  border-color: var(--platform-line-strong);
+  color: var(--platform-ink);
 }
 
 .registry-submit-active {
-  border-color: #2f3134 !important;
-  background: #2f3134 !important;
+  border-color: var(--platform-ink) !important;
+  background: var(--platform-ink) !important;
   color: #ffffff !important;
 }
 
 .registry-submit.danger {
-  background: #7a3021;
-  border-color: #7a3021;
+  background: var(--platform-negative);
+  border-color: var(--platform-negative);
   color: #ffffff;
 }
 
@@ -458,8 +466,8 @@ textarea {
 .registry-error {
   margin-top: 16px;
   padding: 12px 14px;
-  border: 1px solid #ddd6c9;
-  background: rgba(255, 252, 247, 0.94);
+  border: 1px solid var(--platform-line);
+  background: #ffffff;
   font-size: 14px;
 }
 
@@ -498,7 +506,7 @@ textarea {
   display: grid;
   gap: 8px;
   padding: 14px 16px;
-  border: 1px solid #ddd6c9;
+  border: 1px solid var(--platform-line);
   background: #ffffff;
 }
 
@@ -543,7 +551,7 @@ textarea {
   display: grid;
   gap: 6px;
   padding-top: 12px;
-  border-top: 1px solid #ddd6c9;
+  border-top: 1px solid var(--platform-line);
 }
 
 .registry-op-meta span {
@@ -563,7 +571,7 @@ textarea {
   display: grid;
   gap: 12px;
   padding-top: 10px;
-  border-top: 1px solid #ece7dd;
+  border-top: 1px solid var(--platform-line);
 }
 
 .registry-preview-header,
@@ -595,7 +603,7 @@ textarea {
 
 .registry-toolbar-header {
   padding-top: 10px;
-  border-top: 2px solid #2f3134;
+  border-top: 2px solid var(--platform-ink);
 }
 
 .registry-toolbar-actions {
@@ -612,9 +620,9 @@ textarea {
 .registry-table {
   width: 100%;
   border-collapse: collapse;
-  border-top: 2px solid #2f3134;
-  border-bottom: 2px solid #2f3134;
-  background: rgba(255, 252, 247, 0.86);
+  border-top: 2px solid var(--platform-ink);
+  border-bottom: 2px solid var(--platform-ink);
+  background: #ffffff;
 }
 
 .registry-table th,
@@ -630,14 +638,14 @@ textarea {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #6b7280;
-  border-bottom: 1px solid #7f776b;
+  border-bottom: 1px solid var(--platform-line-strong);
 }
 
 .registry-table-main th {
   position: sticky;
   top: 0;
   z-index: 2;
-  background: #f7f1e6;
+  background: var(--platform-band);
 }
 
 .registry-table-compact th,
@@ -658,15 +666,15 @@ textarea {
 }
 
 .registry-row-summary:hover {
-  background: rgba(143, 124, 90, 0.05);
+  background: var(--platform-band);
 }
 
 .registry-row-selected {
-  background: rgba(47, 49, 52, 0.06);
+  background: var(--platform-band-strong);
 }
 
 .registry-row-archived td {
-  background: rgba(122, 48, 33, 0.04);
+  background: var(--platform-band);
 }
 
 .registry-row-detail td {
@@ -682,15 +690,15 @@ textarea {
 .registry-row-toggle {
   min-height: 30px;
   padding: 0 10px;
-  border: 1px solid #d3cec2;
+  border: 1px solid var(--platform-line-strong);
   background: #ffffff;
-  color: #111111;
+  color: var(--platform-ink);
   cursor: pointer;
 }
 
 .registry-row-toggle-active {
-  border-color: #2f3134;
-  background: #2f3134;
+  border-color: var(--platform-ink);
+  background: var(--platform-ink);
   color: #ffffff;
 }
 
@@ -698,7 +706,7 @@ textarea {
   display: grid;
   gap: 14px;
   padding: 18px 0 6px;
-  border-top: 1px solid #c8bba6;
+  border-top: 1px solid var(--platform-line-strong);
 }
 
 .registry-action-panel-header {
@@ -763,7 +771,7 @@ textarea {
 
 .instrument-id-stack strong {
   font-size: 14px;
-  color: #111111;
+  color: var(--platform-ink);
 }
 
 .instrument-id-stack span:not(.lifecycle-badge) {
@@ -778,7 +786,7 @@ textarea {
   align-items: center;
   width: fit-content;
   padding: 4px 8px;
-  border: 1px solid #ddd6c9;
+  border: 1px solid var(--platform-line);
   background: #ffffff;
   font-size: 12px;
 }
@@ -788,28 +796,33 @@ textarea {
 }
 
 .coverage-badge-complete {
-  color: #18653b;
-  background: #f2fbf4;
+  border-color: rgba(15, 118, 110, 0.35);
+  color: var(--platform-positive);
+  background: #ffffff;
 }
 
 .coverage-badge-partial {
-  color: #8a5a11;
-  background: #faf5e8;
+  border-color: rgba(146, 64, 14, 0.35);
+  color: var(--platform-warning);
+  background: #ffffff;
 }
 
 .coverage-badge-unavailable {
-  color: #8f1d1d;
-  background: #fbf1ef;
+  border-color: rgba(180, 35, 24, 0.35);
+  color: var(--platform-negative);
+  background: #ffffff;
 }
 
 .lifecycle-badge-active {
-  color: #18653b;
-  background: #f2fbf4;
+  border-color: rgba(15, 118, 110, 0.35);
+  color: var(--platform-positive);
+  background: #ffffff;
 }
 
 .lifecycle-badge-archived {
-  color: #7a3021;
-  background: #fbf1ef;
+  border-color: rgba(180, 35, 24, 0.35);
+  color: var(--platform-negative);
+  background: #ffffff;
 }
 
 @media (max-width: 960px) {

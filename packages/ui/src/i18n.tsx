@@ -511,6 +511,15 @@ function translateText(
   return `${leading}${translated}${trailing}`
 }
 
+function isKnownRenderedTranslation(
+  value: string,
+  original: string,
+  messages: LanguageMessages,
+  patterns: LanguagePatternMessages,
+) {
+  return supportedLanguages.some((language) => value === translateText(original, language.value, messages, patterns))
+}
+
 function shouldIgnoreElement(element: Element | null) {
   if (!element) {
     return false
@@ -536,12 +545,9 @@ function translateTextNode(
   let original = storedOriginal || node.data
   if (!storedOriginal) {
     textNodeOriginals.set(node, original)
-  } else {
-    const translatedStoredOriginal = translateText(storedOriginal, language, messages, patterns)
-    if (node.data !== storedOriginal && node.data !== translatedStoredOriginal) {
-      original = node.data
-      textNodeOriginals.set(node, original)
-    }
+  } else if (!isKnownRenderedTranslation(node.data, storedOriginal, messages, patterns)) {
+    original = node.data
+    textNodeOriginals.set(node, original)
   }
 
   const next = language === 'en' ? original : translateText(original, language, messages, patterns)
@@ -575,12 +581,9 @@ function translateElementAttributes(
     let original = storedOriginal || currentValue
     if (!storedOriginal) {
       originals.set(attribute, original)
-    } else {
-      const translatedStoredOriginal = translateText(storedOriginal, language, messages, patterns)
-      if (currentValue !== storedOriginal && currentValue !== translatedStoredOriginal) {
-        original = currentValue
-        originals.set(attribute, original)
-      }
+    } else if (!isKnownRenderedTranslation(currentValue, storedOriginal, messages, patterns)) {
+      original = currentValue
+      originals.set(attribute, original)
     }
     const next = language === 'en' ? original : translateText(original, language, messages, patterns)
     if (currentValue !== next) {

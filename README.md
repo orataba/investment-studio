@@ -36,6 +36,8 @@ yungu/
 
 - [docs/README.md](./docs/README.md)
   顶层文档索引，串起数据库工作流、平台边界和历史阶段记录。
+- [docs/FRONTEND_DESIGN_BASELINE.md](./docs/FRONTEND_DESIGN_BASELINE.md)
+  当前前端设计基线，约束白底数据终端、字体层级、tabs 与内容区节奏。
 - [apps/platform/README.md](./apps/platform/README.md)
   Platform app 的职责、启动命令和前端运行时配置。
 - [apps/watchlist/README.md](./apps/watchlist/README.md)
@@ -65,6 +67,7 @@ yungu/
 - 共享资产身份与 typed market facts / selector policy，不共享上层业务 read model。
 - `Watchlist` 继续 fund/watchlist 语境。
 - `Portfolio` 继续 portfolio/account/transaction/risk/review 语境。
+- 前端视觉基线统一为白底、冷中性灰线条和表格优先的信息密度；不要再引入米黄、沙色或暖灰页面背景。
 
 ## 开发工作流
 

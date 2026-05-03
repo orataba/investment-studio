@@ -873,6 +873,102 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
     assert isclose(window_payload["summary"]["cumulative_ttwror"], 0.05, rel_tol=0.0, abs_tol=1e-12)
 
 
+def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatch):
+    instrument_detail = _test_instrument_detail(
+        asset_id="equity-us-test",
+        asset_name="Test Equity",
+        history=[
+            ("2026-01-01", "100.00"),
+            ("2026-01-02", "110.00"),
+            ("2026-01-03", "121.00"),
+            ("2026-01-04", "108.90"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+
+    store = _minimal_store(
+        portfolio_id="window-rebase-test",
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": "window-rebase-test",
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "asset_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Opening cash.",
+                "created_at": "2026-01-01T09:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": "window-rebase-test",
+                "transaction_type": "buy",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "asset_id": "equity-us-test",
+                "instrument_ref": {
+                    "asset_id": "equity-us-test",
+                    "asset_name": "Test Equity",
+                    "asset_type": "equity",
+                    "currency": "USD",
+                    "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
+                },
+                "quantity": 1.0,
+                "price": 100.0,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Buy test equity.",
+                "created_at": "2026-01-01T09:30:00Z",
+            },
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-04"
+    _write_store(store)
+
+    full_response = client.get("/api/portfolios/window-rebase-test/performance")
+    assert full_response.status_code == 200
+    assert isclose(full_response.json()["summary"]["cumulative_ttwror"], 0.089, rel_tol=0.0, abs_tol=1e-12)
+
+    window_response = client.get(
+        "/api/portfolios/window-rebase-test/performance?start_date=2026-01-03&end_date=2026-01-04"
+    )
+    assert window_response.status_code == 200
+    summary = window_response.json()["summary"]
+    assert isclose(summary["cumulative_ttwror"], -0.01, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["current_drawdown"], -0.10, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["max_drawdown"], -0.10, rel_tol=0.0, abs_tol=1e-12)
+
+
 def test_period_calculation_report_reconciles_initial_delta_transfers_and_final_value(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         asset_id="equity-us-test",

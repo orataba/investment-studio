@@ -13,12 +13,14 @@
 - `Taxonomies` 已有真实配置工作台，支持层级 sleeve tree、assignment、`TargetSet`、`default planning taxonomy` 与 `cash_bucket` 维护
 - `Research` 已有真实工作台，支持基于 planning taxonomy / TargetSet / 当前持仓的 target-weight solve、run history、target weights、member targets、风险预算求解诊断和调仓缺口
 - `Review` 已有真实 period review pack 页面
-- `Overview` 已作为组合默认首页发布，承载 NAV、收益、回撤、sleeve 结构和 top holdings 总览；`Snapshot` 不再作为独立工作面保留
+- `Overview` 已作为组合默认首页发布，主图按 `Portfolio Value / TWR Index` 两种组合管理口径展示，回撤固定基于 TWR；页面同时承载 sleeve 结构和 top holdings 总览，`Snapshot` 不再作为独立工作面保留
 
 ## 当前文档
 
 - [../../docs/README.md](../../docs/README.md)
   仓库级文档入口，包含数据库工作流和平台边界说明。
+- [../../docs/FRONTEND_DESIGN_BASELINE.md](../../docs/FRONTEND_DESIGN_BASELINE.md)
+  当前前端视觉基线，约束白底数据终端、tabs 以下内容节奏和 Portfolio / Fund Detail 的一致性。
 - [docs/01_PMS_REFERENCE_BASELINE.md](./docs/01_PMS_REFERENCE_BASELINE.md)
 - [docs/02_PRODUCT_PRD.md](./docs/02_PRODUCT_PRD.md)
 - [docs/03_DOMAIN_MODEL.md](./docs/03_DOMAIN_MODEL.md)

@@ -5,6 +5,7 @@ import { formatCurrency, formatPercent, formatSignedCurrency, signedValueClass }
 import {
   copyPortfolio,
   deletePortfolio,
+  getPortfolios,
   getWorkspaceSummaryForPortfolio,
   type PortfolioWorkspaceSummary,
 } from '../lib/api'
@@ -25,6 +26,11 @@ type PortfolioWorkspaceLayoutProps = {
   children: React.ReactNode
   toolbarLabel?: string
   controls?: React.ReactNode
+}
+
+type PortfolioSelectorOption = {
+  portfolio_id: string
+  portfolio_name: string
 }
 
 const portfolioTabs: WorkspaceTab[] = [...workspacePrimaryNavigation]
@@ -52,6 +58,7 @@ export default function PortfolioWorkspaceLayout({
   const { portfolioId = '' } = useParams()
   const [summary, setSummary] = useState<PortfolioWorkspaceSummary | null>(null)
   const [summaryError, setSummaryError] = useState<string | null>(null)
+  const [portfolioOptions, setPortfolioOptions] = useState<PortfolioSelectorOption[]>([])
   const [selectorMenuOpen, setSelectorMenuOpen] = useState(false)
   const [selectorNotice, setSelectorNotice] = useState<string | null>(null)
   const selectorMenuRef = useRef<HTMLDivElement | null>(null)
@@ -86,6 +93,31 @@ export default function PortfolioWorkspaceLayout({
   }, [portfolioId])
 
   useEffect(() => {
+    let cancelled = false
+
+    getPortfolios()
+      .then((response) => {
+        if (!cancelled) {
+          setPortfolioOptions(
+            response.map((portfolio) => ({
+              portfolio_id: portfolio.portfolio_id,
+              portfolio_name: portfolio.portfolio_name,
+            })),
+          )
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPortfolioOptions([])
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
     function handleClick(event: MouseEvent) {
       const target = event.target as Node | null
       if (selectorMenuOpen && selectorMenuRef.current && target && !selectorMenuRef.current.contains(target)) {
@@ -109,17 +141,35 @@ export default function PortfolioWorkspaceLayout({
   const badges = summaryError
     ? [...resolvedSummary.badges, 'Workspace summary unavailable']
     : resolvedSummary.badges
+  const selectorPortfolios =
+    resolvedPortfolioId && !portfolioOptions.some((portfolio) => portfolio.portfolio_id === resolvedPortfolioId)
+      ? [
+          {
+            portfolio_id: resolvedPortfolioId,
+            portfolio_name: resolvedSummary.portfolio_name,
+          },
+          ...portfolioOptions,
+        ]
+      : portfolioOptions
 
   async function handleSelectorAction(action: 'copy' | 'delete') {
     try {
       if (action === 'copy') {
         const copied = await copyPortfolio(resolvedPortfolioId)
+        setPortfolioOptions((current) => [
+          ...current,
+          {
+            portfolio_id: copied.portfolio_id,
+            portfolio_name: copied.portfolio_name,
+          },
+        ])
         setSelectorNotice(`Copied portfolio "${resolvedSummary.portfolio_name}".`)
         navigate(buildPortfolioSectionPath(copied.portfolio_id, '/overview'))
         return
       }
 
       await deletePortfolio(resolvedPortfolioId)
+      setPortfolioOptions((current) => current.filter((portfolio) => portfolio.portfolio_id !== resolvedPortfolioId))
       setSelectorNotice(`Deleted portfolio "${resolvedSummary.portfolio_name}".`)
       navigate('/portfolios')
     } catch (requestError) {
@@ -136,7 +186,7 @@ export default function PortfolioWorkspaceLayout({
   }
 
   return (
-    <section className="terminal-page">
+    <section className="terminal-page portfolio-workspace-page">
       <header className="portfolio-workspace-shell">
         <div className="portfolio-toolbar-band">
           <div className="workspace-breadcrumbs">
@@ -164,44 +214,56 @@ export default function PortfolioWorkspaceLayout({
               </span>
               <span className="workspace-selector-chip-label">All</span>
             </Link>
-            <div className="workspace-selector-menu-shell" ref={selectorMenuRef}>
-              <div className="workspace-selector-chip workspace-selector-chip-active">
-                <Link
-                  className="workspace-selector-chip-label workspace-selector-chip-label-active"
-                  to={portfolioHomePath}
-                >
-                  {resolvedSummary.portfolio_name}
-                </Link>
-                <button
-                  type="button"
-                  className="workspace-selector-menu-trigger workspace-selector-menu-trigger-active"
-                  onClick={() => setSelectorMenuOpen((current) => !current)}
-                  aria-label="Portfolio actions"
-                >
-                  ...
-                </button>
-              </div>
-              {selectorMenuOpen ? (
-                <div className="workspace-selector-menu">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void handleSelectorAction('copy')
-                    }}
-                  >
-                    Copy Portfolio
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void handleSelectorAction('delete')
-                    }}
-                  >
-                    Delete Portfolio
-                  </button>
+            {selectorPortfolios.map((portfolio) =>
+              portfolio.portfolio_id === resolvedPortfolioId ? (
+                <div className="workspace-selector-menu-shell" key={portfolio.portfolio_id} ref={selectorMenuRef}>
+                  <div className="workspace-selector-chip workspace-selector-chip-active">
+                    <Link
+                      className="workspace-selector-chip-label workspace-selector-chip-label-active"
+                      to={portfolioHomePath}
+                    >
+                      {portfolio.portfolio_name}
+                    </Link>
+                    <button
+                      type="button"
+                      className="workspace-selector-menu-trigger workspace-selector-menu-trigger-active"
+                      onClick={() => setSelectorMenuOpen((current) => !current)}
+                      aria-label="Portfolio actions"
+                    >
+                      ...
+                    </button>
+                  </div>
+                  {selectorMenuOpen ? (
+                    <div className="workspace-selector-menu">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleSelectorAction('copy')
+                        }}
+                      >
+                        Copy Portfolio
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleSelectorAction('delete')
+                        }}
+                      >
+                        Delete Portfolio
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
-            </div>
+              ) : (
+                <Link
+                  className="workspace-selector-chip workspace-selector-chip-inactive"
+                  key={portfolio.portfolio_id}
+                  to={buildPortfolioSectionPath(portfolio.portfolio_id, '/overview')}
+                >
+                  <span className="workspace-selector-chip-label">{portfolio.portfolio_name}</span>
+                </Link>
+              ),
+            )}
             <Link className="workspace-create-link" to="/portfolios">
               + Create Portfolio
             </Link>

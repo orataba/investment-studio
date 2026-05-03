@@ -11,8 +11,8 @@
 - `language.css`
   语言切换控件的基础样式。
 
-后续目标：
+当前边界：
 
-- 统一 `Watchlist` 与 `Portfolio` 的设计风格
-- 保持表格优先、信息密度高、终端式体验
-- 沉淀布局骨架、基础组件和通用 UI primitives
+- 前端视觉基线记录在 [../../docs/FRONTEND_DESIGN_BASELINE.md](../../docs/FRONTEND_DESIGN_BASELINE.md)。
+- `packages/ui` 还没有承载通用 component library；新增布局、tabs、table、chart primitives 前，先确认已经在两个以上 app 中稳定复用。
+- 当前跨 app 共享只放语言能力，避免为了单页视觉修复把 app 私有样式提前抽象成全局依赖。

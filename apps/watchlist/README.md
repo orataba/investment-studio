@@ -111,6 +111,8 @@ npm --prefix apps/watchlist/frontend run build
 
 - [../../docs/README.md](../../docs/README.md)
   仓库级文档入口，包含数据库工作流和平台边界说明。
+- [../../docs/FRONTEND_DESIGN_BASELINE.md](../../docs/FRONTEND_DESIGN_BASELINE.md)
+  当前前端视觉基线，约束白底数据终端、tabs 节奏和 Watchlist / Portfolio 的内容区一致性。
 - [docs/INDEX.md](./docs/INDEX.md)
 - [docs/CURRENT_SYSTEM_BASELINE.md](./docs/CURRENT_SYSTEM_BASELINE.md)
 - [docs/FUND_PRODUCT_FRAMEWORK.md](./docs/FUND_PRODUCT_FRAMEWORK.md)

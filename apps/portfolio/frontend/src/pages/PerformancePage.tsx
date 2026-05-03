@@ -26,6 +26,7 @@ import {
   formatSignedCurrency,
   signedValueClass,
 } from '../lib/format'
+import { buildTwrIndexPoints } from '../lib/performanceSeries'
 
 type PerformanceDetailTab = 'daily' | 'calculation' | 'contribution' | 'boundary'
 
@@ -610,6 +611,10 @@ export default function PerformancePage() {
         })),
     [workspace],
   )
+  const twrIndexChartPoints = useMemo(
+    () => buildTwrIndexPoints(workspace?.daily_series ?? []),
+    [workspace],
+  )
   const monthlyBuckets = useMemo(
     () => buildMonthlyBuckets(workspace?.daily_series ?? []),
     [workspace],
@@ -791,7 +796,7 @@ export default function PerformancePage() {
                       : 'No complete valuation date'}
                   </div>
                 </div>
-                <PerformanceNavChart points={navChartPoints} currency={baseCurrency} />
+                <PerformanceNavChart points={navChartPoints} twrPoints={twrIndexChartPoints} currency={baseCurrency} />
               </section>
 
               <section className="performance-section-block">

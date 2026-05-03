@@ -33,6 +33,7 @@ import {
   formatSignedCurrency,
   signedValueClass,
 } from '../lib/format'
+import { buildTwrIndexPoints } from '../lib/performanceSeries'
 
 const DEFAULT_REVIEW_LOOKBACK_DAYS = 30
 
@@ -395,6 +396,10 @@ export default function ReviewPage() {
         .map((point) => ({ date: point.as_of_date, value: point.ending_nav as number })),
     [performanceWorkspace],
   )
+  const twrIndexChartPoints = useMemo(
+    () => buildTwrIndexPoints(performanceWorkspace?.daily_series ?? []),
+    [performanceWorkspace],
+  )
   const recentDailyRows = useMemo(
     () => [...(performanceWorkspace?.daily_series ?? [])].reverse().slice(0, 20),
     [performanceWorkspace],
@@ -726,7 +731,7 @@ export default function ReviewPage() {
               <div className="portfolio-detail-toolbar performance-subsection-toolbar">
                 <div className="panel-title">NAV Trend</div>
               </div>
-              <PerformanceNavChart points={navChartPoints} currency={baseCurrency} />
+              <PerformanceNavChart points={navChartPoints} twrPoints={twrIndexChartPoints} currency={baseCurrency} />
             </section>
 
             <div className="performance-block-grid">

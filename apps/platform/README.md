@@ -37,6 +37,8 @@
 
 跨 app 的数据库和平台边界说明见 [../../docs/README.md](../../docs/README.md)。
 
+前端视觉约束见 [../../docs/FRONTEND_DESIGN_BASELINE.md](../../docs/FRONTEND_DESIGN_BASELINE.md)；Platform 页面保持白底数据终端风格，不再使用米黄或暖色渐变背景。
+
 ## Local NAV Imports
 
 仓库根目录的 `nav/` 只作为本机 NAV / Excel 文件导入暂存目录，供 [backend/scripts/import_coverage_nav_from_folder.py](./backend/scripts/import_coverage_nav_from_folder.py) 读取。
