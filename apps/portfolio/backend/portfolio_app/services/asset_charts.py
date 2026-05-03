@@ -122,17 +122,14 @@ def _downsample_points(points: list[dict[str, object]], max_points: int | None) 
     return [points[index] for index in sorted(sampled_indices)]
 
 
-def build_asset_price_chart(
-    asset_id: str,
+def build_asset_price_chart_from_detail(
+    detail: dict[str, object],
     *,
+    asset_id: str,
     as_of_date: date,
     range_key: str | None = None,
     max_points: int | None = None,
 ) -> dict[str, object] | None:
-    detail = get_registry_instrument_detail(asset_id)
-    if not isinstance(detail, dict):
-        return None
-
     normalized_range_key = normalize_chart_range_key(range_key)
     points_by_basis = _basis_points(detail)
     candidate_bases = _candidate_chart_bases(detail)
@@ -218,6 +215,54 @@ def build_asset_price_chart(
             "low": min(point_values) if point_values else None,
         },
     }
+
+
+def build_asset_price_chart(
+    asset_id: str,
+    *,
+    as_of_date: date,
+    range_key: str | None = None,
+    max_points: int | None = None,
+) -> dict[str, object] | None:
+    detail = get_registry_instrument_detail(asset_id)
+    if not isinstance(detail, dict):
+        return None
+    return build_asset_price_chart_from_detail(
+        detail,
+        asset_id=asset_id,
+        as_of_date=as_of_date,
+        range_key=range_key,
+        max_points=max_points,
+    )
+
+
+def build_asset_sparkline_from_detail(
+    detail: dict[str, object],
+    *,
+    asset_id: str,
+    as_of_date: date,
+    max_points: int = 20,
+) -> list[dict[str, object]]:
+    chart = build_asset_price_chart_from_detail(
+        detail,
+        asset_id=asset_id,
+        as_of_date=as_of_date,
+        range_key="6m",
+        max_points=max_points,
+    )
+    if not isinstance(chart, dict):
+        return []
+    points = chart.get("points", [])
+    if not isinstance(points, list):
+        return []
+    return [
+        {
+            "date": str(point.get("date") or ""),
+            "value": float(point.get("value")),
+        }
+        for point in points
+        if isinstance(point, dict) and _safe_float(point.get("value")) is not None
+    ]
 
 
 def build_asset_sparkline(

@@ -8,23 +8,33 @@ from portfolio_app.services.ledger import (
     summarize_position_lots,
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
+from portfolio_app.services.daily_snapshots import build_materialized_holdings_workspace
 from portfolio_app.services.performance import build_statement_of_assets_report
-from portfolio_app.services.portfolio_store import get_portfolio, list_accounts, list_transactions
+from portfolio_app.services.portfolio_store import (
+    get_portfolio,
+    get_portfolio_live_summary,
+    list_accounts,
+    list_transactions,
+)
 
 router = APIRouter()
 
 
-def _require_portfolio(portfolio_id: str | None) -> dict[str, object]:
+def _require_portfolio(portfolio_id: str | None, *, live_summary: bool = False) -> dict[str, object]:
     if not portfolio_id:
         raise HTTPException(status_code=400, detail="portfolio_id is required")
-    resolved_portfolio = get_portfolio(portfolio_id)
+    resolved_portfolio = (
+        get_portfolio_live_summary(portfolio_id)
+        if live_summary
+        else get_portfolio(portfolio_id)
+    )
     if resolved_portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return resolved_portfolio
 
 @router.get("/summary")
 def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
-    resolved_portfolio = _require_portfolio(portfolio_id)
+    resolved_portfolio = _require_portfolio(portfolio_id, live_summary=True)
 
     as_of_date = str(resolved_portfolio.get("as_of_date") or date.today().isoformat())
     return {
@@ -69,6 +79,13 @@ def holdings_workspace(
     )
     resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
     resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
+    materialized_workspace = build_materialized_holdings_workspace(
+        resolved_portfolio_id,
+        as_of_date=resolved_as_of_date,
+    )
+    if materialized_workspace is not None:
+        return materialized_workspace
+
     accounts = list_accounts(resolved_portfolio_id)
     transactions = list_transactions(resolved_portfolio_id)
     try:

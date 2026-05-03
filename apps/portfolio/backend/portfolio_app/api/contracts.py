@@ -544,6 +544,26 @@ class DailySnapshotListResponse(BaseModel):
     snapshots: list[DailySnapshotRecord]
 
 
+class DailySnapshotRefreshRequest(BaseModel):
+    portfolio_ids: list[str] = Field(default_factory=list)
+    asset_ids: list[str] = Field(default_factory=list)
+    dirty_from: date | None = None
+    refresh_all: bool = False
+
+
+class DailySnapshotRefreshResult(BaseModel):
+    portfolio_id: str
+    snapshot_count: int = 0
+    refreshed_from: date | None = None
+    refreshed_to: date | None = None
+    refreshed_at: str | None = None
+
+
+class DailySnapshotRefreshResponse(BaseModel):
+    portfolio_ids: list[str]
+    refreshed: list[DailySnapshotRefreshResult]
+
+
 class DailyPerformancePoint(BaseModel):
     as_of_date: date
     coverage_state: CoverageState

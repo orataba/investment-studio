@@ -12,6 +12,10 @@ from yungu_asset_core.db_models import InstrumentMarketData
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
     AccountRecordModel,
+    PortfolioCalculationStateModel,
+    PortfolioDailyContributionSliceModel,
+    PortfolioDailyHoldingSnapshotModel,
+    PortfolioDailySnapshotModel,
     PortfolioRecordModel,
     TargetSetLineRecordModel,
     TargetSetRecordModel,
@@ -374,6 +378,10 @@ def _load_store_from_db(session) -> dict[str, object]:
 def _save_store_to_db(session, data: dict[str, object]) -> None:
     normalized = _normalize_store(data)
 
+    session.execute(delete(PortfolioDailyContributionSliceModel))
+    session.execute(delete(PortfolioDailyHoldingSnapshotModel))
+    session.execute(delete(PortfolioDailySnapshotModel))
+    session.execute(delete(PortfolioCalculationStateModel))
     session.execute(delete(TargetSetLineRecordModel))
     session.execute(delete(TargetSetRecordModel))
     session.execute(delete(TaxonomyAssignmentRecordModel))
@@ -838,6 +846,28 @@ def _serialize_portfolio_row_with_live_summary(
         )
     ).all()
     return _build_live_portfolio_rollup(session, item, accounts=accounts, transactions=transactions)
+
+
+def _serialize_portfolio_row_with_materialized_summary(
+    session,
+    item: PortfolioRecordModel,
+) -> dict[str, object]:
+    payload = _serialize_portfolio_row(item)
+    latest_snapshot = session.scalar(
+        select(PortfolioDailySnapshotModel)
+        .where(PortfolioDailySnapshotModel.portfolio_id == item.portfolio_id)
+        .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
+    )
+    if latest_snapshot is None:
+        return payload
+
+    snapshot = latest_snapshot.snapshot_json if isinstance(latest_snapshot.snapshot_json, dict) else {}
+    payload["as_of_date"] = latest_snapshot.as_of_date.isoformat()
+    payload["nav"] = _safe_float(snapshot.get("nav")) or 0.0
+    payload["day_change_value"] = _safe_float(snapshot.get("absolute_change")) or 0.0
+    payload["day_change_pct"] = _safe_float(snapshot.get("daily_ttwror")) or 0.0
+    payload["securities_count"] = int(snapshot.get("total_position_count") or 0)
+    return payload
 
 
 def _serialize_account_row(item: AccountRecordModel) -> dict[str, object]:
@@ -1501,10 +1531,19 @@ def list_portfolios() -> list[dict[str, object]]:
                 PortfolioRecordModel.portfolio_id,
             )
         ).all()
-        return [_serialize_portfolio_row_with_live_summary(session, item) for item in portfolios]
+        return [_serialize_portfolio_row_with_materialized_summary(session, item) for item in portfolios]
 
 
 def get_portfolio(portfolio_id: str) -> dict[str, object] | None:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        record = session.get(PortfolioRecordModel, portfolio_id)
+        if record is None:
+            return None
+        return _serialize_portfolio_row_with_materialized_summary(session, record)
+
+
+def get_portfolio_live_summary(portfolio_id: str) -> dict[str, object] | None:
     session_factory = get_session_factory()
     with session_factory() as session:
         record = session.get(PortfolioRecordModel, portfolio_id)
@@ -2802,6 +2841,10 @@ def delete_portfolio(portfolio_id: str) -> bool:
                 )
             )
         )
+        session.execute(delete(PortfolioDailyContributionSliceModel).where(PortfolioDailyContributionSliceModel.portfolio_id == portfolio_id))
+        session.execute(delete(PortfolioDailyHoldingSnapshotModel).where(PortfolioDailyHoldingSnapshotModel.portfolio_id == portfolio_id))
+        session.execute(delete(PortfolioDailySnapshotModel).where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id))
+        session.execute(delete(PortfolioCalculationStateModel).where(PortfolioCalculationStateModel.portfolio_id == portfolio_id))
         session.execute(delete(TaxonomyRecordModel).where(TaxonomyRecordModel.portfolio_id == portfolio_id))
         session.execute(delete(TransactionRecordModel).where(TransactionRecordModel.portfolio_id == portfolio_id))
         session.execute(delete(AccountRecordModel).where(AccountRecordModel.portfolio_id == portfolio_id))
@@ -2930,6 +2973,7 @@ def create_account(
         )
         session.add(record)
         session.commit()
+        _mark_daily_snapshots_stale(portfolio_id, dirty_from=opened_at)
         return _serialize_account_row(record)
 
 
@@ -2974,6 +3018,12 @@ def list_transactions(
             )
         ).all()
         return [_serialize_transaction_row(item) for item in records]
+
+
+def _mark_daily_snapshots_stale(portfolio_id: str, *, dirty_from: date | None = None) -> None:
+    from portfolio_app.services.daily_snapshots import mark_portfolio_daily_snapshots_stale
+
+    mark_portfolio_daily_snapshots_stale(portfolio_id, dirty_from=dirty_from)
 
 
 def create_transaction(
@@ -3098,7 +3148,9 @@ def create_transactions(
             session.add(record)
             session.flush()
             created.append(record)
+        dirty_from = min((record.trade_date for record in created), default=None)
         session.commit()
+        _mark_daily_snapshots_stale(portfolio_id, dirty_from=dirty_from)
         return [_serialize_transaction_row(record) for record in created]
 
 
@@ -3141,6 +3193,7 @@ def update_transaction(
         )
         if record is None:
             return None
+        previous_trade_date = record.trade_date
         _apply_transaction_record(
             record,
             transaction_type=transaction_type,
@@ -3168,7 +3221,12 @@ def update_transaction(
             note=note,
             created_at=created_at or record.created_at or _current_utc_timestamp(),
         )
+        dirty_from = min(
+            (candidate for candidate in (previous_trade_date, record.trade_date) if candidate is not None),
+            default=None,
+        )
         session.commit()
+        _mark_daily_snapshots_stale(portfolio_id, dirty_from=dirty_from)
         return _serialize_transaction_row(record)
 
 
@@ -3192,7 +3250,14 @@ def delete_transactions(
         serialized = [_serialize_transaction_row(record) for record in records]
         for record in records:
             session.delete(record)
+        deleted_dates = [
+            parsed_date
+            for parsed_date in (_safe_date(record.get("trade_date")) for record in serialized)
+            if parsed_date is not None
+        ]
+        dirty_from = min(deleted_dates, default=None)
         session.commit()
+        _mark_daily_snapshots_stale(portfolio_id, dirty_from=dirty_from)
         return serialized
 
 

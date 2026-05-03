@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from platform_app.api.contracts import PlatformFxRateRecord, PlatformFxRatesResponse, PlatformFxRateUpsertRequest
 from platform_app.services.fx_rates import list_fx_rates, maintained_fx_pairs, supported_fx_currencies, upsert_fx_rate
+from platform_app.services.portfolio_notifications import queue_portfolio_daily_snapshot_refresh
 
 
 router = APIRouter()
@@ -19,7 +20,10 @@ def list_platform_fx_rates() -> PlatformFxRatesResponse:
 
 
 @router.post("", response_model=PlatformFxRateRecord)
-def upsert_platform_fx_rate(payload: PlatformFxRateUpsertRequest) -> PlatformFxRateRecord:
+def upsert_platform_fx_rate(
+    payload: PlatformFxRateUpsertRequest,
+    background_tasks: BackgroundTasks,
+) -> PlatformFxRateRecord:
     try:
         record = upsert_fx_rate(
             base_currency=payload.base_currency,
@@ -31,4 +35,9 @@ def upsert_platform_fx_rate(payload: PlatformFxRateUpsertRequest) -> PlatformFxR
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    queue_portfolio_daily_snapshot_refresh(
+        background_tasks,
+        dirty_from=payload.as_of_date,
+        refresh_all=True,
+    )
     return PlatformFxRateRecord.model_validate(record)

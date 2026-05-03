@@ -3,6 +3,15 @@ from __future__ import annotations
 from math import isclose, sqrt
 from copy import deepcopy
 
+from portfolio_app.api.routes import performance as performance_routes
+from portfolio_app.api.routes import workspace as workspace_routes
+from portfolio_app.db.models import (
+    PortfolioCalculationStateModel,
+    PortfolioDailyContributionSliceModel,
+    PortfolioDailyHoldingSnapshotModel,
+    PortfolioDailySnapshotModel,
+)
+from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import performance, portfolio_store
 
 
@@ -35,6 +44,39 @@ def _test_instrument_detail(
             for as_of_date, value in history
         ],
     }
+
+
+def _daily_snapshot_row_count(portfolio_id: str) -> int:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        return int(
+            session.query(PortfolioDailySnapshotModel)
+            .filter(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)
+            .count()
+        )
+
+
+def _daily_holding_row_count(portfolio_id: str) -> int:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        return int(
+            session.query(PortfolioDailyHoldingSnapshotModel)
+            .filter(PortfolioDailyHoldingSnapshotModel.portfolio_id == portfolio_id)
+            .count()
+        )
+
+
+def _daily_contribution_slice_count(portfolio_id: str, axis: str) -> int:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        return int(
+            session.query(PortfolioDailyContributionSliceModel)
+            .filter(
+                PortfolioDailyContributionSliceModel.portfolio_id == portfolio_id,
+                PortfolioDailyContributionSliceModel.axis == axis,
+            )
+            .count()
+        )
 
 
 def _minimal_store(
@@ -114,6 +156,84 @@ def test_seed_portfolio_performance_uses_external_boundary_flows(client):
     assert summary["net_external_inflow"] == 38000.0
     assert summary["cumulative_ttwror"] is not None
     assert summary["irr"] is not None
+
+
+def test_performance_endpoints_reuse_materialized_daily_snapshots(client, monkeypatch):
+    first_response = client.get("/api/portfolios/yungu/snapshots/daily")
+    assert first_response.status_code == 200
+    assert _daily_snapshot_row_count("yungu") > 0
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, "yungu")
+        assert state is not None
+        assert state.daily_snapshot_status == "current"
+
+    def fail_dynamic_snapshot_build(*_args, **_kwargs):
+        raise AssertionError("materialized daily snapshots should satisfy this read")
+
+    monkeypatch.setattr(performance, "build_daily_portfolio_snapshots", fail_dynamic_snapshot_build)
+
+    second_snapshot_response = client.get("/api/portfolios/yungu/snapshots/daily")
+    assert second_snapshot_response.status_code == 200
+    performance_response = client.get("/api/portfolios/yungu/performance")
+    assert performance_response.status_code == 200
+
+
+def test_refresh_materializes_holdings_and_contribution_slices(client):
+    response = client.get("/api/portfolios/yungu/snapshots/daily")
+    assert response.status_code == 200
+
+    assert _daily_snapshot_row_count("yungu") > 0
+    assert _daily_holding_row_count("yungu") > 0
+    assert _daily_contribution_slice_count("yungu", "instrument") > 0
+    assert _daily_contribution_slice_count("yungu", "account") > 0
+
+
+def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(client, monkeypatch):
+    response = client.get("/api/portfolios/yungu/snapshots/daily")
+    assert response.status_code == 200
+
+    def fail_live_holdings(*_args, **_kwargs):
+        raise AssertionError("materialized holdings should satisfy this read")
+
+    def fail_dynamic_contribution(*_args, **_kwargs):
+        raise AssertionError("materialized contribution slices should satisfy this read")
+
+    monkeypatch.setattr(workspace_routes, "build_statement_of_assets_report", fail_live_holdings)
+    monkeypatch.setattr(performance_routes, "build_contribution_report", fail_dynamic_contribution)
+
+    holdings_response = client.get("/api/workspace/holdings?portfolio_id=yungu")
+    assert holdings_response.status_code == 200
+    assert holdings_response.json()["rows"]
+
+    contribution_response = client.get("/api/portfolios/yungu/performance/contribution?axis=instrument")
+    assert contribution_response.status_code == 200
+    assert contribution_response.json()["daily_slices"]
+
+
+def test_daily_snapshot_refresh_endpoint_refreshes_impacted_asset_portfolios(client):
+    initial_response = client.get("/api/portfolios/yungu/snapshots/daily")
+    assert initial_response.status_code == 200
+
+    refresh_response = client.post(
+        "/api/portfolios/snapshots/daily/refresh",
+        json={
+            "asset_ids": ["fund-us-agg"],
+            "dirty_from": "2026-04-14",
+        },
+    )
+    assert refresh_response.status_code == 200
+    refresh_payload = refresh_response.json()
+    assert refresh_payload["portfolio_ids"] == ["yungu"]
+    assert refresh_payload["refreshed"][0]["snapshot_count"] == _daily_snapshot_row_count("yungu")
+
+    empty_refresh_response = client.post(
+        "/api/portfolios/snapshots/daily/refresh",
+        json={"asset_ids": ["not-held"]},
+    )
+    assert empty_refresh_response.status_code == 200
+    assert empty_refresh_response.json()["portfolio_ids"] == []
 
 
 def test_daily_ttwror_neutralizes_external_deposit(client, monkeypatch):

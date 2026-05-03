@@ -45,6 +45,117 @@ class PortfolioRecordModel(Base):
         back_populates="portfolio",
         cascade="all, delete-orphan",
     )
+    daily_snapshots: Mapped[list["PortfolioDailySnapshotModel"]] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
+    daily_holding_snapshots: Mapped[list["PortfolioDailyHoldingSnapshotModel"]] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
+    daily_contribution_slices: Mapped[list["PortfolioDailyContributionSliceModel"]] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
+    calculation_state: Mapped["PortfolioCalculationStateModel | None"] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class PortfolioDailySnapshotModel(Base):
+    __tablename__ = "portfolio_daily_snapshot"
+    __table_args__ = (
+        Index("ix_portfolio_daily_snapshot_portfolio_coverage", "portfolio_id", "coverage_state", "as_of_date"),
+    )
+
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    as_of_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    coverage_state: Mapped[str] = mapped_column(String, nullable=False)
+    nav: Mapped[float | None]
+    beginning_nav: Mapped[float | None]
+    ending_nav: Mapped[float | None]
+    daily_ttwror: Mapped[float | None]
+    cumulative_ttwror: Mapped[float | None]
+    drawdown: Mapped[float | None]
+    snapshot_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    calculated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="daily_snapshots")
+
+
+class PortfolioDailyHoldingSnapshotModel(Base):
+    __tablename__ = "portfolio_daily_holding_snapshot"
+    __table_args__ = (
+        Index("ix_portfolio_daily_holding_portfolio_date", "portfolio_id", "as_of_date"),
+        Index("ix_portfolio_daily_holding_asset_date", "portfolio_id", "asset_id", "as_of_date"),
+        Index("ix_portfolio_daily_holding_account_date", "portfolio_id", "account_id", "as_of_date"),
+    )
+
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    as_of_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    account_id: Mapped[str] = mapped_column(String, primary_key=True)
+    asset_id: Mapped[str] = mapped_column(String, primary_key=True)
+    currency: Mapped[str] = mapped_column(String, nullable=False)
+    quantity: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    cost_basis: Mapped[float | None]
+    cost_basis_base: Mapped[float | None]
+    last_price: Mapped[float | None]
+    market_value: Mapped[float | None]
+    market_value_base: Mapped[float | None]
+    portfolio_weight: Mapped[float | None]
+    holding_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    calculated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="daily_holding_snapshots")
+
+
+class PortfolioDailyContributionSliceModel(Base):
+    __tablename__ = "portfolio_daily_contribution_slice"
+    __table_args__ = (
+        Index("ix_portfolio_daily_contribution_axis_date", "portfolio_id", "axis", "as_of_date"),
+        Index("ix_portfolio_daily_contribution_group_date", "portfolio_id", "axis", "group_key", "as_of_date"),
+    )
+
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    as_of_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    axis: Mapped[str] = mapped_column(String, primary_key=True)
+    group_key: Mapped[str] = mapped_column(String, primary_key=True)
+    group_label: Mapped[str] = mapped_column(String, nullable=False)
+    coverage_state: Mapped[str] = mapped_column(String, nullable=False)
+    total_pnl: Mapped[float | None]
+    daily_contribution: Mapped[float | None]
+    slice_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    calculated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="daily_contribution_slices")
+
+
+class PortfolioCalculationStateModel(Base):
+    __tablename__ = "portfolio_calculation_state"
+
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    daily_snapshot_status: Mapped[str] = mapped_column(String, nullable=False, default="stale")
+    dirty_from: Mapped[date | None] = mapped_column(Date)
+    refreshed_from: Mapped[date | None] = mapped_column(Date)
+    refreshed_to: Mapped[date | None] = mapped_column(Date)
+    refreshed_at: Mapped[str | None] = mapped_column(String)
+    error_message: Mapped[str | None] = mapped_column(String)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="calculation_state")
 
 
 class AccountRecordModel(Base):

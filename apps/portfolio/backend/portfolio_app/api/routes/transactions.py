@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from portfolio_app.api.assemblers import (
     resolve_transaction_flow_scope,
@@ -42,6 +42,7 @@ from portfolio_app.services.instrument_registry import (
     get_registry_instrument,
     list_registry_instruments,
 )
+from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
 from portfolio_app.services.portfolio_store import (
     create_transaction,
     create_transactions,
@@ -67,6 +68,11 @@ INCOME_ASSET_TYPES: dict[str, set[str]] = {
     "return_of_capital": {"fund", "equity"},
     "maturity_redemption": {"bond"},
 }
+
+
+def _queue_daily_snapshot_refresh(background_tasks: BackgroundTasks | None, portfolio_id: str) -> None:
+    if background_tasks is not None:
+        background_tasks.add_task(refresh_portfolio_daily_snapshots, portfolio_id)
 
 
 def _resolve_flow_scope(transaction_type: str) -> str:
@@ -666,6 +672,7 @@ def _persist_transaction_record(
     portfolio_id: str,
     payload: TransactionCreateRequest,
     existing_transaction: dict[str, object] | None = None,
+    background_tasks: BackgroundTasks | None = None,
 ) -> TransactionRecord:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -979,6 +986,7 @@ def _persist_transaction_record(
     )
     if persisted_record is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    _queue_daily_snapshot_refresh(background_tasks, portfolio_id)
     account_lookup = {item["account_id"]: item for item in list_accounts(portfolio_id)}
     return _serialize_transaction(portfolio_id, persisted_record, account_lookup)
 
@@ -987,8 +995,13 @@ def _persist_transaction_record(
 def create_transaction_record(
     portfolio_id: str,
     payload: TransactionCreateRequest,
+    background_tasks: BackgroundTasks,
 ) -> TransactionRecord:
-    return _persist_transaction_record(portfolio_id=portfolio_id, payload=payload)
+    return _persist_transaction_record(
+        portfolio_id=portfolio_id,
+        payload=payload,
+        background_tasks=background_tasks,
+    )
 
 
 @router.put("/{portfolio_id}/transactions/{transaction_id}", response_model=TransactionRecord)
@@ -996,6 +1009,7 @@ def update_transaction_record(
     portfolio_id: str,
     transaction_id: str,
     payload: TransactionCreateRequest,
+    background_tasks: BackgroundTasks,
 ) -> TransactionRecord:
     existing_transaction = get_transaction(portfolio_id, transaction_id)
     if existing_transaction is None:
@@ -1014,6 +1028,7 @@ def update_transaction_record(
         portfolio_id=portfolio_id,
         payload=payload,
         existing_transaction=existing_transaction,
+        background_tasks=background_tasks,
     )
 
 
@@ -1021,6 +1036,7 @@ def update_transaction_record(
 def delete_transaction_record(
     portfolio_id: str,
     transaction_id: str,
+    background_tasks: BackgroundTasks,
 ) -> TransactionDeleteResponse:
     existing_transaction = get_transaction(portfolio_id, transaction_id)
     if existing_transaction is None:
@@ -1036,6 +1052,7 @@ def delete_transaction_record(
         portfolio_id,
         transaction_ids=transaction_ids,
     )
+    _queue_daily_snapshot_refresh(background_tasks, portfolio_id)
     return TransactionDeleteResponse(
         portfolio_id=portfolio_id,
         deleted_count=len(deleted_records),
@@ -1051,6 +1068,7 @@ def delete_transaction_record(
 def create_internal_transfer_records(
     portfolio_id: str,
     payload: InternalTransferCreateRequest,
+    background_tasks: BackgroundTasks,
 ) -> TransactionBatchResponse:
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -1214,6 +1232,7 @@ def create_internal_transfer_records(
             },
         ],
     )
+    _queue_daily_snapshot_refresh(background_tasks, portfolio_id)
     account_lookup = {item["account_id"]: item for item in list_accounts(portfolio_id)}
     return TransactionBatchResponse(
         portfolio_id=portfolio_id,

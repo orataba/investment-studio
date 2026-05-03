@@ -35,6 +35,9 @@ from portfolio_app.api.contracts import (
     ContributionLineRecord,
     ContributionReportResponse,
     ContributionReportSummary,
+    DailySnapshotRefreshRequest,
+    DailySnapshotRefreshResponse,
+    DailySnapshotRefreshResult,
     DailySnapshotListResponse,
     DailySnapshotListSummary,
     DailySnapshotRecord,
@@ -59,6 +62,13 @@ from portfolio_app.api.contracts import (
     ReturnCalendarSummary,
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
+from portfolio_app.services.daily_snapshots import (
+    build_materialized_contribution_report,
+    build_materialized_performance_report,
+    list_materialized_daily_snapshots,
+    refresh_portfolio_daily_snapshots_for_asset_change,
+    refresh_selected_portfolio_daily_snapshots,
+)
 from portfolio_app.services.performance import (
     build_period_boundary_groups_report,
     build_contribution_bucket_calendar_report,
@@ -74,8 +84,6 @@ from portfolio_app.services.performance import (
     build_period_calculation_bucket_report,
     build_period_calculation_groups_calendar_report,
     build_period_calculation_groups_report,
-    build_daily_portfolio_snapshots,
-    build_portfolio_performance_report,
     build_return_calendar_report,
     summarize_daily_snapshots,
 )
@@ -90,6 +98,36 @@ from portfolio_app.services.portfolio_store import (
 router = APIRouter()
 
 
+@router.post("/snapshots/daily/refresh", response_model=DailySnapshotRefreshResponse)
+def refresh_daily_snapshots(
+    payload: DailySnapshotRefreshRequest,
+) -> DailySnapshotRefreshResponse:
+    try:
+        if payload.refresh_all:
+            refreshed = refresh_portfolio_daily_snapshots_for_asset_change(
+                asset_ids=[],
+                dirty_from=payload.dirty_from,
+                refresh_all=True,
+            )
+        elif payload.portfolio_ids:
+            refreshed = refresh_selected_portfolio_daily_snapshots(
+                payload.portfolio_ids,
+                dirty_from=payload.dirty_from,
+            )
+        else:
+            refreshed = refresh_portfolio_daily_snapshots_for_asset_change(
+                asset_ids=payload.asset_ids,
+                dirty_from=payload.dirty_from,
+            )
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    return DailySnapshotRefreshResponse(
+        portfolio_ids=[str(item.get("portfolio_id") or "") for item in refreshed],
+        refreshed=[DailySnapshotRefreshResult.model_validate(item) for item in refreshed],
+    )
+
+
 @router.get("/{portfolio_id}/snapshots/daily", response_model=DailySnapshotListResponse)
 def list_daily_snapshots(
     portfolio_id: str,
@@ -101,10 +139,8 @@ def list_daily_snapshots(
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     try:
-        snapshots = build_daily_portfolio_snapshots(
-            portfolio,
-            list_accounts(portfolio_id),
-            list_transactions(portfolio_id),
+        snapshots = list_materialized_daily_snapshots(
+            portfolio_id,
             start_date=start_date,
             end_date=end_date,
         )
@@ -132,15 +168,15 @@ def get_portfolio_performance(
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     try:
-        report = build_portfolio_performance_report(
-            portfolio,
-            list_accounts(portfolio_id),
-            list_transactions(portfolio_id),
+        report = build_materialized_performance_report(
+            portfolio_id,
             start_date=start_date,
             end_date=end_date,
         )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
+    if report is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
 
     return PerformanceResponse(
         portfolio_id=portfolio_id,
@@ -554,19 +590,31 @@ def get_portfolio_contribution_report(
         raise HTTPException(status_code=422, detail="axis must be instrument, account, or taxonomy")
 
     try:
-        report = build_contribution_report(
-            portfolio,
-            list_accounts(portfolio_id),
-            list_transactions(portfolio_id),
-            taxonomies=list_taxonomies(portfolio_id),
-            taxonomy_nodes=list_taxonomy_nodes(portfolio_id),
-            taxonomy_assignments=list_taxonomy_assignments(portfolio_id),
-            start_date=start_date,
-            end_date=end_date,
-            axis=axis,
-            taxonomy_id=taxonomy_id,
-            group_key=group_key,
+        report = (
+            build_materialized_contribution_report(
+                portfolio_id,
+                start_date=start_date,
+                end_date=end_date,
+                axis=axis,
+                group_key=group_key,
+            )
+            if axis in {"instrument", "account"}
+            else None
         )
+        if report is None:
+            report = build_contribution_report(
+                portfolio,
+                list_accounts(portfolio_id),
+                list_transactions(portfolio_id),
+                taxonomies=list_taxonomies(portfolio_id),
+                taxonomy_nodes=list_taxonomy_nodes(portfolio_id),
+                taxonomy_assignments=list_taxonomy_assignments(portfolio_id),
+                start_date=start_date,
+                end_date=end_date,
+                axis=axis,
+                taxonomy_id=taxonomy_id,
+                group_key=group_key,
+            )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except InstrumentRegistryError as error:

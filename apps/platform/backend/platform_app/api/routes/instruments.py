@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from typing import Annotated
 
 from platform_app.api.contracts import (
@@ -34,6 +34,7 @@ from platform_app.services.instrument_store import (
     upsert_market_data,
     upsert_source_settings,
 )
+from platform_app.services.portfolio_notifications import queue_portfolio_daily_snapshot_refresh
 
 
 router = APIRouter()
@@ -107,6 +108,7 @@ def get_instrument_record(asset_id: str) -> PlatformInstrumentDetail:
 def upsert_instrument_market_data(
     asset_id: str,
     payload: PlatformMarketDataUpsertRequest,
+    background_tasks: BackgroundTasks,
 ) -> PlatformInstrumentRecord:
     record = upsert_market_data(
         asset_id=asset_id,
@@ -120,6 +122,12 @@ def upsert_instrument_market_data(
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
+    queue_portfolio_daily_snapshot_refresh(
+        background_tasks,
+        asset_ids=[asset_id],
+        dirty_from=payload.as_of_date,
+        refresh_all=payload.metric_family.strip().lower() == "fx" or asset_id.startswith("fx-"),
+    )
     return PlatformInstrumentRecord.model_validate(record)
 
 
@@ -149,6 +157,7 @@ def update_instrument_source_settings(
 def refresh_instrument_market_data(
     asset_id: str,
     payload: PlatformRefreshTriggerRequest,
+    background_tasks: BackgroundTasks,
 ) -> PlatformInstrumentRecord:
     record = refresh_market_data(
         asset_id=asset_id,
@@ -157,6 +166,11 @@ def refresh_instrument_market_data(
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
+    queue_portfolio_daily_snapshot_refresh(
+        background_tasks,
+        asset_ids=[asset_id],
+        refresh_all=asset_id.startswith("fx-"),
+    )
     return PlatformInstrumentRecord.model_validate(record)
 
 
@@ -186,6 +200,7 @@ def restore_instrument_record(
 def import_instrument_nav_history(
     asset_id: str,
     payload: PlatformNavImportRequest,
+    background_tasks: BackgroundTasks,
 ) -> PlatformInstrumentRecord:
     try:
         record = import_nav_text(
@@ -199,6 +214,7 @@ def import_instrument_nav_history(
         raise HTTPException(status_code=400, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
+    queue_portfolio_daily_snapshot_refresh(background_tasks, asset_ids=[asset_id])
     return PlatformInstrumentRecord.model_validate(record)
 
 
@@ -231,6 +247,7 @@ def preview_instrument_nav_history(
 def import_instrument_nav_history_file(
     asset_id: str,
     payload: PlatformNavImportFileRequest,
+    background_tasks: BackgroundTasks,
 ) -> PlatformInstrumentRecord:
     try:
         record = import_nav_file(
@@ -245,4 +262,5 @@ def import_instrument_nav_history_file(
         raise HTTPException(status_code=400, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
+    queue_portfolio_daily_snapshot_refresh(background_tasks, asset_ids=[asset_id])
     return PlatformInstrumentRecord.model_validate(record)

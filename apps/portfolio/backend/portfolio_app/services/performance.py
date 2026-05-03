@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import date, timedelta
 from math import isfinite, sqrt
 
+from portfolio_app.services.asset_charts import build_asset_sparkline_from_detail
 from portfolio_app.core.settings import get_settings
 from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
@@ -418,6 +419,38 @@ def _position_buckets_from_lots(position_lots: list[dict[str, object]]) -> list[
         )
     return rendered_buckets
 
+
+def _position_buckets_by_account_asset_from_lots(position_lots: list[dict[str, object]]) -> list[dict[str, object]]:
+    positions_by_account_asset: dict[tuple[str, str], dict[str, object]] = {}
+    for position_lot in position_lots:
+        account_id = str(position_lot.get("account_id") or "")
+        asset_id = str(position_lot.get("asset_id") or "")
+        if not account_id or not asset_id:
+            continue
+        bucket = positions_by_account_asset.setdefault(
+            (account_id, asset_id),
+            {
+                "account_id": account_id,
+                "asset_id": asset_id,
+                "instrument_ref": deepcopy(position_lot.get("instrument_ref")),
+                "currency": _normalized_currency(position_lot.get("currency")),
+                "quantity": 0.0,
+                "cost_basis": 0.0,
+                "open_position_lot_count": 0,
+            },
+        )
+        bucket["quantity"] += _safe_float(position_lot.get("remaining_quantity")) or 0.0
+        bucket["cost_basis"] += _safe_float(position_lot.get("remaining_cost_basis")) or 0.0
+        bucket["open_position_lot_count"] += 1
+
+    rendered_buckets: list[dict[str, object]] = []
+    for bucket in positions_by_account_asset.values():
+        if abs(_safe_float(bucket.get("quantity")) or 0.0) <= 1e-9:
+            continue
+        rendered_buckets.append(bucket)
+    return rendered_buckets
+
+
 def _resolve_snapshot_window(
     portfolio: dict[str, object],
     transactions: list[dict[str, object]],
@@ -443,6 +476,97 @@ def _resolve_snapshot_window(
     return resolved_start, resolved_end
 
 
+def _build_materialized_holding_rows(
+    *,
+    account_asset_buckets: list[dict[str, object]],
+    as_of_date: date,
+    base_currency: str,
+    direct_fx_assets: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+    nav: float | None,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for bucket in account_asset_buckets:
+        account_id = str(bucket.get("account_id") or "")
+        asset_id = str(bucket.get("asset_id") or "")
+        if not account_id or not asset_id:
+            continue
+
+        currency = _normalized_currency(bucket.get("currency"), fallback=base_currency)
+        quantity = _safe_float(bucket.get("quantity")) or 0.0
+        cost_basis = _safe_float(bucket.get("cost_basis"))
+        converted_cost_basis, _ = convert_amount_on(
+            cost_basis,
+            as_of_date=as_of_date,
+            from_currency=currency,
+            to_currency=base_currency,
+            direct_fx_assets=direct_fx_assets,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        detail = _instrument_detail_cache_get(asset_id, instrument_detail_cache)
+        price_point = (
+            _select_market_point_as_of(detail=detail, role="valuation", as_of_date=as_of_date)
+            if isinstance(detail, dict)
+            else None
+        )
+        last_price = _safe_float((price_point or {}).get("value"))
+        market_value = _position_market_value(
+            quantity=quantity,
+            last_price=last_price,
+            instrument_ref=(bucket.get("instrument_ref") if isinstance(bucket.get("instrument_ref"), dict) else None),
+        )
+        converted_market_value, _ = convert_amount_on(
+            market_value,
+            as_of_date=as_of_date,
+            from_currency=currency,
+            to_currency=base_currency,
+            direct_fx_assets=direct_fx_assets,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        rows.append(
+            {
+                "line_id": f"{account_id}:{asset_id}",
+                "account_id": account_id,
+                "asset_id": asset_id,
+                "instrument_ref": deepcopy(bucket.get("instrument_ref") or {}),
+                "quantity": quantity,
+                "cost_basis": cost_basis,
+                "cost_basis_base": converted_cost_basis,
+                "last_price": last_price,
+                "market_value": market_value,
+                "market_value_base": converted_market_value,
+                "currency": currency,
+                "portfolio_weight": (
+                    converted_market_value / nav
+                    if converted_market_value is not None and nav is not None and nav > 1e-9
+                    else None
+                ),
+                "account_ids": [account_id],
+                "account_count": 1,
+                "open_position_lot_count": int(bucket.get("open_position_lot_count") or 0),
+                "price_chart": (
+                    build_asset_sparkline_from_detail(
+                        detail,
+                        asset_id=asset_id,
+                        as_of_date=as_of_date,
+                    )
+                    if isinstance(detail, dict)
+                    else []
+                ),
+                "coverage_status": "price-nav-fx" if converted_market_value is not None else "unpriced",
+            }
+        )
+
+    rows.sort(
+        key=lambda item: (
+            str(item.get("account_id") or ""),
+            -((_safe_float(item.get("market_value_base")) or 0.0)),
+            str(item.get("asset_id") or ""),
+        )
+    )
+    return rows
+
+
 def _build_single_date_snapshot(
     portfolio: dict[str, object],
     accounts: list[dict[str, object]],
@@ -450,6 +574,14 @@ def _build_single_date_snapshot(
     *,
     as_of_date: date,
 ) -> dict[str, object]:
+    portfolio_id = str(portfolio.get("portfolio_id") or "")
+    if portfolio_id:
+        from portfolio_app.services.daily_snapshots import get_materialized_daily_snapshot
+
+        materialized_snapshot = get_materialized_daily_snapshot(portfolio_id, as_of_date)
+        if materialized_snapshot is not None:
+            return materialized_snapshot
+
     portfolio_view = deepcopy(portfolio)
     portfolio_view["as_of_date"] = as_of_date.isoformat()
     historical_start_date = min(
@@ -718,6 +850,7 @@ def build_daily_portfolio_snapshots(
     *,
     start_date: date | None = None,
     end_date: date | None = None,
+    include_materialized_rows: bool = False,
 ) -> list[dict[str, object]]:
     window = _resolve_snapshot_window(
         portfolio,
@@ -732,6 +865,7 @@ def build_daily_portfolio_snapshots(
     sorted_transactions = sorted(transactions, key=_transaction_sort_key)
     account_cost_methods = _account_cost_methods(accounts)
     account_currency_map = _account_currency_map(accounts)
+    account_name_map = _account_name_map(accounts)
     portfolio_id = str(portfolio.get("portfolio_id") or "")
     base_currency = _normalized_currency(portfolio.get("base_currency"))
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
@@ -740,6 +874,10 @@ def build_daily_portfolio_snapshots(
     fx_payload = get_platform_fx_rates()
     direct_fx_assets = _fx_direct_asset_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+    transactions_by_date: dict[str, list[dict[str, object]]] = defaultdict(list)
+    if include_materialized_rows:
+        for transaction in sorted_transactions:
+            transactions_by_date[str(transaction.get("trade_date") or "")].append(transaction)
 
     snapshots: list[dict[str, object]] = []
     last_complete_nav: float | None = None
@@ -754,6 +892,10 @@ def build_daily_portfolio_snapshots(
     previous_position_market_value_date: date | None = None
     cumulative_asset_currency_gains = 0.0
     asset_currency_gain_history_complete = True
+    previous_contribution_states_by_axis: dict[str, dict[str, dict[str, object]]] = {
+        "instrument": {},
+        "account": {},
+    }
 
     for as_of_date in _iter_dates(resolved_start_date, resolved_end_date):
         as_of_iso = as_of_date.isoformat()
@@ -776,6 +918,11 @@ def build_daily_portfolio_snapshots(
         all_position_lots = position_lots
         open_position_lots = [position_lot for position_lot in all_position_lots if position_lot.get("status") == "open"]
         position_buckets = _position_buckets_from_lots(open_position_lots)
+        account_asset_buckets = (
+            _position_buckets_by_account_asset_from_lots(open_position_lots)
+            if include_materialized_rows
+            else []
+        )
         transaction_buckets = _sum_period_transaction_buckets(
             transactions_as_of,
             base_currency=base_currency,
@@ -1072,47 +1219,101 @@ def build_daily_portfolio_snapshots(
         if nav is not None:
             last_complete_nav = nav
 
-        snapshots.append(
-            {
-                "as_of_date": as_of_date,
-                "base_currency": base_currency,
-                "valuation_timezone": valuation_timezone,
-                "valuation_cutoff_policy": valuation_cutoff_policy,
-                "coverage_state": coverage_state,
-                "stale_price_flag": stale_price_flag,
-                "stale_fx_flag": stale_fx_flag,
-                "total_position_count": total_position_count,
-                "priced_position_count": priced_position_count,
-                "market_observation_count": fresh_price_count,
-                "return_observation_eligible": (
-                    daily_ttwror is not None
-                    and isfinite(daily_ttwror)
-                    and (fresh_price_count > 0 or abs(daily_ttwror) > 1e-12)
-                ),
-                "cash_balance": resolved_cash_balance,
-                "position_market_value": resolved_position_market_value,
-                "nav": nav,
-                "open_cost_basis": resolved_open_cost_basis,
-                "unrealized_pnl": unrealized_pnl,
-                "realized_pnl": pnl_components["realized_pnl"],
-                "income_cash_amount": pnl_components["income_cash_amount"],
-                "expense_cash_amount": pnl_components["expense_cash_amount"],
-                "cash_currency_gains": cash_currency_gains,
-                "asset_currency_gains": asset_currency_gains,
-                "return_of_capital_amount": pnl_components["return_of_capital_amount"],
-                "total_pnl": total_pnl,
-                "external_cash_in": flow_breakdown["external_cash_in"],
-                "external_cash_out": flow_breakdown["external_cash_out"],
-                "net_external_inflow": flow_breakdown["net_external_inflow"],
-                "beginning_nav": beginning_nav,
-                "ending_nav": nav,
-                "absolute_change": absolute_change,
-                "delta": delta,
-                "daily_ttwror": daily_ttwror,
-                "cumulative_ttwror": cumulative_ttwror,
-                "drawdown": drawdown,
-            }
-        )
+        snapshot_payload: dict[str, object] = {
+            "as_of_date": as_of_date,
+            "base_currency": base_currency,
+            "valuation_timezone": valuation_timezone,
+            "valuation_cutoff_policy": valuation_cutoff_policy,
+            "coverage_state": coverage_state,
+            "stale_price_flag": stale_price_flag,
+            "stale_fx_flag": stale_fx_flag,
+            "total_position_count": total_position_count,
+            "priced_position_count": priced_position_count,
+            "market_observation_count": fresh_price_count,
+            "return_observation_eligible": (
+                daily_ttwror is not None
+                and isfinite(daily_ttwror)
+                and (fresh_price_count > 0 or abs(daily_ttwror) > 1e-12)
+            ),
+            "cash_balance": resolved_cash_balance,
+            "pending_settlement": pending_settlement_base if pending_settlement_complete else None,
+            "position_market_value": resolved_position_market_value,
+            "nav": nav,
+            "open_cost_basis": resolved_open_cost_basis,
+            "unrealized_pnl": unrealized_pnl,
+            "realized_pnl": pnl_components["realized_pnl"],
+            "income_cash_amount": pnl_components["income_cash_amount"],
+            "expense_cash_amount": pnl_components["expense_cash_amount"],
+            "cash_currency_gains": cash_currency_gains,
+            "asset_currency_gains": asset_currency_gains,
+            "return_of_capital_amount": pnl_components["return_of_capital_amount"],
+            "total_pnl": total_pnl,
+            "external_cash_in": flow_breakdown["external_cash_in"],
+            "external_cash_out": flow_breakdown["external_cash_out"],
+            "net_external_inflow": flow_breakdown["net_external_inflow"],
+            "beginning_nav": beginning_nav,
+            "ending_nav": nav,
+            "absolute_change": absolute_change,
+            "delta": delta,
+            "daily_ttwror": daily_ttwror,
+            "cumulative_ttwror": cumulative_ttwror,
+            "drawdown": drawdown,
+        }
+
+        if include_materialized_rows:
+            snapshot_payload["_holding_rows"] = _build_materialized_holding_rows(
+                account_asset_buckets=account_asset_buckets,
+                as_of_date=as_of_date,
+                base_currency=base_currency,
+                direct_fx_assets=direct_fx_assets,
+                instrument_detail_cache=instrument_detail_cache,
+                nav=nav,
+            )
+            contribution_slices: list[dict[str, object]] = []
+            for contribution_axis in ("instrument", "account"):
+                current_states = _build_contribution_group_end_states(
+                    axis=contribution_axis,
+                    portfolio_id=portfolio_id,
+                    accounts=accounts,
+                    transactions_as_of=transactions_as_of,
+                    position_lots=position_lots,
+                    postings=postings,
+                    as_of_date=as_of_date,
+                    base_currency=base_currency,
+                    account_cost_methods=account_cost_methods,
+                    account_currency_map=account_currency_map,
+                    account_name_map=account_name_map,
+                    direct_fx_assets=direct_fx_assets,
+                    instrument_detail_cache=instrument_detail_cache,
+                )
+                current_events = _build_contribution_daily_events(
+                    axis=contribution_axis,
+                    as_of_date=as_of_date,
+                    position_lots=all_position_lots,
+                    transactions_on_date=transactions_by_date.get(as_of_iso, []),
+                    base_currency=base_currency,
+                    account_name_map=account_name_map,
+                    direct_fx_assets=direct_fx_assets,
+                    instrument_detail_cache=instrument_detail_cache,
+                )
+                contribution_slices.extend(
+                    _build_contribution_slices_for_date(
+                        axis=contribution_axis,
+                        as_of_date=as_of_date,
+                        previous_states=previous_contribution_states_by_axis.get(contribution_axis, {}),
+                        current_states=current_states,
+                        current_events=current_events,
+                        snapshot=snapshot_payload,
+                        previous_date=as_of_date - timedelta(days=1),
+                        base_currency=base_currency,
+                        direct_fx_assets=direct_fx_assets,
+                        instrument_detail_cache=instrument_detail_cache,
+                    )
+                )
+                previous_contribution_states_by_axis[contribution_axis] = current_states
+            snapshot_payload["_contribution_slices"] = contribution_slices
+
+        snapshots.append(snapshot_payload)
 
         previous_cash_balances_by_currency = dict(cash_balances_by_currency)
         previous_cash_balance_date = as_of_date
@@ -1298,6 +1499,34 @@ def build_portfolio_performance_report(
         start_date=calculation_start_date,
         end_date=end_date,
     )
+    return build_portfolio_performance_report_from_snapshots(
+        portfolio,
+        snapshots,
+        transactions=transactions,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+def build_portfolio_performance_report_from_snapshots(
+    portfolio: dict[str, object],
+    snapshots: list[dict[str, object]],
+    *,
+    transactions: list[dict[str, object]] | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, object]:
+    normalized_snapshots = []
+    for snapshot in snapshots:
+        normalized_snapshot = dict(snapshot)
+        snapshot_date = _parse_iso_date(normalized_snapshot.get("as_of_date"))
+        if snapshot_date is not None:
+            normalized_snapshot["as_of_date"] = snapshot_date
+        normalized_snapshots.append(normalized_snapshot)
+    snapshots = sorted(
+        normalized_snapshots,
+        key=lambda item: item.get("as_of_date") if isinstance(item.get("as_of_date"), date) else date.min,
+    )
     visible_snapshots = [
         snapshot
         for snapshot in snapshots
@@ -1313,7 +1542,7 @@ def build_portfolio_performance_report(
     if start_date is not None:
         transaction_dates = [
             parsed
-            for parsed in (_parse_iso_date(item.get("trade_date")) for item in transactions)
+            for parsed in (_parse_iso_date(item.get("trade_date")) for item in (transactions or []))
             if parsed is not None
         ]
         first_transaction_date = min(transaction_dates) if transaction_dates else None
@@ -2715,6 +2944,8 @@ def _build_contribution_group_end_states(
     portfolio_id: str,
     accounts: list[dict[str, object]],
     transactions_as_of: list[dict[str, object]],
+    position_lots: list[dict[str, object]] | None = None,
+    postings: list[dict[str, object]] | None = None,
     as_of_date: date,
     base_currency: str,
     account_cost_methods: dict[str, str],
@@ -2724,8 +2955,14 @@ def _build_contribution_group_end_states(
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> dict[str, dict[str, object]]:
     states: dict[str, dict[str, object]] = {}
-    position_lots = build_position_lots(portfolio_id, accounts, transactions_as_of)
-    open_position_lots = [position_lot for position_lot in position_lots if position_lot.get("status") == "open"]
+    resolved_position_lots = (
+        position_lots
+        if position_lots is not None
+        else build_position_lots(portfolio_id, accounts, transactions_as_of)
+    )
+    open_position_lots = [
+        position_lot for position_lot in resolved_position_lots if position_lot.get("status") == "open"
+    ]
 
     for position_lot in open_position_lots:
         if axis == "instrument":
@@ -2800,13 +3037,17 @@ def _build_contribution_group_end_states(
             state["stale_fx_flag"] = bool(state.get("stale_fx_flag")) or valuation_fx_stale
 
     if axis == "account":
-        postings = derive_ledger_postings(
-            portfolio_id,
-            transactions_as_of,
-            account_cost_methods=account_cost_methods,
-            account_currency_map=account_currency_map,
+        resolved_postings = (
+            postings
+            if postings is not None
+            else derive_ledger_postings(
+                portfolio_id,
+                transactions_as_of,
+                account_cost_methods=account_cost_methods,
+                account_currency_map=account_currency_map,
+            )
         )
-        for posting in postings:
+        for posting in resolved_postings:
             cash_amount_delta = _safe_float(posting.get("cash_amount_delta"))
             if cash_amount_delta is None:
                 continue
@@ -3082,6 +3323,184 @@ def _build_contribution_daily_events(
                     )
 
     return events
+
+
+def _build_contribution_slices_for_date(
+    *,
+    axis: str,
+    as_of_date: date,
+    previous_states: dict[str, dict[str, object]],
+    current_states: dict[str, dict[str, object]],
+    current_events: dict[str, dict[str, object]],
+    snapshot: dict[str, object] | None,
+    previous_date: date,
+    base_currency: str,
+    direct_fx_assets: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+) -> list[dict[str, object]]:
+    daily_slices: list[dict[str, object]] = []
+    group_keys = sorted(set(previous_states) | set(current_states) | set(current_events))
+    beginning_nav = _safe_float((snapshot or {}).get("beginning_nav"))
+    ending_nav = _safe_float((snapshot or {}).get("ending_nav"))
+
+    for candidate_group_key in group_keys:
+        previous_state = previous_states.get(candidate_group_key)
+        current_state = current_states.get(candidate_group_key)
+        current_event = current_events.get(candidate_group_key)
+
+        group_label = str(
+            (current_state or {}).get("group_label")
+            or (previous_state or {}).get("group_label")
+            or (current_event or {}).get("group_label")
+            or candidate_group_key
+        )
+
+        if previous_state is None:
+            beginning_value_base = 0.0
+            previous_unrealized_pnl = 0.0
+        else:
+            beginning_value_base = _safe_float(previous_state.get("ending_value_base"))
+            previous_unrealized_pnl = _safe_float(previous_state.get("unrealized_pnl"))
+
+        if current_state is None:
+            ending_value_base = 0.0
+            ending_cash_balance_base = 0.0 if axis == "account" else None
+            ending_position_market_value_base = 0.0
+            ending_open_cost_basis_base = 0.0
+            ending_unrealized_pnl = 0.0
+        else:
+            ending_value_base = _safe_float(current_state.get("ending_value_base"))
+            ending_cash_balance_base = _safe_float(current_state.get("cash_balance_base"))
+            ending_position_market_value_base = _safe_float(current_state.get("position_market_value_base"))
+            ending_open_cost_basis_base = _safe_float(current_state.get("open_cost_basis_base"))
+            ending_unrealized_pnl = _safe_float(current_state.get("unrealized_pnl"))
+
+        realized_pnl = _safe_float((current_event or {}).get("realized_pnl"))
+        income_cash_amount = _safe_float((current_event or {}).get("income_cash_amount"))
+        expense_cash_amount = _safe_float((current_event or {}).get("expense_cash_amount"))
+        fee_amount = _safe_float((current_event or {}).get("fee_amount"))
+        tax_amount = _safe_float((current_event or {}).get("tax_amount"))
+        cash_currency_gains = None
+        asset_currency_gains = None
+        if previous_state is None:
+            cash_currency_gains = 0.0 if axis == "account" else None
+            asset_currency_gains = 0.0
+        else:
+            asset_currency_gains, _ = _compute_currency_translation_gain(
+                previous_state.get("_position_market_value_local_by_currency"),
+                previous_date=previous_date,
+                current_date=as_of_date,
+                base_currency=base_currency,
+                direct_fx_assets=direct_fx_assets,
+                instrument_detail_cache=instrument_detail_cache,
+            )
+            if axis == "account":
+                cash_currency_gains, _ = _compute_currency_translation_gain(
+                    previous_state.get("_cash_balance_local_by_currency"),
+                    previous_date=previous_date,
+                    current_date=as_of_date,
+                    base_currency=base_currency,
+                    direct_fx_assets=direct_fx_assets,
+                    instrument_detail_cache=instrument_detail_cache,
+                )
+            else:
+                cash_currency_gains = None
+        if realized_pnl is None and current_event is None:
+            realized_pnl = 0.0
+        if income_cash_amount is None and current_event is None:
+            income_cash_amount = 0.0
+        if expense_cash_amount is None and current_event is None:
+            expense_cash_amount = 0.0
+        if fee_amount is None and current_event is None:
+            fee_amount = 0.0
+        if tax_amount is None and current_event is None:
+            tax_amount = 0.0
+        if asset_currency_gains is None and current_event is None:
+            asset_currency_gains = 0.0
+        if axis == "account" and cash_currency_gains is None and current_event is None:
+            cash_currency_gains = 0.0
+
+        unrealized_pnl_change = None
+        if (
+            (previous_state is None or previous_unrealized_pnl is not None)
+            and (current_state is None or ending_unrealized_pnl is not None)
+        ):
+            unrealized_pnl_change = (ending_unrealized_pnl or 0.0) - (previous_unrealized_pnl or 0.0)
+
+        total_pnl = None
+        if (
+            realized_pnl is not None
+            and income_cash_amount is not None
+            and expense_cash_amount is not None
+            and unrealized_pnl_change is not None
+        ):
+            total_pnl = realized_pnl + income_cash_amount - expense_cash_amount + unrealized_pnl_change
+            if asset_currency_gains is not None:
+                total_pnl += asset_currency_gains
+            if axis == "account" and cash_currency_gains is not None:
+                total_pnl += cash_currency_gains
+
+        slice_coverage_state = str((snapshot or {}).get("coverage_state") or "unavailable")
+        if (
+            (previous_state is not None and beginning_value_base is None)
+            or (current_state is not None and ending_value_base is None)
+            or (current_state is not None and ending_position_market_value_base is None)
+            or (current_state is not None and ending_open_cost_basis_base is None)
+            or (axis == "account" and current_state is not None and ending_cash_balance_base is None)
+            or (asset_currency_gains is None)
+            or (axis == "account" and cash_currency_gains is None)
+            or total_pnl is None
+        ):
+            if slice_coverage_state == "complete":
+                slice_coverage_state = "partial"
+
+        daily_slices.append(
+            {
+                "as_of_date": as_of_date,
+                "axis": axis,
+                "group_key": candidate_group_key,
+                "group_label": group_label,
+                "coverage_state": slice_coverage_state,
+                "market_observation_count": int((snapshot or {}).get("market_observation_count") or 0),
+                "return_observation_eligible": bool((snapshot or {}).get("return_observation_eligible")),
+                "beginning_value_base": beginning_value_base,
+                "ending_value_base": ending_value_base,
+                "beginning_weight": (
+                    beginning_value_base / beginning_nav
+                    if beginning_value_base is not None and beginning_nav is not None and beginning_nav > 1e-9
+                    else None
+                ),
+                "ending_weight": (
+                    ending_value_base / ending_nav
+                    if ending_value_base is not None and ending_nav is not None and ending_nav > 1e-9
+                    else None
+                ),
+                "cash_balance_base": ending_cash_balance_base,
+                "position_market_value_base": ending_position_market_value_base,
+                "open_cost_basis_base": ending_open_cost_basis_base,
+                "realized_pnl": realized_pnl,
+                "unrealized_pnl": ending_unrealized_pnl,
+                "income_cash_amount": income_cash_amount,
+                "expense_cash_amount": expense_cash_amount,
+                "fee_amount": fee_amount,
+                "tax_amount": tax_amount,
+                "cash_currency_gains": cash_currency_gains,
+                "asset_currency_gains": asset_currency_gains,
+                "total_pnl": total_pnl,
+                "daily_return": (
+                    total_pnl / beginning_value_base
+                    if total_pnl is not None and beginning_value_base is not None and beginning_value_base > 1e-9
+                    else None
+                ),
+                "daily_contribution": (
+                    total_pnl / beginning_nav
+                    if total_pnl is not None and beginning_nav is not None and beginning_nav > 1e-9
+                    else None
+                ),
+            }
+        )
+
+    return daily_slices
 
 
 def _is_effective_on(
@@ -3580,6 +3999,222 @@ def _filter_contribution_report_by_group_key(
     return filtered_report
 
 
+def build_contribution_report_from_daily_slices(
+    portfolio: dict[str, object],
+    snapshots: list[dict[str, object]],
+    daily_slices: list[dict[str, object]],
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    axis: str = "instrument",
+    group_key: str | None = None,
+) -> dict[str, object]:
+    base_currency = _normalized_currency(portfolio.get("base_currency"))
+    valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
+    valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
+
+    normalized_snapshots: list[dict[str, object]] = []
+    for snapshot in snapshots:
+        normalized_snapshot = dict(snapshot)
+        snapshot_date = _parse_iso_date(normalized_snapshot.get("as_of_date"))
+        if snapshot_date is not None:
+            normalized_snapshot["as_of_date"] = snapshot_date
+            normalized_snapshots.append(normalized_snapshot)
+
+    normalized_slices: list[dict[str, object]] = []
+    for daily_slice in daily_slices:
+        normalized_slice = dict(daily_slice)
+        slice_date = _parse_iso_date(normalized_slice.get("as_of_date"))
+        if slice_date is not None:
+            normalized_slice["as_of_date"] = slice_date
+            normalized_slices.append(normalized_slice)
+
+    available_dates = [
+        item["as_of_date"]
+        for item in [*normalized_snapshots, *normalized_slices]
+        if isinstance(item.get("as_of_date"), date)
+    ]
+    resolved_start_date = start_date or (min(available_dates) if available_dates else None)
+    resolved_end_date = end_date or (max(available_dates) if available_dates else None)
+    if resolved_start_date is None or resolved_end_date is None or resolved_end_date < resolved_start_date:
+        return {
+            "portfolio_id": str(portfolio.get("portfolio_id") or ""),
+            "base_currency": base_currency,
+            "valuation_timezone": valuation_timezone,
+            "valuation_cutoff_policy": valuation_cutoff_policy,
+            "summary": {
+                "axis": axis,
+                "group_key": str(group_key or "").strip() or None,
+                "group_label": None,
+                "start_date": start_date,
+                "end_date": end_date,
+                "coverage_state": "unavailable",
+                "slice_count": 0,
+                "group_count": 0,
+                "observation_count": 0,
+                "start_nav": None,
+                "end_nav": None,
+                "portfolio_arithmetic_return": None,
+                "portfolio_cumulative_ttwror": None,
+                "total_period_contribution": None,
+                "contribution_residual": None,
+            },
+            "lines": [],
+            "daily_slices": [],
+        }
+
+    snapshots_by_date = {
+        snapshot["as_of_date"]: snapshot
+        for snapshot in normalized_snapshots
+        if isinstance(snapshot.get("as_of_date"), date)
+    }
+    in_period_slices = [
+        daily_slice
+        for daily_slice in normalized_slices
+        if isinstance(daily_slice.get("as_of_date"), date)
+        and resolved_start_date <= daily_slice["as_of_date"] <= resolved_end_date
+    ]
+
+    contribution_growth_index = 1.0
+    has_return_observation = False
+    arithmetic_return = 0.0
+    observation_count = 0
+    for as_of_date in _iter_dates(resolved_start_date, resolved_end_date):
+        snapshot = snapshots_by_date.get(as_of_date)
+        daily_ttwror = _safe_float((snapshot or {}).get("daily_ttwror"))
+        if daily_ttwror is not None and isfinite(daily_ttwror):
+            arithmetic_return += daily_ttwror
+            contribution_growth_index *= 1.0 + daily_ttwror
+            has_return_observation = True
+            observation_count += 1
+
+    line_accumulators: dict[str, dict[str, object]] = {}
+    for daily_slice in in_period_slices:
+        line_group_key = str(daily_slice.get("group_key") or "")
+        accumulator = line_accumulators.setdefault(
+            line_group_key,
+            {
+                "axis": axis,
+                "group_key": line_group_key,
+                "group_label": str(daily_slice.get("group_label") or line_group_key),
+                "start_value_base": daily_slice.get("beginning_value_base"),
+                "end_value_base": daily_slice.get("ending_value_base"),
+                "average_weight": 0.0,
+                "_weight_count": 0,
+                "ending_weight": daily_slice.get("ending_weight"),
+                "realized_pnl": 0.0,
+                "unrealized_pnl_change": 0.0,
+                "income_cash_amount": 0.0,
+                "expense_cash_amount": 0.0,
+                "fee_amount": 0.0,
+                "tax_amount": 0.0,
+                "cash_currency_gains": 0.0,
+                "asset_currency_gains": 0.0,
+                "total_pnl": 0.0,
+                "period_contribution": 0.0,
+            },
+        )
+        accumulator["end_value_base"] = daily_slice.get("ending_value_base")
+        accumulator["ending_weight"] = daily_slice.get("ending_weight")
+        beginning_weight = _safe_float(daily_slice.get("beginning_weight"))
+        if beginning_weight is not None:
+            accumulator["average_weight"] = (_safe_float(accumulator.get("average_weight")) or 0.0) + beginning_weight
+            accumulator["_weight_count"] = int(accumulator.get("_weight_count") or 0) + 1
+        for field_name in (
+            "realized_pnl",
+            "income_cash_amount",
+            "expense_cash_amount",
+            "fee_amount",
+            "tax_amount",
+            "cash_currency_gains",
+            "asset_currency_gains",
+            "total_pnl",
+            "daily_contribution",
+        ):
+            value = _safe_float(daily_slice.get(field_name))
+            if value is None:
+                continue
+            target_field = "period_contribution" if field_name == "daily_contribution" else field_name
+            accumulator[target_field] = (_safe_float(accumulator.get(target_field)) or 0.0) + value
+        unrealized_delta = None
+        realized_value = _safe_float(daily_slice.get("realized_pnl")) or 0.0
+        income_value = _safe_float(daily_slice.get("income_cash_amount")) or 0.0
+        expense_value = _safe_float(daily_slice.get("expense_cash_amount")) or 0.0
+        total_value = _safe_float(daily_slice.get("total_pnl"))
+        if total_value is not None:
+            unrealized_delta = total_value - realized_value - income_value + expense_value
+        if unrealized_delta is not None:
+            accumulator["unrealized_pnl_change"] = (
+                (_safe_float(accumulator.get("unrealized_pnl_change")) or 0.0) + unrealized_delta
+            )
+
+    lines: list[dict[str, object]] = []
+    for accumulator in line_accumulators.values():
+        weight_count = int(accumulator.pop("_weight_count", 0))
+        average_weight_total = _safe_float(accumulator.get("average_weight")) or 0.0
+        accumulator["average_weight"] = (average_weight_total / weight_count) if weight_count > 0 else None
+        lines.append(accumulator)
+    lines.sort(
+        key=lambda item: (
+            -abs(_safe_float(item.get("period_contribution")) or 0.0),
+            str(item.get("group_key") or ""),
+        )
+    )
+
+    in_period_snapshots = [
+        snapshots_by_date[as_of_date]
+        for as_of_date in _iter_dates(resolved_start_date, resolved_end_date)
+        if as_of_date in snapshots_by_date
+    ]
+    coverage_state = "unavailable"
+    if in_period_snapshots:
+        coverage_state = "complete"
+        if any(str(snapshot.get("coverage_state") or "unavailable") != "complete" for snapshot in in_period_snapshots):
+            coverage_state = "partial"
+        if any(str(item.get("coverage_state") or "unavailable") != "complete" for item in in_period_slices):
+            coverage_state = "partial"
+
+    total_period_contribution = sum((_safe_float(line.get("period_contribution")) or 0.0) for line in lines)
+    portfolio_arithmetic_return = arithmetic_return if observation_count > 0 else None
+    portfolio_cumulative_ttwror = (
+        contribution_growth_index - 1.0
+        if has_return_observation
+        else None
+    )
+    contribution_residual = (
+        portfolio_arithmetic_return - total_period_contribution
+        if portfolio_arithmetic_return is not None
+        else None
+    )
+
+    report = {
+        "portfolio_id": str(portfolio.get("portfolio_id") or ""),
+        "base_currency": base_currency,
+        "valuation_timezone": valuation_timezone,
+        "valuation_cutoff_policy": valuation_cutoff_policy,
+        "summary": {
+            "axis": axis,
+            "group_key": None,
+            "group_label": None,
+            "start_date": resolved_start_date,
+            "end_date": resolved_end_date,
+            "coverage_state": coverage_state,
+            "slice_count": len(in_period_slices),
+            "group_count": len(lines),
+            "observation_count": observation_count,
+            "start_nav": _safe_float((in_period_snapshots[0] if in_period_snapshots else {}).get("beginning_nav")),
+            "end_nav": _safe_float((in_period_snapshots[-1] if in_period_snapshots else {}).get("ending_nav")),
+            "portfolio_arithmetic_return": portfolio_arithmetic_return,
+            "portfolio_cumulative_ttwror": portfolio_cumulative_ttwror,
+            "total_period_contribution": total_period_contribution,
+            "contribution_residual": contribution_residual,
+        },
+        "lines": lines,
+        "daily_slices": in_period_slices,
+    }
+    return _filter_contribution_report_by_group_key(report, group_key=group_key)
+
+
 def build_contribution_report(
     portfolio: dict[str, object],
     accounts: list[dict[str, object]],
@@ -3765,10 +4400,6 @@ def build_contribution_report(
         )
 
     daily_slices: list[dict[str, object]] = []
-    contribution_growth_index = 1.0
-    has_return_observation = False
-    arithmetic_return = 0.0
-    observation_count = 0
 
     for as_of_date in _iter_dates(resolved_start_date, resolved_end_date):
         snapshot = snapshots_by_date.get(as_of_date)
@@ -3776,298 +4407,31 @@ def build_contribution_report(
         previous_states = group_states_by_date.get(previous_date, {})
         current_states = group_states_by_date.get(as_of_date, {})
         current_events = group_events_by_date.get(as_of_date, {})
-        group_keys = sorted(set(previous_states) | set(current_states) | set(current_events))
-        beginning_nav = _safe_float((snapshot or {}).get("beginning_nav"))
-        ending_nav = _safe_float((snapshot or {}).get("ending_nav"))
-        daily_ttwror = _safe_float((snapshot or {}).get("daily_ttwror"))
-        if daily_ttwror is not None and isfinite(daily_ttwror):
-            arithmetic_return += daily_ttwror
-            contribution_growth_index *= 1.0 + daily_ttwror
-            has_return_observation = True
-            observation_count += 1
 
-        for candidate_group_key in group_keys:
-            previous_state = previous_states.get(candidate_group_key)
-            current_state = current_states.get(candidate_group_key)
-            current_event = current_events.get(candidate_group_key)
-
-            group_label = str(
-                (current_state or {}).get("group_label")
-                or (previous_state or {}).get("group_label")
-                or (current_event or {}).get("group_label")
-                or candidate_group_key
+        daily_slices.extend(
+            _build_contribution_slices_for_date(
+                axis=axis,
+                as_of_date=as_of_date,
+                previous_states=previous_states,
+                current_states=current_states,
+                current_events=current_events,
+                snapshot=snapshot,
+                previous_date=previous_date,
+                base_currency=base_currency,
+                direct_fx_assets=direct_fx_assets,
+                instrument_detail_cache=instrument_detail_cache,
             )
-
-            if previous_state is None:
-                beginning_value_base = 0.0
-                previous_unrealized_pnl = 0.0
-            else:
-                beginning_value_base = _safe_float(previous_state.get("ending_value_base"))
-                previous_unrealized_pnl = _safe_float(previous_state.get("unrealized_pnl"))
-
-            if current_state is None:
-                ending_value_base = 0.0
-                ending_cash_balance_base = 0.0 if axis == "account" else None
-                ending_position_market_value_base = 0.0
-                ending_open_cost_basis_base = 0.0
-                ending_unrealized_pnl = 0.0
-            else:
-                ending_value_base = _safe_float(current_state.get("ending_value_base"))
-                ending_cash_balance_base = _safe_float(current_state.get("cash_balance_base"))
-                ending_position_market_value_base = _safe_float(current_state.get("position_market_value_base"))
-                ending_open_cost_basis_base = _safe_float(current_state.get("open_cost_basis_base"))
-                ending_unrealized_pnl = _safe_float(current_state.get("unrealized_pnl"))
-
-            realized_pnl = _safe_float((current_event or {}).get("realized_pnl"))
-            income_cash_amount = _safe_float((current_event or {}).get("income_cash_amount"))
-            expense_cash_amount = _safe_float((current_event or {}).get("expense_cash_amount"))
-            fee_amount = _safe_float((current_event or {}).get("fee_amount"))
-            tax_amount = _safe_float((current_event or {}).get("tax_amount"))
-            cash_currency_gains = None
-            asset_currency_gains = None
-            if previous_state is None:
-                cash_currency_gains = 0.0 if axis == "account" else None
-                asset_currency_gains = 0.0
-            else:
-                asset_currency_gains, asset_fx_stale = _compute_currency_translation_gain(
-                    previous_state.get("_position_market_value_local_by_currency"),
-                    previous_date=previous_date,
-                    current_date=as_of_date,
-                    base_currency=base_currency,
-                    direct_fx_assets=direct_fx_assets,
-                    instrument_detail_cache=instrument_detail_cache,
-                )
-                if axis == "account":
-                    cash_currency_gains, cash_fx_stale = _compute_currency_translation_gain(
-                        previous_state.get("_cash_balance_local_by_currency"),
-                        previous_date=previous_date,
-                        current_date=as_of_date,
-                        base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
-                        instrument_detail_cache=instrument_detail_cache,
-                    )
-                else:
-                    cash_currency_gains = None
-            if realized_pnl is None and current_event is None:
-                realized_pnl = 0.0
-            if income_cash_amount is None and current_event is None:
-                income_cash_amount = 0.0
-            if expense_cash_amount is None and current_event is None:
-                expense_cash_amount = 0.0
-            if fee_amount is None and current_event is None:
-                fee_amount = 0.0
-            if tax_amount is None and current_event is None:
-                tax_amount = 0.0
-            if asset_currency_gains is None and current_event is None:
-                asset_currency_gains = 0.0
-            if axis == "account" and cash_currency_gains is None and current_event is None:
-                cash_currency_gains = 0.0
-
-            unrealized_pnl_change = None
-            if (
-                (previous_state is None or previous_unrealized_pnl is not None)
-                and (current_state is None or ending_unrealized_pnl is not None)
-            ):
-                unrealized_pnl_change = (ending_unrealized_pnl or 0.0) - (previous_unrealized_pnl or 0.0)
-
-            total_pnl = None
-            if (
-                realized_pnl is not None
-                and income_cash_amount is not None
-                and expense_cash_amount is not None
-                and unrealized_pnl_change is not None
-            ):
-                total_pnl = realized_pnl + income_cash_amount - expense_cash_amount + unrealized_pnl_change
-                if asset_currency_gains is not None:
-                    total_pnl += asset_currency_gains
-                if axis == "account" and cash_currency_gains is not None:
-                    total_pnl += cash_currency_gains
-
-            slice_coverage_state = str((snapshot or {}).get("coverage_state") or "unavailable")
-            if (
-                (previous_state is not None and beginning_value_base is None)
-                or (current_state is not None and ending_value_base is None)
-                or (current_state is not None and ending_position_market_value_base is None)
-                or (current_state is not None and ending_open_cost_basis_base is None)
-                or (axis == "account" and current_state is not None and ending_cash_balance_base is None)
-                or (asset_currency_gains is None)
-                or (axis == "account" and cash_currency_gains is None)
-                or total_pnl is None
-            ):
-                if slice_coverage_state == "complete":
-                    slice_coverage_state = "partial"
-
-            daily_slices.append(
-                {
-                    "as_of_date": as_of_date,
-                    "axis": axis,
-                    "group_key": candidate_group_key,
-                    "group_label": group_label,
-                    "coverage_state": slice_coverage_state,
-                    "market_observation_count": int((snapshot or {}).get("market_observation_count") or 0),
-                    "return_observation_eligible": bool((snapshot or {}).get("return_observation_eligible")),
-                    "beginning_value_base": beginning_value_base,
-                    "ending_value_base": ending_value_base,
-                    "beginning_weight": (
-                        beginning_value_base / beginning_nav
-                        if beginning_value_base is not None and beginning_nav is not None and beginning_nav > 1e-9
-                        else None
-                    ),
-                    "ending_weight": (
-                        ending_value_base / ending_nav
-                        if ending_value_base is not None and ending_nav is not None and ending_nav > 1e-9
-                        else None
-                    ),
-                    "cash_balance_base": ending_cash_balance_base,
-                    "position_market_value_base": ending_position_market_value_base,
-                    "open_cost_basis_base": ending_open_cost_basis_base,
-                    "realized_pnl": realized_pnl,
-                    "unrealized_pnl": ending_unrealized_pnl,
-                    "income_cash_amount": income_cash_amount,
-                    "expense_cash_amount": expense_cash_amount,
-                    "fee_amount": fee_amount,
-                    "tax_amount": tax_amount,
-                    "cash_currency_gains": cash_currency_gains,
-                    "asset_currency_gains": asset_currency_gains,
-                    "total_pnl": total_pnl,
-                    "daily_return": (
-                        total_pnl / beginning_value_base
-                        if total_pnl is not None and beginning_value_base is not None and beginning_value_base > 1e-9
-                        else None
-                    ),
-                    "daily_contribution": (
-                        total_pnl / beginning_nav
-                        if total_pnl is not None and beginning_nav is not None and beginning_nav > 1e-9
-                        else None
-                    ),
-                }
-            )
-
-    line_accumulators: dict[str, dict[str, object]] = {}
-    for daily_slice in daily_slices:
-        line_group_key = str(daily_slice.get("group_key") or "")
-        accumulator = line_accumulators.setdefault(
-            line_group_key,
-            {
-                "axis": axis,
-                "group_key": line_group_key,
-                "group_label": str(daily_slice.get("group_label") or line_group_key),
-                "start_value_base": daily_slice.get("beginning_value_base"),
-                "end_value_base": daily_slice.get("ending_value_base"),
-                "average_weight": 0.0,
-                "_weight_count": 0,
-                "ending_weight": daily_slice.get("ending_weight"),
-                "realized_pnl": 0.0,
-                "unrealized_pnl_change": 0.0,
-                "income_cash_amount": 0.0,
-                "expense_cash_amount": 0.0,
-                "fee_amount": 0.0,
-                "tax_amount": 0.0,
-                "cash_currency_gains": 0.0,
-                "asset_currency_gains": 0.0,
-                "total_pnl": 0.0,
-                "period_contribution": 0.0,
-            },
         )
-        accumulator["end_value_base"] = daily_slice.get("ending_value_base")
-        accumulator["ending_weight"] = daily_slice.get("ending_weight")
-        beginning_weight = _safe_float(daily_slice.get("beginning_weight"))
-        if beginning_weight is not None:
-            accumulator["average_weight"] = (_safe_float(accumulator.get("average_weight")) or 0.0) + beginning_weight
-            accumulator["_weight_count"] = int(accumulator.get("_weight_count") or 0) + 1
-        for field_name in (
-            "realized_pnl",
-            "income_cash_amount",
-            "expense_cash_amount",
-            "fee_amount",
-            "tax_amount",
-            "cash_currency_gains",
-            "asset_currency_gains",
-            "total_pnl",
-            "daily_contribution",
-        ):
-            value = _safe_float(daily_slice.get(field_name))
-            if value is None:
-                continue
-            target_field = "period_contribution" if field_name == "daily_contribution" else field_name
-            accumulator[target_field] = (_safe_float(accumulator.get(target_field)) or 0.0) + value
-        unrealized_delta = None
-        realized_value = _safe_float(daily_slice.get("realized_pnl")) or 0.0
-        income_value = _safe_float(daily_slice.get("income_cash_amount")) or 0.0
-        expense_value = _safe_float(daily_slice.get("expense_cash_amount")) or 0.0
-        total_value = _safe_float(daily_slice.get("total_pnl"))
-        if total_value is not None:
-            unrealized_delta = total_value - realized_value - income_value + expense_value
-        if unrealized_delta is not None:
-            accumulator["unrealized_pnl_change"] = (
-                (_safe_float(accumulator.get("unrealized_pnl_change")) or 0.0) + unrealized_delta
-            )
 
-    lines: list[dict[str, object]] = []
-    for accumulator in line_accumulators.values():
-        weight_count = int(accumulator.pop("_weight_count", 0))
-        average_weight_total = _safe_float(accumulator.get("average_weight")) or 0.0
-        accumulator["average_weight"] = (average_weight_total / weight_count) if weight_count > 0 else None
-        lines.append(accumulator)
-    lines.sort(
-        key=lambda item: (
-            -abs(_safe_float(item.get("period_contribution")) or 0.0),
-            str(item.get("group_key") or ""),
-        )
+    return build_contribution_report_from_daily_slices(
+        portfolio,
+        snapshots,
+        daily_slices,
+        start_date=resolved_start_date,
+        end_date=resolved_end_date,
+        axis=axis,
+        group_key=group_key,
     )
-
-    in_period_snapshots = [
-        snapshots_by_date[as_of_date]
-        for as_of_date in _iter_dates(resolved_start_date, resolved_end_date)
-        if as_of_date in snapshots_by_date
-    ]
-    coverage_state = "unavailable"
-    if in_period_snapshots:
-        coverage_state = "complete"
-        if any(str(snapshot.get("coverage_state") or "unavailable") != "complete" for snapshot in in_period_snapshots):
-            coverage_state = "partial"
-        if any(str(item.get("coverage_state") or "unavailable") != "complete" for item in daily_slices):
-            coverage_state = "partial"
-
-    total_period_contribution = sum((_safe_float(line.get("period_contribution")) or 0.0) for line in lines)
-    portfolio_arithmetic_return = arithmetic_return if observation_count > 0 else None
-    portfolio_cumulative_ttwror = (
-        contribution_growth_index - 1.0
-        if has_return_observation
-        else None
-    )
-    contribution_residual = (
-        portfolio_arithmetic_return - total_period_contribution
-        if portfolio_arithmetic_return is not None
-        else None
-    )
-
-    report = {
-        "portfolio_id": portfolio_id,
-        "base_currency": base_currency,
-        "valuation_timezone": valuation_timezone,
-        "valuation_cutoff_policy": valuation_cutoff_policy,
-        "summary": {
-            "axis": axis,
-            "group_key": None,
-            "group_label": None,
-            "start_date": resolved_start_date,
-            "end_date": resolved_end_date,
-            "coverage_state": coverage_state,
-            "slice_count": len(daily_slices),
-            "group_count": len(lines),
-            "observation_count": observation_count,
-            "start_nav": _safe_float((in_period_snapshots[0] if in_period_snapshots else {}).get("beginning_nav")),
-            "end_nav": _safe_float((in_period_snapshots[-1] if in_period_snapshots else {}).get("ending_nav")),
-            "portfolio_arithmetic_return": portfolio_arithmetic_return,
-            "portfolio_cumulative_ttwror": portfolio_cumulative_ttwror,
-            "total_period_contribution": total_period_contribution,
-            "contribution_residual": contribution_residual,
-        },
-        "lines": lines,
-        "daily_slices": daily_slices,
-    }
-    return _filter_contribution_report_by_group_key(report, group_key=group_key)
 
 
 def build_contribution_calendar_report(

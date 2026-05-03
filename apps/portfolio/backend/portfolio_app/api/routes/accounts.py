@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from portfolio_app.api.assemblers import serialize_transaction, summarize_transactions
 from portfolio_app.api.contracts import (
@@ -17,6 +17,7 @@ from portfolio_app.api.contracts import (
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
+from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
 from portfolio_app.services.portfolio_store import create_account, get_account, get_portfolio, list_accounts, list_transactions
 
 
@@ -38,6 +39,7 @@ def list_account_records(portfolio_id: str) -> AccountListResponse:
 def create_account_record(
     portfolio_id: str,
     payload: AccountCreateRequest,
+    background_tasks: BackgroundTasks,
 ) -> AccountRecord:
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -65,6 +67,7 @@ def create_account_record(
         closed_at=payload.closed_at,
         status=payload.status,
     )
+    background_tasks.add_task(refresh_portfolio_daily_snapshots, portfolio_id)
     return AccountRecord.model_validate(record)
 
 

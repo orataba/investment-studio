@@ -4,6 +4,10 @@ from datetime import date
 
 import pytest
 
+from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
+from portfolio_app.db.session import get_session_factory
+from portfolio_app.services import portfolio_store
+from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
 from portfolio_app.services.ledger import _build_position_state, build_position_lots, derive_ledger_postings
 
 
@@ -23,6 +27,82 @@ def test_portfolio_instruments_endpoint_reads_shared_registry_via_portfolio_back
     )
     assert abbv["asset_core"]["identifiers"][0]["identifier_value"] == "ABBV"
     assert abbv["coverage_state"] == "complete"
+
+
+def test_transaction_write_refreshes_materialized_daily_snapshots(client):
+    baseline_response = client.get("/api/portfolios/yungu/snapshots/daily")
+    assert baseline_response.status_code == 200
+
+    created_response = client.post(
+        "/api/portfolios/yungu/transactions",
+        json={
+            "transaction_type": "deposit",
+            "trade_date": "2026-04-16",
+            "account_id": "cash-usd-main",
+            "gross_amount": 1000.0,
+            "currency": "USD",
+        },
+    )
+    assert created_response.status_code == 200
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, "yungu")
+        assert state is not None
+        assert state.daily_snapshot_status == "current"
+        assert state.dirty_from is None
+        assert state.refreshed_to == date(2026, 4, 16)
+        latest_snapshot = (
+            session.query(PortfolioDailySnapshotModel)
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "yungu")
+            .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
+            .first()
+        )
+        assert latest_snapshot is not None
+        assert latest_snapshot.as_of_date == date(2026, 4, 16)
+
+
+def test_transaction_update_marks_daily_snapshots_dirty_from_old_trade_date():
+    refresh_portfolio_daily_snapshots("yungu")
+    existing = portfolio_store.get_transaction("yungu", "txn-0002")
+    assert existing is not None
+
+    updated = portfolio_store.update_transaction(
+        "yungu",
+        "txn-0002",
+        transaction_type=str(existing["transaction_type"]),
+        trade_date=date(2026, 4, 20),
+        trade_time=existing.get("trade_time"),
+        settlement_date=date(2026, 4, 20),
+        entitlement_date=None,
+        acquisition_date=None,
+        account_id=str(existing["account_id"]),
+        settlement_cash_account_id=None,
+        asset_id=None,
+        instrument_ref=None,
+        quantity=None,
+        price=None,
+        gross_amount=float(existing["gross_amount"]),
+        counter_amount=None,
+        fx_rate=None,
+        fees=float(existing["fees"]),
+        taxes=float(existing["taxes"]),
+        currency=str(existing["currency"]),
+        transfer_scope=None,
+        transfer_object_type=None,
+        transfer_group_id=None,
+        counterparty_account_id=None,
+        note=str(existing.get("note") or ""),
+        created_at=str(existing.get("created_at") or ""),
+    )
+    assert updated is not None
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, "yungu")
+        assert state is not None
+        assert state.daily_snapshot_status == "stale"
+        assert state.dirty_from == date(2026, 2, 3)
 
 
 def test_securities_account_defaults_to_fifo_when_cost_basis_omitted(client):
