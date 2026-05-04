@@ -63,6 +63,7 @@ GIPS 强调一致应用计算方法、建立政策，并披露方法边界。
 
 - `04_CALCULATION_SPEC.md` 作为 canonical 计算政策；
 - materialized snapshot 可重建，不能成为不可解释的手填事实；
+- materialized snapshot 刷新必须可重复、可追踪，并在更新并发到达时保留最新 stale 请求；
 - `coverage_state`、`stale_price_flag`、`stale_fx_flag` 必须随关键结果返回；
 - 区间 daily series、summary、drawdown 必须使用同一组 window-rebased `daily_ttwror`。
 
@@ -86,6 +87,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 | 回撤 | `_drawdown_stats()` 基于 TWR growth index，不基于 NAV |
 | 风险样本 | `return_observation_eligible` 控制 realized risk 的有效收益观察 |
 | 物化读模型 | `PortfolioDailySnapshotModel` / holding snapshot / contribution slice |
+| 刷新治理 | `PortfolioCalculationStateModel.refresh_request_id` 对 stale 请求去重，刷新串行 claim；计算期间若收到新请求会再跑一轮 |
 | MWR | `_solve_xirr()` 输出 `irr` / `mwror`，作为补充指标 |
 
 ## 4. 暂不覆盖的 GIPS 能力

@@ -153,6 +153,9 @@ class PortfolioCalculationStateModel(Base):
     refreshed_from: Mapped[date | None] = mapped_column(Date)
     refreshed_to: Mapped[date | None] = mapped_column(Date)
     refreshed_at: Mapped[str | None] = mapped_column(String)
+    refresh_request_id: Mapped[str | None] = mapped_column(String)
+    refresh_started_at: Mapped[str | None] = mapped_column(String)
+    refresh_completed_at: Mapped[str | None] = mapped_column(String)
     error_message: Mapped[str | None] = mapped_column(String)
 
     portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="calculation_state")

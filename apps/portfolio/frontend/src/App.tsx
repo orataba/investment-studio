@@ -4,6 +4,7 @@ import { LanguageSelector } from '../../../../packages/ui/src/i18n'
 import AccountsPage from './pages/AccountsPage'
 import OverviewPage from './pages/OverviewPage'
 import PortfolioHomePage from './pages/PortfolioHomePage'
+import PortfolioSecurityDetailPage from './pages/PortfolioSecurityDetailPage'
 import PortfoliosPage from './pages/PortfoliosPage'
 import PerformancePage from './pages/PerformancePage'
 import ResearchPage from './pages/ResearchPage'
@@ -26,6 +27,7 @@ export default function App() {
           <Route path="/portfolios/:portfolioId/snapshot" element={<Navigate replace to="../overview" />} />
           <Route path="/portfolios/:portfolioId/overview" element={<OverviewPage />} />
           <Route path="/portfolios/:portfolioId/holdings" element={<PortfolioHomePage />} />
+          <Route path="/portfolios/:portfolioId/holdings/:assetId" element={<PortfolioSecurityDetailPage />} />
           <Route path="/portfolios/:portfolioId/performance" element={<PerformancePage />} />
           <Route path="/portfolios/:portfolioId/risk" element={<RiskPage />} />
           <Route path="/portfolios/:portfolioId/transactions" element={<TransactionsPage />} />

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
-from sqlalchemy import delete, func, select
+from threading import Lock
+from time import monotonic, sleep
+from uuid import uuid4
+
+from sqlalchemy import delete, func, select, update
 
 from portfolio_app.db.models import (
     AccountRecordModel,
@@ -22,9 +26,27 @@ from portfolio_app.services.portfolio_store import (
     _serialize_transaction_row,
 )
 
+_LOCAL_REFRESH_LOCKS: dict[str, Lock] = {}
+_LOCAL_REFRESH_LOCKS_GUARD = Lock()
+_RUNNING_REFRESH_WAIT_SECONDS = 30.0
+_RUNNING_REFRESH_POLL_SECONDS = 0.1
+
 
 def _current_utc_timestamp() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _new_refresh_request_id() -> str:
+    return uuid4().hex
+
+
+def _refresh_lock_for_portfolio(portfolio_id: str) -> Lock:
+    with _LOCAL_REFRESH_LOCKS_GUARD:
+        lock = _LOCAL_REFRESH_LOCKS.get(portfolio_id)
+        if lock is None:
+            lock = Lock()
+            _LOCAL_REFRESH_LOCKS[portfolio_id] = lock
+        return lock
 
 
 def _safe_float(value: object) -> float | None:
@@ -123,35 +145,107 @@ def _load_transactions(session, portfolio_id: str) -> list[TransactionRecordMode
     )
 
 
+def _snapshot_count(session, portfolio_id: str) -> int:
+    return int(
+        session.scalar(
+            select(func.count())
+            .select_from(PortfolioDailySnapshotModel)
+            .where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)
+        )
+        or 0
+    )
+
+
+def _current_refresh_result(session, portfolio_id: str) -> dict[str, object] | None:
+    state = session.get(PortfolioCalculationStateModel, portfolio_id)
+    if state is None:
+        return None
+    return {
+        "portfolio_id": portfolio_id,
+        "snapshot_count": _snapshot_count(session, portfolio_id),
+        "refreshed_from": state.refreshed_from,
+        "refreshed_to": state.refreshed_to,
+        "refreshed_at": state.refreshed_at,
+    }
+
+
 def mark_portfolio_daily_snapshots_stale(portfolio_id: str, dirty_from: date | None = None) -> None:
     session_factory = get_session_factory()
     with session_factory() as session:
         if session.get(PortfolioRecordModel, portfolio_id) is None:
             return
         state = _state_for_portfolio(session, portfolio_id)
-        state.daily_snapshot_status = "stale"
+        state.refresh_request_id = _new_refresh_request_id()
+        if state.daily_snapshot_status != "running":
+            state.daily_snapshot_status = "stale"
         if dirty_from is not None:
             state.dirty_from = min(state.dirty_from, dirty_from) if state.dirty_from is not None else dirty_from
         state.error_message = None
         session.commit()
 
 
-def refresh_portfolio_daily_snapshots(portfolio_id: str, end_date: date | None = None) -> dict[str, object] | None:
+def _claim_daily_snapshot_refresh(portfolio_id: str) -> dict[str, object]:
     session_factory = get_session_factory()
     with session_factory() as session:
         portfolio_record = session.get(PortfolioRecordModel, portfolio_id)
         if portfolio_record is None:
-            return None
+            return {"status": "missing"}
         state = _state_for_portfolio(session, portfolio_id)
-        state.daily_snapshot_status = "running"
-        state.error_message = None
+
+        if state.daily_snapshot_status == "current" and _snapshot_count(session, portfolio_id) > 0:
+            return {
+                "status": "current",
+                "result": _current_refresh_result(session, portfolio_id),
+            }
+        if state.daily_snapshot_status == "running":
+            return {"status": "running"}
+
+        request_id = state.refresh_request_id or _new_refresh_request_id()
+        state.refresh_request_id = request_id
+        session.flush()
+        claim_result = session.execute(
+            update(PortfolioCalculationStateModel)
+            .where(PortfolioCalculationStateModel.portfolio_id == portfolio_id)
+            .where(PortfolioCalculationStateModel.daily_snapshot_status != "running")
+            .where(PortfolioCalculationStateModel.refresh_request_id == request_id)
+            .values(
+                daily_snapshot_status="running",
+                refresh_started_at=_current_utc_timestamp(),
+                refresh_completed_at=None,
+                error_message=None,
+            )
+        )
         session.commit()
+        if int(claim_result.rowcount or 0) == 0:
+            return {"status": "running"}
+        return {"status": "claimed", "request_id": request_id}
+
+
+def _wait_for_running_daily_snapshot_refresh(portfolio_id: str) -> bool:
+    deadline = monotonic() + _RUNNING_REFRESH_WAIT_SECONDS
+    session_factory = get_session_factory()
+    while monotonic() < deadline:
+        sleep(_RUNNING_REFRESH_POLL_SECONDS)
+        with session_factory() as session:
+            state = session.get(PortfolioCalculationStateModel, portfolio_id)
+            if state is None or state.daily_snapshot_status != "running":
+                return True
+    return False
+
+
+def _refresh_portfolio_daily_snapshots_once(
+    portfolio_id: str,
+    *,
+    request_id: str,
+    end_date: date | None = None,
+) -> tuple[dict[str, object] | None, bool]:
+    session_factory = get_session_factory()
 
     try:
         with session_factory() as session:
             portfolio_record = session.get(PortfolioRecordModel, portfolio_id)
             if portfolio_record is None:
-                return None
+                return None, False
             account_records = _load_accounts(session, portfolio_id)
             transaction_records = _load_transactions(session, portfolio_id)
             resolved_end_date = end_date or _resolve_live_portfolio_as_of_date(
@@ -268,29 +362,87 @@ def refresh_portfolio_daily_snapshots(portfolio_id: str, end_date: date | None =
                 portfolio_record.securities_count = int(latest_snapshot.get("total_position_count") or 0)
 
             state = _state_for_portfolio(session, portfolio_id)
-            state.daily_snapshot_status = "current"
-            state.dirty_from = None
-            state.refreshed_from = _parse_date(snapshots[0].get("as_of_date")) if snapshots else None
-            state.refreshed_to = _parse_date(snapshots[-1].get("as_of_date")) if snapshots else None
-            state.refreshed_at = calculated_at
-            state.error_message = None
+            refreshed_from = _parse_date(snapshots[0].get("as_of_date")) if snapshots else None
+            refreshed_to = _parse_date(snapshots[-1].get("as_of_date")) if snapshots else None
+            update_result = session.execute(
+                update(PortfolioCalculationStateModel)
+                .where(PortfolioCalculationStateModel.portfolio_id == portfolio_id)
+                .where(PortfolioCalculationStateModel.refresh_request_id == request_id)
+                .values(
+                    daily_snapshot_status="current",
+                    dirty_from=None,
+                    refreshed_from=refreshed_from,
+                    refreshed_to=refreshed_to,
+                    refreshed_at=calculated_at,
+                    refresh_request_id=None,
+                    refresh_completed_at=calculated_at,
+                    error_message=None,
+                )
+            )
+            request_superseded = int(update_result.rowcount or 0) == 0
+            if request_superseded and state.daily_snapshot_status == "running":
+                state.daily_snapshot_status = "stale"
+                state.refresh_completed_at = calculated_at
             session.commit()
 
             return {
                 "portfolio_id": portfolio_id,
                 "snapshot_count": len(snapshots),
-                "refreshed_from": state.refreshed_from,
-                "refreshed_to": state.refreshed_to,
+                "refreshed_from": refreshed_from,
+                "refreshed_to": refreshed_to,
                 "refreshed_at": calculated_at,
-            }
+            }, request_superseded
     except Exception as error:
         with session_factory() as session:
             if session.get(PortfolioRecordModel, portfolio_id) is not None:
-                state = _state_for_portfolio(session, portfolio_id)
-                state.daily_snapshot_status = "failed"
-                state.error_message = str(error)
+                completed_at = _current_utc_timestamp()
+                update_result = session.execute(
+                    update(PortfolioCalculationStateModel)
+                    .where(PortfolioCalculationStateModel.portfolio_id == portfolio_id)
+                    .where(PortfolioCalculationStateModel.refresh_request_id == request_id)
+                    .values(
+                        daily_snapshot_status="failed",
+                        refresh_completed_at=completed_at,
+                        error_message=str(error),
+                    )
+                )
+                if int(update_result.rowcount or 0) == 0:
+                    state = _state_for_portfolio(session, portfolio_id)
+                    if state.daily_snapshot_status == "running":
+                        state.daily_snapshot_status = "stale"
+                    state.refresh_completed_at = completed_at
+                    state.error_message = str(error)
                 session.commit()
         raise
+
+
+def refresh_portfolio_daily_snapshots(portfolio_id: str, end_date: date | None = None) -> dict[str, object] | None:
+    lock = _refresh_lock_for_portfolio(portfolio_id)
+    with lock:
+        while True:
+            claim = _claim_daily_snapshot_refresh(portfolio_id)
+            claim_status = str(claim.get("status") or "")
+            if claim_status == "missing":
+                return None
+            if claim_status == "current":
+                result = claim.get("result")
+                return result if isinstance(result, dict) else None
+            if claim_status == "running":
+                if not _wait_for_running_daily_snapshot_refresh(portfolio_id):
+                    return None
+                continue
+
+            request_id = str(claim.get("request_id") or "")
+            if not request_id:
+                continue
+            result, request_superseded = _refresh_portfolio_daily_snapshots_once(
+                portfolio_id,
+                request_id=request_id,
+                end_date=end_date,
+            )
+            if request_superseded:
+                continue
+            return result
 
 
 def refresh_all_portfolio_daily_snapshots() -> list[dict[str, object]]:
@@ -358,12 +510,7 @@ def _state_requires_refresh(session, portfolio_id: str) -> bool:
     state = session.get(PortfolioCalculationStateModel, portfolio_id)
     if state is None or state.daily_snapshot_status != "current":
         return True
-    snapshot_count = session.scalar(
-        select(func.count())
-        .select_from(PortfolioDailySnapshotModel)
-        .where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)
-    )
-    return int(snapshot_count or 0) == 0
+    return _snapshot_count(session, portfolio_id) == 0
 
 
 def ensure_portfolio_daily_snapshots(portfolio_id: str) -> None:

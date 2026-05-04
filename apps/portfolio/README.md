@@ -58,7 +58,7 @@ uvicorn portfolio_app.main:app --reload --host 127.0.0.1 --port 8001
 - 测试使用临时 SQLite，不会污染默认运行库
 - research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理；当前产物以 target weights、member targets、leaf targets、solve event 和 target weight gaps 为主
 - backend 顶层包名现在是 `portfolio_app`
-- daily snapshots 已物化到数据库，`Performance`、`Holdings`、instrument/account contribution 读路径默认复用物化结果；交易、账户或行情变更会把相关组合标记为 stale 并触发刷新。
+- daily snapshots 已物化到数据库，`Performance`、`Holdings`、instrument/account contribution 读路径默认复用物化结果；交易、账户或行情变更会用 `refresh_request_id` 把相关组合标记为 stale 并触发刷新。若刷新中又收到新数据，当前计算不会清掉新的 stale 标记，而是串行再跑一轮后才置为 current。
 
 ### 2. 前端
 

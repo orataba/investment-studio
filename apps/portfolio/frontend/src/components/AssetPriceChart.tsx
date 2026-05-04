@@ -35,6 +35,7 @@ type AssetPriceChartProps = {
   error: string | null
   rangeKey: PortfolioAssetChartRangeKey
   onRangeChange: (rangeKey: PortfolioAssetChartRangeKey) => void
+  variant?: 'default' | 'instrument'
 }
 
 export default function AssetPriceChart({
@@ -43,18 +44,19 @@ export default function AssetPriceChart({
   error,
   rangeKey,
   onRangeChange,
+  variant = 'default',
 }: AssetPriceChartProps) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null)
   const points = chart?.points ?? []
   const firstPoint = points[0] ?? null
   const activePoint = points[hoverIndex ?? points.length - 1] ?? null
   const currency = chart?.currency ?? chart?.asset_core.currency ?? 'USD'
-  const width = 760
-  const height = 240
-  const paddingLeft = 10
-  const paddingRight = 10
-  const paddingTop = 18
-  const paddingBottom = 26
+  const width = variant === 'instrument' ? 900 : 760
+  const height = variant === 'instrument' ? 340 : 240
+  const paddingLeft = variant === 'instrument' ? 58 : 10
+  const paddingRight = variant === 'instrument' ? 18 : 10
+  const paddingTop = variant === 'instrument' ? 24 : 18
+  const paddingBottom = variant === 'instrument' ? 40 : 26
 
   const chartGeometry = useMemo(() => {
     if (points.length === 0) {
@@ -107,8 +109,19 @@ export default function AssetPriceChart({
       : null
 
   return (
-    <section className="asset-price-chart">
+    <section className={`asset-price-chart ${variant === 'instrument' ? 'asset-price-chart-instrument' : ''}`}>
       <div className="asset-price-chart-toolbar">
+        {variant === 'instrument' && chart ? (
+          <div className="instrument-series-label portfolio-instrument-series-label">
+            <strong>{chart.asset_core.identifiers.find((item) => item.is_primary)?.identifier_value ?? chart.asset_core.asset_id}</strong>
+            <span>{chart.chart_basis ?? 'Price'}</span>
+            <em>
+              {activeChangeValue != null
+                ? `${formatSignedCurrency(activeChangeValue, currency)} · ${formatPercent(activeChangePct)}`
+                : '—'}
+            </em>
+          </div>
+        ) : null}
         <div className="price-chart-readout">
           <strong>{activePoint ? formatUnitPrice(activePoint.value, currency) : '—'}</strong>
           <span>{activePoint ? formatChartDate(activePoint.date) : chart ? `As of ${chart.as_of_date}` : 'No data'}</span>

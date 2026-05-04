@@ -275,7 +275,7 @@
 - group by taxonomy / selected planning taxonomy / account
 - sortable and filterable columns
 - relative-to-benchmark columns
-- security detail pane entry
+- portfolio security detail page entry
 
 **Comparator**
 
@@ -285,7 +285,7 @@
 
 **Drill-down**
 
-- security row -> security detail pane
+- security row -> portfolio security detail page
 - taxonomy group -> grouped holdings view
 - relative columns -> `Performance` or `Risk`
 - account grouping -> `Accounts`
@@ -422,7 +422,7 @@
 
 **Drill-down**
 
-- transaction instrument -> `Holdings` security detail pane
+- transaction instrument -> portfolio security detail page
 - transaction account -> `Accounts`
 
 **Not this page**
@@ -613,9 +613,9 @@
 
 ## 6. Shared Detail Surfaces
 
-### 6.1 Security Detail Pane
+### 6.1 Portfolio Security Detail
 
-单资产 detail surface 的 canonical 入口在 `Holdings`。
+Portfolio-specific security detail 的 canonical 入口从 `Holdings` 行进入，但形态是独立子路由 `/portfolios/:portfolioId/holdings/:assetId`，而不是页面底部普通 section、fixed panel 或 modal。点击 holdings 行后进入组合内单资产详情页，保留 `as_of_date` 等上下文，返回 `Holdings` 时保留列表筛选/排序状态。
 
 包含：
 
@@ -625,12 +625,14 @@
 - `Events`
 - `Data Quality`
 
+Watchlist / Instrument Detail 是 asset-level research terminal 的 canonical 入口。Portfolio Security Detail 可以使用共享资产价格/NAV 事实，并提供资产级收益风险、研究和 monitoring 的 deep link，但不复制 Watchlist detail 的完整工作面。
+
 其他页面如需进入单资产深层信息，应优先：
 
-- 跳转到 `Holdings` 并打开同一资产的 detail pane
-- 或打开同款 drawer
+- 跳转到 portfolio security detail page
+- 或在当前上下文提供明确的 `Open Security Detail` link
 
-而不是再造独立页面。
+而不是在各工作面重复实现另一套单资产详情。
 
 ### 6.2 Node / Group Detail
 
@@ -648,12 +650,12 @@ taxonomy node、risk_sleeve node、benchmark-relative group 等分组对象，�
 | --- | --- | --- |
 | `Overview` composition | `Holdings` grouped view | 保留 `as_of_date` 与 selected taxonomy |
 | `Overview` risk highlight | `Risk` | 保留 `as_of_date` |
-| `Holdings` row | security detail pane | 不离开当前页面 |
+| `Holdings` row | portfolio security detail page | 保留 `as_of_date` 与列表返回状态 |
 | `Holdings` group | `Risk` or `Performance` | 保留 taxonomy context |
 | `Performance` contribution line | `Holdings` / grouped detail | 保留 period 与 grouping |
 | `Risk` drift line | `Holdings` filtered view | 保留 planning taxonomy 与 target_resolution_mode |
 | `Risk` alert event | `Holdings` / `Transactions` / `Accounts` | 跳到相关实体 |
-| `Transactions` instrument | `Holdings` security detail pane | 保留 instrument context |
+| `Transactions` instrument | portfolio security detail page | 保留 instrument context |
 | `Accounts` position | `Holdings` | 保留 account filter |
 | `Review` performance summary | `Performance` | 保留 period, taxonomy, benchmark |
 | `Review` risk summary | review-local period risk detail | 不跳到 `Risk` 当前态页面 |
@@ -665,7 +667,7 @@ taxonomy node、risk_sleeve node、benchmark-relative group 等分组对象，�
 | --- | --- | --- |
 | `PortfolioSnapshot` | `Overview` | `Holdings`, `Risk` |
 | positions / lots | `Holdings` | `Overview`, `Risk` |
-| `Transaction` | `Transactions` | `Accounts`, security detail pane |
+| `Transaction` | `Transactions` | `Accounts`, portfolio security detail |
 | `LedgerPosting` | `Accounts` | derived from `Transaction` |
 | `Account` | `Accounts` | `Transactions`, `Holdings` |
 | `PerformanceSnapshot` | `Performance` | `Review`, `Overview` |
@@ -749,7 +751,7 @@ taxonomy node、risk_sleeve node、benchmark-relative group 等分组对象，�
 1. 页面路由与导航骨架
 2. 各工作面的 page-level state model
 3. object-to-page API 切分
-4. shared detail pane / drawer 体系
+4. shared detail route / drawer 体系
 5. 关键 blank state / unavailable state / comparator missing state
 
 下一阶段不应再回头增加新的一级工作面或重新定义页面主问题。

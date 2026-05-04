@@ -1059,6 +1059,16 @@ $$
 - `benchmark_overlap_ratio`（若适用）
 - `calculation_version`
 
+### 12.1 物化快照刷新一致性
+
+daily snapshot、holding snapshot、contribution slice 是可重建的读模型，不是源事实。刷新链路必须满足：
+
+- 交易、账户、共享行情或 FX 变化先写入源事实，再把受影响组合标记为 `stale`；
+- 每次 stale 标记生成新的 `refresh_request_id`，用于表示“至少需要覆盖到这次事实更新之后”；
+- 同一组合的物化刷新串行执行；如果刷新期间又收到新的 `refresh_request_id`，当前计算结果不得把状态置为 `current` 或清空 `dirty_from`，必须继续按最新事实再计算一轮；
+- 邮件、文件或批量行情导入完成后按资产/组合去重触发刷新，不应在单个数据点写入过程中反复启动组合重建；
+- 读路径可以在发现状态不是 `current` 时触发 repair refresh，但 repair 必须复用同一套串行 claim 逻辑，不能并行删除/插入同一组合的物化表。
+
 ## 13. 首版明确不锁死的高级口径
 
 以下能力首版可以保留扩展位，但不在当前 canonical 规格中锁死：

@@ -5101,6 +5101,259 @@ input[type='checkbox'] {
   font-weight: inherit;
 }
 
+.inline-notice-warning {
+  color: var(--portfolio-warning);
+}
+
+.holdings-main-table tbody tr[tabindex]:focus-visible {
+  outline: 2px solid var(--portfolio-accent);
+  outline-offset: -2px;
+}
+
+.portfolio-security-detail {
+  display: grid;
+  gap: 18px;
+}
+
+.portfolio-security-detail-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 8px 0 2px;
+}
+
+.portfolio-security-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.8fr);
+  gap: 24px;
+  align-items: end;
+  padding: 16px 0 14px;
+  border-top: 2px solid var(--portfolio-ink);
+  border-bottom: 1px solid var(--portfolio-line-strong);
+}
+
+.portfolio-security-title-stack {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.portfolio-security-title-stack h1 {
+  margin: 0;
+  color: var(--portfolio-ink);
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1.12;
+}
+
+.portfolio-security-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  color: var(--portfolio-muted);
+  font-size: 13px;
+}
+
+.portfolio-security-hero-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.portfolio-security-hero-metrics div,
+.portfolio-security-fact {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.portfolio-security-hero-metrics span,
+.portfolio-security-fact span {
+  color: var(--portfolio-muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.portfolio-security-hero-metrics strong,
+.portfolio-security-fact strong {
+  overflow: hidden;
+  color: var(--portfolio-ink);
+  font-size: 16px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-security-hero-metrics strong.positive-cell,
+.portfolio-security-fact strong.positive-cell {
+  color: var(--portfolio-positive);
+}
+
+.portfolio-security-hero-metrics strong.negative-cell,
+.portfolio-security-fact strong.negative-cell {
+  color: var(--portfolio-negative);
+}
+
+.portfolio-security-chart-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.64fr) minmax(320px, 0.86fr);
+  gap: 0 24px;
+  padding-top: 14px;
+  border-top: 2px solid var(--portfolio-ink);
+}
+
+.portfolio-security-chart-main {
+  min-width: 0;
+}
+
+.portfolio-security-chart-facts {
+  display: grid;
+  align-content: start;
+  gap: 0;
+  border-top: 1px solid var(--portfolio-line-strong);
+}
+
+.portfolio-security-fact {
+  min-height: 78px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--portfolio-line);
+}
+
+.portfolio-security-fact em {
+  color: var(--portfolio-muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.asset-price-chart-instrument {
+  padding-top: 0;
+}
+
+.asset-price-chart-instrument .asset-price-chart-toolbar {
+  align-items: center;
+  padding: 12px 0 8px;
+}
+
+.asset-price-chart-instrument .portfolio-instrument-series-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--portfolio-muted);
+  font-size: 14px;
+}
+
+.asset-price-chart-instrument .portfolio-instrument-series-label strong {
+  color: var(--portfolio-ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.asset-price-chart-instrument .portfolio-instrument-series-label span {
+  color: #1f6fbc;
+}
+
+.asset-price-chart-instrument .portfolio-instrument-series-label em {
+  color: var(--portfolio-muted);
+  font-style: normal;
+}
+
+.asset-price-chart-instrument .price-chart-readout {
+  margin-left: auto;
+}
+
+.asset-price-chart-instrument .price-chart-readout strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.asset-price-chart-instrument .price-chart-shell {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.asset-price-chart-instrument .price-chart-grid-line {
+  stroke: rgba(17, 24, 39, 0.36);
+  stroke-width: 0.65;
+}
+
+.asset-price-chart-instrument .price-chart-axis-label {
+  fill: var(--portfolio-ink);
+}
+
+.asset-price-chart-instrument .price-chart-area {
+  fill: rgba(31, 111, 188, 0.16);
+}
+
+.asset-price-chart-instrument .price-chart-line {
+  stroke: #1f6fbc;
+  stroke-width: 2;
+}
+
+.asset-price-chart-instrument .price-chart-footer {
+  border-top: 1px solid var(--portfolio-line);
+}
+
+.portfolio-security-tabs {
+  padding-top: 2px;
+}
+
+.portfolio-security-overview-grid {
+  padding-top: 0;
+}
+
+@media (max-width: 1060px) {
+  .portfolio-security-hero,
+  .portfolio-security-chart-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .portfolio-security-chart-facts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    border-top: none;
+  }
+
+  .portfolio-security-fact {
+    min-height: 0;
+    border-top: 1px solid var(--portfolio-line-strong);
+  }
+}
+
+@media (max-width: 720px) {
+  .portfolio-security-detail-nav {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .portfolio-security-meta-row {
+    align-items: flex-start;
+  }
+
+  .portfolio-security-meta-row,
+  .portfolio-security-hero-metrics,
+  .portfolio-security-chart-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .portfolio-security-title-stack h1 {
+    font-size: 24px;
+  }
+
+  .asset-price-chart-instrument .price-chart-readout {
+    margin-left: 0;
+  }
+}
+
+.holdings-row-active .row-select {
+  border-color: var(--portfolio-accent);
+  background: var(--portfolio-accent);
+}
+
 /* Portfolio overview chart follows the Fund Detail overview chart grammar. */
 .portfolio-workspace-page .overview-nav-chart-panel {
   gap: 6px;

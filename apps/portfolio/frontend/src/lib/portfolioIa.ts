@@ -97,12 +97,12 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
       { title: 'Group by taxonomy / planning axis / account', owner: 'Taxonomy + account context', role: 'Switch between portfolio aggregation lenses' },
       { title: 'Sortable and filterable columns', owner: 'Holdings workspace', role: 'Support dense table workflows without route sprawl' },
       { title: 'Relative-to-benchmark columns', owner: 'Resolved benchmark', role: 'Expose benchmark-relative composition when supported' },
-      { title: 'Security detail pane entry', owner: 'Security detail surface', role: 'Open quotes, transactions, trades, events, and data quality' },
+      { title: 'Security detail page entry', owner: 'Portfolio security detail route', role: 'Open quotes, transactions, trades, events, and data quality' },
     ],
     comparator: ['Default comparator: primary benchmark', 'Target gap is not the canonical comparator on this page'],
     conditionalBlocks: ['If benchmark only has return_only capability, composition-relative columns become unavailable', 'Grouping by account should drill toward Accounts rather than replace it'],
     drillDowns: [
-      { source: 'Security row', target: 'Security detail pane' },
+      { source: 'Security row', target: 'Portfolio security detail page' },
       { source: 'Taxonomy group', target: 'Grouped holdings view' },
       { source: 'Relative columns', target: 'Performance or Risk' },
       { source: 'Account grouping', target: 'Accounts' },
@@ -203,7 +203,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
     comparator: ['No canonical comparator; this page is fact-first'],
     conditionalBlocks: ['Derived Trades remain secondary surfaces, not a separate primary page'],
     drillDowns: [
-      { source: 'Transaction instrument', target: 'Holdings security detail pane' },
+      { source: 'Transaction instrument', target: 'Portfolio security detail page' },
       { source: 'Transaction account', target: 'Accounts' },
     ],
     notThisPage: ['Not a FIFO Trades primary page', 'Not a review or analytics summary page'],

@@ -6,7 +6,7 @@ import pytest
 
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import portfolio_store
+from portfolio_app.services import daily_snapshots, portfolio_store
 from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
 from portfolio_app.services.ledger import _build_position_state, build_position_lots, derive_ledger_postings
 
@@ -103,6 +103,69 @@ def test_transaction_update_marks_daily_snapshots_dirty_from_old_trade_date():
         assert state is not None
         assert state.daily_snapshot_status == "stale"
         assert state.dirty_from == date(2026, 2, 3)
+
+
+def test_daily_snapshot_refresh_replays_when_data_changes_mid_refresh(monkeypatch):
+    original_builder = daily_snapshots.performance.build_daily_portfolio_snapshots
+    build_calls = {"count": 0}
+
+    def build_with_mid_refresh_update(*args, **kwargs):
+        build_calls["count"] += 1
+        if build_calls["count"] == 1:
+            portfolio_store.create_transaction(
+                portfolio_id="yungu",
+                transaction_type="deposit",
+                trade_date=date(2026, 4, 18),
+                trade_time=None,
+                settlement_date=date(2026, 4, 18),
+                entitlement_date=None,
+                acquisition_date=None,
+                account_id="cash-usd-main",
+                settlement_cash_account_id=None,
+                asset_id=None,
+                instrument_ref=None,
+                quantity=None,
+                price=None,
+                gross_amount=1234.0,
+                counter_amount=None,
+                fx_rate=None,
+                fees=0.0,
+                taxes=0.0,
+                currency="USD",
+                transfer_scope=None,
+                transfer_object_type=None,
+                transfer_group_id=None,
+                counterparty_account_id=None,
+                note="mid-refresh data change",
+            )
+        return original_builder(*args, **kwargs)
+
+    monkeypatch.setattr(
+        daily_snapshots.performance,
+        "build_daily_portfolio_snapshots",
+        build_with_mid_refresh_update,
+    )
+
+    result = daily_snapshots.refresh_portfolio_daily_snapshots("yungu")
+
+    assert build_calls["count"] == 2
+    assert result is not None
+    assert result["refreshed_to"] == date(2026, 4, 18)
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, "yungu")
+        assert state is not None
+        assert state.daily_snapshot_status == "current"
+        assert state.dirty_from is None
+        assert state.refreshed_to == date(2026, 4, 18)
+        latest_snapshot = (
+            session.query(PortfolioDailySnapshotModel)
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "yungu")
+            .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
+            .first()
+        )
+        assert latest_snapshot is not None
+        assert latest_snapshot.as_of_date == date(2026, 4, 18)
 
 
 def test_securities_account_defaults_to_fifo_when_cost_basis_omitted(client):
