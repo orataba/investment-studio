@@ -32,7 +32,6 @@ NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES = {
     "return_of_capital",
 }
 DAYS_PER_YEAR = 365.25
-TRADING_DAYS_PER_YEAR = DAYS_PER_YEAR
 
 
 def _safe_float(value: object) -> float | None:
@@ -1393,7 +1392,11 @@ def _compound_daily_ttwror(snapshots: list[dict[str, object]]) -> float | None:
     return (growth_index - 1.0) if has_return else None
 
 
-def _drawdown_stats(snapshots: list[dict[str, object]]) -> dict[str, int | float | None]:
+def _drawdown_stats(
+    snapshots: list[dict[str, object]],
+    *,
+    start_anchor_date: date | None = None,
+) -> dict[str, int | float | None]:
     growth_points: list[tuple[date, float]] = []
     growth_index = 1.0
     for snapshot in snapshots:
@@ -1412,11 +1415,12 @@ def _drawdown_stats(snapshots: list[dict[str, object]]) -> dict[str, int | float
         }
 
     running_peak = 1.0
-    running_peak_date = growth_points[0][0]
+    running_peak_date = start_anchor_date or growth_points[0][0]
     current_drawdown = 0.0
     max_drawdown = 0.0
     max_drawdown_peak_date = running_peak_date
     max_drawdown_trough_date = running_peak_date
+    max_drawdown_peak_growth = running_peak
     recovery_index = None
 
     for point_date, growth_index in growth_points:
@@ -1430,18 +1434,14 @@ def _drawdown_stats(snapshots: list[dict[str, object]]) -> dict[str, int | float
             max_drawdown = drawdown
             max_drawdown_peak_date = running_peak_date
             max_drawdown_trough_date = point_date
+            max_drawdown_peak_growth = running_peak
             recovery_index = None
 
     if max_drawdown_peak_date != max_drawdown_trough_date:
-        required_recovery_growth = growth_points[
-            next(
-                position for position, (point_date, _) in enumerate(growth_points) if point_date == max_drawdown_peak_date
-            )
-        ][1]
         for point_date, growth_index in growth_points:
             if point_date <= max_drawdown_trough_date:
                 continue
-            if growth_index >= required_recovery_growth - 1e-12:
+            if growth_index >= max_drawdown_peak_growth - 1e-12:
                 recovery_index = point_date
                 break
 
@@ -1455,6 +1455,31 @@ def _drawdown_stats(snapshots: list[dict[str, object]]) -> dict[str, int | float
         if recovery_index is not None and max_drawdown_peak_date != max_drawdown_trough_date
         else None,
     }
+
+
+def _rebased_ttwror_series(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
+    growth_index = 1.0
+    peak_growth_index = 1.0
+    has_return_history = False
+    rendered_snapshots: list[dict[str, object]] = []
+
+    for snapshot in snapshots:
+        rendered_snapshot = dict(snapshot)
+        daily_ttwror = _safe_float(snapshot.get("daily_ttwror"))
+        if daily_ttwror is not None and isfinite(daily_ttwror):
+            has_return_history = True
+            growth_index *= 1.0 + daily_ttwror
+            peak_growth_index = max(peak_growth_index, growth_index)
+
+        rendered_snapshot["cumulative_ttwror"] = (growth_index - 1.0) if has_return_history else None
+        rendered_snapshot["drawdown"] = (
+            (growth_index / peak_growth_index) - 1.0
+            if has_return_history and peak_growth_index > 0
+            else None
+        )
+        rendered_snapshots.append(rendered_snapshot)
+
+    return rendered_snapshots
 
 
 def _xnpv(rate: float, cash_flows: list[tuple[date, float]]) -> float:
@@ -1552,6 +1577,7 @@ def build_portfolio_performance_report_from_snapshots(
         if start_date is None
         or (isinstance(snapshot.get("as_of_date"), date) and snapshot["as_of_date"] >= start_date)
     ]
+    visible_daily_series_snapshots = _rebased_ttwror_series(visible_snapshots)
     snapshot_summary = summarize_daily_snapshots(visible_snapshots)
     complete_snapshots = [
         snapshot
@@ -1712,7 +1738,7 @@ def build_portfolio_performance_report_from_snapshots(
         else None
     )
 
-    drawdown_stats = _drawdown_stats(visible_snapshots)
+    drawdown_stats = _drawdown_stats(visible_snapshots, start_anchor_date=start_anchor_date)
     current_drawdown = drawdown_stats["current_drawdown"]
     max_drawdown = drawdown_stats["max_drawdown"]
     max_drawdown_days = drawdown_stats["max_drawdown_days"]
@@ -1723,7 +1749,7 @@ def build_portfolio_performance_report_from_snapshots(
         coverage_state = "complete"
         if snapshot_summary["partial_count"] or snapshot_summary["unavailable_count"]:
             coverage_state = "partial"
-        if cumulative_ttwror is None or irr is None:
+        if cumulative_ttwror is None:
             coverage_state = "partial"
 
     return {
@@ -1797,7 +1823,7 @@ def build_portfolio_performance_report_from_snapshots(
                 "cumulative_ttwror": snapshot["cumulative_ttwror"],
                 "drawdown": snapshot["drawdown"],
             }
-            for snapshot in visible_snapshots
+            for snapshot in visible_daily_series_snapshots
         ],
     }
 

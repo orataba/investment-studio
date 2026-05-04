@@ -1,11 +1,12 @@
 # PMS 正式版计算口径规格
 
-更新时间：`2026-05-03`
+更新时间：`2026-05-04`
 关联文档：
 
 - [`01_PMS_REFERENCE_BASELINE.md`](./01_PMS_REFERENCE_BASELINE.md)
 - [`02_PRODUCT_PRD.md`](./02_PRODUCT_PRD.md)
 - [`03_DOMAIN_MODEL.md`](./03_DOMAIN_MODEL.md)
+- [`06_GIPS_ALIGNMENT.md`](./06_GIPS_ALIGNMENT.md)
 
 ## 1. 文档目标
 
@@ -33,11 +34,17 @@
   - risk system
   - target risk budget gap
   - scenario P&L
+- **GIPS-informed 方法治理负责**：
+  - TWR 优先于 MWR 作为默认绩效呈现口径
+  - external cash flow policy 的稳定定义
+  - 外部现金流日期估值、子期间收益几何链接和方法一致性
+  - coverage / stale / unavailable 边界披露
 
 换句话说：
 
 - 涉及 `持仓、成本、交易匹配、收益率` 的 canonical 口径，尽量先向 PP 靠拢；
 - 涉及 `风控、风险预算、buy-side review` 的部分，再由本项目扩展。
+- 涉及绩效呈现政策、外部现金流治理和方法一致性时，采用 GIPS-informed 原则，但不声称本项目或任意组合 GIPS compliant。
 
 ### 1.2 事实底座与派生原则
 
@@ -428,6 +435,12 @@ $$
 - 资金使用效率：`IRR / MWROR`
 - 基准对比：`benchmark-relative return`
 
+GIPS-informed 规则：
+
+- TWR 是默认组合绩效语言；
+- MWR / IRR 是补充资金效率指标，不得在 UI 或 API summary 中替代 TWR；
+- 若 IRR 因现金流符号、同日窗口或数学求根原因不可得，不能据此把已完整计算的 TWR 结果标记为失败。
+
 ### 5.2 Daily TTWROR
 
 正式版组合级 TTWROR 采用 Portfolio Performance 的日级 true time-weighted 逻辑：
@@ -448,6 +461,7 @@ $$
 - 外部流入放在分母，视作在当日开始投入；
 - 外部流出加回分子，视作在当日结束取出；
 - 这样可以把 external flows 从业绩中中性化。
+- 当前 daily snapshot engine 对每个 `as_of_date` 估值，因此外部现金流发生日天然有估值；若未来支持非日频估值，必须引入 large cash flow policy 与子期间收益几何链接，不能静默改用近似 MWR 方法。
 
 ### 5.3 Cumulative TTWROR
 
@@ -550,6 +564,7 @@ $$
 
 - 组合级 drawdown 必须基于 `TTWROR` 复合后的 `G_t`，不得基于资产规模 `NAV_t` 直接计算；
 - 任何带 `start_date / end_date` 的区间 summary 都必须用区间内 `daily_ttwror` 重新复合并重算 drawdown，不能直接复用 inception-to-date 的 `cumulative_ttwror` 或 snapshot-level drawdown；
+- 区间第一笔有效收益如果已经形成回撤，drawdown peak 应以区间起点锚点为基准，而不是把第一条收益观察日误当作峰值日；
 - 若主图显示 `Portfolio Value`，下方 drawdown 仍然使用 `TWR Index`，因为外部出入金不应制造或稀释投资回撤。
 
 ### 5.8 Volatility / Sharpe / Sortino / Tracking Error

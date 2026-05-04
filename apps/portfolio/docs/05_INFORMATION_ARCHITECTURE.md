@@ -1,6 +1,6 @@
 # 05 Information Architecture
 
-> 说明：这份 IA 文档保留目标态工作面设计。当前实际实现以 [README.md](../README.md) 为准，其中当前状态总览已经以 `Overview` 形式发布，`Snapshot` 不再作为独立工作面保留。
+> 说明：这份 IA 文档保留目标态工作面设计。当前实际实现以 [README.md](../README.md) 为准；当前状态总览统一命名为 `Overview`，`Snapshot` 仅作为后端派生对象语义保留。
 
 ## 1. Purpose
 
@@ -150,7 +150,7 @@
 
 单组合一级导航固定为：
 
-1. `Snapshot`
+1. `Overview`
 2. `Holdings`
 3. `Performance`
 4. `Risk`
@@ -169,9 +169,9 @@
 | Context | Applies To | Default Rule | Notes |
 | --- | --- | --- | --- |
 | `portfolio_id` | all pages | current workspace portfolio | 不允许跨页面隐式切到其他组合 |
-| `as_of_date` | `Snapshot` / `Holdings` / `Risk` | latest complete `as_of_date` | 当前状态页统一使用 |
+| `as_of_date` | `Overview` / `Holdings` / `Risk` | latest complete `as_of_date` | 当前状态页统一使用 |
 | `period` | `Performance` / `Review` | user-selected | 区间页统一使用 |
-| `resolved_primary_benchmark_assignment_id` | `Snapshot` / `Holdings` / `Risk` | resolved active assignment at `as_of_date` | 当前状态页不读取 portfolio 固定 benchmark pointer |
+| `resolved_primary_benchmark_assignment_id` | `Overview` / `Holdings` / `Risk` | resolved active assignment at `as_of_date` | 当前状态页不读取 portfolio 固定 benchmark pointer |
 | `benchmark_resolution_mode` | `Performance` / `Review` | resolved primary benchmark over selected period | 区间内发生 benchmark assignment 切换时显示 `Mixed Benchmark` |
 | `selected_taxonomy_id` | `Holdings` / `Performance` / `Risk` / `Review` | page-specific default | 非 planning taxonomy 不能进入 target compare |
 | `target_resolution_mode` | `Risk` | dimension-aware resolved target source | `weight` / `risk_budget` 各自按 active `TAA` fallback `SAA` 解析；若来源不同显示 `Mixed Target Dimensions` |
@@ -184,7 +184,7 @@
 
 #### Current-State Pages
 
-- `Snapshot`
+- `Overview`
 - `Holdings`
 - `Risk`
 
@@ -218,7 +218,7 @@
 
 ## 5. Canonical Page Definitions
 
-### 5.1 Snapshot
+### 5.1 Overview
 
 **Primary question**
 
@@ -646,8 +646,8 @@ taxonomy node、risk_sleeve node、benchmark-relative group 等分组对象，�
 
 | From | To | Rule |
 | --- | --- | --- |
-| `Snapshot` composition | `Holdings` grouped view | 保留 `as_of_date` 与 selected taxonomy |
-| `Snapshot` risk highlight | `Risk` | 保留 `as_of_date` |
+| `Overview` composition | `Holdings` grouped view | 保留 `as_of_date` 与 selected taxonomy |
+| `Overview` risk highlight | `Risk` | 保留 `as_of_date` |
 | `Holdings` row | security detail pane | 不离开当前页面 |
 | `Holdings` group | `Risk` or `Performance` | 保留 taxonomy context |
 | `Performance` contribution line | `Holdings` / grouped detail | 保留 period 与 grouping |
@@ -657,28 +657,28 @@ taxonomy node、risk_sleeve node、benchmark-relative group 等分组对象，�
 | `Accounts` position | `Holdings` | 保留 account filter |
 | `Review` performance summary | `Performance` | 保留 period, taxonomy, benchmark |
 | `Review` risk summary | review-local period risk detail | 不跳到 `Risk` 当前态页面 |
-| `Research` handoff | `Review` / `Risk` / `Snapshot` | 保留 referenced run id |
+| `Research` handoff | `Review` / `Risk` / `Overview` | 保留 referenced run id |
 
 ## 8. Canonical Object-to-Page Ownership
 
 | Object | Primary Page | Secondary Consumers |
 | --- | --- | --- |
-| `PortfolioSnapshot` | `Snapshot` | `Holdings`, `Risk` |
-| positions / lots | `Holdings` | `Snapshot`, `Risk` |
+| `PortfolioSnapshot` | `Overview` | `Holdings`, `Risk` |
+| positions / lots | `Holdings` | `Overview`, `Risk` |
 | `Transaction` | `Transactions` | `Accounts`, security detail pane |
 | `LedgerPosting` | `Accounts` | derived from `Transaction` |
 | `Account` | `Accounts` | `Transactions`, `Holdings` |
-| `PerformanceSnapshot` | `Performance` | `Review`, `Snapshot` |
+| `PerformanceSnapshot` | `Performance` | `Review`, `Overview` |
 | `AttributionReport` | `Performance` | `Review` |
-| `RiskSnapshot` | `Risk` | `Snapshot` |
+| `RiskSnapshot` | `Risk` | `Overview` |
 | `PeriodRiskSummary` | `Review` | exports |
 | `AlertRule` | `Risk / Limits & Alerts` | monitor engine |
 | `AlertEvent` | `Risk / Limits & Alerts` | `Review` |
 | `ReviewPack` | `Review` | exports |
 | `ResolvedTargetTimeline` | `Review` | `PeriodRiskSummary` |
 | `ExportArtifact` | `Review` | archived export list / artifact viewer |
-| `ResearchRun` | `Research` | `Review`, `Snapshot`, `Risk` via handoff |
-| `PortfolioBenchmarkAssignment` | `Portfolio Configure` | `Snapshot`, `Performance`, `Risk`, `Review` |
+| `ResearchRun` | `Research` | `Review`, `Overview`, `Risk` via handoff |
+| `PortfolioBenchmarkAssignment` | `Portfolio Configure` | `Overview`, `Performance`, `Risk`, `Review` |
 | `Taxonomy` | `Portfolio Configure / Taxonomies` | `Holdings`, `Performance`, `Risk`, `Review` |
 | `TargetSet` | `Portfolio Configure / Taxonomies` | `Risk`, `Review` |
 
@@ -690,7 +690,7 @@ taxonomy node、risk_sleeve node、benchmark-relative group 等分组对象，�
 
 - `Performance` 仍可展示 benchmark-relative return
 - `Risk` 不展示 `benchmark_active_weight`
-- `Snapshot` 不展示 benchmark composition-style active-bet blocks
+- `Overview` 不展示 benchmark composition-style active-bet blocks
 - `Holdings` 不展示 benchmark-relative composition columns
 - `Review` 不展示 `benchmark-active bets summary`，只保留 `benchmark-relative performance summary`
 - Brinson 或 benchmark allocation/selection 归因不启用
@@ -699,7 +699,7 @@ taxonomy node、risk_sleeve node、benchmark-relative group 等分组对象，�
 
 若当前组合不存在可解析的 primary benchmark assignment：
 
-- `Snapshot`、`Holdings`、`Performance`、`Risk`、`Review` 的 benchmark-relative 区块都应进入 `comparator missing` 或 `absolute only`
+- `Overview`、`Holdings`、`Performance`、`Risk`、`Review` 的 benchmark-relative 区块都应进入 `comparator missing` 或 `absolute only`
 - `Portfolio Configure` 必须明确提示 benchmark assignment 缺失
 
 ### 9.3 Missing Planning Context

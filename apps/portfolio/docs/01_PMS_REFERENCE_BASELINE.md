@@ -8,17 +8,19 @@
 
 这个项目要做的是一个正式版的个人/小团队组合管理 PMS（Portfolio Management System）。
 
-当前明确的三条参考主线是：
+当前明确的四条参考主线是：
 
 1. **Morningstar**：主要参考产品设计、信息架构、页面组织、报告感和整体 UI 语言。
 2. **Portfolio Performance**：主要参考组合管理领域模型、账户/持仓/交易抽象、收益率与绩效计算、分类与报表能力。
 3. **Bridgewater**：主要参考风险预算投资逻辑、宏观环境分解方法、组合“灵魂”和投资操作系统。
+4. **GIPS**：主要参考绩效计算治理、TWR 优先原则、外部现金流处理、估值频率和方法一致性。
 
-这三条线的职责要严格分开：
+这四条线的职责要严格分开：
 
 - **Morningstar 决定我们怎么呈现。**
 - **Portfolio Performance 决定我们怎么记账和计算。**
 - **Bridgewater 决定我们为什么这样配置组合。**
+- **GIPS 决定绩效口径如何保持可解释、一致和可审计。**
 
 ## 2. 参考框架
 
@@ -27,6 +29,7 @@
 | Morningstar | 设计/UI 参考 | 导航结构、工作台布局、Snapshot / X-Ray 风格当前状态报告、基准对比、专业报告表达 | 不做像素级复刻，不照搬其面向顾问/订阅产品的商业包装 |
 | Portfolio Performance | 领域模型与计算参考 | 账户、组合、交易、现金流、绩效指标、Taxonomy/分类、导入导出思路 | 不照搬其 Java/Eclipse 桌面架构 |
 | Bridgewater | 投资逻辑参考 | 风险预算、环境平衡、增长/通胀驱动、风险而非资金作为配置对象 | 不声称使用 Bridgewater 官方方法论或内部实现 |
+| GIPS | 绩效治理参考 | TWR 优先、外部现金流中性化、估值频率、几何链接、方法一致性、披露边界 | 不声称 GIPS compliance；不在首版实现 firm/composite/report/verification 合规体系 |
 
 ## 3. Morningstar 参考要点
 
@@ -201,9 +204,39 @@ Portfolio Performance（PP）是正式版最重要的**计算与领域模型参�
 - 底部或右侧为 selected security detail pane；
 - detail pane 承载单资产历史、交易、trade matching 和事件解释。
 
-## 5. Bridgewater 参考要点
+## 5. GIPS 参考要点
 
 ### 5.1 参考定位
+
+GIPS 对本项目的价值不在 UI 或账本模型，而在 **绩效计算治理**：
+
+- 默认用 TWR 呈现管理绩效；
+- 把 external cash flows 从业绩中中性化；
+- 对估值频率、现金流发生日估值、几何链接和方法一致性提出明确要求；
+- 要求对方法、覆盖率和不可用边界保持清晰披露。
+
+本项目只采用这些原则作为计算设计约束，不声称 GIPS compliance。
+
+### 5.2 必要参考资料
+
+- GIPS Standards for Firms：<https://www.gipsstandards.org/standards/gips-standards-for-firms/>
+- GIPS Standards Handbook for Firms：<https://www.gipsstandards.org/standards/gips-standards-for-firms/gips-standards-handbook-for-firms/>
+- 本项目 GIPS 对照说明：[`06_GIPS_ALIGNMENT.md`](./06_GIPS_ALIGNMENT.md)
+
+### 5.3 计算层提炼结论
+
+正式版 PMS 应从 GIPS 吸收这些原则：
+
+- **TWR 是默认绩效语言**：IRR / MWROR 只能作为补充资金效率指标。
+- **外部现金流政策必须稳定**：`deposit / withdrawal` 与真实组合边界分配才是组合级 external flows。
+- **估值日期必须支撑现金流处理**：当前 daily snapshot engine 等价于对所有外部现金流日期估值；若未来做非日频估值，必须先定义 large cash flow policy 与子期间链接。
+- **区间收益必须几何链接**：不能把日收益简单相加后当作 TWR。
+- **方法一致性优先于表面精度**：summary、daily series、drawdown、risk 必须消费同一条 TWR 序列。
+- **合规声明必须克制**：缺少 firm/composite/report/verification 体系时，只能写 GIPS-informed methodology，不能写 GIPS compliant。
+
+## 6. Bridgewater 参考要点
+
+### 6.1 参考定位
 
 Bridgewater 对这个项目最重要的贡献不是“某个指标”，而是组合管理的底层问题定义：
 
@@ -212,7 +245,7 @@ Bridgewater 对这个项目最重要的贡献不是“某个指标”，而是�
 - 组合应该围绕**环境平衡**构建，而不是围绕某一种市场叙事孤注一掷。
 - 研究判断、风险预算、资本放缩、执行实现，是不同层级的问题。
 
-### 5.2 本项目应吸收的核心原则
+### 6.2 本项目应吸收的核心原则
 
 #### 原则 A：风险比资金更重要
 
@@ -266,13 +299,13 @@ Bridgewater 对这个项目最重要的贡献不是“某个指标”，而是�
 - 与当前 `TargetSet` 目标的偏离来自哪里；
 - 哪些偏离是主动判断，哪些偏离是市场漂移。
 
-### 5.3 必要参考资料
+### 6.3 必要参考资料
 
 - Bridgewater《The All Weather Story》：<https://www.bridgewater.com/research-and-insights/the-all-weather-story>
 - Bridgewater《The Biggest Mistake in Investing》：<https://www.bridgewater.com/research-and-insights/the-biggest-mistake-in-investing>
 - Bridgewater《A New Era of Higher Inflation Risks》：<https://www.bridgewater.com/research-and-insights/a-new-era-of-higher-inflation-risks>
 
-### 5.4 投资逻辑提炼结论
+### 6.4 投资逻辑提炼结论
 
 正式版 PMS 的投资内核应当默认支持：
 
@@ -281,17 +314,18 @@ Bridgewater 对这个项目最重要的贡献不是“某个指标”，而是�
 - benchmark、`TargetSet` 目标、actual 结果三层对照；
 - `SAA TargetSet -> TAA TargetSet -> implementation -> realized outcome` 的完整链路。
 
-## 6. 当前正式版的基础判断
+## 7. 当前正式版的基础判断
 
-基于以上三条参考线，正式版的产品方向可以先锁为：
+基于以上四条参考线，正式版的产品方向可以先锁为：
 
-### 6.1 产品气质
+### 7.1 产品气质
 
 - Morningstar 风格的专业投研/组合工作台；
 - Portfolio Performance 风格的账本与绩效底座；
-- Bridgewater 风格的风险预算和环境平衡投资逻辑。
+- Bridgewater 风格的风险预算和环境平衡投资逻辑；
+- GIPS-informed 的绩效计算治理和方法一致性。
 
-### 6.2 首版核心能力
+### 7.2 首版核心能力
 
 首版应优先覆盖：
 
@@ -303,7 +337,7 @@ Bridgewater 对这个项目最重要的贡献不是“某个指标”，而是�
 6. snapshot / performance / risk / review 四类分析工作面
 7. taxonomy 上的 `TargetSet` targets、drift / risk budget gap / attribution
 
-### 6.3 产品壳层结论
+### 7.3 产品壳层结论
 
 正式版前端应采用两层结构：
 
@@ -340,7 +374,7 @@ Bridgewater 对这个项目最重要的贡献不是“某个指标”，而是�
 - `Research` 位于组合内，但仅承载 run / update / display / handoff，不暴露复杂配置器
 - `Taxonomies` 位于组合配置入口下，用于构建该组合的多分类体系；每套 taxonomy 应声明 `primary_assignment_scope`，首版只允许 `primary scope + optional cash_bucket`，而 planning-enabled taxonomy 负责维护 `TargetSet`（`saa` / `taa`）及其 `TargetSetLine` 目标
 
-### 6.4 数据架构结论
+### 7.4 数据架构结论
 
 正式版的数据结构应按“事实输入 -> 配置输入 -> 派生分析”理解：
 
@@ -377,7 +411,7 @@ Bridgewater 对这个项目最重要的贡献不是“某个指标”，而是�
 - `Snapshots` 由 Analytics 从事实层生成，不属于 Kernel 原始主数据；
 - `Review` 和 `Snapshot report` 都消费派生分析层，而不是直接手填页面字段。
 
-### 6.5 明确的非目标
+### 7.5 明确的非目标
 
 当前不应做的事情：
 
@@ -386,7 +420,7 @@ Bridgewater 对这个项目最重要的贡献不是“某个指标”，而是�
 - 不把 Bridgewater 的公开材料机械翻译成“固定模板”；
 - 不在产品一开始就堆太多“投顾 CRM / 客户管理 / 营销页面”能力。
 
-## 7. 下一步文档建议
+## 8. 下一步文档建议
 
 这个参考基线文档之后，建议紧接着补四份正式版文档：
 

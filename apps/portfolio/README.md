@@ -26,6 +26,7 @@
 - [docs/03_DOMAIN_MODEL.md](./docs/03_DOMAIN_MODEL.md)
 - [docs/04_CALCULATION_SPEC.md](./docs/04_CALCULATION_SPEC.md)
 - [docs/05_INFORMATION_ARCHITECTURE.md](./docs/05_INFORMATION_ARCHITECTURE.md)
+- [docs/06_GIPS_ALIGNMENT.md](./docs/06_GIPS_ALIGNMENT.md)
 
 ## 开发原则
 
@@ -57,6 +58,7 @@ uvicorn portfolio_app.main:app --reload --host 127.0.0.1 --port 8001
 - 测试使用临时 SQLite，不会污染默认运行库
 - research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理；当前产物以 target weights、member targets、leaf targets、solve event 和 target weight gaps 为主
 - backend 顶层包名现在是 `portfolio_app`
+- daily snapshots 已物化到数据库，`Performance`、`Holdings`、instrument/account contribution 读路径默认复用物化结果；交易、账户或行情变更会把相关组合标记为 stale 并触发刷新。
 
 ### 2. 前端
 
@@ -89,9 +91,21 @@ npm run dev
 npm --prefix apps/portfolio/frontend run build
 ```
 
+## 计算层阶段性状态
+
+截至 `2026-05-04`：
+
+- 组合级 TTWROR 使用日频 true time-weighted 口径：外部流入进分母，外部流出加回分子，区间结果几何复合。
+- `Overview`、`Performance`、`Review` 的 TWR index、daily series 和 drawdown 均按查询窗口重新复合；不得复用 inception-to-date 的累计 TWR 作为区间曲线。
+- `Risk` 的 realized volatility、rolling volatility、Sharpe / Sortino 输入来自 `daily_ttwror` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。
+- `IRR / MWROR` 是资金效率补充指标；若数学上不可解，不应降低 TWR 口径的 coverage。
+- 绩效方法参考 Portfolio Performance 的账本模型，并吸收 GIPS 的 TWR 优先、外部现金流政策、估值频率和方法一致性原则；本项目不声称 GIPS compliance，详见 [docs/06_GIPS_ALIGNMENT.md](./docs/06_GIPS_ALIGNMENT.md)。
+
 ## 加载速度排查记录
 
 2026-05-02 对 Portfolio 页面加载链路做了一次只读排查。当前本地 portfolio 数据量不大：`portfolio` 2 条、`transaction` 39 条、`taxonomy_node` 28 条、`target_set_line` 168 条；但共享资产库已有 `instrument_market_data` 约 27,439 条。因此加载慢主要不是 portfolio 私有表过大，而是页面首屏并行触发多条重计算链路，每条链路又独立重放交易、重建 position lots、读取 shared asset 行情。
+
+2026-05-03 已完成 daily snapshot / holding snapshot / contribution slice 的物化读模型，核心 performance 和 holdings 读路径不再每次从零生成全窗口 daily snapshots。下面记录保留为历史排查背景；后续性能工作重点转为增量刷新、shared asset detail 缓存和 Review/Risk 多接口结果复用。
 
 主要慢点：
 
