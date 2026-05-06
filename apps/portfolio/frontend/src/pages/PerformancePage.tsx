@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom'
 
 import CalculationStatus from '../components/CalculationStatus'
 import PerformanceNavChart from '../components/PerformanceNavChart'
+import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
   getPortfolioPerformance,
@@ -29,9 +30,69 @@ import {
 import { buildTwrIndexPoints } from '../lib/performanceSeries'
 
 type PerformanceDetailTab = 'daily' | 'calculation' | 'contribution' | 'boundary'
+type PerformanceContributionAxisView = Extract<PortfolioContributionAxis, 'instrument' | 'account'>
+type PerformanceViewState = {
+  detailTab: PerformanceDetailTab
+  contributionAxis: PerformanceContributionAxisView
+}
+
+type PerformanceTableView = PortfolioTableViewOption & {
+  state: PerformanceViewState
+  readonly?: boolean
+  createdAt?: string
+  updatedAt?: string
+}
+
+type PerformanceViewStore = {
+  activeViewId: string
+  customViews: PerformanceTableView[]
+}
 
 const DEFAULT_PERFORMANCE_LOOKBACK_DAYS = 30
 const DAYS_PER_YEAR = 365.25
+const PERFORMANCE_VIEWS_STORAGE_KEY = 'yungu.portfolio.performance.views.v1'
+const DEFAULT_PERFORMANCE_VIEW_STATE: PerformanceViewState = {
+  detailTab: 'daily',
+  contributionAxis: 'instrument',
+}
+
+const SYSTEM_PERFORMANCE_VIEWS: PerformanceTableView[] = [
+  {
+    id: 'total-return',
+    name: 'Total Return',
+    description: 'Daily return detail with headline summary.',
+    readonly: true,
+    state: DEFAULT_PERFORMANCE_VIEW_STATE,
+  },
+  {
+    id: 'contribution',
+    name: 'Contribution',
+    description: 'Contribution ranking by instrument.',
+    readonly: true,
+    state: { detailTab: 'contribution', contributionAxis: 'instrument' },
+  },
+  {
+    id: 'account-contribution',
+    name: 'Account Contribution',
+    description: 'Contribution ranking by account.',
+    readonly: true,
+    state: { detailTab: 'contribution', contributionAxis: 'account' },
+  },
+  {
+    id: 'calculation',
+    name: 'Calculation',
+    description: 'Period waterfall calculation lines.',
+    readonly: true,
+    state: { detailTab: 'calculation', contributionAxis: 'instrument' },
+  },
+  {
+    id: 'boundary',
+    name: 'Boundary Holdings',
+    description: 'Start and end holdings composition.',
+    readonly: true,
+    state: { detailTab: 'boundary', contributionAxis: 'instrument' },
+  },
+]
 
 type ContributionLine = PortfolioContributionReportResponse['lines'][number]
 type ContributionSlice = PortfolioContributionReportResponse['daily_slices'][number]
@@ -66,7 +127,7 @@ type MonthlyBucket = {
   net_external_inflow: number
   absolute_change: number | null
   delta: number | null
-  cumulative_ttwror: number | null
+  cumulative_twr: number | null
 }
 
 function coverageClassName(coverageState: PortfolioPerformanceCoverageState) {
@@ -250,8 +311,8 @@ function buildMonthlyBuckets(dailySeries: PortfolioDailyPerformancePoint[]) {
       bucket.delta += point.delta
     }
 
-    if (point.daily_ttwror != null) {
-      bucket.growth_index *= 1 + point.daily_ttwror
+    if (point.daily_twr != null) {
+      bucket.growth_index *= 1 + point.daily_twr
       bucket.has_return = true
       bucket.observation_count += 1
     }
@@ -285,9 +346,101 @@ function buildMonthlyBuckets(dailySeries: PortfolioDailyPerformancePoint[]) {
       net_external_inflow: bucket.net_external_inflow,
       absolute_change: bucket.absolute_change_complete ? bucket.absolute_change : null,
       delta: bucket.delta_complete ? bucket.delta : null,
-      cumulative_ttwror: bucket.has_return ? bucket.growth_index - 1 : null,
+      cumulative_twr: bucket.has_return ? bucket.growth_index - 1 : null,
     } satisfies MonthlyBucket
   })
+}
+
+function parsePerformanceDetailTab(value: string | null): PerformanceDetailTab | null {
+  return value === 'daily' || value === 'calculation' || value === 'contribution' || value === 'boundary' ? value : null
+}
+
+function parsePerformanceContributionAxis(value: string | null): PerformanceContributionAxisView | null {
+  return value === 'instrument' || value === 'account' ? value : null
+}
+
+function normalizePerformanceViewState(value: unknown): PerformanceViewState {
+  if (!value || typeof value !== 'object') {
+    return DEFAULT_PERFORMANCE_VIEW_STATE
+  }
+  const record = value as Partial<PerformanceViewState>
+  return {
+    detailTab: parsePerformanceDetailTab(typeof record.detailTab === 'string' ? record.detailTab : null) ?? DEFAULT_PERFORMANCE_VIEW_STATE.detailTab,
+    contributionAxis:
+      parsePerformanceContributionAxis(typeof record.contributionAxis === 'string' ? record.contributionAxis : null) ??
+      DEFAULT_PERFORMANCE_VIEW_STATE.contributionAxis,
+  }
+}
+
+function serializePerformanceViewState(value: PerformanceViewState) {
+  const normalized = normalizePerformanceViewState(value)
+  return JSON.stringify(normalized)
+}
+
+function performanceViewStatesEqual(left: PerformanceViewState, right: PerformanceViewState) {
+  return serializePerformanceViewState(left) === serializePerformanceViewState(right)
+}
+
+function normalizePerformanceViewStore(value: unknown): PerformanceViewStore {
+  const record = value && typeof value === 'object' ? (value as Partial<PerformanceViewStore>) : {}
+  const customViews = Array.isArray(record.customViews)
+    ? record.customViews
+        .filter((view): view is PerformanceTableView => Boolean(view && typeof view === 'object' && typeof view.id === 'string'))
+        .map((view) => ({
+          id: view.id,
+          name: typeof view.name === 'string' && view.name.trim() ? view.name.trim() : 'Custom View',
+          description: typeof view.description === 'string' ? view.description : null,
+          readonly: false,
+          createdAt: typeof view.createdAt === 'string' ? view.createdAt : undefined,
+          updatedAt: typeof view.updatedAt === 'string' ? view.updatedAt : undefined,
+          state: normalizePerformanceViewState(view.state),
+        }))
+    : []
+  const knownViewIds = new Set([...SYSTEM_PERFORMANCE_VIEWS.map((view) => view.id), ...customViews.map((view) => view.id)])
+  const activeViewId =
+    typeof record.activeViewId === 'string' && knownViewIds.has(record.activeViewId)
+      ? record.activeViewId
+      : SYSTEM_PERFORMANCE_VIEWS[0].id
+  return { activeViewId, customViews }
+}
+
+function loadPerformanceViewStore(): PerformanceViewStore {
+  if (typeof window === 'undefined') {
+    return normalizePerformanceViewStore(null)
+  }
+  try {
+    const rawValue = window.localStorage.getItem(PERFORMANCE_VIEWS_STORAGE_KEY)
+    return normalizePerformanceViewStore(rawValue ? JSON.parse(rawValue) : null)
+  } catch {
+    return normalizePerformanceViewStore(null)
+  }
+}
+
+function savePerformanceViewStore(store: PerformanceViewStore) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    window.localStorage.setItem(PERFORMANCE_VIEWS_STORAGE_KEY, JSON.stringify(store))
+  } catch {
+    return
+  }
+}
+
+function getPerformanceViews(store: PerformanceViewStore) {
+  return [...SYSTEM_PERFORMANCE_VIEWS, ...store.customViews]
+}
+
+function getPerformanceViewById(store: PerformanceViewStore, viewId: string) {
+  return getPerformanceViews(store).find((view) => view.id === viewId) ?? SYSTEM_PERFORMANCE_VIEWS[0]
+}
+
+function resolvePerformanceViewState(store: PerformanceViewStore, viewId: string) {
+  return getPerformanceViewById(store, viewId).state
+}
+
+function createPerformanceViewId() {
+  return `custom:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
 }
 
 function TableStatusRow({
@@ -327,6 +480,13 @@ export default function PerformancePage() {
   const [boundaryWorkspace, setBoundaryWorkspace] = useState<PortfolioPeriodBoundaryHoldingsResponse | null>(null)
   const [boundaryLoading, setBoundaryLoading] = useState(false)
   const [boundaryError, setBoundaryError] = useState<string | null>(null)
+  const initialPerformanceViewStore = useMemo(() => loadPerformanceViewStore(), [])
+  const initialPerformanceViewState = useMemo(
+    () => resolvePerformanceViewState(initialPerformanceViewStore, initialPerformanceViewStore.activeViewId),
+    [initialPerformanceViewStore],
+  )
+  const [performanceViewStore, setPerformanceViewStore] = useState<PerformanceViewStore>(() => initialPerformanceViewStore)
+  const [activePerformanceViewId, setActivePerformanceViewId] = useState(initialPerformanceViewStore.activeViewId)
 
   const appliedStartDate = searchParams.get('start_date') ?? ''
   const appliedEndDate = searchParams.get('end_date') ?? ''
@@ -337,20 +497,21 @@ export default function PerformancePage() {
   )
   const effectiveStartDate = appliedStartDate || defaultStartDate
   const effectiveEndDate = appliedEndDate || defaultEndDate
-  const detailTab = (() => {
-    const raw = searchParams.get('detail_tab')
-    if (raw === 'calculation' || raw === 'contribution' || raw === 'boundary') {
-      return raw
-    }
-    return 'daily'
-  })() satisfies PerformanceDetailTab
-  const contributionAxis = (() => {
-    const raw = searchParams.get('contribution_axis')
-    if (raw === 'account') {
-      return raw
-    }
-    return 'instrument'
-  })() satisfies Extract<PortfolioContributionAxis, 'instrument' | 'account'>
+  const detailTab =
+    parsePerformanceDetailTab(searchParams.get('detail_tab')) ?? initialPerformanceViewState.detailTab
+  const contributionAxis =
+    parsePerformanceContributionAxis(searchParams.get('contribution_axis')) ??
+    initialPerformanceViewState.contributionAxis
+  const performanceViews = useMemo(() => getPerformanceViews(performanceViewStore), [performanceViewStore])
+  const activePerformanceView = useMemo(
+    () => getPerformanceViewById(performanceViewStore, activePerformanceViewId),
+    [activePerformanceViewId, performanceViewStore],
+  )
+  const currentPerformanceViewState = useMemo<PerformanceViewState>(
+    () => ({ detailTab, contributionAxis }),
+    [contributionAxis, detailTab],
+  )
+  const performanceViewEdited = !performanceViewStatesEqual(currentPerformanceViewState, activePerformanceView.state)
 
   const [draftStartDate, setDraftStartDate] = useState(effectiveStartDate)
   const [draftEndDate, setDraftEndDate] = useState(effectiveEndDate)
@@ -399,6 +560,73 @@ export default function PerformancePage() {
     })
   }
 
+  function applyPerformanceViewState(state: PerformanceViewState) {
+    const normalized = normalizePerformanceViewState(state)
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      if (normalized.detailTab === 'daily') {
+        next.delete('detail_tab')
+      } else {
+        next.set('detail_tab', normalized.detailTab)
+      }
+      if (normalized.contributionAxis === 'instrument') {
+        next.delete('contribution_axis')
+      } else {
+        next.set('contribution_axis', normalized.contributionAxis)
+      }
+      return next
+    })
+  }
+
+  function handleSelectPerformanceView(viewId: string) {
+    const nextView = getPerformanceViewById(performanceViewStore, viewId)
+    setActivePerformanceViewId(nextView.id)
+    setPerformanceViewStore((current) => ({ ...current, activeViewId: nextView.id }))
+    applyPerformanceViewState(resolvePerformanceViewState(performanceViewStore, nextView.id))
+  }
+
+  function handleSavePerformanceView() {
+    if (activePerformanceView.readonly) {
+      return
+    }
+    const timestamp = new Date().toISOString()
+    setPerformanceViewStore((current) => {
+      return {
+        ...current,
+        activeViewId: activePerformanceViewId,
+        customViews: current.customViews.map((view) =>
+          view.id === activePerformanceViewId
+            ? {
+                ...view,
+                state: currentPerformanceViewState,
+                updatedAt: timestamp,
+              }
+            : view,
+        ),
+      }
+    })
+  }
+
+  function handleSavePerformanceViewAs(name: string, description: string | null) {
+    const timestamp = new Date().toISOString()
+    const viewId = createPerformanceViewId()
+    const nextView: PerformanceTableView = {
+      id: viewId,
+      name,
+      description,
+      readonly: false,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      state: currentPerformanceViewState,
+    }
+    setPerformanceViewStore((current) => ({
+      ...current,
+      activeViewId: viewId,
+      customViews: [...current.customViews, nextView],
+    }))
+    setActivePerformanceViewId(viewId)
+  }
+
   function handleApplyFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     updateWindowParams(draftStartDate || null, draftEndDate || null)
@@ -409,6 +637,10 @@ export default function PerformancePage() {
     setDraftEndDate(defaultEndDate)
     updateWindowParams(null, null)
   }
+
+  useEffect(() => {
+    savePerformanceViewStore(performanceViewStore)
+  }, [performanceViewStore])
 
   useEffect(() => {
     if (!portfolioId) {
@@ -674,14 +906,14 @@ export default function PerformancePage() {
 
   const rightSummaryRows = [
     {
-      label: 'Cumulative TTWROR',
-      value: signedPercent(summary?.cumulative_ttwror),
-      toneClassName: signedValueClass(summary?.cumulative_ttwror),
+      label: 'Cumulative TWR',
+      value: signedPercent(summary?.cumulative_twr),
+      toneClassName: signedValueClass(summary?.cumulative_twr),
     },
     {
-      label: 'Annualized TTWROR',
-      value: signedPercent(summary?.annualized_ttwror),
-      toneClassName: signedValueClass(summary?.annualized_ttwror),
+      label: 'Annualized TWR',
+      value: signedPercent(summary?.annualized_twr),
+      toneClassName: signedValueClass(summary?.annualized_twr),
     },
     { label: 'IRR / MWROR', value: signedPercent(summary?.irr), toneClassName: signedValueClass(summary?.irr) },
     {
@@ -703,6 +935,15 @@ export default function PerformancePage() {
         </div>
 
         <form className="performance-filter-bar" onSubmit={handleApplyFilters}>
+          <PortfolioTableViewControls
+            views={performanceViews}
+            activeViewId={activePerformanceViewId}
+            edited={performanceViewEdited}
+            canSave={!activePerformanceView.readonly}
+            onSelect={handleSelectPerformanceView}
+            onSave={handleSavePerformanceView}
+            onSaveAs={handleSavePerformanceViewAs}
+          />
           <div className="performance-filter-group">
             <label>
               <span>Start Date</span>
@@ -814,7 +1055,7 @@ export default function PerformancePage() {
                         <th>End NAV</th>
                         <th>Net Flow</th>
                         <th>P&amp;L Ex Flows</th>
-                        <th>Monthly TTWROR</th>
+                        <th>Monthly TWR</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -834,8 +1075,8 @@ export default function PerformancePage() {
                             <td className={signedValueClass(bucket.delta)}>
                               {formatSignedCurrency(bucket.delta, baseCurrency)}
                             </td>
-                            <td className={signedValueClass(bucket.cumulative_ttwror)}>
-                              {signedPercent(bucket.cumulative_ttwror)}
+                            <td className={signedValueClass(bucket.cumulative_twr)}>
+                              {signedPercent(bucket.cumulative_twr)}
                             </td>
                           </tr>
                         ))
@@ -962,11 +1203,11 @@ export default function PerformancePage() {
                             </td>
                             <td>{formatCurrency(point.ending_nav, baseCurrency)}</td>
                             <td>{formatSignedCurrency(point.net_external_inflow, baseCurrency)}</td>
-                            <td className={signedValueClass(point.daily_ttwror)}>
-                              {signedPercent(point.daily_ttwror, 3)}
+                            <td className={signedValueClass(point.daily_twr)}>
+                              {signedPercent(point.daily_twr, 3)}
                             </td>
-                            <td className={signedValueClass(point.cumulative_ttwror)}>
-                              {signedPercent(point.cumulative_ttwror)}
+                            <td className={signedValueClass(point.cumulative_twr)}>
+                              {signedPercent(point.cumulative_twr)}
                             </td>
                             <td className={signedValueClass(point.drawdown)}>
                               {signedPercent(point.drawdown)}

@@ -6,9 +6,11 @@ import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
   SUPPORTED_PORTFOLIO_CURRENCIES,
   createPortfolioAccount,
+  updatePortfolioAccount,
   type PortfolioAccountRecord,
   getPortfolioAccountsWorkspace,
   type PortfolioAccountCreatePayload,
+  type PortfolioAccountUpdatePayload,
   type PortfolioAccountPositionRecord,
   type PortfolioAccountWorkspaceAccount,
   type PortfolioAccountsWorkspaceResponse,
@@ -65,6 +67,9 @@ export default function AccountsPage() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null)
+  const [pendingCostMethodChange, setPendingCostMethodChange] = useState<PendingCostMethodChange | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [form, setForm] = useState<AccountFormState>(buildInitialAccountForm)
 
@@ -195,6 +200,8 @@ export default function AccountsPage() {
     workspace?.selected_account_id ?? visibleAccounts[0]?.account.account_id ?? ''
   const selectedAccount =
     visibleAccounts.find((item) => item.account.account_id === resolvedSelectedAccountId) ?? visibleAccounts[0] ?? null
+  const editingAccount =
+    visibleAccounts.find((item) => item.account.account_id === editingAccountId)?.account ?? null
 
   const visibleLedgerPostings = workspace?.ledger_postings ?? []
   const visiblePositions = workspace?.positions ?? []
@@ -203,16 +210,8 @@ export default function AccountsPage() {
     return <Navigate replace to="/portfolios" />
   }
 
-  async function handleCreateAccount() {
-    setFormError(null)
-    setNotice(null)
-
-    if (!form.account_name.trim()) {
-      setFormError('Enter an account name.')
-      return
-    }
-
-    const payload: PortfolioAccountCreatePayload = {
+  function accountPayloadFromForm(): PortfolioAccountCreatePayload {
+    return {
       account_name: form.account_name.trim(),
       account_type: form.account_type,
       currency: form.currency.trim().toUpperCase(),
@@ -228,15 +227,70 @@ export default function AccountsPage() {
       closed_at: form.closed_at || null,
       status: form.status || 'active',
     }
+  }
+
+  async function applyAccountUpdate(accountId: string, payload: PortfolioAccountUpdatePayload) {
+    const updated = await updatePortfolioAccount(portfolioId, accountId, payload)
+    setPendingCostMethodChange(null)
+    setDrawerOpen(false)
+    setNotice(`Updated ${updated.account_name}.`)
+    await refreshWorkspace(updated.account_id)
+  }
+
+  async function handleSaveAccount() {
+    setFormError(null)
+    setNotice(null)
+
+    if (!form.account_name.trim()) {
+      setFormError('Enter an account name.')
+      return
+    }
+
+    const payload = accountPayloadFromForm()
 
     try {
+      if (drawerMode === 'edit') {
+        if (!editingAccountId) {
+          setFormError('Select an account to edit.')
+          return
+        }
+        const updatePayload: PortfolioAccountUpdatePayload = {
+          account_name: payload.account_name,
+          institution: payload.institution,
+          default_settlement_cash_account_id: payload.default_settlement_cash_account_id,
+          cost_basis_method: payload.cost_basis_method,
+          allowed_asset_types: payload.allowed_asset_types,
+          opened_at: payload.opened_at,
+          closed_at: payload.closed_at,
+          status: payload.status,
+        }
+        const currentCostMethod = editingAccount?.cost_basis_method ?? 'fifo'
+        const nextCostMethod = updatePayload.cost_basis_method ?? currentCostMethod
+        if (
+          editingAccount?.account_type === 'securities_account' &&
+          nextCostMethod !== currentCostMethod
+        ) {
+          setPendingCostMethodChange({
+            accountId: editingAccountId,
+            accountName: updatePayload.account_name || editingAccount.account_name,
+            currentMethod: currentCostMethod,
+            nextMethod: nextCostMethod,
+            payload: updatePayload,
+          })
+          return
+        }
+
+        await applyAccountUpdate(editingAccountId, updatePayload)
+        return
+      }
+
       const created = await createPortfolioAccount(portfolioId, payload)
       setDrawerOpen(false)
       setNotice(`Added ${formatLabel(created.account_type)} ${created.account_name}.`)
       setForm(buildInitialAccountForm(accountRecords))
       await refreshWorkspace(created.account_id)
     } catch (requestError) {
-      setFormError(requestError instanceof Error ? requestError.message : 'Failed to create account.')
+      setFormError(requestError instanceof Error ? requestError.message : 'Failed to save account.')
     }
   }
 
@@ -310,8 +364,27 @@ export default function AccountsPage() {
               <div className="transaction-filter-actions">
                 <button
                   type="button"
+                  className="toolbar-link"
+                  disabled={!selectedAccount}
+                  onClick={() => {
+                    if (!selectedAccount) {
+                      return
+                    }
+                    setDrawerMode('edit')
+                    setEditingAccountId(selectedAccount.account.account_id)
+                    setDrawerOpen(true)
+                    setFormError(null)
+                    setForm(buildAccountFormFromRecord(selectedAccount.account))
+                  }}
+                >
+                  Edit Account
+                </button>
+                <button
+                  type="button"
                   className="toolbar-link button-primary"
                   onClick={() => {
+                    setDrawerMode('create')
+                    setEditingAccountId(null)
                     setDrawerOpen(true)
                     setFormError(null)
                     setForm(buildInitialAccountForm(accountRecords))
@@ -548,7 +621,7 @@ export default function AccountsPage() {
           >
             <div className="transaction-drawer-header">
               <div>
-                <div className="panel-title">Add Account</div>
+                <div className="panel-title">{drawerMode === 'edit' ? 'Edit Account' : 'Add Account'}</div>
               </div>
               <button type="button" className="toolbar-link" onClick={() => setDrawerOpen(false)}>
                 Close
@@ -574,6 +647,7 @@ export default function AccountsPage() {
                   <span>Account Type</span>
                   <select
                     value={form.account_type}
+                    disabled={drawerMode === 'edit'}
                     onChange={(event) =>
                       setForm((current) => ({
                         ...current,
@@ -590,6 +664,7 @@ export default function AccountsPage() {
                   <span>Currency</span>
                   <select
                     value={form.currency}
+                    disabled={drawerMode === 'edit'}
                     onChange={(event) =>
                       setForm((current) => ({
                         ...current,
@@ -755,12 +830,65 @@ export default function AccountsPage() {
               {formError ? <div className="error-state transaction-form-error">{formError}</div> : null}
 
               <div className="transaction-form-footer">
-                <button type="button" className="toolbar-link button-primary" onClick={() => void handleCreateAccount()}>
-                  Save Account
+                <button type="button" className="toolbar-link button-primary" onClick={() => void handleSaveAccount()}>
+                  {drawerMode === 'edit' ? 'Update Account' : 'Save Account'}
                 </button>
               </div>
             </div>
           </aside>
+        </div>
+      ) : null}
+
+      {pendingCostMethodChange ? (
+        <div
+          className="transaction-entry-backdrop"
+          role="presentation"
+          onClick={() => setPendingCostMethodChange(null)}
+        >
+          <div
+            className="transaction-entry-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Confirm cost method change"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="transaction-entry-modal-header">
+              <div>
+                <div className="panel-title">Confirm Cost Method Change</div>
+                <div className="portfolio-detail-meta">{pendingCostMethodChange.accountName}</div>
+              </div>
+              <button type="button" className="toolbar-link" onClick={() => setPendingCostMethodChange(null)}>
+                Close
+              </button>
+            </div>
+            <div className="transaction-form">
+              <div className="portfolio-detail-meta">
+                Changing cost method from {formatCostMethodLabel(pendingCostMethodChange.currentMethod)} to{' '}
+                {formatCostMethodLabel(pendingCostMethodChange.nextMethod)} will replay this account's transaction
+                history and recalculate cost basis, average cost, realized gain, and unrealized gain. Market value,
+                cash flows, and time-weighted return are not changed by this accounting method.
+              </div>
+              <div className="transaction-form-footer">
+                <button type="button" className="toolbar-link" onClick={() => setPendingCostMethodChange(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="toolbar-link button-primary"
+                  onClick={() =>
+                    void applyAccountUpdate(pendingCostMethodChange.accountId, pendingCostMethodChange.payload).catch(
+                      (requestError) => {
+                        setPendingCostMethodChange(null)
+                        setFormError(requestError instanceof Error ? requestError.message : 'Failed to save account.')
+                      },
+                    )
+                  }
+                >
+                  Recalculate and Update
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       ) : null}
     </PortfolioWorkspaceLayout>
@@ -780,6 +908,18 @@ type AccountFormState = {
   status: string
 }
 
+type PendingCostMethodChange = {
+  accountId: string
+  accountName: string
+  currentMethod: 'moving_average' | 'fifo'
+  nextMethod: 'moving_average' | 'fifo'
+  payload: PortfolioAccountUpdatePayload
+}
+
+function formatCostMethodLabel(method: 'moving_average' | 'fifo') {
+  return method === 'moving_average' ? 'Moving Average' : 'FIFO'
+}
+
 function buildInitialAccountForm(accounts: PortfolioAccountRecord[] = []): AccountFormState {
   const defaultCashAccount = accounts.find((account) => account.account_type === 'deposit_account')
   return {
@@ -793,6 +933,21 @@ function buildInitialAccountForm(accounts: PortfolioAccountRecord[] = []): Accou
     opened_at: localTodayIso(),
     closed_at: '',
     status: 'active',
+  }
+}
+
+function buildAccountFormFromRecord(account: PortfolioAccountRecord): AccountFormState {
+  return {
+    account_name: account.account_name,
+    account_type: account.account_type,
+    currency: account.currency,
+    institution: account.institution ?? '',
+    default_settlement_cash_account_id: account.default_settlement_cash_account_id ?? '',
+    cost_basis_method: account.cost_basis_method ?? 'fifo',
+    allowed_asset_types: account.allowed_asset_types ?? [],
+    opened_at: account.opened_at ?? '',
+    closed_at: account.closed_at ?? '',
+    status: account.status || 'active',
   }
 }
 

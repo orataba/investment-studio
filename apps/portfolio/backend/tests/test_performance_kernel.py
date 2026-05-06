@@ -12,7 +12,7 @@ from portfolio_app.db.models import (
     PortfolioDailySnapshotModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import performance, portfolio_store
+from portfolio_app.services import ledger, performance, portfolio_store
 
 
 def _write_store(store: dict[str, object]) -> None:
@@ -154,7 +154,7 @@ def test_seed_portfolio_performance_uses_external_boundary_flows(client):
     assert summary["external_cash_in"] == 50000.0
     assert summary["external_cash_out"] == 12000.0
     assert summary["net_external_inflow"] == 38000.0
-    assert summary["cumulative_ttwror"] is not None
+    assert summary["cumulative_twr"] is not None
     assert summary["irr"] is not None
 
 
@@ -236,7 +236,7 @@ def test_daily_snapshot_refresh_endpoint_refreshes_impacted_asset_portfolios(cli
     assert empty_refresh_response.json()["portfolio_ids"] == []
 
 
-def test_daily_ttwror_neutralizes_external_deposit(client, monkeypatch):
+def test_daily_twr_neutralizes_external_deposit(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         asset_id="equity-us-test",
         asset_name="Test Equity",
@@ -347,10 +347,10 @@ def test_daily_ttwror_neutralizes_external_deposit(client, monkeypatch):
     assert by_date["2026-01-02"]["beginning_nav"] == 100.0
     assert by_date["2026-01-02"]["ending_nav"] == 160.0
     assert by_date["2026-01-02"]["external_cash_in"] == 50.0
-    assert by_date["2026-01-02"]["daily_ttwror"] == 0.06666666666666665
+    assert by_date["2026-01-02"]["daily_twr"] == 0.06666666666666665
 
 
-def test_daily_ttwror_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypatch):
+def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         asset_id="equity-us-test",
         asset_name="Test Equity",
@@ -489,12 +489,12 @@ def test_daily_ttwror_ignores_internal_sale_but_cuts_on_withdrawal(client, monke
 
     assert by_date["2026-01-02"]["external_cash_in"] == 0.0
     assert by_date["2026-01-02"]["external_cash_out"] == 0.0
-    assert by_date["2026-01-02"]["daily_ttwror"] == 0.10000000000000009
+    assert by_date["2026-01-02"]["daily_twr"] == 0.10000000000000009
     assert by_date["2026-01-03"]["external_cash_out"] == 110.0
-    assert by_date["2026-01-03"]["daily_ttwror"] == 0.0
+    assert by_date["2026-01-03"]["daily_twr"] == 0.0
 
 
-def test_performance_summary_reports_one_year_ttwror_annualized_and_irr(client, monkeypatch):
+def test_performance_summary_reports_one_year_twr_annualized_and_irr(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         asset_id="equity-us-test",
         asset_name="Test Equity",
@@ -581,8 +581,8 @@ def test_performance_summary_reports_one_year_ttwror_annualized_and_irr(client, 
     last_point = payload["daily_series"][-1]
     expected_annualized = (1.1 ** (365.25 / 365.0)) - 1.0
 
-    assert isclose(summary["cumulative_ttwror"], 0.1, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["annualized_ttwror"], expected_annualized, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["cumulative_twr"], 0.1, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["annualized_twr"], expected_annualized, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["irr"], expected_annualized, rel_tol=0.0, abs_tol=1e-10)
     assert isclose(summary["mwror"], summary["irr"], rel_tol=0.0, abs_tol=1e-12)
     assert summary["external_cash_in"] == 0.0
@@ -590,7 +590,7 @@ def test_performance_summary_reports_one_year_ttwror_annualized_and_irr(client, 
     assert summary["realized_pnl"] == 0.0
     assert summary["unrealized_pnl"] == 10.0
     assert summary["total_pnl"] == 10.0
-    assert last_point["cumulative_ttwror"] == summary["cumulative_ttwror"]
+    assert last_point["cumulative_twr"] == summary["cumulative_twr"]
     assert last_point["unrealized_pnl"] == 10.0
 
 
@@ -870,7 +870,7 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
     window_payload = window_response.json()
     assert window_payload["summary"]["start_date"] == "2026-01-05"
     assert window_payload["summary"]["start_nav"] == 100.0
-    assert isclose(window_payload["summary"]["cumulative_ttwror"], 0.05, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(window_payload["summary"]["cumulative_twr"], 0.05, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatch):
@@ -957,7 +957,7 @@ def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatc
 
     full_response = client.get("/api/portfolios/window-rebase-test/performance")
     assert full_response.status_code == 200
-    assert isclose(full_response.json()["summary"]["cumulative_ttwror"], 0.089, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(full_response.json()["summary"]["cumulative_twr"], 0.089, rel_tol=0.0, abs_tol=1e-12)
 
     window_response = client.get(
         "/api/portfolios/window-rebase-test/performance?start_date=2026-01-03&end_date=2026-01-04"
@@ -966,11 +966,11 @@ def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatc
     window_payload = window_response.json()
     summary = window_payload["summary"]
     by_date = {item["as_of_date"]: item for item in window_payload["daily_series"]}
-    assert isclose(summary["cumulative_ttwror"], -0.01, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["cumulative_twr"], -0.01, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["current_drawdown"], -0.10, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["max_drawdown"], -0.10, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(by_date["2026-01-03"]["cumulative_ttwror"], 0.10, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(by_date["2026-01-04"]["cumulative_ttwror"], -0.01, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(by_date["2026-01-03"]["cumulative_twr"], 0.10, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(by_date["2026-01-04"]["cumulative_twr"], -0.01, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(by_date["2026-01-04"]["drawdown"], -0.10, rel_tol=0.0, abs_tol=1e-12)
 
 
@@ -1839,9 +1839,9 @@ def test_return_calendar_report_rolls_daily_returns_into_monthly_buckets(client,
 
     assert payload["summary"]["frequency"] == "monthly"
     assert payload["summary"]["bucket_count"] == 3
-    assert buckets["2026-01"]["cumulative_ttwror"] is None
-    assert buckets["2026-02"]["cumulative_ttwror"] == 0.10000000000000009
-    assert buckets["2026-03"]["cumulative_ttwror"] == 0.10000000000000009
+    assert buckets["2026-01"]["cumulative_twr"] is None
+    assert buckets["2026-02"]["cumulative_twr"] == 0.10000000000000009
+    assert buckets["2026-03"]["cumulative_twr"] == 0.10000000000000009
     assert buckets["2026-02"]["start_nav"] == 100.0
     assert buckets["2026-02"]["end_nav"] == 110.0
     assert buckets["2026-03"]["start_nav"] == 110.0
@@ -1947,6 +1947,185 @@ def test_instrument_contribution_report_tracks_daily_pnl_and_residual(client, mo
     assert slice_by_date["2026-01-01"]["daily_contribution"] is None
     assert isclose(slice_by_date["2026-01-02"]["daily_contribution"], 0.1, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(slice_by_date["2026-01-02"]["total_pnl"], 10.0, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_cost_basis_method_changes_book_split_not_economic_contribution(client, monkeypatch):
+    asset_id = "equity-us-cost-method"
+    instrument_ref = {
+        "asset_id": asset_id,
+        "asset_name": "Asset A",
+        "asset_type": "equity",
+        "currency": "USD",
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": "A", "is_primary": True}],
+    }
+    instrument_detail = _test_instrument_detail(
+        asset_id=asset_id,
+        asset_name="Asset A",
+        history=[
+            ("2026-01-01", "50.00"),
+            ("2026-01-02", "100.00"),
+            ("2026-01-03", "75.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda requested_asset_id: deepcopy(instrument_detail) if requested_asset_id == asset_id else None,
+    )
+    monkeypatch.setattr(
+        ledger,
+        "get_registry_instrument_detail",
+        lambda requested_asset_id: deepcopy(instrument_detail) if requested_asset_id == asset_id else None,
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "build_asset_sparkline",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+
+    def transaction(
+        transaction_id: str,
+        transaction_type: str,
+        trade_date: str,
+        *,
+        account_id: str,
+        asset_id_value: str | None,
+        quantity: float | None,
+        price: float | None,
+        gross_amount: float,
+        note: str,
+    ) -> dict[str, object]:
+        return {
+            "transaction_id": transaction_id,
+            "portfolio_id": "",
+            "transaction_type": transaction_type,
+            "trade_date": trade_date,
+            "settlement_date": trade_date,
+            "account_id": account_id,
+            "settlement_cash_account_id": (
+                "cash-usd-main" if transaction_type in {"buy", "sell"} else None
+            ),
+            "asset_id": asset_id_value,
+            "instrument_ref": deepcopy(instrument_ref) if asset_id_value else None,
+            "quantity": quantity,
+            "price": price,
+            "gross_amount": gross_amount,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "transfer_scope": None,
+            "transfer_object_type": None,
+            "transfer_group_id": None,
+            "counterparty_account_id": None,
+            "note": note,
+            "created_at": f"{trade_date}T09:00:00Z",
+        }
+
+    def build_store(portfolio_id: str, cost_basis_method: str) -> dict[str, object]:
+        transactions = [
+            transaction(
+                "txn-0001",
+                "opening_balance",
+                "2026-01-01",
+                account_id="cash-usd-main",
+                asset_id_value=None,
+                quantity=None,
+                price=None,
+                gross_amount=750000.0,
+                note="Opening cash.",
+            ),
+            transaction(
+                "txn-0002",
+                "buy",
+                "2026-01-01",
+                account_id="broker-us-core",
+                asset_id_value=asset_id,
+                quantity=5000.0,
+                price=50.0,
+                gross_amount=250000.0,
+                note="Buy 5000 at 50.",
+            ),
+            transaction(
+                "txn-0003",
+                "buy",
+                "2026-01-02",
+                account_id="broker-us-core",
+                asset_id_value=asset_id,
+                quantity=5000.0,
+                price=100.0,
+                gross_amount=500000.0,
+                note="Buy 5000 at 100.",
+            ),
+            transaction(
+                "txn-0004",
+                "sell",
+                "2026-01-03",
+                account_id="broker-us-core",
+                asset_id_value=asset_id,
+                quantity=6000.0,
+                price=75.0,
+                gross_amount=450000.0,
+                note="Sell 6000 at 75.",
+            ),
+        ]
+        for item in transactions:
+            item["portfolio_id"] = portfolio_id
+        store = _minimal_store(portfolio_id=portfolio_id, transactions=transactions)
+        store["accounts"][1]["cost_basis_method"] = cost_basis_method
+        return store
+
+    def run_case(portfolio_id: str, cost_basis_method: str) -> dict[str, object]:
+        _write_store(build_store(portfolio_id, cost_basis_method))
+
+        holdings_response = client.get(f"/api/workspace/holdings?portfolio_id={portfolio_id}")
+        assert holdings_response.status_code == 200
+        holding = next(row for row in holdings_response.json()["rows"] if row["asset_core"]["asset_id"] == asset_id)
+
+        contribution_response = client.get(
+            f"/api/portfolios/{portfolio_id}/performance/contribution?axis=instrument"
+        )
+        assert contribution_response.status_code == 200
+        contribution_payload = contribution_response.json()
+        line = next(item for item in contribution_payload["lines"] if item["group_key"] == asset_id)
+        performance_response = client.get(f"/api/portfolios/{portfolio_id}/performance")
+        assert performance_response.status_code == 200
+        return {"holding": holding, "line": line, "summary": performance_response.json()["summary"]}
+
+    fifo = run_case("cost-method-fifo-test", "fifo")
+    moving_average = run_case("cost-method-ma-test", "moving_average")
+
+    assert fifo["holding"]["quantity"] == 4000.0
+    assert moving_average["holding"]["quantity"] == 4000.0
+    assert fifo["holding"]["market_value"] == 300000.0
+    assert moving_average["holding"]["market_value"] == 300000.0
+
+    assert fifo["holding"]["cost_basis"] == 400000.0
+    assert fifo["line"]["realized_pnl"] == 100000.0
+    assert fifo["line"]["unrealized_pnl_change"] == -100000.0
+
+    assert moving_average["holding"]["cost_basis"] == 300000.0
+    assert moving_average["line"]["realized_pnl"] == 0.0
+    assert moving_average["line"]["unrealized_pnl_change"] == 0.0
+
+    assert fifo["line"]["total_pnl"] == 0.0
+    assert moving_average["line"]["total_pnl"] == 0.0
+    assert isclose(
+        fifo["line"]["period_contribution"],
+        moving_average["line"]["period_contribution"],
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert isclose(
+        fifo["summary"]["cumulative_twr"],
+        moving_average["summary"]["cumulative_twr"],
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
 
 
 def test_account_contribution_report_tracks_interest_income(client, monkeypatch):
@@ -6239,7 +6418,7 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     performance_summary = performance_payload["summary"]
     assert isclose(performance_summary["cash_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(performance_summary["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(performance_summary["cumulative_ttwror"], 0.04, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(performance_summary["cumulative_twr"], 0.04, rel_tol=0.0, abs_tol=1e-12)
 
     calculation_response = client.get("/api/portfolios/cash-fx-test/performance/calculation")
     assert calculation_response.status_code == 200
@@ -6425,7 +6604,7 @@ def test_asset_currency_gains_flow_through_performance_and_calculation(client, m
     assert isclose(performance_summary["asset_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(performance_summary["unrealized_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(performance_summary["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(performance_summary["cumulative_ttwror"], 0.04, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(performance_summary["cumulative_twr"], 0.04, rel_tol=0.0, abs_tol=1e-12)
 
     calculation_response = client.get("/api/portfolios/asset-fx-test/performance/calculation")
     assert calculation_response.status_code == 200
@@ -6671,7 +6850,7 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
     assert isclose(performance_summary["total_pnl"], (75.0 + 40.0) / 7.5, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_foreign_currency_external_flow_is_converted_before_daily_ttwror(client, monkeypatch):
+def test_foreign_currency_external_flow_is_converted_before_daily_twr(client, monkeypatch):
     fx_detail = {
         "asset_id": "fx-usd-hkd",
         "asset_name": "USD/HKD",
@@ -6814,7 +6993,7 @@ def test_foreign_currency_external_flow_is_converted_before_daily_ttwror(client,
     assert isclose(day_two["external_cash_in"], 100.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(day_two["absolute_change"], 104.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(day_two["delta"], 4.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(day_two["daily_ttwror"], 0.02, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(day_two["daily_twr"], 0.02, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_performance_summary_custom_period_uses_period_deltas(client, monkeypatch):

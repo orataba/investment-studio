@@ -597,6 +597,7 @@ export default function WatchlistsPage() {
   const [workingColumns, setWorkingColumns] = useState<string[]>([])
   const [columnDraft, setColumnDraft] = useState<string[]>([])
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({})
+  const [columnDropTarget, setColumnDropTarget] = useState('')
   const [workingGroupBy, setWorkingGroupBy] = useState('none')
   const [workingFilters, setWorkingFilters] = useState<FilterState>({})
   const [selectedFieldCategory, setSelectedFieldCategory] = useState('')
@@ -605,7 +606,6 @@ export default function WatchlistsPage() {
   const [modalKind, setModalKind] = useState<ModalKind>(null)
   const [filterMenuOpen, setFilterMenuOpen] = useState(false)
   const [groupMenuOpen, setGroupMenuOpen] = useState(false)
-  const [moreMenuOpen, setMoreMenuOpen] = useState(false)
   const [selectorMenuOpen, setSelectorMenuOpen] = useState(false)
   const [selectedFilterField, setSelectedFilterField] = useState('')
   const [filterOptionRows, setFilterOptionRows] = useState<Array<Record<string, unknown>>>([])
@@ -635,7 +635,6 @@ export default function WatchlistsPage() {
   const [reloadToken, setReloadToken] = useState(0)
   const filterMenuRef = useRef<HTMLDivElement | null>(null)
   const groupMenuRef = useRef<HTMLDivElement | null>(null)
-  const moreMenuRef = useRef<HTMLDivElement | null>(null)
   const selectorMenuRef = useRef<HTMLDivElement | null>(null)
   const resizeState = useRef<{
     column: string
@@ -786,9 +785,6 @@ export default function WatchlistsPage() {
       if (groupMenuOpen && groupMenuRef.current && target && !groupMenuRef.current.contains(target)) {
         setGroupMenuOpen(false)
       }
-      if (moreMenuOpen && moreMenuRef.current && target && !moreMenuRef.current.contains(target)) {
-        setMoreMenuOpen(false)
-      }
       if (selectorMenuOpen && selectorMenuRef.current && target && !selectorMenuRef.current.contains(target)) {
         setSelectorMenuOpen(false)
       }
@@ -796,7 +792,7 @@ export default function WatchlistsPage() {
 
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
-  }, [filterMenuOpen, groupMenuOpen, moreMenuOpen, selectorMenuOpen])
+  }, [filterMenuOpen, groupMenuOpen, selectorMenuOpen])
 
   useEffect(() => {
     if (modalKind !== 'add') {
@@ -1210,6 +1206,49 @@ export default function WatchlistsPage() {
   const sortField = sortRules[0]?.field || null
   const sortDirection = sortRules[0]?.direction || 'asc'
 
+  function moveWorkingColumn(sourceColumn: string, targetColumn: string) {
+    if (!sourceColumn || sourceColumn === targetColumn || requiredColumns.includes(sourceColumn)) {
+      return
+    }
+    setWorkingColumns((current) => {
+      const normalized = ensureRequiredColumns(current.length ? current : visibleColumns)
+      const sourceIndex = normalized.indexOf(sourceColumn)
+      const targetIndex = normalized.indexOf(targetColumn)
+      if (sourceIndex < 0 || targetIndex < 0) {
+        return normalized
+      }
+      const next = [...normalized]
+      const [moved] = next.splice(sourceIndex, 1)
+      let insertIndex = requiredColumns.includes(targetColumn) ? requiredColumns.length : targetIndex
+      if (sourceIndex < targetIndex) {
+        insertIndex = targetIndex
+      }
+      next.splice(insertIndex, 0, moved)
+      return ensureRequiredColumns(next)
+    })
+  }
+
+  function handleColumnDragStart(event: React.DragEvent<HTMLTableCellElement>, column: string) {
+    if (requiredColumns.includes(column)) {
+      event.preventDefault()
+      return
+    }
+    event.dataTransfer.setData('text/plain', column)
+    event.dataTransfer.effectAllowed = 'move'
+  }
+
+  function handleColumnDragOver(event: React.DragEvent<HTMLTableCellElement>, column: string) {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    setColumnDropTarget(column)
+  }
+
+  function handleColumnDrop(event: React.DragEvent<HTMLTableCellElement>, targetColumn: string) {
+    event.preventDefault()
+    moveWorkingColumn(event.dataTransfer.getData('text/plain'), targetColumn)
+    setColumnDropTarget('')
+  }
+
   useEffect(() => {
     setCollapsedGroupKeys(new Set())
   }, [activeGroupBy, screenerCriteriaKey])
@@ -1609,7 +1648,6 @@ export default function WatchlistsPage() {
     }
 
     setIsExporting(true)
-    setMoreMenuOpen(false)
     setError(null)
     setNotice(null)
     try {
@@ -1920,7 +1958,6 @@ export default function WatchlistsPage() {
                   setSelectedInstrumentId('')
                   setModalKind('add')
                   setFilterMenuOpen(false)
-                  setMoreMenuOpen(false)
                   setGroupMenuOpen(false)
                   setNotice(null)
                   setError(null)
@@ -1980,7 +2017,6 @@ export default function WatchlistsPage() {
                     setSaveViewDescription('')
                     setModalKind('save-view')
                     setFilterMenuOpen(false)
-                    setMoreMenuOpen(false)
                     setGroupMenuOpen(false)
                     setNotice(null)
                   }
@@ -2012,7 +2048,6 @@ export default function WatchlistsPage() {
                 setColumnDraft(visibleColumns)
                 setModalKind('columns')
                 setFilterMenuOpen(false)
-                setMoreMenuOpen(false)
                 setGroupMenuOpen(false)
                 setNotice(null)
               }}
@@ -2027,7 +2062,6 @@ export default function WatchlistsPage() {
                 onClick={() => {
                   setGroupMenuOpen((current) => !current)
                   setFilterMenuOpen(false)
-                  setMoreMenuOpen(false)
                   setModalKind(null)
                 }}
               >
@@ -2070,7 +2104,6 @@ export default function WatchlistsPage() {
                 onClick={() => {
                   setFilterMenuOpen((current) => !current)
                   setGroupMenuOpen(false)
-                  setMoreMenuOpen(false)
                   setModalKind(null)
                 }}
               >
@@ -2208,32 +2241,14 @@ export default function WatchlistsPage() {
               ) : null}
             </div>
 
-            <div className="watchlists-dropdown" ref={moreMenuRef}>
-              <button
-                type="button"
-                className="watchlists-toolbar-button"
-                onClick={() => {
-                  setMoreMenuOpen((current) => !current)
-                  setFilterMenuOpen(false)
-                  setGroupMenuOpen(false)
-                  setModalKind(null)
-                }}
-              >
-                More
-              </button>
-              {moreMenuOpen ? (
-                <div className="watchlists-menu">
-                  <button
-                    type="button"
-                    className="watchlists-menu-item"
-                    disabled={isExporting}
-                    onClick={() => void handleDownloadCurrentView()}
-                  >
-                    {isExporting ? 'Exporting...' : 'Download'}
-                  </button>
-                </div>
-              ) : null}
-            </div>
+            <button
+              type="button"
+              className="watchlists-toolbar-button"
+              disabled={isExporting}
+              onClick={() => void handleDownloadCurrentView()}
+            >
+              {isExporting ? 'Exporting...' : 'Download'}
+            </button>
             {selectedRows.length ? (
               <button
                 type="button"
@@ -2243,7 +2258,6 @@ export default function WatchlistsPage() {
                   resetCopyItemsForm()
                   setModalKind('copy-items')
                   setFilterMenuOpen(false)
-                  setMoreMenuOpen(false)
                   setGroupMenuOpen(false)
                   setNotice(null)
                 }}
@@ -2260,7 +2274,6 @@ export default function WatchlistsPage() {
                   resetMoveItemsForm()
                   setModalKind('move-items')
                   setFilterMenuOpen(false)
-                  setMoreMenuOpen(false)
                   setGroupMenuOpen(false)
                   setNotice(null)
                 }}
@@ -2347,7 +2360,22 @@ export default function WatchlistsPage() {
                   const width = columnWidths[column] ?? defaultWidthByKey.get(column)
                   const sortMode = sortabilityByKey.get(column) || 'none'
                   return (
-                    <th key={column} style={width ? { width: `${width}px` } : undefined}>
+                    <th
+                      key={column}
+                      className={[
+                        requiredColumns.includes(column) ? '' : 'watchlists-column-draggable',
+                        columnDropTarget === column ? 'watchlists-column-drop-target' : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' ') || undefined}
+                      draggable={!requiredColumns.includes(column)}
+                      style={width ? { width: `${width}px` } : undefined}
+                      onDragStart={(event) => handleColumnDragStart(event, column)}
+                      onDragOver={(event) => handleColumnDragOver(event, column)}
+                      onDragLeave={() => setColumnDropTarget('')}
+                      onDrop={(event) => handleColumnDrop(event, column)}
+                      onDragEnd={() => setColumnDropTarget('')}
+                    >
                       <span
                         className={
                           sortMode !== 'none'
@@ -2384,6 +2412,8 @@ export default function WatchlistsPage() {
                       <span
                         className="watchlists-th-resizer"
                         onMouseDown={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
                           const currentWidth = columnWidths[column] || 140
                           resizeState.current = {
                             column,
@@ -2588,58 +2618,7 @@ export default function WatchlistsPage() {
                 })}
               </div>
 
-              <div className="watchlists-modal-arrange">
-                <div className="watchlists-arrange-head">
-                  <span>Arrange</span>
-                  <button type="button" onClick={() => setColumnDraft([])}>
-                    Remove All
-                  </button>
-                </div>
-
-              <div className="watchlists-arrange-list">
-                {columnDraft.map((column, index) => (
-                  <div
-                    key={column}
-                    className="watchlists-arrange-item"
-                    draggable
-                    onDragStart={(event) => {
-                      event.dataTransfer.setData('text/plain', String(index))
-                      event.dataTransfer.effectAllowed = 'move'
-                    }}
-                    onDragOver={(event) => event.preventDefault()}
-                    onDrop={(event) => {
-                      event.preventDefault()
-                      const fromIndex = Number(event.dataTransfer.getData('text/plain'))
-                      if (Number.isNaN(fromIndex) || fromIndex === index) {
-                        return
-                      }
-                      setColumnDraft((current) => {
-                        const next = [...current]
-                        const [moved] = next.splice(fromIndex, 1)
-                        next.splice(index, 0, moved)
-                        return next
-                      })
-                    }}
-                  >
-                    <span className="watchlists-arrange-handle">⋮⋮</span>
-                    <span>{fieldLabelByKey.get(column) || formatLabel(column)}</span>
-                    <div className="watchlists-arrange-actions">
-                      {requiredColumns.includes(column) ? (
-                        <span className="watchlists-arrange-lock">Required</span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setColumnDraft((current) => current.filter((item) => item !== column))}
-                        >
-                          ×
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
             </div>
-          </div>
 
             <div className="watchlists-modal-actions watchlists-modal-actions-sticky">
               <button

@@ -166,7 +166,7 @@
 
 - snapshot generation / valuation cache
 - NAV / cumulative return
-- TTWROR
+- TWR
 - IRR / MWROR
 - benchmark-relative return
 - drawdown
@@ -379,8 +379,9 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 - 高密度表格；
 - 可排序、可筛选、可分组、可切换列；
-- 默认展示 market value、weight、cost basis、unrealized P&L；
+- 默认展示 asset、quote、quote date、quantity、avg cost、cost basis、market value、weight、unrealized P&L；
 - 允许按 taxonomy / selected planning taxonomy / account 聚合。
+- 不在 Holdings 默认承载资产级 TWR、realized gain、dividend / coupon income 或 closed positions；这些属于 Performance / security detail 的区间绩效视图。
 
 #### Performance
 
@@ -764,7 +765,7 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 - NAV history
 - daily return series
-- TTWROR
+- TWR
 - IRR / MWROR
 - benchmark comparison
 - excess return
@@ -859,6 +860,7 @@ MVP 先支持**全球公开市场的标准化资产**：
 - 当前持有什么？
 - 这些头寸的成本、权重和未实现损益是什么？
 - 单个资产的 quotes / transactions / trades / events 是什么？
+- 当前持仓对应的 quote date 是否足够新？
 
 它也应该支持：
 

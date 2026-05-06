@@ -79,8 +79,8 @@ class PortfolioDailySnapshotModel(Base):
     nav: Mapped[float | None]
     beginning_nav: Mapped[float | None]
     ending_nav: Mapped[float | None]
-    daily_ttwror: Mapped[float | None]
-    cumulative_ttwror: Mapped[float | None]
+    daily_twr: Mapped[float | None]
+    cumulative_twr: Mapped[float | None]
     drawdown: Mapped[float | None]
     snapshot_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     calculated_at: Mapped[str] = mapped_column(String, nullable=False)

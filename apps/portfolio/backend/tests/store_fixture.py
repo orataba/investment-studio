@@ -53,7 +53,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
             "currency": "USD",
             "institution": "Interactive Brokers",
             "default_settlement_cash_account_id": "cash-usd-main",
-            "cost_basis_method": "moving_average",
+            "cost_basis_method": "fifo",
             "allowed_asset_types": ["equity", "fund"],
             "opened_at": "2026-01-02",
             "status": "active",

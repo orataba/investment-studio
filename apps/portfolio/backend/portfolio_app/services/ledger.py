@@ -322,6 +322,15 @@ def _normalize_position_bucket(bucket: dict[str, object], cost_basis_method: str
         total_cost_basis += cost_basis
 
     if cleaned_lots:
+        if cost_basis_method == "moving_average":
+            bucket["lots"] = (
+                [{"quantity": total_quantity, "cost_basis": total_cost_basis}]
+                if total_quantity > 1e-9
+                else []
+            )
+            bucket["quantity"] = 0.0 if abs(total_quantity) < 1e-9 else total_quantity
+            bucket["cost_basis"] = 0.0 if abs(total_cost_basis) < 1e-9 else total_cost_basis
+            return
         bucket["lots"] = cleaned_lots
         bucket["quantity"] = 0.0 if abs(total_quantity) < 1e-9 else total_quantity
         bucket["cost_basis"] = 0.0 if abs(total_cost_basis) < 1e-9 else total_cost_basis
@@ -608,10 +617,10 @@ def _build_position_state(
                 account_id,
                 asset_id,
                 quantity=quantity or 0.0,
-                cost_basis_method="fifo",
+                cost_basis_method=cost_basis_method,
                 error_message="Position transfer requires source lots as of trade_date.",
             )
-            if transferred_cost_basis <= 0 or not transferred_lots:
+            if transferred_cost_basis < -1e-9 or not transferred_lots:
                 raise ValueError("Position transfer requires source lots as of trade_date.")
             transfer_group_id = str(transaction.get("transfer_group_id") or "")
             if transfer_group_id and transferred_lots:
@@ -955,10 +964,10 @@ def derive_ledger_postings(
                     account_id,
                     asset_id,
                     quantity=transferred_quantity,
-                    cost_basis_method="fifo",
+                    cost_basis_method=cost_basis_method,
                     error_message="Position transfer requires source lots as of trade_date.",
                 )
-                if transferred_cost_basis <= 0 or not transferred_lots:
+                if transferred_cost_basis < -1e-9 or not transferred_lots:
                     raise ValueError("Position transfer requires source lots as of trade_date.")
                 transfer_group_id = str(transaction.get("transfer_group_id") or "")
                 if transfer_group_id and transferred_lots:
@@ -989,8 +998,8 @@ def derive_ledger_postings(
                 if not incoming_lots:
                     raise ValueError("Position transfer requires linked source lots.")
                 received_cost_basis = sum((_safe_float(lot.get("cost_basis")) or 0.0) for lot in incoming_lots)
-                if received_cost_basis <= 0:
-                    raise ValueError("Position transfer requires positive linked source lot cost basis.")
+                if received_cost_basis < -1e-9:
+                    raise ValueError("Position transfer requires non-negative linked source lot cost basis.")
                 append_posting(
                     transaction,
                     posting_role="internal_position_transfer",
@@ -1145,6 +1154,9 @@ def _new_position_lot(
     opened_at: str,
     acquisition_date: str,
     entry_quantity: float,
+    entry_gross_amount: float,
+    entry_fee_amount: float,
+    entry_tax_amount: float,
     entry_cost_basis: float,
     source_position_lot_id: str | None = None,
     linked_transaction_ids: set[str] | None = None,
@@ -1171,6 +1183,9 @@ def _new_position_lot(
         "remaining_quantity": entry_quantity,
         "realized_quantity": 0.0,
         "transferred_quantity": 0.0,
+        "entry_gross_amount": entry_gross_amount,
+        "entry_fee_amount": entry_fee_amount,
+        "entry_tax_amount": entry_tax_amount,
         "entry_cost_basis": entry_cost_basis,
         "remaining_cost_basis": entry_cost_basis,
         "realized_cost_basis": 0.0,
@@ -1191,6 +1206,16 @@ def _touch_position_lot(position_lot: dict[str, object], transaction_id: str | N
     linked_transaction_ids = position_lot.setdefault("_linked_transaction_ids", set())
     if isinstance(linked_transaction_ids, set):
         linked_transaction_ids.add(transaction_id)
+
+
+def _entry_amount_slice(position_lot: dict[str, object], field_name: str, quantity: float) -> float:
+    if quantity <= 0:
+        return 0.0
+    entry_quantity = _safe_float(position_lot.get("entry_quantity")) or 0.0
+    entry_amount = _safe_float(position_lot.get(field_name)) or 0.0
+    if entry_quantity <= 1e-9 or entry_amount <= 1e-9:
+        return 0.0
+    return entry_amount * (quantity / entry_quantity)
 
 
 def _close_position_lot_if_needed(
@@ -1287,6 +1312,21 @@ def _consume_position_lots(
                     "position_lot": position_lot,
                     "quantity": take_quantity,
                     "cost_basis": take_cost_basis,
+                    "entry_gross_amount": _entry_amount_slice(
+                        position_lot,
+                        "entry_gross_amount",
+                        take_quantity,
+                    ),
+                    "entry_fee_amount": _entry_amount_slice(
+                        position_lot,
+                        "entry_fee_amount",
+                        take_quantity,
+                    ),
+                    "entry_tax_amount": _entry_amount_slice(
+                        position_lot,
+                        "entry_tax_amount",
+                        take_quantity,
+                    ),
                 }
             )
             remaining -= take_quantity
@@ -1301,6 +1341,25 @@ def _consume_position_lots(
         lot_quantity = quantities[index]
         lot_cost_basis = _safe_float(position_lot.get("remaining_cost_basis")) or 0.0
         take_cost_basis = lot_cost_basis * (take_quantity / lot_quantity) if lot_quantity > 0 else 0.0
+        entry_gross_amount = take_cost_basis
+        entry_fee_amount = 0.0
+        entry_tax_amount = 0.0
+        if cost_basis_method != "moving_average":
+            entry_gross_amount = _entry_amount_slice(
+                position_lot,
+                "entry_gross_amount",
+                take_quantity,
+            )
+            entry_fee_amount = _entry_amount_slice(
+                position_lot,
+                "entry_fee_amount",
+                take_quantity,
+            )
+            entry_tax_amount = _entry_amount_slice(
+                position_lot,
+                "entry_tax_amount",
+                take_quantity,
+            )
         position_lot["remaining_quantity"] = lot_quantity - take_quantity
         position_lot["remaining_cost_basis"] = lot_cost_basis - take_cost_basis
         slices.append(
@@ -1308,6 +1367,9 @@ def _consume_position_lots(
                 "position_lot": position_lot,
                 "quantity": take_quantity,
                 "cost_basis": take_cost_basis,
+                "entry_gross_amount": entry_gross_amount,
+                "entry_fee_amount": entry_fee_amount,
+                "entry_tax_amount": entry_tax_amount,
             }
         )
     return slices
@@ -1414,11 +1476,50 @@ def build_position_lots(
         opened_at: str,
         acquisition_date: str,
         entry_quantity: float,
+        entry_gross_amount: float,
+        entry_fee_amount: float,
+        entry_tax_amount: float,
         entry_cost_basis: float,
         source_position_lot_id: str | None = None,
         linked_transaction_ids: set[str] | None = None,
     ) -> dict[str, object]:
         resolved_cost_basis_method = _resolve_cost_basis_method(account_cost_methods, target_account_id)
+        if resolved_cost_basis_method == "moving_average":
+            active_lots = _active_position_lots(position_lots_by_key, target_account_id, target_asset_id)
+            if active_lots:
+                position_lot = active_lots[0]
+                position_lot["entry_quantity"] = (_safe_float(position_lot.get("entry_quantity")) or 0.0) + entry_quantity
+                position_lot["remaining_quantity"] = (
+                    (_safe_float(position_lot.get("remaining_quantity")) or 0.0) + entry_quantity
+                )
+                position_lot["entry_gross_amount"] = (
+                    (_safe_float(position_lot.get("entry_gross_amount")) or 0.0) + entry_gross_amount
+                )
+                position_lot["entry_fee_amount"] = (
+                    (_safe_float(position_lot.get("entry_fee_amount")) or 0.0) + entry_fee_amount
+                )
+                position_lot["entry_tax_amount"] = (
+                    (_safe_float(position_lot.get("entry_tax_amount")) or 0.0) + entry_tax_amount
+                )
+                position_lot["entry_cost_basis"] = (
+                    (_safe_float(position_lot.get("entry_cost_basis")) or 0.0) + entry_cost_basis
+                )
+                position_lot["remaining_cost_basis"] = (
+                    (_safe_float(position_lot.get("remaining_cost_basis")) or 0.0) + entry_cost_basis
+                )
+                if not isinstance(position_lot.get("instrument_ref"), dict) or not position_lot.get("instrument_ref"):
+                    position_lot["instrument_ref"] = deepcopy(instrument_ref)
+                if source_position_lot_id != position_lot.get("source_position_lot_id"):
+                    position_lot["source_position_lot_id"] = None
+                existing_acquisition_date = str(position_lot.get("acquisition_date") or acquisition_date)
+                if acquisition_date and acquisition_date < existing_acquisition_date:
+                    position_lot["acquisition_date"] = acquisition_date
+                for linked_transaction_id in linked_transaction_ids or set():
+                    _touch_position_lot(position_lot, linked_transaction_id)
+                _touch_position_lot(position_lot, opened_by_transaction_id)
+                _close_position_lot_if_needed(position_lot, close_date=opened_at)
+                return position_lot
+
         position_lot = _new_position_lot(
             position_lot_id=next_position_lot_id(),
             portfolio_id=portfolio_id,
@@ -1432,6 +1533,9 @@ def build_position_lots(
             opened_at=opened_at,
             acquisition_date=acquisition_date,
             entry_quantity=entry_quantity,
+            entry_gross_amount=entry_gross_amount,
+            entry_fee_amount=entry_fee_amount,
+            entry_tax_amount=entry_tax_amount,
             entry_cost_basis=entry_cost_basis,
             source_position_lot_id=source_position_lot_id,
             linked_transaction_ids=linked_transaction_ids,
@@ -1549,6 +1653,9 @@ def build_position_lots(
                 opened_at=trade_date,
                 acquisition_date=acquisition_date,
                 entry_quantity=quantity,
+                entry_gross_amount=gross_amount,
+                entry_fee_amount=fees if transaction_type == "buy" else 0.0,
+                entry_tax_amount=taxes if transaction_type == "buy" else 0.0,
                 entry_cost_basis=entry_cost_basis,
             )
             continue
@@ -1573,6 +1680,9 @@ def build_position_lots(
                 opened_at=trade_date,
                 acquisition_date=trade_date,
                 entry_quantity=quantity,
+                entry_gross_amount=gross_amount,
+                entry_fee_amount=0.0,
+                entry_tax_amount=0.0,
                 entry_cost_basis=gross_amount,
             )
             continue
@@ -1710,7 +1820,7 @@ def build_position_lots(
                 account_id=account_key,
                 asset_id=resolved_asset_id,
                 quantity=quantity,
-                cost_basis_method="fifo",
+                cost_basis_method=cost_basis_method,
                 error_message="Position transfer requires source position lots as of trade_date.",
             )
             if not disposal_slices:
@@ -1720,6 +1830,9 @@ def build_position_lots(
                 position_lot = slice_item["position_lot"]
                 matched_quantity = _safe_float(slice_item.get("quantity")) or 0.0
                 matched_cost_basis = _safe_float(slice_item.get("cost_basis")) or 0.0
+                matched_entry_gross_amount = _safe_float(slice_item.get("entry_gross_amount")) or 0.0
+                matched_entry_fee_amount = _safe_float(slice_item.get("entry_fee_amount")) or 0.0
+                matched_entry_tax_amount = _safe_float(slice_item.get("entry_tax_amount")) or 0.0
                 position_lot["transferred_quantity"] = (
                     (_safe_float(position_lot.get("transferred_quantity")) or 0.0) + matched_quantity
                 )
@@ -1745,6 +1858,9 @@ def build_position_lots(
                             position_lot.get("acquisition_date") or position_lot.get("opened_at") or trade_date
                         ),
                         "entry_quantity": matched_quantity,
+                        "entry_gross_amount": matched_entry_gross_amount,
+                        "entry_fee_amount": matched_entry_fee_amount,
+                        "entry_tax_amount": matched_entry_tax_amount,
                         "entry_cost_basis": matched_cost_basis,
                         "source_position_lot_id": str(position_lot.get("position_lot_id") or "") or None,
                     }
@@ -1766,6 +1882,9 @@ def build_position_lots(
                 raise ValueError("Position transfer requires linked source position lots.")
             for incoming_slice in incoming_slices:
                 entry_quantity = _safe_float(incoming_slice.get("entry_quantity")) or 0.0
+                entry_gross_amount = _safe_float(incoming_slice.get("entry_gross_amount")) or 0.0
+                entry_fee_amount = _safe_float(incoming_slice.get("entry_fee_amount")) or 0.0
+                entry_tax_amount = _safe_float(incoming_slice.get("entry_tax_amount")) or 0.0
                 entry_cost_basis = _safe_float(incoming_slice.get("entry_cost_basis"))
                 if entry_quantity <= 0 or entry_cost_basis is None or entry_cost_basis < 0:
                     raise ValueError("Position transfer requires valid linked source lot slices.")
@@ -1791,6 +1910,9 @@ def build_position_lots(
                         incoming_slice.get("acquisition_date") or incoming_slice.get("opened_at") or trade_date
                     ),
                     entry_quantity=entry_quantity,
+                    entry_gross_amount=entry_gross_amount,
+                    entry_fee_amount=entry_fee_amount,
+                    entry_tax_amount=entry_tax_amount,
                     entry_cost_basis=entry_cost_basis,
                     source_position_lot_id=(
                         str(incoming_slice.get("source_position_lot_id") or "") or None
@@ -1821,6 +1943,9 @@ def build_position_lots(
         remaining_cost_basis = _safe_float(raw_position_lot.get("remaining_cost_basis")) or 0.0
         realized_quantity = _safe_float(raw_position_lot.get("realized_quantity")) or 0.0
         entry_quantity = _safe_float(raw_position_lot.get("entry_quantity")) or 0.0
+        entry_gross_amount = _safe_float(raw_position_lot.get("entry_gross_amount")) or 0.0
+        entry_fee_amount = _safe_float(raw_position_lot.get("entry_fee_amount")) or 0.0
+        entry_tax_amount = _safe_float(raw_position_lot.get("entry_tax_amount")) or 0.0
         entry_cost_basis = _safe_float(raw_position_lot.get("entry_cost_basis")) or 0.0
         realized_proceeds = _safe_float(raw_position_lot.get("realized_proceeds")) or 0.0
         asset_price = pricing_map.get(str(raw_position_lot.get("asset_id") or ""))
@@ -1863,7 +1988,13 @@ def build_position_lots(
                 "remaining_quantity": remaining_quantity,
                 "realized_quantity": realized_quantity,
                 "transferred_quantity": _safe_float(raw_position_lot.get("transferred_quantity")) or 0.0,
+                "entry_gross_amount": entry_gross_amount,
+                "entry_fee_amount": entry_fee_amount,
+                "entry_tax_amount": entry_tax_amount,
                 "entry_cost_basis": entry_cost_basis,
+                "entry_cost_per_unit": (
+                    entry_cost_basis / entry_quantity if entry_quantity > 1e-9 else None
+                ),
                 "remaining_cost_basis": remaining_cost_basis,
                 "realized_cost_basis": _safe_float(raw_position_lot.get("realized_cost_basis")) or 0.0,
                 "transferred_cost_basis": _safe_float(raw_position_lot.get("transferred_cost_basis")) or 0.0,
@@ -1872,7 +2003,7 @@ def build_position_lots(
                 "income_cash_amount": _safe_float(raw_position_lot.get("income_cash_amount")) or 0.0,
                 "expense_cash_amount": _safe_float(raw_position_lot.get("expense_cash_amount")) or 0.0,
                 "return_of_capital_amount": _safe_float(raw_position_lot.get("return_of_capital_amount")) or 0.0,
-                "entry_price": (entry_cost_basis / entry_quantity) if entry_quantity > 1e-9 else None,
+                "entry_price": (entry_gross_amount / entry_quantity) if entry_quantity > 1e-9 else None,
                 "average_exit_price": (
                     realized_proceeds / realized_quantity if realized_quantity > 1e-9 else None
                 ),

@@ -197,6 +197,9 @@ def _select_market_point_as_of(
                 "value": resolved_value,
                 "as_of_date": point_date,
                 "currency": _normalized_currency(point.get("currency"), fallback=str(detail.get("currency") or "USD")),
+                "metric_family": str(point.get("metric_family") or ""),
+                "quote_basis": quote_basis,
+                "provider": point.get("provider"),
                 "status": str(point.get("status") or "complete"),
                 "stale": point_date is not None and point_date < as_of_date,
             }
@@ -216,6 +219,9 @@ def _select_market_point_as_of(
         "value": resolved_value,
         "as_of_date": point_date,
         "currency": _normalized_currency(point.get("currency"), fallback=str(detail.get("currency") or "USD")),
+        "metric_family": str(point.get("metric_family") or ""),
+        "quote_basis": str(point.get("quote_basis") or ""),
+        "provider": point.get("provider"),
         "status": str(point.get("status") or "complete"),
         "stale": point_date is not None and point_date < as_of_date,
     }
@@ -393,12 +399,14 @@ def _position_buckets_from_lots(position_lots: list[dict[str, object]]) -> list[
                 "cost_basis": 0.0,
                 "open_position_lot_count": 0,
                 "account_ids": set(),
+                "cost_basis_methods": set(),
             },
         )
         bucket["quantity"] += _safe_float(position_lot.get("remaining_quantity")) or 0.0
         bucket["cost_basis"] += _safe_float(position_lot.get("remaining_cost_basis")) or 0.0
         bucket["open_position_lot_count"] += 1
         bucket["account_ids"].add(str(position_lot.get("account_id") or ""))
+        bucket["cost_basis_methods"].add(str(position_lot.get("cost_basis_method") or "fifo"))
     rendered_buckets: list[dict[str, object]] = []
     for bucket in positions_by_asset.values():
         if abs(_safe_float(bucket.get("quantity")) or 0.0) <= 1e-9:
@@ -409,11 +417,18 @@ def _position_buckets_from_lots(position_lots: list[dict[str, object]]) -> list[
             if isinstance(raw_account_ids, set)
             else []
         )
+        raw_methods = bucket.get("cost_basis_methods")
+        cost_basis_methods = (
+            sorted(method for method in raw_methods if method)
+            if isinstance(raw_methods, set)
+            else []
+        )
         rendered_buckets.append(
             {
-                **bucket,
+                **{key: value for key, value in bucket.items() if key != "cost_basis_methods"},
                 "account_ids": account_ids,
                 "account_count": len(account_ids),
+                "cost_basis_method": cost_basis_methods[0] if len(cost_basis_methods) == 1 else "mixed",
             }
         )
     return rendered_buckets
@@ -436,17 +451,30 @@ def _position_buckets_by_account_asset_from_lots(position_lots: list[dict[str, o
                 "quantity": 0.0,
                 "cost_basis": 0.0,
                 "open_position_lot_count": 0,
+                "cost_basis_methods": set(),
             },
         )
         bucket["quantity"] += _safe_float(position_lot.get("remaining_quantity")) or 0.0
         bucket["cost_basis"] += _safe_float(position_lot.get("remaining_cost_basis")) or 0.0
         bucket["open_position_lot_count"] += 1
+        bucket["cost_basis_methods"].add(str(position_lot.get("cost_basis_method") or "fifo"))
 
     rendered_buckets: list[dict[str, object]] = []
     for bucket in positions_by_account_asset.values():
         if abs(_safe_float(bucket.get("quantity")) or 0.0) <= 1e-9:
             continue
-        rendered_buckets.append(bucket)
+        raw_methods = bucket.get("cost_basis_methods")
+        cost_basis_methods = (
+            sorted(method for method in raw_methods if method)
+            if isinstance(raw_methods, set)
+            else []
+        )
+        rendered_buckets.append(
+            {
+                **{key: value for key, value in bucket.items() if key != "cost_basis_methods"},
+                "cost_basis_method": cost_basis_methods[0] if len(cost_basis_methods) == 1 else "mixed",
+            }
+        )
     return rendered_buckets
 
 
@@ -529,9 +557,15 @@ def _build_materialized_holding_rows(
                 "asset_id": asset_id,
                 "instrument_ref": deepcopy(bucket.get("instrument_ref") or {}),
                 "quantity": quantity,
+                "cost_basis_method": str(bucket.get("cost_basis_method") or "fifo"),
                 "cost_basis": cost_basis,
                 "cost_basis_base": converted_cost_basis,
                 "last_price": last_price,
+                "quote_as_of_date": (price_point or {}).get("as_of_date"),
+                "quote_metric_family": (price_point or {}).get("metric_family"),
+                "quote_basis": (price_point or {}).get("quote_basis"),
+                "quote_provider": (price_point or {}).get("provider"),
+                "quote_status": (price_point or {}).get("status"),
                 "market_value": market_value,
                 "market_value_base": converted_market_value,
                 "currency": currency,
@@ -1194,21 +1228,21 @@ def build_daily_portfolio_snapshots(
         beginning_nav = last_complete_nav
         absolute_change = None
         delta = None
-        daily_ttwror = None
+        daily_twr = None
         if nav is not None and last_complete_nav is not None and flow_breakdown["coverage_complete"]:
             absolute_change = nav - last_complete_nav
             delta = absolute_change - flow_breakdown["net_external_inflow"]
             denominator = last_complete_nav + flow_breakdown["external_cash_in"]
             numerator = nav + flow_breakdown["external_cash_out"]
             if denominator > 1e-9 and numerator >= 0:
-                daily_ttwror = (numerator / denominator) - 1.0
+                daily_twr = (numerator / denominator) - 1.0
 
-        if daily_ttwror is not None and isfinite(daily_ttwror):
+        if daily_twr is not None and isfinite(daily_twr):
             has_return_history = True
-            growth_index *= 1.0 + daily_ttwror
+            growth_index *= 1.0 + daily_twr
             peak_growth_index = max(peak_growth_index, growth_index)
 
-        cumulative_ttwror = (growth_index - 1.0) if has_return_history else None
+        cumulative_twr = (growth_index - 1.0) if has_return_history else None
         drawdown = (
             (growth_index / peak_growth_index) - 1.0
             if has_return_history and peak_growth_index > 0
@@ -1230,9 +1264,9 @@ def build_daily_portfolio_snapshots(
             "priced_position_count": priced_position_count,
             "market_observation_count": fresh_price_count,
             "return_observation_eligible": (
-                daily_ttwror is not None
-                and isfinite(daily_ttwror)
-                and (fresh_price_count > 0 or abs(daily_ttwror) > 1e-12)
+                daily_twr is not None
+                and isfinite(daily_twr)
+                and (fresh_price_count > 0 or abs(daily_twr) > 1e-12)
             ),
             "cash_balance": resolved_cash_balance,
             "pending_settlement": pending_settlement_base if pending_settlement_complete else None,
@@ -1254,8 +1288,8 @@ def build_daily_portfolio_snapshots(
             "ending_nav": nav,
             "absolute_change": absolute_change,
             "delta": delta,
-            "daily_ttwror": daily_ttwror,
-            "cumulative_ttwror": cumulative_ttwror,
+            "daily_twr": daily_twr,
+            "cumulative_twr": cumulative_twr,
             "drawdown": drawdown,
         }
 
@@ -1380,14 +1414,14 @@ def _downside_deviation(values: list[float], *, minimum_acceptable_return: float
     return sqrt(sum(downside_squares) / len(downside_squares))
 
 
-def _compound_daily_ttwror(snapshots: list[dict[str, object]]) -> float | None:
+def _compound_daily_twr(snapshots: list[dict[str, object]]) -> float | None:
     growth_index = 1.0
     has_return = False
     for snapshot in snapshots:
-        daily_ttwror = _safe_float(snapshot.get("daily_ttwror"))
-        if daily_ttwror is None or not isfinite(daily_ttwror):
+        daily_twr = _safe_float(snapshot.get("daily_twr"))
+        if daily_twr is None or not isfinite(daily_twr):
             continue
-        growth_index *= 1.0 + daily_ttwror
+        growth_index *= 1.0 + daily_twr
         has_return = True
     return (growth_index - 1.0) if has_return else None
 
@@ -1400,11 +1434,11 @@ def _drawdown_stats(
     growth_points: list[tuple[date, float]] = []
     growth_index = 1.0
     for snapshot in snapshots:
-        daily_ttwror = _safe_float(snapshot.get("daily_ttwror"))
+        daily_twr = _safe_float(snapshot.get("daily_twr"))
         snapshot_date = snapshot.get("as_of_date")
-        if daily_ttwror is None or not isfinite(daily_ttwror) or not isinstance(snapshot_date, date):
+        if daily_twr is None or not isfinite(daily_twr) or not isinstance(snapshot_date, date):
             continue
-        growth_index *= 1.0 + daily_ttwror
+        growth_index *= 1.0 + daily_twr
         growth_points.append((snapshot_date, growth_index))
     if not growth_points:
         return {
@@ -1457,7 +1491,7 @@ def _drawdown_stats(
     }
 
 
-def _rebased_ttwror_series(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
+def _rebased_twr_series(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
     growth_index = 1.0
     peak_growth_index = 1.0
     has_return_history = False
@@ -1465,13 +1499,13 @@ def _rebased_ttwror_series(snapshots: list[dict[str, object]]) -> list[dict[str,
 
     for snapshot in snapshots:
         rendered_snapshot = dict(snapshot)
-        daily_ttwror = _safe_float(snapshot.get("daily_ttwror"))
-        if daily_ttwror is not None and isfinite(daily_ttwror):
+        daily_twr = _safe_float(snapshot.get("daily_twr"))
+        if daily_twr is not None and isfinite(daily_twr):
             has_return_history = True
-            growth_index *= 1.0 + daily_ttwror
+            growth_index *= 1.0 + daily_twr
             peak_growth_index = max(peak_growth_index, growth_index)
 
-        rendered_snapshot["cumulative_ttwror"] = (growth_index - 1.0) if has_return_history else None
+        rendered_snapshot["cumulative_twr"] = (growth_index - 1.0) if has_return_history else None
         rendered_snapshot["drawdown"] = (
             (growth_index / peak_growth_index) - 1.0
             if has_return_history and peak_growth_index > 0
@@ -1577,7 +1611,7 @@ def build_portfolio_performance_report_from_snapshots(
         if start_date is None
         or (isinstance(snapshot.get("as_of_date"), date) and snapshot["as_of_date"] >= start_date)
     ]
-    visible_daily_series_snapshots = _rebased_ttwror_series(visible_snapshots)
+    visible_daily_series_snapshots = _rebased_twr_series(visible_snapshots)
     snapshot_summary = summarize_daily_snapshots(visible_snapshots)
     complete_snapshots = [
         snapshot
@@ -1603,11 +1637,11 @@ def build_portfolio_performance_report_from_snapshots(
         for snapshot in visible_snapshots
         if snapshot.get("coverage_state") == "complete" and snapshot.get("nav") is not None
     ]
-    return_observation_count = sum(1 for snapshot in visible_snapshots if snapshot.get("daily_ttwror") is not None)
+    return_observation_count = sum(1 for snapshot in visible_snapshots if snapshot.get("daily_twr") is not None)
     risk_return_snapshots = [
         snapshot
         for snapshot in visible_snapshots
-        if snapshot.get("daily_ttwror") is not None and bool(snapshot.get("return_observation_eligible"))
+        if snapshot.get("daily_twr") is not None and bool(snapshot.get("return_observation_eligible"))
     ]
     risk_return_observation_count = len(risk_return_snapshots)
     start_snapshot = complete_snapshots[0] if complete_snapshots else None
@@ -1629,10 +1663,10 @@ def build_portfolio_performance_report_from_snapshots(
             return None
         return end_value - start_value
 
-    cumulative_ttwror = _compound_daily_ttwror(visible_snapshots) if end_snapshot and return_observation_count > 0 else None
-    annualized_ttwror = None
+    cumulative_twr = _compound_daily_twr(visible_snapshots) if end_snapshot and return_observation_count > 0 else None
+    annualized_twr = None
     if (
-        cumulative_ttwror is not None
+        cumulative_twr is not None
         and start_snapshot is not None
         and end_snapshot is not None
         and isinstance(start_snapshot.get("as_of_date"), date)
@@ -1640,7 +1674,7 @@ def build_portfolio_performance_report_from_snapshots(
     ):
         years = _year_fraction(start_snapshot["as_of_date"], end_snapshot["as_of_date"])
         if years > 1e-9:
-            annualized_ttwror = (1.0 + cumulative_ttwror) ** (1.0 / years) - 1.0
+            annualized_twr = (1.0 + cumulative_twr) ** (1.0 / years) - 1.0
 
     flow_snapshots = visible_snapshots
     if start_anchor_date is not None and end_anchor_date is not None:
@@ -1695,9 +1729,9 @@ def build_portfolio_performance_report_from_snapshots(
         irr = _solve_xirr(cash_flows)
 
     daily_returns = [
-        _safe_float(snapshot.get("daily_ttwror"))
+        _safe_float(snapshot.get("daily_twr"))
         for snapshot in risk_return_snapshots
-        if snapshot.get("daily_ttwror") is not None
+        if snapshot.get("daily_twr") is not None
     ]
     daily_returns = [value for value in daily_returns if value is not None]
     mean_daily_return = (sum(daily_returns) / len(daily_returns)) if daily_returns else None
@@ -1749,7 +1783,7 @@ def build_portfolio_performance_report_from_snapshots(
         coverage_state = "complete"
         if snapshot_summary["partial_count"] or snapshot_summary["unavailable_count"]:
             coverage_state = "partial"
-        if cumulative_ttwror is None:
+        if cumulative_twr is None:
             coverage_state = "partial"
 
     return {
@@ -1771,8 +1805,8 @@ def build_portfolio_performance_report_from_snapshots(
             "external_cash_in": external_cash_in,
             "external_cash_out": external_cash_out,
             "net_external_inflow": net_external_inflow,
-            "cumulative_ttwror": cumulative_ttwror,
-            "annualized_ttwror": annualized_ttwror,
+            "cumulative_twr": cumulative_twr,
+            "annualized_twr": annualized_twr,
             "irr": irr,
             "mwror": irr,
             "absolute_change": absolute_change,
@@ -1819,8 +1853,8 @@ def build_portfolio_performance_report_from_snapshots(
                 "net_external_inflow": snapshot["net_external_inflow"],
                 "absolute_change": snapshot["absolute_change"],
                 "delta": snapshot["delta"],
-                "daily_ttwror": snapshot["daily_ttwror"],
-                "cumulative_ttwror": snapshot["cumulative_ttwror"],
+                "daily_twr": snapshot["daily_twr"],
+                "cumulative_twr": snapshot["cumulative_twr"],
                 "drawdown": snapshot["drawdown"],
             }
             for snapshot in visible_daily_series_snapshots
@@ -2195,9 +2229,15 @@ def _build_boundary_holding_records(
                 "asset_id": str(bucket.get("asset_id") or ""),
                 "instrument_ref": deepcopy(bucket.get("instrument_ref") or {}),
                 "quantity": quantity,
+                "cost_basis_method": str(bucket.get("cost_basis_method") or "fifo"),
                 "cost_basis": cost_basis,
                 "cost_basis_base": converted_cost_basis,
                 "last_price": last_price,
+                "quote_as_of_date": (price_point or {}).get("as_of_date"),
+                "quote_metric_family": (price_point or {}).get("metric_family"),
+                "quote_basis": (price_point or {}).get("quote_basis"),
+                "quote_provider": (price_point or {}).get("provider"),
+                "quote_status": (price_point or {}).get("status"),
                 "market_value": market_value_local,
                 "market_value_base": converted_market_value,
                 "currency": currency,
@@ -2876,9 +2916,9 @@ def build_return_calendar_report(
         else:
             bucket["delta"] += delta
 
-        daily_ttwror = _safe_float(point.get("daily_ttwror"))
-        if daily_ttwror is not None and isfinite(daily_ttwror):
-            bucket["_growth_index"] *= 1.0 + daily_ttwror
+        daily_twr = _safe_float(point.get("daily_twr"))
+        if daily_twr is not None and isfinite(daily_twr):
+            bucket["_growth_index"] *= 1.0 + daily_twr
             bucket["_has_return"] = True
             bucket["observation_count"] += 1
 
@@ -2915,7 +2955,7 @@ def build_return_calendar_report(
                 "net_external_inflow": bucket["net_external_inflow"],
                 "absolute_change": bucket["absolute_change"] if bucket["_absolute_change_complete"] else None,
                 "delta": bucket["delta"] if bucket["_delta_complete"] else None,
-                "cumulative_ttwror": (bucket["_growth_index"] - 1.0) if bucket["_has_return"] else None,
+                "cumulative_twr": (bucket["_growth_index"] - 1.0) if bucket["_has_return"] else None,
             }
         )
 
@@ -4101,7 +4141,7 @@ def build_contribution_report_from_daily_slices(
                 "start_nav": None,
                 "end_nav": None,
                 "portfolio_arithmetic_return": None,
-                "portfolio_cumulative_ttwror": None,
+                "portfolio_cumulative_twr": None,
                 "total_period_contribution": None,
                 "contribution_residual": None,
             },
@@ -4127,10 +4167,10 @@ def build_contribution_report_from_daily_slices(
     observation_count = 0
     for as_of_date in _iter_dates(resolved_start_date, resolved_end_date):
         snapshot = snapshots_by_date.get(as_of_date)
-        daily_ttwror = _safe_float((snapshot or {}).get("daily_ttwror"))
-        if daily_ttwror is not None and isfinite(daily_ttwror):
-            arithmetic_return += daily_ttwror
-            contribution_growth_index *= 1.0 + daily_ttwror
+        daily_twr = _safe_float((snapshot or {}).get("daily_twr"))
+        if daily_twr is not None and isfinite(daily_twr):
+            arithmetic_return += daily_twr
+            contribution_growth_index *= 1.0 + daily_twr
             has_return_observation = True
             observation_count += 1
 
@@ -4222,7 +4262,7 @@ def build_contribution_report_from_daily_slices(
 
     total_period_contribution = sum((_safe_float(line.get("period_contribution")) or 0.0) for line in lines)
     portfolio_arithmetic_return = arithmetic_return if observation_count > 0 else None
-    portfolio_cumulative_ttwror = (
+    portfolio_cumulative_twr = (
         contribution_growth_index - 1.0
         if has_return_observation
         else None
@@ -4251,7 +4291,7 @@ def build_contribution_report_from_daily_slices(
             "start_nav": _safe_float((in_period_snapshots[0] if in_period_snapshots else {}).get("beginning_nav")),
             "end_nav": _safe_float((in_period_snapshots[-1] if in_period_snapshots else {}).get("ending_nav")),
             "portfolio_arithmetic_return": portfolio_arithmetic_return,
-            "portfolio_cumulative_ttwror": portfolio_cumulative_ttwror,
+            "portfolio_cumulative_twr": portfolio_cumulative_twr,
             "total_period_contribution": total_period_contribution,
             "contribution_residual": contribution_residual,
         },
@@ -4377,7 +4417,7 @@ def build_contribution_report(
                 "start_nav": None,
                 "end_nav": None,
                 "portfolio_arithmetic_return": None,
-                "portfolio_cumulative_ttwror": None,
+                "portfolio_cumulative_twr": None,
                 "total_period_contribution": None,
                 "contribution_residual": None,
             },

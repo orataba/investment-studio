@@ -173,7 +173,7 @@ Portfolio Performance（PP）是正式版最重要的**计算与领域模型参�
 
 - **组合账本是真相源**，不是 UI 页面。
 - **账户、组合、证券、现金流、公司行为要分层建模**。
-- **收益率口径必须明确区分**：TTWROR、IRR/MWROR、绝对收益、基准相对收益。
+- **收益率口径必须明确区分**：TWR、IRR/MWROR、绝对收益、基准相对收益。
 - **分类不是装饰字段**，而是一等公民对象，后续要承载资产类别、planning taxonomy、主题、策略、账户维度等多重视图。
 - **快照是运行时派生分析层**，报表和分析应基于快照和账本计算，而不是手写汇总字段。
 
@@ -332,7 +332,7 @@ Bridgewater 对这个项目最重要的贡献不是“某个指标”，而是�
 1. 组合与账户建模
 2. 交易账本与现金流
 3. 由 Analytics 生成的持仓与估值快照
-4. TTWROR / IRR / benchmark-relative performance
+4. TWR / IRR / benchmark-relative performance
 5. taxonomy / planning taxonomy / bucket / benchmark 视图
 6. snapshot / performance / risk / review 四类分析工作面
 7. taxonomy 上的 `TargetSet` targets、drift / risk budget gap / attribution
@@ -407,7 +407,7 @@ Bridgewater 对这个项目最重要的贡献不是“某个指标”，而是�
 
 - `Quotes` 是跨组合共享的市场数据，不属于某个 portfolio 私有；
 - `Transactions` 是组合私有账本；
-- `Trades` 不是原始事实，而是 FIFO lot matching 后的分析结果；
+- `Trades` 不是原始事实，而是账户成本法匹配后的分析结果；FIFO 账户保留真实 lot matching，moving-average 账户使用 rolling average bucket；
 - `Snapshots` 由 Analytics 从事实层生成，不属于 Kernel 原始主数据；
 - `Review` 和 `Snapshot report` 都消费派生分析层，而不是直接手填页面字段。
 

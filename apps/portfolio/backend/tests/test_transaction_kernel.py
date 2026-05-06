@@ -187,6 +187,119 @@ def test_securities_account_defaults_to_fifo_when_cost_basis_omitted(client):
     assert response.json()["cost_basis_method"] == "fifo"
 
 
+def test_account_cost_method_can_be_updated_before_asset_history(client):
+    created_response = client.post(
+        "/api/portfolios/yungu/accounts",
+        json={
+            "account_name": "Cost Method Editable Account",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "fifo",
+            "allowed_asset_types": ["equity"],
+            "opened_at": "2026-04-22",
+            "status": "active",
+        },
+    )
+    assert created_response.status_code == 200
+    account = created_response.json()
+
+    updated_response = client.patch(
+        f"/api/portfolios/yungu/accounts/{account['account_id']}",
+        json={
+            "account_name": "Cost Method Editable Account",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "moving_average",
+            "allowed_asset_types": ["equity"],
+            "opened_at": "2026-04-22",
+            "status": "active",
+        },
+    )
+
+    assert updated_response.status_code == 200
+    assert updated_response.json()["cost_basis_method"] == "moving_average"
+
+
+def test_account_cost_method_change_restates_asset_history(client):
+    created_response = client.post(
+        "/api/portfolios/yungu/accounts",
+        json={
+            "account_name": "Cost Method Restatement Account",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "fifo",
+            "allowed_asset_types": ["equity"],
+            "opened_at": "2026-04-01",
+            "status": "active",
+        },
+    )
+    assert created_response.status_code == 200
+    account = created_response.json()
+
+    for trade_date, transaction_type, quantity, price in [
+        ("2026-04-10", "buy", 5000.0, 50.0),
+        ("2026-04-11", "buy", 5000.0, 100.0),
+        ("2026-04-12", "sell", 6000.0, 75.0),
+    ]:
+        transaction_response = client.post(
+            "/api/portfolios/yungu/transactions",
+            json={
+                "transaction_type": transaction_type,
+                "trade_date": trade_date,
+                "account_id": account["account_id"],
+                "settlement_cash_account_id": "cash-usd-main",
+                "asset_id": "equity-us-abbv",
+                "quantity": quantity,
+                "price": price,
+                "gross_amount": quantity * price,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+            },
+        )
+        assert transaction_response.status_code == 200
+
+    fifo_lots_response = client.get(
+        "/api/portfolios/yungu/position-lots",
+        params={"account_id": account["account_id"], "asset_id": "equity-us-abbv"},
+    )
+    assert fifo_lots_response.status_code == 200
+    fifo_lots = fifo_lots_response.json()["position_lots"]
+    assert sum(lot["remaining_cost_basis"] for lot in fifo_lots) == pytest.approx(400000.0)
+    assert sum(lot["realized_cost_basis"] for lot in fifo_lots) == pytest.approx(350000.0)
+    assert sum(lot["realized_pnl"] for lot in fifo_lots) == pytest.approx(100000.0)
+
+    updated_response = client.patch(
+        f"/api/portfolios/yungu/accounts/{account['account_id']}",
+        json={
+            "account_name": "Cost Method Restatement Account",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "moving_average",
+            "allowed_asset_types": ["equity"],
+            "opened_at": "2026-04-01",
+            "status": "active",
+        },
+    )
+    assert updated_response.status_code == 200
+    assert updated_response.json()["cost_basis_method"] == "moving_average"
+
+    restated_lots_response = client.get(
+        "/api/portfolios/yungu/position-lots",
+        params={"account_id": account["account_id"], "asset_id": "equity-us-abbv"},
+    )
+    assert restated_lots_response.status_code == 200
+    restated_lots = restated_lots_response.json()["position_lots"]
+    assert len(restated_lots) == 1
+    assert sum(lot["remaining_cost_basis"] for lot in restated_lots) == pytest.approx(300000.0)
+    assert sum(lot["realized_cost_basis"] for lot in restated_lots) == pytest.approx(450000.0)
+    assert sum(lot["realized_pnl"] for lot in restated_lots) == pytest.approx(0.0)
+
+
 def test_transaction_fact_can_be_updated_and_deleted(client):
     created_response = client.post(
         "/api/portfolios/yungu/transactions",
@@ -537,7 +650,7 @@ def test_position_lots_support_historical_as_of_date(client):
     assert position_lot["unrealized_pnl"] == pytest.approx(3712.0)
 
 
-def test_position_transfer_uses_fifo_slicing_for_moving_average_accounts(client):
+def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(client):
     source_account = client.post(
         "/api/portfolios/yungu/accounts",
         json={
@@ -597,7 +710,7 @@ def test_position_transfer_uses_fifo_slicing_for_moving_average_accounts(client)
     )
     assert transfer_response.status_code == 200
     transfer_batch = transfer_response.json()
-    assert {txn["gross_amount"] for txn in transfer_batch["transactions"]} == {2000.0}
+    assert {txn["gross_amount"] for txn in transfer_batch["transactions"]} == {2250.0}
 
     destination_lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
@@ -605,9 +718,9 @@ def test_position_transfer_uses_fifo_slicing_for_moving_average_accounts(client)
     )
     assert destination_lots_response.status_code == 200
     destination_lots = destination_lots_response.json()["position_lots"]
-    assert len(destination_lots) == 2
-    assert [lot["entry_quantity"] for lot in destination_lots] == pytest.approx([50.0, 100.0])
-    assert [lot["entry_cost_basis"] for lot in destination_lots] == pytest.approx([1000.0, 1000.0])
+    assert len(destination_lots) == 1
+    assert destination_lots[0]["entry_quantity"] == pytest.approx(150.0)
+    assert destination_lots[0]["entry_cost_basis"] == pytest.approx(2250.0)
 
     source_lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
@@ -616,8 +729,89 @@ def test_position_transfer_uses_fifo_slicing_for_moving_average_accounts(client)
     assert source_lots_response.status_code == 200
     source_lots = source_lots_response.json()["position_lots"]
     assert len(source_lots) == 1
-    assert source_lots[0]["entry_cost_basis"] == pytest.approx(2000.0)
+    assert source_lots[0]["entry_cost_basis"] == pytest.approx(3000.0)
     assert source_lots[0]["remaining_quantity"] == pytest.approx(50.0)
+    assert source_lots[0]["remaining_cost_basis"] == pytest.approx(750.0)
+    assert source_lots[0]["transferred_cost_basis"] == pytest.approx(2250.0)
+
+
+def test_position_transfer_allows_zero_cost_basis_lots(client):
+    source_account = client.post(
+        "/api/portfolios/yungu/accounts",
+        json={
+            "account_name": "Zero Cost Source",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "fifo",
+            "allowed_asset_types": ["equity"],
+            "opened_at": "2026-04-01",
+            "status": "active",
+        },
+    ).json()
+    destination_account = client.post(
+        "/api/portfolios/yungu/accounts",
+        json={
+            "account_name": "Zero Cost Destination",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "fifo",
+            "allowed_asset_types": ["equity"],
+            "opened_at": "2026-04-01",
+            "status": "active",
+        },
+    ).json()
+
+    opening_response = client.post(
+        "/api/portfolios/yungu/transactions",
+        json={
+            "transaction_type": "opening_balance",
+            "trade_date": "2026-04-20",
+            "account_id": source_account["account_id"],
+            "asset_id": "equity-us-abbv",
+            "quantity": 10.0,
+            "gross_amount": 0.0,
+            "currency": "USD",
+        },
+    )
+    assert opening_response.status_code == 200
+
+    transfer_response = client.post(
+        "/api/portfolios/yungu/transactions/internal-transfer",
+        json={
+            "trade_date": "2026-04-21",
+            "transfer_object_type": "position",
+            "from_account_id": source_account["account_id"],
+            "to_account_id": destination_account["account_id"],
+            "asset_id": "equity-us-abbv",
+            "quantity": 4.0,
+        },
+    )
+    assert transfer_response.status_code == 200
+    assert {transaction["gross_amount"] for transaction in transfer_response.json()["transactions"]} == {0.0}
+
+    source_lots_response = client.get(
+        "/api/portfolios/yungu/position-lots",
+        params={"account_id": source_account["account_id"], "asset_id": "equity-us-abbv"},
+    )
+    destination_lots_response = client.get(
+        "/api/portfolios/yungu/position-lots",
+        params={"account_id": destination_account["account_id"], "asset_id": "equity-us-abbv"},
+    )
+    assert source_lots_response.status_code == 200
+    assert destination_lots_response.status_code == 200
+    source_lots = source_lots_response.json()["position_lots"]
+    destination_lots = destination_lots_response.json()["position_lots"]
+    assert len(source_lots) == 1
+    assert len(destination_lots) == 1
+    assert source_lots[0]["remaining_quantity"] == pytest.approx(6.0)
+    assert source_lots[0]["remaining_cost_basis"] == pytest.approx(0.0)
+    assert source_lots[0]["transferred_cost_basis"] == pytest.approx(0.0)
+    assert destination_lots[0]["entry_quantity"] == pytest.approx(4.0)
+    assert destination_lots[0]["entry_cost_basis"] == pytest.approx(0.0)
 
 
 def test_copy_portfolio_remaps_counterparty_account_ids(client):
@@ -2107,6 +2301,56 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
     assert sell_position_posting["cost_basis_delta"] == pytest.approx(-10000.0)
 
 
+def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
+    account = client.post(
+        "/api/portfolios/yungu/accounts",
+        json={
+            "account_name": "Entry Price Review Account",
+            "account_type": "securities_account",
+            "currency": "USD",
+            "institution": "Test Broker",
+            "default_settlement_cash_account_id": "cash-usd-main",
+            "cost_basis_method": "fifo",
+            "allowed_asset_types": ["equity"],
+            "opened_at": "2026-04-01",
+            "status": "active",
+        },
+    ).json()
+
+    buy_response = client.post(
+        "/api/portfolios/yungu/transactions",
+        json={
+            "transaction_type": "buy",
+            "trade_date": "2026-04-16",
+            "account_id": account["account_id"],
+            "settlement_cash_account_id": "cash-usd-main",
+            "asset_id": "equity-us-abbv",
+            "quantity": 10.0,
+            "price": 100.0,
+            "gross_amount": 1000.0,
+            "fees": 5.0,
+            "taxes": 3.0,
+            "currency": "USD",
+        },
+    )
+    assert buy_response.status_code == 200
+
+    lots_response = client.get(
+        "/api/portfolios/yungu/position-lots",
+        params={"account_id": account["account_id"], "asset_id": "equity-us-abbv", "status": "open"},
+    )
+    assert lots_response.status_code == 200
+    lots = lots_response.json()["position_lots"]
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot["entry_gross_amount"] == pytest.approx(1000.0)
+    assert lot["entry_fee_amount"] == pytest.approx(5.0)
+    assert lot["entry_tax_amount"] == pytest.approx(3.0)
+    assert lot["entry_cost_basis"] == pytest.approx(1008.0)
+    assert lot["entry_price"] == pytest.approx(100.0)
+    assert lot["entry_cost_per_unit"] == pytest.approx(100.8)
+
+
 def test_moving_average_position_lots_match_account_cost_basis_method(client):
     account = client.post(
         "/api/portfolios/yungu/accounts",
@@ -2178,6 +2422,10 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
     )
     assert lots_response.status_code == 200
     lots = lots_response.json()["position_lots"]
+    assert len(lots) == 1
+    assert lots[0]["entry_quantity"] == pytest.approx(200.0)
+    assert lots[0]["remaining_quantity"] == pytest.approx(150.0)
+    assert lots[0]["entry_cost_basis"] == pytest.approx(22000.0)
     assert sum(lot["remaining_cost_basis"] for lot in lots) == pytest.approx(16500.0)
     assert sum(lot["realized_cost_basis"] for lot in lots) == pytest.approx(5500.0)
     assert sum(lot["realized_pnl"] for lot in lots) == pytest.approx(1000.0)
@@ -2392,7 +2640,7 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
     account = client.post(
         "/api/portfolios/yungu/accounts",
         json={
-            "account_name": "Legacy Lot Import",
+            "account_name": "Imported Lot Account",
             "account_type": "securities_account",
             "currency": "USD",
             "institution": "Test Broker",

@@ -217,7 +217,7 @@ function periodReturnFromTtwror(
   fallbackToFirst = true,
 ) {
   const sortedPoints = points
-    .filter((point) => point.cumulative_ttwror != null || point.ending_nav != null)
+    .filter((point) => point.cumulative_twr != null || point.ending_nav != null)
     .slice()
     .sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
   if (sortedPoints.length < 2) {
@@ -232,9 +232,9 @@ function periodReturnFromTtwror(
     return null
   }
 
-  if (latestPoint.cumulative_ttwror != null && anchorPoint.cumulative_ttwror != null) {
-    const anchorGrowth = 1 + anchorPoint.cumulative_ttwror
-    return anchorGrowth !== 0 ? (1 + latestPoint.cumulative_ttwror) / anchorGrowth - 1 : null
+  if (latestPoint.cumulative_twr != null && anchorPoint.cumulative_twr != null) {
+    const anchorGrowth = 1 + anchorPoint.cumulative_twr
+    return anchorGrowth !== 0 ? (1 + latestPoint.cumulative_twr) / anchorGrowth - 1 : null
   }
 
   if (latestPoint.ending_nav != null && anchorPoint.ending_nav != null && anchorPoint.ending_nav !== 0) {
@@ -989,10 +989,10 @@ export default function OverviewPage() {
         },
         {
           label: 'Since Inception',
-          value: signedPercent(performanceWorkspace?.summary.cumulative_ttwror),
+          value: signedPercent(performanceWorkspace?.summary.cumulative_twr),
           benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.sinceInception),
           emphasis: true,
-          toneClassName: signedValueClass(performanceWorkspace?.summary.cumulative_ttwror),
+          toneClassName: signedValueClass(performanceWorkspace?.summary.cumulative_twr),
         },
       ],
     },

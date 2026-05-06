@@ -303,8 +303,8 @@ def _refresh_portfolio_daily_snapshots_once(
                         nav=_safe_float(snapshot.get("nav")),
                         beginning_nav=_safe_float(snapshot.get("beginning_nav")),
                         ending_nav=_safe_float(snapshot.get("ending_nav")),
-                        daily_ttwror=_safe_float(snapshot.get("daily_ttwror")),
-                        cumulative_ttwror=_safe_float(snapshot.get("cumulative_ttwror")),
+                        daily_twr=_safe_float(snapshot.get("daily_twr")),
+                        cumulative_twr=_safe_float(snapshot.get("cumulative_twr")),
                         drawdown=_safe_float(snapshot.get("drawdown")),
                         snapshot_json=_json_safe(public_snapshot),  # type: ignore[arg-type]
                         calculated_at=calculated_at,
@@ -358,7 +358,7 @@ def _refresh_portfolio_daily_snapshots_once(
             if latest_snapshot is not None:
                 portfolio_record.nav = _safe_float(latest_snapshot.get("nav")) or 0.0
                 portfolio_record.day_change_value = _safe_float(latest_snapshot.get("absolute_change")) or 0.0
-                portfolio_record.day_change_pct = _safe_float(latest_snapshot.get("daily_ttwror")) or 0.0
+                portfolio_record.day_change_pct = _safe_float(latest_snapshot.get("daily_twr")) or 0.0
                 portfolio_record.securities_count = int(latest_snapshot.get("total_position_count") or 0)
 
             state = _state_for_portfolio(session, portfolio_id)
@@ -596,6 +596,14 @@ def _sum_complete(values: list[object]) -> float | None:
     return total
 
 
+def _first_present(rows: list[dict[str, object]], key: str) -> object | None:
+    for row in rows:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def _aggregate_holding_rows(
     rows: list[PortfolioDailyHoldingSnapshotModel],
     *,
@@ -619,6 +627,13 @@ def _aggregate_holding_rows(
         market_value_base = _sum_complete([row.get("market_value_base") for row in asset_rows])
         cost_basis_base = _sum_complete([row.get("cost_basis_base") for row in asset_rows])
         first_row = asset_rows[0] if asset_rows else {}
+        cost_basis_methods = sorted(
+            {
+                str(row.get("cost_basis_method") or "")
+                for row in asset_rows
+                if str(row.get("cost_basis_method") or "")
+            }
+        )
         price_chart = next(
             (
                 row.get("price_chart")
@@ -632,11 +647,23 @@ def _aggregate_holding_rows(
                 "line_id": asset_id,
                 "asset_core": deepcopy(first_row.get("instrument_ref") or {}),
                 "quantity": _sum_complete([row.get("quantity") for row in asset_rows]),
-                "last_price": first_row.get("last_price"),
+                "last_price": _first_present(asset_rows, "last_price"),
+                "quote_as_of_date": _first_present(asset_rows, "quote_as_of_date"),
+                "quote_metric_family": _first_present(asset_rows, "quote_metric_family"),
+                "quote_basis": _first_present(asset_rows, "quote_basis"),
+                "quote_provider": _first_present(asset_rows, "quote_provider"),
+                "quote_status": _first_present(asset_rows, "quote_status"),
                 "market_value": _sum_complete([row.get("market_value") for row in asset_rows]),
                 "market_value_base": market_value_base,
                 "day_change_pct": None,
                 "day_change_value": None,
+                "cost_basis_method": (
+                    cost_basis_methods[0]
+                    if len(cost_basis_methods) == 1
+                    else "mixed"
+                    if cost_basis_methods
+                    else "fifo"
+                ),
                 "cost_basis": _sum_complete([row.get("cost_basis") for row in asset_rows]),
                 "cost_basis_base": cost_basis_base,
                 "allocation": (
@@ -738,7 +765,7 @@ def build_materialized_holdings_workspace(
             "cash_balance": snapshot_payload.get("cash_balance"),
             "pending_settlement": snapshot_payload.get("pending_settlement"),
             "nav": total_nav_base,
-            "day_change_pct": snapshot_payload.get("daily_ttwror"),
+            "day_change_pct": snapshot_payload.get("daily_twr"),
             "day_change_value": snapshot_payload.get("absolute_change"),
             "cost_basis": total_cost_basis_base,
             "allocation": (

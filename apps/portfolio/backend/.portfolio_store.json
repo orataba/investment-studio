@@ -49,7 +49,7 @@
       "currency": "USD",
       "institution": "Interactive Brokers",
       "default_settlement_cash_account_id": "cash-usd-main",
-      "cost_basis_method": "moving_average",
+      "cost_basis_method": "fifo",
       "allowed_asset_types": [
         "equity",
         "fund"

@@ -10,6 +10,7 @@ from portfolio_app.api.contracts import (
     AccountListResponse,
     AccountRecord,
     AccountPositionRecord,
+    AccountUpdateRequest,
     AccountsWorkspaceResponse,
     AccountWorkspaceAccount,
     DerivationBoundaryStatus,
@@ -18,10 +19,34 @@ from portfolio_app.api.contracts import (
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
-from portfolio_app.services.portfolio_store import create_account, get_account, get_portfolio, list_accounts, list_transactions
+from portfolio_app.services.portfolio_store import (
+    create_account,
+    get_account,
+    get_portfolio,
+    list_accounts,
+    list_transactions,
+    update_account,
+)
 
 
 router = APIRouter()
+
+
+def _validate_default_settlement_account(
+    *,
+    portfolio_id: str,
+    settlement_account_id: str | None,
+    currency: str,
+) -> None:
+    if not settlement_account_id:
+        return
+    settlement_account = get_account(portfolio_id, settlement_account_id)
+    if settlement_account is None:
+        raise HTTPException(status_code=400, detail="Default settlement cash account not found.")
+    if settlement_account.get("account_type") != "deposit_account":
+        raise HTTPException(status_code=400, detail="Default settlement cash account must be deposit_account.")
+    if str(settlement_account.get("currency") or "").upper() != currency.upper():
+        raise HTTPException(status_code=400, detail="Settlement cash mapping must use the same currency.")
 
 
 @router.get("/{portfolio_id}/accounts", response_model=AccountListResponse)
@@ -46,13 +71,11 @@ def create_account_record(
 
     settlement_account_id = payload.default_settlement_cash_account_id
     if payload.account_type == "securities_account" and settlement_account_id:
-        settlement_account = get_account(portfolio_id, settlement_account_id)
-        if settlement_account is None:
-            raise HTTPException(status_code=400, detail="Default settlement cash account not found.")
-        if settlement_account.get("account_type") != "deposit_account":
-            raise HTTPException(status_code=400, detail="Default settlement cash account must be deposit_account.")
-        if str(settlement_account.get("currency") or "").upper() != payload.currency.upper():
-            raise HTTPException(status_code=400, detail="Settlement cash mapping must use the same currency.")
+        _validate_default_settlement_account(
+            portfolio_id=portfolio_id,
+            settlement_account_id=settlement_account_id,
+            currency=payload.currency,
+        )
 
     record = create_account(
         portfolio_id=portfolio_id,
@@ -67,6 +90,81 @@ def create_account_record(
         closed_at=payload.closed_at,
         status=payload.status,
     )
+    background_tasks.add_task(refresh_portfolio_daily_snapshots, portfolio_id)
+    return AccountRecord.model_validate(record)
+
+
+@router.patch("/{portfolio_id}/accounts/{account_id}", response_model=AccountRecord)
+def update_account_record(
+    portfolio_id: str,
+    account_id: str,
+    payload: AccountUpdateRequest,
+    background_tasks: BackgroundTasks,
+) -> AccountRecord:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    existing_account = get_account(portfolio_id, account_id)
+    if existing_account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    account_type = str(existing_account.get("account_type") or "")
+    account_name = (
+        payload.account_name.strip()
+        if payload.account_name is not None
+        else str(existing_account.get("account_name") or "")
+    )
+    if not account_name:
+        raise HTTPException(status_code=400, detail="Account name is required.")
+
+    institution = payload.institution if payload.institution is not None else existing_account.get("institution")
+    opened_at = payload.opened_at if "opened_at" in payload.model_fields_set else existing_account.get("opened_at")
+    closed_at = payload.closed_at if "closed_at" in payload.model_fields_set else existing_account.get("closed_at")
+    status = payload.status if payload.status is not None else str(existing_account.get("status") or "active")
+
+    if account_type == "deposit_account":
+        if payload.default_settlement_cash_account_id is not None:
+            raise HTTPException(status_code=400, detail="deposit_account must not carry default_settlement_cash_account_id.")
+        if payload.cost_basis_method is not None:
+            raise HTTPException(status_code=400, detail="deposit_account must not carry cost_basis_method.")
+        if payload.allowed_asset_types is not None:
+            raise HTTPException(status_code=400, detail="deposit_account must not carry allowed_asset_types.")
+        settlement_account_id = None
+        cost_basis_method = None
+        allowed_asset_types = None
+    else:
+        settlement_account_id = (
+            payload.default_settlement_cash_account_id
+            if "default_settlement_cash_account_id" in payload.model_fields_set
+            else existing_account.get("default_settlement_cash_account_id")
+        )
+        _validate_default_settlement_account(
+            portfolio_id=portfolio_id,
+            settlement_account_id=settlement_account_id,
+            currency=str(existing_account.get("currency") or ""),
+        )
+        current_cost_basis_method = str(existing_account.get("cost_basis_method") or "fifo")
+        cost_basis_method = payload.cost_basis_method or current_cost_basis_method
+        allowed_asset_types = (
+            payload.allowed_asset_types
+            if "allowed_asset_types" in payload.model_fields_set
+            else existing_account.get("allowed_asset_types")
+        )
+
+    record = update_account(
+        portfolio_id=portfolio_id,
+        account_id=account_id,
+        account_name=account_name,
+        institution=institution if isinstance(institution, str) else None,
+        default_settlement_cash_account_id=settlement_account_id if isinstance(settlement_account_id, str) else None,
+        cost_basis_method=cost_basis_method,
+        allowed_asset_types=allowed_asset_types if isinstance(allowed_asset_types, list) else None,
+        opened_at=opened_at if isinstance(opened_at, date) else date.fromisoformat(str(opened_at)) if opened_at else None,
+        closed_at=closed_at if isinstance(closed_at, date) else date.fromisoformat(str(closed_at)) if closed_at else None,
+        status=str(status or "active"),
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Account not found")
     background_tasks.add_task(refresh_portfolio_daily_snapshots, portfolio_id)
     return AccountRecord.model_validate(record)
 

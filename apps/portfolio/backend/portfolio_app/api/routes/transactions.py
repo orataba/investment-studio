@@ -1157,9 +1157,8 @@ def create_internal_transfer_records(
             asset_id=asset_id or "",
             quantity=float(payload.quantity or 0.0),
             account_cost_methods=account_cost_methods,
-            consumption_method="fifo",
         )
-        if estimated_transferred_amount <= 0:
+        if estimated_transferred_amount < -1e-9:
             raise HTTPException(
                 status_code=400,
                 detail="Unable to derive transferred cost basis from current source position.",

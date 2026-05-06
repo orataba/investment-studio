@@ -110,8 +110,8 @@ export type PortfolioDailyPerformancePoint = {
   net_external_inflow: number
   absolute_change: number | null
   delta: number | null
-  daily_ttwror: number | null
-  cumulative_ttwror: number | null
+  daily_twr: number | null
+  cumulative_twr: number | null
   drawdown: number | null
 }
 
@@ -129,8 +129,8 @@ export type PortfolioPerformanceSummary = {
   external_cash_in: number
   external_cash_out: number
   net_external_inflow: number
-  cumulative_ttwror: number | null
-  annualized_ttwror: number | null
+  cumulative_twr: number | null
+  annualized_twr: number | null
   irr: number | null
   mwror: number | null
   absolute_change: number | null
@@ -280,7 +280,7 @@ export type PortfolioContributionReportSummary = {
   start_nav: number | null
   end_nav: number | null
   portfolio_arithmetic_return: number | null
-  portfolio_cumulative_ttwror: number | null
+  portfolio_cumulative_twr: number | null
   total_period_contribution: number | null
   contribution_residual: number | null
 }
@@ -326,10 +326,16 @@ export type PortfolioHoldingRow = {
   asset_core: AssetCore
   quantity: number
   last_price: number | null
+  quote_as_of_date?: string | null
+  quote_metric_family?: string | null
+  quote_basis?: string | null
+  quote_provider?: string | null
+  quote_status?: string | null
   market_value: number | null
   market_value_base?: number | null
   day_change_pct: number | null
   day_change_value: number | null
+  cost_basis_method?: 'fifo' | 'moving_average' | 'mixed' | string | null
   cost_basis: number | null
   cost_basis_base?: number | null
   allocation: number | null
@@ -918,6 +924,17 @@ export type PortfolioAccountCreatePayload = {
   status?: string
 }
 
+export type PortfolioAccountUpdatePayload = {
+  account_name?: string | null
+  institution?: string | null
+  default_settlement_cash_account_id?: string | null
+  cost_basis_method?: 'moving_average' | 'fifo' | null
+  allowed_asset_types?: string[] | null
+  opened_at?: string | null
+  closed_at?: string | null
+  status?: string | null
+}
+
 export type PortfolioLedgerPostingRecord = {
   posting_id: string
   transaction_id: string
@@ -1135,7 +1152,11 @@ export type PortfolioPositionLotRecord = {
   remaining_quantity: number
   realized_quantity: number
   transferred_quantity: number
+  entry_gross_amount: number
+  entry_fee_amount: number
+  entry_tax_amount: number
   entry_cost_basis: number
+  entry_cost_per_unit?: number | null
   remaining_cost_basis: number
   realized_cost_basis: number
   transferred_cost_basis: number
@@ -1342,6 +1363,21 @@ export function createPortfolioAccount(portfolioId: string, payload: PortfolioAc
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export function updatePortfolioAccount(
+  portfolioId: string,
+  accountId: string,
+  payload: PortfolioAccountUpdatePayload,
+) {
+  return fetchJson<PortfolioAccountRecord>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/accounts/${encodeURIComponent(accountId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  )
 }
 
 export function getPortfolioAccountsWorkspace(portfolioId: string, accountId?: string) {

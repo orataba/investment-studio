@@ -128,7 +128,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
       'coverage_state: complete / partial / unavailable',
     ],
     coreBlocks: [
-      { title: 'Return scorecard', owner: 'PerformanceSnapshot', role: 'Show TTWROR, IRR, drawdown, and absolute result' },
+      { title: 'Return scorecard', owner: 'PerformanceSnapshot', role: 'Show TWR, IRR, drawdown, and absolute result' },
       { title: 'Benchmark comparison', owner: 'Resolved benchmark timeline', role: 'Explain excess return and benchmark-relative context' },
       { title: 'Drawdown summary', owner: 'PerformanceSnapshot', role: 'Expose major period drawdowns and recovery status' },
       { title: 'Contribution / attribution tables', owner: 'AttributionReport', role: 'Break down result drivers by taxonomy or default planning axis' },

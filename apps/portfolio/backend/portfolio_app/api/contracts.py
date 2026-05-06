@@ -259,6 +259,32 @@ class AccountCreateRequest(BaseModel):
         return self
 
 
+class AccountUpdateRequest(BaseModel):
+    account_name: str | None = Field(default=None, min_length=1)
+    institution: str | None = None
+    default_settlement_cash_account_id: str | None = None
+    cost_basis_method: CostBasisMethod | None = None
+    allowed_asset_types: list[AccountScopedAssetType] | None = None
+    opened_at: date | None = None
+    closed_at: date | None = None
+    status: str | None = None
+
+    @model_validator(mode="after")
+    def validate_account_update_contract(self) -> "AccountUpdateRequest":
+        if self.allowed_asset_types == []:
+            self.allowed_asset_types = None
+        if self.allowed_asset_types:
+            normalized: list[AccountScopedAssetType] = []
+            for raw_value in self.allowed_asset_types:
+                value = str(raw_value).strip().lower()
+                if value and value not in normalized:
+                    normalized.append(value)  # type: ignore[arg-type]
+            self.allowed_asset_types = normalized or None
+        if self.opened_at and self.closed_at and self.closed_at < self.opened_at:
+            raise ValueError("closed_at must not be earlier than opened_at.")
+        return self
+
+
 class TransactionRecord(BaseModel):
     transaction_id: str
     portfolio_id: str
@@ -437,7 +463,11 @@ class PositionLotRecord(BaseModel):
     remaining_quantity: float
     realized_quantity: float
     transferred_quantity: float = 0.0
+    entry_gross_amount: float = 0.0
+    entry_fee_amount: float = 0.0
+    entry_tax_amount: float = 0.0
     entry_cost_basis: float
+    entry_cost_per_unit: float | None = None
     remaining_cost_basis: float
     realized_cost_basis: float
     transferred_cost_basis: float = 0.0
@@ -522,8 +552,8 @@ class DailySnapshotRecord(BaseModel):
     ending_nav: float | None = None
     absolute_change: float | None = None
     delta: float | None = None
-    daily_ttwror: float | None = None
-    cumulative_ttwror: float | None = None
+    daily_twr: float | None = None
+    cumulative_twr: float | None = None
     drawdown: float | None = None
 
 
@@ -586,8 +616,8 @@ class DailyPerformancePoint(BaseModel):
     net_external_inflow: float = 0.0
     absolute_change: float | None = None
     delta: float | None = None
-    daily_ttwror: float | None = None
-    cumulative_ttwror: float | None = None
+    daily_twr: float | None = None
+    cumulative_twr: float | None = None
     drawdown: float | None = None
 
 
@@ -605,8 +635,8 @@ class PerformanceSummary(BaseModel):
     external_cash_in: float = 0.0
     external_cash_out: float = 0.0
     net_external_inflow: float = 0.0
-    cumulative_ttwror: float | None = None
-    annualized_ttwror: float | None = None
+    cumulative_twr: float | None = None
+    annualized_twr: float | None = None
     irr: float | None = None
     mwror: float | None = None
     absolute_change: float | None = None
@@ -734,7 +764,7 @@ class ReturnCalendarBucket(BaseModel):
     net_external_inflow: float = 0.0
     absolute_change: float | None = None
     delta: float | None = None
-    cumulative_ttwror: float | None = None
+    cumulative_twr: float | None = None
 
 
 class ReturnCalendarSummary(BaseModel):
@@ -1509,7 +1539,7 @@ class ContributionReportSummary(BaseModel):
     start_nav: float | None = None
     end_nav: float | None = None
     portfolio_arithmetic_return: float | None = None
-    portfolio_cumulative_ttwror: float | None = None
+    portfolio_cumulative_twr: float | None = None
     total_period_contribution: float | None = None
     contribution_residual: float | None = None
 

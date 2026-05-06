@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useState, type CSSProperties } from 'rea
 import { useParams, useSearchParams } from 'react-router-dom'
 
 import CalculationStatus from '../components/CalculationStatus'
+import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import RollingVolatilityChart, { type RollingVolatilityPoint } from '../components/RollingVolatilityChart'
 import RiskTargetGapChart, { type RiskTargetGapChartRow } from '../components/RiskTargetGapChart'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
@@ -30,6 +31,61 @@ const DEFAULT_ROLLING_WINDOW_DAYS = 63
 const DAYS_PER_YEAR = 365.25
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const VOL_WINDOW_PRESETS = [21, 63, 126] as const
+const RISK_VIEWS_STORAGE_KEY = 'yungu.portfolio.risk.views.v1'
+
+type RiskDisplayMode = 'overview' | 'matrices' | 'drift' | 'contribution'
+type RiskViewState = {
+  displayMode: RiskDisplayMode
+  rollingWindowDays: number
+}
+
+type RiskTableView = PortfolioTableViewOption & {
+  state: RiskViewState
+  readonly?: boolean
+  createdAt?: string
+  updatedAt?: string
+}
+
+type RiskViewStore = {
+  activeViewId: string
+  customViews: RiskTableView[]
+}
+
+const DEFAULT_RISK_VIEW_STATE: RiskViewState = {
+  displayMode: 'overview',
+  rollingWindowDays: DEFAULT_ROLLING_WINDOW_DAYS,
+}
+
+const SYSTEM_RISK_VIEWS: RiskTableView[] = [
+  {
+    id: 'overview',
+    name: 'Overview',
+    description: 'All risk sections.',
+    readonly: true,
+    state: DEFAULT_RISK_VIEW_STATE,
+  },
+  {
+    id: 'matrices',
+    name: 'Matrices',
+    description: 'Volatility and covariance matrices.',
+    readonly: true,
+    state: { displayMode: 'matrices', rollingWindowDays: DEFAULT_ROLLING_WINDOW_DAYS },
+  },
+  {
+    id: 'drift',
+    name: 'Drift',
+    description: 'Current target drift and risk budget gaps.',
+    readonly: true,
+    state: { displayMode: 'drift', rollingWindowDays: DEFAULT_ROLLING_WINDOW_DAYS },
+  },
+  {
+    id: 'contribution',
+    name: 'Contribution',
+    description: 'All-asset risk contribution table.',
+    readonly: true,
+    state: { displayMode: 'contribution', rollingWindowDays: DEFAULT_ROLLING_WINDOW_DAYS },
+  },
+]
 
 type PortfolioTaxonomyRecord = PortfolioTaxonomyCatalogResponse['taxonomies'][number]
 type ContributionLine = PortfolioContributionReportResponse['lines'][number]
@@ -130,6 +186,94 @@ function parseRollingWindow(rawValue: string | null) {
     return parsed
   }
   return DEFAULT_ROLLING_WINDOW_DAYS
+}
+
+function parseRiskDisplayMode(value: string | null): RiskDisplayMode | null {
+  return value === 'overview' || value === 'matrices' || value === 'drift' || value === 'contribution' ? value : null
+}
+
+function normalizeRiskViewState(value: unknown): RiskViewState {
+  if (!value || typeof value !== 'object') {
+    return DEFAULT_RISK_VIEW_STATE
+  }
+  const record = value as Partial<RiskViewState>
+  return {
+    displayMode: parseRiskDisplayMode(typeof record.displayMode === 'string' ? record.displayMode : null) ?? DEFAULT_RISK_VIEW_STATE.displayMode,
+    rollingWindowDays:
+      typeof record.rollingWindowDays === 'number'
+        ? parseRollingWindow(String(record.rollingWindowDays))
+        : DEFAULT_RISK_VIEW_STATE.rollingWindowDays,
+  }
+}
+
+function serializeRiskViewState(value: RiskViewState) {
+  return JSON.stringify(normalizeRiskViewState(value))
+}
+
+function riskViewStatesEqual(left: RiskViewState, right: RiskViewState) {
+  return serializeRiskViewState(left) === serializeRiskViewState(right)
+}
+
+function normalizeRiskViewStore(value: unknown): RiskViewStore {
+  const record = value && typeof value === 'object' ? (value as Partial<RiskViewStore>) : {}
+  const customViews = Array.isArray(record.customViews)
+    ? record.customViews
+        .filter((view): view is RiskTableView => Boolean(view && typeof view === 'object' && typeof view.id === 'string'))
+        .map((view) => ({
+          id: view.id,
+          name: typeof view.name === 'string' && view.name.trim() ? view.name.trim() : 'Custom View',
+          description: typeof view.description === 'string' ? view.description : null,
+          readonly: false,
+          createdAt: typeof view.createdAt === 'string' ? view.createdAt : undefined,
+          updatedAt: typeof view.updatedAt === 'string' ? view.updatedAt : undefined,
+          state: normalizeRiskViewState(view.state),
+        }))
+    : []
+  const knownViewIds = new Set([...SYSTEM_RISK_VIEWS.map((view) => view.id), ...customViews.map((view) => view.id)])
+  const activeViewId =
+    typeof record.activeViewId === 'string' && knownViewIds.has(record.activeViewId)
+      ? record.activeViewId
+      : SYSTEM_RISK_VIEWS[0].id
+  return { activeViewId, customViews }
+}
+
+function loadRiskViewStore(): RiskViewStore {
+  if (typeof window === 'undefined') {
+    return normalizeRiskViewStore(null)
+  }
+  try {
+    const rawValue = window.localStorage.getItem(RISK_VIEWS_STORAGE_KEY)
+    return normalizeRiskViewStore(rawValue ? JSON.parse(rawValue) : null)
+  } catch {
+    return normalizeRiskViewStore(null)
+  }
+}
+
+function saveRiskViewStore(store: RiskViewStore) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    window.localStorage.setItem(RISK_VIEWS_STORAGE_KEY, JSON.stringify(store))
+  } catch {
+    return
+  }
+}
+
+function getRiskViews(store: RiskViewStore) {
+  return [...SYSTEM_RISK_VIEWS, ...store.customViews]
+}
+
+function getRiskViewById(store: RiskViewStore, viewId: string) {
+  return getRiskViews(store).find((view) => view.id === viewId) ?? SYSTEM_RISK_VIEWS[0]
+}
+
+function resolveRiskViewState(store: RiskViewStore, viewId: string) {
+  return getRiskViewById(store, viewId).state
+}
+
+function createRiskViewId() {
+  return `custom:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
 }
 
 function finiteNumber(value: number | null | undefined) {
@@ -256,10 +400,10 @@ function targetMemberKey(memberType: PortfolioTargetSetLineRecord['target_member
 
 function buildRollingVolatilityPoints(dailySeries: PortfolioDailyPerformancePoint[], windowDays: number) {
   const returnPoints = dailySeries
-    .filter((point) => finiteNumber(point.daily_ttwror) != null && point.return_observation_eligible)
+    .filter((point) => finiteNumber(point.daily_twr) != null && point.return_observation_eligible)
     .slice()
     .sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
-    .map((point) => ({ date: point.as_of_date, value: point.daily_ttwror as number }))
+    .map((point) => ({ date: point.as_of_date, value: point.daily_twr as number }))
 
   const points: RollingVolatilityPoint[] = []
   for (let index = windowDays - 1; index < returnPoints.length; index += 1) {
@@ -299,7 +443,7 @@ function buildMonthlyVolatilityBuckets(dailySeries: PortfolioDailyPerformancePoi
       bucketKeys.push(bucketKey)
     }
 
-    const dailyReturn = finiteNumber(point.daily_ttwror)
+    const dailyReturn = finiteNumber(point.daily_twr)
     if (dailyReturn != null && point.return_observation_eligible) {
       bucket.returns.push({ date: point.as_of_date, value: dailyReturn })
     }
@@ -901,11 +1045,31 @@ export default function RiskPage() {
   const [riskDataLoading, setRiskDataLoading] = useState(false)
   const [performanceError, setPerformanceError] = useState<string | null>(null)
   const [contributionError, setContributionError] = useState<string | null>(null)
+  const initialRiskViewStore = useMemo(() => loadRiskViewStore(), [])
+  const initialRiskViewState = useMemo(
+    () => resolveRiskViewState(initialRiskViewStore, initialRiskViewStore.activeViewId),
+    [initialRiskViewStore],
+  )
+  const [riskViewStore, setRiskViewStore] = useState<RiskViewStore>(() => initialRiskViewStore)
+  const [activeRiskViewId, setActiveRiskViewId] = useState(initialRiskViewStore.activeViewId)
 
   const requestedAsOfDate = searchParams.get('as_of_date') ?? ''
   const appliedStartDate = searchParams.get('start_date') ?? ''
   const appliedEndDate = searchParams.get('end_date') ?? ''
-  const rollingWindowDays = parseRollingWindow(searchParams.get('vol_window_days'))
+  const rollingWindowDays = searchParams.get('vol_window_days')
+    ? parseRollingWindow(searchParams.get('vol_window_days'))
+    : initialRiskViewState.rollingWindowDays
+  const riskDisplayMode = parseRiskDisplayMode(searchParams.get('risk_view')) ?? initialRiskViewState.displayMode
+  const riskViews = useMemo(() => getRiskViews(riskViewStore), [riskViewStore])
+  const activeRiskView = useMemo(
+    () => getRiskViewById(riskViewStore, activeRiskViewId),
+    [activeRiskViewId, riskViewStore],
+  )
+  const currentRiskViewState = useMemo<RiskViewState>(
+    () => ({ displayMode: riskDisplayMode, rollingWindowDays }),
+    [riskDisplayMode, rollingWindowDays],
+  )
+  const riskViewEdited = !riskViewStatesEqual(currentRiskViewState, activeRiskView.state)
   const riskWindowEndDate = appliedEndDate || holdingsWorkspace?.as_of_date || requestedAsOfDate
   const riskWindowStartDate = appliedStartDate || (riskWindowEndDate ? shiftIsoDate(riskWindowEndDate, -(DEFAULT_RISK_LOOKBACK_DAYS - 1)) : '')
 
@@ -932,6 +1096,7 @@ export default function RiskPage() {
     start_date?: string | null
     end_date?: string | null
     vol_window_days?: string | null
+    risk_view?: string | null
   }) {
     setSearchParams((current) => {
       const next = new URLSearchParams(current)
@@ -969,6 +1134,68 @@ export default function RiskPage() {
       vol_window_days: null,
     })
   }
+
+  function applyRiskViewState(state: RiskViewState) {
+    const normalized = normalizeRiskViewState(state)
+    setDraftRollingWindowDays(String(normalized.rollingWindowDays))
+    updateRiskParams({
+      risk_view: normalized.displayMode === 'overview' ? null : normalized.displayMode,
+      vol_window_days: normalized.rollingWindowDays === DEFAULT_ROLLING_WINDOW_DAYS ? null : String(normalized.rollingWindowDays),
+    })
+  }
+
+  function handleSelectRiskView(viewId: string) {
+    const nextView = getRiskViewById(riskViewStore, viewId)
+    setActiveRiskViewId(nextView.id)
+    setRiskViewStore((current) => ({ ...current, activeViewId: nextView.id }))
+    applyRiskViewState(resolveRiskViewState(riskViewStore, nextView.id))
+  }
+
+  function handleSaveRiskView() {
+    if (activeRiskView.readonly) {
+      return
+    }
+    const timestamp = new Date().toISOString()
+    setRiskViewStore((current) => {
+      return {
+        ...current,
+        activeViewId: activeRiskViewId,
+        customViews: current.customViews.map((view) =>
+          view.id === activeRiskViewId
+            ? {
+                ...view,
+                state: currentRiskViewState,
+                updatedAt: timestamp,
+              }
+            : view,
+        ),
+      }
+    })
+  }
+
+  function handleSaveRiskViewAs(name: string, description: string | null) {
+    const timestamp = new Date().toISOString()
+    const viewId = createRiskViewId()
+    const nextView: RiskTableView = {
+      id: viewId,
+      name,
+      description,
+      readonly: false,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      state: currentRiskViewState,
+    }
+    setRiskViewStore((current) => ({
+      ...current,
+      activeViewId: viewId,
+      customViews: [...current.customViews, nextView],
+    }))
+    setActiveRiskViewId(viewId)
+  }
+
+  useEffect(() => {
+    saveRiskViewStore(riskViewStore)
+  }, [riskViewStore])
 
   useEffect(() => {
     if (!portfolioId) {
@@ -1412,6 +1639,10 @@ export default function RiskPage() {
     )
   }
 
+  const showRiskMatrices = riskDisplayMode === 'overview' || riskDisplayMode === 'matrices'
+  const showRiskDrift = riskDisplayMode === 'overview' || riskDisplayMode === 'drift'
+  const showRiskContribution = riskDisplayMode === 'overview' || riskDisplayMode === 'contribution'
+
   return (
     <PortfolioWorkspaceLayout activeSection="Risk" toolbarLabel="View: Risk Analytics">
       <section className="portfolio-detail-surface">
@@ -1420,6 +1651,15 @@ export default function RiskPage() {
         </div>
 
         <form className="performance-filter-bar" onSubmit={handleApplyFilters}>
+          <PortfolioTableViewControls
+            views={riskViews}
+            activeViewId={activeRiskViewId}
+            edited={riskViewEdited}
+            canSave={!activeRiskView.readonly}
+            onSelect={handleSelectRiskView}
+            onSave={handleSaveRiskView}
+            onSaveAs={handleSaveRiskViewAs}
+          />
           <div className="risk-filter-grid">
             <label>
               <span>As Of Date</span>
@@ -1505,112 +1745,120 @@ export default function RiskPage() {
 
         {holdingsWorkspace ? (
           <>
-            <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                <div className="panel-title">Rolling Annualized Volatility</div>
-                <div className="portfolio-detail-meta">
-                  {riskWindowStartDate && riskWindowEndDate
-                    ? `${riskWindowStartDate} to ${riskWindowEndDate}; ${rollingVolatilityPoints.length} rolling points`
-                    : 'No active risk window'}
-                </div>
-              </div>
-              <RollingVolatilityChart points={rollingVolatilityPoints} windowDays={rollingWindowDays} />
-            </section>
+            {showRiskMatrices ? (
+              <>
+                <section className="performance-section-block">
+                  <div className="portfolio-detail-toolbar performance-subsection-toolbar">
+                    <div className="panel-title">Rolling Annualized Volatility</div>
+                    <div className="portfolio-detail-meta">
+                      {riskWindowStartDate && riskWindowEndDate
+                        ? `${riskWindowStartDate} to ${riskWindowEndDate}; ${rollingVolatilityPoints.length} rolling points`
+                        : 'No active risk window'}
+                    </div>
+                  </div>
+                  <RollingVolatilityChart points={rollingVolatilityPoints} windowDays={rollingWindowDays} />
+                </section>
 
-            <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                <div className="panel-title">Monthly Annualized Volatility Matrix</div>
-                <div className="portfolio-detail-meta">
-                  {performanceWorkspace?.summary.risk_return_observation_count ?? 0} market return observations
-                </div>
-              </div>
-              {renderMonthlyVolatilityMatrix()}
-            </section>
+                <section className="performance-section-block">
+                  <div className="portfolio-detail-toolbar performance-subsection-toolbar">
+                    <div className="panel-title">Monthly Annualized Volatility Matrix</div>
+                    <div className="portfolio-detail-meta">
+                      {performanceWorkspace?.summary.risk_return_observation_count ?? 0} market return observations
+                    </div>
+                  </div>
+                  {renderMonthlyVolatilityMatrix()}
+                </section>
 
-            <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                <div className="panel-title">Covariance Matrices</div>
-                <div className="portfolio-detail-meta">
-                  Annualized observed-return covariance; taxonomy view uses {defaultPlanningTaxonomy?.name ?? 'the default planning taxonomy'}
-                </div>
-              </div>
-              <div className="risk-covariance-grid">
-                <div className="risk-matrix-panel">
-                  <div className="risk-matrix-panel-title">All Assets</div>
-                  {renderCovarianceMatrix(assetCovarianceMatrix, 'No all-asset covariance matrix is available.')}
-                </div>
-                <div className="risk-matrix-panel">
-                  <div className="risk-matrix-panel-title">Taxonomy Level 1</div>
-                  {renderCovarianceMatrix(
-                    taxonomyCovarianceMatrix,
-                    defaultPlanningTaxonomy
-                      ? 'No taxonomy level-1 covariance matrix is available.'
-                      : 'Configure a default planning taxonomy to build the taxonomy covariance matrix.',
-                  )}
-                </div>
-              </div>
-            </section>
+                <section className="performance-section-block">
+                  <div className="portfolio-detail-toolbar performance-subsection-toolbar">
+                    <div className="panel-title">Covariance Matrices</div>
+                    <div className="portfolio-detail-meta">
+                      Annualized observed-return covariance; taxonomy view uses {defaultPlanningTaxonomy?.name ?? 'the default planning taxonomy'}
+                    </div>
+                  </div>
+                  <div className="risk-covariance-grid">
+                    <div className="risk-matrix-panel">
+                      <div className="risk-matrix-panel-title">All Assets</div>
+                      {renderCovarianceMatrix(assetCovarianceMatrix, 'No all-asset covariance matrix is available.')}
+                    </div>
+                    <div className="risk-matrix-panel">
+                      <div className="risk-matrix-panel-title">Taxonomy Level 1</div>
+                      {renderCovarianceMatrix(
+                        taxonomyCovarianceMatrix,
+                        defaultPlanningTaxonomy
+                          ? 'No taxonomy level-1 covariance matrix is available.'
+                          : 'Configure a default planning taxonomy to build the taxonomy covariance matrix.',
+                      )}
+                    </div>
+                  </div>
+                </section>
+              </>
+            ) : null}
 
-            <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                <div className="panel-title">Current Portfolio Drift</div>
-                <div className="portfolio-detail-meta">
-                  {defaultPlanningTaxonomy
-                    ? `${defaultPlanningTaxonomy.name}; current date ${holdingsWorkspace.as_of_date}`
-                    : 'Default planning taxonomy is not configured'}
+            {showRiskDrift ? (
+              <section className="performance-section-block">
+                <div className="portfolio-detail-toolbar performance-subsection-toolbar">
+                  <div className="panel-title">Current Portfolio Drift</div>
+                  <div className="portfolio-detail-meta">
+                    {defaultPlanningTaxonomy
+                      ? `${defaultPlanningTaxonomy.name}; current date ${holdingsWorkspace.as_of_date}`
+                      : 'Default planning taxonomy is not configured'}
+                  </div>
                 </div>
-              </div>
-              <div className="risk-target-grid">
-                <div className="risk-target-panel">
-                  <div className="risk-matrix-panel-title">SAA Weight Target Gap</div>
-                  <RiskTargetGapChart
-                    rows={saaWeightGapRows}
-                    ariaLabel="SAA weight target drift"
-                    emptyLabel="No active SAA weight target is configured."
-                  />
+                <div className="risk-target-grid">
+                  <div className="risk-target-panel">
+                    <div className="risk-matrix-panel-title">SAA Weight Target Gap</div>
+                    <RiskTargetGapChart
+                      rows={saaWeightGapRows}
+                      ariaLabel="SAA weight target drift"
+                      emptyLabel="No active SAA weight target is configured."
+                    />
+                  </div>
+                  <div className="risk-target-panel">
+                    <div className="risk-matrix-panel-title">TAA Weight Target Gap</div>
+                    <RiskTargetGapChart
+                      rows={taaWeightGapRows}
+                      ariaLabel="TAA weight target drift"
+                      emptyLabel="No active TAA weight target is configured."
+                    />
+                  </div>
+                  <div className="risk-target-panel">
+                    <div className="risk-matrix-panel-title">SAA Risk Target Gap</div>
+                    <RiskTargetGapChart
+                      rows={saaRiskGapRows}
+                      ariaLabel="SAA risk budget target gap"
+                      emptyLabel="No active SAA risk target is configured or risk shares are unavailable."
+                      currentLabel="Risk Share"
+                      targetLabel="Risk Target"
+                    />
+                  </div>
+                  <div className="risk-target-panel">
+                    <div className="risk-matrix-panel-title">TAA Risk Target Gap</div>
+                    <RiskTargetGapChart
+                      rows={taaRiskGapRows}
+                      ariaLabel="TAA risk budget target gap"
+                      emptyLabel="No active TAA risk target is configured or risk shares are unavailable."
+                      currentLabel="Risk Share"
+                      targetLabel="Risk Target"
+                    />
+                  </div>
                 </div>
-                <div className="risk-target-panel">
-                  <div className="risk-matrix-panel-title">TAA Weight Target Gap</div>
-                  <RiskTargetGapChart
-                    rows={taaWeightGapRows}
-                    ariaLabel="TAA weight target drift"
-                    emptyLabel="No active TAA weight target is configured."
-                  />
-                </div>
-                <div className="risk-target-panel">
-                  <div className="risk-matrix-panel-title">SAA Risk Target Gap</div>
-                  <RiskTargetGapChart
-                    rows={saaRiskGapRows}
-                    ariaLabel="SAA risk budget target gap"
-                    emptyLabel="No active SAA risk target is configured or risk shares are unavailable."
-                    currentLabel="Risk Share"
-                    targetLabel="Risk Target"
-                  />
-                </div>
-                <div className="risk-target-panel">
-                  <div className="risk-matrix-panel-title">TAA Risk Target Gap</div>
-                  <RiskTargetGapChart
-                    rows={taaRiskGapRows}
-                    ariaLabel="TAA risk budget target gap"
-                    emptyLabel="No active TAA risk target is configured or risk shares are unavailable."
-                    currentLabel="Risk Share"
-                    targetLabel="Risk Target"
-                  />
-                </div>
-              </div>
-            </section>
+              </section>
+            ) : null}
 
-            <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                <div className="panel-title">All-Asset Risk Contribution</div>
-                <div className="portfolio-detail-meta">
-                  {riskWindowStartDate && riskWindowEndDate
-                    ? `${riskWindowStartDate} to ${riskWindowEndDate}; interval returns and in-window annualized volatility`
-                    : 'No active risk window'}
+            {showRiskContribution ? (
+              <section className="performance-section-block">
+                <div className="portfolio-detail-toolbar performance-subsection-toolbar">
+                  <div className="panel-title">All-Asset Risk Contribution</div>
+                  <div className="portfolio-detail-meta">
+                    {riskWindowStartDate && riskWindowEndDate
+                      ? `${riskWindowStartDate} to ${riskWindowEndDate}; interval returns and in-window annualized volatility`
+                      : 'No active risk window'}
+                  </div>
                 </div>
-              </div>
-              {renderPeriodRiskContributionTable()}
-            </section>
+                {renderPeriodRiskContributionTable()}
+              </section>
+            ) : null}
           </>
         ) : null}
       </section>

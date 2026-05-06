@@ -25,7 +25,7 @@
 这份规格中的默认继承关系如下：
 
 - **PP 负责**：
-  - TTWROR
+  - TWR
   - IRR / MWROR
   - Statement of Assets 风格的 purchase value / cost basis
   - open / closed trades 的 lot matching 逻辑
@@ -203,7 +203,7 @@
 ### 2.4.1 opening_balance 处理
 
 - `opening_balance` 只允许出现在组合导入起点或 inception 边界；
-- 在 TTWROR 与 `Delta` 口径中，`opening_balance` 用于建立期初 `MVB` / 起始持仓，不作为区间内 external flow 重复计入；
+- 在 TWR 与 `Delta` 口径中，`opening_balance` 用于建立期初 `MVB` / 起始持仓，不作为区间内 external flow 重复计入；
 - 在 IRR / MWROR 中，若测量窗口从导入起点开始，`opening_balance` 视为期初初始投入；若测量窗口开始于其后日期，则它落在窗口外，不再重复记为现金流。
 - `opening_balance + position` 必须进一步 materialize 成 opening lots；`gross_amount` 解释为 imported remaining cost basis，而不是 bootstrap 日市值。
 - `opening_balance` 的 `trade_date` / `settlement_date` 表示导入边界；历史 lot 的 acquisition date 必须落在 opening lots 上，而不是伪造到 bootstrap transaction 的成交日期里。
@@ -296,13 +296,22 @@ $$
 
 ### 3.5 Cost Basis / Purchase Value
 
-正式版首版默认 canonical cost-basis method 采用 **FIFO**，优先贴近 PP 的 Statement of Assets / Trades 逻辑。
+成本法是账面成本、realized capital gain 和税务/会计解释口径，不是组合绩效收益口径。
+Portfolio 级 TWR、IRR、drawdown 和 contribution 必须基于 fair value、cash flow 与 P&L 事件计算，不得因为账户从 FIFO 改成 moving average 而改变组合级 return。
+
+当前实现支持账户级成本法：
+
+- 新建 `securities_account` 未显式选择时默认 `FIFO`；
+- `FIFO` 保留真实 open lots，并按交易时间顺序释放成本；
+- `moving_average` 对每个 `account + asset` 保留一个滚动平均成本 bucket；API 仍输出一个 synthetic position lot 以支持 UI、转仓链路和审计引用；
+- 修改账户成本法会从交易事实重新推导 holdings、lots、ledger postings 与 snapshots，不保留“历史旧算法”的兼容分支。
 
 对导入边界上的 opening positions：
 
-- `opening_balance + position` 是 bootstrap event，但成本法上必须继续落实到 lots；
-- one opening lot in import payload = one cost-basis unit in FIFO world；
-- 若是 multi-lot imported position，后续卖出必须先按这些 imported opening lots 的 FIFO 顺序匹配，而不是先聚合再卖出。
+- `opening_balance + position` 是 bootstrap event，但成本法上必须 materialize 为成本单元；
+- `FIFO` 下，一个 opening lot 表示一个后续可被 FIFO 消耗的成本单元；
+- `moving_average` 下，opening position 进入该账户该资产的 rolling average bucket；
+- `gross_amount` 表示 imported remaining cost basis，可以为 0；0 成本持仓仍然是合法持仓，后续卖出或内部转仓不得被误判为缺失成本。
 
 ### 3.5.1 Bond valuation boundary
 
@@ -314,13 +323,25 @@ $$
 - coupon 作为现金收益进入 ledger；到期本金回收通过 `maturity_redemption` 或等价显式事件入账；
 - duration、convexity、yield、spread 等字段可作为解释性外部输入展示，但不是首版 canonical 自研计算结果。
 
-#### Open position purchase value
+#### Open position book cost
 
-对任意头寸，未平仓剩余份额的 purchase value 定义为：
+对任意当前头寸，`Cost Basis` / `Purchase Value` 定义为 open-position book cost：
 
-- 基于 FIFO lot matching 后，当前仍未卖出的 buy lots 成本之和；
-- 包含应计到 lot 的交易费用；
-- 不包含已经 realized 的部分。
+- 当前仍未 disposed / transferred out 的 remaining cost basis；
+- 包含已资本化到 buy/opening/reinvestment 成本的费用和税费；
+- 不包含已经 realized 或 transferred out 的部分；
+- 在 `FIFO` 下等于 open FIFO lots 的 remaining cost basis 之和；
+- 在 `moving_average` 下等于 rolling average bucket 的 remaining cost basis。
+
+`Avg Cost` 定义为：
+
+$$
+AvgCost^{book}_i = \frac{RemainingCostBasis_i}{RemainingQuantity_i}
+$$
+
+它不是某一笔交易的 purchase price。真实交易价格在 lot 层用 `entry_price = entry_gross_amount / entry_quantity` 表示，且不包含资本化费用和税费；`entry_cost_per_unit` 才包含资本化费用和税费。`moving_average` 的 synthetic lot 没有真实 tax-lot purchase price，展示时应优先使用当前 `Avg Cost`。
+
+Holdings 是当前持仓状态表，只展示当前仍然 open 的 quantity、quote、market value、weight、open-position cost basis 与 unrealized P&L。资产级 TWR、period contribution、realized gain、dividend / coupon income、fees / taxes impact 和 closed positions 属于 `Performance` / security detail 的区间绩效视图，不进入 Holdings 默认列，也不作为 Holdings 的 canonical 语义。
 
 #### Unrealized P&L
 
@@ -330,7 +351,10 @@ $$
 
 #### Realized P&L
 
-每次卖出时，按 FIFO 依次匹配最早未平的买入 lot：
+每次卖出时：
+
+- `FIFO` 按最早未平的 lot 依次匹配；
+- `moving_average` 按卖出时的 rolling average cost per unit 释放成本。
 
 $$
 RealizedPnL = NetSaleProceeds - MatchedCostBasis
@@ -338,17 +362,19 @@ $$
 
 说明：
 
-- 首版以 FIFO 作为默认统一口径，避免持仓页、trades 页、review 页各用不同成本法；
-- 若未来需要支持 average cost，也应作为显式切换口径，不得静默替换 canonical 默认值。
+- realized P&L 是成本法相关的 book/tax P&L；
+- TWR 不使用 realized P&L 作为收益率输入，因此成本法切换只重算 book capital gain / cost basis，不应改变 fair-value based return。
 
 ### 3.5.2 Internal position transfer
 
-对 `transfer_object_type = position` 的内部转仓，首版 canonical 规则如下：
+对 `transfer_object_type = position` 的内部转仓，canonical 规则如下：
 
 - 它不是卖出再买入，不得形成 realized P&L；
-- source account 的 open lots 必须 in-kind 搬迁到 destination account；
-- 被迁移的 lot slice 必须保留原 acquisition date、remaining cost basis、unit cost 与已分摊 fees；
-- 若未显式提供 lot-level selection，部分转仓默认按 source account 内的 FIFO open-lot 顺序切分；
+- source account 使用自己的成本法决定 transferred cost basis；
+- `FIFO` source 按 open lots 顺序切分并搬迁 source lot metadata；
+- `moving_average` source 按 rolling average cost 生成一个 average-cost transfer slice；
+- destination account 再按自己的成本法接收：FIFO 生成 destination lot，moving average 合并到 destination bucket；
+- 0 成本 lot 可以内部转仓，只要数量充足并且 source slice 存在；
 - `TradeView` 不把内部 position transfer 解释为新的 open trade 或 closed trade，只更新所属 account 归属。
 
 ### 3.6 Trades 视图计算
@@ -431,7 +457,7 @@ $$
 
 除非明确写成 `absolute_change`、`delta` 或 `pnl`，否则系统中的“return”默认指：
 
-- 组合级：`TTWROR`
+- 组合级：`TWR`
 - 资金使用效率：`IRR / MWROR`
 - 基准对比：`benchmark-relative return`
 
@@ -441,9 +467,9 @@ GIPS-informed 规则：
 - MWR / IRR 是补充资金效率指标，不得在 UI 或 API summary 中替代 TWR；
 - 若 IRR 因现金流符号、同日窗口或数学求根原因不可得，不能据此把已完整计算的 TWR 结果标记为失败。
 
-### 5.2 Daily TTWROR
+### 5.2 Daily TWR
 
-正式版组合级 TTWROR 采用 Portfolio Performance 的日级 true time-weighted 逻辑：
+正式版组合级 TWR 采用 Portfolio Performance 的日级 true time-weighted 逻辑：
 
 $$
 r_t = \frac{MVE_t + CF_{out,t}}{MVB_t + CF_{in,t}} - 1
@@ -463,7 +489,7 @@ $$
 - 这样可以把 external flows 从业绩中中性化。
 - 当前 daily snapshot engine 对每个 `as_of_date` 估值，因此外部现金流发生日天然有估值；若未来支持非日频估值，必须引入 large cash flow policy 与子期间收益几何链接，不能静默改用近似 MWR 方法。
 
-### 5.3 Cumulative TTWROR
+### 5.3 Cumulative TWR
 
 给定区间内共有 `n` 个子期间：
 
@@ -475,7 +501,7 @@ $$
 
 组合的 `TWR Index` 是把 `R_cum` 归一到 100 后得到的组合表现曲线。它在语义上类似基金的 total-return NAV / cumulative NAV，但不是组合会计单位净值；它只用于投资表现、回撤、波动和 benchmark comparison，不用于资产规模或账面 NAV 展示。
 
-### 5.4 Annualized TTWROR
+### 5.4 Annualized TWR
 
 若区间长度为 `Y` 年（按 `ACT/365.25` 计算）：
 
@@ -508,8 +534,8 @@ $$
 说明：
 
 - IRR 反映资本使用效率；
-- TTWROR 反映经理在中性化 external flows 后的投资表现；
-- UI 不允许用 IRR 替代 TTWROR 展示“组合收益”。
+- TWR 反映经理在中性化 external flows 后的投资表现；
+- UI 不允许用 IRR 替代 TWR 展示“组合收益”。
 
 ### 5.6 Absolute Change 与 Delta
 
@@ -562,8 +588,8 @@ $$
 
 约束：
 
-- 组合级 drawdown 必须基于 `TTWROR` 复合后的 `G_t`，不得基于资产规模 `NAV_t` 直接计算；
-- 任何带 `start_date / end_date` 的区间 summary 都必须用区间内 `daily_ttwror` 重新复合并重算 drawdown，不能直接复用 inception-to-date 的 `cumulative_ttwror` 或 snapshot-level drawdown；
+- 组合级 drawdown 必须基于 `TWR` 复合后的 `G_t`，不得基于资产规模 `NAV_t` 直接计算；
+- 任何带 `start_date / end_date` 的区间 summary 都必须用区间内 `daily_twr` 重新复合并重算 drawdown，不能直接复用 inception-to-date 的 `cumulative_twr` 或 snapshot-level drawdown；
 - 区间第一笔有效收益如果已经形成回撤，drawdown peak 应以区间起点锚点为基准，而不是把第一条收益观察日误当作峰值日；
 - 若主图显示 `Portfolio Value`，下方 drawdown 仍然使用 `TWR Index`，因为外部出入金不应制造或稀释投资回撤。
 
@@ -571,7 +597,7 @@ $$
 
 ### Portfolio volatility
 
-默认使用组合 `daily_ttwror` 的 simple returns 构造风险统计；当需要对齐 PP 风格展示时，可额外输出 log-return 版本，但 canonical risk API 默认仍以 simple returns 为主。资产规模 `NAV_t` 的变化不得作为组合级 volatility / Sharpe / Sortino 的输入。
+默认使用组合 `daily_twr` 的 simple returns 构造风险统计；当需要对齐 PP 风格展示时，可额外输出 log-return 版本，但 canonical risk API 默认仍以 simple returns 为主。资产规模 `NAV_t` 的变化不得作为组合级 volatility / Sharpe / Sortino 的输入。
 
 $$
 \sigma_{ann} = std(r_t) \times \sqrt{periods\_per\_year}
@@ -1085,7 +1111,7 @@ daily snapshot、holding snapshot、contribution slice 是可重建的读模型�
 按当前 PRD，计算实现建议优先级如下：
 
 1. `P0`
-   NAV、weights、FX、TTWROR、IRR、drawdown、benchmark-relative、drift、basic exposures、scenario P&L
+   NAV、weights、FX、TWR、IRR、drawdown、benchmark-relative、drift、basic exposures、scenario P&L
 2. `P0`
    covariance-based realized risk、risk share、target risk budget gap、tracking error、information ratio
 3. `P1`

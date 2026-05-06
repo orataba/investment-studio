@@ -1,6 +1,6 @@
 # GIPS-Informed Performance Methodology
 
-更新时间：`2026-05-04`
+更新时间：`2026-05-06`
 
 关联文档：
 
@@ -26,7 +26,7 @@ GIPS 对普通组合绩效呈现默认要求使用 time-weighted returns，只�
 
 本项目采用：
 
-- `TTWROR` 作为 `Overview / Performance / Review` 的默认组合收益口径；
+- `TWR` 作为 `Overview / Performance / Review` 的默认组合收益口径；
 - `IRR / MWROR` 作为资金使用效率补充指标；
 - UI 不允许用 IRR 替代 TWR 展示“组合收益”。
 
@@ -38,7 +38,7 @@ GIPS 强调 TWR 要中性化 client-driven external cash flows，避免把出入
 
 - `deposit`、`withdrawal` 和真实组合边界分配为 external cash flow；
 - `buy / sell / dividend / coupon / fee / tax / internal transfer` 不作为组合级 external cash flow；
-- 日频 TTWROR 公式固定为：
+- 日频 TWR 公式固定为：
 
 ```text
 r_t = (MVE_t + CF_out,t) / (MVB_t + CF_in,t) - 1
@@ -65,15 +65,27 @@ GIPS 强调一致应用计算方法、建立政策，并披露方法边界。
 - materialized snapshot 可重建，不能成为不可解释的手填事实；
 - materialized snapshot 刷新必须可重复、可追踪，并在更新并发到达时保留最新 stale 请求；
 - `coverage_state`、`stale_price_flag`、`stale_fx_flag` 必须随关键结果返回；
-- 区间 daily series、summary、drawdown 必须使用同一组 window-rebased `daily_ttwror`。
+- 区间 daily series、summary、drawdown 必须使用同一组 window-rebased `daily_twr`。
 
-### 2.5 风险统计必须来自收益序列
+### 2.5 成本法不得污染绩效收益率
+
+GIPS-informed 绩效口径以 fair value、外部现金流中性化和几何链接为核心。FIFO、moving average 等成本法属于 book/tax P&L 解释口径，不是 TWR 的输入政策。
+
+本项目采用：
+
+- 账户级成本法只影响 `Cost Basis`、`Avg Cost`、realized capital gain、unrealized P&L 和 lot 展示；
+- 组合级 TWR、annualized TWR、drawdown、IRR/MWROR 的 fair-value calculation 不读取 FIFO/MA 作为收益率分支；
+- 修改账户成本法时，系统从 transaction facts 重算成本相关 read models，而不是保留历史算法兼容层。
+
+Holdings 只作为当前持仓状态表。资产级 TWR、区间 contribution、realized gain、income 和 closed positions 必须从 `Performance` 或 security detail 读取，避免把 current holdings 和 period performance 混成一个口径。
+
+### 2.6 风险统计必须来自收益序列
 
 GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收益率序列，而不是资产规模路径。
 
 本项目采用：
 
-- portfolio realized volatility、rolling volatility、Sharpe、Sortino 默认使用 `daily_ttwror` simple returns；
+- portfolio realized volatility、rolling volatility、Sharpe、Sortino 默认使用 `daily_twr` simple returns；
 - 非市场观察日的 stale-price carry-forward 0 return 不进入风险样本；
 - `NAV_t` 只用于资产规模和现金流调节，不作为组合级波动率输入。
 
@@ -81,9 +93,9 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 
 | 主题 | 当前实现 |
 | --- | --- |
-| 日频 TWR | `build_daily_portfolio_snapshots()` 生成 `daily_ttwror` |
-| 几何复合 | `_compound_daily_ttwror()` 与区间 `daily_series.cumulative_ttwror` |
-| 区间 rebasing | `_rebased_ttwror_series()` 对查询窗口重算 TWR index 和 drawdown |
+| 日频 TWR | `build_daily_portfolio_snapshots()` 生成 `daily_twr` |
+| 几何复合 | `_compound_daily_twr()` 与区间 `daily_series.cumulative_twr` |
+| 区间 rebasing | `_rebased_twr_series()` 对查询窗口重算 TWR index 和 drawdown |
 | 回撤 | `_drawdown_stats()` 基于 TWR growth index，不基于 NAV |
 | 风险样本 | `return_observation_eligible` 控制 realized risk 的有效收益观察 |
 | 物化读模型 | `PortfolioDailySnapshotModel` / holding snapshot / contribution slice |
@@ -109,10 +121,10 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 任何改动 portfolio 计算层的 PR 都应检查：
 
 - 是否改变了 external cash flow 分类；
-- 是否改变了 `daily_ttwror` 的分母、分子或现金流时点；
+- 是否改变了 `daily_twr` 的分母、分子或现金流时点；
 - 区间 summary 和 `daily_series` 是否都按查询窗口重新复合；
 - drawdown 是否基于 TWR growth index；
-- risk 是否只使用符合 `return_observation_eligible` 的 `daily_ttwror`；
+- risk 是否只使用符合 `return_observation_eligible` 的 `daily_twr`；
 - `IRR / MWROR` 缺失是否被解释为补充指标不可用，而不是 TWR 失败；
 - materialized read path 和 dynamic fallback path 是否结果一致；
 - 文档中的 canonical 口径是否同步更新。

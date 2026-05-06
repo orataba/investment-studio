@@ -865,7 +865,7 @@ def _serialize_portfolio_row_with_materialized_summary(
     payload["as_of_date"] = latest_snapshot.as_of_date.isoformat()
     payload["nav"] = _safe_float(snapshot.get("nav")) or 0.0
     payload["day_change_value"] = _safe_float(snapshot.get("absolute_change")) or 0.0
-    payload["day_change_pct"] = _safe_float(snapshot.get("daily_ttwror")) or 0.0
+    payload["day_change_pct"] = _safe_float(snapshot.get("daily_twr")) or 0.0
     payload["securities_count"] = int(snapshot.get("total_position_count") or 0)
     return payload
 
@@ -2974,6 +2974,69 @@ def create_account(
         session.add(record)
         session.commit()
         _mark_daily_snapshots_stale(portfolio_id, dirty_from=opened_at)
+        return _serialize_account_row(record)
+
+
+def update_account(
+    portfolio_id: str,
+    account_id: str,
+    *,
+    account_name: str,
+    institution: str | None,
+    default_settlement_cash_account_id: str | None,
+    cost_basis_method: str | None,
+    allowed_asset_types: list[str] | None,
+    opened_at: date | None,
+    closed_at: date | None,
+    status: str,
+) -> dict[str, object] | None:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        record = session.scalar(
+            select(AccountRecordModel).where(
+                AccountRecordModel.portfolio_id == portfolio_id,
+                AccountRecordModel.account_id == account_id,
+            )
+        )
+        if record is None:
+            return None
+
+        previous_opened_at = record.opened_at
+        previous_cost_basis_method = record.cost_basis_method
+        first_asset_transaction_date = None
+        if cost_basis_method != previous_cost_basis_method:
+            first_asset_transaction_date = session.scalar(
+                select(func.min(TransactionRecordModel.trade_date)).where(
+                    TransactionRecordModel.portfolio_id == portfolio_id,
+                    or_(
+                        TransactionRecordModel.account_id == account_id,
+                        TransactionRecordModel.counterparty_account_id == account_id,
+                    ),
+                    or_(
+                        TransactionRecordModel.asset_id.is_not(None),
+                        TransactionRecordModel.transfer_object_type == "position",
+                    ),
+                )
+            )
+
+        record.account_name = account_name.strip()
+        record.institution = (institution or "").strip() or None
+        record.default_settlement_cash_account_id = default_settlement_cash_account_id
+        record.cost_basis_method = cost_basis_method
+        record.allowed_asset_types_json = sorted(set(allowed_asset_types or [])) or None
+        record.opened_at = opened_at
+        record.closed_at = closed_at
+        record.status = (status or "active").strip() or "active"
+        session.commit()
+        dirty_from = min(
+            (
+                candidate
+                for candidate in (first_asset_transaction_date, previous_opened_at, opened_at)
+                if candidate is not None
+            ),
+            default=None,
+        )
+        _mark_daily_snapshots_stale(portfolio_id, dirty_from=dirty_from)
         return _serialize_account_row(record)
 
 

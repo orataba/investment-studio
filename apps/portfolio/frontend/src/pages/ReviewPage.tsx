@@ -139,8 +139,8 @@ function buildMonthlyBuckets(dailySeries: PortfolioDailyPerformancePoint[]) {
     }
 
     bucket.endDate = point.as_of_date
-    if (point.daily_ttwror != null) {
-      bucket.growthIndex *= 1 + point.daily_ttwror
+    if (point.daily_twr != null) {
+      bucket.growthIndex *= 1 + point.daily_twr
       bucket.observationCount += 1
     }
     if (point.absolute_change == null) {
@@ -407,8 +407,8 @@ export default function ReviewPage() {
   const worstDailyRows = useMemo(
     () =>
       [...(performanceWorkspace?.daily_series ?? [])]
-        .filter((point) => point.daily_ttwror != null)
-        .sort((left, right) => (left.daily_ttwror ?? 0) - (right.daily_ttwror ?? 0))
+        .filter((point) => point.daily_twr != null)
+        .sort((left, right) => (left.daily_twr ?? 0) - (right.daily_twr ?? 0))
         .slice(0, 10),
     [performanceWorkspace],
   )
@@ -450,16 +450,16 @@ export default function ReviewPage() {
   )
   const realizedRiskMetrics = useMemo(() => {
     const dailySeries = performanceWorkspace?.daily_series ?? []
-    const validDailyReturns = dailySeries.filter((point) => point.daily_ttwror != null)
+    const validDailyReturns = dailySeries.filter((point) => point.daily_twr != null)
     const worstDay =
-      [...validDailyReturns].sort((left, right) => (left.daily_ttwror ?? 0) - (right.daily_ttwror ?? 0))[0] ?? null
+      [...validDailyReturns].sort((left, right) => (left.daily_twr ?? 0) - (right.daily_twr ?? 0))[0] ?? null
     const deepestDrawdown =
       [...dailySeries].filter((point) => point.drawdown != null).sort((left, right) => (left.drawdown ?? 0) - (right.drawdown ?? 0))[0] ??
       null
     return {
       observationCount: performanceWorkspace?.summary.return_observation_count ?? 0,
       staleDays: dailySeries.filter((point) => point.stale_price_flag || point.stale_fx_flag).length,
-      downDays: validDailyReturns.filter((point) => (point.daily_ttwror ?? 0) < 0).length,
+      downDays: validDailyReturns.filter((point) => (point.daily_twr ?? 0) < 0).length,
       worstDay,
       deepestDrawdown,
     }
@@ -567,8 +567,8 @@ export default function ReviewPage() {
     { label: 'End NAV', value: formatCurrency(performanceWorkspace?.summary.end_nav, baseCurrency) },
     {
       label: 'Cumulative Return',
-      value: signedPercent(performanceWorkspace?.summary.cumulative_ttwror),
-      toneClassName: signedValueClass(performanceWorkspace?.summary.cumulative_ttwror),
+      value: signedPercent(performanceWorkspace?.summary.cumulative_twr),
+      toneClassName: signedValueClass(performanceWorkspace?.summary.cumulative_twr),
     },
     {
       label: 'Total P&L',
@@ -613,8 +613,8 @@ export default function ReviewPage() {
   const riskSummaryRight = [
     {
       label: 'Worst Day',
-      value: signedPercent(realizedRiskMetrics.worstDay?.daily_ttwror, 3),
-      toneClassName: signedValueClass(realizedRiskMetrics.worstDay?.daily_ttwror),
+      value: signedPercent(realizedRiskMetrics.worstDay?.daily_twr, 3),
+      toneClassName: signedValueClass(realizedRiskMetrics.worstDay?.daily_twr),
     },
     { label: 'Worst Day Date', value: realizedRiskMetrics.worstDay?.as_of_date ?? '—' },
     { label: 'Deepest Drawdown Date', value: realizedRiskMetrics.deepestDrawdown?.as_of_date ?? '—' },
@@ -940,8 +940,8 @@ export default function ReviewPage() {
                             </span>
                           </td>
                           <td>{formatCurrency(point.ending_nav, baseCurrency)}</td>
-                          <td className={signedValueClass(point.daily_ttwror)}>
-                            {signedPercent(point.daily_ttwror, 3)}
+                          <td className={signedValueClass(point.daily_twr)}>
+                            {signedPercent(point.daily_twr, 3)}
                           </td>
                           <td className={signedValueClass(point.drawdown)}>
                             {signedPercent(point.drawdown)}
@@ -1209,11 +1209,11 @@ export default function ReviewPage() {
                             </span>
                           </td>
                           <td>{formatCurrency(point.ending_nav, baseCurrency)}</td>
-                          <td className={signedValueClass(point.daily_ttwror)}>
-                            {signedPercent(point.daily_ttwror, 3)}
+                          <td className={signedValueClass(point.daily_twr)}>
+                            {signedPercent(point.daily_twr, 3)}
                           </td>
-                          <td className={signedValueClass(point.cumulative_ttwror)}>
-                            {signedPercent(point.cumulative_ttwror)}
+                          <td className={signedValueClass(point.cumulative_twr)}>
+                            {signedPercent(point.cumulative_twr)}
                           </td>
                           <td className={signedValueClass(point.drawdown)}>
                             {signedPercent(point.drawdown)}

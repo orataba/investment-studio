@@ -82,6 +82,7 @@ npm run dev
 - 需要组合时，显式通过前端 `/portfolios` 页面、`POST /api/portfolios`，或 [backend/scripts/import_real_portfolio_from_csv.py](./backend/scripts/import_real_portfolio_from_csv.py) 创建
   导入脚本现在要求显式传入 `--csv-path` 与 `--portfolio-id`；`--portfolio-name` 不传时会回退到 `portfolio_id`
 - 新建 `securities_account` 时，如果不显式选择成本法，系统默认使用 `FIFO`
+- 账户成本法支持 `FIFO` 与 `moving_average`；修改成本法会按交易事实重算 holdings、lots、ledger postings 和 snapshots
 
 ## 常用校验命令
 
@@ -93,11 +94,13 @@ npm --prefix apps/portfolio/frontend run build
 
 ## 计算层阶段性状态
 
-截至 `2026-05-04`：
+截至 `2026-05-06`：
 
-- 组合级 TTWROR 使用日频 true time-weighted 口径：外部流入进分母，外部流出加回分子，区间结果几何复合。
+- 组合级 TWR 使用日频 true time-weighted 口径：外部流入进分母，外部流出加回分子，区间结果几何复合。
+- FIFO / moving average 只影响 book cost、realized capital gain、unrealized P&L 和 lot 展示；不影响 fair-value based TWR。
+- `moving_average` 在底层按 `account + asset` 维护一个 rolling average cost bucket；API 为 UI 和转仓审计输出一个 synthetic position lot。
 - `Overview`、`Performance`、`Review` 的 TWR index、daily series 和 drawdown 均按查询窗口重新复合；不得复用 inception-to-date 的累计 TWR 作为区间曲线。
-- `Risk` 的 realized volatility、rolling volatility、Sharpe / Sortino 输入来自 `daily_ttwror` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。
+- `Risk` 的 realized volatility、rolling volatility、Sharpe / Sortino 输入来自 `daily_twr` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。
 - `IRR / MWROR` 是资金效率补充指标；若数学上不可解，不应降低 TWR 口径的 coverage。
 - 绩效方法参考 Portfolio Performance 的账本模型，并吸收 GIPS 的 TWR 优先、外部现金流政策、估值频率和方法一致性原则；本项目不声称 GIPS compliance，详见 [docs/06_GIPS_ALIGNMENT.md](./docs/06_GIPS_ALIGNMENT.md)。
 

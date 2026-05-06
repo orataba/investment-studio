@@ -966,8 +966,9 @@ th {
 }
 
 .watchlists-toolbar-button-active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--line-strong);
+  background: transparent;
+  color: var(--ink);
 }
 
 .watchlists-toolbar-count {
@@ -1042,6 +1043,7 @@ th {
   border: none;
   border-radius: 0;
   padding-right: 34px;
+  outline: none;
 }
 
 .watchlists-plus-button {
@@ -1070,6 +1072,15 @@ th {
   width: 16px;
   height: 16px;
   display: block;
+}
+
+.watchlists-view-group .watchlists-inline-select-group:focus,
+.watchlists-view-group .watchlists-inline-select-group:focus-visible,
+.watchlists-view-group .watchlists-plus-button:focus,
+.watchlists-view-group .watchlists-plus-button:focus-visible {
+  border-color: transparent;
+  outline: none;
+  box-shadow: none;
 }
 
 .watchlists-square-button {
@@ -1396,6 +1407,22 @@ th {
   background: transparent;
 }
 
+.watchlists-th-resizer:hover {
+  box-shadow: inset -2px 0 0 var(--accent);
+}
+
+.watchlists-column-draggable {
+  cursor: grab;
+}
+
+.watchlists-column-draggable:active {
+  cursor: grabbing;
+}
+
+.watchlists-column-drop-target {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 .watchlists-sort-indicator {
   color: #0b72d7;
   font-size: 14px;
@@ -1470,7 +1497,8 @@ th {
 }
 
 .watchlists-columns-modal {
-  height: min(88vh, 920px);
+  width: min(720px, calc(100vw - 48px));
+  height: min(520px, calc(100vh - 48px));
   overflow: hidden;
 }
 
@@ -1487,12 +1515,10 @@ th {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 18px 10px;
+  padding: 14px 16px 8px;
 }
 
 .watchlists-modal-header button,
-.watchlists-arrange-head button,
-.watchlists-arrange-actions button,
 .watchlists-modal-actions button,
 .watchlists-add-filters button {
   padding: 6px 10px;
@@ -1502,7 +1528,12 @@ th {
 }
 
 .watchlists-modal-search {
-  padding: 0 18px 18px;
+  padding: 0 16px 12px;
+}
+
+.watchlists-modal-search .form-input {
+  height: 32px;
+  padding: 6px 10px;
 }
 
 .watchlists-modal-body {
@@ -1595,9 +1626,9 @@ th {
 
 .watchlists-modal-grid {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) 360px;
-  gap: 18px;
-  padding: 0 18px 18px;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 12px;
+  padding: 0 16px 12px;
 }
 
 .watchlists-columns-modal .watchlists-modal-grid {
@@ -1606,8 +1637,7 @@ th {
 }
 
 .watchlists-modal-categories,
-.watchlists-modal-fields,
-.watchlists-modal-arrange {
+.watchlists-modal-fields {
   min-height: 420px;
   border: 1px solid var(--line);
   background: transparent;
@@ -1625,13 +1655,13 @@ th {
 }
 
 .watchlists-category-item {
-  padding: 12px 14px;
+  padding: 9px 12px;
   border: none;
   border-left: 3px solid transparent;
   background: transparent;
   color: #111111;
   text-align: left;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .watchlists-category-item-active {
@@ -1650,85 +1680,36 @@ th {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
-  align-items: start;
-  padding: 10px 0;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 0;
   border-bottom: 1px solid var(--line);
   background: transparent;
+}
+
+.watchlists-field-item > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
 }
 
 .watchlists-field-label {
-  font-size: 14px;
+  overflow: hidden;
+  font-size: 13px;
   color: #111111;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .watchlists-field-meta {
-  margin-top: 3px;
-  color: #6b7280;
-  font-size: 12px;
-}
-
-.watchlists-modal-arrange {
-  display: grid;
-  align-content: start;
-}
-
-.watchlists-columns-modal .watchlists-modal-arrange {
-  min-height: 0;
-  grid-template-rows: auto minmax(0, 1fr);
-  overflow: hidden;
-}
-
-.watchlists-arrange-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
-  border-bottom: 1px solid #ececec;
-}
-
-.watchlists-arrange-list {
-  display: grid;
-  gap: 0;
-  padding: 0 10px;
-}
-
-.watchlists-columns-modal .watchlists-arrange-list {
-  min-height: 0;
-  overflow: auto;
-}
-
-.watchlists-arrange-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 0;
-  background: transparent;
-  font-size: 14px;
-  border: none;
-  border-bottom: 1px solid var(--line);
-}
-
-.watchlists-arrange-item + .watchlists-arrange-item {
   margin-top: 0;
-}
-
-.watchlists-arrange-handle {
-  color: #9ca3af;
-  font-size: 16px;
-  letter-spacing: 1px;
-}
-
-.watchlists-arrange-actions {
-  display: inline-flex;
-  gap: 8px;
-}
-
-.watchlists-arrange-lock {
+  overflow: hidden;
   color: #6b7280;
   font-size: 12px;
-  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .watchlists-modal-actions {
@@ -1747,7 +1728,7 @@ th {
   bottom: 0;
   background: #ffffff;
   border-top: 1px solid #ececec;
-  padding: 12px 18px;
+  padding: 10px 16px;
   z-index: 5;
 }
 
@@ -3943,7 +3924,7 @@ td:last-child {
   background: transparent;
   color: #4b5563;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 400;
   line-height: 1.2;
   white-space: nowrap;
   transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
@@ -6101,10 +6082,7 @@ button:disabled {
 .watchlists-toolbar-button,
 .watchlists-pagination-button,
 .watchlists-square-button,
-.watchlists-plus-button,
 .watchlists-modal-header button,
-.watchlists-arrange-head button,
-.watchlists-arrange-actions button,
 .watchlists-modal-actions button,
 .watchlists-add-filters button,
 .instrument-detail-actions button,
@@ -6128,8 +6106,6 @@ button:disabled {
 .watchlists-toolbar-button,
 .watchlists-pagination-button,
 .watchlists-modal-header button,
-.watchlists-arrange-head button,
-.watchlists-arrange-actions button,
 .watchlists-modal-actions button,
 .watchlists-add-filters button,
 .editor-actions button,
@@ -6150,10 +6126,7 @@ button:disabled {
 .watchlists-toolbar-button:hover,
 .watchlists-pagination-button:hover:not(:disabled),
 .watchlists-square-button:hover,
-.watchlists-plus-button:hover,
 .watchlists-modal-header button:hover,
-.watchlists-arrange-head button:hover,
-.watchlists-arrange-actions button:hover,
 .watchlists-modal-actions button:hover,
 .watchlists-add-filters button:hover,
 .editor-actions button:hover,
@@ -6164,8 +6137,7 @@ button:disabled {
 
 .button-primary,
 .toolbar-link-active,
-.watchlist-switcher-chip-active,
-.watchlists-toolbar-button-active {
+.watchlist-switcher-chip-active {
   border-color: var(--accent) !important;
   background: var(--accent) !important;
   color: #ffffff !important;
@@ -6401,7 +6373,6 @@ input[type='checkbox'] {
 .watchlists-filter-values,
 .watchlists-modal-categories,
 .watchlists-modal-fields,
-.watchlists-modal-arrange,
 .watchlists-move-summary,
 .watchlists-move-note,
 .watchlists-registry-selected {
@@ -6628,10 +6599,7 @@ input[type='checkbox'] {
   .watchlist-menu-trigger,
   .watchlists-toolbar-button,
   .watchlists-square-button,
-  .watchlists-plus-button,
   .watchlists-modal-header button,
-  .watchlists-arrange-head button,
-  .watchlists-arrange-actions button,
   .watchlists-modal-actions button,
   .watchlists-add-filters button,
   .instrument-detail-actions button,
@@ -6643,7 +6611,7 @@ input[type='checkbox'] {
   .watchlists-filter-reset,
   .instrument-settings-text-action
 ) {
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .app-shell :is(

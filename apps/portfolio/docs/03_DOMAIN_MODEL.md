@@ -882,11 +882,12 @@ flowchart LR
 
 ### 定义
 
-`Lot` 表示成本基础和 realized/unrealized P&L 计算所需的细粒度持仓单元。
+`Lot` 表示成本基础和 realized/unrealized P&L 计算所需的持仓成本单元。
+在 `FIFO` 账户中，它是实际 open tax/book lot；在 `moving_average` 账户中，它是系统输出的 synthetic rolling-average bucket，不代表某一笔真实 tax lot。
 
 ### 角色
 
-- 支持 average cost / FIFO / specific lot 等口径扩展；
+- 支持账户级 FIFO 和 moving average 成本口径；
 - 为税务和精细归因预留空间。
 
 ### 典型字段
@@ -906,12 +907,15 @@ flowchart LR
 
 ### 关键规则
 
-- `opening_balance + position` 不得只生成“无 lot 头寸”，而必须 materialize 成一个或多个 opening lots；
+- `opening_balance + position` 不得只生成“无成本单元头寸”，而必须 materialize 成 FIFO lot 或 moving-average bucket；
 - 若导入源保留历史 lot granularity，则系统必须按 source lots 分别导入，并保留各自 `acquisition_date`、`quantity_remaining`、`cost_basis_remaining` 与已分摊 fees；
 - 若导入源只提供聚合头寸与聚合成本基础，系统只能生成单个 `synthetic_opening` lot；此时 bootstrap 之前的 exact trade continuity 不可得，后续 realized P&L 将以该 synthetic lot 为起点解释；
+- `gross_amount` 表示 imported remaining cost basis，可以为 0；
+- `FIFO` 账户卖出或转出时按 open lots 顺序释放成本；
+- `moving_average` 账户卖出或转出时按当前 rolling average cost per unit 释放成本，并保持一个 active synthetic bucket；
 - `transfer_object_type = position` 的内部转仓不得形成 realized P&L；
-- 内部转仓必须把 source account 的 open lots 按原 acquisition date、剩余 cost basis 与已分摊 fees 原样搬迁到 destination account；
-- 若转仓数量只覆盖部分 open lots，系统必须对被迁移的 lot 做确定性切片；首版默认按 source account 内的 FIFO lot 顺序切分，除非未来显式支持 lot-level selection。
+- 内部转仓必须按 source account 成本法确定 transferred cost basis；FIFO source 搬迁确定性 lot slices，moving-average source 生成 average-cost transfer slice；
+- destination account 按自己的成本法接收转入 slice；0 成本 slice 也是合法转仓结果。
 
 ### 6.3 TradeView
 
@@ -997,7 +1001,7 @@ flowchart LR
 
 - cumulative return
 - period return
-- TTWROR
+- TWR
 - IRR / MWROR
 - benchmark return
 - excess return
@@ -1491,6 +1495,6 @@ classDiagram
 领域模型确定后，下一份文档应把以下内容量化：
 
 1. `04_CALCULATION_SPEC.md`
-   明确 TTWROR、IRR、FX、benchmark-relative return、drawdown、drift、target risk budget gap、scenario P&L 口径。
+   明确 TWR、IRR、FX、benchmark-relative return、drawdown、drift、target risk budget gap、scenario P&L 口径。
 2. `05_INFORMATION_ARCHITECTURE.md`
    明确这些对象在 UI 中如何映射为页面、tabs、filters、drill-down 和 review workflow。
