@@ -184,6 +184,7 @@ export type PortfolioPeriodCalculationSummary = {
   delta: number | null
   capital_gains: number | null
   realized_capital_gains: number | null
+  unrealized_capital_gains: number | null
   earnings: number | null
   fees: number | null
   taxes: number | null
@@ -203,7 +204,7 @@ export type PortfolioPerformanceCalculationResponse = {
   lines: PortfolioPeriodCalculationLine[]
 }
 
-export type PortfolioContributionAxis = 'instrument' | 'account' | 'taxonomy'
+export type PortfolioContributionAxis = 'instrument' | 'account' | 'asset_type' | 'currency' | 'taxonomy'
 
 export type PortfolioPeriodCalculationGroupRecord = {
   axis: PortfolioContributionAxis
@@ -217,6 +218,7 @@ export type PortfolioPeriodCalculationGroupRecord = {
   final_value: number | null
   delta: number | null
   residual_delta: number | null
+  capital_gains: number | null
   realized_capital_gains: number | null
   unrealized_pnl_change: number | null
   earnings: number | null

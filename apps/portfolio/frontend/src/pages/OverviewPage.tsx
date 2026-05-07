@@ -210,7 +210,7 @@ function findAnchorPerformancePoint(points: PortfolioDailyPerformancePoint[], ta
   return anchor ?? points[0] ?? null
 }
 
-function periodReturnFromTtwror(
+function periodReturnFromTwr(
   points: PortfolioDailyPerformancePoint[],
   targetDate: string | null,
   fallbackToFirst = true,
@@ -261,9 +261,9 @@ function buildPortfolioReturnMetrics(points: PortfolioDailyPerformancePoint[]) {
   const priorYearEnd = addDays(yearStart, -1)
 
   return {
-    oneWeek: periodReturnFromTtwror(sortedPoints, formatDateKey(addDays(latestDate, -7))),
-    mtd: periodReturnFromTtwror(sortedPoints, formatDateKey(priorMonthEnd), false),
-    ytd: periodReturnFromTtwror(sortedPoints, formatDateKey(priorYearEnd), false),
+    oneWeek: periodReturnFromTwr(sortedPoints, formatDateKey(addDays(latestDate, -7))),
+    mtd: periodReturnFromTwr(sortedPoints, formatDateKey(priorMonthEnd), false),
+    ytd: periodReturnFromTwr(sortedPoints, formatDateKey(priorYearEnd), false),
   }
 }
 

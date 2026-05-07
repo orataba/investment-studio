@@ -4,6 +4,7 @@ import { useParams, useSearchParams } from 'react-router-dom'
 import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import { downloadCsv } from '../lib/csv'
 import {
   getPortfolioAssetPriceChart,
   getPortfolioInstruments,
@@ -74,6 +75,13 @@ type RelativePerformanceMetrics = {
   captureRatio: number | null
 }
 
+type CalculationGroupByOption = {
+  value: PortfolioContributionAxis
+  label: string
+  description: string
+  disabled?: boolean
+}
+
 function localDateIso(input = new Date()) {
   const year = input.getFullYear()
   const month = `${input.getMonth() + 1}`.padStart(2, '0')
@@ -106,6 +114,10 @@ function finiteNumber(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
+function csvNumber(value: number | null | undefined) {
+  return finiteNumber(value)
+}
+
 function sumNullable(...values: Array<number | null | undefined>) {
   let hasValue = false
   let total = 0
@@ -128,20 +140,22 @@ function expenseImpact(value: number | null | undefined) {
   return finiteValue === 0 ? 0 : -Math.abs(finiteValue)
 }
 
-function capitalGainAmount(row: Pick<CalculationGroupRow, 'realized_capital_gains' | 'unrealized_pnl_change'>) {
-  return sumNullable(row.realized_capital_gains, row.unrealized_pnl_change)
-}
-
 function fxPnlAmount(row: Pick<CalculationGroupRow, 'cash_currency_gains' | 'asset_currency_gains'>) {
   return sumNullable(row.cash_currency_gains, row.asset_currency_gains)
 }
 
-function calculationAxisLabel(axis: PortfolioContributionAxis, taxonomy: PortfolioTaxonomyRecord | null) {
+function calculationAxisLabel(axis: PortfolioContributionAxis) {
   if (axis === 'account') {
     return 'Account'
   }
+  if (axis === 'asset_type') {
+    return 'Asset Type'
+  }
+  if (axis === 'currency') {
+    return 'Currency'
+  }
   if (axis === 'taxonomy') {
-    return taxonomy?.name ?? 'Taxonomy'
+    return 'Taxonomy'
   }
   return 'Asset'
 }
@@ -149,6 +163,12 @@ function calculationAxisLabel(axis: PortfolioContributionAxis, taxonomy: Portfol
 function calculationAxisCountLabel(axis: PortfolioContributionAxis) {
   if (axis === 'account') {
     return 'accounts'
+  }
+  if (axis === 'asset_type') {
+    return 'asset types'
+  }
+  if (axis === 'currency') {
+    return 'currencies'
   }
   if (axis === 'taxonomy') {
     return 'groups'
@@ -710,6 +730,7 @@ function PerformancePage() {
   const [calculationLoading, setCalculationLoading] = useState(false)
   const [calculationError, setCalculationError] = useState<string | null>(null)
   const [calculationGroupBy, setCalculationGroupBy] = useState<PortfolioContributionAxis>('instrument')
+  const [calculationGroupByOpen, setCalculationGroupByOpen] = useState(false)
   const [calculationGroupsWorkspace, setCalculationGroupsWorkspace] =
     useState<PortfolioPerformanceCalculationGroupsResponse | null>(null)
   const [calculationGroupsLoading, setCalculationGroupsLoading] = useState(false)
@@ -733,6 +754,47 @@ function PerformancePage() {
   )
   const resolvedCalculationGroupBy =
     calculationGroupBy === 'taxonomy' && !defaultPlanningTaxonomy ? 'instrument' : calculationGroupBy
+  const calculationGroupByOptions = useMemo<CalculationGroupByOption[]>(
+    () => [
+      {
+        value: 'instrument',
+        label: 'Asset',
+        description: 'Group period P&L, TWR, contribution, and gain split by instrument.',
+      },
+      {
+        value: 'asset_type',
+        label: 'Asset Type',
+        description: 'Group period calculation rows by asset class, with cash kept in a cash line.',
+      },
+      {
+        value: 'currency',
+        label: 'Currency',
+        description: 'Group position and cash effects by local currency.',
+      },
+      {
+        value: 'account',
+        label: 'Account',
+        description: 'Group period calculation rows by portfolio account or custody sleeve.',
+      },
+      {
+        value: 'taxonomy',
+        label: 'Taxonomy',
+        description: defaultPlanningTaxonomy
+          ? `Group rows by the default planning taxonomy: ${defaultPlanningTaxonomy.name}.`
+          : 'No default planning taxonomy is configured for this portfolio.',
+        disabled: !defaultPlanningTaxonomy,
+      },
+    ],
+    [defaultPlanningTaxonomy],
+  )
+  const selectedCalculationGroupByOption =
+    calculationGroupByOptions.find((option) => option.value === resolvedCalculationGroupBy) ??
+    calculationGroupByOptions[0]
+
+  function handleCalculationGroupByChange(value: PortfolioContributionAxis) {
+    setCalculationGroupBy(value)
+    setCalculationGroupByOpen(false)
+  }
 
   useEffect(() => {
     if (!portfolioId) {
@@ -976,8 +1038,7 @@ function PerformancePage() {
   const initialValue = calculationSummary?.initial_value ?? summary?.start_nav ?? null
   const finalValue = calculationSummary?.final_value ?? summary?.end_nav ?? null
   const portfolioRealizedGain = calculationSummary?.realized_capital_gains ?? summary?.realized_pnl ?? null
-  const portfolioUnrealizedGainChange = calculationSummary?.capital_gains ?? summary?.unrealized_pnl ?? null
-  const portfolioCapitalGain = sumNullable(portfolioRealizedGain, portfolioUnrealizedGainChange)
+  const portfolioUnrealizedGain = calculationSummary?.unrealized_capital_gains ?? null
   const portfolioIncome = calculationSummary?.earnings ?? summary?.income_cash_amount ?? null
   const portfolioFxPnl = sumNullable(calculationSummary?.cash_currency_gains, calculationSummary?.asset_currency_gains)
   const portfolioFees = expenseImpact(calculationSummary?.fees)
@@ -986,10 +1047,80 @@ function PerformancePage() {
   const portfolioContribution = calculationGroupsSummary?.total_period_contribution ?? summary?.cumulative_twr ?? null
   const contributionResidual = calculationGroupsSummary?.contribution_residual ?? null
   const showContributionResidual = contributionResidual != null && Math.abs(contributionResidual) > 0.0000005
-  const calculationGroupLabel = calculationAxisLabel(resolvedCalculationGroupBy, defaultPlanningTaxonomy)
+  const calculationGroupLabel = calculationAxisLabel(resolvedCalculationGroupBy)
   const calculationMeta = `${periodLabel} · ${formatNumber(calculationRows.length, 0)} ${calculationAxisCountLabel(
     resolvedCalculationGroupBy,
   )}`
+
+  function handleDownloadCalculationCsv() {
+    if (!portfolioId || !calculationGroupsWorkspace) {
+      return
+    }
+
+    const header = [
+      'Line',
+      'P&L / Flow',
+      'Start Value',
+      'End Value',
+      'Avg Weight',
+      'End Weight',
+      'Realized Gain',
+      'Unrealized Gain',
+      'Income',
+      'Fees',
+      'Taxes',
+      'FX P&L',
+      'TWR',
+      'Contribution',
+    ]
+    const rows: Array<Array<string | number | null>> = [
+      header,
+      ['Initial Value', null, csvNumber(initialValue), ...Array(11).fill(null)],
+      ...calculationRows.map((row) => [
+        row.group_label,
+        csvNumber(row.total_pnl),
+        csvNumber(row.initial_value),
+        csvNumber(row.final_value),
+        csvNumber(row.average_weight),
+        csvNumber(row.ending_weight),
+        csvNumber(row.realized_capital_gains),
+        csvNumber(row.unrealized_pnl_change),
+        csvNumber(row.earnings),
+        csvNumber(expenseImpact(row.fees)),
+        csvNumber(expenseImpact(row.taxes)),
+        csvNumber(fxPnlAmount(row)),
+        csvNumber(row.period_return),
+        csvNumber(row.period_contribution),
+      ]),
+      ['Deposits', csvNumber(calculationSummary?.deposits), ...Array(12).fill(null)],
+      ['Withdrawals', csvNumber(expenseImpact(calculationSummary?.withdrawals)), ...Array(12).fill(null)],
+      [
+        'Portfolio Total',
+        csvNumber(portfolioPeriodPnl),
+        csvNumber(summary?.start_nav),
+        csvNumber(summary?.end_nav),
+        1,
+        1,
+        csvNumber(portfolioRealizedGain),
+        csvNumber(portfolioUnrealizedGain),
+        csvNumber(portfolioIncome),
+        csvNumber(portfolioFees),
+        csvNumber(portfolioTaxes),
+        csvNumber(portfolioFxPnl),
+        csvNumber(summary?.cumulative_twr),
+        csvNumber(portfolioContribution),
+      ],
+    ]
+    if (showContributionResidual) {
+      rows.push(['Contribution Residual', ...Array(12).fill(null), csvNumber(contributionResidual)])
+    }
+    rows.push(['Final Value', null, null, csvNumber(finalValue), ...Array(10).fill(null)])
+
+    downloadCsv(
+      `performance-calculation-${portfolioId}-${effectiveStartDate}-${effectiveEndDate}-${resolvedCalculationGroupBy}.csv`,
+      rows,
+    )
+  }
 
   return (
     <PortfolioWorkspaceLayout activeSection="Performance" toolbarLabel="View: Performance">
@@ -1057,36 +1188,28 @@ function PerformancePage() {
             </section>
 
             <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar performance-section-toolbar">
-                <div>
-                  <div className="panel-title">Calculation</div>
-                  <div className="portfolio-detail-meta">{calculationMeta}</div>
-                </div>
-                <div className="performance-group-by-control" aria-label="Group calculation rows">
-                  <span>Group By</span>
-                  <div className="performance-group-by-buttons" role="group">
+              <div className="portfolio-detail-toolbar performance-subsection-toolbar performance-section-toolbar performance-calculation-toolbar">
+                <div className="performance-calculation-toolbar-main">
+                  <div>
+                    <div className="panel-title">Calculation</div>
+                    <div className="portfolio-detail-meta">{calculationMeta}</div>
+                  </div>
+                  <div className="transaction-filter-actions holdings-filter-actions performance-calculation-actions">
                     <button
                       type="button"
-                      className={resolvedCalculationGroupBy === 'instrument' ? 'performance-group-by-active' : ''}
-                      onClick={() => setCalculationGroupBy('instrument')}
+                      className="holdings-toolbar-button"
+                      onClick={() => setCalculationGroupByOpen(true)}
                     >
-                      Asset
+                      Group By{'\u00A0: '}
+                      {selectedCalculationGroupByOption.label}
                     </button>
                     <button
                       type="button"
-                      className={resolvedCalculationGroupBy === 'account' ? 'performance-group-by-active' : ''}
-                      onClick={() => setCalculationGroupBy('account')}
+                      className="holdings-toolbar-button"
+                      onClick={handleDownloadCalculationCsv}
+                      disabled={!calculationGroupsWorkspace || calculationGroupsLoading}
                     >
-                      Account
-                    </button>
-                    <button
-                      type="button"
-                      className={resolvedCalculationGroupBy === 'taxonomy' ? 'performance-group-by-active' : ''}
-                      onClick={() => setCalculationGroupBy('taxonomy')}
-                      disabled={!defaultPlanningTaxonomy}
-                      title={defaultPlanningTaxonomy ? defaultPlanningTaxonomy.name : 'No default planning taxonomy'}
-                    >
-                      Taxonomy
+                      Download
                     </button>
                   </div>
                 </div>
@@ -1104,14 +1227,13 @@ function PerformancePage() {
                   <thead>
                     <tr>
                       <th>Line</th>
-                      <th>Bridge Impact</th>
+                      <th>P&L / Flow</th>
                       <th>Start Value</th>
                       <th>End Value</th>
-                      <th>Avg Wgt</th>
-                      <th>End Wgt</th>
-                      <th>Capital Gain</th>
+                      <th>Avg Weight</th>
+                      <th>End Weight</th>
                       <th>Realized Gain</th>
-                      <th>Unrealized Chg</th>
+                      <th>Unrealized Gain</th>
                       <th>Income</th>
                       <th>Fees</th>
                       <th>Taxes</th>
@@ -1125,11 +1247,10 @@ function PerformancePage() {
                       <th scope="row">Initial Value</th>
                       <td className="performance-cell-number">—</td>
                       <td className="performance-cell-number">{formatCurrency(initialValue, baseCurrency)}</td>
-                      <EmptyNumberCells count={12} />
+                      <EmptyNumberCells count={11} />
                     </tr>
                     {calculationRows.length ? (
                       calculationRows.map((row) => {
-                        const capitalGain = capitalGainAmount(row)
                         const fxPnl = fxPnlAmount(row)
                         const feePnl = expenseImpact(row.fees)
                         const taxPnl = expenseImpact(row.taxes)
@@ -1147,9 +1268,6 @@ function PerformancePage() {
                             <td className="performance-cell-number">{formatCurrency(row.final_value, baseCurrency)}</td>
                             <td className="performance-cell-number">{formatPercent(row.average_weight)}</td>
                             <td className="performance-cell-number">{formatPercent(row.ending_weight)}</td>
-                            <td className={`performance-cell-number ${signedValueClass(capitalGain)}`}>
-                              {formatSignedCurrency(capitalGain, baseCurrency)}
-                            </td>
                             <td className={`performance-cell-number ${signedValueClass(row.realized_capital_gains)}`}>
                               {formatSignedCurrency(row.realized_capital_gains, baseCurrency)}
                             </td>
@@ -1178,25 +1296,25 @@ function PerformancePage() {
                         )
                       })
                     ) : calculationGroupsLoading ? (
-                      <TableStatusRow colSpan={15} label={`Loading ${calculationGroupLabel.toLowerCase()} calculation…`} />
+                      <TableStatusRow colSpan={14} label={`Loading ${calculationGroupLabel.toLowerCase()} calculation…`} />
                     ) : calculationGroupsError ? (
-                      <TableStatusRow colSpan={15} label={calculationGroupsError} tone="error" />
+                      <TableStatusRow colSpan={14} label={calculationGroupsError} tone="error" />
                     ) : (
-                      <TableStatusRow colSpan={15} label={`No ${calculationGroupLabel.toLowerCase()} calculation rows available.`} />
+                      <TableStatusRow colSpan={14} label={`No ${calculationGroupLabel.toLowerCase()} calculation rows available.`} />
                     )}
                     <tr className="performance-calculation-external-row">
                       <th scope="row">Deposits</th>
                       <td className={`performance-cell-number ${signedValueClass(calculationSummary?.deposits)}`}>
                         {formatSignedCurrency(calculationSummary?.deposits, baseCurrency)}
                       </td>
-                      <EmptyNumberCells count={13} />
+                      <EmptyNumberCells count={12} />
                     </tr>
                     <tr className="performance-calculation-external-row">
                       <th scope="row">Withdrawals</th>
                       <td className={`performance-cell-number ${signedValueClass(expenseImpact(calculationSummary?.withdrawals))}`}>
                         {formatSignedCurrency(expenseImpact(calculationSummary?.withdrawals), baseCurrency)}
                       </td>
-                      <EmptyNumberCells count={13} />
+                      <EmptyNumberCells count={12} />
                     </tr>
                     <tr className="performance-calculation-total-row">
                       <th scope="row">Portfolio Total</th>
@@ -1207,14 +1325,11 @@ function PerformancePage() {
                       <td className="performance-cell-number">{formatCurrency(summary.end_nav, baseCurrency)}</td>
                       <td className="performance-cell-number">{formatPercent(1)}</td>
                       <td className="performance-cell-number">{formatPercent(1)}</td>
-                      <td className={`performance-cell-number ${signedValueClass(portfolioCapitalGain)}`}>
-                        {formatSignedCurrency(portfolioCapitalGain, baseCurrency)}
-                      </td>
                       <td className={`performance-cell-number ${signedValueClass(portfolioRealizedGain)}`}>
                         {formatSignedCurrency(portfolioRealizedGain, baseCurrency)}
                       </td>
-                      <td className={`performance-cell-number ${signedValueClass(portfolioUnrealizedGainChange)}`}>
-                        {formatSignedCurrency(portfolioUnrealizedGainChange, baseCurrency)}
+                      <td className={`performance-cell-number ${signedValueClass(portfolioUnrealizedGain)}`}>
+                        {formatSignedCurrency(portfolioUnrealizedGain, baseCurrency)}
                       </td>
                       <td className={`performance-cell-number ${signedValueClass(portfolioIncome)}`}>
                         {formatSignedCurrency(portfolioIncome, baseCurrency)}
@@ -1238,7 +1353,7 @@ function PerformancePage() {
                     {showContributionResidual ? (
                       <tr className="performance-calculation-residual-row">
                         <th scope="row">Contribution Residual</th>
-                        <EmptyNumberCells count={13} />
+                        <EmptyNumberCells count={12} />
                         <td className={`performance-cell-number ${signedValueClass(contributionResidual)}`}>
                           {signedPercent(contributionResidual)}
                         </td>
@@ -1249,7 +1364,7 @@ function PerformancePage() {
                       <td className="performance-cell-number">—</td>
                       <td className="performance-cell-number">—</td>
                       <td className="performance-cell-number">{formatCurrency(finalValue, baseCurrency)}</td>
-                      <EmptyNumberCells count={11} />
+                      <EmptyNumberCells count={10} />
                     </tr>
                   </tbody>
                 </table>
@@ -1258,6 +1373,37 @@ function PerformancePage() {
           </div>
         ) : null}
       </section>
+      {calculationGroupByOpen ? (
+        <div className="holdings-modal-backdrop" onClick={() => setCalculationGroupByOpen(false)}>
+          <div className="holdings-modal holdings-compact-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="holdings-modal-header">
+              <div>
+                <div className="panel-title">Group By</div>
+                <div className="section-heading">Choose Grouping Dimension</div>
+              </div>
+              <button type="button" onClick={() => setCalculationGroupByOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="holdings-modal-body holdings-groupby-list">
+              {calculationGroupByOptions.map((option) => (
+                <button
+                  type="button"
+                  className={`holdings-groupby-option ${
+                    option.value === resolvedCalculationGroupBy ? 'holdings-groupby-option-active' : ''
+                  }`}
+                  key={option.value}
+                  onClick={() => handleCalculationGroupByChange(option.value)}
+                  disabled={option.disabled}
+                >
+                  <span>{option.label}</span>
+                  <small>{option.description}</small>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </PortfolioWorkspaceLayout>
   )
 }

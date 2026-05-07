@@ -70,6 +70,8 @@ from portfolio_app.services.daily_snapshots import (
     refresh_selected_portfolio_daily_snapshots,
 )
 from portfolio_app.services.performance import (
+    CONTRIBUTION_AXES,
+    CONTRIBUTION_AXIS_ERROR,
     build_period_boundary_groups_report,
     build_contribution_bucket_calendar_report,
     build_contribution_bucket_report,
@@ -231,8 +233,8 @@ def get_portfolio_period_calculation_groups(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    if axis not in {"instrument", "account", "taxonomy"}:
-        raise HTTPException(status_code=422, detail="axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_AXES:
+        raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
 
     try:
         report = build_period_calculation_groups_report(
@@ -279,8 +281,8 @@ def get_portfolio_period_calculation_groups_calendar(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    if axis not in {"instrument", "account", "taxonomy"}:
-        raise HTTPException(status_code=422, detail="axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_AXES:
+        raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
 
     try:
         report = build_period_calculation_groups_calendar_report(
@@ -325,8 +327,8 @@ def get_portfolio_period_calculation_drilldown(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    if axis not in {"instrument", "account", "taxonomy"}:
-        raise HTTPException(status_code=422, detail="axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_AXES:
+        raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
 
     try:
         report = build_period_calculation_bucket_report(
@@ -371,8 +373,8 @@ def get_portfolio_period_calculation_entries(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    if axis not in {"instrument", "account", "taxonomy"}:
-        raise HTTPException(status_code=422, detail="axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_AXES:
+        raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
 
     try:
         report = build_period_calculation_entries_report(
@@ -421,8 +423,8 @@ def get_portfolio_period_calculation_entries_calendar(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    if axis not in {"instrument", "account", "taxonomy"}:
-        raise HTTPException(status_code=422, detail="axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_AXES:
+        raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
 
     try:
         report = build_period_calculation_entries_calendar_report(
@@ -467,8 +469,8 @@ def get_portfolio_period_boundary_holdings(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    if axis is not None and axis not in {"instrument", "account", "taxonomy"}:
-        raise HTTPException(status_code=422, detail="axis must be instrument, account, or taxonomy")
+    if axis is not None and axis not in CONTRIBUTION_AXES:
+        raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
 
     try:
         report = build_period_boundary_holdings_report(
@@ -586,8 +588,8 @@ def get_portfolio_contribution_report(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    if axis not in {"instrument", "account", "taxonomy"}:
-        raise HTTPException(status_code=422, detail="axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_AXES:
+        raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
 
     try:
         report = (
@@ -644,8 +646,8 @@ def get_portfolio_contribution_calendar(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    if axis not in {"instrument", "account", "taxonomy"}:
-        raise HTTPException(status_code=422, detail="axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_AXES:
+        raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
     if frequency not in {"monthly", "weekly"}:
         raise HTTPException(status_code=422, detail="frequency must be monthly or weekly")
 
@@ -692,8 +694,8 @@ def get_portfolio_contribution_drilldown(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    if axis not in {"instrument", "account", "taxonomy"}:
-        raise HTTPException(status_code=422, detail="axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_AXES:
+        raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
 
     try:
         report = build_contribution_bucket_report(
@@ -742,8 +744,8 @@ def get_portfolio_contribution_calendar_drilldown(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    if axis not in {"instrument", "account", "taxonomy"}:
-        raise HTTPException(status_code=422, detail="axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_AXES:
+        raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
     if frequency not in {"monthly", "weekly"}:
         raise HTTPException(status_code=422, detail="frequency must be monthly or weekly")
 
@@ -791,8 +793,8 @@ def get_portfolio_contribution_entries(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    if axis not in {"instrument", "account", "taxonomy"}:
-        raise HTTPException(status_code=422, detail="axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_AXES:
+        raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
 
     try:
         report = build_contribution_entries_report(
@@ -841,8 +843,8 @@ def get_portfolio_contribution_entries_calendar(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
-    if axis not in {"instrument", "account", "taxonomy"}:
-        raise HTTPException(status_code=422, detail="axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_AXES:
+        raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
     if frequency not in {"monthly", "weekly"}:
         raise HTTPException(status_code=422, detail="frequency must be monthly or weekly")
 

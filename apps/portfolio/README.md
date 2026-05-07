@@ -94,11 +94,11 @@ npm --prefix apps/portfolio/frontend run build
 
 ## 计算层阶段性状态
 
-截至 `2026-05-06`：
+截至 `2026-05-07`：
 
 - 组合级 TWR 使用日频 true time-weighted 口径：外部流入进分母，外部流出加回分子，区间结果几何复合。
-- FIFO / moving average 只影响 book cost、realized capital gain、unrealized P&L 和 lot 展示；不影响 fair-value based TWR。
-- Performance `Calculation` 使用 `Initial Value + Net External Flow + Period P&L = Final Value` 的期间桥接。`Unrealized Chg` 是期末未实现损益减期初未实现损益；期末未实现损益余额留给 Holdings / boundary holdings。
+- FIFO / moving average 只影响 book cost、book realized gain、book unrealized P&L 和 lot 展示；不影响 fair-value based TWR。
+- Performance `Calculation` 使用 `Initial Value + Net External Flow + Period P&L = Final Value` 的期间桥接。资本利得拆分使用期初市值重置后的期间成本，而不是账户 book cost。Calculation group rows 支持 asset / asset type / currency / account / taxonomy，TWR 与 contribution 在后端按对应轴计算，表格可导出 CSV。
 - `moving_average` 在底层按 `account + asset` 维护一个 rolling average cost bucket；API 为 UI 和转仓审计输出一个 synthetic position lot。
 - `Overview`、`Performance`、`Review` 的 TWR index、daily series 和 drawdown 均按查询窗口重新复合；不得复用 inception-to-date 的累计 TWR 作为区间曲线。
 - `Risk` 的 realized volatility、rolling volatility、Sharpe / Sortino 输入来自 `daily_twr` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。

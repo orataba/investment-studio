@@ -13,6 +13,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import { downloadCsv } from '../lib/csv'
 import {
   formatCurrency,
   formatLabel,
@@ -890,14 +891,6 @@ function compareSortableValue(left: SortableValue, right: SortableValue, directi
 
   const result = String(left).localeCompare(String(right), 'zh-Hans-CN')
   return direction === 'asc' ? result : -result
-}
-
-function csvEscape(value: string | number | null | undefined) {
-  if (value == null) {
-    return ''
-  }
-  const text = String(value)
-  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
 
 function holdingColumnExportValue(
@@ -1812,16 +1805,7 @@ export default function PortfolioHomePage() {
       ...visibleColumns.map((column) => holdingColumnTotalExportValue(column.key, sortedHoldingRows, columnContext)),
     ])
 
-    const csv = rows.map((row) => row.map(csvEscape).join(',')).join('\r\n')
-    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' })
-    const url = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `holdings-${workspace.portfolio_id}-${workspace.as_of_date}.csv`
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    window.URL.revokeObjectURL(url)
+    downloadCsv(`holdings-${workspace.portfolio_id}-${workspace.as_of_date}.csv`, rows)
   }
 
   function renderHoldingsSortHeader(column: HoldingsColumnDefinition) {

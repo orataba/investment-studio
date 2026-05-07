@@ -23,6 +23,9 @@ from portfolio_app.services.ledger import (
 
 
 DEFAULT_VALUATION_CUTOFF_POLICY = "latest_complete_eod"
+CONTRIBUTION_AXES = {"instrument", "account", "asset_type", "currency", "taxonomy"}
+CONTRIBUTION_BASE_AXES = {"instrument", "account", "asset_type", "currency"}
+CONTRIBUTION_AXIS_ERROR = "axis must be instrument, account, asset_type, currency, or taxonomy"
 EXTERNAL_CASH_IN_TYPES = {"deposit"}
 EXTERNAL_CASH_OUT_TYPES = {"withdrawal"}
 EARNINGS_TRANSACTION_TYPES = {"dividend", "coupon", "interest", "dividend_reinvestment"}
@@ -854,6 +857,375 @@ def _sum_period_realized_capital_gains(
 
     return {
         "realized_capital_gains": realized_capital_gains,
+        "coverage_complete": coverage_complete,
+        "stale_fx_flag": stale_fx_flag,
+    }
+
+
+def _capital_gains_from_components(line: dict[str, object]) -> float | None:
+    total_pnl = _safe_float(line.get("total_pnl"))
+    earnings = _safe_float(line.get("income_cash_amount"))
+    expense_cash_amount = _safe_float(line.get("expense_cash_amount"))
+    cash_currency_gains = _safe_float(line.get("cash_currency_gains")) or 0.0
+    asset_currency_gains = _safe_float(line.get("asset_currency_gains")) or 0.0
+    if total_pnl is None or earnings is None or expense_cash_amount is None:
+        return None
+    return total_pnl - earnings + expense_cash_amount - cash_currency_gains - asset_currency_gains
+
+
+def _consume_period_lots(
+    lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
+    *,
+    account_id: str,
+    asset_id: str,
+    quantity: float,
+) -> list[dict[str, object]]:
+    remaining_quantity = quantity
+    consumed_slices: list[dict[str, object]] = []
+    for lot in lots_by_key.get((account_id, asset_id), []):
+        if remaining_quantity <= 1e-9:
+            break
+        lot_quantity = _safe_float(lot.get("quantity")) or 0.0
+        if lot_quantity <= 1e-9:
+            continue
+        take_quantity = min(lot_quantity, remaining_quantity)
+        lot_cost_local = _safe_float(lot.get("cost_local")) or 0.0
+        released_cost_local = lot_cost_local * (take_quantity / lot_quantity)
+        lot["quantity"] = lot_quantity - take_quantity
+        lot["cost_local"] = lot_cost_local - released_cost_local
+        remaining_quantity -= take_quantity
+        consumed_slice = {
+            **lot,
+            "quantity": take_quantity,
+            "cost_local": released_cost_local,
+        }
+        consumed_slices.append(consumed_slice)
+    return consumed_slices
+
+
+def _append_period_lot(
+    lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
+    *,
+    account_id: str,
+    asset_id: str,
+    instrument_ref: dict[str, object],
+    currency: str,
+    quantity: float,
+    cost_local: float,
+) -> None:
+    if quantity <= 1e-9:
+        return
+    lots_by_key[(account_id, asset_id)].append(
+        {
+            "account_id": account_id,
+            "asset_id": asset_id,
+            "instrument_ref": deepcopy(instrument_ref),
+            "currency": currency,
+            "quantity": quantity,
+            "cost_local": max(cost_local, 0.0),
+        }
+    )
+
+
+def _reduce_period_lot_cost(
+    lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
+    *,
+    account_id: str,
+    asset_id: str,
+    amount_local: float,
+) -> None:
+    if amount_local <= 1e-9:
+        return
+    active_lots = [
+        lot
+        for lot in lots_by_key.get((account_id, asset_id), [])
+        if (_safe_float(lot.get("quantity")) or 0.0) > 1e-9
+    ]
+    total_quantity = sum((_safe_float(lot.get("quantity")) or 0.0) for lot in active_lots)
+    if total_quantity <= 1e-9:
+        return
+    for lot in active_lots:
+        lot_quantity = _safe_float(lot.get("quantity")) or 0.0
+        reduction = amount_local * (lot_quantity / total_quantity)
+        lot["cost_local"] = max((_safe_float(lot.get("cost_local")) or 0.0) - reduction, 0.0)
+
+
+def _period_lot_market_value_local(
+    lot: dict[str, object],
+    *,
+    as_of_date: date,
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+) -> float | None:
+    asset_id = str(lot.get("asset_id") or "")
+    detail = _instrument_detail_cache_get(asset_id, instrument_detail_cache)
+    if not isinstance(detail, dict):
+        return None
+    price_point = _select_market_point_as_of(
+        detail=detail,
+        role="valuation",
+        as_of_date=as_of_date,
+    )
+    if price_point is None:
+        return None
+    return _position_market_value(
+        quantity=_safe_float(lot.get("quantity")) or 0.0,
+        last_price=_safe_float(price_point.get("value")),
+        instrument_ref=(
+            lot.get("instrument_ref")
+            if isinstance(lot.get("instrument_ref"), dict)
+            else None
+        ),
+    )
+
+
+def _period_taxonomy_group_resolver(
+    *,
+    axis: str,
+    taxonomy_id: str | None,
+    taxonomies: list[dict[str, object]] | None,
+    taxonomy_nodes: list[dict[str, object]] | None,
+    taxonomy_assignments: list[dict[str, object]] | None,
+    as_of_date: date,
+):
+    if axis != "taxonomy":
+        return None
+    taxonomy = next(
+        (
+            item
+            for item in taxonomies or []
+            if str(item.get("taxonomy_id") or "") == str(taxonomy_id or "")
+        ),
+        None,
+    )
+    if taxonomy is None:
+        return None
+    taxonomy_id_value = str(taxonomy.get("taxonomy_id") or "")
+    target_scope = str(taxonomy.get("primary_assignment_scope") or "")
+    taxonomy_nodes_by_id = {
+        str(node.get("taxonomy_node_id") or ""): node
+        for node in taxonomy_nodes or []
+        if str(node.get("taxonomy_id") or "") == taxonomy_id_value
+    }
+    assignments_by_entity: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for assignment in taxonomy_assignments or []:
+        if str(assignment.get("taxonomy_id") or "") != taxonomy_id_value:
+            continue
+        if str(assignment.get("target_scope") or "") != target_scope:
+            continue
+        assignments_by_entity[str(assignment.get("target_entity_id") or "")].append(assignment)
+
+    def resolve(lot: dict[str, object]) -> str:
+        if target_scope == "account":
+            target_entity_id = str(lot.get("account_id") or "")
+        else:
+            target_entity_id = str(lot.get("asset_id") or "")
+        group_key, _group_label = _resolve_taxonomy_group_for_date(
+            taxonomy=taxonomy,
+            taxonomy_nodes_by_id=taxonomy_nodes_by_id,
+            assignments_by_entity=assignments_by_entity,
+            target_entity_id=target_entity_id,
+            as_of_date=as_of_date,
+        )
+        return group_key
+
+    return resolve
+
+
+def _period_unrealized_capital_gains_by_group(
+    portfolio: dict[str, object],
+    accounts: list[dict[str, object]],
+    transactions: list[dict[str, object]],
+    *,
+    start_date: date,
+    end_date: date,
+    axis: str,
+    taxonomy_id: str | None,
+    taxonomies: list[dict[str, object]] | None,
+    taxonomy_nodes: list[dict[str, object]] | None,
+    taxonomy_assignments: list[dict[str, object]] | None,
+    base_currency: str,
+    direct_fx_assets: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+) -> dict[str, object]:
+    lots_by_key: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
+    sorted_transactions = sorted(transactions, key=_transaction_sort_key)
+    start_boundary_date = start_date - timedelta(days=1)
+    portfolio_id = str(portfolio.get("portfolio_id") or "")
+    transactions_before_start = _transactions_as_of_end_date(sorted_transactions, end_date=start_boundary_date)
+    coverage_complete = True
+    stale_fx_flag = False
+
+    for position_lot in build_position_lots(portfolio_id, accounts, transactions_before_start):
+        if str(position_lot.get("status") or "") != "open":
+            continue
+        quantity = _safe_float(position_lot.get("remaining_quantity")) or 0.0
+        if quantity <= 1e-9:
+            continue
+        lot = {
+            "account_id": str(position_lot.get("account_id") or ""),
+            "asset_id": str(position_lot.get("asset_id") or ""),
+            "instrument_ref": (
+                deepcopy(position_lot.get("instrument_ref"))
+                if isinstance(position_lot.get("instrument_ref"), dict)
+                else {}
+            ),
+            "currency": _normalized_currency(position_lot.get("currency"), fallback=base_currency),
+            "quantity": quantity,
+            "cost_local": 0.0,
+        }
+        market_value_local = _period_lot_market_value_local(
+            lot,
+            as_of_date=start_boundary_date,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        if market_value_local is None:
+            coverage_complete = False
+            continue
+        lot["cost_local"] = market_value_local
+        lots_by_key[(str(lot["account_id"]), str(lot["asset_id"]))].append(lot)
+
+    transfer_slices_by_group: dict[str, list[dict[str, object]]] = {}
+    for transaction in sorted_transactions:
+        trade_date = _parse_iso_date(transaction.get("trade_date"))
+        if trade_date is None or trade_date < start_date or trade_date > end_date:
+            continue
+        transaction_type = str(transaction.get("transaction_type") or "")
+        account_id = str(transaction.get("account_id") or "")
+        instrument_ref = (
+            deepcopy(transaction.get("instrument_ref"))
+            if isinstance(transaction.get("instrument_ref"), dict)
+            else {}
+        )
+        asset_id = str(transaction.get("asset_id") or instrument_ref.get("asset_id") or "")
+        quantity = _safe_float(transaction.get("quantity")) or 0.0
+        if not account_id or not asset_id or quantity <= 1e-9:
+            continue
+        currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
+        gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
+
+        if transaction_type in {"opening_balance", "buy", "dividend_reinvestment"}:
+            _append_period_lot(
+                lots_by_key,
+                account_id=account_id,
+                asset_id=asset_id,
+                instrument_ref=instrument_ref,
+                currency=currency,
+                quantity=quantity,
+                cost_local=gross_amount,
+            )
+            continue
+
+        if transaction_type in {"sell", "maturity_redemption"}:
+            _consume_period_lots(
+                lots_by_key,
+                account_id=account_id,
+                asset_id=asset_id,
+                quantity=quantity,
+            )
+            continue
+
+        if transaction_type == "return_of_capital":
+            _reduce_period_lot_cost(
+                lots_by_key,
+                account_id=account_id,
+                asset_id=asset_id,
+                amount_local=gross_amount,
+            )
+            continue
+
+        if transaction_type == "transfer_out" and transaction.get("transfer_object_type") == "position":
+            consumed_slices = _consume_period_lots(
+                lots_by_key,
+                account_id=account_id,
+                asset_id=asset_id,
+                quantity=quantity,
+            )
+            transfer_group_id = str(transaction.get("transfer_group_id") or "")
+            if transfer_group_id:
+                transfer_slices_by_group[transfer_group_id] = consumed_slices
+            continue
+
+        if transaction_type == "transfer_in" and transaction.get("transfer_object_type") == "position":
+            transfer_group_id = str(transaction.get("transfer_group_id") or "")
+            incoming_slices = transfer_slices_by_group.get(transfer_group_id, [])
+            if incoming_slices:
+                for incoming_slice in incoming_slices:
+                    _append_period_lot(
+                        lots_by_key,
+                        account_id=account_id,
+                        asset_id=asset_id,
+                        instrument_ref=(
+                            incoming_slice.get("instrument_ref")
+                            if isinstance(incoming_slice.get("instrument_ref"), dict)
+                            else instrument_ref
+                        ),
+                        currency=_normalized_currency(incoming_slice.get("currency"), fallback=currency),
+                        quantity=_safe_float(incoming_slice.get("quantity")) or 0.0,
+                        cost_local=_safe_float(incoming_slice.get("cost_local")) or 0.0,
+                    )
+                continue
+            _append_period_lot(
+                lots_by_key,
+                account_id=account_id,
+                asset_id=asset_id,
+                instrument_ref=instrument_ref,
+                currency=currency,
+                quantity=quantity,
+                cost_local=gross_amount,
+            )
+
+    taxonomy_resolver = _period_taxonomy_group_resolver(
+        axis=axis,
+        taxonomy_id=taxonomy_id,
+        taxonomies=taxonomies,
+        taxonomy_nodes=taxonomy_nodes,
+        taxonomy_assignments=taxonomy_assignments,
+        as_of_date=end_date,
+    )
+    values: dict[str, float] = defaultdict(float)
+    for lots in lots_by_key.values():
+        for lot in lots:
+            quantity = _safe_float(lot.get("quantity")) or 0.0
+            if quantity <= 1e-9:
+                continue
+            end_market_value_local = _period_lot_market_value_local(
+                lot,
+                as_of_date=end_date,
+                instrument_detail_cache=instrument_detail_cache,
+            )
+            if end_market_value_local is None:
+                coverage_complete = False
+                continue
+            unrealized_local = end_market_value_local - (_safe_float(lot.get("cost_local")) or 0.0)
+            currency = _normalized_currency(lot.get("currency"), fallback=base_currency)
+            unrealized_base, _is_stale = convert_amount_on(
+                unrealized_local,
+                as_of_date=end_date,
+                from_currency=currency,
+                to_currency=base_currency,
+                direct_fx_assets=direct_fx_assets,
+                instrument_detail_cache=instrument_detail_cache,
+            )
+            if unrealized_base is None:
+                coverage_complete = False
+                continue
+            stale_fx_flag = stale_fx_flag or _is_stale
+            if axis == "account":
+                group_key = str(lot.get("account_id") or "")
+            elif axis == "asset_type":
+                instrument_ref = _instrument_ref_from_mapping(lot)
+                group_key, _group_label = _asset_type_key_label(instrument_ref.get("asset_type"))
+            elif axis == "currency":
+                group_key = _normalized_currency(lot.get("currency"), fallback=base_currency)
+            elif axis == "taxonomy" and taxonomy_resolver is not None:
+                group_key = taxonomy_resolver(lot)
+            else:
+                group_key = str(lot.get("asset_id") or "")
+            if group_key:
+                values[group_key] += unrealized_base
+
+    return {
+        "values": dict(values),
         "coverage_complete": coverage_complete,
         "stale_fx_flag": stale_fx_flag,
     }
@@ -1908,6 +2280,7 @@ def build_period_calculation_report(
                 "delta": None,
                 "capital_gains": None,
                 "realized_capital_gains": None,
+                "unrealized_capital_gains": None,
                 "earnings": None,
                 "fees": None,
                 "taxes": None,
@@ -1951,17 +2324,14 @@ def build_period_calculation_report(
     )
 
     initial_value = _safe_float(start_snapshot.get("nav"))
-    start_unrealized_pnl = _safe_float(start_snapshot.get("unrealized_pnl"))
     start_cash_currency_gains = _safe_float(start_snapshot.get("cash_currency_gains"))
     start_asset_currency_gains = _safe_float(start_snapshot.get("asset_currency_gains"))
     if not start_boundary_transactions:
         initial_value = 0.0
-        start_unrealized_pnl = 0.0
         start_cash_currency_gains = 0.0
         start_asset_currency_gains = 0.0
 
     final_value = _safe_float(end_snapshot.get("nav"))
-    end_unrealized_pnl = _safe_float(end_snapshot.get("unrealized_pnl"))
     end_cash_currency_gains = _safe_float(end_snapshot.get("cash_currency_gains"))
     end_asset_currency_gains = _safe_float(end_snapshot.get("asset_currency_gains"))
 
@@ -1975,15 +2345,17 @@ def build_period_calculation_report(
         direct_fx_assets=direct_fx_assets,
         instrument_detail_cache=instrument_detail_cache,
     )
-    position_lots = build_position_lots(
-        str(portfolio.get("portfolio_id") or ""),
+    unrealized_capital_summary = _period_unrealized_capital_gains_by_group(
+        portfolio,
         accounts,
-        end_boundary_transactions,
-    )
-    realized_capital_gains_summary = _sum_period_realized_capital_gains(
-        position_lots,
+        sorted_transactions,
         start_date=resolved_start_date,
         end_date=resolved_end_date,
+        axis="instrument",
+        taxonomy_id=None,
+        taxonomies=None,
+        taxonomy_nodes=None,
+        taxonomy_assignments=None,
         base_currency=base_currency,
         direct_fx_assets=direct_fx_assets,
         instrument_detail_cache=instrument_detail_cache,
@@ -1993,10 +2365,6 @@ def build_period_calculation_report(
     if initial_value is not None and final_value is not None:
         delta = final_value - initial_value - transaction_buckets["net_external_inflow"]
 
-    capital_gains = None
-    if start_unrealized_pnl is not None and end_unrealized_pnl is not None:
-        capital_gains = end_unrealized_pnl - start_unrealized_pnl
-
     cash_currency_gains = None
     if start_cash_currency_gains is not None and end_cash_currency_gains is not None:
         cash_currency_gains = end_cash_currency_gains - start_cash_currency_gains
@@ -2004,30 +2372,44 @@ def build_period_calculation_report(
     if start_asset_currency_gains is not None and end_asset_currency_gains is not None:
         asset_currency_gains = end_asset_currency_gains - start_asset_currency_gains
 
-    residual_gains = None
-    if delta is not None and capital_gains is not None:
-        residual_gains = (
+    capital_gains = None
+    if delta is not None and cash_currency_gains is not None and asset_currency_gains is not None:
+        capital_gains = (
             delta
-            - capital_gains
-            - realized_capital_gains_summary["realized_capital_gains"]
             - transaction_buckets["earnings"]
             + transaction_buckets["fees"]
             + transaction_buckets["taxes"]
+            - cash_currency_gains
+            - asset_currency_gains
         )
-        if cash_currency_gains is not None:
-            residual_gains -= cash_currency_gains
-        if asset_currency_gains is not None:
-            residual_gains -= asset_currency_gains
-    bridge_closed = residual_gains is None or abs(residual_gains) <= 1e-9
+
+    unrealized_capital_values = (
+        unrealized_capital_summary.get("values")
+        if isinstance(unrealized_capital_summary.get("values"), dict)
+        else {}
+    )
+    unrealized_capital_gains = (
+        sum((_safe_float(value) or 0.0) for value in unrealized_capital_values.values())
+        if bool(unrealized_capital_summary.get("coverage_complete"))
+        else None
+    )
+    realized_capital_gains = (
+        capital_gains - unrealized_capital_gains
+        if capital_gains is not None and unrealized_capital_gains is not None
+        else None
+    )
 
     coverage_state = "complete"
     if (
         start_snapshot.get("coverage_state") != "complete"
         or end_snapshot.get("coverage_state") != "complete"
         or not transaction_buckets["coverage_complete"]
-        or not realized_capital_gains_summary["coverage_complete"]
+        or not unrealized_capital_summary["coverage_complete"]
         or initial_value is None
         or final_value is None
+        or capital_gains is None
+        or realized_capital_gains is None
+        or unrealized_capital_gains is None
     ):
         has_any_content = (
             bool(start_boundary_transactions)
@@ -2037,15 +2419,13 @@ def build_period_calculation_report(
             or final_value is not None
         )
         coverage_state = "partial" if has_any_content else "unavailable"
-    if coverage_state == "complete" and not bridge_closed:
-        coverage_state = "partial"
 
     stale_price_flag = bool(start_snapshot.get("stale_price_flag")) or bool(end_snapshot.get("stale_price_flag"))
     stale_fx_flag = (
         bool(start_snapshot.get("stale_fx_flag"))
         or bool(end_snapshot.get("stale_fx_flag"))
         or bool(transaction_buckets["stale_fx_flag"])
-        or bool(realized_capital_gains_summary["stale_fx_flag"])
+        or bool(unrealized_capital_summary.get("stale_fx_flag"))
     )
 
     lines = [
@@ -2059,7 +2439,7 @@ def build_period_calculation_report(
         },
         {
             "key": "capital_gains",
-            "label": "Capital Gains",
+            "label": "Capital Gain",
             "amount": capital_gains,
             "line_kind": "performance",
             "parent_key": None,
@@ -2075,11 +2455,19 @@ def build_period_calculation_report(
         },
         {
             "key": "realized_capital_gains",
-            "label": "Realized Capital Gains",
-            "amount": realized_capital_gains_summary["realized_capital_gains"],
+            "label": "Realized Gain",
+            "amount": realized_capital_gains,
             "line_kind": "performance",
             "parent_key": None,
             "sort_order": 30,
+        },
+        {
+            "key": "unrealized_capital_gains",
+            "label": "Unrealized Gain",
+            "amount": unrealized_capital_gains,
+            "line_kind": "performance",
+            "parent_key": None,
+            "sort_order": 35,
         },
         {
             "key": "earnings",
@@ -2162,7 +2550,8 @@ def build_period_calculation_report(
             "final_value": final_value,
             "delta": delta,
             "capital_gains": capital_gains,
-            "realized_capital_gains": realized_capital_gains_summary["realized_capital_gains"],
+            "realized_capital_gains": realized_capital_gains,
+            "unrealized_capital_gains": unrealized_capital_gains,
             "earnings": transaction_buckets["earnings"],
             "fees": transaction_buckets["fees"],
             "taxes": transaction_buckets["taxes"],
@@ -2439,8 +2828,29 @@ def _filter_boundary_positions(
         group_label = (account_name_map or {}).get(resolved_group_key)
         return filtered_positions, group_label
 
+    if resolved_axis == "asset_type":
+        filtered_positions = [
+            position
+            for position in positions
+            if _asset_type_key_label(_instrument_ref_from_mapping(position).get("asset_type"))[0] == resolved_group_key
+        ]
+        group_label = _asset_type_key_label(
+            _instrument_ref_from_mapping(filtered_positions[0]).get("asset_type")
+            if filtered_positions
+            else resolved_group_key
+        )[1]
+        return filtered_positions, group_label
+
+    if resolved_axis == "currency":
+        filtered_positions = [
+            position
+            for position in positions
+            if _normalized_currency(position.get("currency"), fallback="") == resolved_group_key
+        ]
+        return filtered_positions, resolved_group_key
+
     if resolved_axis != "taxonomy":
-        raise ValueError("axis must be instrument, account, or taxonomy")
+        raise ValueError(CONTRIBUTION_AXIS_ERROR)
     if taxonomy_context is None:
         raise ValueError("taxonomy_id is required when axis=taxonomy.")
     if as_of_date is None:
@@ -2519,8 +2929,8 @@ def build_period_boundary_holdings_report(
     resolved_start_date, resolved_end_date = window
     initial_boundary_date = _initial_boundary_date(resolved_start_date, start_date)
     resolved_axis = str(axis or "").strip() or None
-    if resolved_axis not in {None, "instrument", "account", "taxonomy"}:
-        raise ValueError("axis must be instrument, account, or taxonomy")
+    if resolved_axis not in (CONTRIBUTION_AXES | {None}):
+        raise ValueError(CONTRIBUTION_AXIS_ERROR)
     resolved_taxonomy_id = str(taxonomy_id or "").strip()
     resolved_group_key = str(group_key or "").strip()
     account_name_map = {
@@ -2998,6 +3408,88 @@ def _account_name_map(accounts: list[dict[str, object]]) -> dict[str, str]:
     }
 
 
+def _axis_includes_cash_balance(axis: str) -> bool:
+    return axis in {"account", "asset_type", "currency"}
+
+
+def _asset_type_key_label(value: object) -> tuple[str, str]:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return ("unassigned:asset_type", "Unassigned")
+    group_key = raw_value.replace(" ", "_").replace("-", "_").lower()
+    group_label = " ".join(part.capitalize() for part in group_key.split("_") if part)
+    return (group_key, group_label or raw_value)
+
+
+def _instrument_ref_from_mapping(item: dict[str, object]) -> dict[str, object]:
+    instrument_ref = item.get("instrument_ref")
+    return instrument_ref if isinstance(instrument_ref, dict) else {}
+
+
+def _position_group_for_axis(
+    *,
+    axis: str,
+    position_lot: dict[str, object],
+    account_name_map: dict[str, str],
+    base_currency: str,
+) -> tuple[str, str]:
+    if axis == "instrument":
+        group_key = str(position_lot.get("asset_id") or "")
+        instrument_ref = _instrument_ref_from_mapping(position_lot)
+        return (group_key, str(instrument_ref.get("asset_name") or group_key))
+    if axis == "account":
+        group_key = str(position_lot.get("account_id") or "")
+        return (group_key, account_name_map.get(group_key, group_key))
+    if axis == "asset_type":
+        return _asset_type_key_label(_instrument_ref_from_mapping(position_lot).get("asset_type"))
+    if axis == "currency":
+        group_key = _normalized_currency(position_lot.get("currency"), fallback=base_currency)
+        return (group_key, group_key)
+    raise ValueError(CONTRIBUTION_AXIS_ERROR)
+
+
+def _cash_group_for_axis(
+    *,
+    axis: str,
+    account_id: str,
+    currency: str,
+    account_name_map: dict[str, str],
+) -> tuple[str, str]:
+    if axis == "account":
+        return (account_id, account_name_map.get(account_id, account_id))
+    if axis == "asset_type":
+        return ("cash", "Cash")
+    if axis == "currency":
+        return (currency, currency)
+    raise ValueError(CONTRIBUTION_AXIS_ERROR)
+
+
+def _transaction_group_for_axis(
+    *,
+    axis: str,
+    transaction: dict[str, object],
+    account_name_map: dict[str, str],
+    base_currency: str,
+) -> tuple[str, str]:
+    account_id = str(transaction.get("account_id") or "")
+    instrument_ref = _instrument_ref_from_mapping(transaction)
+    asset_id = str(transaction.get("asset_id") or instrument_ref.get("asset_id") or "")
+    currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
+    if axis == "instrument":
+        if not asset_id:
+            return ("", "")
+        return (asset_id, str(instrument_ref.get("asset_name") or asset_id))
+    if axis == "account":
+        return (account_id, account_name_map.get(account_id, account_id))
+    if axis == "asset_type":
+        if asset_id:
+            return _asset_type_key_label(instrument_ref.get("asset_type"))
+        return ("cash", "Cash")
+    if axis == "currency":
+        return (currency, currency)
+    raise ValueError(CONTRIBUTION_AXIS_ERROR)
+
+
 def _cash_bucket_account_ids(accounts: list[dict[str, object]]) -> set[str]:
     return {
         str(account.get("account_id") or "")
@@ -3063,17 +3555,12 @@ def _build_contribution_group_end_states(
     ]
 
     for position_lot in open_position_lots:
-        if axis == "instrument":
-            group_key = str(position_lot.get("asset_id") or "")
-            group_label = str(
-                (
-                    (position_lot.get("instrument_ref") or {}) if isinstance(position_lot.get("instrument_ref"), dict) else {}
-                ).get("asset_name")
-                or group_key
-            )
-        else:
-            group_key = str(position_lot.get("account_id") or "")
-            group_label = account_name_map.get(group_key, group_key)
+        group_key, group_label = _position_group_for_axis(
+            axis=axis,
+            position_lot=position_lot,
+            account_name_map=account_name_map,
+            base_currency=base_currency,
+        )
         if not group_key:
             continue
         state = _ensure_contribution_group_state(
@@ -3134,7 +3621,7 @@ def _build_contribution_group_end_states(
             state["stale_price_flag"] = bool(state.get("stale_price_flag")) or bool((price_point or {}).get("stale"))
             state["stale_fx_flag"] = bool(state.get("stale_fx_flag")) or valuation_fx_stale
 
-    if axis == "account":
+    if _axis_includes_cash_balance(axis):
         resolved_postings = (
             postings
             if postings is not None
@@ -3149,19 +3636,25 @@ def _build_contribution_group_end_states(
             cash_amount_delta = _safe_float(posting.get("cash_amount_delta"))
             if cash_amount_delta is None:
                 continue
-            group_key = str(posting.get("account_id") or "")
+            posting_currency = _normalized_currency(posting.get("currency"), fallback=base_currency)
+            group_key, group_label = _cash_group_for_axis(
+                axis=axis,
+                account_id=str(posting.get("account_id") or ""),
+                currency=posting_currency,
+                account_name_map=account_name_map,
+            )
             if not group_key:
                 continue
             state = _ensure_contribution_group_state(
                 states,
                 group_key=group_key,
-                group_label=account_name_map.get(group_key, group_key),
+                group_label=group_label,
                 axis=axis,
             )
             converted_cash_delta, is_stale = convert_amount_on(
                 cash_amount_delta,
                 as_of_date=as_of_date,
-                from_currency=_normalized_currency(posting.get("currency"), fallback=base_currency),
+                from_currency=posting_currency,
                 to_currency=base_currency,
                 direct_fx_assets=direct_fx_assets,
                 instrument_detail_cache=instrument_detail_cache,
@@ -3173,7 +3666,6 @@ def _build_contribution_group_end_states(
                     state["_pending_settlement_complete"] = False
                 continue
             cash_balances_local_by_currency = state.get("_cash_balance_local_by_currency")
-            posting_currency = _normalized_currency(posting.get("currency"), fallback=base_currency)
             if isinstance(cash_balances_local_by_currency, (dict, defaultdict)):
                 cash_balances_local_by_currency[posting_currency] += cash_amount_delta
             if ledger_posting_effective_date_iso(posting) <= as_of_date.isoformat():
@@ -3189,9 +3681,9 @@ def _build_contribution_group_end_states(
             state["position_market_value_base"] = None
         if not state.get("_cost_complete"):
             state["open_cost_basis_base"] = None
-        if axis == "account" and not state.get("_cash_complete"):
+        if _axis_includes_cash_balance(axis) and not state.get("_cash_complete"):
             state["cash_balance_base"] = None
-        if axis == "account" and not state.get("_pending_settlement_complete"):
+        if _axis_includes_cash_balance(axis) and not state.get("_pending_settlement_complete"):
             state["pending_settlement_base"] = None
 
         position_market_value_base = _safe_float(state.get("position_market_value_base"))
@@ -3204,7 +3696,7 @@ def _build_contribution_group_end_states(
         else:
             state["unrealized_pnl"] = None
 
-        if axis == "account":
+        if _axis_includes_cash_balance(axis):
             state["ending_value_base"] = (
                 cash_balance_base + pending_settlement_base + position_market_value_base
                 if (
@@ -3284,17 +3776,12 @@ def _build_contribution_daily_events(
         event[field_name] = (_safe_float(current_value) or 0.0) + converted_amount
 
     for position_lot in position_lots:
-        if axis == "instrument":
-            group_key = str(position_lot.get("asset_id") or "")
-            group_label = str(
-                (
-                    (position_lot.get("instrument_ref") or {}) if isinstance(position_lot.get("instrument_ref"), dict) else {}
-                ).get("asset_name")
-                or group_key
-            )
-        else:
-            group_key = str(position_lot.get("account_id") or "")
-            group_label = account_name_map.get(group_key, group_key)
+        group_key, group_label = _position_group_for_axis(
+            axis=axis,
+            position_lot=position_lot,
+            account_name_map=account_name_map,
+            base_currency=base_currency,
+        )
         if not group_key:
             continue
         for realization in position_lot.get("realizations") or []:
@@ -3329,12 +3816,12 @@ def _build_contribution_daily_events(
             ).get("asset_name")
             or asset_id
         )
-        if axis == "instrument":
-            group_key = asset_id
-            group_label = instrument_name
-        else:
-            group_key = account_id
-            group_label = account_name_map.get(group_key, group_key)
+        group_key, group_label = _transaction_group_for_axis(
+            axis=axis,
+            transaction=transaction,
+            account_name_map=account_name_map,
+            base_currency=base_currency,
+        )
         if not group_key:
             continue
 
@@ -3353,10 +3840,7 @@ def _build_contribution_daily_events(
                 trade_date=as_of_date,
                 currency=currency,
             )
-        elif (
-            transaction_type == "interest"
-            and axis == "account"
-        ):
+        elif transaction_type == "interest" and _axis_includes_cash_balance(axis):
             add_amount(
                 group_key=group_key,
                 group_label=group_label,
@@ -3462,7 +3946,7 @@ def _build_contribution_slices_for_date(
 
         if current_state is None:
             ending_value_base = 0.0
-            ending_cash_balance_base = 0.0 if axis == "account" else None
+            ending_cash_balance_base = 0.0 if _axis_includes_cash_balance(axis) else None
             ending_position_market_value_base = 0.0
             ending_open_cost_basis_base = 0.0
             ending_unrealized_pnl = 0.0
@@ -3481,7 +3965,7 @@ def _build_contribution_slices_for_date(
         cash_currency_gains = None
         asset_currency_gains = None
         if previous_state is None:
-            cash_currency_gains = 0.0 if axis == "account" else None
+            cash_currency_gains = 0.0 if _axis_includes_cash_balance(axis) else None
             asset_currency_gains = 0.0
         else:
             asset_currency_gains, _ = _compute_currency_translation_gain(
@@ -3503,6 +3987,15 @@ def _build_contribution_slices_for_date(
                 )
             else:
                 cash_currency_gains = None
+            if axis in {"asset_type", "currency"}:
+                cash_currency_gains, _ = _compute_currency_translation_gain(
+                    previous_state.get("_cash_balance_local_by_currency"),
+                    previous_date=previous_date,
+                    current_date=as_of_date,
+                    base_currency=base_currency,
+                    direct_fx_assets=direct_fx_assets,
+                    instrument_detail_cache=instrument_detail_cache,
+                )
         if realized_pnl is None and current_event is None:
             realized_pnl = 0.0
         if income_cash_amount is None and current_event is None:
@@ -3515,7 +4008,7 @@ def _build_contribution_slices_for_date(
             tax_amount = 0.0
         if asset_currency_gains is None and current_event is None:
             asset_currency_gains = 0.0
-        if axis == "account" and cash_currency_gains is None and current_event is None:
+        if _axis_includes_cash_balance(axis) and cash_currency_gains is None and current_event is None:
             cash_currency_gains = 0.0
 
         unrealized_pnl_change = None
@@ -3535,7 +4028,7 @@ def _build_contribution_slices_for_date(
             total_pnl = realized_pnl + income_cash_amount - expense_cash_amount + unrealized_pnl_change
             if asset_currency_gains is not None:
                 total_pnl += asset_currency_gains
-            if axis == "account" and cash_currency_gains is not None:
+            if _axis_includes_cash_balance(axis) and cash_currency_gains is not None:
                 total_pnl += cash_currency_gains
 
         slice_coverage_state = str((snapshot or {}).get("coverage_state") or "unavailable")
@@ -3544,9 +4037,9 @@ def _build_contribution_slices_for_date(
             or (current_state is not None and ending_value_base is None)
             or (current_state is not None and ending_position_market_value_base is None)
             or (current_state is not None and ending_open_cost_basis_base is None)
-            or (axis == "account" and current_state is not None and ending_cash_balance_base is None)
+            or (_axis_includes_cash_balance(axis) and current_state is not None and ending_cash_balance_base is None)
             or (asset_currency_gains is None)
-            or (axis == "account" and cash_currency_gains is None)
+            or (_axis_includes_cash_balance(axis) and cash_currency_gains is None)
             or total_pnl is None
         ):
             if slice_coverage_state == "complete":
@@ -4383,8 +4876,8 @@ def build_contribution_report(
             group_key=group_key,
         )
 
-    if axis not in {"instrument", "account"}:
-        raise ValueError("axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_BASE_AXES:
+        raise ValueError(CONTRIBUTION_AXIS_ERROR)
 
     window = _resolve_snapshot_window(
         portfolio,
@@ -4914,7 +5407,6 @@ def build_contribution_bucket_calendar_report(
         if isinstance(contribution_calendar_report.get("summary"), dict)
         else {}
     )
-
     rendered_buckets: list[dict[str, object]] = []
     total_amount = 0.0
     total_amount_complete = True
@@ -5054,6 +5546,34 @@ def build_period_calculation_groups_report(
         if str(item.get("group_key") or "")
     }
     period_returns = _period_returns_by_group(list(contribution_report.get("daily_slices") or []))
+    fx_payload = get_platform_fx_rates()
+    direct_fx_assets = _fx_direct_asset_map(fx_payload)
+    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+    unrealized_capital_summary = (
+        _period_unrealized_capital_gains_by_group(
+            portfolio,
+            accounts,
+            transactions,
+            start_date=resolved_start_date,
+            end_date=resolved_end_date,
+            axis=axis,
+            taxonomy_id=str(summary.get("taxonomy_id") or taxonomy_id or "") or None,
+            taxonomies=taxonomies,
+            taxonomy_nodes=taxonomy_nodes,
+            taxonomy_assignments=taxonomy_assignments,
+            base_currency=str(contribution_report["base_currency"]),
+            direct_fx_assets=direct_fx_assets,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        if resolved_start_date is not None and resolved_end_date is not None
+        else {"values": {}, "coverage_complete": False}
+    )
+    unrealized_capital_values = (
+        unrealized_capital_summary.get("values")
+        if isinstance(unrealized_capital_summary.get("values"), dict)
+        else {}
+    )
+    unrealized_capital_complete = bool(unrealized_capital_summary.get("coverage_complete"))
     group_keys = set(line_map.keys()) | set(boundary_start_values.keys()) | set(boundary_end_values.keys())
     groups: list[dict[str, object]] = []
     total_initial_value = 0.0
@@ -5081,6 +5601,15 @@ def build_period_calculation_groups_report(
             else None
         )
         group_total_pnl = _safe_float(line.get("total_pnl"))
+        capital_gains = _capital_gains_from_components(line)
+        unrealized_capital_gains = _safe_float(unrealized_capital_values.get(candidate_group_key))
+        if capital_gains is not None and unrealized_capital_gains is None and unrealized_capital_complete:
+            unrealized_capital_gains = 0.0
+        realized_capital_gains = (
+            capital_gains - unrealized_capital_gains
+            if capital_gains is not None and unrealized_capital_gains is not None
+            else None
+        )
         residual_delta = (
             delta - group_total_pnl
             if delta is not None and group_total_pnl is not None
@@ -5103,8 +5632,9 @@ def build_period_calculation_groups_report(
                 "final_value": final_value,
                 "delta": delta,
                 "residual_delta": residual_delta,
-                "realized_capital_gains": _safe_float(line.get("realized_pnl")),
-                "unrealized_pnl_change": _safe_float(line.get("unrealized_pnl_change")),
+                "capital_gains": capital_gains,
+                "realized_capital_gains": realized_capital_gains,
+                "unrealized_pnl_change": unrealized_capital_gains,
                 "earnings": _safe_float(line.get("income_cash_amount")),
                 "expense_cash_amount": _safe_float(line.get("expense_cash_amount")),
                 "fees": _safe_float(line.get("fee_amount")),
@@ -5173,6 +5703,27 @@ def build_period_calculation_groups_report(
 
     total_delta = total_final_value - total_initial_value if initial_value_complete and final_value_complete else None
     total_residual_delta = total_delta - total_pnl if total_delta is not None and total_pnl_complete else None
+    start_weight_denominator = total_initial_value if initial_value_complete and total_initial_value > 1e-9 else None
+    end_weight_denominator = total_final_value if final_value_complete and total_final_value > 1e-9 else None
+    for item in groups:
+        initial_value = _safe_float(item.get("initial_value"))
+        final_value = _safe_float(item.get("final_value"))
+        ending_weight = _safe_float(item.get("ending_weight"))
+        if ending_weight is None and final_value is not None and end_weight_denominator is not None:
+            ending_weight = final_value / end_weight_denominator
+            item["ending_weight"] = ending_weight
+        if _safe_float(item.get("average_weight")) is None:
+            start_weight = (
+                initial_value / start_weight_denominator
+                if initial_value is not None and start_weight_denominator is not None
+                else None
+            )
+            if start_weight is not None and ending_weight is not None:
+                item["average_weight"] = (start_weight + ending_weight) / 2.0
+            elif start_weight is not None:
+                item["average_weight"] = start_weight
+            elif ending_weight is not None:
+                item["average_weight"] = ending_weight
     portfolio_arithmetic_return = _safe_float(summary.get("portfolio_arithmetic_return"))
     contribution_residual = (
         portfolio_arithmetic_return - total_period_contribution
@@ -5239,6 +5790,32 @@ def build_period_calculation_groups_calendar_report(
         if isinstance(contribution_calendar_report.get("summary"), dict)
         else {}
     )
+    fx_payload = get_platform_fx_rates()
+    direct_fx_assets = _fx_direct_asset_map(fx_payload)
+    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+    unrealized_capital_cache: dict[tuple[date, date], dict[str, object]] = {}
+
+    def unrealized_capital_for_bucket(bucket_start: date | None, bucket_end: date | None) -> dict[str, object]:
+        if bucket_start is None or bucket_end is None:
+            return {"values": {}, "coverage_complete": False}
+        cache_key = (bucket_start, bucket_end)
+        if cache_key not in unrealized_capital_cache:
+            unrealized_capital_cache[cache_key] = _period_unrealized_capital_gains_by_group(
+                portfolio,
+                accounts,
+                transactions,
+                start_date=bucket_start,
+                end_date=bucket_end,
+                axis=axis,
+                taxonomy_id=str(summary.get("taxonomy_id") or taxonomy_id or "") or None,
+                taxonomies=taxonomies,
+                taxonomy_nodes=taxonomy_nodes,
+                taxonomy_assignments=taxonomy_assignments,
+                base_currency=str(contribution_calendar_report["base_currency"]),
+                direct_fx_assets=direct_fx_assets,
+                instrument_detail_cache=instrument_detail_cache,
+            )
+        return unrealized_capital_cache[cache_key]
 
     rendered_buckets: list[dict[str, object]] = []
     total_delta = 0.0
@@ -5250,12 +5827,34 @@ def build_period_calculation_groups_calendar_report(
     for bucket in list(contribution_calendar_report.get("buckets") or []):
         initial_value = _safe_float(bucket.get("beginning_value_base"))
         final_value = _safe_float(bucket.get("ending_value_base"))
+        bucket_start = _parse_iso_date(bucket.get("start_date"))
+        bucket_end = _parse_iso_date(bucket.get("end_date"))
+        bucket_group_key = str(bucket.get("group_key") or "")
         delta = (
             final_value - initial_value
             if initial_value is not None and final_value is not None
             else None
         )
         bucket_total_pnl = _safe_float(bucket.get("total_pnl"))
+        capital_gains = _capital_gains_from_components(bucket)
+        unrealized_capital_summary = unrealized_capital_for_bucket(bucket_start, bucket_end)
+        unrealized_capital_values = (
+            unrealized_capital_summary.get("values")
+            if isinstance(unrealized_capital_summary.get("values"), dict)
+            else {}
+        )
+        unrealized_capital_gains = _safe_float(unrealized_capital_values.get(bucket_group_key))
+        if (
+            capital_gains is not None
+            and unrealized_capital_gains is None
+            and bool(unrealized_capital_summary.get("coverage_complete"))
+        ):
+            unrealized_capital_gains = 0.0
+        realized_capital_gains = (
+            capital_gains - unrealized_capital_gains
+            if capital_gains is not None and unrealized_capital_gains is not None
+            else None
+        )
         residual_delta = (
             delta - bucket_total_pnl
             if delta is not None and bucket_total_pnl is not None
@@ -5269,8 +5868,8 @@ def build_period_calculation_groups_calendar_report(
                 "end_date": bucket.get("end_date"),
                 "axis": axis,
                 "taxonomy_id": summary.get("taxonomy_id"),
-                "group_key": str(bucket.get("group_key") or ""),
-                "group_label": str(bucket.get("group_label") or bucket.get("group_key") or ""),
+                "group_key": bucket_group_key,
+                "group_label": str(bucket.get("group_label") or bucket_group_key),
                 "coverage_state": str(bucket.get("coverage_state") or "unavailable"),
                 "observation_count": int(bucket.get("observation_count") or 0),
                 "average_weight": _safe_float(bucket.get("average_weight")),
@@ -5279,8 +5878,9 @@ def build_period_calculation_groups_calendar_report(
                 "final_value": final_value,
                 "delta": delta,
                 "residual_delta": residual_delta,
-                "realized_capital_gains": _safe_float(bucket.get("realized_pnl")),
-                "unrealized_pnl_change": _safe_float(bucket.get("unrealized_pnl_change")),
+                "capital_gains": capital_gains,
+                "realized_capital_gains": realized_capital_gains,
+                "unrealized_pnl_change": unrealized_capital_gains,
                 "earnings": _safe_float(bucket.get("income_cash_amount")),
                 "expense_cash_amount": _safe_float(bucket.get("expense_cash_amount")),
                 "fees": _safe_float(bucket.get("fee_amount")),
@@ -5385,8 +5985,9 @@ def build_period_calculation_groups_calendar_report(
 _CALCULATION_BUCKET_FIELD_MAP: dict[str, str] = {
     "initial_value": "initial_value",
     "final_value": "final_value",
-    "capital_gains": "unrealized_pnl_change",
+    "capital_gains": "capital_gains",
     "realized_capital_gains": "realized_capital_gains",
+    "unrealized_capital_gains": "unrealized_pnl_change",
     "earnings": "earnings",
     "fees": "fees",
     "taxes": "taxes",
@@ -5565,6 +6166,8 @@ def _resolve_calculation_entry_group(
     account_name_map: dict[str, str],
     asset_id: str | None,
     asset_name: str | None,
+    asset_type: str | None,
+    currency: str | None,
     taxonomy_context: tuple[dict[str, object], dict[str, dict[str, object]], dict[str, list[dict[str, object]]], str]
     | None,
 ) -> tuple[str, str]:
@@ -5576,8 +6179,17 @@ def _resolve_calculation_entry_group(
         if account_id:
             return (account_id, account_name_map.get(account_id, account_id))
         return ("unassigned:account", "Unassigned")
+    if axis == "asset_type":
+        if asset_id:
+            return _asset_type_key_label(asset_type)
+        return ("cash", "Cash")
+    if axis == "currency":
+        normalized_currency = _normalized_currency(currency, fallback="")
+        if normalized_currency:
+            return (normalized_currency, normalized_currency)
+        return ("unassigned:currency", "Unassigned")
     if axis != "taxonomy":
-        raise ValueError("axis must be instrument, account, or taxonomy")
+        raise ValueError(CONTRIBUTION_AXIS_ERROR)
 
     if taxonomy_context is None:
         raise ValueError("taxonomy_id is required when axis=taxonomy.")
@@ -5633,6 +6245,8 @@ def _append_calculation_transaction_entry(
         account_name_map=account_name_map,
         asset_id=asset_id,
         asset_name=asset_name or None,
+        asset_type=str((instrument_ref or {}).get("asset_type") or "") or None,
+        currency=currency,
         taxonomy_context=taxonomy_context,
     )
     base_amount = None
@@ -5701,8 +6315,8 @@ def build_contribution_entries_report(
             "bucket must be one of "
             + ", ".join(sorted(_CONTRIBUTION_ENTRY_BUCKETS))
         )
-    if axis not in {"instrument", "account", "taxonomy"}:
-        raise ValueError("axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_AXES:
+        raise ValueError(CONTRIBUTION_AXIS_ERROR)
 
     window = _resolve_snapshot_window(
         portfolio,
@@ -5780,7 +6394,7 @@ def build_contribution_entries_report(
             ):
                 continue
 
-            income_account_scoped = axis == "account" or (
+            income_account_scoped = _axis_includes_cash_balance(axis) or (
                 taxonomy_context is not None and taxonomy_context[3] in {"account", "cash_bucket"}
             )
 
@@ -5965,6 +6579,8 @@ def build_contribution_entries_report(
                     account_name_map=account_name_map,
                     asset_id=asset_id,
                     asset_name=asset_name or None,
+                    asset_type=str((instrument_ref or {}).get("asset_type") or "") or None,
+                    currency=currency,
                     taxonomy_context=taxonomy_context,
                 )
                 base_amount = None
@@ -6206,8 +6822,8 @@ def build_period_calculation_entries_report(
             "bucket must be one of "
             + ", ".join(sorted(_CALCULATION_ENTRY_BUCKETS))
         )
-    if axis not in {"instrument", "account", "taxonomy"}:
-        raise ValueError("axis must be instrument, account, or taxonomy")
+    if axis not in CONTRIBUTION_AXES:
+        raise ValueError(CONTRIBUTION_AXIS_ERROR)
 
     window = _resolve_snapshot_window(
         portfolio,
@@ -6411,6 +7027,8 @@ def build_period_calculation_entries_report(
                     account_name_map=account_name_map,
                     asset_id=asset_id,
                     asset_name=asset_name or None,
+                    asset_type=str((instrument_ref or {}).get("asset_type") or "") or None,
+                    currency=currency,
                     taxonomy_context=taxonomy_context,
                 )
                 base_amount = None

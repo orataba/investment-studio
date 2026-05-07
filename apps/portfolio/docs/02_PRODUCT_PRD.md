@@ -395,8 +395,8 @@ MVP 先支持**全球公开市场的标准化资产**：
 首屏结构：
 
 - `Return & Risk Metrics`：基于用户选择的自定义区间展示 TWR、annualized TWR、IRR / MWR、volatility、downside volatility、Sharpe / Sortino、drawdown 等收益风险指标；这些 fair-value return / risk 指标可选择独立 benchmark 做对比；
-- `Calculation`：把 period boundary、group contribution 和 waterfall calculation 合并成一张可审计表。顶部为 initial value，group rows 可按 asset / account / taxonomy 展示 start / end value、weights、capital gain、realized gain、unrealized change、income、fees、taxes、FX P&L、period P&L、group TWR、contribution；外部现金流按 deposits / withdrawals 单独列出，底部为 portfolio total 与 final value。
-  Calculation 的桥接公式是 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value`。`Unrealized Chg` 是 `ending unrealized P&L - beginning unrealized P&L`；期末未实现损益余额属于 Holdings / boundary holdings / asset detail，不放入 Calculation 主表。
+- `Calculation`：把 period boundary、group contribution 和 waterfall calculation 合并成一张可审计表。顶部为 initial value，group rows 可按 asset / asset type / currency / account / taxonomy 展示 start / end value、weights、realized gain、unrealized gain、income、fees、taxes、FX P&L、period P&L、group TWR、contribution；外部现金流按 deposits / withdrawals 单独列出，底部为 portfolio total 与 final value，并支持导出当前表格 CSV。
+  Calculation 的桥接公式是 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value`。capital gain 作为底层派生值用于 reconciliation；表格直接展示 realized gain 与 unrealized gain，避免把合计项误读为第三类收益来源。拆分使用期间绩效成本：期初已有持仓按期初市值重置，区间买入按成交 gross amount 入期间成本，期末仍持有部分形成 unrealized gain；账户 FIFO / moving average 不改变 Performance 的期间资本利得拆分。
 
 `NAV Trend` 与 `Monthly Return Matrix` 属于 Overview，不在 Performance 重复展示。Overview 图表 compare 与 Performance benchmark 独立选择，避免把不同分析场景绑死到同一个 benchmark。
 
@@ -873,6 +873,7 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 它也应该支持：
 
+- `group by asset type / currency`
 - `group by taxonomy`
 - `group by selected planning taxonomy`
 

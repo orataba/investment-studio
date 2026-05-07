@@ -690,6 +690,7 @@ class PeriodCalculationSummary(BaseModel):
     delta: float | None = None
     capital_gains: float | None = None
     realized_capital_gains: float | None = None
+    unrealized_capital_gains: float | None = None
     earnings: float | None = None
     fees: float | None = None
     taxes: float | None = None
@@ -1452,12 +1453,13 @@ class TargetSetUpdateRequest(BaseModel):
         return self
 
 
-ContributionAxis = Literal["instrument", "account", "taxonomy"]
+ContributionAxis = Literal["instrument", "account", "asset_type", "currency", "taxonomy"]
 CalculationBucket = Literal[
     "initial_value",
     "final_value",
     "capital_gains",
     "realized_capital_gains",
+    "unrealized_capital_gains",
     "earnings",
     "fees",
     "taxes",
@@ -1838,6 +1840,7 @@ class PeriodCalculationGroupRecord(BaseModel):
     final_value: float | None = None
     delta: float | None = None
     residual_delta: float | None = None
+    capital_gains: float | None = None
     realized_capital_gains: float | None = None
     unrealized_pnl_change: float | None = None
     earnings: float | None = None
@@ -1893,6 +1896,7 @@ class PeriodCalculationGroupCalendarBucketRecord(BaseModel):
     final_value: float | None = None
     delta: float | None = None
     residual_delta: float | None = None
+    capital_gains: float | None = None
     realized_capital_gains: float | None = None
     unrealized_pnl_change: float | None = None
     earnings: float | None = None

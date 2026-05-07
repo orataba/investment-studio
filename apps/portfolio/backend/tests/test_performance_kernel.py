@@ -24,11 +24,12 @@ def _test_instrument_detail(
     asset_id: str,
     asset_name: str,
     history: list[tuple[str, str]],
+    asset_type: str = "equity",
 ) -> dict[str, object]:
     return {
         "asset_id": asset_id,
         "asset_name": asset_name,
-        "asset_type": "equity",
+        "asset_type": asset_type,
         "currency": "USD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": asset_id.upper(), "is_primary": True}],
         "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
@@ -1319,8 +1320,9 @@ def test_period_calculation_report_reconciles_initial_delta_transfers_and_final_
     assert summary["initial_value"] == 100.0
     assert summary["final_value"] == 0.0
     assert summary["delta"] == 10.0
-    assert summary["capital_gains"] == 0.0
+    assert summary["capital_gains"] == 10.0
     assert summary["realized_capital_gains"] == 10.0
+    assert summary["unrealized_capital_gains"] == 0.0
     assert summary["earnings"] == 0.0
     assert summary["fees"] == 0.0
     assert summary["taxes"] == 0.0
@@ -1329,6 +1331,9 @@ def test_period_calculation_report_reconciles_initial_delta_transfers_and_final_
     assert summary["net_external_inflow"] == -110.0
     assert "cash_fx_residual_gains" not in summary
     assert lines["performance_neutral_transfers"]["amount"] == -110.0
+    assert lines["capital_gains"]["amount"] == 10.0
+    assert lines["realized_capital_gains"]["amount"] == 10.0
+    assert lines["unrealized_capital_gains"]["amount"] == 0.0
     assert lines["deposits"]["amount"] == 0.0
     assert lines["withdrawals"]["amount"] == 110.0
 
@@ -2073,6 +2078,7 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
             ("2026-01-01", "50.00"),
             ("2026-01-02", "100.00"),
             ("2026-01-03", "75.00"),
+            ("2026-01-04", "80.00"),
         ],
     )
     monkeypatch.setattr(
@@ -2134,7 +2140,7 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
             "created_at": f"{trade_date}T09:00:00Z",
         }
 
-    def build_store(portfolio_id: str, cost_basis_method: str) -> dict[str, object]:
+    def build_store(portfolio_id: str, cost_basis_method: str, *, final_sale: bool = False) -> dict[str, object]:
         transactions = [
             transaction(
                 "txn-0001",
@@ -2181,6 +2187,20 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
                 note="Sell 6000 at 75.",
             ),
         ]
+        if final_sale:
+            transactions.append(
+                transaction(
+                    "txn-0005",
+                    "sell",
+                    "2026-01-04",
+                    account_id="broker-us-core",
+                    asset_id_value=asset_id,
+                    quantity=4000.0,
+                    price=80.0,
+                    gross_amount=320000.0,
+                    note="Sell remaining 4000 at 80.",
+                )
+            )
         for item in transactions:
             item["portfolio_id"] = portfolio_id
         store = _minimal_store(portfolio_id=portfolio_id, transactions=transactions)
@@ -2229,15 +2249,19 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
     assert fifo["holding"]["cost_basis"] == 400000.0
     assert fifo["line"]["realized_pnl"] == 100000.0
     assert fifo["line"]["unrealized_pnl_change"] == -100000.0
+    assert fifo["calculation_group"]["capital_gains"] == 0.0
     assert fifo["calculation_group"]["realized_capital_gains"] == 100000.0
     assert fifo["calculation_group"]["unrealized_pnl_change"] == -100000.0
     assert fifo["calculation_group"]["total_pnl"] == 0.0
+    assert fifo["calculation_group"]["average_weight"] is not None
+    assert fifo["calculation_group"]["ending_weight"] is not None
 
     assert moving_average["holding"]["cost_basis"] == 300000.0
     assert moving_average["line"]["realized_pnl"] == 0.0
     assert moving_average["line"]["unrealized_pnl_change"] == 0.0
-    assert moving_average["calculation_group"]["realized_capital_gains"] == 0.0
-    assert moving_average["calculation_group"]["unrealized_pnl_change"] == 0.0
+    assert moving_average["calculation_group"]["capital_gains"] == 0.0
+    assert moving_average["calculation_group"]["realized_capital_gains"] == 100000.0
+    assert moving_average["calculation_group"]["unrealized_pnl_change"] == -100000.0
     assert moving_average["calculation_group"]["total_pnl"] == 0.0
 
     assert fifo["line"]["total_pnl"] == 0.0
@@ -2254,6 +2278,30 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
         rel_tol=0.0,
         abs_tol=1e-12,
     )
+
+    _write_store(build_store("cost-method-sold-out-test", "fifo", final_sale=True))
+    sold_out_response = client.get(
+        "/api/portfolios/cost-method-sold-out-test/performance/calculation/groups?axis=instrument"
+    )
+    assert sold_out_response.status_code == 200
+    sold_out_group = next(
+        item
+        for item in sold_out_response.json()["groups"]
+        if item["group_key"] == asset_id
+    )
+    assert sold_out_group["final_value"] == 0.0
+    assert sold_out_group["capital_gains"] == 20000.0
+    assert sold_out_group["realized_capital_gains"] == 20000.0
+    assert sold_out_group["unrealized_pnl_change"] == 0.0
+
+    sold_out_summary_response = client.get(
+        "/api/portfolios/cost-method-sold-out-test/performance/calculation"
+    )
+    assert sold_out_summary_response.status_code == 200
+    sold_out_summary = sold_out_summary_response.json()["summary"]
+    assert sold_out_summary["capital_gains"] == 20000.0
+    assert sold_out_summary["realized_capital_gains"] == 20000.0
+    assert sold_out_summary["unrealized_capital_gains"] == 0.0
 
 
 def test_account_contribution_report_tracks_interest_income(client, monkeypatch):
@@ -4801,6 +4849,125 @@ def test_period_calculation_groups_calendar_rolls_monthly_instrument_bridge(clie
     assert isclose(bucket["delta"], 110.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(bucket["total_pnl"], 10.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(bucket["residual_delta"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_period_calculation_groups_support_asset_type_axis(client, monkeypatch):
+    equity_detail = _test_instrument_detail(
+        asset_id="equity-us-test",
+        asset_name="Test Equity",
+        history=[
+            ("2026-01-01", "100.00"),
+            ("2026-01-02", "110.00"),
+        ],
+        asset_type="equity",
+    )
+    fund_detail = _test_instrument_detail(
+        asset_id="fund-us-test",
+        asset_name="Test Fund",
+        history=[
+            ("2026-01-01", "200.00"),
+            ("2026-01-02", "190.00"),
+        ],
+        asset_type="fund",
+    )
+    instrument_details = {
+        "equity-us-test": equity_detail,
+        "fund-us-test": fund_detail,
+    }
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda asset_id: deepcopy(instrument_details.get(asset_id)),
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+
+    portfolio_id = "calculation-groups-asset-type-test"
+    transactions = [
+        {
+            "transaction_id": "txn-0001",
+            "portfolio_id": portfolio_id,
+            "transaction_type": "opening_balance",
+            "trade_date": "2026-01-01",
+            "settlement_date": "2026-01-01",
+            "account_id": "cash-usd-main",
+            "settlement_cash_account_id": None,
+            "asset_id": None,
+            "instrument_ref": None,
+            "quantity": None,
+            "price": None,
+            "gross_amount": 300.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "transfer_scope": None,
+            "transfer_object_type": None,
+            "transfer_group_id": None,
+            "counterparty_account_id": None,
+            "note": "Opening cash.",
+            "created_at": "2026-01-01T09:00:00Z",
+        },
+    ]
+    for index, (asset_id, asset_name, asset_type, amount) in enumerate(
+        [
+            ("equity-us-test", "Test Equity", "equity", 100.0),
+            ("fund-us-test", "Test Fund", "fund", 200.0),
+        ],
+        start=2,
+    ):
+        transactions.append(
+            {
+                "transaction_id": f"txn-{index:04d}",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "buy",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "asset_id": asset_id,
+                "instrument_ref": {
+                    "asset_id": asset_id,
+                    "asset_name": asset_name,
+                    "asset_type": asset_type,
+                    "currency": "USD",
+                    "identifiers": [{"identifier_type": "ticker", "identifier_value": asset_id.upper(), "is_primary": True}],
+                },
+                "quantity": 1.0,
+                "price": amount,
+                "gross_amount": amount,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": f"Buy {asset_name}.",
+                "created_at": f"2026-01-01T09:{index}0:00Z",
+            }
+        )
+
+    store = _minimal_store(portfolio_id=portfolio_id, transactions=transactions)
+    store["portfolios"][0]["as_of_date"] = "2026-01-02"
+    _write_store(store)
+
+    response = client.get(f"/api/portfolios/{portfolio_id}/performance/calculation/groups?axis=asset_type")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["axis"] == "asset_type"
+    groups = {item["group_key"]: item for item in payload["groups"]}
+
+    assert groups["equity"]["group_label"] == "Equity"
+    assert isclose(groups["equity"]["final_value"], 110.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["equity"]["total_pnl"], 10.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["equity"]["unrealized_pnl_change"], 10.0, rel_tol=0.0, abs_tol=1e-12)
+    assert groups["fund"]["group_label"] == "Fund"
+    assert isclose(groups["fund"]["final_value"], 190.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["fund"]["total_pnl"], -10.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["fund"]["unrealized_pnl_change"], -10.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(client, monkeypatch):

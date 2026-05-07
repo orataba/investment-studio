@@ -483,9 +483,10 @@ Overview 展示 `Monthly Return Matrix`，按 year x month 展示月度 TWR，YT
 Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要结构为：
 
 - `Return & Risk Metrics`：组合级 TWR / annualized TWR、IRR / MWR、risk、drawdown。return / risk 类指标可选择 benchmark price series 做 period return、annualized return、volatility、drawdown 的轻量对比；
-- `Calculation`：合并 initial value、group rows、external flow、portfolio total 与 final value。group rows 可按 asset / account / default planning taxonomy 聚合；`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
-- Calculation 中的 `Unrealized Chg` 是期间未实现损益变化，即 `ending unrealized P&L - beginning unrealized P&L`，用于避免把期初市值中已经包含的历史浮盈重复算入本期收益。期末未实现损益余额属于 Holdings、boundary holdings 或 asset detail，不作为 Calculation 主列。
-- `Capital Gain = Realized Gain + Unrealized Chg`；`Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes、FX P&L 分列。P&L 与 book attribution 不和 benchmark 对比。
+- `Calculation`：合并 initial value、group rows、external flow、portfolio total 与 final value。group rows 可按 asset / asset type / currency / account / default planning taxonomy 聚合；asset type 与 currency 是底层 contribution axis，不允许仅在前端把 asset rows 相加；`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
+- Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。期初已有持仓按 start date 的 beginning market value 重置为期间成本，区间内买入按成交 gross amount 建立期间成本，期末未卖出的持仓用 end date market value 计算 `Unrealized Gain`。
+- `Capital Gain = Realized Gain + Unrealized Gain`；`Realized Gain` 是期间卖出部分相对于期间成本的资本利得，`Unrealized Gain` 是期末仍持有部分相对于期间成本的资本利得。FIFO / moving average 只影响 Holdings / book P&L，不改变 Performance Calculation 的期间资本利得拆分。
+- `Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes、FX P&L 分列。P&L 与 book attribution 不和 benchmark 对比。
 
 Overview 的 chart compare 与 Performance 的 benchmark compare 是独立选择状态，因为用户可能对图表和区间绩效选择不同对比对象。
 
@@ -591,8 +592,24 @@ $$
 其中：
 
 $$
-PeriodPnL = RealizedCapitalGain + (EndingUnrealizedPnL - BeginningUnrealizedPnL) + Income - Fees - Taxes + FXPnL
+PeriodPnL = CapitalGain + Income - Fees - Taxes + FXPnL
 $$
+
+其中：
+
+$$
+CapitalGain = RealizedCapitalGain + UnrealizedCapitalGain
+$$
+
+`RealizedCapitalGain` 和 `UnrealizedCapitalGain` 在 Performance Calculation 中使用期间绩效成本：
+
+- 期初已有持仓按期初市值重置为期间成本；
+- 区间买入按成交 gross amount 建立期间成本；
+- 区间卖出释放对应期间成本并形成 `RealizedCapitalGain`；
+- 期末仍持有的剩余数量形成 `UnrealizedCapitalGain`；
+- 已在期末完全卖出的资产没有剩余 period lot，因此 `UnrealizedCapitalGain = 0`。
+
+账户 book P&L 的 `EndingUnrealizedPnL - BeginningUnrealizedPnL` 可用于会计解释，但不得作为 Performance Calculation 的 capital gain split。
 
 ### 5.7 Drawdown
 

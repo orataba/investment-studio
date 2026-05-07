@@ -2491,6 +2491,15 @@ select {
   border-left-color: var(--portfolio-accent);
 }
 
+.holdings-groupby-option:disabled {
+  color: var(--portfolio-subtle);
+  cursor: not-allowed;
+}
+
+.holdings-groupby-option:disabled:hover {
+  background: transparent;
+}
+
 .holdings-groupby-option span {
   font-size: 14px;
   font-weight: 400;
@@ -5909,47 +5918,20 @@ input[type='checkbox'] {
   margin-top: 2px;
 }
 
-.performance-group-by-control {
-  display: inline-flex;
+.performance-calculation-toolbar {
+  justify-content: flex-start;
+}
+
+.performance-calculation-toolbar-main {
+  display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--portfolio-muted);
-  font-size: 12px;
-  font-weight: 650;
-  white-space: nowrap;
+  gap: 16px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
-.performance-group-by-buttons {
-  display: inline-flex;
-  overflow: hidden;
-  border: 1px solid var(--portfolio-line-strong);
-  background: #ffffff;
-}
-
-.performance-group-by-buttons button {
-  height: 30px;
-  padding: 0 10px;
-  border: 0;
-  border-right: 1px solid var(--portfolio-line);
-  background: #ffffff;
-  color: var(--portfolio-muted);
-  font: inherit;
-  cursor: pointer;
-}
-
-.performance-group-by-buttons button:last-child {
-  border-right: 0;
-}
-
-.performance-group-by-buttons button:hover:not(:disabled),
-.performance-group-by-buttons .performance-group-by-active {
-  background: var(--portfolio-ink);
-  color: #ffffff;
-}
-
-.performance-group-by-buttons button:disabled {
-  color: var(--portfolio-subtle);
-  cursor: not-allowed;
+.performance-calculation-actions {
+  margin-left: 0;
 }
 
 .performance-metric-table-grid {
