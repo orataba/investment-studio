@@ -379,8 +379,9 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 - 高密度表格；
 - 可排序、可筛选、可分组、可切换列；
-- 默认展示 asset、quote、quote date、quantity、avg cost、cost basis、market value、weight、unrealized P&L；
+- 默认展示 asset、quote、quote date、Spark Chart、quantity、avg cost、cost basis、market value、weight、unrealized P&L；
 - 允许按 taxonomy / selected planning taxonomy / account 聚合。
+- 允许展示 quote-derived asset market trend 指标，用于扫当前持仓资产最近市场表现；这些指标不读取组合数量、成本法、现金流或 realized / income events。
 - 不在 Holdings 默认承载资产级 TWR、realized gain、dividend / coupon income 或 closed positions；这些属于 Performance / security detail 的区间绩效视图。
 
 #### Performance
@@ -390,6 +391,14 @@ MVP 先支持**全球公开市场的标准化资产**：
 - 赚了多少？
 - 相对 benchmark 如何？
 - 收益来源和回撤来源是什么？
+
+首屏结构：
+
+- `Return & Risk Metrics`：基于用户选择的自定义区间展示 TWR、annualized TWR、IRR / MWR、volatility、downside volatility、Sharpe / Sortino、drawdown 等收益风险指标；这些 fair-value return / risk 指标可选择独立 benchmark 做对比；
+- `Calculation`：把 period boundary、group contribution 和 waterfall calculation 合并成一张可审计表。顶部为 initial value，group rows 可按 asset / account / taxonomy 展示 start / end value、weights、capital gain、realized gain、unrealized change、income、fees、taxes、FX P&L、period P&L、group TWR、contribution；外部现金流按 deposits / withdrawals 单独列出，底部为 portfolio total 与 final value。
+  Calculation 的桥接公式是 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value`。`Unrealized Chg` 是 `ending unrealized P&L - beginning unrealized P&L`；期末未实现损益余额属于 Holdings / boundary holdings / asset detail，不放入 Calculation 主表。
+
+`NAV Trend` 与 `Monthly Return Matrix` 属于 Overview，不在 Performance 重复展示。Overview 图表 compare 与 Performance benchmark 独立选择，避免把不同分析场景绑死到同一个 benchmark。
 
 #### Risk
 
@@ -874,6 +883,8 @@ MVP 先支持**全球公开市场的标准化资产**：
 - 本期收益如何？
 - 相对 benchmark 如何？
 - 收益与回撤由谁驱动？
+
+页面默认由两块组成：区间 `Return & Risk Metrics`、合并 calculation / contribution / boundary holdings 的 `Calculation` 审计表。Performance 不维护独立 view selector；区间由 start / end date 直接驱动；benchmark compare 与 Overview 的图表 compare 分开选择。
 
 ### 12.6 Risk
 

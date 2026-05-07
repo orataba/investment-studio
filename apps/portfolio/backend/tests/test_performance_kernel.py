@@ -350,6 +350,114 @@ def test_daily_twr_neutralizes_external_deposit(client, monkeypatch):
     assert by_date["2026-01-02"]["daily_twr"] == 0.06666666666666665
 
 
+def test_explicit_performance_period_uses_beginning_nav_boundary(client, monkeypatch):
+    instrument_detail = _test_instrument_detail(
+        asset_id="equity-us-test",
+        asset_name="Test Equity",
+        history=[
+            ("2026-03-31", "100.00"),
+            ("2026-04-01", "110.00"),
+            ("2026-04-20", "120.00"),
+        ],
+    )
+    instrument_ref = {
+        "asset_id": "equity-us-test",
+        "asset_name": "Test Equity",
+        "asset_type": "equity",
+        "currency": "USD",
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
+    }
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+
+    store = _minimal_store(
+        portfolio_id="period-boundary-nav-test",
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": "period-boundary-nav-test",
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-03-31",
+                "settlement_date": "2026-03-31",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "asset_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Opening cash.",
+                "created_at": "2026-03-31T09:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": "period-boundary-nav-test",
+                "transaction_type": "buy",
+                "trade_date": "2026-03-31",
+                "settlement_date": "2026-03-31",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "asset_id": "equity-us-test",
+                "instrument_ref": instrument_ref,
+                "quantity": 1.0,
+                "price": 100.0,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Buy test equity.",
+                "created_at": "2026-03-31T09:30:00Z",
+            },
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-04-20"
+    _write_store(store)
+
+    response = client.get(
+        "/api/portfolios/period-boundary-nav-test/performance?start_date=2026-04-01&end_date=2026-04-20"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    summary = payload["summary"]
+    first_point = payload["daily_series"][0]
+
+    assert summary["start_date"] == "2026-04-01"
+    assert summary["end_date"] == "2026-04-20"
+    assert isclose(summary["start_nav"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["end_nav"], 120.0, rel_tol=0.0, abs_tol=1e-12)
+    assert first_point["as_of_date"] == "2026-04-01"
+    assert isclose(first_point["beginning_nav"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(first_point["ending_nav"], 110.0, rel_tol=0.0, abs_tol=1e-12)
+
+    calculation_response = client.get(
+        "/api/portfolios/period-boundary-nav-test/performance/calculation?start_date=2026-04-01&end_date=2026-04-20"
+    )
+    assert calculation_response.status_code == 200
+    calculation_summary = calculation_response.json()["summary"]
+    assert isclose(calculation_summary["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(calculation_summary["final_value"], 120.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(calculation_summary["delta"], 20.0, rel_tol=0.0, abs_tol=1e-12)
+
+
 def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         asset_id="equity-us-test",
@@ -2092,9 +2200,23 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
         assert contribution_response.status_code == 200
         contribution_payload = contribution_response.json()
         line = next(item for item in contribution_payload["lines"] if item["group_key"] == asset_id)
+        calculation_groups_response = client.get(
+            f"/api/portfolios/{portfolio_id}/performance/calculation/groups?axis=instrument"
+        )
+        assert calculation_groups_response.status_code == 200
+        calculation_group = next(
+            item
+            for item in calculation_groups_response.json()["groups"]
+            if item["group_key"] == asset_id
+        )
         performance_response = client.get(f"/api/portfolios/{portfolio_id}/performance")
         assert performance_response.status_code == 200
-        return {"holding": holding, "line": line, "summary": performance_response.json()["summary"]}
+        return {
+            "holding": holding,
+            "line": line,
+            "calculation_group": calculation_group,
+            "summary": performance_response.json()["summary"],
+        }
 
     fifo = run_case("cost-method-fifo-test", "fifo")
     moving_average = run_case("cost-method-ma-test", "moving_average")
@@ -2107,10 +2229,16 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
     assert fifo["holding"]["cost_basis"] == 400000.0
     assert fifo["line"]["realized_pnl"] == 100000.0
     assert fifo["line"]["unrealized_pnl_change"] == -100000.0
+    assert fifo["calculation_group"]["realized_capital_gains"] == 100000.0
+    assert fifo["calculation_group"]["unrealized_pnl_change"] == -100000.0
+    assert fifo["calculation_group"]["total_pnl"] == 0.0
 
     assert moving_average["holding"]["cost_basis"] == 300000.0
     assert moving_average["line"]["realized_pnl"] == 0.0
     assert moving_average["line"]["unrealized_pnl_change"] == 0.0
+    assert moving_average["calculation_group"]["realized_capital_gains"] == 0.0
+    assert moving_average["calculation_group"]["unrealized_pnl_change"] == 0.0
+    assert moving_average["calculation_group"]["total_pnl"] == 0.0
 
     assert fifo["line"]["total_pnl"] == 0.0
     assert moving_average["line"]["total_pnl"] == 0.0
@@ -2965,13 +3093,14 @@ def test_instrument_contribution_report_surfaces_asset_currency_gains(client, mo
 
     line = next(item for item in payload["lines"] if item["group_key"] == "fund-hk-contribution-test")
     assert isclose(line["asset_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(line["unrealized_pnl_change"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(line["unrealized_pnl_change"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(line["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(line["period_contribution"], 0.04, rel_tol=0.0, abs_tol=1e-12)
 
     slices = [item for item in payload["daily_slices"] if item["group_key"] == "fund-hk-contribution-test"]
     slice_by_date = {item["as_of_date"]: item for item in slices}
     assert isclose(slice_by_date["2026-01-02"]["asset_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(slice_by_date["2026-01-02"]["unrealized_pnl_change"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(slice_by_date["2026-01-02"]["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(slice_by_date["2026-01-02"]["daily_contribution"], 0.04, rel_tol=0.0, abs_tol=1e-12)
 

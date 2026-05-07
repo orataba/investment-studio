@@ -1,105 +1,77 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 
+import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
-import PerformanceNavChart from '../components/PerformanceNavChart'
-import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
+  getPortfolioAssetPriceChart,
+  getPortfolioInstruments,
   getPortfolioPerformance,
-  getPortfolioPerformanceBoundaryHoldings,
   getPortfolioPerformanceCalculation,
-  getPortfolioPerformanceContribution,
+  getPortfolioPerformanceCalculationGroups,
+  getPortfolioTaxonomyCatalog,
+  type PortfolioAssetPriceChartPoint,
+  type PortfolioAssetPriceChartResponse,
   type PortfolioContributionAxis,
-  type PortfolioContributionReportResponse,
   type PortfolioDailyPerformancePoint,
-  type PortfolioPeriodBoundaryHoldingsResponse,
+  type PortfolioPerformanceCalculationGroupsResponse,
   type PortfolioPerformanceCalculationResponse,
-  type PortfolioPerformanceCoverageState,
   type PortfolioPerformanceResponse,
+  type PortfolioPerformanceSummary,
+  type SharedInstrumentRecord,
+  type PortfolioTaxonomyCatalogResponse,
+  type PortfolioTaxonomyRecord,
 } from '../lib/api'
 import {
   formatCurrency,
-  formatLabel,
   formatNumber,
   formatPercent,
-  formatQuantity,
   formatSignedCurrency,
   signedValueClass,
 } from '../lib/format'
-import { buildTwrIndexPoints } from '../lib/performanceSeries'
-
-type PerformanceDetailTab = 'daily' | 'calculation' | 'contribution' | 'boundary'
-type PerformanceContributionAxisView = Extract<PortfolioContributionAxis, 'instrument' | 'account'>
-type PerformanceViewState = {
-  detailTab: PerformanceDetailTab
-  contributionAxis: PerformanceContributionAxisView
-}
-
-type PerformanceTableView = PortfolioTableViewOption & {
-  state: PerformanceViewState
-  readonly?: boolean
-  createdAt?: string
-  updatedAt?: string
-}
-
-type PerformanceViewStore = {
-  activeViewId: string
-  customViews: PerformanceTableView[]
-}
 
 const DEFAULT_PERFORMANCE_LOOKBACK_DAYS = 30
 const DAYS_PER_YEAR = 365.25
-const PERFORMANCE_VIEWS_STORAGE_KEY = 'yungu.portfolio.performance.views.v1'
-const DEFAULT_PERFORMANCE_VIEW_STATE: PerformanceViewState = {
-  detailTab: 'daily',
-  contributionAxis: 'instrument',
+
+type CalculationGroupRow = PortfolioPerformanceCalculationGroupsResponse['groups'][number]
+
+type PerformanceMetricRow = {
+  metric: string
+  value: string
+  valueClassName?: string
+  benchmark?: string
+  benchmarkClassName?: string
+  difference?: string
+  differenceClassName?: string
+  showComparison?: boolean
 }
 
-const SYSTEM_PERFORMANCE_VIEWS: PerformanceTableView[] = [
-  {
-    id: 'total-return',
-    name: 'Total Return',
-    description: 'Daily return detail with headline summary.',
-    readonly: true,
-    state: DEFAULT_PERFORMANCE_VIEW_STATE,
-  },
-  {
-    id: 'contribution',
-    name: 'Contribution',
-    description: 'Contribution ranking by instrument.',
-    readonly: true,
-    state: { detailTab: 'contribution', contributionAxis: 'instrument' },
-  },
-  {
-    id: 'account-contribution',
-    name: 'Account Contribution',
-    description: 'Contribution ranking by account.',
-    readonly: true,
-    state: { detailTab: 'contribution', contributionAxis: 'account' },
-  },
-  {
-    id: 'calculation',
-    name: 'Calculation',
-    description: 'Period waterfall calculation lines.',
-    readonly: true,
-    state: { detailTab: 'calculation', contributionAxis: 'instrument' },
-  },
-  {
-    id: 'boundary',
-    name: 'Boundary Holdings',
-    description: 'Start and end holdings composition.',
-    readonly: true,
-    state: { detailTab: 'boundary', contributionAxis: 'instrument' },
-  },
-]
+type DatedReturn = {
+  date: string
+  value: number
+}
 
-type ContributionLine = PortfolioContributionReportResponse['lines'][number]
-type ContributionSlice = PortfolioContributionReportResponse['daily_slices'][number]
-type AssetContributionRow = ContributionLine & {
+type BenchmarkPeriodMetrics = {
   periodReturn: number | null
+  annualizedReturn: number | null
   annualizedVolatility: number | null
-  returnObservationCount: number
+  annualizedDownsideVolatility: number | null
+  sharpe: number | null
+  sortino: number | null
+  calmar: number | null
+  currentDrawdown: number | null
+  maxDrawdown: number | null
+  dailyReturns: DatedReturn[]
+}
+
+type RelativePerformanceMetrics = {
+  informationRatio: number | null
+  trackingError: number | null
+  beta: number | null
+  upsideCapture: number | null
+  downsideCapture: number | null
+  captureRatio: number | null
 }
 
 function localDateIso(input = new Date()) {
@@ -114,24 +86,6 @@ function shiftIsoDate(isoDate: string, days: number) {
   const nextDate = new Date(year, (month || 1) - 1, day || 1)
   nextDate.setDate(nextDate.getDate() + days)
   return localDateIso(nextDate)
-}
-
-type MonthlyBucket = {
-  bucket_key: string
-  start_date: string
-  end_date: string
-  coverage_state: PortfolioPerformanceCoverageState
-  observation_count: number
-  start_nav: number | null
-  end_nav: number | null
-  net_external_inflow: number
-  absolute_change: number | null
-  delta: number | null
-  cumulative_twr: number | null
-}
-
-function coverageClassName(coverageState: PortfolioPerformanceCoverageState) {
-  return coverageState === 'complete' ? 'coverage-pill-live' : 'coverage-pill-warning'
 }
 
 function signedPercent(value: number | null | undefined, digits = 2) {
@@ -150,6 +104,72 @@ function signedPercent(value: number | null | undefined, digits = 2) {
 
 function finiteNumber(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function sumNullable(...values: Array<number | null | undefined>) {
+  let hasValue = false
+  let total = 0
+  values.forEach((value) => {
+    const finiteValue = finiteNumber(value)
+    if (finiteValue == null) {
+      return
+    }
+    hasValue = true
+    total += finiteValue
+  })
+  return hasValue ? total : null
+}
+
+function expenseImpact(value: number | null | undefined) {
+  const finiteValue = finiteNumber(value)
+  if (finiteValue == null) {
+    return null
+  }
+  return finiteValue === 0 ? 0 : -Math.abs(finiteValue)
+}
+
+function capitalGainAmount(row: Pick<CalculationGroupRow, 'realized_capital_gains' | 'unrealized_pnl_change'>) {
+  return sumNullable(row.realized_capital_gains, row.unrealized_pnl_change)
+}
+
+function fxPnlAmount(row: Pick<CalculationGroupRow, 'cash_currency_gains' | 'asset_currency_gains'>) {
+  return sumNullable(row.cash_currency_gains, row.asset_currency_gains)
+}
+
+function calculationAxisLabel(axis: PortfolioContributionAxis, taxonomy: PortfolioTaxonomyRecord | null) {
+  if (axis === 'account') {
+    return 'Account'
+  }
+  if (axis === 'taxonomy') {
+    return taxonomy?.name ?? 'Taxonomy'
+  }
+  return 'Asset'
+}
+
+function calculationAxisCountLabel(axis: PortfolioContributionAxis) {
+  if (axis === 'account') {
+    return 'accounts'
+  }
+  if (axis === 'taxonomy') {
+    return 'groups'
+  }
+  return 'assets'
+}
+
+function formatRatio(value: number | null | undefined, digits = 2) {
+  const finiteValue = finiteNumber(value)
+  return finiteValue == null ? '—' : formatNumber(finiteValue, digits)
+}
+
+function signedRatio(value: number | null | undefined, digits = 2) {
+  const finiteValue = finiteNumber(value)
+  if (finiteValue == null) {
+    return '—'
+  }
+  if (finiteValue > 0) {
+    return `+${formatNumber(finiteValue, digits)}`
+  }
+  return formatNumber(finiteValue, digits)
 }
 
 function sampleStddev(values: number[]) {
@@ -200,6 +220,18 @@ function annualizedVolatility(values: number[], dateKeys: string[] = [], startDa
   return stddev == null || periodsPerYear == null ? null : stddev * Math.sqrt(periodsPerYear)
 }
 
+function annualizedDownsideVolatility(values: number[], dateKeys: string[] = [], startDate?: string | null) {
+  const periodsPerYear = annualizationPeriodsPerYear(dateKeys, values.length, startDate)
+  if (!values.length || periodsPerYear == null) {
+    return null
+  }
+  const downsideSquares = values.map((value) => Math.min(0, value) ** 2)
+  if (!downsideSquares.some((value) => value > 0)) {
+    return null
+  }
+  return Math.sqrt(downsideSquares.reduce((total, value) => total + value, 0) / values.length) * Math.sqrt(periodsPerYear)
+}
+
 function compoundReturn(values: number[]) {
   if (!values.length) {
     return null
@@ -207,440 +239,500 @@ function compoundReturn(values: number[]) {
   return values.reduce((growthIndex, value) => growthIndex * (1 + value), 1) - 1
 }
 
-function buildAssetContributionRows(lines: ContributionLine[], slices: ContributionSlice[]) {
-  const slicesByGroup = new Map<string, ContributionSlice[]>()
-  slices.forEach((slice) => {
-    const groupSlices = slicesByGroup.get(slice.group_key) ?? []
-    groupSlices.push(slice)
-    slicesByGroup.set(slice.group_key, groupSlices)
-  })
-
-  return lines.map((line) => {
-    const groupSlices = slicesByGroup.get(line.group_key) ?? []
-    const returns = groupSlices
-      .map((slice) => finiteNumber(slice.daily_return))
-      .filter((value): value is number => value != null)
-    const returnDates = groupSlices
-      .filter((slice) => finiteNumber(slice.daily_return) != null && slice.return_observation_eligible)
-      .map((slice) => slice.as_of_date)
-    const riskReturns = groupSlices
-      .filter((slice) => finiteNumber(slice.daily_return) != null && slice.return_observation_eligible)
-      .map((slice) => slice.daily_return as number)
-    const firstDate = groupSlices.reduce<string | null>(
-      (current, slice) => (current == null || slice.as_of_date < current ? slice.as_of_date : current),
-      null,
-    )
-
-    return {
-      ...line,
-      periodReturn: compoundReturn(returns),
-      annualizedVolatility: annualizedVolatility(riskReturns, returnDates, firstDate),
-      returnObservationCount: riskReturns.length,
-    } satisfies AssetContributionRow
-  })
+function annualizedReturnFromDailyReturns(values: number[], dateKeys: string[], startDate?: string | null) {
+  const periodReturn = compoundReturn(values)
+  const sortedDates = [...dateKeys].sort()
+  const firstDate = startDate ?? sortedDates[0]
+  const lastDate = sortedDates[sortedDates.length - 1]
+  const elapsedDays = firstDate && lastDate ? dayDiff(firstDate, lastDate) : null
+  return periodReturn != null && elapsedDays != null && elapsedDays > 0
+    ? (1 + periodReturn) ** (DAYS_PER_YEAR / elapsedDays) - 1
+    : null
 }
 
-function buildMonthlyBuckets(dailySeries: PortfolioDailyPerformancePoint[]) {
-  const orderedKeys: string[] = []
-  const buckets = new Map<
-    string,
-    {
-      bucket_key: string
-      start_date: string
-      end_date: string
-      coverage_state: PortfolioPerformanceCoverageState
-      observation_count: number
-      start_nav: number | null
-      end_nav: number | null
-      net_external_inflow: number
-      absolute_change: number
-      delta: number
-      absolute_change_complete: boolean
-      delta_complete: boolean
-      growth_index: number
-      has_return: boolean
-      seen_complete: boolean
-      seen_partial: boolean
-      seen_unavailable: boolean
-    }
-  >()
-
-  dailySeries.forEach((point) => {
-    const bucketKey = point.as_of_date.slice(0, 7)
-    let bucket = buckets.get(bucketKey)
-    if (!bucket) {
-      bucket = {
-        bucket_key: bucketKey,
-        start_date: point.as_of_date,
-        end_date: point.as_of_date,
-        coverage_state: 'unavailable',
-        observation_count: 0,
-        start_nav: point.beginning_nav,
-        end_nav: point.ending_nav,
-        net_external_inflow: 0,
-        absolute_change: 0,
-        delta: 0,
-        absolute_change_complete: true,
-        delta_complete: true,
-        growth_index: 1,
-        has_return: false,
-        seen_complete: false,
-        seen_partial: false,
-        seen_unavailable: false,
-      }
-      buckets.set(bucketKey, bucket)
-      orderedKeys.push(bucketKey)
-    }
-
-    bucket.end_date = point.as_of_date
-    if (bucket.start_nav == null) {
-      bucket.start_nav = point.beginning_nav
-    }
-    bucket.end_nav = point.ending_nav
-    bucket.net_external_inflow += point.net_external_inflow
-
-    if (point.absolute_change == null) {
-      bucket.absolute_change_complete = false
-    } else {
-      bucket.absolute_change += point.absolute_change
-    }
-
-    if (point.delta == null) {
-      bucket.delta_complete = false
-    } else {
-      bucket.delta += point.delta
-    }
-
-    if (point.daily_twr != null) {
-      bucket.growth_index *= 1 + point.daily_twr
-      bucket.has_return = true
-      bucket.observation_count += 1
-    }
-
-    if (point.coverage_state === 'complete') {
-      bucket.seen_complete = true
-    } else if (point.coverage_state === 'partial') {
-      bucket.seen_partial = true
-    } else {
-      bucket.seen_unavailable = true
-    }
-  })
-
-  return orderedKeys.map((bucketKey) => {
-    const bucket = buckets.get(bucketKey)!
-    let coverageState: PortfolioPerformanceCoverageState = 'unavailable'
-    if (bucket.seen_complete) {
-      coverageState = bucket.seen_partial || bucket.seen_unavailable ? 'partial' : 'complete'
-    } else if (bucket.seen_partial) {
-      coverageState = 'partial'
-    }
-
-    return {
-      bucket_key: bucket.bucket_key,
-      start_date: bucket.start_date,
-      end_date: bucket.end_date,
-      coverage_state: coverageState,
-      observation_count: bucket.observation_count,
-      start_nav: bucket.start_nav,
-      end_nav: bucket.end_nav,
-      net_external_inflow: bucket.net_external_inflow,
-      absolute_change: bucket.absolute_change_complete ? bucket.absolute_change : null,
-      delta: bucket.delta_complete ? bucket.delta : null,
-      cumulative_twr: bucket.has_return ? bucket.growth_index - 1 : null,
-    } satisfies MonthlyBucket
-  })
+function ratioToDrawdown(returnValue: number | null | undefined, maxDrawdown: number | null | undefined) {
+  const finiteReturn = finiteNumber(returnValue)
+  const finiteDrawdown = finiteNumber(maxDrawdown)
+  return finiteReturn != null && finiteDrawdown != null && finiteDrawdown < 0
+    ? finiteReturn / Math.abs(finiteDrawdown)
+    : null
 }
 
-function parsePerformanceDetailTab(value: string | null): PerformanceDetailTab | null {
-  return value === 'daily' || value === 'calculation' || value === 'contribution' || value === 'boundary' ? value : null
-}
-
-function parsePerformanceContributionAxis(value: string | null): PerformanceContributionAxisView | null {
-  return value === 'instrument' || value === 'account' ? value : null
-}
-
-function normalizePerformanceViewState(value: unknown): PerformanceViewState {
-  if (!value || typeof value !== 'object') {
-    return DEFAULT_PERFORMANCE_VIEW_STATE
+function buildBenchmarkPeriodMetrics(
+  points: PortfolioAssetPriceChartPoint[],
+  startDate: string,
+  endDate: string,
+): BenchmarkPeriodMetrics | null {
+  const sortedPoints = points
+    .filter((point) => Number.isFinite(point.value) && point.date >= startDate && point.date <= endDate)
+    .slice()
+    .sort((left, right) => left.date.localeCompare(right.date))
+  const firstPoint = sortedPoints[0]
+  const lastPoint = sortedPoints[sortedPoints.length - 1]
+  if (!firstPoint || !lastPoint || sortedPoints.length < 2) {
+    return null
   }
-  const record = value as Partial<PerformanceViewState>
+
+  const dailyReturns = sortedPoints
+    .slice(1)
+    .map((point, index) => {
+      const previous = sortedPoints[index]
+      return previous.value !== 0 ? { date: point.date, value: point.value / previous.value - 1 } : null
+    })
+    .filter((value): value is { date: string; value: number } => value != null)
+  const periodReturn = firstPoint.value !== 0 ? lastPoint.value / firstPoint.value - 1 : null
+  const elapsedDays = dayDiff(firstPoint.date, lastPoint.date)
+  const annualizedReturn =
+    periodReturn != null && elapsedDays != null && elapsedDays > 0
+      ? (1 + periodReturn) ** (DAYS_PER_YEAR / elapsedDays) - 1
+      : null
+  const dailyReturnValues = dailyReturns.map((point) => point.value)
+  const dailyReturnDates = dailyReturns.map((point) => point.date)
+  const annualizedVol = annualizedVolatility(dailyReturnValues, dailyReturnDates, firstPoint.date)
+  const annualizedDownsideVol = annualizedDownsideVolatility(dailyReturnValues, dailyReturnDates, firstPoint.date)
+
+  let highWater = firstPoint.value
+  let currentDrawdown: number | null = null
+  let maxDrawdown: number | null = null
+  sortedPoints.forEach((point) => {
+    highWater = Math.max(highWater, point.value)
+    const drawdown = highWater > 0 ? point.value / highWater - 1 : null
+    if (drawdown != null) {
+      currentDrawdown = drawdown
+      maxDrawdown = maxDrawdown == null ? drawdown : Math.min(maxDrawdown, drawdown)
+    }
+  })
+
   return {
-    detailTab: parsePerformanceDetailTab(typeof record.detailTab === 'string' ? record.detailTab : null) ?? DEFAULT_PERFORMANCE_VIEW_STATE.detailTab,
-    contributionAxis:
-      parsePerformanceContributionAxis(typeof record.contributionAxis === 'string' ? record.contributionAxis : null) ??
-      DEFAULT_PERFORMANCE_VIEW_STATE.contributionAxis,
+    periodReturn,
+    annualizedReturn,
+    annualizedVolatility: annualizedVol,
+    annualizedDownsideVolatility: annualizedDownsideVol,
+    sharpe:
+      annualizedReturn != null && annualizedVol != null && annualizedVol !== 0
+        ? annualizedReturn / annualizedVol
+        : null,
+    sortino:
+      annualizedReturn != null && annualizedDownsideVol != null && annualizedDownsideVol !== 0
+        ? annualizedReturn / annualizedDownsideVol
+        : null,
+    calmar: ratioToDrawdown(annualizedReturn, maxDrawdown),
+    currentDrawdown,
+    maxDrawdown,
+    dailyReturns,
   }
 }
 
-function serializePerformanceViewState(value: PerformanceViewState) {
-  const normalized = normalizePerformanceViewState(value)
-  return JSON.stringify(normalized)
-}
-
-function performanceViewStatesEqual(left: PerformanceViewState, right: PerformanceViewState) {
-  return serializePerformanceViewState(left) === serializePerformanceViewState(right)
-}
-
-function normalizePerformanceViewStore(value: unknown): PerformanceViewStore {
-  const record = value && typeof value === 'object' ? (value as Partial<PerformanceViewStore>) : {}
-  const customViews = Array.isArray(record.customViews)
-    ? record.customViews
-        .filter((view): view is PerformanceTableView => Boolean(view && typeof view === 'object' && typeof view.id === 'string'))
-        .map((view) => ({
-          id: view.id,
-          name: typeof view.name === 'string' && view.name.trim() ? view.name.trim() : 'Custom View',
-          description: typeof view.description === 'string' ? view.description : null,
-          readonly: false,
-          createdAt: typeof view.createdAt === 'string' ? view.createdAt : undefined,
-          updatedAt: typeof view.updatedAt === 'string' ? view.updatedAt : undefined,
-          state: normalizePerformanceViewState(view.state),
-        }))
-    : []
-  const knownViewIds = new Set([...SYSTEM_PERFORMANCE_VIEWS.map((view) => view.id), ...customViews.map((view) => view.id)])
-  const activeViewId =
-    typeof record.activeViewId === 'string' && knownViewIds.has(record.activeViewId)
-      ? record.activeViewId
-      : SYSTEM_PERFORMANCE_VIEWS[0].id
-  return { activeViewId, customViews }
-}
-
-function loadPerformanceViewStore(): PerformanceViewStore {
-  if (typeof window === 'undefined') {
-    return normalizePerformanceViewStore(null)
+function buildRelativePerformanceMetrics(
+  portfolioDailySeries: PortfolioDailyPerformancePoint[],
+  benchmarkMetrics: BenchmarkPeriodMetrics | null,
+): RelativePerformanceMetrics | null {
+  if (!benchmarkMetrics?.dailyReturns.length) {
+    return null
   }
-  try {
-    const rawValue = window.localStorage.getItem(PERFORMANCE_VIEWS_STORAGE_KEY)
-    return normalizePerformanceViewStore(rawValue ? JSON.parse(rawValue) : null)
-  } catch {
-    return normalizePerformanceViewStore(null)
+  const benchmarkByDate = new Map(benchmarkMetrics.dailyReturns.map((point) => [point.date, point.value]))
+  const pairs = portfolioDailySeries
+    .map((point) => {
+      const portfolioReturn = finiteNumber(point.daily_twr)
+      const benchmarkReturn = benchmarkByDate.get(point.as_of_date)
+      return portfolioReturn != null && benchmarkReturn != null && point.return_observation_eligible
+        ? { date: point.as_of_date, portfolioReturn, benchmarkReturn }
+        : null
+    })
+    .filter((value): value is { date: string; portfolioReturn: number; benchmarkReturn: number } => value != null)
+
+  if (pairs.length < 2) {
+    return null
+  }
+
+  const dates = pairs.map((point) => point.date)
+  const portfolioReturns = pairs.map((point) => point.portfolioReturn)
+  const benchmarkReturns = pairs.map((point) => point.benchmarkReturn)
+  const activeReturns = pairs.map((point) => point.portfolioReturn - point.benchmarkReturn)
+  const trackingError = annualizedVolatility(activeReturns, dates, dates[0])
+  const portfolioAnnualizedReturn = annualizedReturnFromDailyReturns(portfolioReturns, dates, dates[0])
+  const benchmarkAnnualizedReturn = annualizedReturnFromDailyReturns(benchmarkReturns, dates, dates[0])
+  const activeAnnualizedReturn =
+    portfolioAnnualizedReturn != null && benchmarkAnnualizedReturn != null
+      ? portfolioAnnualizedReturn - benchmarkAnnualizedReturn
+      : null
+
+  const benchmarkMean = benchmarkReturns.reduce((total, value) => total + value, 0) / benchmarkReturns.length
+  const portfolioMean = portfolioReturns.reduce((total, value) => total + value, 0) / portfolioReturns.length
+  const benchmarkVariance =
+    benchmarkReturns.reduce((total, value) => total + (value - benchmarkMean) ** 2, 0) / (benchmarkReturns.length - 1)
+  const covariance =
+    pairs.reduce(
+      (total, point) => total + (point.portfolioReturn - portfolioMean) * (point.benchmarkReturn - benchmarkMean),
+      0,
+    ) /
+    (pairs.length - 1)
+
+  const upPairs = pairs.filter((point) => point.benchmarkReturn > 0)
+  const downPairs = pairs.filter((point) => point.benchmarkReturn < 0)
+  const upsideBenchmarkReturn = compoundReturn(upPairs.map((point) => point.benchmarkReturn))
+  const upsidePortfolioReturn = compoundReturn(upPairs.map((point) => point.portfolioReturn))
+  const downsideBenchmarkReturn = compoundReturn(downPairs.map((point) => point.benchmarkReturn))
+  const downsidePortfolioReturn = compoundReturn(downPairs.map((point) => point.portfolioReturn))
+  const upsideCapture =
+    upsidePortfolioReturn != null && upsideBenchmarkReturn != null && upsideBenchmarkReturn !== 0
+      ? (upsidePortfolioReturn / upsideBenchmarkReturn) * 100
+      : null
+  const downsideCapture =
+    downsidePortfolioReturn != null && downsideBenchmarkReturn != null && downsideBenchmarkReturn !== 0
+      ? (downsidePortfolioReturn / downsideBenchmarkReturn) * 100
+      : null
+
+  return {
+    informationRatio:
+      activeAnnualizedReturn != null && trackingError != null && trackingError !== 0
+        ? activeAnnualizedReturn / trackingError
+        : null,
+    trackingError,
+    beta: benchmarkVariance > 0 ? covariance / benchmarkVariance : null,
+    upsideCapture,
+    downsideCapture,
+    captureRatio:
+      upsideCapture != null && downsideCapture != null && downsideCapture !== 0
+        ? upsideCapture / downsideCapture
+        : null,
   }
 }
 
-function savePerformanceViewStore(store: PerformanceViewStore) {
-  if (typeof window === 'undefined') {
-    return
+function benchmarkMetricText(
+  selected: SharedInstrumentRecord | null,
+  loading: boolean,
+  value: number | null | undefined,
+  formatter: (input: number | null | undefined) => string = signedPercent,
+) {
+  if (!selected) {
+    return '—'
   }
-  try {
-    window.localStorage.setItem(PERFORMANCE_VIEWS_STORAGE_KEY, JSON.stringify(store))
-  } catch {
-    return
+  if (loading) {
+    return 'Loading'
   }
+  return formatter(value)
 }
 
-function getPerformanceViews(store: PerformanceViewStore) {
-  return [...SYSTEM_PERFORMANCE_VIEWS, ...store.customViews]
+function benchmarkMetricClassName(
+  selected: SharedInstrumentRecord | null,
+  loading: boolean,
+  value: number | null | undefined,
+) {
+  return selected && !loading ? signedValueClass(value) : undefined
 }
 
-function getPerformanceViewById(store: PerformanceViewStore, viewId: string) {
-  return getPerformanceViews(store).find((view) => view.id === viewId) ?? SYSTEM_PERFORMANCE_VIEWS[0]
+function buildPerformanceMetricRows(
+  summary: PortfolioPerformanceSummary,
+  dailySeries: PortfolioDailyPerformancePoint[],
+  baseCurrency: string,
+  selectedBenchmarkInstrument: SharedInstrumentRecord | null,
+  benchmarkLoading: boolean,
+  benchmarkMetrics: BenchmarkPeriodMetrics | null,
+) {
+  const relativeMetrics = buildRelativePerformanceMetrics(dailySeries, benchmarkMetrics)
+  const showComparison = selectedBenchmarkInstrument != null || benchmarkLoading
+  const irr = finiteNumber(summary.irr) ?? finiteNumber(summary.mwror)
+  const calmarRatio = ratioToDrawdown(summary.annualized_twr, summary.max_drawdown)
+  const returnDifference =
+    summary.cumulative_twr != null && benchmarkMetrics?.periodReturn != null
+      ? summary.cumulative_twr - benchmarkMetrics.periodReturn
+      : null
+  const annualizedReturnDifference =
+    summary.annualized_twr != null && benchmarkMetrics?.annualizedReturn != null
+      ? summary.annualized_twr - benchmarkMetrics.annualizedReturn
+      : null
+  const volatilityDifference =
+    summary.annualized_volatility != null && benchmarkMetrics?.annualizedVolatility != null
+      ? summary.annualized_volatility - benchmarkMetrics.annualizedVolatility
+      : null
+  const downsideVolatilityDifference =
+    summary.annualized_downside_volatility != null && benchmarkMetrics?.annualizedDownsideVolatility != null
+      ? summary.annualized_downside_volatility - benchmarkMetrics.annualizedDownsideVolatility
+      : null
+  const sharpeDifference =
+    summary.sharpe_ratio != null && benchmarkMetrics?.sharpe != null ? summary.sharpe_ratio - benchmarkMetrics.sharpe : null
+  const sortinoDifference =
+    summary.sortino_ratio != null && benchmarkMetrics?.sortino != null ? summary.sortino_ratio - benchmarkMetrics.sortino : null
+  const calmarDifference =
+    calmarRatio != null && benchmarkMetrics?.calmar != null ? calmarRatio - benchmarkMetrics.calmar : null
+  const currentDrawdownDifference =
+    summary.current_drawdown != null && benchmarkMetrics?.currentDrawdown != null
+      ? summary.current_drawdown - benchmarkMetrics.currentDrawdown
+      : null
+  const maxDrawdownDifference =
+    summary.max_drawdown != null && benchmarkMetrics?.maxDrawdown != null
+      ? summary.max_drawdown - benchmarkMetrics.maxDrawdown
+      : null
+
+  return [
+    {
+      metric: 'TWR',
+      value: signedPercent(summary.cumulative_twr),
+      valueClassName: signedValueClass(summary.cumulative_twr),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.periodReturn),
+      benchmarkClassName: benchmarkMetricClassName(
+        selectedBenchmarkInstrument,
+        benchmarkLoading,
+        benchmarkMetrics?.periodReturn,
+      ),
+      difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, returnDifference),
+      differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, returnDifference),
+      showComparison,
+    },
+    {
+      metric: 'Annualized TWR',
+      value: signedPercent(summary.annualized_twr),
+      valueClassName: signedValueClass(summary.annualized_twr),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.annualizedReturn),
+      benchmarkClassName: benchmarkMetricClassName(
+        selectedBenchmarkInstrument,
+        benchmarkLoading,
+        benchmarkMetrics?.annualizedReturn,
+      ),
+      difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, annualizedReturnDifference),
+      differenceClassName: benchmarkMetricClassName(
+        selectedBenchmarkInstrument,
+        benchmarkLoading,
+        annualizedReturnDifference,
+      ),
+      showComparison,
+    },
+    {
+      metric: 'IRR / MWR',
+      value: signedPercent(irr),
+      valueClassName: signedValueClass(irr),
+    },
+    {
+      metric: 'Total P&L',
+      value: formatSignedCurrency(summary.total_pnl, baseCurrency),
+      valueClassName: signedValueClass(summary.total_pnl),
+    },
+    {
+      metric: 'Mean Daily Return',
+      value: signedPercent(summary.mean_daily_return, 3),
+      valueClassName: signedValueClass(summary.mean_daily_return),
+    },
+    {
+      metric: 'Calmar Ratio',
+      value: formatRatio(calmarRatio),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.calmar, formatRatio),
+      difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, calmarDifference, signedRatio),
+      differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, calmarDifference),
+      showComparison,
+    },
+    {
+      metric: 'Volatility',
+      value: formatPercent(summary.annualized_volatility),
+      benchmark: benchmarkMetricText(
+        selectedBenchmarkInstrument,
+        benchmarkLoading,
+        benchmarkMetrics?.annualizedVolatility,
+        formatPercent,
+      ),
+      benchmarkClassName: undefined,
+      difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, volatilityDifference),
+      differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, volatilityDifference),
+      showComparison,
+    },
+    {
+      metric: 'Downside Volatility',
+      value: formatPercent(summary.annualized_downside_volatility),
+      benchmark: benchmarkMetricText(
+        selectedBenchmarkInstrument,
+        benchmarkLoading,
+        benchmarkMetrics?.annualizedDownsideVolatility,
+        formatPercent,
+      ),
+      difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, downsideVolatilityDifference),
+      differenceClassName: benchmarkMetricClassName(
+        selectedBenchmarkInstrument,
+        benchmarkLoading,
+        downsideVolatilityDifference,
+      ),
+      showComparison,
+    },
+    {
+      metric: 'Sharpe Ratio',
+      value: formatRatio(summary.sharpe_ratio),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.sharpe, formatRatio),
+      difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, sharpeDifference, signedRatio),
+      differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, sharpeDifference),
+      showComparison,
+    },
+    {
+      metric: 'Sortino Ratio',
+      value: formatRatio(summary.sortino_ratio),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.sortino, formatRatio),
+      difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, sortinoDifference, signedRatio),
+      differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, sortinoDifference),
+      showComparison,
+    },
+    {
+      metric: 'Current DD',
+      value: signedPercent(summary.current_drawdown),
+      valueClassName: signedValueClass(summary.current_drawdown),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.currentDrawdown),
+      benchmarkClassName: benchmarkMetricClassName(
+        selectedBenchmarkInstrument,
+        benchmarkLoading,
+        benchmarkMetrics?.currentDrawdown,
+      ),
+      difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, currentDrawdownDifference),
+      differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, currentDrawdownDifference),
+      showComparison,
+    },
+    {
+      metric: 'Max DD',
+      value: signedPercent(summary.max_drawdown),
+      valueClassName: signedValueClass(summary.max_drawdown),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.maxDrawdown),
+      benchmarkClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.maxDrawdown),
+      difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, maxDrawdownDifference),
+      differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, maxDrawdownDifference),
+      showComparison,
+    },
+    {
+      metric: 'Tracking Error',
+      value: formatPercent(relativeMetrics?.trackingError),
+    },
+    {
+      metric: 'Information Ratio',
+      value: formatRatio(relativeMetrics?.informationRatio),
+    },
+    {
+      metric: 'Beta',
+      value: formatRatio(relativeMetrics?.beta),
+    },
+    {
+      metric: 'Upside Capture',
+      value: formatPercent(relativeMetrics?.upsideCapture == null ? null : relativeMetrics.upsideCapture / 100),
+    },
+    {
+      metric: 'Downside Capture',
+      value: formatPercent(relativeMetrics?.downsideCapture == null ? null : relativeMetrics.downsideCapture / 100),
+    },
+    {
+      metric: 'CAP Ratio',
+      value: formatRatio(relativeMetrics?.captureRatio),
+    },
+  ] satisfies PerformanceMetricRow[]
 }
 
-function resolvePerformanceViewState(store: PerformanceViewStore, viewId: string) {
-  return getPerformanceViewById(store, viewId).state
-}
-
-function createPerformanceViewId() {
-  return `custom:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
-}
-
-function TableStatusRow({
-  colSpan,
-  label,
-  tone = 'neutral',
-}: {
-  colSpan: number
-  label: string
-  tone?: 'neutral' | 'error'
-}) {
+function TableStatusRow({ colSpan, label, tone = 'muted' }: { colSpan: number; label: string; tone?: 'muted' | 'error' }) {
   return (
-    <tr className="table-status-row">
-      <td colSpan={colSpan} className={`empty-state-cell ${tone === 'error' ? 'table-status-cell-error' : ''}`}>
+    <tr>
+      <td colSpan={colSpan} className={`table-empty-cell ${tone === 'error' ? 'table-empty-cell-error' : ''}`}>
         {label}
       </td>
     </tr>
   )
 }
 
-export default function PerformancePage() {
-  const { portfolioId = '' } = useParams()
+function EmptyNumberCells({ count }: { count: number }) {
+  return Array.from({ length: count }, (_, index) => (
+    <td key={index} className="performance-cell-number">
+      —
+    </td>
+  ))
+}
+
+function MetricGrid({ rows }: { rows: PerformanceMetricRow[] }) {
+  const columnLabels = ['Return', 'Risk', 'Relative']
+  const columnCount = columnLabels.length
+  const showComparisonColumns = rows.some((row) => row.showComparison)
+  const rowsPerColumn = Math.ceil(rows.length / columnCount)
+  const columnRows = Array.from({ length: columnCount }, (_, index) =>
+    rows.slice(index * rowsPerColumn, (index + 1) * rowsPerColumn),
+  ).filter((items) => items.length > 0)
+
+  return (
+    <div className="performance-metric-table-grid">
+      {columnRows.map((items, columnIndex) => (
+        <div className="performance-metric-table-shell" key={`metric-column-${columnIndex}`}>
+          <div className="performance-metric-column-title">{columnLabels[columnIndex]}</div>
+          <table
+            className={`performance-metric-table ${
+              showComparisonColumns ? 'performance-metric-table-has-comparison' : ''
+            }`}
+          >
+            <thead>
+              <tr>
+                <th>Metric</th>
+                <th>Portfolio</th>
+                {showComparisonColumns ? <th>BM</th> : null}
+                {showComparisonColumns ? <th>Diff</th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((row) => (
+                <tr key={row.metric}>
+                  <th scope="row">
+                    <span className="performance-metric-table-name">
+                      <span>{row.metric}</span>
+                    </span>
+                  </th>
+                  <td className={row.valueClassName ?? ''}>{row.value}</td>
+                  {showComparisonColumns ? (
+                    <td className={row.benchmarkClassName ?? ''}>{row.showComparison ? row.benchmark ?? '—' : '—'}</td>
+                  ) : null}
+                  {showComparisonColumns ? (
+                    <td className={row.differenceClassName ?? ''}>{row.showComparison ? row.difference ?? '—' : '—'}</td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PerformancePage() {
+  const { portfolioId } = useParams<{ portfolioId: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
+
+  const todayDate = useMemo(() => localDateIso(), [])
+  const appliedStartDate = searchParams.get('start_date') ?? ''
+  const appliedEndDate = searchParams.get('end_date') ?? ''
+  const effectiveEndDate = appliedEndDate || todayDate
+  const defaultStartDate = useMemo(
+    () => shiftIsoDate(effectiveEndDate, -(DEFAULT_PERFORMANCE_LOOKBACK_DAYS - 1)),
+    [effectiveEndDate],
+  )
+  const effectiveStartDate = appliedStartDate || defaultStartDate
+
   const [workspace, setWorkspace] = useState<PortfolioPerformanceResponse | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [calculationWorkspace, setCalculationWorkspace] = useState<PortfolioPerformanceCalculationResponse | null>(null)
   const [calculationLoading, setCalculationLoading] = useState(false)
   const [calculationError, setCalculationError] = useState<string | null>(null)
-  const [contributionWorkspace, setContributionWorkspace] = useState<PortfolioContributionReportResponse | null>(null)
-  const [contributionLoading, setContributionLoading] = useState(false)
-  const [contributionError, setContributionError] = useState<string | null>(null)
-  const [assetContributionWorkspace, setAssetContributionWorkspace] =
-    useState<PortfolioContributionReportResponse | null>(null)
-  const [assetContributionLoading, setAssetContributionLoading] = useState(false)
-  const [assetContributionError, setAssetContributionError] = useState<string | null>(null)
-  const [boundaryWorkspace, setBoundaryWorkspace] = useState<PortfolioPeriodBoundaryHoldingsResponse | null>(null)
-  const [boundaryLoading, setBoundaryLoading] = useState(false)
-  const [boundaryError, setBoundaryError] = useState<string | null>(null)
-  const initialPerformanceViewStore = useMemo(() => loadPerformanceViewStore(), [])
-  const initialPerformanceViewState = useMemo(
-    () => resolvePerformanceViewState(initialPerformanceViewStore, initialPerformanceViewStore.activeViewId),
-    [initialPerformanceViewStore],
+  const [calculationGroupBy, setCalculationGroupBy] = useState<PortfolioContributionAxis>('instrument')
+  const [calculationGroupsWorkspace, setCalculationGroupsWorkspace] =
+    useState<PortfolioPerformanceCalculationGroupsResponse | null>(null)
+  const [calculationGroupsLoading, setCalculationGroupsLoading] = useState(false)
+  const [calculationGroupsError, setCalculationGroupsError] = useState<string | null>(null)
+  const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
+  const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
+  const [benchmarkSearch, setBenchmarkSearch] = useState('')
+  const [benchmarkAssetId, setBenchmarkAssetId] = useState('')
+  const [benchmarkChart, setBenchmarkChart] = useState<PortfolioAssetPriceChartResponse | null>(null)
+  const [benchmarkLoading, setBenchmarkLoading] = useState(false)
+  const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
+  const defaultPlanningTaxonomy = useMemo(
+    () =>
+      taxonomyCatalog?.taxonomies.find(
+        (taxonomy) =>
+          taxonomy.taxonomy_id === taxonomyCatalog.default_planning_taxonomy_id &&
+          taxonomy.planning_enabled &&
+          taxonomy.status === 'active',
+      ) ?? null,
+    [taxonomyCatalog],
   )
-  const [performanceViewStore, setPerformanceViewStore] = useState<PerformanceViewStore>(() => initialPerformanceViewStore)
-  const [activePerformanceViewId, setActivePerformanceViewId] = useState(initialPerformanceViewStore.activeViewId)
-
-  const appliedStartDate = searchParams.get('start_date') ?? ''
-  const appliedEndDate = searchParams.get('end_date') ?? ''
-  const defaultEndDate = useMemo(() => localDateIso(), [])
-  const defaultStartDate = useMemo(
-    () => shiftIsoDate(defaultEndDate, -(DEFAULT_PERFORMANCE_LOOKBACK_DAYS - 1)),
-    [defaultEndDate],
-  )
-  const effectiveStartDate = appliedStartDate || defaultStartDate
-  const effectiveEndDate = appliedEndDate || defaultEndDate
-  const detailTab =
-    parsePerformanceDetailTab(searchParams.get('detail_tab')) ?? initialPerformanceViewState.detailTab
-  const contributionAxis =
-    parsePerformanceContributionAxis(searchParams.get('contribution_axis')) ??
-    initialPerformanceViewState.contributionAxis
-  const performanceViews = useMemo(() => getPerformanceViews(performanceViewStore), [performanceViewStore])
-  const activePerformanceView = useMemo(
-    () => getPerformanceViewById(performanceViewStore, activePerformanceViewId),
-    [activePerformanceViewId, performanceViewStore],
-  )
-  const currentPerformanceViewState = useMemo<PerformanceViewState>(
-    () => ({ detailTab, contributionAxis }),
-    [contributionAxis, detailTab],
-  )
-  const performanceViewEdited = !performanceViewStatesEqual(currentPerformanceViewState, activePerformanceView.state)
-
-  const [draftStartDate, setDraftStartDate] = useState(effectiveStartDate)
-  const [draftEndDate, setDraftEndDate] = useState(effectiveEndDate)
-
-  useEffect(() => {
-    setDraftStartDate(effectiveStartDate)
-    setDraftEndDate(effectiveEndDate)
-  }, [effectiveEndDate, effectiveStartDate])
-
-  function updateSearchParam(key: string, value: string | null) {
-    setSearchParams((current) => {
-      const next = new URLSearchParams(current)
-      const normalizedValue = value && value.trim() ? value : null
-      const currentValue = current.get(key)
-      if (normalizedValue === currentValue || (!normalizedValue && !currentValue)) {
-        return current
-      }
-      if (normalizedValue) {
-        next.set(key, normalizedValue)
-      } else {
-        next.delete(key)
-      }
-      return next
-    })
-  }
-
-  function updateWindowParams(startDate: string | null, endDate: string | null) {
-    setSearchParams((current) => {
-      const next = new URLSearchParams(current)
-      const normalizedStartDate = startDate && startDate.trim() ? startDate : null
-      const normalizedEndDate = endDate && endDate.trim() ? endDate : null
-
-      if (normalizedStartDate) {
-        next.set('start_date', normalizedStartDate)
-      } else {
-        next.delete('start_date')
-      }
-
-      if (normalizedEndDate) {
-        next.set('end_date', normalizedEndDate)
-      } else {
-        next.delete('end_date')
-      }
-
-      return next
-    })
-  }
-
-  function applyPerformanceViewState(state: PerformanceViewState) {
-    const normalized = normalizePerformanceViewState(state)
-    setSearchParams((current) => {
-      const next = new URLSearchParams(current)
-      if (normalized.detailTab === 'daily') {
-        next.delete('detail_tab')
-      } else {
-        next.set('detail_tab', normalized.detailTab)
-      }
-      if (normalized.contributionAxis === 'instrument') {
-        next.delete('contribution_axis')
-      } else {
-        next.set('contribution_axis', normalized.contributionAxis)
-      }
-      return next
-    })
-  }
-
-  function handleSelectPerformanceView(viewId: string) {
-    const nextView = getPerformanceViewById(performanceViewStore, viewId)
-    setActivePerformanceViewId(nextView.id)
-    setPerformanceViewStore((current) => ({ ...current, activeViewId: nextView.id }))
-    applyPerformanceViewState(resolvePerformanceViewState(performanceViewStore, nextView.id))
-  }
-
-  function handleSavePerformanceView() {
-    if (activePerformanceView.readonly) {
-      return
-    }
-    const timestamp = new Date().toISOString()
-    setPerformanceViewStore((current) => {
-      return {
-        ...current,
-        activeViewId: activePerformanceViewId,
-        customViews: current.customViews.map((view) =>
-          view.id === activePerformanceViewId
-            ? {
-                ...view,
-                state: currentPerformanceViewState,
-                updatedAt: timestamp,
-              }
-            : view,
-        ),
-      }
-    })
-  }
-
-  function handleSavePerformanceViewAs(name: string, description: string | null) {
-    const timestamp = new Date().toISOString()
-    const viewId = createPerformanceViewId()
-    const nextView: PerformanceTableView = {
-      id: viewId,
-      name,
-      description,
-      readonly: false,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      state: currentPerformanceViewState,
-    }
-    setPerformanceViewStore((current) => ({
-      ...current,
-      activeViewId: viewId,
-      customViews: [...current.customViews, nextView],
-    }))
-    setActivePerformanceViewId(viewId)
-  }
-
-  function handleApplyFilters(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    updateWindowParams(draftStartDate || null, draftEndDate || null)
-  }
-
-  function handleResetFilters() {
-    setDraftStartDate(defaultStartDate)
-    setDraftEndDate(defaultEndDate)
-    updateWindowParams(null, null)
-  }
-
-  useEffect(() => {
-    savePerformanceViewStore(performanceViewStore)
-  }, [performanceViewStore])
+  const resolvedCalculationGroupBy =
+    calculationGroupBy === 'taxonomy' && !defaultPlanningTaxonomy ? 'instrument' : calculationGroupBy
 
   useEffect(() => {
     if (!portfolioId) {
@@ -652,20 +744,16 @@ export default function PerformancePage() {
 
     let cancelled = false
     setLoading(true)
-
-    getPortfolioPerformance(portfolioId, {
-      start_date: effectiveStartDate || undefined,
-      end_date: effectiveEndDate || undefined,
-    })
+    setError(null)
+    getPortfolioPerformance(portfolioId, { start_date: effectiveStartDate, end_date: effectiveEndDate })
       .then((response) => {
-        if (cancelled) {
-          return
-        }
-        setWorkspace(response)
-        setError(null)
-      })
-      .catch((requestError) => {
         if (!cancelled) {
+          setWorkspace(response)
+        }
+      })
+      .catch((requestError: unknown) => {
+        if (!cancelled) {
+          setWorkspace(null)
           setError(requestError instanceof Error ? requestError.message : 'Failed to load performance workspace.')
         }
       })
@@ -678,73 +766,29 @@ export default function PerformancePage() {
     return () => {
       cancelled = true
     }
-  }, [effectiveEndDate, effectiveStartDate, portfolioId])
+  }, [portfolioId, effectiveStartDate, effectiveEndDate])
 
   useEffect(() => {
     if (!portfolioId) {
-      setAssetContributionWorkspace(null)
-      setAssetContributionLoading(false)
-      setAssetContributionError(null)
-      return
-    }
-
-    let cancelled = false
-    setAssetContributionLoading(true)
-    setAssetContributionError(null)
-
-    getPortfolioPerformanceContribution(portfolioId, {
-      start_date: effectiveStartDate || undefined,
-      end_date: effectiveEndDate || undefined,
-      axis: 'instrument',
-    })
-      .then((response) => {
-        if (!cancelled) {
-          setAssetContributionWorkspace(response)
-          setAssetContributionError(null)
-        }
-      })
-      .catch((requestError) => {
-        if (!cancelled) {
-          setAssetContributionError(
-            requestError instanceof Error ? requestError.message : 'Failed to load all-asset contribution.',
-          )
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setAssetContributionLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [effectiveEndDate, effectiveStartDate, portfolioId])
-
-  useEffect(() => {
-    if (!portfolioId || detailTab !== 'calculation') {
+      setCalculationWorkspace(null)
+      setCalculationLoading(false)
+      setCalculationError(null)
       return
     }
 
     let cancelled = false
     setCalculationLoading(true)
     setCalculationError(null)
-
-    getPortfolioPerformanceCalculation(portfolioId, {
-      start_date: effectiveStartDate || undefined,
-      end_date: effectiveEndDate || undefined,
-    })
+    getPortfolioPerformanceCalculation(portfolioId, { start_date: effectiveStartDate, end_date: effectiveEndDate })
       .then((response) => {
         if (!cancelled) {
           setCalculationWorkspace(response)
-          setCalculationError(null)
         }
       })
-      .catch((requestError) => {
+      .catch((requestError: unknown) => {
         if (!cancelled) {
-          setCalculationError(
-            requestError instanceof Error ? requestError.message : 'Failed to load period calculation.',
-          )
+          setCalculationWorkspace(null)
+          setCalculationError(requestError instanceof Error ? requestError.message : 'Failed to load period calculation.')
         }
       })
       .finally(() => {
@@ -756,202 +800,209 @@ export default function PerformancePage() {
     return () => {
       cancelled = true
     }
-  }, [detailTab, effectiveEndDate, effectiveStartDate, portfolioId])
+  }, [portfolioId, effectiveStartDate, effectiveEndDate])
 
   useEffect(() => {
-    if (!portfolioId || detailTab !== 'contribution') {
+    if (!portfolioId) {
+      setBenchmarkInstruments([])
+      setTaxonomyCatalog(null)
       return
     }
 
     let cancelled = false
-    setContributionLoading(true)
-    setContributionError(null)
-
-    getPortfolioPerformanceContribution(portfolioId, {
-      start_date: effectiveStartDate || undefined,
-      end_date: effectiveEndDate || undefined,
-      axis: contributionAxis,
-    })
-      .then((response) => {
-        if (!cancelled) {
-          setContributionWorkspace(response)
-          setContributionError(null)
+    Promise.allSettled([getPortfolioInstruments(portfolioId), getPortfolioTaxonomyCatalog(portfolioId)])
+      .then(([instrumentResult, taxonomyResult]) => {
+        if (cancelled) {
+          return
         }
-      })
-      .catch((requestError) => {
-        if (!cancelled) {
-          setContributionError(
-            requestError instanceof Error ? requestError.message : 'Failed to load contribution breakdown.',
-          )
+        if (instrumentResult.status === 'fulfilled') {
+          setBenchmarkInstruments(instrumentResult.value.instruments)
+        } else {
+          setBenchmarkInstruments([])
         }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setContributionLoading(false)
+        if (taxonomyResult.status === 'fulfilled') {
+          setTaxonomyCatalog(taxonomyResult.value)
+        } else {
+          setTaxonomyCatalog(null)
         }
       })
 
     return () => {
       cancelled = true
     }
-  }, [contributionAxis, detailTab, effectiveEndDate, effectiveStartDate, portfolioId])
+  }, [portfolioId])
 
   useEffect(() => {
-    if (!portfolioId || detailTab !== 'boundary') {
+    if (!portfolioId) {
+      setCalculationGroupsWorkspace(null)
+      setCalculationGroupsLoading(false)
+      setCalculationGroupsError(null)
       return
     }
 
     let cancelled = false
-    setBoundaryLoading(true)
-    setBoundaryError(null)
-
-    getPortfolioPerformanceBoundaryHoldings(portfolioId, {
-      start_date: effectiveStartDate || undefined,
-      end_date: effectiveEndDate || undefined,
+    setCalculationGroupsLoading(true)
+    setCalculationGroupsError(null)
+    getPortfolioPerformanceCalculationGroups(portfolioId, {
+      start_date: effectiveStartDate,
+      end_date: effectiveEndDate,
+      axis: resolvedCalculationGroupBy,
+      taxonomy_id:
+        resolvedCalculationGroupBy === 'taxonomy' ? defaultPlanningTaxonomy?.taxonomy_id ?? undefined : undefined,
     })
       .then((response) => {
         if (!cancelled) {
-          setBoundaryWorkspace(response)
-          setBoundaryError(null)
+          setCalculationGroupsWorkspace(response)
         }
       })
-      .catch((requestError) => {
+      .catch((requestError: unknown) => {
         if (!cancelled) {
-          setBoundaryError(
-            requestError instanceof Error ? requestError.message : 'Failed to load period boundary holdings.',
+          setCalculationGroupsWorkspace(null)
+          setCalculationGroupsError(
+            requestError instanceof Error ? requestError.message : 'Failed to load calculation groups.',
           )
         }
       })
       .finally(() => {
         if (!cancelled) {
-          setBoundaryLoading(false)
+          setCalculationGroupsLoading(false)
         }
       })
 
     return () => {
       cancelled = true
     }
-  }, [detailTab, effectiveEndDate, effectiveStartDate, portfolioId])
+  }, [
+    portfolioId,
+    effectiveStartDate,
+    effectiveEndDate,
+    resolvedCalculationGroupBy,
+    defaultPlanningTaxonomy?.taxonomy_id,
+  ])
 
-  const navChartPoints = useMemo(
+  useEffect(() => {
+    if (!portfolioId || !benchmarkAssetId) {
+      setBenchmarkChart(null)
+      setBenchmarkLoading(false)
+      setBenchmarkError(null)
+      return
+    }
+
+    let cancelled = false
+    setBenchmarkLoading(true)
+    setBenchmarkError(null)
+
+    getPortfolioAssetPriceChart(portfolioId, benchmarkAssetId, {
+      as_of_date: effectiveEndDate,
+      range: 'all',
+    })
+      .then((response) => {
+        if (!cancelled) {
+          setBenchmarkChart(response)
+        }
+      })
+      .catch((requestError: unknown) => {
+        if (!cancelled) {
+          setBenchmarkChart(null)
+          setBenchmarkError(requestError instanceof Error ? requestError.message : 'Failed to load benchmark history.')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setBenchmarkLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [benchmarkAssetId, effectiveEndDate, portfolioId])
+
+  function updateWindowParams(nextStartDate: string | null, nextEndDate: string | null) {
+    const nextParams = new URLSearchParams(searchParams)
+    if (nextStartDate) {
+      nextParams.set('start_date', nextStartDate)
+    } else {
+      nextParams.delete('start_date')
+    }
+    if (nextEndDate) {
+      nextParams.set('end_date', nextEndDate)
+    } else {
+      nextParams.delete('end_date')
+    }
+    setSearchParams(nextParams)
+  }
+
+  const summary = workspace?.summary ?? null
+  const baseCurrency = workspace?.base_currency ?? calculationWorkspace?.base_currency ?? calculationGroupsWorkspace?.base_currency ?? 'USD'
+  const periodLabel =
+    summary?.start_date && summary.end_date
+      ? `${summary.start_date} to ${summary.end_date}`
+      : `${effectiveStartDate} to ${effectiveEndDate}`
+
+  const selectedBenchmarkInstrument =
+    benchmarkInstruments.find((instrument) => instrument.asset_id === benchmarkAssetId) ?? null
+  const benchmarkMetrics = useMemo(
+    () => buildBenchmarkPeriodMetrics(benchmarkChart?.points ?? [], effectiveStartDate, effectiveEndDate),
+    [benchmarkChart, effectiveStartDate, effectiveEndDate],
+  )
+  const metricRows = useMemo(
     () =>
-      (workspace?.daily_series ?? [])
-        .filter((point) => point.ending_nav != null)
-        .map((point) => ({
-          date: point.as_of_date,
-          value: point.ending_nav as number,
-        })),
-    [workspace],
+      summary
+        ? buildPerformanceMetricRows(
+            summary,
+            workspace?.daily_series ?? [],
+            baseCurrency,
+            selectedBenchmarkInstrument,
+            benchmarkLoading,
+            benchmarkMetrics,
+          )
+        : [],
+    [summary, workspace?.daily_series, baseCurrency, selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics],
   )
-  const twrIndexChartPoints = useMemo(
-    () => buildTwrIndexPoints(workspace?.daily_series ?? []),
-    [workspace],
-  )
-  const monthlyBuckets = useMemo(
-    () => buildMonthlyBuckets(workspace?.daily_series ?? []),
-    [workspace],
-  )
-  const recentMonthlyBuckets = useMemo(
-    () => [...monthlyBuckets].reverse().slice(0, 12),
-    [monthlyBuckets],
-  )
-  const recentDailyRows = useMemo(
-    () => [...(workspace?.daily_series ?? [])].reverse().slice(0, 30),
-    [workspace],
-  )
-  const rankedContributionLines = useMemo(
-    () =>
-      [...(contributionWorkspace?.lines ?? [])]
-        .sort(
-          (left, right) =>
-            Math.abs(right.period_contribution ?? 0) - Math.abs(left.period_contribution ?? 0) ||
-            Math.abs(right.total_pnl ?? 0) - Math.abs(left.total_pnl ?? 0),
-        ),
-    [contributionWorkspace],
-  )
-  const allAssetContributionRows = useMemo(
-    () =>
-      buildAssetContributionRows(
-        assetContributionWorkspace?.lines ?? [],
-        assetContributionWorkspace?.daily_slices ?? [],
-      ),
-    [assetContributionWorkspace],
-  )
+  const calculationRows = useMemo(() => {
+    if (!calculationGroupsWorkspace) {
+      return []
+    }
+    return calculationGroupsWorkspace.groups.slice().sort((left, right) => {
+      const leftMagnitude = Math.abs(finiteNumber(left.period_contribution) ?? finiteNumber(left.total_pnl) ?? 0)
+      const rightMagnitude = Math.abs(finiteNumber(right.period_contribution) ?? finiteNumber(right.total_pnl) ?? 0)
+      return rightMagnitude - leftMagnitude || left.group_label.localeCompare(right.group_label)
+    })
+  }, [calculationGroupsWorkspace])
 
-  const summary = workspace?.summary
-  const baseCurrency = workspace?.base_currency ?? 'USD'
-
-  const leftSummaryRows = [
-    { label: 'Period', value: summary ? `${summary.start_date ?? '—'} to ${summary.end_date ?? '—'}` : '—' },
-    { label: 'Coverage', value: summary ? formatLabel(summary.coverage_state) : '—' },
-    { label: 'Start NAV', value: formatCurrency(summary?.start_nav, baseCurrency) },
-    { label: 'End NAV', value: formatCurrency(summary?.end_nav, baseCurrency) },
-    { label: 'Net External Inflow', value: formatSignedCurrency(summary?.net_external_inflow, baseCurrency) },
-    {
-      label: 'Absolute Change',
-      value: formatSignedCurrency(summary?.absolute_change, baseCurrency),
-      toneClassName: signedValueClass(summary?.absolute_change),
-    },
-    {
-      label: 'P&L Ex Flows',
-      value: formatSignedCurrency(summary?.delta, baseCurrency),
-      toneClassName: signedValueClass(summary?.delta),
-    },
-    {
-      label: 'Total P&L',
-      value: formatSignedCurrency(summary?.total_pnl, baseCurrency),
-      toneClassName: signedValueClass(summary?.total_pnl),
-    },
-  ]
-
-  const rightSummaryRows = [
-    {
-      label: 'Cumulative TWR',
-      value: signedPercent(summary?.cumulative_twr),
-      toneClassName: signedValueClass(summary?.cumulative_twr),
-    },
-    {
-      label: 'Annualized TWR',
-      value: signedPercent(summary?.annualized_twr),
-      toneClassName: signedValueClass(summary?.annualized_twr),
-    },
-    { label: 'IRR / MWROR', value: signedPercent(summary?.irr), toneClassName: signedValueClass(summary?.irr) },
-    {
-      label: 'Mean Daily Return',
-      value: signedPercent(summary?.mean_daily_return, 3),
-      toneClassName: signedValueClass(summary?.mean_daily_return),
-    },
-    { label: 'Annualized Volatility', value: signedPercent(summary?.annualized_volatility) },
-    { label: 'Sharpe Ratio', value: formatNumber(summary?.sharpe_ratio, 2) },
-    { label: 'Sortino Ratio', value: formatNumber(summary?.sortino_ratio, 2) },
-    { label: 'Max Drawdown', value: signedPercent(summary?.max_drawdown), toneClassName: signedValueClass(summary?.max_drawdown) },
-  ]
+  const calculationSummary = calculationWorkspace?.summary ?? null
+  const calculationGroupsSummary = calculationGroupsWorkspace?.summary ?? null
+  const initialValue = calculationSummary?.initial_value ?? summary?.start_nav ?? null
+  const finalValue = calculationSummary?.final_value ?? summary?.end_nav ?? null
+  const portfolioRealizedGain = calculationSummary?.realized_capital_gains ?? summary?.realized_pnl ?? null
+  const portfolioUnrealizedGainChange = calculationSummary?.capital_gains ?? summary?.unrealized_pnl ?? null
+  const portfolioCapitalGain = sumNullable(portfolioRealizedGain, portfolioUnrealizedGainChange)
+  const portfolioIncome = calculationSummary?.earnings ?? summary?.income_cash_amount ?? null
+  const portfolioFxPnl = sumNullable(calculationSummary?.cash_currency_gains, calculationSummary?.asset_currency_gains)
+  const portfolioFees = expenseImpact(calculationSummary?.fees)
+  const portfolioTaxes = expenseImpact(calculationSummary?.taxes)
+  const portfolioPeriodPnl = calculationSummary?.delta ?? summary?.delta ?? summary?.total_pnl ?? null
+  const portfolioContribution = calculationGroupsSummary?.total_period_contribution ?? summary?.cumulative_twr ?? null
+  const contributionResidual = calculationGroupsSummary?.contribution_residual ?? null
+  const showContributionResidual = contributionResidual != null && Math.abs(contributionResidual) > 0.0000005
+  const calculationGroupLabel = calculationAxisLabel(resolvedCalculationGroupBy, defaultPlanningTaxonomy)
+  const calculationMeta = `${periodLabel} · ${formatNumber(calculationRows.length, 0)} ${calculationAxisCountLabel(
+    resolvedCalculationGroupBy,
+  )}`
 
   return (
-    <PortfolioWorkspaceLayout activeSection="Performance" toolbarLabel="View: Total Return">
-      <section className="portfolio-detail-surface">
-        <div className="portfolio-detail-toolbar">
-          <div className="panel-title">Performance</div>
-        </div>
-
-        <form className="performance-filter-bar" onSubmit={handleApplyFilters}>
-          <PortfolioTableViewControls
-            views={performanceViews}
-            activeViewId={activePerformanceViewId}
-            edited={performanceViewEdited}
-            canSave={!activePerformanceView.readonly}
-            onSelect={handleSelectPerformanceView}
-            onSave={handleSavePerformanceView}
-            onSaveAs={handleSavePerformanceViewAs}
-          />
-          <div className="performance-filter-group">
+    <PortfolioWorkspaceLayout activeSection="Performance" toolbarLabel="View: Performance">
+      <section className="portfolio-detail-surface performance-surface">
+        <div className="transaction-filter-bar performance-window-bar">
+          <div className="performance-filter-group performance-window-group">
             <label>
               <span>Start Date</span>
               <input
                 className="transaction-filter-input"
                 type="date"
-                value={draftStartDate}
-                onChange={(event) => setDraftStartDate(event.target.value)}
+                value={effectiveStartDate}
+                onChange={(event) => updateWindowParams(event.target.value || null, appliedEndDate || null)}
               />
             </label>
             <label>
@@ -959,468 +1010,256 @@ export default function PerformancePage() {
               <input
                 className="transaction-filter-input"
                 type="date"
-                value={draftEndDate}
-                onChange={(event) => setDraftEndDate(event.target.value)}
+                value={effectiveEndDate}
+                onChange={(event) => updateWindowParams(appliedStartDate || null, event.target.value || null)}
               />
             </label>
           </div>
-          <div className="performance-filter-actions">
-            <button type="submit">Apply Window</button>
-            <button type="button" onClick={handleResetFilters}>
-              Reset
-            </button>
-          </div>
-        </form>
-
-        {!appliedStartDate && !appliedEndDate ? (
-          <div className="inline-notice">
-            Default window: trailing {DEFAULT_PERFORMANCE_LOOKBACK_DAYS} calendar days ending {effectiveEndDate}.
-          </div>
-        ) : null}
+          <BenchmarkSearchBox
+            className="performance-benchmark-search"
+            instruments={benchmarkInstruments}
+            selectedAssetId={benchmarkAssetId}
+            searchValue={benchmarkSearch}
+            onSearchChange={setBenchmarkSearch}
+            onSelectInstrument={(instrument) => {
+              setBenchmarkAssetId(instrument.asset_id)
+              setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
+              setBenchmarkError(null)
+            }}
+            onClear={() => {
+              setBenchmarkAssetId('')
+              setBenchmarkSearch('')
+              setBenchmarkChart(null)
+              setBenchmarkError(null)
+            }}
+            placeholder="Compare benchmark..."
+          />
+        </div>
 
         {error ? <div className="inline-notice inline-notice-error">{error}</div> : null}
-        {loading && workspace ? <div className="inline-notice">Refreshing derived performance window…</div> : null}
-
-        {loading && !workspace ? (
-          <CalculationStatus label="Building performance workspace from portfolio transactions and shared prices…" />
+        {benchmarkError ? <div className="inline-notice inline-notice-error">{benchmarkError}</div> : null}
+        {loading && !workspace ? <CalculationStatus label="Loading performance workspace…" /> : null}
+        {loading && workspace ? <CalculationStatus label="Refreshing performance workspace…" /> : null}
+        {!loading && !workspace && !error ? (
+          <div className="empty-state">Select a portfolio to review performance.</div>
         ) : null}
 
-        {!loading && !workspace && !error ? <div className="empty-state">No performance data is available.</div> : null}
-
-        {workspace ? (
-          <>
-            <div className="performance-summary-grid">
-              <div className="table-shell">
-                <table className="performance-summary-table">
-                  <thead>
-                    <tr>
-                      <th colSpan={2}>Period Summary</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {leftSummaryRows.map((row) => (
-                      <tr key={row.label}>
-                        <th>{row.label}</th>
-                        <td className={row.toneClassName}>{row.value}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+        {workspace && summary ? (
+          <div className="performance-section-stack">
+            <section className="performance-section-block">
+              <div className="portfolio-detail-toolbar performance-subsection-toolbar performance-section-toolbar">
+                <div>
+                  <div className="panel-title">Return &amp; Risk Metrics</div>
+                  <div className="portfolio-detail-meta">{periodLabel}</div>
+                </div>
               </div>
-
-              <div className="table-shell">
-                <table className="performance-summary-table">
-                  <thead>
-                    <tr>
-                      <th colSpan={2}>Return And Risk</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rightSummaryRows.map((row) => (
-                      <tr key={row.label}>
-                        <th>{row.label}</th>
-                        <td className={row.toneClassName}>{row.value}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div className="performance-block-grid">
-              <section className="performance-section-block">
-                <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                  <div className="panel-title">NAV Trend</div>
-                  <div className="portfolio-detail-meta">
-                    {summary?.latest_complete_as_of_date
-                      ? `Latest complete valuation ${summary.latest_complete_as_of_date}`
-                      : 'No complete valuation date'}
-                  </div>
-                </div>
-                <PerformanceNavChart points={navChartPoints} twrPoints={twrIndexChartPoints} currency={baseCurrency} />
-              </section>
-
-              <section className="performance-section-block">
-                <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                  <div className="panel-title">Monthly Return Table</div>
-                </div>
-                <div className="table-shell">
-                  <table className="transactions-table">
-                    <thead>
-                      <tr>
-                        <th>Bucket</th>
-                        <th>Coverage</th>
-                        <th>Observations</th>
-                        <th>Start NAV</th>
-                        <th>End NAV</th>
-                        <th>Net Flow</th>
-                        <th>P&amp;L Ex Flows</th>
-                        <th>Monthly TWR</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {recentMonthlyBuckets.length ? (
-                        recentMonthlyBuckets.map((bucket) => (
-                          <tr key={bucket.bucket_key}>
-                            <td>{bucket.bucket_key}</td>
-                            <td>
-                              <span className={`coverage-pill ${coverageClassName(bucket.coverage_state)}`}>
-                                {formatLabel(bucket.coverage_state)}
-                              </span>
-                            </td>
-                            <td>{bucket.observation_count}</td>
-                            <td>{formatCurrency(bucket.start_nav, baseCurrency)}</td>
-                            <td>{formatCurrency(bucket.end_nav, baseCurrency)}</td>
-                            <td>{formatSignedCurrency(bucket.net_external_inflow, baseCurrency)}</td>
-                            <td className={signedValueClass(bucket.delta)}>
-                              {formatSignedCurrency(bucket.delta, baseCurrency)}
-                            </td>
-                            <td className={signedValueClass(bucket.cumulative_twr)}>
-                              {signedPercent(bucket.cumulative_twr)}
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <TableStatusRow colSpan={8} label="No monthly return buckets available." />
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            </div>
+              <MetricGrid rows={metricRows} />
+            </section>
 
             <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                <div className="panel-title">All-Asset Return Contribution</div>
-                <div className="portfolio-detail-meta">
-                  {assetContributionWorkspace?.summary.start_date && assetContributionWorkspace.summary.end_date
-                    ? `${assetContributionWorkspace.summary.start_date} to ${assetContributionWorkspace.summary.end_date}; ${allAssetContributionRows.length} assets`
-                    : 'Held or traded assets inside the selected window'}
+              <div className="portfolio-detail-toolbar performance-subsection-toolbar performance-section-toolbar">
+                <div>
+                  <div className="panel-title">Calculation</div>
+                  <div className="portfolio-detail-meta">{calculationMeta}</div>
+                </div>
+                <div className="performance-group-by-control" aria-label="Group calculation rows">
+                  <span>Group By</span>
+                  <div className="performance-group-by-buttons" role="group">
+                    <button
+                      type="button"
+                      className={resolvedCalculationGroupBy === 'instrument' ? 'performance-group-by-active' : ''}
+                      onClick={() => setCalculationGroupBy('instrument')}
+                    >
+                      Asset
+                    </button>
+                    <button
+                      type="button"
+                      className={resolvedCalculationGroupBy === 'account' ? 'performance-group-by-active' : ''}
+                      onClick={() => setCalculationGroupBy('account')}
+                    >
+                      Account
+                    </button>
+                    <button
+                      type="button"
+                      className={resolvedCalculationGroupBy === 'taxonomy' ? 'performance-group-by-active' : ''}
+                      onClick={() => setCalculationGroupBy('taxonomy')}
+                      disabled={!defaultPlanningTaxonomy}
+                      title={defaultPlanningTaxonomy ? defaultPlanningTaxonomy.name : 'No default planning taxonomy'}
+                    >
+                      Taxonomy
+                    </button>
+                  </div>
                 </div>
               </div>
-              {assetContributionLoading && !assetContributionWorkspace ? (
-                <CalculationStatus label="Building all-asset contribution rows…" />
+              {calculationError ? <div className="inline-notice inline-notice-error">{calculationError}</div> : null}
+              {calculationGroupsError ? (
+                <div className="inline-notice inline-notice-error">{calculationGroupsError}</div>
               ) : null}
-              {assetContributionError ? (
-                <div className="inline-notice inline-notice-error">{assetContributionError}</div>
+              {(calculationLoading && !calculationWorkspace) ||
+              (calculationGroupsLoading && !calculationGroupsWorkspace) ? (
+                <CalculationStatus label="Building performance calculation…" />
               ) : null}
               <div className="table-shell">
-                <table className="transactions-table">
+                <table className="transactions-table performance-calculation-table">
                   <thead>
                     <tr>
-                      <th>Asset</th>
+                      <th>Line</th>
+                      <th>Bridge Impact</th>
                       <th>Start Value</th>
                       <th>End Value</th>
-                      <th>Avg Weight</th>
-                      <th>End Weight</th>
-                      <th>Interval Return</th>
-                      <th>Total P&amp;L</th>
+                      <th>Avg Wgt</th>
+                      <th>End Wgt</th>
+                      <th>Capital Gain</th>
+                      <th>Realized Gain</th>
+                      <th>Unrealized Chg</th>
+                      <th>Income</th>
+                      <th>Fees</th>
+                      <th>Taxes</th>
+                      <th>FX P&L</th>
+                      <th>TWR</th>
                       <th>Contribution</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {allAssetContributionRows.length ? (
-                      allAssetContributionRows.map((line) => (
-                        <tr key={`asset-contribution:${line.group_key}`}>
-                          <td>{line.group_label}</td>
-                          <td>{formatCurrency(line.start_value_base, assetContributionWorkspace?.base_currency ?? baseCurrency)}</td>
-                          <td>{formatCurrency(line.end_value_base, assetContributionWorkspace?.base_currency ?? baseCurrency)}</td>
-                          <td>{formatPercent(line.average_weight)}</td>
-                          <td>{formatPercent(line.ending_weight)}</td>
-                          <td
-                            className={signedValueClass(line.periodReturn)}
-                            title={`${line.returnObservationCount} return observations`}
-                          >
-                            {signedPercent(line.periodReturn)}
-                          </td>
-                          <td className={signedValueClass(line.total_pnl)}>
-                            {formatSignedCurrency(line.total_pnl, assetContributionWorkspace?.base_currency ?? baseCurrency)}
-                          </td>
-                          <td className={signedValueClass(line.period_contribution)}>
-                            {signedPercent(line.period_contribution)}
-                          </td>
-                        </tr>
-                      ))
-                    ) : assetContributionLoading ? (
-                      <TableStatusRow colSpan={8} label="Loading all-asset contribution rows…" />
-                    ) : assetContributionError ? (
-                      <TableStatusRow colSpan={8} label={assetContributionError} tone="error" />
+                    <tr className="performance-calculation-boundary-row">
+                      <th scope="row">Initial Value</th>
+                      <td className="performance-cell-number">—</td>
+                      <td className="performance-cell-number">{formatCurrency(initialValue, baseCurrency)}</td>
+                      <EmptyNumberCells count={12} />
+                    </tr>
+                    {calculationRows.length ? (
+                      calculationRows.map((row) => {
+                        const capitalGain = capitalGainAmount(row)
+                        const fxPnl = fxPnlAmount(row)
+                        const feePnl = expenseImpact(row.fees)
+                        const taxPnl = expenseImpact(row.taxes)
+                        return (
+                          <tr key={row.group_key}>
+                            <th scope="row" className="performance-line-label">
+                              {row.group_label}
+                            </th>
+                            <td className={`performance-cell-number ${signedValueClass(row.total_pnl)}`}>
+                              {formatSignedCurrency(row.total_pnl, baseCurrency)}
+                            </td>
+                            <td className="performance-cell-number">
+                              {formatCurrency(row.initial_value, baseCurrency)}
+                            </td>
+                            <td className="performance-cell-number">{formatCurrency(row.final_value, baseCurrency)}</td>
+                            <td className="performance-cell-number">{formatPercent(row.average_weight)}</td>
+                            <td className="performance-cell-number">{formatPercent(row.ending_weight)}</td>
+                            <td className={`performance-cell-number ${signedValueClass(capitalGain)}`}>
+                              {formatSignedCurrency(capitalGain, baseCurrency)}
+                            </td>
+                            <td className={`performance-cell-number ${signedValueClass(row.realized_capital_gains)}`}>
+                              {formatSignedCurrency(row.realized_capital_gains, baseCurrency)}
+                            </td>
+                            <td className={`performance-cell-number ${signedValueClass(row.unrealized_pnl_change)}`}>
+                              {formatSignedCurrency(row.unrealized_pnl_change, baseCurrency)}
+                            </td>
+                            <td className={`performance-cell-number ${signedValueClass(row.earnings)}`}>
+                              {formatSignedCurrency(row.earnings, baseCurrency)}
+                            </td>
+                            <td className={`performance-cell-number ${signedValueClass(feePnl)}`}>
+                              {formatSignedCurrency(feePnl, baseCurrency)}
+                            </td>
+                            <td className={`performance-cell-number ${signedValueClass(taxPnl)}`}>
+                              {formatSignedCurrency(taxPnl, baseCurrency)}
+                            </td>
+                            <td className={`performance-cell-number ${signedValueClass(fxPnl)}`}>
+                              {formatSignedCurrency(fxPnl, baseCurrency)}
+                            </td>
+                            <td className={`performance-cell-number ${signedValueClass(row.period_return)}`}>
+                              {signedPercent(row.period_return)}
+                            </td>
+                            <td className={`performance-cell-number ${signedValueClass(row.period_contribution)}`}>
+                              {signedPercent(row.period_contribution)}
+                            </td>
+                          </tr>
+                        )
+                      })
+                    ) : calculationGroupsLoading ? (
+                      <TableStatusRow colSpan={15} label={`Loading ${calculationGroupLabel.toLowerCase()} calculation…`} />
+                    ) : calculationGroupsError ? (
+                      <TableStatusRow colSpan={15} label={calculationGroupsError} tone="error" />
                     ) : (
-                      <TableStatusRow colSpan={8} label="No held or traded assets are available in this window." />
+                      <TableStatusRow colSpan={15} label={`No ${calculationGroupLabel.toLowerCase()} calculation rows available.`} />
                     )}
+                    <tr className="performance-calculation-external-row">
+                      <th scope="row">Deposits</th>
+                      <td className={`performance-cell-number ${signedValueClass(calculationSummary?.deposits)}`}>
+                        {formatSignedCurrency(calculationSummary?.deposits, baseCurrency)}
+                      </td>
+                      <EmptyNumberCells count={13} />
+                    </tr>
+                    <tr className="performance-calculation-external-row">
+                      <th scope="row">Withdrawals</th>
+                      <td className={`performance-cell-number ${signedValueClass(expenseImpact(calculationSummary?.withdrawals))}`}>
+                        {formatSignedCurrency(expenseImpact(calculationSummary?.withdrawals), baseCurrency)}
+                      </td>
+                      <EmptyNumberCells count={13} />
+                    </tr>
+                    <tr className="performance-calculation-total-row">
+                      <th scope="row">Portfolio Total</th>
+                      <td className={`performance-cell-number ${signedValueClass(portfolioPeriodPnl)}`}>
+                        {formatSignedCurrency(portfolioPeriodPnl, baseCurrency)}
+                      </td>
+                      <td className="performance-cell-number">{formatCurrency(summary.start_nav, baseCurrency)}</td>
+                      <td className="performance-cell-number">{formatCurrency(summary.end_nav, baseCurrency)}</td>
+                      <td className="performance-cell-number">{formatPercent(1)}</td>
+                      <td className="performance-cell-number">{formatPercent(1)}</td>
+                      <td className={`performance-cell-number ${signedValueClass(portfolioCapitalGain)}`}>
+                        {formatSignedCurrency(portfolioCapitalGain, baseCurrency)}
+                      </td>
+                      <td className={`performance-cell-number ${signedValueClass(portfolioRealizedGain)}`}>
+                        {formatSignedCurrency(portfolioRealizedGain, baseCurrency)}
+                      </td>
+                      <td className={`performance-cell-number ${signedValueClass(portfolioUnrealizedGainChange)}`}>
+                        {formatSignedCurrency(portfolioUnrealizedGainChange, baseCurrency)}
+                      </td>
+                      <td className={`performance-cell-number ${signedValueClass(portfolioIncome)}`}>
+                        {formatSignedCurrency(portfolioIncome, baseCurrency)}
+                      </td>
+                      <td className={`performance-cell-number ${signedValueClass(portfolioFees)}`}>
+                        {formatSignedCurrency(portfolioFees, baseCurrency)}
+                      </td>
+                      <td className={`performance-cell-number ${signedValueClass(portfolioTaxes)}`}>
+                        {formatSignedCurrency(portfolioTaxes, baseCurrency)}
+                      </td>
+                      <td className={`performance-cell-number ${signedValueClass(portfolioFxPnl)}`}>
+                        {formatSignedCurrency(portfolioFxPnl, baseCurrency)}
+                      </td>
+                      <td className={`performance-cell-number ${signedValueClass(summary.cumulative_twr)}`}>
+                        {signedPercent(summary.cumulative_twr)}
+                      </td>
+                      <td className={`performance-cell-number ${signedValueClass(portfolioContribution)}`}>
+                        {signedPercent(portfolioContribution)}
+                      </td>
+                    </tr>
+                    {showContributionResidual ? (
+                      <tr className="performance-calculation-residual-row">
+                        <th scope="row">Contribution Residual</th>
+                        <EmptyNumberCells count={13} />
+                        <td className={`performance-cell-number ${signedValueClass(contributionResidual)}`}>
+                          {signedPercent(contributionResidual)}
+                        </td>
+                      </tr>
+                    ) : null}
+                    <tr className="performance-calculation-boundary-row performance-calculation-final-row">
+                      <th scope="row">Final Value</th>
+                      <td className="performance-cell-number">—</td>
+                      <td className="performance-cell-number">—</td>
+                      <td className="performance-cell-number">{formatCurrency(finalValue, baseCurrency)}</td>
+                      <EmptyNumberCells count={11} />
+                    </tr>
                   </tbody>
                 </table>
               </div>
             </section>
-
-            <div className="holdings-detail-tabbar">
-              {[
-                { key: 'daily', label: 'Daily Series', meta: `${workspace.daily_series.length} rows` },
-                { key: 'calculation', label: 'Calculation', meta: 'Period waterfall lines' },
-                { key: 'contribution', label: 'Contribution', meta: `${contributionAxis} view` },
-                { key: 'boundary', label: 'Boundary Holdings', meta: 'Start / end composition' },
-              ].map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  className={`holdings-detail-tab ${detailTab === tab.key ? 'holdings-detail-tab-active' : ''}`}
-                  onClick={() => updateSearchParam('detail_tab', tab.key)}
-                >
-                  <span className="holdings-detail-tab-label">{tab.label}</span>
-                  <span className="holdings-detail-tab-meta">{tab.meta}</span>
-                </button>
-              ))}
-            </div>
-
-            {detailTab === 'daily' ? (
-              <section className="performance-section-block">
-                <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                  <div className="panel-title">Daily Series</div>
-                </div>
-                <div className="table-shell">
-                  <table className="transactions-table">
-                    <thead>
-                      <tr>
-                        <th>Date</th>
-                        <th>Coverage</th>
-                        <th>Ending NAV</th>
-                        <th>Net Flow</th>
-                        <th>Daily Return</th>
-                        <th>Cumulative Return</th>
-                        <th>Drawdown</th>
-                        <th>P&amp;L Ex Flows</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {recentDailyRows.length ? (
-                        recentDailyRows.map((point) => (
-                          <tr key={point.as_of_date}>
-                            <td>{point.as_of_date}</td>
-                            <td>
-                              <span className={`coverage-pill ${coverageClassName(point.coverage_state)}`}>
-                                {formatLabel(point.coverage_state)}
-                              </span>
-                            </td>
-                            <td>{formatCurrency(point.ending_nav, baseCurrency)}</td>
-                            <td>{formatSignedCurrency(point.net_external_inflow, baseCurrency)}</td>
-                            <td className={signedValueClass(point.daily_twr)}>
-                              {signedPercent(point.daily_twr, 3)}
-                            </td>
-                            <td className={signedValueClass(point.cumulative_twr)}>
-                              {signedPercent(point.cumulative_twr)}
-                            </td>
-                            <td className={signedValueClass(point.drawdown)}>
-                              {signedPercent(point.drawdown)}
-                            </td>
-                            <td className={signedValueClass(point.delta)}>
-                              {formatSignedCurrency(point.delta, baseCurrency)}
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <TableStatusRow colSpan={8} label="No daily performance rows available." />
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            ) : null}
-
-            {detailTab === 'calculation' ? (
-              <section className="performance-section-block">
-                <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                  <div className="panel-title">Period Calculation</div>
-                </div>
-                {calculationLoading && !calculationWorkspace ? <CalculationStatus label="Building period calculation lines…" /> : null}
-                {calculationError ? <div className="inline-notice inline-notice-error">{calculationError}</div> : null}
-                <div className="table-shell">
-                  <table className="transactions-table">
-                    <thead>
-                      <tr>
-                        <th>Line</th>
-                        <th>Kind</th>
-                        <th>Amount</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {calculationWorkspace?.lines.length ? (
-                        calculationWorkspace.lines.map((line) => (
-                          <tr key={line.key}>
-                            <td className={line.parent_key ? 'performance-line-label performance-line-label-child' : 'performance-line-label'}>
-                              {line.label}
-                            </td>
-                            <td>{formatLabel(line.line_kind)}</td>
-                            <td className={signedValueClass(line.amount)}>
-                              {formatSignedCurrency(line.amount, calculationWorkspace.base_currency)}
-                            </td>
-                          </tr>
-                        ))
-                      ) : calculationLoading ? (
-                        <TableStatusRow colSpan={3} label="Loading period calculation…" />
-                      ) : calculationError ? (
-                        <TableStatusRow colSpan={3} label={calculationError} tone="error" />
-                      ) : (
-                        <TableStatusRow colSpan={3} label="No period calculation lines available." />
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            ) : null}
-
-            {detailTab === 'contribution' ? (
-              <section className="performance-section-block">
-                <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                  <div className="panel-title">Contribution</div>
-                </div>
-                <div className="performance-inline-tabs">
-                  {[
-                    { key: 'instrument', label: 'Instrument' },
-                    { key: 'account', label: 'Account' },
-                  ].map((axis) => (
-                    <button
-                      key={axis.key}
-                      type="button"
-                      className={`performance-inline-tab ${contributionAxis === axis.key ? 'performance-inline-tab-active' : ''}`}
-                      onClick={() => updateSearchParam('contribution_axis', axis.key)}
-                    >
-                      {axis.label}
-                    </button>
-                  ))}
-                </div>
-                {contributionLoading && !contributionWorkspace ? <CalculationStatus label="Building contribution ranking…" /> : null}
-                {contributionError ? <div className="inline-notice inline-notice-error">{contributionError}</div> : null}
-                <div className="table-shell">
-                  <table className="transactions-table">
-                    <thead>
-                      <tr>
-                        <th>Group</th>
-                        <th>Avg Weight</th>
-                        <th>End Weight</th>
-                        <th>Realized P&amp;L</th>
-                        <th>Unrealized Change</th>
-                        <th>Total P&amp;L</th>
-                        <th>Contribution</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rankedContributionLines.length ? (
-                        rankedContributionLines.map((line) => (
-                          <tr key={`${line.group_key}:${line.group_label}`}>
-                            <td>{line.group_label}</td>
-                            <td>{formatPercent(line.average_weight)}</td>
-                            <td>{formatPercent(line.ending_weight)}</td>
-                            <td className={signedValueClass(line.realized_pnl)}>
-                              {formatSignedCurrency(line.realized_pnl, contributionWorkspace?.base_currency ?? baseCurrency)}
-                            </td>
-                            <td className={signedValueClass(line.unrealized_pnl_change)}>
-                              {formatSignedCurrency(
-                                line.unrealized_pnl_change,
-                                contributionWorkspace?.base_currency ?? baseCurrency,
-                              )}
-                            </td>
-                            <td className={signedValueClass(line.total_pnl)}>
-                              {formatSignedCurrency(line.total_pnl, contributionWorkspace?.base_currency ?? baseCurrency)}
-                            </td>
-                            <td className={signedValueClass(line.period_contribution)}>
-                              {signedPercent(line.period_contribution)}
-                            </td>
-                          </tr>
-                        ))
-                      ) : contributionLoading ? (
-                        <TableStatusRow colSpan={7} label="Loading contribution lines…" />
-                      ) : contributionError ? (
-                        <TableStatusRow colSpan={7} label={contributionError} tone="error" />
-                      ) : (
-                        <TableStatusRow colSpan={7} label="No contribution lines available." />
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            ) : null}
-
-            {detailTab === 'boundary' ? (
-              <section className="performance-section-block">
-                <div className="portfolio-detail-toolbar performance-subsection-toolbar">
-                  <div className="panel-title">Boundary Holdings</div>
-                </div>
-                {boundaryLoading && !boundaryWorkspace ? <CalculationStatus label="Resolving period boundary holdings…" /> : null}
-                {boundaryError ? <div className="inline-notice inline-notice-error">{boundaryError}</div> : null}
-                <div className="performance-summary-grid">
-                  <div className="table-shell">
-                    <table className="transactions-table">
-                      <thead>
-                        <tr>
-                          <th colSpan={4}>Start Boundary</th>
-                        </tr>
-                        <tr>
-                          <th>Asset</th>
-                          <th>Quantity</th>
-                          <th>Market Value</th>
-                          <th>Weight</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {boundaryWorkspace?.start_positions.length ? (
-                          boundaryWorkspace.start_positions.map((position) => (
-                            <tr key={`start:${position.position_id}`}>
-                              <td>{position.instrument_ref.asset_name}</td>
-                              <td>{formatQuantity(position.quantity)}</td>
-                              <td>{formatCurrency(position.market_value_base, boundaryWorkspace.base_currency)}</td>
-                              <td>{formatPercent(position.portfolio_weight)}</td>
-                            </tr>
-                          ))
-                        ) : boundaryLoading ? (
-                          <TableStatusRow colSpan={4} label="Loading start boundary…" />
-                        ) : boundaryError ? (
-                          <TableStatusRow colSpan={4} label={boundaryError} tone="error" />
-                        ) : (
-                          <TableStatusRow colSpan={4} label="No start-boundary positions available." />
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <div className="table-shell">
-                    <table className="transactions-table">
-                      <thead>
-                        <tr>
-                          <th colSpan={4}>End Boundary</th>
-                        </tr>
-                        <tr>
-                          <th>Asset</th>
-                          <th>Quantity</th>
-                          <th>Market Value</th>
-                          <th>Weight</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {boundaryWorkspace?.end_positions.length ? (
-                          boundaryWorkspace.end_positions.map((position) => (
-                            <tr key={`end:${position.position_id}`}>
-                              <td>{position.instrument_ref.asset_name}</td>
-                              <td>{formatQuantity(position.quantity)}</td>
-                              <td>{formatCurrency(position.market_value_base, boundaryWorkspace.base_currency)}</td>
-                              <td>{formatPercent(position.portfolio_weight)}</td>
-                            </tr>
-                          ))
-                        ) : boundaryLoading ? (
-                          <TableStatusRow colSpan={4} label="Loading end boundary…" />
-                        ) : boundaryError ? (
-                          <TableStatusRow colSpan={4} label={boundaryError} tone="error" />
-                        ) : (
-                          <TableStatusRow colSpan={4} label="No end-boundary positions available." />
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </section>
-            ) : null}
-          </>
+          </div>
         ) : null}
       </section>
     </PortfolioWorkspaceLayout>
   )
 }
+
+export default PerformancePage

@@ -1494,6 +1494,7 @@ class DailyContributionSliceRecord(BaseModel):
     open_cost_basis_base: float | None = None
     realized_pnl: float | None = None
     unrealized_pnl: float | None = None
+    unrealized_pnl_change: float | None = None
     income_cash_amount: float | None = None
     expense_cash_amount: float | None = None
     fee_amount: float | None = None
@@ -1830,6 +1831,9 @@ class PeriodCalculationGroupRecord(BaseModel):
     taxonomy_id: str | None = None
     group_key: str
     group_label: str
+    average_weight: float | None = None
+    ending_weight: float | None = None
+    period_return: float | None = None
     initial_value: float | None = None
     final_value: float | None = None
     delta: float | None = None

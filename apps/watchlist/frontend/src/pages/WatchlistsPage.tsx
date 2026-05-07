@@ -1032,7 +1032,7 @@ export default function WatchlistsPage() {
       ...fieldRegistry,
       {
         field_key: 'price_chart_1d',
-        label: 'Price Chart',
+        label: 'Spark Chart',
         description: '1 day',
         category_code: 'market_data',
         data_type: 'sparkline',
@@ -1050,7 +1050,7 @@ export default function WatchlistsPage() {
       },
       {
         field_key: 'price_chart_1w',
-        label: 'Price Chart',
+        label: 'Spark Chart',
         description: '1 week',
         category_code: 'market_data',
         data_type: 'sparkline',
@@ -1068,7 +1068,7 @@ export default function WatchlistsPage() {
       },
       {
         field_key: 'price_chart_1m',
-        label: 'Price Chart',
+        label: 'Spark Chart',
         description: '1 month',
         category_code: 'market_data',
         data_type: 'sparkline',
@@ -1086,7 +1086,7 @@ export default function WatchlistsPage() {
       },
       {
         field_key: 'price_chart_1y',
-        label: 'Price Chart',
+        label: 'Spark Chart',
         description: '1 year',
         category_code: 'market_data',
         data_type: 'sparkline',

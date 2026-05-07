@@ -2421,8 +2421,19 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     assert fields_by_key["latest_quote"]["asset_scope_json"] == []
     assert fields_by_key["latest_quote"]["source_metric_code"] == "asset_chart_read_model.series.latest_quote"
     assert fields_by_key["latest_quote_date"]["data_type"] == "date"
+    assert fields_by_key["price_chart_1m"]["label"] == "Spark Chart"
+    assert fields_by_key["return_1w"]["label"] == "1W Return"
     assert fields_by_key["return_mtd"]["label"] == "MTD"
     assert fields_by_key["return_ytd"]["label"] == "YTD"
+    assert fields_by_key["return_1m"]["label"] == "1M"
+    assert fields_by_key["return_1y"]["label"] == "1Y"
+    assert fields_by_key["annualized_return"]["label"] == "Ann."
+    assert fields_by_key["return_3y"]["label"] == "3Y"
+    assert fields_by_key["return_5y"]["label"] == "5Y"
+    assert fields_by_key["max_drawdown"]["label"] == "Max DD"
+    assert fields_by_key["attr.current_drawdown"]["label"] == "Current DD"
+    assert fields_by_key["attr.peer_return_1w_percentile"]["label"] == "1W Return Pctl"
+    assert fields_by_key["attr.peer_annualized_return_percentile"]["label"] == "Ann. Pctl"
 
 
 def test_adding_funds_does_not_inject_product_framework_values(client: TestClient) -> None:

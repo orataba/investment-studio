@@ -204,7 +204,10 @@ export default function PortfolioWorkspaceLayout({
             <span className="workspace-breadcrumb-separator">/</span>
             <span className="workspace-breadcrumb-current">{activeSection}</span>
           </div>
-          <div className="workspace-app-title">Portfolio</div>
+          <div className="workspace-app-heading">
+            <div className="workspace-app-title">Portfolio</div>
+            <div className="workspace-app-as-of">As of {resolvedSummary.as_of_date || '—'}</div>
+          </div>
           <div className="portfolio-selector-row">
             <Link className="workspace-selector-chip workspace-selector-chip-inactive workspace-selector-chip-home" to="/portfolios">
               <span className="workspace-selector-home-icon" aria-hidden="true">
@@ -291,7 +294,6 @@ export default function PortfolioWorkspaceLayout({
                     {badge}
                   </span>
                 ))}
-                <span className="portfolio-subhead-meta">As of {resolvedSummary.as_of_date}</span>
               </div>
             </div>
           </div>

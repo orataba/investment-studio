@@ -1,6 +1,10 @@
-import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useParams } from 'react-router-dom'
 
+import BenchmarkSearchBox, {
+  benchmarkInstrumentLabel,
+  instrumentPrimaryIdentifier,
+} from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
 import PerformanceNavChart from '../components/PerformanceNavChart'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
@@ -17,6 +21,7 @@ import {
   type PortfolioAssetPriceChartResponse,
   type PortfolioHoldingRow,
   type PortfolioDailyPerformancePoint,
+  type PortfolioPerformanceCoverageState,
   type PortfolioPerformanceResponse,
   type PortfolioTaxonomyAssignmentRecord,
   type PortfolioTaxonomyCatalogResponse,
@@ -28,12 +33,14 @@ import {
 import {
   formatCurrency,
   formatLabel,
+  formatNumber,
   formatPercent,
   formatQuantity,
   formatSignedCurrency,
   formatUnitPrice,
   signedValueClass,
 } from '../lib/format'
+import { buildMonthlyBuckets, buildMonthlyReturnMatrixRows, MONTH_LABELS } from '../lib/monthlyReturns'
 import { buildTwrIndexPoints } from '../lib/performanceSeries'
 
 type AllocationBucket = {
@@ -125,18 +132,6 @@ function primaryIdentifier(row: PortfolioHoldingRow) {
   )
 }
 
-function instrumentPrimaryIdentifier(instrument: SharedInstrumentRecord) {
-  return (
-    instrument.identifiers.find((item) => item.is_primary)?.identifier_value ??
-    instrument.identifiers[0]?.identifier_value ??
-    instrument.asset_id
-  )
-}
-
-function benchmarkInstrumentLabel(instrument: SharedInstrumentRecord) {
-  return `${instrumentPrimaryIdentifier(instrument)} · ${instrument.asset_name}`
-}
-
 function signedPercent(value: number | null | undefined, digits = 2) {
   if (value == null || Number.isNaN(value)) {
     return '—'
@@ -149,6 +144,10 @@ function signedPercent(value: number | null | undefined, digits = 2) {
     return `-${absolute}`
   }
   return absolute
+}
+
+function coverageClassName(coverageState: PortfolioPerformanceCoverageState) {
+  return coverageState === 'complete' ? 'coverage-pill-live' : 'coverage-pill-warning'
 }
 
 function dateFromString(date: string) {
@@ -595,7 +594,6 @@ export default function OverviewPage() {
   const [performanceError, setPerformanceError] = useState<string | null>(null)
   const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
-  const [benchmarkSearchFocused, setBenchmarkSearchFocused] = useState(false)
   const [benchmarkAssetId, setBenchmarkAssetId] = useState('')
   const [benchmarkChart, setBenchmarkChart] = useState<PortfolioAssetPriceChartResponse | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
@@ -749,7 +747,6 @@ export default function OverviewPage() {
   }, [benchmarkAssetId, holdingsWorkspace?.as_of_date, portfolioId, summary?.as_of_date])
 
   const holdingsRows = holdingsWorkspace?.rows ?? []
-  const deferredBenchmarkSearch = useDeferredValue(benchmarkSearch)
   const resolvedBaseCurrency =
     summary?.base_currency ?? holdingsWorkspace?.base_currency ?? performanceWorkspace?.base_currency ?? 'USD'
   const sortedHoldings = useMemo(
@@ -914,45 +911,6 @@ export default function OverviewPage() {
   }))
   const selectedBenchmarkInstrument =
     benchmarkInstruments.find((instrument) => instrument.asset_id === benchmarkAssetId) ?? null
-  const selectedBenchmarkLabel = selectedBenchmarkInstrument
-    ? benchmarkInstrumentLabel(selectedBenchmarkInstrument)
-    : ''
-  const benchmarkInputValue =
-    selectedBenchmarkInstrument && !benchmarkSearch ? selectedBenchmarkLabel : benchmarkSearch
-  const filteredBenchmarkOptions = useMemo(() => {
-    const normalizedSearch = deferredBenchmarkSearch.trim().toLowerCase()
-    if (!normalizedSearch) {
-      return benchmarkInstruments
-        .slice()
-        .sort((left, right) => {
-          const typeRank = (type: string) =>
-            type === 'index' ? 0 : type === 'fund' ? 1 : type === 'etf' ? 2 : type === 'equity' ? 3 : 4
-          return (
-            typeRank(left.asset_type) - typeRank(right.asset_type) ||
-            instrumentPrimaryIdentifier(left).localeCompare(instrumentPrimaryIdentifier(right)) ||
-            left.asset_name.localeCompare(right.asset_name)
-          )
-        })
-        .slice(0, 12)
-    }
-
-    return benchmarkInstruments
-      .filter((instrument) => {
-        const haystack = [
-          instrument.asset_name,
-          instrument.asset_type,
-          instrument.currency,
-          instrumentPrimaryIdentifier(instrument),
-          benchmarkInstrumentLabel(instrument),
-          ...instrument.identifiers.map((identifier) => identifier.identifier_value),
-        ]
-          .join(' ')
-          .toLowerCase()
-        return haystack.includes(normalizedSearch)
-      })
-      .slice(0, 10)
-  }, [benchmarkInstruments, deferredBenchmarkSearch])
-  const showBenchmarkResults = benchmarkSearchFocused
   const benchmarkMetrics = useMemo(
     () => buildBenchmarkMetrics(benchmarkChart?.points ?? []) ?? null,
     [benchmarkChart],
@@ -961,6 +919,11 @@ export default function OverviewPage() {
     () => buildPortfolioReturnMetrics(performanceWorkspace?.daily_series ?? []),
     [performanceWorkspace],
   )
+  const monthlyBuckets = useMemo(
+    () => buildMonthlyBuckets(performanceWorkspace?.daily_series ?? []),
+    [performanceWorkspace],
+  )
+  const monthlyMatrixRows = useMemo(() => buildMonthlyReturnMatrixRows(monthlyBuckets), [monthlyBuckets])
 
   const overviewMetricGroups: Array<{ label: string; rows: OverviewMetricRow[] }> = [
     {
@@ -1158,77 +1121,23 @@ export default function OverviewPage() {
                 <div className="overview-nav-grid">
                   <div className="overview-nav-chart-panel">
                     <div className="overview-chart-controls">
-                      <label className="overview-benchmark-search">
-                        <div className="overview-benchmark-search-box">
-                          <input
-                            type="search"
-                            aria-label="Compare benchmark"
-                            placeholder="Compare..."
-                            value={benchmarkInputValue}
-                            onFocus={() => setBenchmarkSearchFocused(true)}
-                            onBlur={() => window.setTimeout(() => setBenchmarkSearchFocused(false), 140)}
-                            onChange={(event) => {
-                              const nextValue = event.target.value
-                              setBenchmarkSearch(nextValue)
-                              if (selectedBenchmarkInstrument && nextValue !== selectedBenchmarkLabel) {
-                                setBenchmarkAssetId('')
-                                setBenchmarkChart(null)
-                              }
-                            }}
-                          />
-                          {selectedBenchmarkInstrument ? (
-                            <button
-                              type="button"
-                              className="overview-benchmark-clear"
-                              aria-label="Clear benchmark"
-                              onMouseDown={(event) => event.preventDefault()}
-                              onClick={() => {
-                                setBenchmarkAssetId('')
-                                setBenchmarkSearch('')
-                                setBenchmarkChart(null)
-                                setBenchmarkError(null)
-                              }}
-                            >
-                              ×
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="overview-benchmark-toggle"
-                              aria-label="Show benchmark choices"
-                              onMouseDown={(event) => event.preventDefault()}
-                              onClick={() => setBenchmarkSearchFocused((current) => !current)}
-                            >
-                              <span aria-hidden="true" />
-                            </button>
-                          )}
-                          {showBenchmarkResults ? (
-                            <div className="overview-benchmark-results">
-                              {filteredBenchmarkOptions.length ? (
-                                filteredBenchmarkOptions.map((instrument) => (
-                                  <button
-                                    type="button"
-                                    key={instrument.asset_id}
-                                    onMouseDown={(event) => event.preventDefault()}
-                                    onClick={() => {
-                                      setBenchmarkAssetId(instrument.asset_id)
-                                      setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
-                                      setBenchmarkSearchFocused(false)
-                                    }}
-                                  >
-                                    <strong>{instrument.asset_name}</strong>
-                                    <span>
-                                      {instrumentPrimaryIdentifier(instrument)} · {formatLabel(instrument.asset_type)} · {instrument.currency}
-                                    </span>
-                                  </button>
-                                ))
-                              ) : (
-                                <div className="overview-benchmark-empty">No database match</div>
-                              )}
-                            </div>
-                          ) : null}
-                        </div>
-                      </label>
+                      <BenchmarkSearchBox
+                        instruments={benchmarkInstruments}
+                        selectedAssetId={benchmarkAssetId}
+                        searchValue={benchmarkSearch}
+                        onSearchChange={setBenchmarkSearch}
+                        onSelectInstrument={(instrument) => {
+                          setBenchmarkAssetId(instrument.asset_id)
+                          setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
+                          setBenchmarkError(null)
+                        }}
+                        onClear={() => {
+                          setBenchmarkAssetId('')
+                          setBenchmarkSearch('')
+                          setBenchmarkChart(null)
+                          setBenchmarkError(null)
+                        }}
+                      />
                     </div>
                     {benchmarkError ? <div className="overview-benchmark-error">{benchmarkError}</div> : null}
                     {performanceLoading && !performanceWorkspace ? (
@@ -1282,6 +1191,63 @@ export default function OverviewPage() {
                       ))}
                     </div>
                   </aside>
+                </div>
+              </section>
+
+              <section className="performance-section-block">
+                <div className="portfolio-detail-toolbar performance-subsection-toolbar performance-section-toolbar">
+                  <div className="panel-title">Monthly Return Matrix</div>
+                </div>
+                <div className="table-shell">
+                  <table className="transactions-table performance-return-matrix-table">
+                    <thead>
+                      <tr>
+                        <th>Year</th>
+                        {MONTH_LABELS.map((monthLabel) => (
+                          <th key={monthLabel}>{monthLabel}</th>
+                        ))}
+                        <th>YTD</th>
+                        <th>Obs</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {monthlyMatrixRows.length ? (
+                        monthlyMatrixRows.map((row) => (
+                          <tr key={row.year}>
+                            <th scope="row">
+                              <span>{row.year}</span>
+                              <span className={`coverage-dot ${coverageClassName(row.coverageState)}`} />
+                            </th>
+                            {row.months.map((bucket, index) => (
+                              <td
+                                key={`${row.year}:${MONTH_LABELS[index]}`}
+                                className={`performance-cell-number performance-return-cell ${signedValueClass(
+                                  bucket?.cumulative_twr,
+                                )}`}
+                                title={
+                                  bucket
+                                    ? `${bucket.start_date} to ${bucket.end_date}; ${formatLabel(
+                                        bucket.coverage_state,
+                                      )}; ${formatNumber(bucket.observation_count, 0)} observations`
+                                    : undefined
+                                }
+                              >
+                                {signedPercent(bucket?.cumulative_twr)}
+                              </td>
+                            ))}
+                            <td className={`performance-cell-number performance-return-cell ${signedValueClass(row.ytd)}`}>
+                              {signedPercent(row.ytd)}
+                            </td>
+                            <td className="performance-cell-number performance-cell-muted">
+                              {formatNumber(row.observationCount, 0)}
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <TableStatusRow colSpan={15} label="No monthly return buckets available." />
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </section>
 

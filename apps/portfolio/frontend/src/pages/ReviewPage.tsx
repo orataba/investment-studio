@@ -596,12 +596,12 @@ export default function ReviewPage() {
   const riskSummaryLeft = [
     { label: 'Annualized Volatility', value: signedPercent(performanceWorkspace?.summary.annualized_volatility) },
     {
-      label: 'Current Drawdown',
+      label: 'Current DD',
       value: signedPercent(performanceWorkspace?.summary.current_drawdown),
       toneClassName: signedValueClass(performanceWorkspace?.summary.current_drawdown),
     },
     {
-      label: 'Max Drawdown',
+      label: 'Max DD',
       value: signedPercent(performanceWorkspace?.summary.max_drawdown),
       toneClassName: signedValueClass(performanceWorkspace?.summary.max_drawdown),
     },
@@ -783,7 +783,7 @@ export default function ReviewPage() {
                         <th>Stale Days</th>
                         <th>Return</th>
                         <th>Absolute Change</th>
-                        <th>Max Drawdown</th>
+                        <th>Max DD</th>
                       </tr>
                     </thead>
                     <tbody>

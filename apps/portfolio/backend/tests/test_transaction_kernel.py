@@ -595,6 +595,13 @@ def test_holdings_workspace_includes_shared_price_sparklines(client):
     assert abbv_row["price_chart"]
     assert abbv_row["price_chart"][-1]["date"] == "2026-04-15"
     assert abbv_row["price_chart"][-1]["value"] == pytest.approx(206.47)
+    assert abbv_row["asset_trend_as_of_date"] == "2026-04-15"
+    assert abbv_row["asset_trend_basis"] == "close"
+    assert abbv_row["asset_return_1w"] == pytest.approx(206.47 / 207.18 - 1)
+    assert abbv_row["asset_return_mtd"] == pytest.approx(206.47 / 210.20 - 1)
+    assert abbv_row["asset_return_ytd"] == pytest.approx(0)
+    assert abbv_row["asset_return_1y"] is None
+    assert abbv_row["asset_current_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
 
 
 def test_asset_price_chart_endpoint_returns_filtered_shared_history(client):

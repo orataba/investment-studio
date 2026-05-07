@@ -309,11 +309,11 @@
 
 **Core blocks**
 
-- return scorecard
-- benchmark comparison
-- drawdown summary
-- contribution / attribution tables
-- benchmark-relative contribution
+- `Return & Risk Metrics` for the selected custom period: TWR, annualized TWR, IRR / MWR, volatility, downside volatility, Sharpe / Sortino, and drawdown. These rows can use an independently selected benchmark.
+- `Calculation`: one audit table combining period boundary values, group-level contribution, return breakdown, non-performance external flows, portfolio total, and final value. Rows can group by asset, account, or the default planning taxonomy. The table follows `Initial Value + Deposits - Withdrawals + Period P&L = Final Value`; unrealized P&L is shown as period change, not ending balance. Accounting attribution rows do not compare to a benchmark.
+- Benchmark-relative comparison / contribution where a benchmark is available.
+
+`NAV Trend` and `Monthly Return Matrix` remain `Overview` blocks. `Performance` should not duplicate them. Overview chart compare and Performance benchmark compare are independent controls.
 
 **Comparator**
 

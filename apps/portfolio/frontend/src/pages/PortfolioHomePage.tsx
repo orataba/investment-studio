@@ -60,6 +60,11 @@ type HoldingsColumnKey =
   | 'day_change_pct'
   | 'unrealized_value'
   | 'unrealized_pct'
+  | 'asset_return_1w'
+  | 'asset_return_mtd'
+  | 'asset_return_ytd'
+  | 'asset_return_1y'
+  | 'asset_current_drawdown'
   | 'chart_return'
   | 'chart_volatility'
   | 'chart_max_drawdown'
@@ -135,7 +140,18 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
   },
   {
     label: 'Quote',
-    columns: ['last_price', 'quote_date', 'quote_basis', 'quote_provider', 'quote_status', 'price_chart'],
+    columns: ['last_price', 'quote_date', 'quote_basis', 'quote_provider', 'quote_status'],
+  },
+  {
+    label: 'Asset Trend',
+    columns: [
+      'price_chart',
+      'asset_return_1w',
+      'asset_return_mtd',
+      'asset_return_ytd',
+      'asset_return_1y',
+      'asset_current_drawdown',
+    ],
   },
   {
     label: 'Position',
@@ -174,6 +190,7 @@ const DEFAULT_HOLDINGS_COLUMNS: HoldingsColumnKey[] = [
   'asset',
   'last_price',
   'quote_date',
+  'price_chart',
   'quantity',
   'avg_cost_book',
   'cost_basis',
@@ -210,10 +227,15 @@ const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
   day_change_pct: 120,
   unrealized_value: 148,
   unrealized_pct: 148,
+  asset_return_1w: 128,
+  asset_return_mtd: 112,
+  asset_return_ytd: 112,
+  asset_return_1y: 112,
+  asset_current_drawdown: 120,
   chart_return: 128,
   chart_volatility: 112,
   chart_max_drawdown: 132,
-  price_chart: 128,
+  price_chart: 132,
   coverage: 132,
 }
 
@@ -247,6 +269,32 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
     },
   },
   {
+    id: 'asset-trend',
+    name: 'Asset Trend',
+    description: 'Recent quote-series returns and current drawdown.',
+    readonly: true,
+    state: {
+      columns: [
+        'asset',
+        'last_price',
+        'quote_date',
+        'price_chart',
+        'asset_return_1w',
+        'asset_return_mtd',
+        'asset_return_ytd',
+        'asset_return_1y',
+        'asset_current_drawdown',
+        'market_value_base',
+        'weight',
+        'unrealized_pct',
+      ],
+      columnWidths: {},
+      groupBy: 'none',
+      sortField: 'asset_return_mtd',
+      sortDirection: 'desc',
+    },
+  },
+  {
     id: 'return-risk',
     name: 'Return & Risk',
     description: 'Return and risk metrics for broad scanning.',
@@ -257,6 +305,11 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
         'asset_type',
         'market_value_base',
         'weight',
+        'price_chart',
+        'asset_return_1w',
+        'asset_return_mtd',
+        'asset_return_ytd',
+        'asset_current_drawdown',
         'day_change_pct',
         'day_change_value',
         'unrealized_value',
@@ -905,6 +958,16 @@ function holdingColumnExportValue(
       return unrealizedValue(row)
     case 'unrealized_pct':
       return unrealizedPct(row)
+    case 'asset_return_1w':
+      return row.asset_return_1w ?? null
+    case 'asset_return_mtd':
+      return row.asset_return_mtd ?? null
+    case 'asset_return_ytd':
+      return row.asset_return_ytd ?? null
+    case 'asset_return_1y':
+      return row.asset_return_1y ?? null
+    case 'asset_current_drawdown':
+      return row.asset_current_drawdown ?? null
     case 'chart_return':
       return chartReturn(row)
     case 'chart_volatility':
@@ -1193,6 +1256,46 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     total: (rows) => signedPercent(totalUnrealizedPct(rows)),
     totalClassName: (rows) => signedValueClass(totalUnrealizedPct(rows)),
   },
+  asset_return_1w: {
+    key: 'asset_return_1w',
+    label: '1W Return',
+    align: 'right',
+    render: (row) => signedPercent(row.asset_return_1w),
+    sortValue: (row) => row.asset_return_1w,
+    className: (row) => signedValueClass(row.asset_return_1w),
+  },
+  asset_return_mtd: {
+    key: 'asset_return_mtd',
+    label: 'MTD',
+    align: 'right',
+    render: (row) => signedPercent(row.asset_return_mtd),
+    sortValue: (row) => row.asset_return_mtd,
+    className: (row) => signedValueClass(row.asset_return_mtd),
+  },
+  asset_return_ytd: {
+    key: 'asset_return_ytd',
+    label: 'YTD',
+    align: 'right',
+    render: (row) => signedPercent(row.asset_return_ytd),
+    sortValue: (row) => row.asset_return_ytd,
+    className: (row) => signedValueClass(row.asset_return_ytd),
+  },
+  asset_return_1y: {
+    key: 'asset_return_1y',
+    label: '1Y',
+    align: 'right',
+    render: (row) => signedPercent(row.asset_return_1y),
+    sortValue: (row) => row.asset_return_1y,
+    className: (row) => signedValueClass(row.asset_return_1y),
+  },
+  asset_current_drawdown: {
+    key: 'asset_current_drawdown',
+    label: 'Current DD',
+    align: 'right',
+    render: (row) => signedPercent(row.asset_current_drawdown),
+    sortValue: (row) => row.asset_current_drawdown,
+    className: (row) => signedValueClass(row.asset_current_drawdown),
+  },
   chart_return: {
     key: 'chart_return',
     label: 'Chart Return',
@@ -1218,10 +1321,10 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
   },
   price_chart: {
     key: 'price_chart',
-    label: 'Price Chart',
+    label: 'Spark Chart',
     render: (row) =>
       row.price_chart.length ? <MiniSparkline values={row.price_chart} /> : <span className="sparkline-empty">—</span>,
-    sortValue: (row) => chartReturn(row),
+    sortValue: (row) => row.asset_return_mtd ?? chartReturn(row),
   },
   coverage: {
     key: 'coverage',
@@ -1537,6 +1640,24 @@ export default function PortfolioHomePage() {
       }
     })
     setActiveHoldingsViewId(viewId)
+  }
+
+  function handleDeleteHoldingsView(viewId: string) {
+    const targetView = getHoldingsViewById(holdingsViewStore, viewId)
+    if (targetView.readonly) {
+      return
+    }
+    const fallbackView = SYSTEM_HOLDINGS_VIEWS[0]
+    const deletingActiveView = targetView.id === activeHoldingsViewId
+    setHoldingsViewStore((current) => ({
+      ...current,
+      activeViewId: deletingActiveView ? fallbackView.id : current.activeViewId,
+      customViews: current.customViews.filter((view) => view.id !== targetView.id),
+    }))
+    if (deletingActiveView) {
+      setActiveHoldingsViewId(fallbackView.id)
+      applyHoldingsViewState(fallbackView.state)
+    }
   }
 
   function handleSelectAsset(assetId: string | null) {
@@ -1927,9 +2048,11 @@ export default function PortfolioHomePage() {
               activeViewId={activeHoldingsViewId}
               edited={holdingsViewEdited}
               canSave={!activeHoldingsView.readonly}
+              canDelete
               onSelect={handleSelectHoldingsView}
               onSave={handleSaveHoldingsView}
               onSaveAs={handleSaveHoldingsViewAs}
+              onDelete={handleDeleteHoldingsView}
             />
             <button
               type="button"

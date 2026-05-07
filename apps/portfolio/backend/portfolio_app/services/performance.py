@@ -3,9 +3,12 @@ from __future__ import annotations
 from collections import defaultdict
 from copy import deepcopy
 from datetime import date, timedelta
-from math import isfinite, sqrt
+from math import isfinite, prod, sqrt
 
-from portfolio_app.services.asset_charts import build_asset_sparkline_from_detail
+from portfolio_app.services.asset_charts import (
+    build_asset_sparkline_from_detail,
+    build_asset_trend_metrics_from_detail,
+)
 from portfolio_app.core.settings import get_settings
 from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
@@ -550,6 +553,14 @@ def _build_materialized_holding_rows(
             direct_fx_assets=direct_fx_assets,
             instrument_detail_cache=instrument_detail_cache,
         )
+        asset_trend_metrics = (
+            build_asset_trend_metrics_from_detail(
+                detail,
+                as_of_date=as_of_date,
+            )
+            if isinstance(detail, dict)
+            else {}
+        )
         rows.append(
             {
                 "line_id": f"{account_id}:{asset_id}",
@@ -586,6 +597,7 @@ def _build_materialized_holding_rows(
                     if isinstance(detail, dict)
                     else []
                 ),
+                **asset_trend_metrics,
                 "coverage_status": "price-nav-fx" if converted_market_value is not None else "unpriced",
             }
         )
@@ -3566,6 +3578,7 @@ def _build_contribution_slices_for_date(
                 "open_cost_basis_base": ending_open_cost_basis_base,
                 "realized_pnl": realized_pnl,
                 "unrealized_pnl": ending_unrealized_pnl,
+                "unrealized_pnl_change": unrealized_pnl_change,
                 "income_cash_amount": income_cash_amount,
                 "expense_cash_amount": expense_cash_amount,
                 "fee_amount": fee_amount,
@@ -3722,6 +3735,7 @@ def _group_contribution_slices_by_taxonomy(
                 "open_cost_basis_base": 0.0,
                 "realized_pnl": 0.0,
                 "unrealized_pnl": 0.0,
+                "unrealized_pnl_change": 0.0,
                 "income_cash_amount": 0.0,
                 "expense_cash_amount": 0.0,
                 "fee_amount": 0.0,
@@ -3745,6 +3759,7 @@ def _group_contribution_slices_by_taxonomy(
             "open_cost_basis_base",
             "realized_pnl",
             "unrealized_pnl",
+            "unrealized_pnl_change",
             "income_cash_amount",
             "expense_cash_amount",
             "fee_amount",
@@ -3864,6 +3879,7 @@ def _build_taxonomy_contribution_report(
             accumulator["average_weight"] = (_safe_float(accumulator.get("average_weight")) or 0.0) + beginning_weight
         for field_name in (
             "realized_pnl",
+            "unrealized_pnl_change",
             "income_cash_amount",
             "expense_cash_amount",
             "fee_amount",
@@ -3878,15 +3894,6 @@ def _build_taxonomy_contribution_report(
                 continue
             target_field = "period_contribution" if field_name == "daily_contribution" else field_name
             accumulator[target_field] = (_safe_float(accumulator.get(target_field)) or 0.0) + value
-        total_pnl = _safe_float(grouped_slice.get("total_pnl"))
-        if total_pnl is not None:
-            accumulator["unrealized_pnl_change"] = (
-                (_safe_float(accumulator.get("unrealized_pnl_change")) or 0.0)
-                + total_pnl
-                - (_safe_float(grouped_slice.get("realized_pnl")) or 0.0)
-                - (_safe_float(grouped_slice.get("income_cash_amount")) or 0.0)
-                + (_safe_float(grouped_slice.get("expense_cash_amount")) or 0.0)
-            )
 
     lines: list[dict[str, object]] = []
     weight_denominator = len(available_beginning_weight_dates)
@@ -4208,6 +4215,7 @@ def build_contribution_report_from_daily_slices(
             accumulator["_weight_count"] = int(accumulator.get("_weight_count") or 0) + 1
         for field_name in (
             "realized_pnl",
+            "unrealized_pnl_change",
             "income_cash_amount",
             "expense_cash_amount",
             "fee_amount",
@@ -4222,17 +4230,6 @@ def build_contribution_report_from_daily_slices(
                 continue
             target_field = "period_contribution" if field_name == "daily_contribution" else field_name
             accumulator[target_field] = (_safe_float(accumulator.get(target_field)) or 0.0) + value
-        unrealized_delta = None
-        realized_value = _safe_float(daily_slice.get("realized_pnl")) or 0.0
-        income_value = _safe_float(daily_slice.get("income_cash_amount")) or 0.0
-        expense_value = _safe_float(daily_slice.get("expense_cash_amount")) or 0.0
-        total_value = _safe_float(daily_slice.get("total_pnl"))
-        if total_value is not None:
-            unrealized_delta = total_value - realized_value - income_value + expense_value
-        if unrealized_delta is not None:
-            accumulator["unrealized_pnl_change"] = (
-                (_safe_float(accumulator.get("unrealized_pnl_change")) or 0.0) + unrealized_delta
-            )
 
     lines: list[dict[str, object]] = []
     for accumulator in line_accumulators.values():
@@ -4665,6 +4662,7 @@ def build_contribution_calendar_report(
             accumulator["average_weight"] = (_safe_float(accumulator.get("average_weight")) or 0.0) + beginning_weight
         for field_name in (
             "realized_pnl",
+            "unrealized_pnl_change",
             "income_cash_amount",
             "expense_cash_amount",
             "fee_amount",
@@ -4679,16 +4677,6 @@ def build_contribution_calendar_report(
                 continue
             target_field = "bucket_contribution" if field_name == "daily_contribution" else field_name
             accumulator[target_field] = (_safe_float(accumulator.get(target_field)) or 0.0) + value
-
-        total_pnl = _safe_float(daily_slice.get("total_pnl"))
-        if total_pnl is not None:
-            accumulator["unrealized_pnl_change"] = (
-                (_safe_float(accumulator.get("unrealized_pnl_change")) or 0.0)
-                + total_pnl
-                - (_safe_float(daily_slice.get("realized_pnl")) or 0.0)
-                - (_safe_float(daily_slice.get("income_cash_amount")) or 0.0)
-                + (_safe_float(daily_slice.get("expense_cash_amount")) or 0.0)
-            )
 
     rendered_buckets: list[dict[str, object]] = []
     for bucket_group_key, accumulator in bucket_accumulators.items():
@@ -5065,6 +5053,7 @@ def build_period_calculation_groups_report(
         for item in list(contribution_report.get("lines") or [])
         if str(item.get("group_key") or "")
     }
+    period_returns = _period_returns_by_group(list(contribution_report.get("daily_slices") or []))
     group_keys = set(line_map.keys()) | set(boundary_start_values.keys()) | set(boundary_end_values.keys())
     groups: list[dict[str, object]] = []
     total_initial_value = 0.0
@@ -5107,6 +5096,9 @@ def build_period_calculation_groups_report(
                     or boundary_labels.get(candidate_group_key)
                     or candidate_group_key
                 ),
+                "average_weight": _safe_float(line.get("average_weight")),
+                "ending_weight": _safe_float(line.get("ending_weight")),
+                "period_return": period_returns.get(candidate_group_key),
                 "initial_value": initial_value,
                 "final_value": final_value,
                 "delta": delta,
@@ -5412,6 +5404,24 @@ _CALCULATION_ENTRY_BUCKETS = {
     "taxes",
     "realized_capital_gains",
 }
+
+
+def _period_returns_by_group(daily_slices: list[dict[str, object]]) -> dict[str, float | None]:
+    returns_by_group: dict[str, list[float]] = defaultdict(list)
+    for daily_slice in daily_slices:
+        group_key = str(daily_slice.get("group_key") or "")
+        daily_return = _safe_float(daily_slice.get("daily_return"))
+        if not group_key or daily_return is None or not isfinite(daily_return):
+            continue
+        returns_by_group[group_key].append(daily_return)
+    return {
+        group_key: (
+            prod(1.0 + daily_return for daily_return in group_returns) - 1.0
+            if group_returns
+            else None
+        )
+        for group_key, group_returns in returns_by_group.items()
+    }
 
 
 def build_period_calculation_bucket_report(

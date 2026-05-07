@@ -203,6 +203,58 @@ export type PortfolioPerformanceCalculationResponse = {
   lines: PortfolioPeriodCalculationLine[]
 }
 
+export type PortfolioContributionAxis = 'instrument' | 'account' | 'taxonomy'
+
+export type PortfolioPeriodCalculationGroupRecord = {
+  axis: PortfolioContributionAxis
+  taxonomy_id: string | null
+  group_key: string
+  group_label: string
+  average_weight: number | null
+  ending_weight: number | null
+  period_return: number | null
+  initial_value: number | null
+  final_value: number | null
+  delta: number | null
+  residual_delta: number | null
+  realized_capital_gains: number | null
+  unrealized_pnl_change: number | null
+  earnings: number | null
+  expense_cash_amount: number | null
+  fees: number | null
+  taxes: number | null
+  cash_currency_gains: number | null
+  asset_currency_gains: number | null
+  total_pnl: number | null
+  period_contribution: number | null
+}
+
+export type PortfolioPeriodCalculationGroupsSummary = {
+  axis: PortfolioContributionAxis
+  taxonomy_id: string | null
+  group_key: string | null
+  group_label: string | null
+  start_date: string | null
+  end_date: string | null
+  group_count: number
+  total_initial_value: number | null
+  total_final_value: number | null
+  total_delta: number | null
+  total_residual_delta: number | null
+  total_pnl: number | null
+  total_period_contribution: number | null
+  contribution_residual: number | null
+}
+
+export type PortfolioPerformanceCalculationGroupsResponse = {
+  portfolio_id: string
+  base_currency: string
+  valuation_timezone: string
+  valuation_cutoff_policy: string
+  summary: PortfolioPeriodCalculationGroupsSummary
+  groups: PortfolioPeriodCalculationGroupRecord[]
+}
+
 export type PortfolioPeriodBoundaryHoldingRecord = {
   position_id: string
   asset_id: string
@@ -243,8 +295,6 @@ export type PortfolioPeriodBoundaryHoldingsResponse = {
   start_positions: PortfolioPeriodBoundaryHoldingRecord[]
   end_positions: PortfolioPeriodBoundaryHoldingRecord[]
 }
-
-export type PortfolioContributionAxis = 'instrument' | 'account' | 'taxonomy'
 
 export type PortfolioContributionLineRecord = {
   axis: PortfolioContributionAxis
@@ -309,6 +359,7 @@ export type PortfolioContributionReportResponse = {
     open_cost_basis_base: number | null
     realized_pnl: number | null
     unrealized_pnl: number | null
+    unrealized_pnl_change: number | null
     income_cash_amount: number | null
     expense_cash_amount: number | null
     fee_amount: number | null
@@ -340,6 +391,13 @@ export type PortfolioHoldingRow = {
   cost_basis_base?: number | null
   allocation: number | null
   price_chart: SparklinePoint[]
+  asset_trend_as_of_date?: string | null
+  asset_trend_basis?: string | null
+  asset_return_1w?: number | null
+  asset_return_mtd?: number | null
+  asset_return_ytd?: number | null
+  asset_return_1y?: number | null
+  asset_current_drawdown?: number | null
   coverage_status: string
   account_count?: number
   open_position_lot_count?: number
@@ -1484,6 +1542,17 @@ export function getPortfolioPerformanceCalculation(
   return fetchJson<PortfolioPerformanceCalculationResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/performance/calculation${query}`,
+  )
+}
+
+export function getPortfolioPerformanceCalculationGroups(
+  portfolioId: string,
+  filters: PortfolioPerformanceFilters & { axis?: PortfolioContributionAxis; taxonomy_id?: string } = {},
+) {
+  const query = buildQuery(filters)
+  return fetchJson<PortfolioPerformanceCalculationGroupsResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/performance/calculation/groups${query}`,
   )
 }
 

@@ -5146,7 +5146,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       key: 'annualized_return' as const,
-      label: 'Annualized Return',
+      label: 'Ann. Return',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
         primary: fund.annualizedReturn == null ? '—' : formatPercent(fund.annualizedReturn),
@@ -5242,7 +5242,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     },
     {
       key: 'max_drawdown' as const,
-      label: 'Max Drawdown',
+      label: 'Max DD',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
         primary: fund.maxDrawdown == null ? '—' : formatPercent(fund.maxDrawdown),
@@ -5436,14 +5436,14 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       value: riskBenchmarkLabel,
     },
     {
-      label: 'Current Drawdown',
+      label: 'Current DD',
       value:
         returnDrawdownSeries.length > 0
           ? formatPercent(returnDrawdownSeries[returnDrawdownSeries.length - 1].value)
           : '—',
     },
     {
-      label: 'Max Drawdown',
+      label: 'Max DD',
       value:
         lifetimeRiskSnapshot.maxDrawdown == null
           ? '—'
@@ -5817,13 +5817,13 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       note: 'SI',
     },
     {
-      label: 'Max Drawdown',
+      label: 'Max DD',
       value:
         lifetimeRiskSnapshot.maxDrawdown == null ? '—' : formatPercent(lifetimeRiskSnapshot.maxDrawdown),
       note: 'SI',
     },
     {
-      label: 'Current Drawdown',
+      label: 'Current DD',
       value: currentDrawdownValue == null ? '—' : formatPercent(currentDrawdownValue),
       note: drawdownPressureWatch.level,
     },
@@ -6033,7 +6033,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       watch: betaDriftWatch.level,
     },
     {
-      signal: 'Current Drawdown',
+      signal: 'Current DD',
       current: currentDrawdownValue == null ? '—' : formatPercent(currentDrawdownValue),
       baseline:
         lifetimeRiskSnapshot.maxDrawdown == null
@@ -6181,7 +6181,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
     {
-      label: 'Max Drawdown',
+      label: 'Max DD',
       supportsBenchmark: true,
       cells: riskMatrixSnapshots.map(({ fund, benchmark }) => ({
         primary: fund.maxDrawdown == null ? '—' : formatPercent(fund.maxDrawdown),
@@ -7741,7 +7741,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
               <div className="instrument-performance-title-group">
                 <div className="panel-title">Risk</div>
                 <div className="instrument-performance-title-row">
-                  <div className="instrument-section-title">Rolling Annualized Return / Volatility</div>
+                  <div className="instrument-section-title">Rolling Ann. Return / Volatility</div>
                 </div>
               </div>
               <div className="instrument-performance-matrix-controls">

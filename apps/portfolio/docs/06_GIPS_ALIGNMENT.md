@@ -51,6 +51,7 @@ GIPS 要求至少月度计算 TWR；如果不计算日收益，则大额外部�
 本项目采用 daily snapshot engine：
 
 - 每个 `as_of_date` 都生成 end-of-day snapshot；
+- 每个 daily snapshot 显式保留 `beginning_nav` 与 `ending_nav`，用户选择区间时用首日 `beginning_nav` 作为 initial value、末日 `ending_nav` 作为 final value；
 - 外部现金流发生日天然拥有当日估值；
 - 现阶段不需要另设 large cash flow threshold；
 - 若未来支持非日频估值，必须先引入大额现金流政策和子期间 return linking，不能直接用 Modified Dietz 静默替代 true TWR。
@@ -77,7 +78,11 @@ GIPS-informed 绩效口径以 fair value、外部现金流中性化和几何链�
 - 组合级 TWR、annualized TWR、drawdown、IRR/MWROR 的 fair-value calculation 不读取 FIFO/MA 作为收益率分支；
 - 修改账户成本法时，系统从 transaction facts 重算成本相关 read models，而不是保留历史算法兼容层。
 
+Performance `Calculation` 使用 period bridge：`Initial Value + Net External Flow + Period P&L = Final Value`。其中 unrealized P&L 进入本期收益时使用期末余额减期初余额的变化额；期末 unrealized P&L 余额是状态披露，不是本期收益加总项。
+
 Holdings 只作为当前持仓状态表。资产级 TWR、区间 contribution、realized gain、income 和 closed positions 必须从 `Performance` 或 security detail 读取，避免把 current holdings 和 period performance 混成一个口径。
+
+Holdings 中允许出现 `Spark Chart`、`1W Return / MTD / YTD / 1Y` 和 `Current DD`，但它们必须明确是 quote-derived asset market trend：只基于资产自身 selected quote series，不读取组合现金流、数量、成本法或 realized / income events。它们用于持仓扫盘，不作为 GIPS-informed portfolio return 或 contribution disclosure。
 
 ### 2.6 风险统计必须来自收益序列
 
@@ -96,6 +101,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 | 日频 TWR | `build_daily_portfolio_snapshots()` 生成 `daily_twr` |
 | 几何复合 | `_compound_daily_twr()` 与区间 `daily_series.cumulative_twr` |
 | 区间 rebasing | `_rebased_twr_series()` 对查询窗口重算 TWR index 和 drawdown |
+| 区间边界 | daily `beginning_nav` / `ending_nav` 支撑 initial / final value |
 | 回撤 | `_drawdown_stats()` 基于 TWR growth index，不基于 NAV |
 | 风险样本 | `return_observation_eligible` 控制 realized risk 的有效收益观察 |
 | 物化读模型 | `PortfolioDailySnapshotModel` / holding snapshot / contribution slice |

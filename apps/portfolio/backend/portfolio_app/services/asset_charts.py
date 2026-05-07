@@ -122,15 +122,11 @@ def _downsample_points(points: list[dict[str, object]], max_points: int | None) 
     return [points[index] for index in sorted(sampled_indices)]
 
 
-def build_asset_price_chart_from_detail(
+def _selected_chart_points(
     detail: dict[str, object],
     *,
-    asset_id: str,
     as_of_date: date,
-    range_key: str | None = None,
-    max_points: int | None = None,
-) -> dict[str, object] | None:
-    normalized_range_key = normalize_chart_range_key(range_key)
+) -> tuple[list[dict[str, object]], str | None]:
     points_by_basis = _basis_points(detail)
     candidate_bases = _candidate_chart_bases(detail)
 
@@ -143,17 +139,157 @@ def build_asset_price_chart_from_detail(
             selected_points = eligible_points
             break
 
+    if selected_points:
+        return selected_points, selected_basis
+
+    fallback_basis: str | None = None
+    fallback_points: list[dict[str, object]] = []
+    for quote_basis, basis_points in points_by_basis.items():
+        eligible_points = [point for point in basis_points if point["date"] <= as_of_date]
+        if not eligible_points:
+            continue
+        if not fallback_points or str(eligible_points[-1]["date_iso"]) > str(fallback_points[-1]["date_iso"]):
+            fallback_basis = quote_basis
+            fallback_points = eligible_points
+    return fallback_points, fallback_basis
+
+
+def _latest_point_on_or_before(
+    points: list[dict[str, object]],
+    target_date: date,
+) -> dict[str, object] | None:
+    latest: dict[str, object] | None = None
+    for point in points:
+        point_date = point.get("date")
+        if isinstance(point_date, date) and point_date <= target_date:
+            latest = point
+    return latest
+
+
+def _first_point_on_or_after(
+    points: list[dict[str, object]],
+    target_date: date,
+) -> dict[str, object] | None:
+    for point in points:
+        point_date = point.get("date")
+        if isinstance(point_date, date) and point_date >= target_date:
+            return point
+    return None
+
+
+def _return_between_points(
+    start_point: dict[str, object] | None,
+    end_point: dict[str, object] | None,
+) -> float | None:
+    if start_point is None or end_point is None:
+        return None
+    start_date = start_point.get("date")
+    end_date = end_point.get("date")
+    if isinstance(start_date, date) and isinstance(end_date, date) and start_date >= end_date:
+        return None
+    start_value = _safe_float(start_point.get("value"))
+    end_value = _safe_float(end_point.get("value"))
+    if start_value is None or end_value is None or abs(start_value) <= 1e-12:
+        return None
+    return end_value / start_value - 1
+
+
+def _period_return(
+    points: list[dict[str, object]],
+    *,
+    end_point: dict[str, object] | None,
+    anchor_date: date,
+    fallback_start_date: date | None = None,
+) -> float | None:
+    start_point = _latest_point_on_or_before(points, anchor_date)
+    if start_point is None and fallback_start_date is not None:
+        start_point = _first_point_on_or_after(points, fallback_start_date)
+    return _return_between_points(start_point, end_point)
+
+
+def build_asset_trend_metrics_from_detail(
+    detail: dict[str, object],
+    *,
+    as_of_date: date,
+) -> dict[str, object]:
+    selected_points, selected_basis = _selected_chart_points(detail, as_of_date=as_of_date)
     if not selected_points:
-        fallback_points = [
-            point
-            for points in points_by_basis.values()
-            for point in points
-            if point["date"] <= as_of_date
-        ]
-        fallback_points.sort(key=lambda item: item["date_iso"])
-        selected_points = fallback_points
-        if selected_points:
-            selected_basis = str(selected_points[-1].get("quote_basis") or "")
+        return {
+            "asset_trend_as_of_date": None,
+            "asset_trend_basis": selected_basis,
+            "asset_return_1w": None,
+            "asset_return_mtd": None,
+            "asset_return_ytd": None,
+            "asset_return_1y": None,
+            "asset_current_drawdown": None,
+        }
+
+    end_point = selected_points[-1]
+    end_date = end_point.get("date") if isinstance(end_point.get("date"), date) else as_of_date
+    month_start = date(end_date.year, end_date.month, 1)
+    year_start = date(end_date.year, 1, 1)
+    drawdown_values = [_safe_float(point.get("value")) for point in selected_points]
+    valid_drawdown_values = [value for value in drawdown_values if value is not None]
+    end_value = _safe_float(end_point.get("value"))
+    peak_value = max(valid_drawdown_values) if valid_drawdown_values else None
+
+    return {
+        "asset_trend_as_of_date": end_date.isoformat(),
+        "asset_trend_basis": selected_basis,
+        "asset_return_1w": _period_return(
+            selected_points,
+            end_point=end_point,
+            anchor_date=end_date - timedelta(days=7),
+        ),
+        "asset_return_mtd": _period_return(
+            selected_points,
+            end_point=end_point,
+            anchor_date=month_start - timedelta(days=1),
+            fallback_start_date=month_start,
+        ),
+        "asset_return_ytd": _period_return(
+            selected_points,
+            end_point=end_point,
+            anchor_date=year_start - timedelta(days=1),
+            fallback_start_date=year_start,
+        ),
+        "asset_return_1y": _period_return(
+            selected_points,
+            end_point=end_point,
+            anchor_date=end_date - timedelta(days=365),
+        ),
+        "asset_current_drawdown": (
+            end_value / peak_value - 1
+            if end_value is not None and peak_value is not None and peak_value > 1e-12
+            else None
+        ),
+    }
+
+
+def build_asset_trend_metrics(
+    asset_id: str,
+    *,
+    as_of_date: date,
+) -> dict[str, object]:
+    detail = get_registry_instrument_detail(asset_id)
+    if not isinstance(detail, dict):
+        return {}
+    return build_asset_trend_metrics_from_detail(
+        detail,
+        as_of_date=as_of_date,
+    )
+
+
+def build_asset_price_chart_from_detail(
+    detail: dict[str, object],
+    *,
+    asset_id: str,
+    as_of_date: date,
+    range_key: str | None = None,
+    max_points: int | None = None,
+) -> dict[str, object] | None:
+    normalized_range_key = normalize_chart_range_key(range_key)
+    selected_points, selected_basis = _selected_chart_points(detail, as_of_date=as_of_date)
 
     range_start_date = _range_start_date(as_of_date=as_of_date, range_key=normalized_range_key)
     visible_points = (
@@ -241,7 +377,7 @@ def build_asset_sparkline_from_detail(
     *,
     asset_id: str,
     as_of_date: date,
-    max_points: int = 20,
+    max_points: int = 48,
 ) -> list[dict[str, object]]:
     chart = build_asset_price_chart_from_detail(
         detail,
@@ -269,7 +405,7 @@ def build_asset_sparkline(
     asset_id: str,
     *,
     as_of_date: date,
-    max_points: int = 20,
+    max_points: int = 48,
 ) -> list[dict[str, object]]:
     chart = build_asset_price_chart(
         asset_id,

@@ -19,6 +19,8 @@ from portfolio_app.db.models import (
 )
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import performance
+from portfolio_app.services.asset_charts import build_asset_trend_metrics
+from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.portfolio_store import (
     _resolve_live_portfolio_as_of_date,
     _serialize_account_row,
@@ -30,6 +32,7 @@ _LOCAL_REFRESH_LOCKS: dict[str, Lock] = {}
 _LOCAL_REFRESH_LOCKS_GUARD = Lock()
 _RUNNING_REFRESH_WAIT_SECONDS = 30.0
 _RUNNING_REFRESH_POLL_SECONDS = 0.1
+DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260506-asset-trend"
 
 
 def _current_utc_timestamp() -> str:
@@ -156,6 +159,19 @@ def _snapshot_count(session, portfolio_id: str) -> int:
     )
 
 
+def _latest_snapshot_calculation_version(session, portfolio_id: str) -> str | None:
+    payload = session.scalar(
+        select(PortfolioDailySnapshotModel.snapshot_json)
+        .where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)
+        .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
+        .limit(1)
+    )
+    if not isinstance(payload, dict):
+        return None
+    version = payload.get("calculation_version")
+    return str(version) if version not in (None, "") else None
+
+
 def _current_refresh_result(session, portfolio_id: str) -> dict[str, object] | None:
     state = session.get(PortfolioCalculationStateModel, portfolio_id)
     if state is None:
@@ -166,6 +182,7 @@ def _current_refresh_result(session, portfolio_id: str) -> dict[str, object] | N
         "refreshed_from": state.refreshed_from,
         "refreshed_to": state.refreshed_to,
         "refreshed_at": state.refreshed_at,
+        "calculation_version": DAILY_SNAPSHOT_CALCULATION_VERSION,
     }
 
 
@@ -192,11 +209,17 @@ def _claim_daily_snapshot_refresh(portfolio_id: str) -> dict[str, object]:
             return {"status": "missing"}
         state = _state_for_portfolio(session, portfolio_id)
 
-        if state.daily_snapshot_status == "current" and _snapshot_count(session, portfolio_id) > 0:
-            return {
-                "status": "current",
-                "result": _current_refresh_result(session, portfolio_id),
-            }
+        snapshot_count = _snapshot_count(session, portfolio_id)
+        if state.daily_snapshot_status == "current" and snapshot_count > 0:
+            if _latest_snapshot_calculation_version(session, portfolio_id) == DAILY_SNAPSHOT_CALCULATION_VERSION:
+                return {
+                    "status": "current",
+                    "result": _current_refresh_result(session, portfolio_id),
+                }
+            state.daily_snapshot_status = "stale"
+            state.refresh_request_id = _new_refresh_request_id()
+            state.error_message = None
+            session.flush()
         if state.daily_snapshot_status == "running":
             return {"status": "running"}
 
@@ -295,6 +318,7 @@ def _refresh_portfolio_daily_snapshots_once(
                     item for item in list(snapshot.get("_contribution_slices") or []) if isinstance(item, dict)
                 ]
                 public_snapshot = _public_snapshot_payload(snapshot)
+                public_snapshot["calculation_version"] = DAILY_SNAPSHOT_CALCULATION_VERSION
                 session.add(
                     PortfolioDailySnapshotModel(
                         portfolio_id=portfolio_id,
@@ -510,7 +534,9 @@ def _state_requires_refresh(session, portfolio_id: str) -> bool:
     state = session.get(PortfolioCalculationStateModel, portfolio_id)
     if state is None or state.daily_snapshot_status != "current":
         return True
-    return _snapshot_count(session, portfolio_id) == 0
+    if _snapshot_count(session, portfolio_id) == 0:
+        return True
+    return _latest_snapshot_calculation_version(session, portfolio_id) != DAILY_SNAPSHOT_CALCULATION_VERSION
 
 
 def ensure_portfolio_daily_snapshots(portfolio_id: str) -> None:
@@ -604,6 +630,15 @@ def _first_present(rows: list[dict[str, object]], key: str) -> object | None:
     return None
 
 
+def _asset_trend_metrics(asset_id: str, as_of_date: date | None) -> dict[str, object]:
+    if not asset_id or as_of_date is None:
+        return {}
+    try:
+        return build_asset_trend_metrics(asset_id, as_of_date=as_of_date)
+    except InstrumentRegistryError:
+        return {}
+
+
 def _aggregate_holding_rows(
     rows: list[PortfolioDailyHoldingSnapshotModel],
     *,
@@ -612,6 +647,7 @@ def _aggregate_holding_rows(
     rows_by_asset: dict[str, list[dict[str, object]]] = {}
     for row in rows:
         payload = dict(row.holding_json) if isinstance(row.holding_json, dict) else {}
+        payload["_snapshot_as_of_date"] = row.as_of_date
         rows_by_asset.setdefault(row.asset_id, []).append(payload)
 
     aggregated_rows: list[dict[str, object]] = []
@@ -642,6 +678,18 @@ def _aggregate_holding_rows(
             ),
             [],
         )
+        trend_metrics = {
+            "asset_return_1w": _first_present(asset_rows, "asset_return_1w"),
+            "asset_return_mtd": _first_present(asset_rows, "asset_return_mtd"),
+            "asset_return_ytd": _first_present(asset_rows, "asset_return_ytd"),
+            "asset_return_1y": _first_present(asset_rows, "asset_return_1y"),
+            "asset_current_drawdown": _first_present(asset_rows, "asset_current_drawdown"),
+            "asset_trend_as_of_date": _first_present(asset_rows, "asset_trend_as_of_date"),
+            "asset_trend_basis": _first_present(asset_rows, "asset_trend_basis"),
+        }
+        if all(value is None for value in trend_metrics.values()):
+            snapshot_as_of_date = _parse_date(_first_present(asset_rows, "_snapshot_as_of_date"))
+            trend_metrics = _asset_trend_metrics(asset_id, snapshot_as_of_date)
         aggregated_rows.append(
             {
                 "line_id": asset_id,
@@ -672,6 +720,7 @@ def _aggregate_holding_rows(
                     else None
                 ),
                 "price_chart": price_chart,
+                **trend_metrics,
                 "coverage_status": "price-nav-fx" if market_value_base is not None else "unpriced",
                 "account_count": len(account_ids),
                 "open_position_lot_count": sum(int(row.get("open_position_lot_count") or 0) for row in asset_rows),

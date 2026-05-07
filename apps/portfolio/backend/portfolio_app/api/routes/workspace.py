@@ -2,7 +2,7 @@ from datetime import date
 
 from fastapi import APIRouter, HTTPException
 
-from portfolio_app.services.asset_charts import build_asset_sparkline
+from portfolio_app.services.asset_charts import build_asset_sparkline, build_asset_trend_metrics
 from portfolio_app.services.ledger import (
     build_position_lots,
     summarize_position_lots,
@@ -109,6 +109,14 @@ def holdings_workspace(
             for position in statement.get("positions", [])
             if str(position.get("asset_id") or "")
         }
+        trend_metrics_by_asset = {
+            str(position.get("asset_id") or ""): build_asset_trend_metrics(
+                str(position.get("asset_id") or ""),
+                as_of_date=resolved_as_of_date,
+            )
+            for position in statement.get("positions", [])
+            if str(position.get("asset_id") or "")
+        }
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     positions = list(statement["positions"])
@@ -135,6 +143,7 @@ def holdings_workspace(
             "cost_basis_base": position.get("cost_basis_base"),
             "allocation": position.get("portfolio_weight"),
             "price_chart": sparkline_by_asset.get(str(position.get("asset_id") or ""), []),
+            **trend_metrics_by_asset.get(str(position.get("asset_id") or ""), {}),
             "coverage_status": "price-nav-fx" if position.get("market_value_base") is not None else "unpriced",
             "account_count": int(position.get("account_count") or 0),
             "open_position_lot_count": int(position.get("open_position_lot_count") or 0),

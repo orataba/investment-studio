@@ -91,6 +91,7 @@
 - 当日价格、FX、benchmark level 都视为当日收盘或该日最终可用估值；
 - 当日 `MVB` 等于上一估值日的 `MVE`；
 - 当日 `MVE` 为当日收盘后的组合总市值与现金合计。
+- 物化 daily snapshot 必须同时保存 `beginning_nav` 与 `ending_nav`；任意用户查询区间 `[start_date, end_date]` 的 `initial value` 使用 `start_date` 当天的 `beginning_nav`，语义等同于上一估值日 EOD，`final value` 使用 `end_date` 的 `ending_nav`。
 
 ### 2.1.1 全球 EOD 规则
 
@@ -343,6 +344,16 @@ $$
 
 Holdings 是当前持仓状态表，只展示当前仍然 open 的 quantity、quote、market value、weight、open-position cost basis 与 unrealized P&L。资产级 TWR、period contribution、realized gain、dividend / coupon income、fees / taxes impact 和 closed positions 属于 `Performance` / security detail 的区间绩效视图，不进入 Holdings 默认列，也不作为 Holdings 的 canonical 语义。
 
+Holdings 可以展示 quote-derived asset market trend 指标，作为扫描当前持仓资产自身近期市场表现的辅助列：
+
+- `Spark Chart` 使用同一 selected quote series 的 6M 路径；
+- `1W Return / MTD / YTD / 1Y` 只使用资产自身 selected quote series，计算为 `latest_quote / anchor_quote - 1`；
+- selected quote series 按 `quote_selection_policy.total_return -> chart -> valuation -> reference` 选择；若策略为空，则选用截至 as-of 最新的一条 quote basis，不能混用多个 basis；
+- `1W Return` / `1Y` 的 anchor quote 是目标日期或之前最近 quote；
+- `MTD` / `YTD` 的 anchor quote 是月初 / 年初之前最近 quote；若历史不足，则使用期间内第一条 quote 作为 partial-data fallback；
+- `Current DD` 计算为 `latest_quote / max_available_selected_quote_to_date - 1`；
+- 这些指标不读取 quantity、cash flow、cost basis、FIFO / moving average、realized gain 或 income，因此不属于组合 TWR、holding contribution 或 book P&L。
+
 #### Unrealized P&L
 
 $$
@@ -467,6 +478,17 @@ GIPS-informed 规则：
 - MWR / IRR 是补充资金效率指标，不得在 UI 或 API summary 中替代 TWR；
 - 若 IRR 因现金流符号、同日窗口或数学求根原因不可得，不能据此把已完整计算的 TWR 结果标记为失败。
 
+Overview 展示 `Monthly Return Matrix`，按 year x month 展示月度 TWR，YTD 为可用月份的复合收益。
+
+Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要结构为：
+
+- `Return & Risk Metrics`：组合级 TWR / annualized TWR、IRR / MWR、risk、drawdown。return / risk 类指标可选择 benchmark price series 做 period return、annualized return、volatility、drawdown 的轻量对比；
+- `Calculation`：合并 initial value、group rows、external flow、portfolio total 与 final value。group rows 可按 asset / account / default planning taxonomy 聚合；`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
+- Calculation 中的 `Unrealized Chg` 是期间未实现损益变化，即 `ending unrealized P&L - beginning unrealized P&L`，用于避免把期初市值中已经包含的历史浮盈重复算入本期收益。期末未实现损益余额属于 Holdings、boundary holdings 或 asset detail，不作为 Calculation 主列。
+- `Capital Gain = Realized Gain + Unrealized Chg`；`Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes、FX P&L 分列。P&L 与 book attribution 不和 benchmark 对比。
+
+Overview 的 chart compare 与 Performance 的 benchmark compare 是独立选择状态，因为用户可能对图表和区间绩效选择不同对比对象。
+
 ### 5.2 Daily TWR
 
 正式版组合级 TWR 采用 Portfolio Performance 的日级 true time-weighted 逻辑：
@@ -488,6 +510,7 @@ $$
 - 外部流出加回分子，视作在当日结束取出；
 - 这样可以把 external flows 从业绩中中性化。
 - 当前 daily snapshot engine 对每个 `as_of_date` 估值，因此外部现金流发生日天然有估值；若未来支持非日频估值，必须引入 large cash flow policy 与子期间收益几何链接，不能静默改用近似 MWR 方法。
+- 对显式区间 `2026-04-01` 到 `2026-04-20`，`initial value` 是 `2026-04-01` 的 `MVB / beginning_nav`，即 `2026-03-31` EOD；`final value` 是 `2026-04-20` 的 `MVE / ending_nav`。区间 TWR 几何链接 `2026-04-01` 至 `2026-04-20` 的 daily returns。
 
 ### 5.3 Cumulative TWR
 
@@ -558,6 +581,18 @@ NetExternalInflow = \sum CF_{in} - \sum CF_{out}
 $$
 
 `Delta` 表示扣除 external cash flows 后的绝对收益金额。
+
+在 period calculation 中，`Delta` 也等于本期 `Period P&L`，并应满足：
+
+$$
+FinalValue = InitialValue + NetExternalInflow + PeriodPnL
+$$
+
+其中：
+
+$$
+PeriodPnL = RealizedCapitalGain + (EndingUnrealizedPnL - BeginningUnrealizedPnL) + Income - Fees - Taxes + FXPnL
+$$
 
 ### 5.7 Drawdown
 

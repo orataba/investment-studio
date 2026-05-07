@@ -1063,7 +1063,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "price_chart_1m",
-        "label": "Price Chart",
+        "label": "Spark Chart",
         "description": "1-month NAV spark chart from the current chart read model.",
         "category_code": "performance_risk",
         "data_type": "sparkline",
@@ -1153,7 +1153,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "return_1w",
-        "label": "Total Return (1W)",
+        "label": "1W Return",
         "description": "1-week total return.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1171,7 +1171,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "return_1m",
-        "label": "Total Return (1M)",
+        "label": "1M",
         "description": "1-month total return.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1189,7 +1189,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "return_1y",
-        "label": "Total Return (1Y)",
+        "label": "1Y",
         "description": "1-year annualized total return.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1207,7 +1207,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "annualized_return",
-        "label": "Annualized Return",
+        "label": "Ann.",
         "description": "Since-inception annualized total return.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1225,7 +1225,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "return_3y",
-        "label": "Total Return (3Y)",
+        "label": "3Y",
         "description": "3-year annualized total return.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1243,7 +1243,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "return_5y",
-        "label": "Total Return (5Y)",
+        "label": "5Y",
         "description": "5-year annualized total return.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1261,7 +1261,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "max_drawdown",
-        "label": "Max Drawdown",
+        "label": "Max DD",
         "description": "Maximum drawdown from the active performance snapshot.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1279,7 +1279,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "attr.current_drawdown",
-        "label": "当前回撤",
+        "label": "Current DD",
         "description": "Current drawdown from the latest NAV relative to the prior high watermark.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1387,7 +1387,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "attr.peer_return_percentile",
-        "label": "Peer Return Percentile",
+        "label": "Return Pctl",
         "description": "Average taxonomy peer percentile across available return metrics. Higher is better.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1405,7 +1405,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "attr.peer_risk_percentile",
-        "label": "Peer Risk Percentile",
+        "label": "Risk Pctl",
         "description": "Average taxonomy peer percentile across available risk metrics. Higher is better.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1423,7 +1423,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "attr.peer_risk_adjusted_percentile",
-        "label": "Peer Risk-Adj Percentile",
+        "label": "Risk-Adj Pctl",
         "description": "Average taxonomy peer percentile across risk-adjusted metrics. Higher is better.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1441,7 +1441,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "attr.peer_return_1w_percentile",
-        "label": "1W Return Percentile",
+        "label": "1W Return Pctl",
         "description": "1-week return percentile within the taxonomy peer group. Higher is better.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1454,12 +1454,12 @@ FIELD_REGISTRY = [
         "availability_rule_json": {"requires": ["asset_performance_read_model"]},
         "source_domain": "read_model",
         "source_metric_code": "watchlist_row_read_model.attributes.peer_return_1w_percentile",
-        "default_width": 165,
+        "default_width": 180,
         "default_visible": False,
     },
     {
         "field_key": "attr.peer_return_1m_percentile",
-        "label": "1M Return Percentile",
+        "label": "1M Pctl",
         "description": "1-month return percentile within the taxonomy peer group. Higher is better.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1477,7 +1477,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "attr.peer_return_ytd_percentile",
-        "label": "YTD Return Percentile",
+        "label": "YTD Pctl",
         "description": "Year-to-date return percentile within the taxonomy peer group. Higher is better.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1495,7 +1495,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "attr.peer_return_1y_percentile",
-        "label": "1Y Return Percentile",
+        "label": "1Y Pctl",
         "description": "1-year return percentile within the taxonomy peer group. Higher is better.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1513,7 +1513,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "attr.peer_return_3y_percentile",
-        "label": "3Y Return Percentile",
+        "label": "3Y Pctl",
         "description": "3-year annualized return percentile within the taxonomy peer group. Higher is better.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1531,7 +1531,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "attr.peer_return_5y_percentile",
-        "label": "5Y Return Percentile",
+        "label": "5Y Pctl",
         "description": "5-year annualized return percentile within the taxonomy peer group. Higher is better.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1549,7 +1549,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "attr.peer_annualized_return_percentile",
-        "label": "Ann. Return Percentile",
+        "label": "Ann. Pctl",
         "description": "Since-inception annualized return percentile within the taxonomy peer group. Higher is better.",
         "category_code": "performance_risk",
         "data_type": "number",
@@ -1585,7 +1585,7 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "attr.peer_max_drawdown_percentile",
-        "label": "Max Drawdown Percentile",
+        "label": "Max DD Pctl",
         "description": "Maximum drawdown percentile within the taxonomy peer group. Shallower drawdown ranks better.",
         "category_code": "performance_risk",
         "data_type": "number",

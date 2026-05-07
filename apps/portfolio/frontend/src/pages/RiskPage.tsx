@@ -1193,6 +1193,24 @@ export default function RiskPage() {
     setActiveRiskViewId(viewId)
   }
 
+  function handleDeleteRiskView(viewId: string) {
+    const targetView = getRiskViewById(riskViewStore, viewId)
+    if (targetView.readonly) {
+      return
+    }
+    const fallbackView = SYSTEM_RISK_VIEWS[0]
+    const deletingActiveView = targetView.id === activeRiskViewId
+    setRiskViewStore((current) => ({
+      ...current,
+      activeViewId: deletingActiveView ? fallbackView.id : current.activeViewId,
+      customViews: current.customViews.filter((view) => view.id !== targetView.id),
+    }))
+    if (deletingActiveView) {
+      setActiveRiskViewId(fallbackView.id)
+      applyRiskViewState(fallbackView.state)
+    }
+  }
+
   useEffect(() => {
     saveRiskViewStore(riskViewStore)
   }, [riskViewStore])
@@ -1656,9 +1674,11 @@ export default function RiskPage() {
             activeViewId={activeRiskViewId}
             edited={riskViewEdited}
             canSave={!activeRiskView.readonly}
+            canDelete
             onSelect={handleSelectRiskView}
             onSave={handleSaveRiskView}
             onSaveAs={handleSaveRiskViewAs}
+            onDelete={handleDeleteRiskView}
           />
           <div className="risk-filter-grid">
             <label>

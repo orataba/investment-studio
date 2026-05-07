@@ -58,7 +58,7 @@ uvicorn portfolio_app.main:app --reload --host 127.0.0.1 --port 8001
 - 测试使用临时 SQLite，不会污染默认运行库
 - research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理；当前产物以 target weights、member targets、leaf targets、solve event 和 target weight gaps 为主
 - backend 顶层包名现在是 `portfolio_app`
-- daily snapshots 已物化到数据库，`Performance`、`Holdings`、instrument/account contribution 读路径默认复用物化结果；交易、账户或行情变更会用 `refresh_request_id` 把相关组合标记为 stale 并触发刷新。若刷新中又收到新数据，当前计算不会清掉新的 stale 标记，而是串行再跑一轮后才置为 current。
+- daily snapshots 已物化到数据库，并显式保存每日 `beginning_nav` / `ending_nav`；`Performance`、`Holdings`、instrument/account contribution 读路径默认复用物化结果。交易、账户或行情变更会用 `refresh_request_id` 把相关组合标记为 stale 并触发刷新。若刷新中又收到新数据，当前计算不会清掉新的 stale 标记，而是串行再跑一轮后才置为 current。
 
 ### 2. 前端
 
@@ -98,6 +98,7 @@ npm --prefix apps/portfolio/frontend run build
 
 - 组合级 TWR 使用日频 true time-weighted 口径：外部流入进分母，外部流出加回分子，区间结果几何复合。
 - FIFO / moving average 只影响 book cost、realized capital gain、unrealized P&L 和 lot 展示；不影响 fair-value based TWR。
+- Performance `Calculation` 使用 `Initial Value + Net External Flow + Period P&L = Final Value` 的期间桥接。`Unrealized Chg` 是期末未实现损益减期初未实现损益；期末未实现损益余额留给 Holdings / boundary holdings。
 - `moving_average` 在底层按 `account + asset` 维护一个 rolling average cost bucket；API 为 UI 和转仓审计输出一个 synthetic position lot。
 - `Overview`、`Performance`、`Review` 的 TWR index、daily series 和 drawdown 均按查询窗口重新复合；不得复用 inception-to-date 的累计 TWR 作为区间曲线。
 - `Risk` 的 realized volatility、rolling volatility、Sharpe / Sortino 输入来自 `daily_twr` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。
