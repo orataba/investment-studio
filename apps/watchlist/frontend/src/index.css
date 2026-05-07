@@ -1049,6 +1049,7 @@ th {
 .watchlists-plus-button {
   width: 34px;
   height: 30px;
+  padding: 0;
   border: none;
   border-left: 1px solid var(--line-strong);
   background: transparent;
@@ -1058,6 +1059,20 @@ th {
   align-items: center;
   justify-content: center;
   line-height: 1;
+}
+
+.watchlists-plus-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.watchlists-plus-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
 }
 
 .watchlists-save-icon {
@@ -1361,6 +1376,12 @@ th {
   background: transparent;
 }
 
+.watchlists-table th,
+.watchlists-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .watchlists-table tbody tr {
   transition: background 0.16s ease;
 }
@@ -1383,7 +1404,15 @@ th {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  max-width: 100%;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.watchlists-th-label > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .watchlists-th-sortable {
@@ -1471,6 +1500,49 @@ th {
   font-size: 12px;
   font-weight: 600;
   color: #6b7280;
+}
+
+.watchlists-group-name-cell {
+  min-width: 0;
+}
+
+.watchlists-group-name-cell .watchlists-group-header {
+  max-width: 100%;
+  width: 100%;
+}
+
+.watchlists-group-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watchlists-group-summary-cell {
+  color: #64748b;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.watchlists-group-summary-value {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  max-width: 100%;
+  line-height: 1.1;
+  overflow: hidden;
+}
+
+.watchlists-group-summary-value small {
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.watchlists-group-summary-empty {
+  color: #cbd5e1;
 }
 
 .watchlists-modal-backdrop {
@@ -3950,8 +4022,9 @@ td:last-child {
 }
 
 .instrument-performance-benchmark-select {
-  width: min(320px, 36vw);
-  flex: 0 1 320px;
+  display: block;
+  width: min(340px, 100%);
+  flex: 0 1 340px;
   margin-left: 0;
 }
 
@@ -5626,8 +5699,8 @@ td:last-child {
   }
 
   .instrument-performance-benchmark-select {
-    width: min(360px, 100%);
-    flex-basis: min(360px, 100%);
+    width: min(340px, 100%);
+    flex-basis: min(340px, 100%);
     margin-left: 0;
   }
 
@@ -6505,6 +6578,11 @@ input[type='checkbox'] {
 }
 
 .watchlists-table .watchlists-asset-link {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: #111827;
   font-weight: 500;
 }
@@ -6516,9 +6594,24 @@ input[type='checkbox'] {
 }
 
 .watchlists-table .sparkline {
-  width: 88px;
+  width: 100%;
   height: 24px;
   display: block;
+}
+
+.watchlists-table .sparkline-cell {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+.watchlists-table .ticker-pill,
+.watchlists-table .rating-pill,
+.watchlists-table .status-badge {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .positive-cell,
@@ -6830,7 +6923,7 @@ input[type='checkbox'] {
   border-top: none;
 }
 
-/* Unified quote chart controls shared with Portfolio overview. */
+/* Compare controls shared with Portfolio overview/performance. */
 .instrument-chart-shell .instrument-quote-toolbar-primary {
   align-items: center;
   gap: 12px;
@@ -6840,8 +6933,8 @@ input[type='checkbox'] {
 
 .instrument-chart-shell .instrument-chart-compare {
   display: block;
-  width: min(496px, 100%);
-  flex: 0 1 496px;
+  width: min(380px, 100%);
+  flex: 0 1 380px;
 }
 
 .instrument-chart-compare-search {
@@ -6858,15 +6951,16 @@ input[type='checkbox'] {
 
 .instrument-chart-compare-search-box input {
   width: 100%;
-  height: 40px;
-  padding: 0 42px 0 12px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 34px 0 10px;
   border: 1px solid #cbd5e1;
   border-radius: 0;
   background: #ffffff;
   color: #111827;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 400;
-  line-height: 40px;
+  line-height: 1.2;
   outline: none;
 }
 
@@ -6881,24 +6975,24 @@ input[type='checkbox'] {
 
 .instrument-chart-compare-search-box input:focus {
   border-color: #1f6fbc;
-  box-shadow: 0 0 0 1px #1f6fbc inset;
+  box-shadow: none;
 }
 
 .instrument-chart-compare-search-box > button {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 3px;
+  right: 5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 1px solid transparent;
   background: transparent;
   color: #475467;
   cursor: pointer;
-  font-size: 17px;
+  font-size: 13px;
   font-weight: 500;
   line-height: 1;
 }
@@ -6992,19 +7086,20 @@ input[type='checkbox'] {
 }
 
 .instrument-chart-compare select {
-  height: 40px;
-  padding: 0 40px 0 12px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 34px 0 10px;
   border-color: #cbd5e1;
   background: #ffffff;
   color: #111827;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 400;
-  line-height: 40px;
+  line-height: 1.2;
 }
 
 .instrument-chart-compare select:focus {
   border-color: #1f6fbc;
-  box-shadow: 0 0 0 1px #1f6fbc inset;
+  box-shadow: none;
 }
 
 .instrument-chart-series-head {

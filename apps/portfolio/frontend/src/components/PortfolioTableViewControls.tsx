@@ -42,6 +42,7 @@ export default function PortfolioTableViewControls({
   const deleteEnabled = canDelete && Boolean(onDelete)
   const busy = saving || deleting
   const activeViewLabel = `View\u00A0: ${activeView?.name ?? 'Default'}${edited ? ' (Edited)' : ''}`
+  const quickActionLabel = edited ? (canSave ? 'Save view' : 'Save as view') : 'Create view'
 
   useEffect(() => {
     if (!viewMenuOpen) {
@@ -178,10 +179,10 @@ export default function PortfolioTableViewControls({
             }
             openSaveAs()
           }}
-          aria-label={edited && canSave ? 'Save view' : 'Create view'}
-          title={edited && canSave ? 'Save view' : 'Create view'}
+          aria-label={quickActionLabel}
+          title={quickActionLabel}
         >
-          {edited && canSave ? (
+          {edited ? (
             saving ? (
               '...'
             ) : (
@@ -195,7 +196,17 @@ export default function PortfolioTableViewControls({
               </span>
             )
           ) : (
-            '+'
+            <span className="portfolio-table-view-plus-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path
+                  d="M12 5v14M5 12h14"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeLinecap="square"
+                  strokeWidth="2"
+                />
+              </svg>
+            </span>
           )}
         </button>
         {viewMenuOpen ? (

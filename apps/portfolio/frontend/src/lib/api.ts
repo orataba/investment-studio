@@ -1320,31 +1320,102 @@ export type PortfolioTransactionDeleteResponse = {
 }
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+const GET_CACHE_TTL_MS = 60_000
+const GET_CACHE_MAX_ENTRIES = 128
 
-async function fetchJson<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, {
+type FetchJsonOptions = {
+  invalidateGetCache?: boolean
+}
+
+type CachedGetRequest = {
+  expiresAt: number
+  promise: Promise<unknown>
+}
+
+const getRequestCache = new Map<string, CachedGetRequest>()
+
+export function clearPortfolioApiCache() {
+  getRequestCache.clear()
+}
+
+function trimGetRequestCache() {
+  while (getRequestCache.size > GET_CACHE_MAX_ENTRIES) {
+    const oldestKey = getRequestCache.keys().next().value
+    if (oldestKey === undefined) {
+      break
+    }
+    getRequestCache.delete(oldestKey)
+  }
+}
+
+function fetchJson<T>(
+  baseUrl: string,
+  path: string,
+  init?: RequestInit,
+  options: FetchJsonOptions = {},
+): Promise<T> {
+  const method = (init?.method ?? 'GET').toUpperCase()
+  const cacheKey = method === 'GET' ? `${baseUrl}${path}` : null
+  const now = Date.now()
+
+  if (cacheKey) {
+    const cached = getRequestCache.get(cacheKey)
+    if (cached && cached.expiresAt > now) {
+      getRequestCache.delete(cacheKey)
+      getRequestCache.set(cacheKey, cached)
+      return cached.promise as Promise<T>
+    }
+    if (cached) {
+      getRequestCache.delete(cacheKey)
+    }
+  }
+
+  const request = fetch(`${baseUrl}${path}`, {
     headers: {
       'Content-Type': 'application/json',
       ...(init?.headers || {}),
     },
     ...init,
-  })
-
-  if (!response.ok) {
-    const body = await response.text()
-    if (body) {
-      try {
-        const parsed = JSON.parse(body) as { detail?: string }
-        throw new Error(parsed.detail || body)
-      } catch {
-        throw new Error(body)
+  }).then(async (response) => {
+    if (!response.ok) {
+      const body = await response.text()
+      if (body) {
+        let message = body
+        try {
+          const parsed = JSON.parse(body) as { detail?: string }
+          message = parsed.detail || body
+        } catch {
+          message = body
+        }
+        throw new Error(message)
       }
+
+      throw new Error(`Request failed: ${response.status}`)
     }
 
-    throw new Error(`Request failed: ${response.status}`)
+    return (await response.json()) as T
+  })
+
+  if (cacheKey) {
+    getRequestCache.set(cacheKey, {
+      expiresAt: now + GET_CACHE_TTL_MS,
+      promise: request,
+    })
+    trimGetRequestCache()
+    request.catch(() => {
+      getRequestCache.delete(cacheKey)
+    })
+    return request
   }
 
-  return (await response.json()) as T
+  if (options.invalidateGetCache === false) {
+    return request
+  }
+
+  return request.then((value) => {
+    getRequestCache.clear()
+    return value
+  })
 }
 
 function buildQuery(filters: Record<string, string | undefined>) {
@@ -1366,6 +1437,25 @@ export function getWorkspaceSummaryForPortfolio(portfolioId: string) {
   return fetchJson<PortfolioWorkspaceSummary>(
     API_BASE_URL,
     `/api/workspace/summary?portfolio_id=${encodeURIComponent(portfolioId)}`,
+  )
+}
+
+export type PortfolioWorkspacePreloadResponse = {
+  portfolio_id: string
+  status: string
+  warmed_surfaces: string[]
+}
+
+export function preloadPortfolioWorkspace(portfolioId: string) {
+  return fetchJson<PortfolioWorkspacePreloadResponse>(
+    API_BASE_URL,
+    `/api/workspace/preload?portfolio_id=${encodeURIComponent(portfolioId)}`,
+    {
+      method: 'POST',
+    },
+    {
+      invalidateGetCache: false,
+    },
   )
 }
 

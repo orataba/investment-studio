@@ -64,8 +64,6 @@ def _overview_view_columns() -> list[dict[str, object]]:
         {"field_key": "return_mtd", "display_order": 7, "width": 120},
         {"field_key": "return_ytd", "display_order": 8, "width": 150},
         {"field_key": "attr.current_drawdown", "display_order": 9, "width": 120},
-        {"field_key": "attr.peer_overall_percentile", "display_order": 10, "width": 120},
-        {"field_key": "data_freshness_status", "display_order": 11, "width": 140},
     ]
 
 

@@ -1,14 +1,19 @@
 from datetime import date
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
+from portfolio_app.db.models import PortfolioCalculationStateModel
+from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.asset_charts import build_asset_sparkline, build_asset_trend_metrics
+from portfolio_app.services.workspace_cache import (
+    get_cached_materialized_holdings_workspace,
+    preload_portfolio_workspace_cache,
+)
 from portfolio_app.services.ledger import (
     build_position_lots,
     summarize_position_lots,
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
-from portfolio_app.services.daily_snapshots import build_materialized_holdings_workspace
 from portfolio_app.services.performance import build_statement_of_assets_report
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
@@ -20,21 +25,28 @@ from portfolio_app.services.portfolio_store import (
 router = APIRouter()
 
 
-def _require_portfolio(portfolio_id: str | None, *, live_summary: bool = False) -> dict[str, object]:
+def _materialized_summary_is_current(portfolio_id: str) -> bool:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        state = session.get(PortfolioCalculationStateModel, portfolio_id)
+        return state is not None and state.daily_snapshot_status == "current"
+
+
+def _require_portfolio(portfolio_id: str | None, *, live_if_materialized_stale: bool = False) -> dict[str, object]:
     if not portfolio_id:
         raise HTTPException(status_code=400, detail="portfolio_id is required")
-    resolved_portfolio = (
-        get_portfolio_live_summary(portfolio_id)
-        if live_summary
-        else get_portfolio(portfolio_id)
-    )
+    if live_if_materialized_stale and not _materialized_summary_is_current(portfolio_id):
+        resolved_portfolio = get_portfolio_live_summary(portfolio_id)
+    else:
+        resolved_portfolio = get_portfolio(portfolio_id)
     if resolved_portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return resolved_portfolio
 
+
 @router.get("/summary")
 def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
-    resolved_portfolio = _require_portfolio(portfolio_id, live_summary=True)
+    resolved_portfolio = _require_portfolio(portfolio_id, live_if_materialized_stale=True)
 
     as_of_date = str(resolved_portfolio.get("as_of_date") or date.today().isoformat())
     return {
@@ -65,6 +77,27 @@ def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
     }
 
 
+@router.post("/preload")
+def preload_workspace(
+    background_tasks: BackgroundTasks,
+    portfolio_id: str | None = None,
+) -> dict[str, object]:
+    resolved_portfolio = _require_portfolio(portfolio_id)
+    resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
+    warmed_surfaces = [
+        "holdings",
+        "performance",
+        "contribution:instrument",
+        "contribution:account",
+    ]
+    background_tasks.add_task(preload_portfolio_workspace_cache, resolved_portfolio_id)
+    return {
+        "portfolio_id": resolved_portfolio_id,
+        "status": "queued",
+        "warmed_surfaces": warmed_surfaces,
+    }
+
+
 @router.get("/holdings")
 def holdings_workspace(
     portfolio_id: str | None = None,
@@ -79,7 +112,7 @@ def holdings_workspace(
     )
     resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
     resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
-    materialized_workspace = build_materialized_holdings_workspace(
+    materialized_workspace = get_cached_materialized_holdings_workspace(
         resolved_portfolio_id,
         as_of_date=resolved_as_of_date,
     )

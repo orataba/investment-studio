@@ -63,11 +63,13 @@ from portfolio_app.api.contracts import (
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.daily_snapshots import (
-    build_materialized_contribution_report,
-    build_materialized_performance_report,
     list_materialized_daily_snapshots,
     refresh_portfolio_daily_snapshots_for_asset_change,
     refresh_selected_portfolio_daily_snapshots,
+)
+from portfolio_app.services.workspace_cache import (
+    get_cached_materialized_contribution_report,
+    get_cached_materialized_performance_report,
 )
 from portfolio_app.services.performance import (
     CONTRIBUTION_AXES,
@@ -170,7 +172,7 @@ def get_portfolio_performance(
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     try:
-        report = build_materialized_performance_report(
+        report = get_cached_materialized_performance_report(
             portfolio_id,
             start_date=start_date,
             end_date=end_date,
@@ -593,7 +595,7 @@ def get_portfolio_contribution_report(
 
     try:
         report = (
-            build_materialized_contribution_report(
+            get_cached_materialized_contribution_report(
                 portfolio_id,
                 start_date=start_date,
                 end_date=end_date,

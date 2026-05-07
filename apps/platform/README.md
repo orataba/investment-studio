@@ -6,7 +6,7 @@
 
 - `frontend/` 与 `backend/` 都已可运行
 - `Platform` 只负责平台首页、app switcher 和 `Database Dashboard`
-- `Platform` 直接维护 `shared_asset` schema，但不是 `Watchlist` / `Portfolio` 的运行时数据中转层
+- `Platform` 直接维护 `shared_asset` schema，并在共享市场数据更新后通知 downstream app 刷新物化读模型
 - `Platform` 对 `Watchlist` 的入口和 app registry 文案应反映当前真实发布范围：fund-only，Copilot 仅保留 backend extension boundary
 
 ## 当前职责
@@ -15,12 +15,13 @@
 - 提供到 `Watchlist` 与 `Portfolio` 的入口
 - 提供 `Database Dashboard` API 与页面，维护 `Instruments / FX / NAV / market facts`
 - 在 `Database Dashboard` 里支持手工录入、CSV/Excel 导入、邮件刷新，并展示选中资产的共享市场数据与净值历史
+- 在共享市场数据更新后，触发 `Watchlist` 资产 read model 重算，并触发 `Portfolio` daily snapshots 刷新
 - 在前端用 `/api/apps` 暴露 app registry
 
 ## 当前不承载
 
 - 其他 app 的核心运行时依赖
-- 跨 app 业务编排
+- 其他 app 的业务计算；Platform 只发出 market-data update 通知
 - 共享 detail 页面
 - 共享业务 read model
 
@@ -44,6 +45,15 @@
 仓库根目录的 `nav/` 只作为本机 NAV / Excel 文件导入暂存目录，供 [backend/scripts/import_coverage_nav_from_folder.py](./backend/scripts/import_coverage_nav_from_folder.py) 读取。
 
 这些文件通常包含外部导出的运行数据，目录已加入 `.gitignore`，不再作为源码资产提交。
+
+## Downstream Refresh
+
+`Database Dashboard` 更新共享市场数据后，Platform 会通过后台通知刷新 downstream app：
+
+- `Watchlist`: 调用 `/api/recalc/assets/{asset_id}/all`，重算 summary / chart / performance / risk / row read models。
+- `Portfolio`: 调用 `/api/portfolios/snapshots/daily/refresh`，按受影响资产刷新 daily snapshots；FX 更新会刷新全部组合。
+
+这些通知要求本地 `YUNGU_PLATFORM_WATCHLIST_API_URL` 和 `YUNGU_PLATFORM_PORTFOLIO_API_URL` 指向正在运行的 app backend。通知失败不会回滚共享数据写入；Watchlist 仍保留读路径 stale repair，Portfolio 也会在读路径发现状态过期时修复。
 
 ## 快速启动
 

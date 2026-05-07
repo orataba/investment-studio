@@ -14,6 +14,7 @@ import {
   PLATFORM_HOME_URL,
 } from '../lib/navigation'
 import { workspacePrimaryNavigation } from '../lib/portfolioIa'
+import { preloadPortfolioRouteModules, preloadPortfolioTabData } from '../lib/preload'
 
 type WorkspaceTab = {
   label: string
@@ -90,6 +91,15 @@ export default function PortfolioWorkspaceLayout({
     return () => {
       cancelled = true
     }
+  }, [portfolioId])
+
+  useEffect(() => {
+    if (!portfolioId) {
+      return
+    }
+
+    preloadPortfolioRouteModules()
+    preloadPortfolioTabData(portfolioId)
   }, [portfolioId])
 
   useEffect(() => {

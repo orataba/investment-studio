@@ -4970,6 +4970,107 @@ def test_period_calculation_groups_support_asset_type_axis(client, monkeypatch):
     assert isclose(groups["fund"]["unrealized_pnl_change"], -10.0, rel_tol=0.0, abs_tol=1e-12)
 
 
+def test_period_calculation_groups_instrument_includes_cash_balance(client, monkeypatch):
+    instrument_detail = _test_instrument_detail(
+        asset_id="equity-us-cash-line-test",
+        asset_name="Cash Line Test Equity",
+        history=[
+            ("2026-01-01", "100.00"),
+            ("2026-01-02", "110.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-cash-line-test" else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+
+    portfolio_id = "calculation-instrument-cash-line-test"
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "asset_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 150.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Opening cash.",
+                "created_at": "2026-01-01T09:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "buy",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "asset_id": "equity-us-cash-line-test",
+                "instrument_ref": {
+                    "asset_id": "equity-us-cash-line-test",
+                    "asset_name": "Cash Line Test Equity",
+                    "asset_type": "equity",
+                    "currency": "USD",
+                    "identifiers": [
+                        {"identifier_type": "ticker", "identifier_value": "CASHLINE", "is_primary": True}
+                    ],
+                },
+                "quantity": 1.0,
+                "price": 100.0,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Buy with remaining cash.",
+                "created_at": "2026-01-01T09:30:00Z",
+            },
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-02"
+    _write_store(store)
+
+    response = client.get(f"/api/portfolios/{portfolio_id}/performance/calculation/groups?axis=instrument")
+    assert response.status_code == 200
+    payload = response.json()
+    summary = payload["summary"]
+    groups = {item["group_key"]: item for item in payload["groups"]}
+
+    assert isclose(summary["total_initial_value"], 150.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["total_final_value"], 160.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["total_delta"], 10.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["total_pnl"], 10.0, rel_tol=0.0, abs_tol=1e-12)
+    assert groups["cash"]["group_label"] == "Cash"
+    assert isclose(groups["cash"]["initial_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["cash"]["final_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["cash"]["total_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["equity-us-cash-line-test"]["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["equity-us-cash-line-test"]["final_value"], 110.0, rel_tol=0.0, abs_tol=1e-12)
+
+
 def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         asset_id="equity-us-test",
@@ -5664,12 +5765,13 @@ def test_period_calculation_drilldown_returns_instrument_capital_gains(client, m
     assert payload["summary"]["axis"] == "instrument"
     assert payload["summary"]["bucket"] == "capital_gains"
     assert isclose(payload["summary"]["total_amount"], 21.0, rel_tol=0.0, abs_tol=1e-12)
-    assert len(payload["groups"]) == 1
-    group = payload["groups"][0]
+    groups = {item["group_key"]: item for item in payload["groups"]}
+    group = groups["equity-us-test"]
     assert group["group_key"] == "equity-us-test"
     assert isclose(group["amount"], 21.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(group["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(group["final_value"], 121.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["cash"]["amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_period_calculation_drilldown_taxonomy_exposes_reclassification_residual(client, monkeypatch):
@@ -6730,6 +6832,14 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     line_by_key = {item["key"]: item for item in calculation_payload["lines"]}
     assert isclose(line_by_key["cash_currency_gains"]["amount"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert "residual_gains" not in line_by_key
+
+    groups_response = client.get("/api/portfolios/cash-fx-test/performance/calculation/groups?axis=instrument")
+    assert groups_response.status_code == 200
+    cash_group = next(item for item in groups_response.json()["groups"] if item["group_key"] == "cash")
+    assert isclose(cash_group["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(cash_group["final_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(cash_group["cash_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(cash_group["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_asset_currency_gains_flow_through_performance_and_calculation(client, monkeypatch):

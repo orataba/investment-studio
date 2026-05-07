@@ -16,6 +16,9 @@
   --portfolio-positive: #0f766e;
   --portfolio-negative: #b42318;
   --portfolio-warning: #92400e;
+  --portfolio-date-control-height: 30px;
+  --portfolio-date-control-width: 136px;
+  --portfolio-date-picker-size: 16px;
 }
 
 * {
@@ -577,12 +580,19 @@ select {
 
 .holding-name-cell {
   font-weight: 500;
-  min-width: 220px;
+  min-width: 0;
 }
 
 .holding-name-stack {
   display: grid;
   gap: 2px;
+  min-width: 0;
+}
+
+.holding-name-stack span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .holding-secondary {
@@ -649,11 +659,21 @@ select {
   align-items: center;
 }
 
+.holdings-main-table .sparkline-cell {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
 .sparkline,
 .mini-sparkline {
   width: 88px;
   height: 24px;
   display: block;
+}
+
+.holdings-main-table .mini-sparkline {
+  width: 100%;
 }
 
 .sparkline-path {
@@ -1762,7 +1782,7 @@ select {
 }
 
 .holdings-filter-group {
-  grid-template-columns: minmax(180px, 240px);
+  grid-template-columns: minmax(0, var(--portfolio-date-control-width));
   flex: 0 1 auto;
 }
 
@@ -1878,6 +1898,20 @@ select {
   border-left: 1px solid var(--portfolio-line-strong);
   font-size: 20px;
   line-height: 1;
+}
+
+.portfolio-table-view-plus-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.portfolio-table-view-plus-icon svg {
+  display: block;
+  width: 16px;
+  height: 16px;
 }
 
 .portfolio-table-view-save-icon {
@@ -2153,7 +2187,15 @@ select {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  max-width: 100%;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.holdings-th-label > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .holdings-th-sortable {
@@ -2171,6 +2213,12 @@ select {
 
 .holdings-main-table {
   table-layout: fixed;
+}
+
+.holdings-main-table th,
+.holdings-main-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .holdings-main-table thead th {
@@ -5893,7 +5941,32 @@ input[type='checkbox'] {
 }
 
 .performance-window-bar .transaction-filter-input {
-  width: 136px;
+  width: var(--portfolio-date-control-width);
+}
+
+input[type='date'] {
+  box-sizing: border-box;
+  width: min(var(--portfolio-date-control-width), 100%);
+  max-width: 100%;
+  min-width: 0;
+  height: var(--portfolio-date-control-height);
+  min-height: var(--portfolio-date-control-height);
+  padding: 0 8px;
+  border-radius: 0;
+  font: inherit;
+  line-height: calc(var(--portfolio-date-control-height) - 2px);
+}
+
+input[type='date']::-webkit-datetime-edit {
+  padding: 0;
+}
+
+input[type='date']::-webkit-calendar-picker-indicator {
+  width: var(--portfolio-date-picker-size);
+  height: var(--portfolio-date-picker-size);
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
 }
 
 .performance-benchmark-search {

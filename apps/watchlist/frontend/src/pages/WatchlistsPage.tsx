@@ -61,8 +61,14 @@ type WatchlistRowGroup = {
   key: string
   label: string | null
   rows: Array<Record<string, unknown>>
+  summaryRows: Array<Record<string, unknown>>
   rowCount: number
   depth: number
+}
+type GroupAverageCell = {
+  value: number
+  count: number
+  total: number
 }
 type ActiveFilterEntry = {
   fieldKey: string
@@ -86,6 +92,8 @@ const TAXONOMY_GROUP_FIELD_KEYS = [
 ]
 const TAXONOMY_GROUP_DEPTH_INDENT_PX = 18
 const TAXONOMY_GROUP_LABEL_OFFSET_PX = 26
+const WATCHLIST_SELECT_COLUMN_WIDTH = 44
+const WATCHLIST_DEFAULT_COLUMN_WIDTH = 140
 const TAXONOMY_FILTER_FIELD: FieldRegistryRecord = {
   field_key: TAXONOMY_FILTER_FIELD_KEY,
   label: 'Taxonomy',
@@ -103,6 +111,42 @@ const TAXONOMY_FILTER_FIELD: FieldRegistryRecord = {
   source_metric_code: 'fund_taxonomy.tree',
   default_width: null,
   default_visible: false,
+}
+
+function compactTableColumnWidths<T extends string>(
+  columns: T[],
+  getRequestedWidth: (column: T) => number,
+  getMinimumWidth: (column: T) => number,
+  availableWidth: number,
+  fixedWidth = 0,
+) {
+  const specs = columns.map((column) => {
+    const minWidth = getMinimumWidth(column)
+    const requestedWidth = Math.max(getRequestedWidth(column), minWidth)
+    return { column, minWidth, requestedWidth }
+  })
+  const requestedDataWidth = specs.reduce((total, spec) => total + spec.requestedWidth, 0)
+  const minimumDataWidth = specs.reduce((total, spec) => total + spec.minWidth, 0)
+  const targetDataWidth =
+    availableWidth > fixedWidth && requestedDataWidth + fixedWidth > availableWidth
+      ? Math.max(minimumDataWidth, availableWidth - fixedWidth)
+      : requestedDataWidth
+  const widths = {} as Record<T, number>
+
+  if (targetDataWidth >= requestedDataWidth || requestedDataWidth <= minimumDataWidth) {
+    specs.forEach((spec) => {
+      widths[spec.column] = Math.round(spec.requestedWidth)
+    })
+  } else {
+    const flexibleWidth = requestedDataWidth - minimumDataWidth
+    specs.forEach((spec) => {
+      const share = (spec.requestedWidth - spec.minWidth) / flexibleWidth
+      widths[spec.column] = Math.round(spec.minWidth + (targetDataWidth - minimumDataWidth) * share)
+    })
+  }
+
+  const totalWidth = fixedWidth + columns.reduce((total, column) => total + widths[column], 0)
+  return { widths, totalWidth }
 }
 
 function isAllCoverageWatchlist(watchlist?: WatchlistRecord | WatchlistDetail | null) {
@@ -319,6 +363,92 @@ function isReturnMetricField(fieldKey: string) {
     fieldKey.endsWith('_return_pct') ||
     fieldKey.endsWith('_change_pct')
   )
+}
+
+function getWatchlistCompactMinWidth(fieldKey: string, field: FieldRegistryRecord | undefined) {
+  if (fieldKey === 'asset_name') {
+    return 180
+  }
+  if (fieldKey === 'ticker_or_isin') {
+    return 96
+  }
+  if (fieldKey.includes('price_chart') || fieldKey.includes('sparkline')) {
+    return 104
+  }
+  if (fieldKey.endsWith('_date') || fieldKey.endsWith('_at')) {
+    return 104
+  }
+  if (fieldKey.includes('status')) {
+    return 112
+  }
+  if (isTaxonomyFieldKey(fieldKey) || fieldKey.startsWith('attr.')) {
+    return 112
+  }
+  if (
+    isReturnMetricField(fieldKey) ||
+    field?.formatter_code === 'percent' ||
+    field?.formatter_code === 'decimal' ||
+    field?.data_type === 'integer' ||
+    field?.data_type === 'number'
+  ) {
+    return 88
+  }
+  if (field?.formatter_code === 'currency_compact') {
+    return 104
+  }
+  return 104
+}
+
+function isAverageSummaryField(fieldKey: string, field: FieldRegistryRecord | undefined) {
+  if (!field || !['number', 'integer'].includes(field.data_type)) {
+    return false
+  }
+  if (
+    fieldKey === 'aum' ||
+    fieldKey === 'latest_quote' ||
+    fieldKey === 'attr.peer_sample_count' ||
+    field.formatter_code === 'currency_compact'
+  ) {
+    return false
+  }
+  return field.sort_mode === 'numeric' || field.formatter_code === 'percent' || field.formatter_code === 'decimal'
+}
+
+function buildGroupAverageCell(
+  fieldKey: string,
+  field: FieldRegistryRecord | undefined,
+  rows: Array<Record<string, unknown>>,
+): GroupAverageCell | null {
+  if (!isAverageSummaryField(fieldKey, field) || !rows.length) {
+    return null
+  }
+  const values = rows
+    .map((row) => asNumber(row[fieldKey]))
+    .filter((value): value is number => value != null)
+  if (!values.length) {
+    return null
+  }
+  return {
+    value: values.reduce((sum, value) => sum + value, 0) / values.length,
+    count: values.length,
+    total: rows.length,
+  }
+}
+
+function formatGroupAverageCell(fieldKey: string, field: FieldRegistryRecord | undefined, value: number) {
+  if (fieldKey.includes('_percentile')) {
+    return `${formatNumber(value, 0)} pct`
+  }
+  if (fieldKey === 'overall_rating') {
+    return formatNumber(value, 1)
+  }
+  if (field?.formatter_code === 'percent' || isReturnMetricField(fieldKey)) {
+    return formatPercent(value)
+  }
+  if (field?.formatter_code === 'decimal' || field?.data_type === 'integer') {
+    return formatNumber(value, field.data_type === 'integer' ? 1 : 2)
+  }
+  return formatNumber(value)
 }
 
 function priceChartWindowLabel(fieldKey: string) {
@@ -636,6 +766,8 @@ export default function WatchlistsPage() {
   const filterMenuRef = useRef<HTMLDivElement | null>(null)
   const groupMenuRef = useRef<HTMLDivElement | null>(null)
   const selectorMenuRef = useRef<HTMLDivElement | null>(null)
+  const tableShellRef = useRef<HTMLDivElement | null>(null)
+  const [tableShellWidth, setTableShellWidth] = useState(0)
   const resizeState = useRef<{
     column: string
     startX: number
@@ -673,6 +805,25 @@ export default function WatchlistsPage() {
     () => JSON.stringify(baseScreenerPayload || {}),
     [baseScreenerPayload],
   )
+
+  useEffect(() => {
+    const element = tableShellRef.current
+    if (!element) {
+      return undefined
+    }
+
+    const updateWidth = () => setTableShellWidth(Math.floor(element.clientWidth))
+    updateWidth()
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateWidth)
+      return () => window.removeEventListener('resize', updateWidth)
+    }
+
+    const observer = new ResizeObserver(updateWidth)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -1180,6 +1331,10 @@ export default function WatchlistsPage() {
     () => new Map([...mergedFieldRegistry.map((field) => [field.field_key, field.label] as const), [TAXONOMY_GROUP_BY_CODE, 'Taxonomy']]),
     [mergedFieldRegistry],
   )
+  const fieldByKey = useMemo(
+    () => new Map(mergedFieldRegistry.map((field) => [field.field_key, field] as const)),
+    [mergedFieldRegistry],
+  )
   const defaultWidthByKey = useMemo(() => {
     const map = new Map<string, number>()
     mergedFieldRegistry.forEach((field) => {
@@ -1197,11 +1352,45 @@ export default function WatchlistsPage() {
     () => normalizeFilterState(activeView?.default_filters),
     [activeView?.default_filters],
   )
+  const baseWidthByKey = useMemo(() => {
+    const map = new Map<string, number>()
+    activeView?.column_meta?.forEach((item) => {
+      if (typeof item.width === 'number') {
+        map.set(item.field_key, item.width)
+      }
+    })
+    return map
+  }, [activeView?.column_meta])
+  const serializeViewColumnWidths = (columns: string[], widths: Map<string, number> | Record<string, number>) =>
+    JSON.stringify(
+      columns.map((fieldKey) => [
+        fieldKey,
+        widths instanceof Map
+          ? widths.get(fieldKey) ?? defaultWidthByKey.get(fieldKey) ?? null
+          : widths[fieldKey] ?? defaultWidthByKey.get(fieldKey) ?? null,
+      ]),
+    )
+  const viewColumnWidthsEdited =
+    serializeViewColumnWidths(visibleColumns, columnWidths) !== serializeViewColumnWidths(baseColumns, baseWidthByKey)
   const viewEdited =
     JSON.stringify(visibleColumns) !== JSON.stringify(baseColumns) ||
     workingGroupBy !== baseGroupBy ||
     serializeFilterState(workingFilters) !== serializeFilterState(baseFilters) ||
-    JSON.stringify(sortRules) !== JSON.stringify(baseSort)
+    JSON.stringify(sortRules) !== JSON.stringify(baseSort) ||
+    viewColumnWidthsEdited
+  const compactWatchlistColumns = useMemo(
+    () =>
+      compactTableColumnWidths(
+        visibleColumns,
+        (column) => columnWidths[column] ?? defaultWidthByKey.get(column) ?? WATCHLIST_DEFAULT_COLUMN_WIDTH,
+        (column) => getWatchlistCompactMinWidth(column, fieldByKey.get(column)),
+        tableShellWidth,
+        WATCHLIST_SELECT_COLUMN_WIDTH,
+      ),
+    [columnWidths, defaultWidthByKey, fieldByKey, tableShellWidth, visibleColumns],
+  )
+  const displayColumnWidths = compactWatchlistColumns.widths
+  const watchlistTableMinWidth = compactWatchlistColumns.totalWidth
   const activeGroupBy = workingGroupBy && workingGroupBy !== 'none' ? workingGroupBy : null
   const sortField = sortRules[0]?.field || null
   const sortDirection = sortRules[0]?.direction || 'asc'
@@ -1455,7 +1644,7 @@ export default function WatchlistsPage() {
   const groupedRows = useMemo(() => {
     const rows = screenerResult?.rows || []
     if (!activeGroupBy) {
-      return [{ key: 'all', label: null, rows, rowCount: rows.length, depth: 0 }]
+      return [{ key: 'all', label: null, rows, summaryRows: rows, rowCount: rows.length, depth: 0 }]
     }
     if (activeGroupBy === TAXONOMY_GROUP_BY_CODE) {
       type TreeNode = {
@@ -1464,6 +1653,7 @@ export default function WatchlistsPage() {
         depth: number
         rowCount: number
         rows: Array<Record<string, unknown>>
+        summaryRows: Array<Record<string, unknown>>
         children: Map<string, TreeNode>
       }
       const root = new Map<string, TreeNode>()
@@ -1484,6 +1674,7 @@ export default function WatchlistsPage() {
           depth,
           rowCount: 0,
           rows: [],
+          summaryRows: [],
           children: new Map<string, TreeNode>(),
         }
         map.set(key, node)
@@ -1496,6 +1687,7 @@ export default function WatchlistsPage() {
           const node = getOrCreate(root, ['Unspecified'], 'Unspecified', 0)
           node.rowCount += 1
           node.rows.push(row)
+          node.summaryRows.push(row)
           return
         }
         let currentMap = root
@@ -1503,6 +1695,7 @@ export default function WatchlistsPage() {
         for (const [index, label] of path.entries()) {
           currentNode = getOrCreate(currentMap, path.slice(0, index + 1), label, index)
           currentNode.rowCount += 1
+          currentNode.summaryRows.push(row)
           currentMap = currentNode.children
         }
         currentNode?.rows.push(row)
@@ -1521,6 +1714,7 @@ export default function WatchlistsPage() {
             key: node.key,
             label: node.label,
             rows: node.children.size ? [] : node.rows,
+            summaryRows: node.summaryRows,
             rowCount: node.rowCount,
             depth: node.depth,
           })
@@ -1530,6 +1724,7 @@ export default function WatchlistsPage() {
               key: `${node.key}::direct`,
               label: `${node.label} · Direct`,
               rows: node.rows,
+              summaryRows: node.rows,
               rowCount: node.rows.length,
               depth: node.depth + 1,
             })
@@ -1537,7 +1732,9 @@ export default function WatchlistsPage() {
         })
       }
       visit([...root.values()])
-      return flattened.length ? flattened : [{ key: 'all', label: null, rows, rowCount: rows.length, depth: 0 }]
+      return flattened.length
+        ? flattened
+        : [{ key: 'all', label: null, rows, summaryRows: rows, rowCount: rows.length, depth: 0 }]
     }
     const bucketMap = new Map<string, Array<Record<string, unknown>>>()
     rows.forEach((row) => {
@@ -1563,12 +1760,13 @@ export default function WatchlistsPage() {
         key,
         label: key,
         rows: bucketMap.get(key) || [],
+        summaryRows: bucketMap.get(key) || [],
         rowCount: bucketMap.get(key)?.length || 0,
         depth: 0,
       }))
     bucketMap.forEach((value, key) => {
       if (!seen.has(key)) {
-        groups.push({ key, label: key, rows: value, rowCount: value.length, depth: 0 })
+        groups.push({ key, label: key, rows: value, summaryRows: value, rowCount: value.length, depth: 0 })
       }
     })
     return groups
@@ -1997,6 +2195,8 @@ export default function WatchlistsPage() {
                 type="button"
                 className="watchlists-plus-button"
                 disabled={isSavingView}
+                aria-label={viewEdited ? 'Save view' : 'Create view'}
+                title={viewEdited ? 'Save view' : 'Create view'}
                 onClick={() => {
                   if (viewEdited && watchlistId && activeView) {
                     setIsSavingView(true)
@@ -2036,7 +2236,17 @@ export default function WatchlistsPage() {
                     </span>
                   )
                 ) : (
-                  '+'
+                  <span className="watchlists-plus-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24">
+                      <path
+                        d="M12 5v14M5 12h14"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeLinecap="square"
+                        strokeWidth="2"
+                      />
+                    </svg>
+                  </span>
                 )}
               </button>
             </div>
@@ -2331,12 +2541,12 @@ export default function WatchlistsPage() {
         {notice ? <div className="inline-notice">{notice}</div> : null}
         {error ? <div className="inline-notice inline-notice-error">{error}</div> : null}
 
-        <div className="table-shell">
-          <table className="terminal-table watchlists-table">
+        <div className="table-shell" ref={tableShellRef}>
+          <table className="terminal-table watchlists-table" style={{ minWidth: `${watchlistTableMinWidth}px` }}>
             <colgroup>
-              <col style={{ width: '44px' }} />
+              <col style={{ width: `${WATCHLIST_SELECT_COLUMN_WIDTH}px` }} />
               {visibleColumns.map((column) => {
-                const width = columnWidths[column] ?? defaultWidthByKey.get(column)
+                const width = displayColumnWidths[column]
                 return (
                   <col
                     key={column}
@@ -2357,7 +2567,7 @@ export default function WatchlistsPage() {
                   />
                 </th>
                 {visibleColumns.map((column) => {
-                  const width = columnWidths[column] ?? defaultWidthByKey.get(column)
+                  const width = displayColumnWidths[column]
                   const sortMode = sortabilityByKey.get(column) || 'none'
                   return (
                     <th
@@ -2414,7 +2624,7 @@ export default function WatchlistsPage() {
                         onMouseDown={(event) => {
                           event.preventDefault()
                           event.stopPropagation()
-                          const currentWidth = columnWidths[column] || 140
+                          const currentWidth = displayColumnWidths[column] || WATCHLIST_DEFAULT_COLUMN_WIDTH
                           resizeState.current = {
                             column,
                             startX: event.clientX,
@@ -2437,39 +2647,64 @@ export default function WatchlistsPage() {
                       {activeGroupBy ? (
                         <tr className="watchlists-group-row">
                           <td className="watchlists-select-col watchlists-group-spacer" aria-hidden="true" />
-                          <td colSpan={Math.max(visibleColumns.length, 1)}>
-                            <button
-                              type="button"
-                              className="watchlists-group-header"
-                              style={{ paddingLeft: `${group.depth * TAXONOMY_GROUP_DEPTH_INDENT_PX}px` }}
-                              aria-expanded={!collapsed}
-                              onClick={() =>
-                                setCollapsedGroupKeys((current) => {
-                                  const next = new Set(current)
-                                  if (next.has(group.key)) {
-                                    next.delete(group.key)
-                                  } else {
-                                    next.add(group.key)
-                                  }
-                                  return next
-                                })
-                              }
-                            >
-                              <span
-                                className={
-                                  collapsed
-                                    ? 'watchlists-group-caret watchlists-group-caret-collapsed'
-                                    : 'watchlists-group-caret'
-                                }
-                              >
-                                ▾
-                              </span>
-                              <span className="watchlists-group-title">
-                                {group.label || 'Unspecified'}
-                              </span>
-                              <span className="watchlists-group-count">{group.rowCount}</span>
-                            </button>
-                          </td>
+                          {visibleColumns.map((column, columnIndex) => {
+                            if (columnIndex === 0) {
+                              return (
+                                <td key={column} className="watchlists-group-name-cell">
+                                  <button
+                                    type="button"
+                                    className="watchlists-group-header"
+                                    style={{ paddingLeft: `${group.depth * TAXONOMY_GROUP_DEPTH_INDENT_PX}px` }}
+                                    aria-expanded={!collapsed}
+                                    onClick={() =>
+                                      setCollapsedGroupKeys((current) => {
+                                        const next = new Set(current)
+                                        if (next.has(group.key)) {
+                                          next.delete(group.key)
+                                        } else {
+                                          next.add(group.key)
+                                        }
+                                        return next
+                                      })
+                                    }
+                                  >
+                                    <span
+                                      className={
+                                        collapsed
+                                          ? 'watchlists-group-caret watchlists-group-caret-collapsed'
+                                          : 'watchlists-group-caret'
+                                      }
+                                    >
+                                      ▾
+                                    </span>
+                                    <span className="watchlists-group-title">
+                                      {group.label || 'Unspecified'}
+                                    </span>
+                                    <span className="watchlists-group-count">{group.rowCount}</span>
+                                  </button>
+                                </td>
+                              )
+                            }
+                            const field = fieldByKey.get(column)
+                            const average = buildGroupAverageCell(column, field, group.summaryRows)
+                            return (
+                              <td key={column} className="watchlists-group-summary-cell">
+                                {average ? (
+                                  <span
+                                    className="watchlists-group-summary-value"
+                                    title={`Equal-weight average of ${average.count}/${average.total} rows`}
+                                  >
+                                    <span>{formatGroupAverageCell(column, field, average.value)}</span>
+                                    {average.count !== average.total ? (
+                                      <small>{average.count}/{average.total}</small>
+                                    ) : null}
+                                  </span>
+                                ) : (
+                                  <span className="watchlists-group-summary-empty">—</span>
+                                )}
+                              </td>
+                            )
+                          })}
                         </tr>
                       ) : null}
                       {group.rows.map((row, index) => {

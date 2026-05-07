@@ -240,6 +240,45 @@ const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
   coverage: 132,
 }
 
+const COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS: Partial<Record<HoldingsColumnKey, number>> = {
+  asset: 180,
+  ticker: 92,
+  asset_type: 96,
+  taxonomy_top: 112,
+  taxonomy_leaf: 124,
+  currency: 76,
+  holding_date: 104,
+  quantity: 96,
+  cost_method: 104,
+  avg_cost_book: 104,
+  last_price: 92,
+  quote_date: 104,
+  quote_basis: 104,
+  quote_provider: 104,
+  quote_status: 104,
+  market_value: 108,
+  market_value_base: 116,
+  cost_basis: 108,
+  cost_basis_base: 116,
+  weight: 84,
+  accounts: 84,
+  open_lots: 88,
+  day_change_value: 104,
+  day_change_pct: 92,
+  unrealized_value: 108,
+  unrealized_pct: 104,
+  asset_return_1w: 92,
+  asset_return_mtd: 92,
+  asset_return_ytd: 92,
+  asset_return_1y: 92,
+  asset_current_drawdown: 100,
+  chart_return: 96,
+  chart_volatility: 96,
+  chart_max_drawdown: 104,
+  price_chart: 104,
+  coverage: 104,
+}
+
 const DEFAULT_HOLDINGS_VIEW_STATE: HoldingsViewState = {
   columns: DEFAULT_HOLDINGS_COLUMNS,
   columnWidths: {},
@@ -725,6 +764,43 @@ function normalizeHoldingsColumns(columns: HoldingsColumnKey[]) {
 
 function clampHoldingsColumnWidth(value: number) {
   return Math.min(Math.max(value, HOLDINGS_COLUMN_MIN_WIDTH), HOLDINGS_COLUMN_MAX_WIDTH)
+}
+
+function compactTableColumnWidths<T extends string>(
+  columns: T[],
+  getRequestedWidth: (column: T) => number,
+  getMinimumWidth: (column: T) => number,
+  availableWidth: number,
+) {
+  const specs = columns.map((column) => {
+    const minWidth = getMinimumWidth(column)
+    const requestedWidth = Math.max(getRequestedWidth(column), minWidth)
+    return { column, minWidth, requestedWidth }
+  })
+  const requestedWidth = specs.reduce((total, spec) => total + spec.requestedWidth, 0)
+  const minimumWidth = specs.reduce((total, spec) => total + spec.minWidth, 0)
+  const targetWidth =
+    availableWidth > 0 && requestedWidth > availableWidth
+      ? Math.max(minimumWidth, availableWidth)
+      : requestedWidth
+  const widths = {} as Record<T, number>
+
+  if (targetWidth >= requestedWidth || requestedWidth <= minimumWidth) {
+    specs.forEach((spec) => {
+      widths[spec.column] = Math.round(spec.requestedWidth)
+    })
+  } else {
+    const flexibleWidth = requestedWidth - minimumWidth
+    specs.forEach((spec) => {
+      const share = (spec.requestedWidth - spec.minWidth) / flexibleWidth
+      widths[spec.column] = Math.round(spec.minWidth + (targetWidth - minimumWidth) * share)
+    })
+  }
+
+  return {
+    widths,
+    totalWidth: columns.reduce((total, column) => total + widths[column], 0),
+  }
 }
 
 function normalizeHoldingsColumnWidths(value: unknown) {
@@ -1454,6 +1530,8 @@ export default function PortfolioHomePage() {
   } | null>(null)
   const holdingsColumnResizeFrame = useRef<number | null>(null)
   const pendingHoldingsColumnResize = useRef<{ column: HoldingsColumnKey; width: number } | null>(null)
+  const holdingsTableShellRef = useRef<HTMLDivElement | null>(null)
+  const [holdingsTableShellWidth, setHoldingsTableShellWidth] = useState(0)
   const requestedAsOfDate = searchParams.get('as_of_date') ?? ''
   const selectedAssetId = searchParams.get('asset_id')
   const holdingsViews = useMemo(() => getHoldingsViews(holdingsViewStore), [holdingsViewStore])
@@ -1494,14 +1572,18 @@ export default function PortfolioHomePage() {
     () => normalizeHoldingsColumns(holdingsColumns).map((column) => HOLDINGS_COLUMN_DEFINITIONS[column]),
     [holdingsColumns],
   )
-  const holdingsTableMinWidth = useMemo(
+  const compactHoldingsColumns = useMemo(
     () =>
-      visibleColumns.reduce(
-        (sum, column) => sum + (holdingsColumnWidths[column.key] ?? DEFAULT_HOLDINGS_COLUMN_WIDTHS[column.key]),
-        0,
+      compactTableColumnWidths(
+        visibleColumns.map((column) => column.key),
+        (column) => holdingsColumnWidths[column] ?? DEFAULT_HOLDINGS_COLUMN_WIDTHS[column],
+        (column) => COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS[column] ?? HOLDINGS_COLUMN_MIN_WIDTH,
+        holdingsTableShellWidth,
       ),
-    [holdingsColumnWidths, visibleColumns],
+    [holdingsColumnWidths, holdingsTableShellWidth, visibleColumns],
   )
+  const displayHoldingsColumnWidths = compactHoldingsColumns.widths
+  const displayHoldingsTableMinWidth = compactHoldingsColumns.totalWidth
   const filteredHoldingsColumns = useMemo(() => {
     const searchQuery = holdingsColumnSearch.trim().toLocaleLowerCase()
     const selectedGroup =
@@ -1520,6 +1602,26 @@ export default function PortfolioHomePage() {
         .map((column) => ({ column, groupLabel: group.label })),
     )
   }, [holdingsColumnCategory, holdingsColumnSearch])
+
+  useEffect(() => {
+    const element = holdingsTableShellRef.current
+    if (!element) {
+      return undefined
+    }
+
+    const updateWidth = () => setHoldingsTableShellWidth(Math.floor(element.clientWidth))
+    updateWidth()
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateWidth)
+      return () => window.removeEventListener('resize', updateWidth)
+    }
+
+    const observer = new ResizeObserver(updateWidth)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+
   const sortedHoldingRows = useMemo(() => {
     const rows = workspace?.rows ?? []
     if (!columnContext || !holdingsSortField) {
@@ -2072,14 +2174,14 @@ export default function PortfolioHomePage() {
           <div className="inline-notice inline-notice-warning">{taxonomyError}</div>
         ) : null}
         {!loading && !error && workspace && columnContext ? (
-          <div className="table-shell holdings-table-shell">
-            <table className="holdings-table holdings-main-table" style={{ minWidth: `${holdingsTableMinWidth}px` }}>
+          <div className="table-shell holdings-table-shell" ref={holdingsTableShellRef}>
+            <table className="holdings-table holdings-main-table" style={{ minWidth: `${displayHoldingsTableMinWidth}px` }}>
               <colgroup>
                 {visibleColumns.map((column) => (
                   <col
                     key={column.key}
                     style={{
-                      width: `${holdingsColumnWidths[column.key] ?? DEFAULT_HOLDINGS_COLUMN_WIDTHS[column.key]}px`,
+                      width: `${displayHoldingsColumnWidths[column.key]}px`,
                     }}
                   />
                 ))}
@@ -2087,7 +2189,7 @@ export default function PortfolioHomePage() {
               <thead>
                 <tr>
                   {visibleColumns.map((column) => {
-                    const width = holdingsColumnWidths[column.key] ?? DEFAULT_HOLDINGS_COLUMN_WIDTHS[column.key]
+                    const width = displayHoldingsColumnWidths[column.key]
                     return (
                       <th
                         key={column.key}

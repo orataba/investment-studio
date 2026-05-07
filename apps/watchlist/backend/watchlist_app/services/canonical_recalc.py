@@ -186,6 +186,15 @@ PEER_COMPARISON_METRICS = [
         "format": "ratio",
     },
     {
+        "metric_key": "sortino_ratio",
+        "label": "Sortino",
+        "source": "risk",
+        "attr": "sortino_ratio",
+        "direction": "higher",
+        "domain": "risk_adjusted",
+        "format": "ratio",
+    },
+    {
         "metric_key": "calmar",
         "label": "Calmar",
         "source": "performance",

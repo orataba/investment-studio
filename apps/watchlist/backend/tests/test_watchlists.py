@@ -167,8 +167,6 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
         "return_mtd",
         "return_ytd",
         "attr.current_drawdown",
-        "attr.peer_overall_percentile",
-        "data_freshness_status",
     ]
     fund_screening_view = next(
         item

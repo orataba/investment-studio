@@ -478,7 +478,7 @@ function HomePage({
         <p className="hero-copy">
           Platform currently exposes three entry points: Database Dashboard, Watchlist, and
           Portfolio. Shared instruments, FX, email refresh rules, and NAV imports belong to
-          Database Dashboard so the app workflows stay decoupled.
+          Database Dashboard, which notifies downstream read models after market data changes.
         </p>
         <div className="hero-meta">Registry source: {sourceLabel}</div>
       </section>
@@ -1153,8 +1153,8 @@ function InstrumentsPage({
         <h1>{registryName}</h1>
         <p className="hero-copy">
           This workspace owns shared instruments, FX, NAV imports, email refresh rules, and
-          typed market data. Watchlist and Portfolio reference this layer directly without
-          turning Platform into a runtime business orchestrator.
+          typed market data. Watchlist and Portfolio consume this layer and refresh their
+          materialized views after shared market data changes.
         </p>
         <div className="registry-pagehead-actions">
           <div className="registry-table-meta">
@@ -1412,7 +1412,7 @@ function InstrumentsPage({
                 </div>
                 <div className="registry-table-meta">
                   {activePanel === 'create'
-                    ? 'Create shared registry assets here. Downstream Watchlist and Portfolio only reference this layer.'
+                    ? 'Create shared registry assets here. Downstream Watchlist and Portfolio refresh from this layer.'
                     : activePanel === 'fx'
                       ? 'Maintain direct FX spot pairs in one place.'
                       : selectedInstrument

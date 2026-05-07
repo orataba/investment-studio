@@ -24,6 +24,7 @@ from platform_app.services.instrument_store import (  # noqa: E402
     _default_source_settings,
     replace_nav_history,
 )
+from platform_app.services.downstream_notifications import notify_market_data_downstream_refresh  # noqa: E402
 
 
 def _normalize_name(value: str) -> str:
@@ -235,6 +236,20 @@ def main() -> int:
                 str(merged_rows[0]["as_of_date"]),
                 str(merged_rows[-1]["as_of_date"]),
             )
+        )
+
+    imported_dirty_dates = [
+        parsed
+        for parsed in (
+            market_data_ops._parse_nav_date(first_nav)
+            for _, _, first_nav, _ in imported_assets
+        )
+        if parsed is not None
+    ]
+    if imported_assets:
+        notify_market_data_downstream_refresh(
+            asset_ids=[asset_id for asset_id, _, _, _ in imported_assets],
+            dirty_from=min(imported_dirty_dates) if imported_dirty_dates else None,
         )
 
     print("Imported assets:")

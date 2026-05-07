@@ -3409,7 +3409,7 @@ def _account_name_map(accounts: list[dict[str, object]]) -> dict[str, str]:
 
 
 def _axis_includes_cash_balance(axis: str) -> bool:
-    return axis in {"account", "asset_type", "currency"}
+    return axis in {"instrument", "account", "asset_type", "currency"}
 
 
 def _asset_type_key_label(value: object) -> tuple[str, str]:
@@ -3455,6 +3455,8 @@ def _cash_group_for_axis(
     currency: str,
     account_name_map: dict[str, str],
 ) -> tuple[str, str]:
+    if axis == "instrument":
+        return ("cash", "Cash")
     if axis == "account":
         return (account_id, account_name_map.get(account_id, account_id))
     if axis == "asset_type":
@@ -3477,7 +3479,7 @@ def _transaction_group_for_axis(
     currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
     if axis == "instrument":
         if not asset_id:
-            return ("", "")
+            return ("cash", "Cash")
         return (asset_id, str(instrument_ref.get("asset_name") or asset_id))
     if axis == "account":
         return (account_id, account_name_map.get(account_id, account_id))
@@ -3851,8 +3853,6 @@ def _build_contribution_daily_events(
             )
 
         if transaction_type in {"fee", "tax"}:
-            if axis == "instrument" and not asset_id:
-                continue
             add_amount(
                 group_key=group_key,
                 group_label=group_label,
@@ -3875,8 +3875,6 @@ def _build_contribution_daily_events(
             if attached_expense > 0 and (
                 transaction_type in NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES
             ):
-                if axis == "instrument" and not asset_id:
-                    continue
                 add_amount(
                     group_key=group_key,
                     group_label=group_label,
@@ -3976,18 +3974,7 @@ def _build_contribution_slices_for_date(
                 direct_fx_assets=direct_fx_assets,
                 instrument_detail_cache=instrument_detail_cache,
             )
-            if axis == "account":
-                cash_currency_gains, _ = _compute_currency_translation_gain(
-                    previous_state.get("_cash_balance_local_by_currency"),
-                    previous_date=previous_date,
-                    current_date=as_of_date,
-                    base_currency=base_currency,
-                    direct_fx_assets=direct_fx_assets,
-                    instrument_detail_cache=instrument_detail_cache,
-                )
-            else:
-                cash_currency_gains = None
-            if axis in {"asset_type", "currency"}:
+            if _axis_includes_cash_balance(axis):
                 cash_currency_gains, _ = _compute_currency_translation_gain(
                     previous_state.get("_cash_balance_local_by_currency"),
                     previous_date=previous_date,
@@ -4492,9 +4479,24 @@ def _apply_taxonomy_boundary_values_to_contribution_report(
             or end_group.get("group_label")
             or group_key
         )
-        line["start_value_base"] = _safe_float(start_group.get("market_value_base")) or 0.0
-        line["end_value_base"] = _safe_float(end_group.get("market_value_base")) or 0.0
-        line["ending_weight"] = _safe_float(end_group.get("portfolio_weight")) or 0.0
+        start_value = _safe_float(start_group.get("market_value_base"))
+        end_value = _safe_float(end_group.get("market_value_base"))
+        ending_weight = _safe_float(end_group.get("portfolio_weight"))
+        line["start_value_base"] = (
+            start_value
+            if start_value is not None
+            else (_safe_float(line.get("start_value_base")) or 0.0)
+        )
+        line["end_value_base"] = (
+            end_value
+            if end_value is not None
+            else (_safe_float(line.get("end_value_base")) or 0.0)
+        )
+        line["ending_weight"] = (
+            ending_weight
+            if ending_weight is not None
+            else (_safe_float(line.get("ending_weight")) or 0.0)
+        )
         line.setdefault("average_weight", 0.0)
         line.setdefault("realized_pnl", 0.0)
         line.setdefault("unrealized_pnl_change", 0.0)
@@ -6174,7 +6176,7 @@ def _resolve_calculation_entry_group(
     if axis == "instrument":
         if asset_id:
             return (asset_id, asset_name or asset_id)
-        return ("unassigned:instrument", "Unassigned")
+        return ("cash", "Cash")
     if axis == "account":
         if account_id:
             return (account_id, account_name_map.get(account_id, account_id))
@@ -6431,8 +6433,6 @@ def build_contribution_entries_report(
                     )
             elif bucket == "expense_cash_amount":
                 if transaction_type in {"fee", "tax"}:
-                    if axis == "instrument" and not asset_id:
-                        continue
                     _append_calculation_transaction_entry(
                         entries,
                         axis=axis,
@@ -6450,8 +6450,6 @@ def build_contribution_entries_report(
                 if attached_expense > 0 and (
                     transaction_type in NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES
                 ):
-                    if axis == "instrument" and not asset_id:
-                        continue
                     _append_calculation_transaction_entry(
                         entries,
                         axis=axis,
@@ -6467,8 +6465,6 @@ def build_contribution_entries_report(
                     )
             elif bucket == "fee_amount":
                 if transaction_type == "fee":
-                    if axis == "instrument" and not asset_id:
-                        continue
                     _append_calculation_transaction_entry(
                         entries,
                         axis=axis,
@@ -6485,8 +6481,6 @@ def build_contribution_entries_report(
                 if fee_amount > 0 and (
                     transaction_type in NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES
                 ):
-                    if axis == "instrument" and not asset_id:
-                        continue
                     _append_calculation_transaction_entry(
                         entries,
                         axis=axis,
@@ -6502,8 +6496,6 @@ def build_contribution_entries_report(
                     )
             elif bucket == "tax_amount":
                 if transaction_type == "tax":
-                    if axis == "instrument" and not asset_id:
-                        continue
                     _append_calculation_transaction_entry(
                         entries,
                         axis=axis,
@@ -6520,8 +6512,6 @@ def build_contribution_entries_report(
                 if tax_amount > 0 and (
                     transaction_type in NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES
                 ):
-                    if axis == "instrument" and not asset_id:
-                        continue
                     _append_calculation_transaction_entry(
                         entries,
                         axis=axis,

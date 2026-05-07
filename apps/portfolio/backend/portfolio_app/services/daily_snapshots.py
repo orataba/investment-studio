@@ -36,7 +36,7 @@ DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260506-asset-trend"
 
 
 def _current_utc_timestamp() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _new_refresh_request_id() -> str:

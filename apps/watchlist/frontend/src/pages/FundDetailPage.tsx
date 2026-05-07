@@ -671,6 +671,33 @@ function benchmarkTypeRank(type: string) {
   return type === 'index' ? 0 : type === 'fund' ? 1 : type === 'etf' ? 2 : type === 'equity' ? 3 : 4
 }
 
+function filterBenchmarkOptions(options: FundLibraryItem[], search: string) {
+  const normalizedSearch = search.trim().toLowerCase()
+  if (!normalizedSearch) {
+    return options
+      .slice()
+      .sort((left, right) => {
+        const leftIdentifier = left.ticker_or_isin || left.fund_id
+        const rightIdentifier = right.ticker_or_isin || right.fund_id
+        return (
+          benchmarkTypeRank(left.product_type) - benchmarkTypeRank(right.product_type) ||
+          leftIdentifier.localeCompare(rightIdentifier) ||
+          left.fund_name.localeCompare(right.fund_name)
+        )
+      })
+      .slice(0, 12)
+  }
+
+  return options
+    .filter((item) =>
+      [item.fund_name, item.ticker_or_isin, item.product_type, item.fund_id, benchmarkLibraryLabel(item)]
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedSearch),
+    )
+    .slice(0, 10)
+}
+
 function parseTimelineNoteImportance(value: unknown): TimelineNoteImportance {
   return value === 'high' || value === 'medium' || value === 'low' ? value : 'medium'
 }
@@ -874,6 +901,9 @@ function getPeerMetricKeyForMatrixCell(
   }
   if (rowKey === 'sharpe_ratio') {
     return periodKey === 'SI' ? 'sharpe_ratio' : null
+  }
+  if (rowKey === 'sortino_ratio') {
+    return periodKey === 'SI' ? 'sortino_ratio' : null
   }
   if (rowKey === 'calmar_ratio') {
     return periodKey === 'SI' ? 'calmar' : null
@@ -3160,6 +3190,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [benchmarkSearchFocused, setBenchmarkSearchFocused] = useState(false)
   const [benchmarkNavSeries, setBenchmarkNavSeries] = useState<FundNavSeriesResponse | null>(null)
   const [metricBenchmarkFundId, setMetricBenchmarkFundId] = useState('')
+  const [metricBenchmarkSearch, setMetricBenchmarkSearch] = useState('')
+  const [metricBenchmarkSearchFocused, setMetricBenchmarkSearchFocused] = useState(false)
   const [metricBenchmarkNavSeries, setMetricBenchmarkNavSeries] =
     useState<FundNavSeriesResponse | null>(null)
   const [performanceMatrixMode, setPerformanceMatrixMode] =
@@ -3219,6 +3251,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [openProductFrameworkPickerKey, setOpenProductFrameworkPickerKey] =
     useState<string | null>(null)
   const deferredBenchmarkSearch = useDeferredValue(benchmarkSearch)
+  const deferredMetricBenchmarkSearch = useDeferredValue(metricBenchmarkSearch)
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
@@ -3535,6 +3568,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setBenchmarkSearchFocused(false)
     setBenchmarkNavSeries(null)
     setMetricBenchmarkFundId('')
+    setMetricBenchmarkSearch('')
+    setMetricBenchmarkSearchFocused(false)
     setMetricBenchmarkNavSeries(null)
     setQuoteActionNotice(null)
     setOpenQuoteChartMenu(null)
@@ -4041,35 +4076,21 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const selectedBenchmark = benchmarkOptions.find((item) => item.fund_id === benchmarkFundId) || null
   const selectedBenchmarkLabel = selectedBenchmark ? benchmarkLibraryLabel(selectedBenchmark) : ''
   const benchmarkInputValue = selectedBenchmark && !benchmarkSearch ? selectedBenchmarkLabel : benchmarkSearch
-  const filteredBenchmarkOptions = useMemo(() => {
-    const normalizedSearch = deferredBenchmarkSearch.trim().toLowerCase()
-    if (!normalizedSearch) {
-      return benchmarkOptions
-        .slice()
-        .sort((left, right) => {
-          const leftIdentifier = left.ticker_or_isin || left.fund_id
-          const rightIdentifier = right.ticker_or_isin || right.fund_id
-          return (
-            benchmarkTypeRank(left.product_type) - benchmarkTypeRank(right.product_type) ||
-            leftIdentifier.localeCompare(rightIdentifier) ||
-            left.fund_name.localeCompare(right.fund_name)
-          )
-        })
-        .slice(0, 12)
-    }
-
-    return benchmarkOptions
-      .filter((item) =>
-        [item.fund_name, item.ticker_or_isin, item.product_type, item.fund_id, benchmarkLibraryLabel(item)]
-          .join(' ')
-          .toLowerCase()
-          .includes(normalizedSearch),
-      )
-      .slice(0, 10)
-  }, [benchmarkOptions, deferredBenchmarkSearch])
+  const filteredBenchmarkOptions = useMemo(
+    () => filterBenchmarkOptions(benchmarkOptions, deferredBenchmarkSearch),
+    [benchmarkOptions, deferredBenchmarkSearch],
+  )
   const showBenchmarkResults = benchmarkSearchFocused
   const selectedMetricBenchmark =
     benchmarkOptions.find((item) => item.fund_id === metricBenchmarkFundId) || null
+  const selectedMetricBenchmarkLabel = selectedMetricBenchmark ? benchmarkLibraryLabel(selectedMetricBenchmark) : ''
+  const metricBenchmarkInputValue =
+    selectedMetricBenchmark && !metricBenchmarkSearch ? selectedMetricBenchmarkLabel : metricBenchmarkSearch
+  const filteredMetricBenchmarkOptions = useMemo(
+    () => filterBenchmarkOptions(benchmarkOptions, deferredMetricBenchmarkSearch),
+    [benchmarkOptions, deferredMetricBenchmarkSearch],
+  )
+  const showMetricBenchmarkResults = metricBenchmarkSearchFocused
 
   if (loading) {
     return (
@@ -5281,24 +5302,18 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
   ]
-  const performanceMetricMatrixRows = performanceMetricMatrixBaseRows
-    .map((row) => {
-      if (activePerformanceMatrixMode === 'values') {
-        return row
-      }
-      return {
-        ...row,
-        supportsBenchmark: false,
-        cells: performancePeriodSnapshots.map((period) =>
-          buildPeerPerformanceMatrixCell(row.key, period.key),
-        ),
-      }
-    })
-    .filter(
-      (row) =>
-        activePerformanceMatrixMode === 'values' ||
-        row.cells.some((cell) => 'peerAvailable' in cell && cell.peerAvailable),
-    )
+  const performanceMetricMatrixRows = performanceMetricMatrixBaseRows.map((row) => {
+    if (activePerformanceMatrixMode === 'values') {
+      return row
+    }
+    return {
+      ...row,
+      supportsBenchmark: false,
+      cells: performancePeriodSnapshots.map((period) =>
+        buildPeerPerformanceMatrixCell(row.key, period.key),
+      ),
+    }
+  })
   const riskScatterRows = risk.scatter_points
     .map((row, index) => ({
       name: getString(row.name),
@@ -6632,7 +6647,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                           <input
                             type="search"
                             aria-label="Compare benchmark"
-                            placeholder="Compare..."
+                            placeholder="Compare benchmark..."
                             value={benchmarkInputValue}
                             onFocus={() => setBenchmarkSearchFocused(true)}
                             onBlur={() => window.setTimeout(() => setBenchmarkSearchFocused(false), 140)}
@@ -7600,20 +7615,76 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 <div className="instrument-performance-title-row">
                   <div className="instrument-section-title">Metrics Matrix</div>
                   <div className="instrument-chart-compare instrument-performance-benchmark-select">
-                    <div className="instrument-chart-compare-select-wrap">
-                      <select
-                        aria-label="Performance benchmark"
-                        value={metricBenchmarkFundId}
-                        onChange={(event) => setMetricBenchmarkFundId(event.target.value)}
-                      >
-                        <option value="">Compare...</option>
-                        {benchmarkOptions.map((item) => (
-                          <option key={item.fund_id} value={item.fund_id}>
-                            {item.ticker_or_isin ? `${item.ticker_or_isin} · ${item.fund_name}` : item.fund_name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                    <label className="instrument-chart-compare-search">
+                      <div className="instrument-chart-compare-search-box">
+                        <input
+                          type="search"
+                          aria-label="Performance benchmark"
+                          placeholder="Compare benchmark..."
+                          value={metricBenchmarkInputValue}
+                          onFocus={() => setMetricBenchmarkSearchFocused(true)}
+                          onBlur={() => window.setTimeout(() => setMetricBenchmarkSearchFocused(false), 140)}
+                          onChange={(event) => {
+                            const nextValue = event.target.value
+                            setMetricBenchmarkSearch(nextValue)
+                            if (selectedMetricBenchmark && nextValue !== selectedMetricBenchmarkLabel) {
+                              setMetricBenchmarkFundId('')
+                              setMetricBenchmarkNavSeries(null)
+                            }
+                          }}
+                        />
+                        {selectedMetricBenchmark ? (
+                          <button
+                            type="button"
+                            className="instrument-chart-compare-clear"
+                            aria-label="Clear benchmark"
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => {
+                              setMetricBenchmarkFundId('')
+                              setMetricBenchmarkSearch('')
+                              setMetricBenchmarkNavSeries(null)
+                            }}
+                          >
+                            ×
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="instrument-chart-compare-toggle"
+                            aria-label="Show benchmark choices"
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => setMetricBenchmarkSearchFocused((current) => !current)}
+                          >
+                            <span aria-hidden="true" />
+                          </button>
+                        )}
+                        {showMetricBenchmarkResults ? (
+                          <div className="instrument-chart-compare-results">
+                            {filteredMetricBenchmarkOptions.length ? (
+                              filteredMetricBenchmarkOptions.map((item) => (
+                                <button
+                                  type="button"
+                                  key={item.fund_id}
+                                  onMouseDown={(event) => event.preventDefault()}
+                                  onClick={() => {
+                                    setMetricBenchmarkFundId(item.fund_id)
+                                    setMetricBenchmarkSearch(benchmarkLibraryLabel(item))
+                                    setMetricBenchmarkSearchFocused(false)
+                                  }}
+                                >
+                                  <strong>{item.fund_name}</strong>
+                                  <span>
+                                    {item.ticker_or_isin || item.fund_id} · {formatLabel(item.product_type)}
+                                  </span>
+                                </button>
+                              ))
+                            ) : (
+                              <div className="instrument-chart-compare-empty">No database match</div>
+                            )}
+                          </div>
+                        ) : null}
+                      </div>
+                    </label>
                   </div>
                 </div>
               </div>

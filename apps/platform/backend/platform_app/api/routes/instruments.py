@@ -34,7 +34,7 @@ from platform_app.services.instrument_store import (
     upsert_market_data,
     upsert_source_settings,
 )
-from platform_app.services.portfolio_notifications import queue_portfolio_daily_snapshot_refresh
+from platform_app.services.downstream_notifications import queue_market_data_downstream_refresh
 
 
 router = APIRouter()
@@ -122,11 +122,11 @@ def upsert_instrument_market_data(
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
-    queue_portfolio_daily_snapshot_refresh(
+    queue_market_data_downstream_refresh(
         background_tasks,
         asset_ids=[asset_id],
         dirty_from=payload.as_of_date,
-        refresh_all=payload.metric_family.strip().lower() == "fx" or asset_id.startswith("fx-"),
+        refresh_all_portfolios=payload.metric_family.strip().lower() == "fx" or asset_id.startswith("fx-"),
     )
     return PlatformInstrumentRecord.model_validate(record)
 
@@ -166,10 +166,10 @@ def refresh_instrument_market_data(
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
-    queue_portfolio_daily_snapshot_refresh(
+    queue_market_data_downstream_refresh(
         background_tasks,
         asset_ids=[asset_id],
-        refresh_all=asset_id.startswith("fx-"),
+        refresh_all_portfolios=asset_id.startswith("fx-"),
     )
     return PlatformInstrumentRecord.model_validate(record)
 
@@ -214,7 +214,7 @@ def import_instrument_nav_history(
         raise HTTPException(status_code=400, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
-    queue_portfolio_daily_snapshot_refresh(background_tasks, asset_ids=[asset_id])
+    queue_market_data_downstream_refresh(background_tasks, asset_ids=[asset_id])
     return PlatformInstrumentRecord.model_validate(record)
 
 
@@ -262,5 +262,5 @@ def import_instrument_nav_history_file(
         raise HTTPException(status_code=400, detail=str(error)) from error
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
-    queue_portfolio_daily_snapshot_refresh(background_tasks, asset_ids=[asset_id])
+    queue_market_data_downstream_refresh(background_tasks, asset_ids=[asset_id])
     return PlatformInstrumentRecord.model_validate(record)
