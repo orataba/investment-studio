@@ -6208,6 +6208,22 @@ input[type='date']::-webkit-calendar-picker-indicator {
   background: #ffffff;
 }
 
+.performance-calculation-group-row th,
+.performance-calculation-group-row td {
+  background: #f8fafc;
+  font-weight: 600;
+}
+
+.performance-calculation-child-row th,
+.performance-calculation-child-row td {
+  background: #ffffff;
+}
+
+.performance-calculation-child-row .performance-line-label {
+  color: #4b5563;
+  font-weight: 500;
+}
+
 .performance-calculation-total-row th,
 .performance-calculation-total-row td {
   border-top: 1px solid var(--portfolio-line-strong);

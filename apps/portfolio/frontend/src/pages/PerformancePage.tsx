@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 
 import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
@@ -36,6 +36,8 @@ const DEFAULT_PERFORMANCE_LOOKBACK_DAYS = 30
 const DAYS_PER_YEAR = 365.25
 
 type CalculationGroupRow = PortfolioPerformanceCalculationGroupsResponse['groups'][number]
+type CalculationGroupChildRow = CalculationGroupRow['children'][number]
+type CalculationDisplayRow = CalculationGroupRow | CalculationGroupChildRow
 
 type PerformanceMetricRow = {
   metric: string
@@ -142,6 +144,14 @@ function expenseImpact(value: number | null | undefined) {
 
 function fxPnlAmount(row: Pick<CalculationGroupRow, 'cash_currency_gains' | 'asset_currency_gains'>) {
   return sumNullable(row.cash_currency_gains, row.asset_currency_gains)
+}
+
+function isCalculationChildRow(row: CalculationDisplayRow): row is CalculationGroupChildRow {
+  return 'item_key' in row
+}
+
+function calculationDisplayLabel(row: CalculationDisplayRow) {
+  return isCalculationChildRow(row) ? row.item_label : row.group_label
 }
 
 function calculationAxisLabel(axis: PortfolioContributionAxis) {
@@ -1048,9 +1058,14 @@ function PerformancePage() {
   const contributionResidual = calculationGroupsSummary?.contribution_residual ?? null
   const showContributionResidual = contributionResidual != null && Math.abs(contributionResidual) > 0.0000005
   const calculationGroupLabel = calculationAxisLabel(resolvedCalculationGroupBy)
+  const calculationChildRowCount = calculationRows.reduce((total, row) => total + (row.children?.length ?? 0), 0)
   const calculationMeta = `${periodLabel} · ${formatNumber(calculationRows.length, 0)} ${calculationAxisCountLabel(
     resolvedCalculationGroupBy,
-  )}`
+  )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} assets/cash` : ''}`
+  const calculationStatusLabel =
+    (calculationLoading && calculationWorkspace) || (calculationGroupsLoading && calculationGroupsWorkspace)
+      ? `Updating ${calculationGroupLabel.toLowerCase()} calculation…`
+      : 'Building performance calculation…'
 
   function handleDownloadCalculationCsv() {
     if (!portfolioId || !calculationGroupsWorkspace) {
@@ -1076,22 +1091,41 @@ function PerformancePage() {
     const rows: Array<Array<string | number | null>> = [
       header,
       ['Initial Value', null, csvNumber(initialValue), ...Array(11).fill(null)],
-      ...calculationRows.map((row) => [
-        row.group_label,
-        csvNumber(row.total_pnl),
-        csvNumber(row.initial_value),
-        csvNumber(row.final_value),
-        csvNumber(row.average_weight),
-        csvNumber(row.ending_weight),
-        csvNumber(row.realized_capital_gains),
-        csvNumber(row.unrealized_pnl_change),
-        csvNumber(row.earnings),
-        csvNumber(expenseImpact(row.fees)),
-        csvNumber(expenseImpact(row.taxes)),
-        csvNumber(fxPnlAmount(row)),
-        csvNumber(row.period_return),
-        csvNumber(row.period_contribution),
-      ]),
+      ...calculationRows.flatMap((row) => {
+        const groupRow = [
+          row.children?.length ? `${row.group_label} Total` : row.group_label,
+          csvNumber(row.total_pnl),
+          csvNumber(row.initial_value),
+          csvNumber(row.final_value),
+          csvNumber(row.average_weight),
+          csvNumber(row.ending_weight),
+          csvNumber(row.realized_capital_gains),
+          csvNumber(row.unrealized_pnl_change),
+          csvNumber(row.earnings),
+          csvNumber(expenseImpact(row.fees)),
+          csvNumber(expenseImpact(row.taxes)),
+          csvNumber(fxPnlAmount(row)),
+          csvNumber(row.period_return),
+          csvNumber(row.period_contribution),
+        ]
+        const childRows = (row.children ?? []).map((child) => [
+          `  ${child.item_label}`,
+          csvNumber(child.total_pnl),
+          csvNumber(child.initial_value),
+          csvNumber(child.final_value),
+          csvNumber(child.average_weight),
+          csvNumber(child.ending_weight),
+          csvNumber(child.realized_capital_gains),
+          csvNumber(child.unrealized_pnl_change),
+          csvNumber(child.earnings),
+          csvNumber(expenseImpact(child.fees)),
+          csvNumber(expenseImpact(child.taxes)),
+          csvNumber(fxPnlAmount(child)),
+          csvNumber(child.period_return),
+          csvNumber(child.period_contribution),
+        ])
+        return [groupRow, ...childRows]
+      }),
       ['Deposits', csvNumber(calculationSummary?.deposits), ...Array(12).fill(null)],
       ['Withdrawals', csvNumber(expenseImpact(calculationSummary?.withdrawals)), ...Array(12).fill(null)],
       [
@@ -1119,6 +1153,54 @@ function PerformancePage() {
     downloadCsv(
       `performance-calculation-${portfolioId}-${effectiveStartDate}-${effectiveEndDate}-${resolvedCalculationGroupBy}.csv`,
       rows,
+    )
+  }
+
+  function renderCalculationDataRow(row: CalculationDisplayRow, rowKey: string, rowClassName?: string) {
+    const fxPnl = fxPnlAmount(row)
+    const feePnl = expenseImpact(row.fees)
+    const taxPnl = expenseImpact(row.taxes)
+    const isChild = isCalculationChildRow(row)
+    return (
+      <tr key={rowKey} className={rowClassName}>
+        <th
+          scope="row"
+          className={`performance-line-label${isChild ? ' performance-line-label-child' : ''}`}
+        >
+          {calculationDisplayLabel(row)}
+        </th>
+        <td className={`performance-cell-number ${signedValueClass(row.total_pnl)}`}>
+          {formatSignedCurrency(row.total_pnl, baseCurrency)}
+        </td>
+        <td className="performance-cell-number">{formatCurrency(row.initial_value, baseCurrency)}</td>
+        <td className="performance-cell-number">{formatCurrency(row.final_value, baseCurrency)}</td>
+        <td className="performance-cell-number">{formatPercent(row.average_weight)}</td>
+        <td className="performance-cell-number">{formatPercent(row.ending_weight)}</td>
+        <td className={`performance-cell-number ${signedValueClass(row.realized_capital_gains)}`}>
+          {formatSignedCurrency(row.realized_capital_gains, baseCurrency)}
+        </td>
+        <td className={`performance-cell-number ${signedValueClass(row.unrealized_pnl_change)}`}>
+          {formatSignedCurrency(row.unrealized_pnl_change, baseCurrency)}
+        </td>
+        <td className={`performance-cell-number ${signedValueClass(row.earnings)}`}>
+          {formatSignedCurrency(row.earnings, baseCurrency)}
+        </td>
+        <td className={`performance-cell-number ${signedValueClass(feePnl)}`}>
+          {formatSignedCurrency(feePnl, baseCurrency)}
+        </td>
+        <td className={`performance-cell-number ${signedValueClass(taxPnl)}`}>
+          {formatSignedCurrency(taxPnl, baseCurrency)}
+        </td>
+        <td className={`performance-cell-number ${signedValueClass(fxPnl)}`}>
+          {formatSignedCurrency(fxPnl, baseCurrency)}
+        </td>
+        <td className={`performance-cell-number ${signedValueClass(row.period_return)}`}>
+          {signedPercent(row.period_return)}
+        </td>
+        <td className={`performance-cell-number ${signedValueClass(row.period_contribution)}`}>
+          {signedPercent(row.period_contribution)}
+        </td>
+      </tr>
     )
   }
 
@@ -1218,9 +1300,8 @@ function PerformancePage() {
               {calculationGroupsError ? (
                 <div className="inline-notice inline-notice-error">{calculationGroupsError}</div>
               ) : null}
-              {(calculationLoading && !calculationWorkspace) ||
-              (calculationGroupsLoading && !calculationGroupsWorkspace) ? (
-                <CalculationStatus label="Building performance calculation…" />
+              {calculationLoading || calculationGroupsLoading ? (
+                <CalculationStatus label={calculationStatusLabel} />
               ) : null}
               <div className="table-shell">
                 <table className="transactions-table performance-calculation-table">
@@ -1251,48 +1332,21 @@ function PerformancePage() {
                     </tr>
                     {calculationRows.length ? (
                       calculationRows.map((row) => {
-                        const fxPnl = fxPnlAmount(row)
-                        const feePnl = expenseImpact(row.fees)
-                        const taxPnl = expenseImpact(row.taxes)
                         return (
-                          <tr key={row.group_key}>
-                            <th scope="row" className="performance-line-label">
-                              {row.group_label}
-                            </th>
-                            <td className={`performance-cell-number ${signedValueClass(row.total_pnl)}`}>
-                              {formatSignedCurrency(row.total_pnl, baseCurrency)}
-                            </td>
-                            <td className="performance-cell-number">
-                              {formatCurrency(row.initial_value, baseCurrency)}
-                            </td>
-                            <td className="performance-cell-number">{formatCurrency(row.final_value, baseCurrency)}</td>
-                            <td className="performance-cell-number">{formatPercent(row.average_weight)}</td>
-                            <td className="performance-cell-number">{formatPercent(row.ending_weight)}</td>
-                            <td className={`performance-cell-number ${signedValueClass(row.realized_capital_gains)}`}>
-                              {formatSignedCurrency(row.realized_capital_gains, baseCurrency)}
-                            </td>
-                            <td className={`performance-cell-number ${signedValueClass(row.unrealized_pnl_change)}`}>
-                              {formatSignedCurrency(row.unrealized_pnl_change, baseCurrency)}
-                            </td>
-                            <td className={`performance-cell-number ${signedValueClass(row.earnings)}`}>
-                              {formatSignedCurrency(row.earnings, baseCurrency)}
-                            </td>
-                            <td className={`performance-cell-number ${signedValueClass(feePnl)}`}>
-                              {formatSignedCurrency(feePnl, baseCurrency)}
-                            </td>
-                            <td className={`performance-cell-number ${signedValueClass(taxPnl)}`}>
-                              {formatSignedCurrency(taxPnl, baseCurrency)}
-                            </td>
-                            <td className={`performance-cell-number ${signedValueClass(fxPnl)}`}>
-                              {formatSignedCurrency(fxPnl, baseCurrency)}
-                            </td>
-                            <td className={`performance-cell-number ${signedValueClass(row.period_return)}`}>
-                              {signedPercent(row.period_return)}
-                            </td>
-                            <td className={`performance-cell-number ${signedValueClass(row.period_contribution)}`}>
-                              {signedPercent(row.period_contribution)}
-                            </td>
-                          </tr>
+                          <Fragment key={row.group_key}>
+                            {renderCalculationDataRow(
+                              row,
+                              `group:${row.group_key}`,
+                              row.children?.length ? 'performance-calculation-group-row' : undefined,
+                            )}
+                            {(row.children ?? []).map((child) =>
+                              renderCalculationDataRow(
+                                child,
+                                `child:${child.parent_group_key}:${child.item_kind}:${child.item_key}`,
+                                'performance-calculation-child-row',
+                              ),
+                            )}
+                          </Fragment>
                         )
                       })
                     ) : calculationGroupsLoading ? (

@@ -4964,10 +4964,16 @@ def test_period_calculation_groups_support_asset_type_axis(client, monkeypatch):
     assert isclose(groups["equity"]["final_value"], 110.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["equity"]["total_pnl"], 10.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["equity"]["unrealized_pnl_change"], 10.0, rel_tol=0.0, abs_tol=1e-12)
+    equity_children = {item["item_key"]: item for item in groups["equity"]["children"]}
+    assert equity_children["equity-us-test"]["item_label"] == "Test Equity"
+    assert isclose(equity_children["equity-us-test"]["final_value"], 110.0, rel_tol=0.0, abs_tol=1e-12)
     assert groups["fund"]["group_label"] == "Fund"
     assert isclose(groups["fund"]["final_value"], 190.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["fund"]["total_pnl"], -10.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["fund"]["unrealized_pnl_change"], -10.0, rel_tol=0.0, abs_tol=1e-12)
+    fund_children = {item["item_key"]: item for item in groups["fund"]["children"]}
+    assert fund_children["fund-us-test"]["item_label"] == "Test Fund"
+    assert isclose(fund_children["fund-us-test"]["final_value"], 190.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_period_calculation_groups_instrument_includes_cash_balance(client, monkeypatch):
@@ -6840,6 +6846,17 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(cash_group["final_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(cash_group["cash_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(cash_group["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+
+    asset_type_groups_response = client.get("/api/portfolios/cash-fx-test/performance/calculation/groups?axis=asset_type")
+    assert asset_type_groups_response.status_code == 200
+    asset_type_cash_group = next(
+        item for item in asset_type_groups_response.json()["groups"] if item["group_key"] == "cash"
+    )
+    cash_child = next(item for item in asset_type_cash_group["children"] if item["item_kind"] == "cash")
+    assert cash_child["item_label"] == "Cash"
+    assert isclose(cash_child["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(cash_child["final_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(cash_child["cash_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_asset_currency_gains_flow_through_performance_and_calculation(client, monkeypatch):

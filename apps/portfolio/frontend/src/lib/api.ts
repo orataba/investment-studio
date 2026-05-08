@@ -206,11 +206,7 @@ export type PortfolioPerformanceCalculationResponse = {
 
 export type PortfolioContributionAxis = 'instrument' | 'account' | 'asset_type' | 'currency' | 'taxonomy'
 
-export type PortfolioPeriodCalculationGroupRecord = {
-  axis: PortfolioContributionAxis
-  taxonomy_id: string | null
-  group_key: string
-  group_label: string
+export type PortfolioPeriodCalculationGroupMetrics = {
   average_weight: number | null
   ending_weight: number | null
   period_return: number | null
@@ -229,6 +225,24 @@ export type PortfolioPeriodCalculationGroupRecord = {
   asset_currency_gains: number | null
   total_pnl: number | null
   period_contribution: number | null
+}
+
+export type PortfolioPeriodCalculationGroupChildRecord = PortfolioPeriodCalculationGroupMetrics & {
+  axis: PortfolioContributionAxis
+  taxonomy_id: string | null
+  parent_group_key: string
+  parent_group_label: string
+  item_key: string
+  item_label: string
+  item_kind: 'asset' | 'cash'
+}
+
+export type PortfolioPeriodCalculationGroupRecord = PortfolioPeriodCalculationGroupMetrics & {
+  axis: PortfolioContributionAxis
+  taxonomy_id: string | null
+  group_key: string
+  group_label: string
+  children: PortfolioPeriodCalculationGroupChildRecord[]
 }
 
 export type PortfolioPeriodCalculationGroupsSummary = {
