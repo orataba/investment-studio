@@ -368,13 +368,19 @@ def _apply_sort(
     for rule in reversed(sort_rules):
         field = rule.get("field")
         reverse = rule.get("direction", "asc").lower() == "desc"
-        sorted_rows.sort(
-            key=lambda item: (
-                _resolve_field_value(item, field) is None,
-                _resolve_field_value(item, field),
-            ),
+        populated_rows: list[tuple[object, dict[str, object]]] = []
+        empty_rows: list[dict[str, object]] = []
+        for row in sorted_rows:
+            value = _resolve_field_value(row, field)
+            if value is None:
+                empty_rows.append(row)
+            else:
+                populated_rows.append((value, row))
+        populated_rows.sort(
+            key=lambda item: item[0],
             reverse=reverse,
         )
+        sorted_rows = [row for _, row in populated_rows] + empty_rows
     return sorted_rows
 
 

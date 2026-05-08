@@ -786,7 +786,12 @@ export function updateWatchlistView(
 }
 
 export function addWatchlistItems(watchlistId: string, assetIds: string[]) {
-  return fetchJson<{ watchlist_id: string; accepted_count: number; pending_recalc_asset_ids: string[] }>(
+  return fetchJson<{
+    watchlist_id: string
+    accepted_count: number
+    pending_recalc_asset_ids: string[]
+    recalculated_asset_ids: string[]
+  }>(
     `/api/watchlists/${watchlistId}/items`,
     {
       method: 'POST',

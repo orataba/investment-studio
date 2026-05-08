@@ -1147,10 +1147,10 @@ export default function WatchlistsPage() {
       await refreshWatchlistDetail()
       setReloadToken(Date.now())
       setModalKind(null)
-      const duplicateCount = Math.max(resolvedAssetIds.size - addResult.accepted_count, 0)
+      const skippedCount = Math.max(rows.length - addResult.accepted_count, 0)
       setNotice(
-        duplicateCount > 0
-          ? `Processed ${rows.length} rows. Added ${addResult.accepted_count}, ${duplicateCount} already existed in this watchlist.`
+        skippedCount > 0
+          ? `Processed ${rows.length} rows. Added ${addResult.accepted_count}; ${skippedCount} were duplicate rows or already existed in this watchlist.`
           : `Processed ${rows.length} rows. Added ${addResult.accepted_count} from shared registry.`,
       )
     } catch (batchError) {
@@ -1263,14 +1263,11 @@ export default function WatchlistsPage() {
         types.add(assetType)
       }
     })
-    return [...types]
+    return types.size ? [...types] : ['fund']
   }, [screenerResult])
   const supportsAnyAssetScope = (field: FieldRegistryRecord) => {
     if (!field.asset_scope_json.length) {
       return true
-    }
-    if (!activeAssetTypes.length) {
-      return false
     }
     return field.asset_scope_json.some((assetType) =>
       activeAssetTypes.includes(String(assetType).trim().toLowerCase()),
@@ -1279,9 +1276,6 @@ export default function WatchlistsPage() {
   const supportsAllAssetScope = (field: FieldRegistryRecord) => {
     if (!field.asset_scope_json.length) {
       return true
-    }
-    if (!activeAssetTypes.length) {
-      return false
     }
     const normalizedScope = field.asset_scope_json.map((assetType) =>
       String(assetType).trim().toLowerCase(),
@@ -3220,11 +3214,6 @@ export default function WatchlistsPage() {
                   }
                   setIsSavingView(true)
                   try {
-                    const advancedFilters =
-                      activeView?.default_advanced_filters &&
-                      typeof activeView.default_advanced_filters === 'object'
-                        ? activeView.default_advanced_filters
-                        : null
                     const payload = buildViewPayload(
                       saveViewName.trim(),
                       saveViewDescription.trim() || null,

@@ -675,7 +675,7 @@ def get_watchlist(
         str(row.asset_type or "").strip().lower()
         for row in watchlist_rows
         if str(row.asset_type or "").strip()
-    }
+    } or {"fund"}
     scoped_fields = [
         field
         for field in fields
@@ -716,7 +716,6 @@ def add_items_to_watchlist(
     missing_asset_ids: list[str] = []
     unsupported_asset_ids: list[str] = []
     resolved_instruments: list[dict[str, object]] = []
-    recalculated_asset_ids: list[str] = []
     for asset_id in payload.asset_ids:
         requested_asset_id = asset_id.strip()
         if not requested_asset_id:
@@ -768,9 +767,7 @@ def add_items_to_watchlist(
         )
 
     for shared_instrument in resolved_instruments:
-        detail_asset_id = _ensure_local_asset_detail(session, shared_instrument)
-        if detail_asset_id and detail_asset_id not in recalculated_asset_ids:
-            recalculated_asset_ids.append(detail_asset_id)
+        _ensure_local_asset_detail(session, shared_instrument)
 
     created = watchlist_repository.add_items(
         session,
@@ -778,16 +775,18 @@ def add_items_to_watchlist(
         asset_ids=canonical_asset_ids,
         added_by="api",
     )
+    created_asset_ids = [item.asset_id for item in created]
     try:
         _materialize_watchlist_rows(
             session,
             watchlist_id=watchlist_id,
-            asset_ids=[item.asset_id for item in created],
+            asset_ids=created_asset_ids,
         )
     except SharedInstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
-    for asset_id in recalculated_asset_ids:
+    recalculated_asset_ids: list[str] = []
+    for asset_id in created_asset_ids:
         canonical_recalc_service.execute_recalc(
             session,
             asset_id=asset_id,
@@ -796,12 +795,13 @@ def add_items_to_watchlist(
             trigger_ref_type="watchlist",
             trigger_ref_id=watchlist_id,
         )
+        recalculated_asset_ids.append(asset_id)
 
     session.commit()
     return {
         "watchlist_id": watchlist_id,
         "accepted_count": len(created),
-        "pending_recalc_asset_ids": canonical_asset_ids,
+        "pending_recalc_asset_ids": created_asset_ids,
         "recalculated_asset_ids": recalculated_asset_ids,
     }
 

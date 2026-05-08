@@ -191,6 +191,25 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
     ]
 
 
+def test_empty_watchlist_still_exposes_fund_field_scope(
+    client: TestClient,
+) -> None:
+    created = client.post(
+        "/api/watchlists",
+        json={"name": "Empty Fund Scope", "description": None},
+    )
+    assert created.status_code == 200
+    watchlist_id = created.json()["watchlist_id"]
+
+    detail = client.get(f"/api/watchlists/{watchlist_id}")
+
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert payload["item_count"] == 0
+    assert "taxonomy" in [item["code"] for item in payload["available_group_bys"]]
+    assert "attr.coverage_status" in payload["default_filters_summary"]
+
+
 def test_adding_shared_registry_instrument_to_created_watchlist_materializes_rows(
     client: TestClient,
 ) -> None:
@@ -519,6 +538,95 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
     assert payload["rows"][0]["return_mtd"] == pytest.approx(2.259067, abs=1e-6)
     assert payload["rows"][0]["annualized_return"] == pytest.approx(14.119462, abs=1e-6)
     assert payload["snapshot_metadata"]["as_of_date"] == "2026-04-14"
+
+
+def test_adding_existing_watchlist_item_is_noop_without_membership_recalc(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.api.routes import watchlists as watchlists_route
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Duplicate Add Guard", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    first_add = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["sxv264"]},
+    )
+    assert first_add.status_code == 200
+    assert first_add.json()["accepted_count"] == 1
+
+    def _unexpected_recalc(*_args, **_kwargs):
+        raise AssertionError("duplicate membership add should not execute recalc")
+
+    monkeypatch.setattr(
+        watchlists_route.canonical_recalc_service,
+        "execute_recalc",
+        _unexpected_recalc,
+    )
+
+    duplicate_add = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["sxv264"]},
+    )
+
+    assert duplicate_add.status_code == 200
+    assert duplicate_add.json() == {
+        "watchlist_id": watchlist_id,
+        "accepted_count": 0,
+        "pending_recalc_asset_ids": [],
+        "recalculated_asset_ids": [],
+    }
+
+
+def test_screener_sort_keeps_missing_values_last_for_descending_metrics(
+    client: TestClient,
+) -> None:
+    seed_shared_instrument(
+        {
+            "asset_id": "fund-no-return",
+            "asset_name": "No Return Fund",
+            "asset_type": "fund",
+            "currency": "USD",
+            "identifiers": [
+                {"identifier_type": "ticker", "identifier_value": "NORET", "is_primary": True},
+            ],
+            "market_data": [],
+            "lifecycle_state": {"status": "active"},
+        }
+    )
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Sort Missing Returns", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"asset_ids": ["fund-no-return", "sxv264"]},
+    )
+    assert add_response.status_code == 200
+
+    screener = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "view_id": "overview",
+            "selected_fields": ["asset_name", "return_ytd"],
+            "sort": [{"field": "return_ytd", "direction": "desc"}],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+
+    assert screener.status_code == 200
+    rows = screener.json()["rows"]
+    assert [row["asset_id"] for row in rows] == ["sxv264", "fund-no-return"]
+    assert rows[0]["return_ytd"] is not None
+    assert rows[1]["return_ytd"] is None
 
 
 def test_calendar_period_returns_use_prior_close_as_base(

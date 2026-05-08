@@ -27,6 +27,10 @@ export default function WatchlistEntryPage() {
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [createModalOpen, setCreateModalOpen] = useState(false)
+  const [createWatchlistName, setCreateWatchlistName] = useState('')
+  const [createWatchlistDescription, setCreateWatchlistDescription] = useState('')
+  const [isCreatingWatchlist, setIsCreatingWatchlist] = useState(false)
   const menuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -99,24 +103,39 @@ export default function WatchlistEntryPage() {
     }
   }
 
+  function resetCreateWatchlistForm() {
+    setCreateWatchlistName('')
+    setCreateWatchlistDescription('')
+    setIsCreatingWatchlist(false)
+  }
+
   async function handleCreateWatchlist() {
-    const proposedName = window.prompt('Watchlist name')
-    const name = proposedName?.trim()
+    const name = createWatchlistName.trim()
     if (!name) {
       return
     }
 
+    setIsCreatingWatchlist(true)
+    setError(null)
+    setNotice(null)
     try {
-      const created = await createWatchlist({ name })
-      setWatchlists((current) => [...current, created])
+      const created = await createWatchlist({
+        name,
+        description: createWatchlistDescription.trim() || null,
+      })
+      const nextWatchlists = await getWatchlists()
+      setWatchlists(nextWatchlists)
+      resetCreateWatchlistForm()
+      setCreateModalOpen(false)
       setNotice(`Created watchlist "${created.name}".`)
       navigate(buildWatchlistPath(created.watchlist_id))
     } catch (requestError) {
-      setNotice(
+      setError(
         requestError instanceof Error
           ? requestError.message
           : 'Failed to create watchlist.',
       )
+      setIsCreatingWatchlist(false)
     }
   }
 
@@ -290,13 +309,91 @@ export default function WatchlistEntryPage() {
             type="button"
             className="watchlist-create-link"
             onClick={() => {
-              void handleCreateWatchlist()
+              resetCreateWatchlistForm()
+              setCreateModalOpen(true)
+              setError(null)
+              setNotice(null)
             }}
           >
             + Create Watchlist
           </button>
         </div>
       </section>
+
+      {createModalOpen ? (
+        <div
+          className="watchlists-modal-backdrop"
+          onClick={() => {
+            if (!isCreatingWatchlist) {
+              resetCreateWatchlistForm()
+              setCreateModalOpen(false)
+            }
+          }}
+        >
+          <div className="watchlists-modal watchlists-save-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="watchlists-modal-header">
+              <div>
+                <div className="panel-title">Create Watchlist</div>
+                <div className="section-heading">Create A New List For Instruments And Views</div>
+              </div>
+              <button
+                type="button"
+                disabled={isCreatingWatchlist}
+                onClick={() => {
+                  resetCreateWatchlistForm()
+                  setCreateModalOpen(false)
+                }}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="watchlists-modal-body">
+              <div className="form-field">
+                <span>Name</span>
+                <input
+                  className="form-input"
+                  value={createWatchlistName}
+                  onChange={(event) => setCreateWatchlistName(event.target.value)}
+                  placeholder="Coverage"
+                />
+              </div>
+              <div className="form-field">
+                <span>Description</span>
+                <textarea
+                  className="form-textarea"
+                  value={createWatchlistDescription}
+                  onChange={(event) => setCreateWatchlistDescription(event.target.value)}
+                  placeholder="Optional description for this watchlist."
+                />
+              </div>
+            </div>
+
+            <div className="watchlists-modal-actions">
+              <button
+                type="button"
+                disabled={isCreatingWatchlist}
+                onClick={() => {
+                  resetCreateWatchlistForm()
+                  setCreateModalOpen(false)
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button-primary"
+                disabled={isCreatingWatchlist || !createWatchlistName.trim()}
+                onClick={() => {
+                  void handleCreateWatchlist()
+                }}
+              >
+                {isCreatingWatchlist ? 'Creating...' : 'Create Watchlist'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }
