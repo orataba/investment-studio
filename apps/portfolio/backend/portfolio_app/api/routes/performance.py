@@ -239,6 +239,17 @@ def get_portfolio_period_calculation_groups(
         raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
 
     try:
+        contribution_report = (
+            get_cached_materialized_contribution_report(
+                portfolio_id,
+                start_date=start_date,
+                end_date=end_date,
+                axis=axis,
+                group_key=group_key,
+            )
+            if axis in {"instrument", "account"}
+            else None
+        )
         report = build_period_calculation_groups_report(
             portfolio,
             list_accounts(portfolio_id),
@@ -251,6 +262,7 @@ def get_portfolio_period_calculation_groups(
             axis=axis,
             taxonomy_id=taxonomy_id,
             group_key=group_key,
+            contribution_report=contribution_report,
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error

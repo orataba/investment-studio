@@ -71,6 +71,7 @@ def _normalized_currency(value: object, *, fallback: str = "USD") -> str:
 _CALCULATION_DETAIL_SUFFIX = "_detail"
 _CALCULATION_DETAIL_GROUP_SEPARATOR = "\x1f"
 _CALCULATION_DETAIL_PARENT_AXES = {"instrument", "account", "asset_type", "currency", "taxonomy"}
+_CALCULATION_CASH_DETAIL_AXIS = "cash_detail"
 
 
 def _calculation_detail_axis(axis: str) -> str:
@@ -82,6 +83,10 @@ def _calculation_detail_parent_axis(axis: str) -> str | None:
         return None
     parent_axis = axis[: -len(_CALCULATION_DETAIL_SUFFIX)]
     return parent_axis if parent_axis in _CALCULATION_DETAIL_PARENT_AXES else None
+
+
+def _is_internal_calculation_axis(axis: str) -> bool:
+    return axis == _CALCULATION_CASH_DETAIL_AXIS or _calculation_detail_parent_axis(axis) in CONTRIBUTION_BASE_AXES
 
 
 def _encode_calculation_detail_group_key(
@@ -3494,6 +3499,8 @@ def _account_name_map(accounts: list[dict[str, object]]) -> dict[str, str]:
 
 
 def _axis_includes_cash_balance(axis: str) -> bool:
+    if axis == _CALCULATION_CASH_DETAIL_AXIS:
+        return True
     parent_axis = _calculation_detail_parent_axis(axis)
     if parent_axis is not None:
         return parent_axis in {"instrument", "account", "asset_type", "currency"}
@@ -3521,6 +3528,8 @@ def _position_group_for_axis(
     account_name_map: dict[str, str],
     base_currency: str,
 ) -> tuple[str, str]:
+    if axis == _CALCULATION_CASH_DETAIL_AXIS:
+        return ("", "")
     detail_parent_axis = _calculation_detail_parent_axis(axis)
     if detail_parent_axis in {"instrument", "account", "asset_type", "currency"}:
         parent_group_key, _parent_group_label = _position_group_for_axis(
@@ -3565,6 +3574,20 @@ def _cash_group_for_axis(
     currency: str,
     account_name_map: dict[str, str],
 ) -> tuple[str, str]:
+    if axis == _CALCULATION_CASH_DETAIL_AXIS:
+        return (
+            _encode_calculation_detail_group_key(
+                parent_group_key="cash",
+                item_kind="cash",
+                item_key=_cash_detail_item_key(account_id=account_id, currency=currency),
+            ),
+            _cash_detail_item_label(
+                parent_axis="instrument",
+                account_id=account_id,
+                currency=currency,
+                account_name_map=account_name_map,
+            ),
+        )
     detail_parent_axis = _calculation_detail_parent_axis(axis)
     if detail_parent_axis in {"instrument", "account", "asset_type", "currency"}:
         parent_group_key, _parent_group_label = _cash_group_for_axis(
@@ -3608,6 +3631,22 @@ def _transaction_group_for_axis(
     instrument_ref = _instrument_ref_from_mapping(transaction)
     asset_id = str(transaction.get("asset_id") or instrument_ref.get("asset_id") or "")
     currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
+    if axis == _CALCULATION_CASH_DETAIL_AXIS:
+        if asset_id:
+            return ("", "")
+        return (
+            _encode_calculation_detail_group_key(
+                parent_group_key="cash",
+                item_kind="cash",
+                item_key=_cash_detail_item_key(account_id=account_id, currency=currency),
+            ),
+            _cash_detail_item_label(
+                parent_axis="instrument",
+                account_id=account_id,
+                currency=currency,
+                account_name_map=account_name_map,
+            ),
+        )
     detail_parent_axis = _calculation_detail_parent_axis(axis)
     if detail_parent_axis in {"instrument", "account", "asset_type", "currency"}:
         parent_group_key, _parent_group_label = _transaction_group_for_axis(
@@ -5040,7 +5079,7 @@ def build_contribution_report(
         )
 
     if axis not in CONTRIBUTION_BASE_AXES and not (
-        allow_internal_detail_axis and _calculation_detail_parent_axis(axis) in CONTRIBUTION_BASE_AXES
+        allow_internal_detail_axis and _is_internal_calculation_axis(axis)
     ):
         raise ValueError(CONTRIBUTION_AXIS_ERROR)
 
@@ -5115,12 +5154,17 @@ def build_contribution_report(
 
     for as_of_date in _iter_dates(boundary_start_date, resolved_end_date):
         transactions_as_of = _transactions_as_of_end_date(sorted_transactions, end_date=as_of_date)
-        position_lots = build_position_lots(portfolio_id, accounts, transactions_as_of)
+        position_lots = (
+            []
+            if axis == _CALCULATION_CASH_DETAIL_AXIS
+            else build_position_lots(portfolio_id, accounts, transactions_as_of)
+        )
         group_states_by_date[as_of_date] = _build_contribution_group_end_states(
             axis=axis,
             portfolio_id=portfolio_id,
             accounts=accounts,
             transactions_as_of=transactions_as_of,
+            position_lots=position_lots,
             as_of_date=as_of_date,
             base_currency=base_currency,
             account_cost_methods=account_cost_methods,
@@ -5864,7 +5908,7 @@ def _build_period_calculation_child_records(
     if not parent_labels:
         return {}
 
-    detail_axis = _calculation_detail_axis(axis)
+    detail_axis = _CALCULATION_CASH_DETAIL_AXIS if axis == "instrument" else _calculation_detail_axis(axis)
     if axis in {"instrument", "account", "asset_type", "currency"}:
         detail_report = build_contribution_report(
             portfolio,
@@ -5912,28 +5956,31 @@ def _build_period_calculation_child_records(
         if str(item.get("group_key") or "")
     }
     period_returns = _period_returns_by_group(list(detail_report.get("daily_slices") or []))
-    fx_payload = get_platform_fx_rates()
-    direct_fx_assets = _fx_direct_asset_map(fx_payload)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
-    unrealized_capital_summary = (
-        _period_unrealized_capital_gains_by_group(
-            portfolio,
-            accounts,
-            transactions,
-            start_date=resolved_start_date,
-            end_date=resolved_end_date,
-            axis=detail_axis,
-            taxonomy_id=taxonomy_id,
-            taxonomies=taxonomies,
-            taxonomy_nodes=taxonomy_nodes,
-            taxonomy_assignments=taxonomy_assignments,
-            base_currency=str(detail_report["base_currency"]),
-            direct_fx_assets=direct_fx_assets,
-            instrument_detail_cache=instrument_detail_cache,
+    if axis == "instrument":
+        unrealized_capital_summary = {"values": {}, "coverage_complete": True}
+    else:
+        fx_payload = get_platform_fx_rates()
+        direct_fx_assets = _fx_direct_asset_map(fx_payload)
+        instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+        unrealized_capital_summary = (
+            _period_unrealized_capital_gains_by_group(
+                portfolio,
+                accounts,
+                transactions,
+                start_date=resolved_start_date,
+                end_date=resolved_end_date,
+                axis=detail_axis,
+                taxonomy_id=taxonomy_id,
+                taxonomies=taxonomies,
+                taxonomy_nodes=taxonomy_nodes,
+                taxonomy_assignments=taxonomy_assignments,
+                base_currency=str(detail_report["base_currency"]),
+                direct_fx_assets=direct_fx_assets,
+                instrument_detail_cache=instrument_detail_cache,
+            )
+            if resolved_start_date is not None and resolved_end_date is not None
+            else {"values": {}, "coverage_complete": False}
         )
-        if resolved_start_date is not None and resolved_end_date is not None
-        else {"values": {}, "coverage_complete": False}
-    )
     unrealized_capital_values = (
         unrealized_capital_summary.get("values")
         if isinstance(unrealized_capital_summary.get("values"), dict)
@@ -6028,6 +6075,112 @@ def _build_period_calculation_child_records(
     return dict(children_by_parent)
 
 
+def _build_period_calculation_cash_parent_group(
+    portfolio: dict[str, object],
+    accounts: list[dict[str, object]],
+    transactions: list[dict[str, object]],
+    *,
+    start_date: date | None,
+    end_date: date | None,
+    resolved_start_date: date | None,
+    resolved_end_date: date | None,
+) -> dict[str, object] | None:
+    if resolved_start_date is None or resolved_end_date is None:
+        return None
+
+    cash_detail_report = build_contribution_report(
+        portfolio,
+        accounts,
+        transactions,
+        start_date=start_date,
+        end_date=end_date,
+        axis=_CALCULATION_CASH_DETAIL_AXIS,
+        allow_internal_detail_axis=True,
+    )
+    parent_daily_slices: list[dict[str, object]] = []
+    for daily_slice in list(cash_detail_report.get("daily_slices") or []):
+        parent_slice = dict(daily_slice)
+        parent_slice["axis"] = "instrument"
+        parent_slice["group_key"] = "cash"
+        parent_slice["group_label"] = "Cash"
+        parent_daily_slices.append(parent_slice)
+    parent_daily_slices = _merge_calculation_detail_daily_slices(parent_daily_slices)
+    if not parent_daily_slices:
+        return None
+
+    parent_report = build_contribution_report_from_daily_slices(
+        portfolio,
+        [],
+        parent_daily_slices,
+        start_date=resolved_start_date,
+        end_date=resolved_end_date,
+        axis="instrument",
+        group_key="cash",
+    )
+    line_map = {
+        str(item.get("group_key") or ""): item
+        for item in list(parent_report.get("lines") or [])
+        if str(item.get("group_key") or "")
+    }
+    line = line_map.get("cash")
+    if line is None:
+        return None
+
+    initial_value = None
+    final_value = None
+    start_value_field = "beginning_value_base" if start_date is not None else "ending_value_base"
+    for daily_slice in parent_daily_slices:
+        as_of_date = daily_slice.get("as_of_date")
+        if as_of_date == resolved_start_date:
+            initial_value = _safe_float(daily_slice.get(start_value_field))
+        if as_of_date == resolved_end_date:
+            final_value = _safe_float(daily_slice.get("ending_value_base"))
+
+    delta = (
+        final_value - initial_value
+        if initial_value is not None and final_value is not None
+        else None
+    )
+    group_total_pnl = _safe_float(line.get("total_pnl"))
+    capital_gains = _capital_gains_from_components(line)
+    unrealized_capital_gains = 0.0 if capital_gains is not None else None
+    realized_capital_gains = (
+        capital_gains - unrealized_capital_gains
+        if capital_gains is not None and unrealized_capital_gains is not None
+        else None
+    )
+    residual_delta = (
+        delta - group_total_pnl
+        if delta is not None and group_total_pnl is not None
+        else None
+    )
+    period_returns = _period_returns_by_group(parent_daily_slices)
+    return {
+        "axis": "instrument",
+        "taxonomy_id": None,
+        "group_key": "cash",
+        "group_label": "Cash",
+        "average_weight": _safe_float(line.get("average_weight")),
+        "ending_weight": _safe_float(line.get("ending_weight")),
+        "period_return": period_returns.get("cash"),
+        "initial_value": initial_value,
+        "final_value": final_value,
+        "delta": delta,
+        "residual_delta": residual_delta,
+        "capital_gains": capital_gains,
+        "realized_capital_gains": realized_capital_gains,
+        "unrealized_pnl_change": unrealized_capital_gains,
+        "earnings": _safe_float(line.get("income_cash_amount")),
+        "expense_cash_amount": _safe_float(line.get("expense_cash_amount")),
+        "fees": _safe_float(line.get("fee_amount")),
+        "taxes": _safe_float(line.get("tax_amount")),
+        "cash_currency_gains": _safe_float(line.get("cash_currency_gains")),
+        "asset_currency_gains": _safe_float(line.get("asset_currency_gains")),
+        "total_pnl": group_total_pnl,
+        "period_contribution": _safe_float(line.get("period_contribution")),
+    }
+
+
 def build_period_calculation_groups_report(
     portfolio: dict[str, object],
     accounts: list[dict[str, object]],
@@ -6041,19 +6194,21 @@ def build_period_calculation_groups_report(
     axis: str = "instrument",
     taxonomy_id: str | None = None,
     group_key: str | None = None,
+    contribution_report: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    contribution_report = build_contribution_report(
-        portfolio,
-        accounts,
-        transactions,
-        taxonomies=taxonomies,
-        taxonomy_nodes=taxonomy_nodes,
-        taxonomy_assignments=taxonomy_assignments,
-        start_date=start_date,
-        end_date=end_date,
-        axis=axis,
-        taxonomy_id=taxonomy_id,
-    )
+    if contribution_report is None:
+        contribution_report = build_contribution_report(
+            portfolio,
+            accounts,
+            transactions,
+            taxonomies=taxonomies,
+            taxonomy_nodes=taxonomy_nodes,
+            taxonomy_assignments=taxonomy_assignments,
+            start_date=start_date,
+            end_date=end_date,
+            axis=axis,
+            taxonomy_id=taxonomy_id,
+        )
     summary = (
         deepcopy(contribution_report.get("summary"))
         if isinstance(contribution_report.get("summary"), dict)
@@ -6218,6 +6373,19 @@ def build_period_calculation_groups_report(
             total_pnl_complete = False
         else:
             total_pnl += group_total_pnl
+
+    if axis == "instrument" and not any(str(item.get("group_key") or "") == "cash" for item in groups):
+        cash_parent_group = _build_period_calculation_cash_parent_group(
+            portfolio,
+            accounts,
+            transactions,
+            start_date=start_date,
+            end_date=end_date,
+            resolved_start_date=resolved_start_date,
+            resolved_end_date=resolved_end_date,
+        )
+        if cash_parent_group is not None:
+            groups.append(cash_parent_group)
 
     groups.sort(
         key=lambda item: (
