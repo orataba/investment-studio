@@ -243,10 +243,7 @@ def _select_market_point_as_of(
     as_of_date: date,
 ) -> dict[str, object] | None:
     points_by_basis = _market_points_by_basis(detail)
-    candidate_bases = [
-        *_normalized_policy_bases(detail, role),
-        *_normalized_policy_bases(detail, "reference"),
-    ]
+    candidate_bases = _normalized_policy_bases(detail, role)
     seen_bases: set[str] = set()
     for quote_basis in candidate_bases:
         if quote_basis in seen_bases:
@@ -268,28 +265,7 @@ def _select_market_point_as_of(
                 "status": str(point.get("status") or "complete"),
                 "stale": point_date is not None and point_date < as_of_date,
             }
-
-    fallback_points: list[dict[str, object]] = []
-    for points in points_by_basis.values():
-        fallback_points.extend(points)
-    fallback_points.sort(key=lambda item: str(item.get("as_of_date") or ""))
-    point = _latest_point_on_or_before(fallback_points, as_of_date)
-    if point is None:
-        return None
-    resolved_value = _safe_float(point.get("value"))
-    if resolved_value is None:
-        return None
-    point_date = _parse_iso_date(point.get("as_of_date"))
-    return {
-        "value": resolved_value,
-        "as_of_date": point_date,
-        "currency": _normalized_currency(point.get("currency"), fallback=str(detail.get("currency") or "USD")),
-        "metric_family": str(point.get("metric_family") or ""),
-        "quote_basis": str(point.get("quote_basis") or ""),
-        "provider": point.get("provider"),
-        "status": str(point.get("status") or "complete"),
-        "stale": point_date is not None and point_date < as_of_date,
-    }
+    return None
 
 
 def _fx_direct_asset_map(fx_payload: dict[str, object]) -> dict[tuple[str, str], str]:

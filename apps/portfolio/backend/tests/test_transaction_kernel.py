@@ -843,6 +843,22 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
     assert destination_lots[0]["entry_quantity"] == pytest.approx(4.0)
     assert destination_lots[0]["entry_cost_basis"] == pytest.approx(0.0)
 
+    sell_response = client.post(
+        "/api/portfolios/yungu/transactions",
+        json={
+            "transaction_type": "sell",
+            "trade_date": "2026-04-22",
+            "account_id": destination_account["account_id"],
+            "settlement_cash_account_id": "cash-usd-main",
+            "asset_id": "equity-us-abbv",
+            "quantity": 2.0,
+            "price": 100.0,
+            "gross_amount": 200.0,
+            "currency": "USD",
+        },
+    )
+    assert sell_response.status_code == 200
+
 
 def test_copy_portfolio_remaps_counterparty_account_ids(client):
     copy_response = client.post("/api/portfolios/yungu/copy")

@@ -202,38 +202,11 @@ def _select_quote_value(
             resolved = _safe_float((point or {}).get("value"))
             if resolved is not None:
                 return resolved
-
-        for quote_basis in _normalized_policy_bases(instrument, "reference"):
-            point = _latest_point_on_or_before(points_by_basis.get(quote_basis, []), as_of_date)
-            resolved = _safe_float((point or {}).get("value"))
-            if resolved is not None:
-                return resolved
-
-        fallback_points: list[dict[str, object]] = []
-        for points in points_by_basis.values():
-            fallback_points.extend(points)
-        fallback_points.sort(key=lambda point: str(point.get("as_of_date") or ""))
-        point = _latest_point_on_or_before(fallback_points, as_of_date)
-        return _safe_float((point or {}).get("value"))
+        return None
 
     latest_by_basis = _latest_points_by_basis(instrument)
     for quote_basis in _normalized_policy_bases(instrument, role):
         resolved = _safe_float(latest_by_basis.get(quote_basis, {}).get("value"))
-        if resolved is not None:
-            return resolved
-
-    for quote_basis in _normalized_policy_bases(instrument, "reference"):
-        resolved = _safe_float(latest_by_basis.get(quote_basis, {}).get("value"))
-        if resolved is not None:
-            return resolved
-
-    fallback_points = sorted(
-        latest_by_basis.values(),
-        key=lambda point: str(point.get("as_of_date") or ""),
-        reverse=True,
-    )
-    for point in fallback_points:
-        resolved = _safe_float(point.get("value"))
         if resolved is not None:
             return resolved
     return None
@@ -633,8 +606,8 @@ def _build_position_state(
             if not incoming_lots:
                 raise ValueError("Position transfer requires linked source lots.")
             received_cost_basis = sum((_safe_float(lot.get("cost_basis")) or 0.0) for lot in incoming_lots)
-            if received_cost_basis <= 0:
-                raise ValueError("Position transfer requires positive linked source lot cost basis.")
+            if received_cost_basis < -1e-9:
+                raise ValueError("Position transfer requires non-negative linked source lot cost basis.")
             _add_position_state(
                 position_state,
                 account_id,

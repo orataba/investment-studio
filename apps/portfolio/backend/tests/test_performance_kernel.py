@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from math import isclose, sqrt
 from copy import deepcopy
+from datetime import date
+from math import isclose, sqrt
 
 from portfolio_app.api.routes import performance as performance_routes
 from portfolio_app.api.routes import workspace as workspace_routes
@@ -45,6 +46,60 @@ def _test_instrument_detail(
             for as_of_date, value in history
         ],
     }
+
+
+def test_valuation_quote_selection_rejects_reference_and_total_return_fallbacks():
+    detail = {
+        "asset_id": "equity-us-split",
+        "asset_name": "Split Adjusted Equity",
+        "asset_type": "equity",
+        "currency": "USD",
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": "SPLT", "is_primary": True}],
+        "quote_selection_policy": {
+            "valuation": ["close"],
+            "reference": ["adjusted_close"],
+            "total_return": ["adjusted_close", "close"],
+        },
+        "market_data": [
+            {
+                "metric_family": "price",
+                "quote_basis": "adjusted_close",
+                "as_of_date": "2026-01-02",
+                "value": "55.00",
+                "currency": "USD",
+                "status": "complete",
+            }
+        ],
+        "latest_market_data": [
+            {
+                "metric_family": "price",
+                "quote_basis": "adjusted_close",
+                "as_of_date": "2026-01-02",
+                "value": "55.00",
+                "currency": "USD",
+                "status": "complete",
+            }
+        ],
+    }
+
+    assert (
+        performance._select_market_point_as_of(
+            detail=deepcopy(detail),
+            role="valuation",
+            as_of_date=date(2026, 1, 2),
+        )
+        is None
+    )
+    assert ledger._select_quote_value(deepcopy(detail), role="valuation", as_of_date=date(2026, 1, 2)) is None
+    assert ledger._select_quote_value(deepcopy(detail), role="valuation") is None
+
+    total_return_point = performance._select_market_point_as_of(
+        detail=deepcopy(detail),
+        role="total_return",
+        as_of_date=date(2026, 1, 2),
+    )
+    assert total_return_point is not None
+    assert total_return_point["quote_basis"] == "adjusted_close"
 
 
 def _daily_snapshot_row_count(portfolio_id: str) -> int:
