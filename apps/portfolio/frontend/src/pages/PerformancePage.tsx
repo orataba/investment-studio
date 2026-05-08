@@ -1,8 +1,9 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 
 import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
+import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import { downloadCsv } from '../lib/csv'
 import {
@@ -11,9 +12,11 @@ import {
   getPortfolioPerformance,
   getPortfolioPerformanceCalculation,
   getPortfolioPerformanceCalculationGroups,
+  getPortfolioPerformanceContribution,
   getPortfolioTaxonomyCatalog,
   type PortfolioAssetPriceChartPoint,
   type PortfolioAssetPriceChartResponse,
+  type PortfolioContributionReportResponse,
   type PortfolioContributionAxis,
   type PortfolioDailyPerformancePoint,
   type PortfolioPerformanceCalculationGroupsResponse,
@@ -78,11 +81,250 @@ type RelativePerformanceMetrics = {
 }
 
 type CalculationGroupByOption = {
-  value: PortfolioContributionAxis
+  value: CalculationGroupByKey
   label: string
   description: string
   disabled?: boolean
 }
+
+type CalculationGroupByKey = 'none' | 'account' | 'asset_type' | 'currency' | 'taxonomy'
+
+type CalculationTableMode = 'risk_attribution' | 'calculation'
+
+type CalculationColumnKey =
+  | 'line'
+  | 'pnl_flow'
+  | 'start_value'
+  | 'end_value'
+  | 'avg_weight'
+  | 'end_weight'
+  | 'realized_gain'
+  | 'unrealized_gain'
+  | 'income'
+  | 'fees'
+  | 'taxes'
+  | 'fx_pnl'
+  | 'period_return'
+  | 'return_contribution'
+  | 'own_vol'
+  | 'own_sharpe'
+  | 'own_corr'
+  | 'beta'
+  | 'contribution_vol'
+  | 'risk_contribution'
+  | 'observations'
+
+type CalculationTableViewState = {
+  columns: CalculationColumnKey[]
+  mode: CalculationTableMode
+}
+
+type CalculationTableView = PortfolioTableViewOption & {
+  state: CalculationTableViewState
+  readonly?: boolean
+  createdAt?: string
+  updatedAt?: string
+}
+
+type CalculationTableViewStore = {
+  activeViewId: string
+  customViews: CalculationTableView[]
+}
+
+type CalculationSyntheticRowKind =
+  | 'initial'
+  | 'final'
+  | 'deposits'
+  | 'withdrawals'
+  | 'portfolio_total'
+  | 'contribution_residual'
+  | 'risk_contribution_residual'
+
+type CalculationTableRow =
+  | {
+      kind: 'group'
+      key: string
+      className?: string
+      row: CalculationGroupRow
+    }
+  | {
+      kind: 'child'
+      key: string
+      className?: string
+      row: CalculationGroupChildRow
+    }
+  | {
+      kind: 'synthetic'
+      key: string
+      className?: string
+      label: string
+      syntheticKind: CalculationSyntheticRowKind
+    }
+
+type RiskAttributionStats = {
+  groupKey: string
+  observationCount: number
+  ownObservationCount: number
+  annualizedVolatility: number | null
+  sharpe: number | null
+  correlationToPortfolio: number | null
+  betaToPortfolio: number | null
+  contributionVolatility: number | null
+  realizedRiskContribution: number | null
+}
+
+const LOCKED_CALCULATION_COLUMN: CalculationColumnKey = 'line'
+const CALCULATION_TABLE_VIEWS_STORAGE_KEY = 'yungu.portfolio.performance.calculation.views.v1'
+
+const RISK_ATTRIBUTION_COLUMNS: CalculationColumnKey[] = [
+  'line',
+  'avg_weight',
+  'end_weight',
+  'period_return',
+  'return_contribution',
+  'own_vol',
+  'own_sharpe',
+  'own_corr',
+  'beta',
+  'contribution_vol',
+  'risk_contribution',
+  'observations',
+]
+
+const FULL_CALCULATION_COLUMNS: CalculationColumnKey[] = [
+  'line',
+  'pnl_flow',
+  'start_value',
+  'end_value',
+  'avg_weight',
+  'end_weight',
+  'realized_gain',
+  'unrealized_gain',
+  'income',
+  'fees',
+  'taxes',
+  'fx_pnl',
+  'period_return',
+  'return_contribution',
+]
+
+const CALCULATION_COLUMN_GROUPS: Array<{ label: string; columns: CalculationColumnKey[] }> = [
+  { label: 'Core', columns: ['line', 'avg_weight', 'end_weight', 'period_return', 'return_contribution'] },
+  {
+    label: 'P&L',
+    columns: [
+      'pnl_flow',
+      'start_value',
+      'end_value',
+      'realized_gain',
+      'unrealized_gain',
+      'income',
+      'fees',
+      'taxes',
+      'fx_pnl',
+    ],
+  },
+  {
+    label: 'Risk Attribution',
+    columns: ['own_vol', 'own_sharpe', 'own_corr', 'beta', 'contribution_vol', 'risk_contribution', 'observations'],
+  },
+]
+
+const ALL_CALCULATION_COLUMN_KEYS = CALCULATION_COLUMN_GROUPS.flatMap((group) => group.columns)
+const RISK_CALCULATION_COLUMN_KEYS = new Set<CalculationColumnKey>([
+  'own_vol',
+  'own_sharpe',
+  'own_corr',
+  'beta',
+  'contribution_vol',
+  'risk_contribution',
+  'observations',
+])
+const SIGNED_CALCULATION_COLUMN_KEYS = new Set<CalculationColumnKey>([
+  'pnl_flow',
+  'realized_gain',
+  'unrealized_gain',
+  'income',
+  'fees',
+  'taxes',
+  'fx_pnl',
+  'period_return',
+  'return_contribution',
+  'own_corr',
+  'beta',
+  'risk_contribution',
+])
+
+const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
+  line: 'Line',
+  pnl_flow: 'P&L / Flow',
+  start_value: 'Start Value',
+  end_value: 'End Value',
+  avg_weight: 'Avg Weight',
+  end_weight: 'End Weight',
+  realized_gain: 'Realized Gain',
+  unrealized_gain: 'Unrealized Gain',
+  income: 'Income',
+  fees: 'Fees',
+  taxes: 'Taxes',
+  fx_pnl: 'FX P&L',
+  period_return: 'Period Return',
+  return_contribution: 'Return Contribution',
+  own_vol: 'Own Vol',
+  own_sharpe: 'Own Sharpe',
+  own_corr: 'Own Corr',
+  beta: 'Beta',
+  contribution_vol: 'Contribution Vol',
+  risk_contribution: 'Risk Contribution',
+  observations: 'Obs',
+}
+
+const DEFAULT_CALCULATION_TABLE_VIEW_STATE: CalculationTableViewState = {
+  columns: RISK_ATTRIBUTION_COLUMNS,
+  mode: 'risk_attribution',
+}
+
+const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
+  {
+    id: 'risk-attribution',
+    name: 'Default',
+    description: 'Realized group risk contribution and own-risk metrics.',
+    readonly: true,
+    state: DEFAULT_CALCULATION_TABLE_VIEW_STATE,
+  },
+  {
+    id: 'full-calculation',
+    name: 'Full Calculation',
+    description: 'Period P&L, gain split, flows, TWR, and return contribution.',
+    readonly: true,
+    state: {
+      columns: FULL_CALCULATION_COLUMNS,
+      mode: 'calculation',
+    },
+  },
+  {
+    id: 'pnl-breakdown',
+    name: 'P&L Breakdown',
+    description: 'Compact realized, unrealized, income, expense, and FX attribution.',
+    readonly: true,
+    state: {
+      columns: [
+        'line',
+        'pnl_flow',
+        'start_value',
+        'end_value',
+        'realized_gain',
+        'unrealized_gain',
+        'income',
+        'fees',
+        'taxes',
+        'fx_pnl',
+        'return_contribution',
+      ],
+      mode: 'calculation',
+    },
+  },
+]
 
 function localDateIso(input = new Date()) {
   const year = input.getFullYear()
@@ -167,7 +409,7 @@ function calculationAxisLabel(axis: PortfolioContributionAxis) {
   if (axis === 'taxonomy') {
     return 'Taxonomy'
   }
-  return 'Asset'
+  return 'Instrument'
 }
 
 function calculationAxisCountLabel(axis: PortfolioContributionAxis) {
@@ -183,7 +425,123 @@ function calculationAxisCountLabel(axis: PortfolioContributionAxis) {
   if (axis === 'taxonomy') {
     return 'groups'
   }
-  return 'assets'
+  return 'instruments'
+}
+
+function normalizeCalculationColumns(columns: CalculationColumnKey[]) {
+  const seen = new Set<CalculationColumnKey>()
+  const normalized: CalculationColumnKey[] = [LOCKED_CALCULATION_COLUMN]
+  columns.forEach((column) => {
+    if (
+      column === LOCKED_CALCULATION_COLUMN ||
+      seen.has(column) ||
+      !ALL_CALCULATION_COLUMN_KEYS.includes(column)
+    ) {
+      return
+    }
+    seen.add(column)
+    normalized.push(column)
+  })
+  return normalized
+}
+
+function parseCalculationTableMode(value: string | null | undefined): CalculationTableMode {
+  return value === 'calculation' || value === 'risk_attribution' ? value : 'risk_attribution'
+}
+
+function normalizeCalculationTableViewState(value: unknown): CalculationTableViewState {
+  if (!value || typeof value !== 'object') {
+    return DEFAULT_CALCULATION_TABLE_VIEW_STATE
+  }
+  const record = value as Partial<CalculationTableViewState>
+  return {
+    columns: normalizeCalculationColumns(
+      Array.isArray(record.columns) ? (record.columns as CalculationColumnKey[]) : RISK_ATTRIBUTION_COLUMNS,
+    ),
+    mode: parseCalculationTableMode(typeof record.mode === 'string' ? record.mode : null),
+  }
+}
+
+function serializeCalculationTableViewState(value: CalculationTableViewState) {
+  const normalized = normalizeCalculationTableViewState(value)
+  return JSON.stringify({
+    columns: normalized.columns,
+    mode: normalized.mode,
+  })
+}
+
+function calculationTableViewStatesEqual(left: CalculationTableViewState, right: CalculationTableViewState) {
+  return serializeCalculationTableViewState(left) === serializeCalculationTableViewState(right)
+}
+
+function normalizeCalculationTableViewStore(value: unknown): CalculationTableViewStore {
+  const record = value && typeof value === 'object' ? (value as Partial<CalculationTableViewStore>) : {}
+  const customViews = Array.isArray(record.customViews)
+    ? record.customViews
+        .filter((view): view is CalculationTableView => Boolean(view && typeof view === 'object' && typeof view.id === 'string'))
+        .map((view) => ({
+          id: view.id,
+          name: typeof view.name === 'string' && view.name.trim() ? view.name.trim() : 'Custom View',
+          description: typeof view.description === 'string' ? view.description : null,
+          readonly: false,
+          createdAt: typeof view.createdAt === 'string' ? view.createdAt : undefined,
+          updatedAt: typeof view.updatedAt === 'string' ? view.updatedAt : undefined,
+          state: normalizeCalculationTableViewState(view.state),
+        }))
+    : []
+  const customViewIds = new Set(customViews.map((view) => view.id))
+  const knownViewIds = new Set([...SYSTEM_CALCULATION_TABLE_VIEWS.map((view) => view.id), ...customViewIds])
+  const activeViewId =
+    typeof record.activeViewId === 'string' && knownViewIds.has(record.activeViewId)
+      ? record.activeViewId
+      : SYSTEM_CALCULATION_TABLE_VIEWS[0].id
+  return { activeViewId, customViews }
+}
+
+function loadCalculationTableViewStore(): CalculationTableViewStore {
+  if (typeof window === 'undefined') {
+    return normalizeCalculationTableViewStore(null)
+  }
+  try {
+    const rawValue = window.localStorage.getItem(CALCULATION_TABLE_VIEWS_STORAGE_KEY)
+    if (rawValue) {
+      return normalizeCalculationTableViewStore(JSON.parse(rawValue))
+    }
+  } catch {
+    return normalizeCalculationTableViewStore(null)
+  }
+  return normalizeCalculationTableViewStore(null)
+}
+
+function saveCalculationTableViewStore(store: CalculationTableViewStore) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    window.localStorage.setItem(CALCULATION_TABLE_VIEWS_STORAGE_KEY, JSON.stringify(store))
+  } catch {
+    return
+  }
+}
+
+function getCalculationTableViews(store: CalculationTableViewStore) {
+  return [...SYSTEM_CALCULATION_TABLE_VIEWS, ...store.customViews]
+}
+
+function getCalculationTableViewById(store: CalculationTableViewStore, viewId: string) {
+  return getCalculationTableViews(store).find((view) => view.id === viewId) ?? SYSTEM_CALCULATION_TABLE_VIEWS[0]
+}
+
+function resolveCalculationTableViewState(store: CalculationTableViewStore, viewId: string) {
+  return getCalculationTableViewById(store, viewId).state
+}
+
+function createCalculationTableViewId() {
+  return `custom:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
+}
+
+function calculationColumnsNeedRiskAttribution(columns: CalculationColumnKey[]) {
+  return normalizeCalculationColumns(columns).some((column) => RISK_CALCULATION_COLUMN_KEYS.has(column))
 }
 
 function formatRatio(value: number | null | undefined, digits = 2) {
@@ -210,6 +568,30 @@ function sampleStddev(values: number[]) {
   const variance =
     values.reduce((total, value) => total + (value - mean) * (value - mean), 0) / (values.length - 1)
   return Math.sqrt(Math.max(variance, 0))
+}
+
+function sampleCovariance(leftValues: number[], rightValues: number[]) {
+  if (leftValues.length < 2 || leftValues.length !== rightValues.length) {
+    return null
+  }
+  const leftMean = leftValues.reduce((total, value) => total + value, 0) / leftValues.length
+  const rightMean = rightValues.reduce((total, value) => total + value, 0) / rightValues.length
+  return (
+    leftValues.reduce(
+      (total, leftValue, index) => total + (leftValue - leftMean) * (rightValues[index] - rightMean),
+      0,
+    ) /
+    (leftValues.length - 1)
+  )
+}
+
+function sampleCorrelation(leftValues: number[], rightValues: number[]) {
+  const covariance = sampleCovariance(leftValues, rightValues)
+  const leftStddev = sampleStddev(leftValues)
+  const rightStddev = sampleStddev(rightValues)
+  return covariance != null && leftStddev != null && rightStddev != null && leftStddev > 0 && rightStddev > 0
+    ? covariance / (leftStddev * rightStddev)
+    : null
 }
 
 function dayDiff(left: string, right: string) {
@@ -649,6 +1031,104 @@ function buildPerformanceMetricRows(
   ] satisfies PerformanceMetricRow[]
 }
 
+function buildPortfolioReturnByDate(dailySeries: PortfolioDailyPerformancePoint[]) {
+  const lookup = new Map<string, number>()
+  dailySeries.forEach((point) => {
+    const dailyReturn = finiteNumber(point.daily_twr)
+    if (dailyReturn != null && point.return_observation_eligible) {
+      lookup.set(point.as_of_date, dailyReturn)
+    }
+  })
+  return lookup
+}
+
+function buildRealizedRiskAttributionStats(
+  contributionWorkspace: PortfolioContributionReportResponse | null,
+  portfolioDailySeries: PortfolioDailyPerformancePoint[],
+) {
+  const portfolioReturnByDate = buildPortfolioReturnByDate(portfolioDailySeries)
+  const grouped = new Map<
+    string,
+    {
+      groupKey: string
+      ownReturns: DatedReturn[]
+      contributionPairs: Array<{ date: string; contribution: number; portfolioReturn: number }>
+      ownReturnPairs: Array<{ date: string; groupReturn: number; portfolioReturn: number }>
+    }
+  >()
+
+  ;(contributionWorkspace?.daily_slices ?? [])
+    .slice()
+    .sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
+    .forEach((slice) => {
+      const groupKey = slice.group_key
+      const current = grouped.get(groupKey) ?? {
+        groupKey,
+        ownReturns: [],
+        contributionPairs: [],
+        ownReturnPairs: [],
+      }
+      const portfolioReturn = portfolioReturnByDate.get(slice.as_of_date)
+      const ownReturn = finiteNumber(slice.daily_return)
+      const dailyContribution = finiteNumber(slice.daily_contribution)
+      if (ownReturn != null && slice.return_observation_eligible) {
+        current.ownReturns.push({ date: slice.as_of_date, value: ownReturn })
+        if (portfolioReturn != null) {
+          current.ownReturnPairs.push({ date: slice.as_of_date, groupReturn: ownReturn, portfolioReturn })
+        }
+      }
+      if (dailyContribution != null && portfolioReturn != null && slice.return_observation_eligible) {
+        current.contributionPairs.push({
+          date: slice.as_of_date,
+          contribution: dailyContribution,
+          portfolioReturn,
+        })
+      }
+      grouped.set(groupKey, current)
+    })
+
+  const stats = new Map<string, RiskAttributionStats>()
+  grouped.forEach((item, groupKey) => {
+    const ownReturnValues = item.ownReturns.map((point) => point.value)
+    const ownReturnDates = item.ownReturns.map((point) => point.date)
+    const annualizedVol = annualizedVolatility(ownReturnValues, ownReturnDates)
+    const annualizedReturn = annualizedReturnFromDailyReturns(ownReturnValues, ownReturnDates, ownReturnDates[0])
+    const contributionValues = item.contributionPairs.map((point) => point.contribution)
+    const contributionDates = item.contributionPairs.map((point) => point.date)
+    const portfolioReturnsForContribution = item.contributionPairs.map((point) => point.portfolioReturn)
+    const contributionVol = annualizedVolatility(contributionValues, contributionDates)
+    const contributionCovariance = sampleCovariance(contributionValues, portfolioReturnsForContribution)
+    const portfolioVariance = sampleCovariance(portfolioReturnsForContribution, portfolioReturnsForContribution)
+    const ownReturnPairValues = item.ownReturnPairs.map((point) => point.groupReturn)
+    const portfolioReturnsForOwn = item.ownReturnPairs.map((point) => point.portfolioReturn)
+    const ownPairPortfolioVariance = sampleCovariance(portfolioReturnsForOwn, portfolioReturnsForOwn)
+    const ownPairCovariance = sampleCovariance(ownReturnPairValues, portfolioReturnsForOwn)
+
+    stats.set(groupKey, {
+      groupKey,
+      observationCount: item.contributionPairs.length,
+      ownObservationCount: item.ownReturns.length,
+      annualizedVolatility: annualizedVol,
+      sharpe:
+        annualizedReturn != null && annualizedVol != null && annualizedVol > 1e-12
+          ? annualizedReturn / annualizedVol
+          : null,
+      correlationToPortfolio: sampleCorrelation(ownReturnPairValues, portfolioReturnsForOwn),
+      betaToPortfolio:
+        ownPairCovariance != null && ownPairPortfolioVariance != null && ownPairPortfolioVariance > 1e-12
+          ? ownPairCovariance / ownPairPortfolioVariance
+          : null,
+      contributionVolatility: contributionVol,
+      realizedRiskContribution:
+        contributionCovariance != null && portfolioVariance != null && portfolioVariance > 1e-12
+          ? contributionCovariance / portfolioVariance
+          : null,
+    })
+  })
+
+  return stats
+}
+
 function TableStatusRow({ colSpan, label, tone = 'muted' }: { colSpan: number; label: string; tone?: 'muted' | 'error' }) {
   return (
     <tr>
@@ -657,14 +1137,6 @@ function TableStatusRow({ colSpan, label, tone = 'muted' }: { colSpan: number; l
       </td>
     </tr>
   )
-}
-
-function EmptyNumberCells({ count }: { count: number }) {
-  return Array.from({ length: count }, (_, index) => (
-    <td key={index} className="performance-cell-number">
-      —
-    </td>
-  ))
 }
 
 function MetricGrid({ rows }: { rows: PerformanceMetricRow[] }) {
@@ -739,12 +1211,44 @@ function PerformancePage() {
   const [calculationWorkspace, setCalculationWorkspace] = useState<PortfolioPerformanceCalculationResponse | null>(null)
   const [calculationLoading, setCalculationLoading] = useState(false)
   const [calculationError, setCalculationError] = useState<string | null>(null)
-  const [calculationGroupBy, setCalculationGroupBy] = useState<PortfolioContributionAxis>('instrument')
+  const [calculationGroupBy, setCalculationGroupBy] = useState<CalculationGroupByKey>('none')
   const [calculationGroupByOpen, setCalculationGroupByOpen] = useState(false)
   const [calculationGroupsWorkspace, setCalculationGroupsWorkspace] =
     useState<PortfolioPerformanceCalculationGroupsResponse | null>(null)
   const [calculationGroupsLoading, setCalculationGroupsLoading] = useState(false)
   const [calculationGroupsError, setCalculationGroupsError] = useState<string | null>(null)
+  const [calculationContributionWorkspace, setCalculationContributionWorkspace] =
+    useState<PortfolioContributionReportResponse | null>(null)
+  const [calculationContributionLoading, setCalculationContributionLoading] = useState(false)
+  const [calculationContributionError, setCalculationContributionError] = useState<string | null>(null)
+  const initialCalculationTableViewStore = useMemo(() => loadCalculationTableViewStore(), [])
+  const initialCalculationTableViewState = useMemo(
+    () => resolveCalculationTableViewState(initialCalculationTableViewStore, initialCalculationTableViewStore.activeViewId),
+    [initialCalculationTableViewStore],
+  )
+  const [calculationTableViewStore, setCalculationTableViewStore] = useState<CalculationTableViewStore>(
+    () => initialCalculationTableViewStore,
+  )
+  const [activeCalculationTableViewId, setActiveCalculationTableViewId] = useState(
+    initialCalculationTableViewStore.activeViewId,
+  )
+  const [calculationColumns, setCalculationColumns] = useState<CalculationColumnKey[]>(
+    () => initialCalculationTableViewState.columns,
+  )
+  const [calculationColumnDraft, setCalculationColumnDraft] = useState<CalculationColumnKey[]>(
+    () => initialCalculationTableViewState.columns,
+  )
+  const [calculationTableMode, setCalculationTableMode] = useState<CalculationTableMode>(
+    () => initialCalculationTableViewState.mode,
+  )
+  const [calculationModeDraft, setCalculationModeDraft] = useState<CalculationTableMode>(
+    () => initialCalculationTableViewState.mode,
+  )
+  const [calculationColumnsOpen, setCalculationColumnsOpen] = useState(false)
+  const [calculationColumnCategory, setCalculationColumnCategory] = useState(
+    CALCULATION_COLUMN_GROUPS[0]?.label ?? 'Core',
+  )
+  const [calculationColumnSearch, setCalculationColumnSearch] = useState('')
   const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
@@ -762,14 +1266,16 @@ function PerformancePage() {
       ) ?? null,
     [taxonomyCatalog],
   )
-  const resolvedCalculationGroupBy =
-    calculationGroupBy === 'taxonomy' && !defaultPlanningTaxonomy ? 'instrument' : calculationGroupBy
+  const effectiveCalculationGroupBy: CalculationGroupByKey =
+    calculationGroupBy === 'taxonomy' && !defaultPlanningTaxonomy ? 'none' : calculationGroupBy
+  const resolvedCalculationGroupBy: PortfolioContributionAxis =
+    effectiveCalculationGroupBy === 'none' ? 'instrument' : effectiveCalculationGroupBy
   const calculationGroupByOptions = useMemo<CalculationGroupByOption[]>(
     () => [
       {
-        value: 'instrument',
-        label: 'Asset',
-        description: 'Group period P&L, TWR, contribution, and gain split by instrument.',
+        value: 'none',
+        label: 'None',
+        description: 'Show instrument/asset lines directly without aggregating them into a higher-level group.',
       },
       {
         value: 'asset_type',
@@ -798,13 +1304,143 @@ function PerformancePage() {
     [defaultPlanningTaxonomy],
   )
   const selectedCalculationGroupByOption =
-    calculationGroupByOptions.find((option) => option.value === resolvedCalculationGroupBy) ??
+    calculationGroupByOptions.find((option) => option.value === effectiveCalculationGroupBy) ??
     calculationGroupByOptions[0]
+  const calculationTableViews = useMemo(
+    () => getCalculationTableViews(calculationTableViewStore),
+    [calculationTableViewStore],
+  )
+  const activeCalculationTableView = useMemo(
+    () => getCalculationTableViewById(calculationTableViewStore, activeCalculationTableViewId),
+    [activeCalculationTableViewId, calculationTableViewStore],
+  )
+  const currentCalculationTableViewState = useMemo<CalculationTableViewState>(
+    () => ({
+      columns: normalizeCalculationColumns(calculationColumns),
+      mode: calculationTableMode,
+    }),
+    [calculationColumns, calculationTableMode],
+  )
+  const calculationTableViewEdited = !calculationTableViewStatesEqual(
+    currentCalculationTableViewState,
+    activeCalculationTableView.state,
+  )
+  const visibleCalculationColumns = useMemo(
+    () => normalizeCalculationColumns(calculationColumns),
+    [calculationColumns],
+  )
+  const calculationNeedsRiskAttribution = useMemo(
+    () => calculationColumnsNeedRiskAttribution(visibleCalculationColumns),
+    [visibleCalculationColumns],
+  )
+  const filteredCalculationColumns = useMemo(() => {
+    const search = calculationColumnSearch.trim().toLowerCase()
+    const groups = search
+      ? CALCULATION_COLUMN_GROUPS
+      : CALCULATION_COLUMN_GROUPS.filter((group) => group.label === calculationColumnCategory)
+    return groups.flatMap((group) =>
+      group.columns
+        .filter((column) => {
+          if (!search) {
+            return true
+          }
+          return (
+            column.toLowerCase().includes(search) ||
+            CALCULATION_COLUMN_LABELS[column].toLowerCase().includes(search) ||
+            group.label.toLowerCase().includes(search)
+          )
+        })
+        .map((column) => ({ column, groupLabel: group.label })),
+    )
+  }, [calculationColumnCategory, calculationColumnSearch])
 
-  function handleCalculationGroupByChange(value: PortfolioContributionAxis) {
+  function handleCalculationGroupByChange(value: CalculationGroupByKey) {
     setCalculationGroupBy(value)
     setCalculationGroupByOpen(false)
   }
+
+  function applyCalculationTableViewState(state: CalculationTableViewState) {
+    const normalized = normalizeCalculationTableViewState(state)
+    setCalculationColumns(normalized.columns)
+    setCalculationColumnDraft(normalized.columns)
+    setCalculationTableMode(normalized.mode)
+    setCalculationModeDraft(normalized.mode)
+  }
+
+  function handleSelectCalculationTableView(viewId: string) {
+    const nextView = getCalculationTableViewById(calculationTableViewStore, viewId)
+    setActiveCalculationTableViewId(nextView.id)
+    setCalculationTableViewStore((current) => ({ ...current, activeViewId: nextView.id }))
+    applyCalculationTableViewState(resolveCalculationTableViewState(calculationTableViewStore, nextView.id))
+  }
+
+  function handleSaveCalculationTableView() {
+    if (activeCalculationTableView.readonly) {
+      return
+    }
+    const timestamp = new Date().toISOString()
+    setCalculationTableViewStore((current) => ({
+      ...current,
+      activeViewId: activeCalculationTableViewId,
+      customViews: current.customViews.map((view) =>
+        view.id === activeCalculationTableViewId
+          ? {
+              ...view,
+              state: currentCalculationTableViewState,
+              updatedAt: timestamp,
+            }
+          : view,
+      ),
+    }))
+  }
+
+  function handleSaveCalculationTableViewAs(name: string, description: string | null) {
+    const timestamp = new Date().toISOString()
+    const viewId = createCalculationTableViewId()
+    const nextView: CalculationTableView = {
+      id: viewId,
+      name,
+      description,
+      readonly: false,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      state: currentCalculationTableViewState,
+    }
+    setCalculationTableViewStore((current) => ({
+      ...current,
+      activeViewId: viewId,
+      customViews: [...current.customViews, nextView],
+    }))
+    setActiveCalculationTableViewId(viewId)
+  }
+
+  function handleDeleteCalculationTableView(viewId: string) {
+    const targetView = getCalculationTableViewById(calculationTableViewStore, viewId)
+    if (targetView.readonly) {
+      return
+    }
+    const fallbackView = SYSTEM_CALCULATION_TABLE_VIEWS[0]
+    const deletingActiveView = targetView.id === activeCalculationTableViewId
+    setCalculationTableViewStore((current) => ({
+      ...current,
+      activeViewId: deletingActiveView ? fallbackView.id : current.activeViewId,
+      customViews: current.customViews.filter((view) => view.id !== targetView.id),
+    }))
+    if (deletingActiveView) {
+      setActiveCalculationTableViewId(fallbackView.id)
+      applyCalculationTableViewState(fallbackView.state)
+    }
+  }
+
+  function handleCalculationColumnDraftToggle(column: CalculationColumnKey, checked: boolean) {
+    setCalculationColumnDraft((current) =>
+      normalizeCalculationColumns(checked ? [...current, column] : current.filter((item) => item !== column)),
+    )
+  }
+
+  useEffect(() => {
+    saveCalculationTableViewStore(calculationTableViewStore)
+  }, [calculationTableViewStore])
 
   useEffect(() => {
     if (!portfolioId) {
@@ -953,6 +1589,55 @@ function PerformancePage() {
   ])
 
   useEffect(() => {
+    if (!portfolioId || !calculationNeedsRiskAttribution) {
+      setCalculationContributionWorkspace(null)
+      setCalculationContributionLoading(false)
+      setCalculationContributionError(null)
+      return
+    }
+
+    let cancelled = false
+    setCalculationContributionLoading(true)
+    setCalculationContributionError(null)
+    getPortfolioPerformanceContribution(portfolioId, {
+      start_date: effectiveStartDate,
+      end_date: effectiveEndDate,
+      axis: resolvedCalculationGroupBy,
+      taxonomy_id:
+        resolvedCalculationGroupBy === 'taxonomy' ? defaultPlanningTaxonomy?.taxonomy_id ?? undefined : undefined,
+    })
+      .then((response) => {
+        if (!cancelled) {
+          setCalculationContributionWorkspace(response)
+        }
+      })
+      .catch((requestError: unknown) => {
+        if (!cancelled) {
+          setCalculationContributionWorkspace(null)
+          setCalculationContributionError(
+            requestError instanceof Error ? requestError.message : 'Failed to load realized risk attribution.',
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setCalculationContributionLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    portfolioId,
+    effectiveStartDate,
+    effectiveEndDate,
+    resolvedCalculationGroupBy,
+    defaultPlanningTaxonomy?.taxonomy_id,
+    calculationNeedsRiskAttribution,
+  ])
+
+  useEffect(() => {
     if (!portfolioId || !benchmarkAssetId) {
       setBenchmarkChart(null)
       setBenchmarkLoading(false)
@@ -1042,6 +1727,19 @@ function PerformancePage() {
       return rightMagnitude - leftMagnitude || left.group_label.localeCompare(right.group_label)
     })
   }, [calculationGroupsWorkspace])
+  const riskAttributionByGroupKey = useMemo(
+    () => buildRealizedRiskAttributionStats(calculationContributionWorkspace, workspace?.daily_series ?? []),
+    [calculationContributionWorkspace, workspace?.daily_series],
+  )
+  const riskAttributionRows = useMemo(() => {
+    return calculationRows.slice().sort((left, right) => {
+      const leftRisk = Math.abs(finiteNumber(riskAttributionByGroupKey.get(left.group_key)?.realizedRiskContribution) ?? 0)
+      const rightRisk = Math.abs(finiteNumber(riskAttributionByGroupKey.get(right.group_key)?.realizedRiskContribution) ?? 0)
+      const leftContribution = Math.abs(finiteNumber(left.period_contribution) ?? 0)
+      const rightContribution = Math.abs(finiteNumber(right.period_contribution) ?? 0)
+      return rightRisk - leftRisk || rightContribution - leftContribution || left.group_label.localeCompare(right.group_label)
+    })
+  }, [calculationRows, riskAttributionByGroupKey])
 
   const calculationSummary = calculationWorkspace?.summary ?? null
   const calculationGroupsSummary = calculationGroupsWorkspace?.summary ?? null
@@ -1063,144 +1761,326 @@ function PerformancePage() {
     resolvedCalculationGroupBy,
   )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} assets/cash` : ''}`
   const calculationStatusLabel =
-    (calculationLoading && calculationWorkspace) || (calculationGroupsLoading && calculationGroupsWorkspace)
+    (calculationLoading && calculationWorkspace) ||
+    (calculationGroupsLoading && calculationGroupsWorkspace) ||
+    (calculationNeedsRiskAttribution && calculationContributionLoading && calculationContributionWorkspace)
       ? `Updating ${calculationGroupLabel.toLowerCase()} calculation…`
-      : 'Building performance calculation…'
+      : calculationTableMode === 'risk_attribution'
+        ? 'Building realized risk attribution…'
+        : 'Building performance calculation…'
+  const riskContributionTotal = riskAttributionRows.reduce(
+    (total, row) => total + (finiteNumber(riskAttributionByGroupKey.get(row.group_key)?.realizedRiskContribution) ?? 0),
+    0,
+  )
+  const riskContributionResidual =
+    riskAttributionRows.length && !calculationContributionLoading && !calculationContributionError
+      ? 1 - riskContributionTotal
+      : null
+  const showRiskContributionResidual =
+    calculationTableMode === 'risk_attribution' &&
+    visibleCalculationColumns.includes('risk_contribution') &&
+    riskContributionResidual != null &&
+    Math.abs(riskContributionResidual) > 0.0005
+  const calculationTableRows = useMemo<CalculationTableRow[]>(() => {
+    if (calculationTableMode === 'risk_attribution') {
+      const rows: CalculationTableRow[] = riskAttributionRows.map((row) => ({
+        kind: 'group',
+        key: `risk:${row.group_key}`,
+        className: 'performance-calculation-group-row',
+        row,
+      }))
+      rows.push({
+        kind: 'synthetic',
+        key: 'portfolio-total',
+        className: 'performance-calculation-total-row',
+        label: 'Portfolio Total',
+        syntheticKind: 'portfolio_total',
+      })
+      if (showRiskContributionResidual) {
+        rows.push({
+          kind: 'synthetic',
+          key: 'risk-contribution-residual',
+          className: 'performance-calculation-residual-row',
+          label: 'Risk Contribution Residual',
+          syntheticKind: 'risk_contribution_residual',
+        })
+      }
+      return rows
+    }
+
+    const rows: CalculationTableRow[] = [
+      {
+        kind: 'synthetic',
+        key: 'initial-value',
+        className: 'performance-calculation-boundary-row',
+        label: 'Initial Value',
+        syntheticKind: 'initial',
+      },
+    ]
+    calculationRows.forEach((row) => {
+      rows.push({
+        kind: 'group',
+        key: `group:${row.group_key}`,
+        className: row.children?.length ? 'performance-calculation-group-row' : undefined,
+        row,
+      })
+      ;(row.children ?? []).forEach((child) => {
+        rows.push({
+          kind: 'child',
+          key: `child:${child.parent_group_key}:${child.item_kind}:${child.item_key}`,
+          className: 'performance-calculation-child-row',
+          row: child,
+        })
+      })
+    })
+    rows.push(
+      {
+        kind: 'synthetic',
+        key: 'deposits',
+        className: 'performance-calculation-external-row',
+        label: 'Deposits',
+        syntheticKind: 'deposits',
+      },
+      {
+        kind: 'synthetic',
+        key: 'withdrawals',
+        className: 'performance-calculation-external-row',
+        label: 'Withdrawals',
+        syntheticKind: 'withdrawals',
+      },
+      {
+        kind: 'synthetic',
+        key: 'portfolio-total',
+        className: 'performance-calculation-total-row',
+        label: 'Portfolio Total',
+        syntheticKind: 'portfolio_total',
+      },
+    )
+    if (showContributionResidual) {
+      rows.push({
+        kind: 'synthetic',
+        key: 'contribution-residual',
+        className: 'performance-calculation-residual-row',
+        label: 'Contribution Residual',
+        syntheticKind: 'contribution_residual',
+      })
+    }
+    rows.push({
+      kind: 'synthetic',
+      key: 'final-value',
+      className: 'performance-calculation-boundary-row performance-calculation-final-row',
+      label: 'Final Value',
+      syntheticKind: 'final',
+    })
+    return rows
+  }, [calculationRows, calculationTableMode, riskAttributionRows, showContributionResidual, showRiskContributionResidual])
+
+  function calculationTableRowLabel(row: CalculationTableRow) {
+    if (row.kind === 'synthetic') {
+      return row.label
+    }
+    return calculationDisplayLabel(row.row)
+  }
+
+  function calculationTableMetricValue(row: CalculationTableRow, column: CalculationColumnKey): number | null {
+    if (column === 'line') {
+      return null
+    }
+
+    if (row.kind === 'synthetic') {
+      switch (row.syntheticKind) {
+        case 'initial':
+          return column === 'start_value' ? finiteNumber(initialValue) : null
+        case 'final':
+          return column === 'end_value' ? finiteNumber(finalValue) : null
+        case 'deposits':
+          return column === 'pnl_flow' ? finiteNumber(calculationSummary?.deposits) : null
+        case 'withdrawals':
+          return column === 'pnl_flow' ? finiteNumber(expenseImpact(calculationSummary?.withdrawals)) : null
+        case 'contribution_residual':
+          return column === 'return_contribution' ? finiteNumber(contributionResidual) : null
+        case 'risk_contribution_residual':
+          return column === 'risk_contribution' ? finiteNumber(riskContributionResidual) : null
+        case 'portfolio_total':
+          switch (column) {
+            case 'pnl_flow':
+              return finiteNumber(portfolioPeriodPnl)
+            case 'start_value':
+              return finiteNumber(summary?.start_nav)
+            case 'end_value':
+              return finiteNumber(summary?.end_nav)
+            case 'avg_weight':
+            case 'end_weight':
+              return 1
+            case 'realized_gain':
+              return finiteNumber(portfolioRealizedGain)
+            case 'unrealized_gain':
+              return finiteNumber(portfolioUnrealizedGain)
+            case 'income':
+              return finiteNumber(portfolioIncome)
+            case 'fees':
+              return finiteNumber(portfolioFees)
+            case 'taxes':
+              return finiteNumber(portfolioTaxes)
+            case 'fx_pnl':
+              return finiteNumber(portfolioFxPnl)
+            case 'period_return':
+              return finiteNumber(summary?.cumulative_twr)
+            case 'return_contribution':
+              return finiteNumber(portfolioContribution)
+            case 'own_vol':
+            case 'contribution_vol':
+              return finiteNumber(summary?.annualized_volatility)
+            case 'own_sharpe':
+              return finiteNumber(summary?.sharpe_ratio)
+            case 'own_corr':
+            case 'beta':
+            case 'risk_contribution':
+              return 1
+            case 'observations':
+              return finiteNumber(summary?.risk_return_observation_count)
+            default:
+              return null
+          }
+        default:
+          return null
+      }
+    }
+
+    const source = row.row
+    const stats = row.kind === 'group' ? riskAttributionByGroupKey.get(row.row.group_key) ?? null : null
+    switch (column) {
+      case 'pnl_flow':
+        return finiteNumber(source.total_pnl)
+      case 'start_value':
+        return finiteNumber(source.initial_value)
+      case 'end_value':
+        return finiteNumber(source.final_value)
+      case 'avg_weight':
+        return finiteNumber(source.average_weight)
+      case 'end_weight':
+        return finiteNumber(source.ending_weight)
+      case 'realized_gain':
+        return finiteNumber(source.realized_capital_gains)
+      case 'unrealized_gain':
+        return finiteNumber(source.unrealized_pnl_change)
+      case 'income':
+        return finiteNumber(source.earnings)
+      case 'fees':
+        return finiteNumber(expenseImpact(source.fees))
+      case 'taxes':
+        return finiteNumber(expenseImpact(source.taxes))
+      case 'fx_pnl':
+        return finiteNumber(fxPnlAmount(source))
+      case 'period_return':
+        return finiteNumber(source.period_return)
+      case 'return_contribution':
+        return finiteNumber(source.period_contribution)
+      case 'own_vol':
+        return finiteNumber(stats?.annualizedVolatility)
+      case 'own_sharpe':
+        return finiteNumber(stats?.sharpe)
+      case 'own_corr':
+        return finiteNumber(stats?.correlationToPortfolio)
+      case 'beta':
+        return finiteNumber(stats?.betaToPortfolio)
+      case 'contribution_vol':
+        return finiteNumber(stats?.contributionVolatility)
+      case 'risk_contribution':
+        return finiteNumber(stats?.realizedRiskContribution)
+      case 'observations':
+        return finiteNumber(stats?.observationCount)
+      default:
+        return null
+    }
+  }
+
+  function calculationTableCellClassName(row: CalculationTableRow, column: CalculationColumnKey) {
+    if (column === 'line') {
+      return row.kind === 'child' ? 'performance-line-label performance-line-label-child' : 'performance-line-label'
+    }
+    const value = calculationTableMetricValue(row, column)
+    return `performance-cell-number${SIGNED_CALCULATION_COLUMN_KEYS.has(column) ? ` ${signedValueClass(value)}` : ''}`
+  }
+
+  function renderCalculationTableCellValue(row: CalculationTableRow, column: CalculationColumnKey): ReactNode {
+    if (column === 'line') {
+      return calculationTableRowLabel(row)
+    }
+    const value = calculationTableMetricValue(row, column)
+    switch (column) {
+      case 'pnl_flow':
+      case 'realized_gain':
+      case 'unrealized_gain':
+      case 'income':
+      case 'fees':
+      case 'taxes':
+      case 'fx_pnl':
+        return formatSignedCurrency(value, baseCurrency)
+      case 'start_value':
+      case 'end_value':
+        return formatCurrency(value, baseCurrency)
+      case 'avg_weight':
+      case 'end_weight':
+      case 'own_vol':
+      case 'contribution_vol':
+        return formatPercent(value)
+      case 'period_return':
+      case 'return_contribution':
+      case 'risk_contribution':
+        return signedPercent(value)
+      case 'own_sharpe':
+        return formatRatio(value)
+      case 'own_corr':
+      case 'beta':
+        return signedRatio(value)
+      case 'observations':
+        return value == null ? '—' : formatNumber(value, 0)
+      default:
+        return '—'
+    }
+  }
+
+  function renderCalculationTableRow(row: CalculationTableRow) {
+    return (
+      <tr key={row.key} className={row.className}>
+        {visibleCalculationColumns.map((column) => {
+          const className = calculationTableCellClassName(row, column)
+          return column === 'line' ? (
+            <th key={column} scope="row" className={className}>
+              {renderCalculationTableCellValue(row, column)}
+            </th>
+          ) : (
+            <td key={column} className={className}>
+              {renderCalculationTableCellValue(row, column)}
+            </td>
+          )
+        })}
+      </tr>
+    )
+  }
 
   function handleDownloadCalculationCsv() {
     if (!portfolioId || !calculationGroupsWorkspace) {
       return
     }
 
-    const header = [
-      'Line',
-      'P&L / Flow',
-      'Start Value',
-      'End Value',
-      'Avg Weight',
-      'End Weight',
-      'Realized Gain',
-      'Unrealized Gain',
-      'Income',
-      'Fees',
-      'Taxes',
-      'FX P&L',
-      'TWR',
-      'Contribution',
-    ]
+    const header = visibleCalculationColumns.map((column) => CALCULATION_COLUMN_LABELS[column])
     const rows: Array<Array<string | number | null>> = [
       header,
-      ['Initial Value', null, csvNumber(initialValue), ...Array(11).fill(null)],
-      ...calculationRows.flatMap((row) => {
-        const groupRow = [
-          row.children?.length ? `${row.group_label} Total` : row.group_label,
-          csvNumber(row.total_pnl),
-          csvNumber(row.initial_value),
-          csvNumber(row.final_value),
-          csvNumber(row.average_weight),
-          csvNumber(row.ending_weight),
-          csvNumber(row.realized_capital_gains),
-          csvNumber(row.unrealized_pnl_change),
-          csvNumber(row.earnings),
-          csvNumber(expenseImpact(row.fees)),
-          csvNumber(expenseImpact(row.taxes)),
-          csvNumber(fxPnlAmount(row)),
-          csvNumber(row.period_return),
-          csvNumber(row.period_contribution),
-        ]
-        const childRows = (row.children ?? []).map((child) => [
-          `  ${child.item_label}`,
-          csvNumber(child.total_pnl),
-          csvNumber(child.initial_value),
-          csvNumber(child.final_value),
-          csvNumber(child.average_weight),
-          csvNumber(child.ending_weight),
-          csvNumber(child.realized_capital_gains),
-          csvNumber(child.unrealized_pnl_change),
-          csvNumber(child.earnings),
-          csvNumber(expenseImpact(child.fees)),
-          csvNumber(expenseImpact(child.taxes)),
-          csvNumber(fxPnlAmount(child)),
-          csvNumber(child.period_return),
-          csvNumber(child.period_contribution),
-        ])
-        return [groupRow, ...childRows]
-      }),
-      ['Deposits', csvNumber(calculationSummary?.deposits), ...Array(12).fill(null)],
-      ['Withdrawals', csvNumber(expenseImpact(calculationSummary?.withdrawals)), ...Array(12).fill(null)],
-      [
-        'Portfolio Total',
-        csvNumber(portfolioPeriodPnl),
-        csvNumber(summary?.start_nav),
-        csvNumber(summary?.end_nav),
-        1,
-        1,
-        csvNumber(portfolioRealizedGain),
-        csvNumber(portfolioUnrealizedGain),
-        csvNumber(portfolioIncome),
-        csvNumber(portfolioFees),
-        csvNumber(portfolioTaxes),
-        csvNumber(portfolioFxPnl),
-        csvNumber(summary?.cumulative_twr),
-        csvNumber(portfolioContribution),
-      ],
+      ...calculationTableRows.map((row) =>
+        visibleCalculationColumns.map((column) =>
+          column === 'line' ? calculationTableRowLabel(row) : csvNumber(calculationTableMetricValue(row, column)),
+        ),
+      ),
     ]
-    if (showContributionResidual) {
-      rows.push(['Contribution Residual', ...Array(12).fill(null), csvNumber(contributionResidual)])
-    }
-    rows.push(['Final Value', null, null, csvNumber(finalValue), ...Array(10).fill(null)])
-
+    const viewSlug = activeCalculationTableView.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
     downloadCsv(
-      `performance-calculation-${portfolioId}-${effectiveStartDate}-${effectiveEndDate}-${resolvedCalculationGroupBy}.csv`,
+      `performance-calculation-${viewSlug || 'view'}-${portfolioId}-${effectiveStartDate}-${effectiveEndDate}-${effectiveCalculationGroupBy}.csv`,
       rows,
-    )
-  }
-
-  function renderCalculationDataRow(row: CalculationDisplayRow, rowKey: string, rowClassName?: string) {
-    const fxPnl = fxPnlAmount(row)
-    const feePnl = expenseImpact(row.fees)
-    const taxPnl = expenseImpact(row.taxes)
-    const isChild = isCalculationChildRow(row)
-    return (
-      <tr key={rowKey} className={rowClassName}>
-        <th
-          scope="row"
-          className={`performance-line-label${isChild ? ' performance-line-label-child' : ''}`}
-        >
-          {calculationDisplayLabel(row)}
-        </th>
-        <td className={`performance-cell-number ${signedValueClass(row.total_pnl)}`}>
-          {formatSignedCurrency(row.total_pnl, baseCurrency)}
-        </td>
-        <td className="performance-cell-number">{formatCurrency(row.initial_value, baseCurrency)}</td>
-        <td className="performance-cell-number">{formatCurrency(row.final_value, baseCurrency)}</td>
-        <td className="performance-cell-number">{formatPercent(row.average_weight)}</td>
-        <td className="performance-cell-number">{formatPercent(row.ending_weight)}</td>
-        <td className={`performance-cell-number ${signedValueClass(row.realized_capital_gains)}`}>
-          {formatSignedCurrency(row.realized_capital_gains, baseCurrency)}
-        </td>
-        <td className={`performance-cell-number ${signedValueClass(row.unrealized_pnl_change)}`}>
-          {formatSignedCurrency(row.unrealized_pnl_change, baseCurrency)}
-        </td>
-        <td className={`performance-cell-number ${signedValueClass(row.earnings)}`}>
-          {formatSignedCurrency(row.earnings, baseCurrency)}
-        </td>
-        <td className={`performance-cell-number ${signedValueClass(feePnl)}`}>
-          {formatSignedCurrency(feePnl, baseCurrency)}
-        </td>
-        <td className={`performance-cell-number ${signedValueClass(taxPnl)}`}>
-          {formatSignedCurrency(taxPnl, baseCurrency)}
-        </td>
-        <td className={`performance-cell-number ${signedValueClass(fxPnl)}`}>
-          {formatSignedCurrency(fxPnl, baseCurrency)}
-        </td>
-        <td className={`performance-cell-number ${signedValueClass(row.period_return)}`}>
-          {signedPercent(row.period_return)}
-        </td>
-        <td className={`performance-cell-number ${signedValueClass(row.period_contribution)}`}>
-          {signedPercent(row.period_contribution)}
-        </td>
-      </tr>
     )
   }
 
@@ -1277,6 +2157,28 @@ function PerformancePage() {
                     <div className="portfolio-detail-meta">{calculationMeta}</div>
                   </div>
                   <div className="transaction-filter-actions holdings-filter-actions performance-calculation-actions">
+                    <PortfolioTableViewControls
+                      views={calculationTableViews}
+                      activeViewId={activeCalculationTableViewId}
+                      edited={calculationTableViewEdited}
+                      canSave={!activeCalculationTableView.readonly}
+                      canDelete
+                      onSelect={handleSelectCalculationTableView}
+                      onSave={handleSaveCalculationTableView}
+                      onSaveAs={handleSaveCalculationTableViewAs}
+                      onDelete={handleDeleteCalculationTableView}
+                    />
+                    <button
+                      type="button"
+                      className={`holdings-toolbar-button ${calculationTableViewEdited ? 'holdings-toolbar-button-active' : ''}`}
+                      onClick={() => {
+                        setCalculationColumnDraft(calculationColumns)
+                        setCalculationModeDraft(calculationTableMode)
+                        setCalculationColumnsOpen(true)
+                      }}
+                    >
+                      Data &amp; Columns
+                    </button>
                     <button
                       type="button"
                       className="holdings-toolbar-button"
@@ -1289,7 +2191,11 @@ function PerformancePage() {
                       type="button"
                       className="holdings-toolbar-button"
                       onClick={handleDownloadCalculationCsv}
-                      disabled={!calculationGroupsWorkspace || calculationGroupsLoading}
+                      disabled={
+                        !calculationGroupsWorkspace ||
+                        calculationGroupsLoading ||
+                        (calculationNeedsRiskAttribution && calculationContributionLoading)
+                      }
                     >
                       Download
                     </button>
@@ -1300,126 +2206,39 @@ function PerformancePage() {
               {calculationGroupsError ? (
                 <div className="inline-notice inline-notice-error">{calculationGroupsError}</div>
               ) : null}
-              {calculationLoading || calculationGroupsLoading ? (
+              {calculationContributionError && calculationNeedsRiskAttribution ? (
+                <div className="inline-notice inline-notice-error">{calculationContributionError}</div>
+              ) : null}
+              {calculationLoading ||
+              calculationGroupsLoading ||
+              (calculationContributionLoading && calculationNeedsRiskAttribution) ? (
                 <CalculationStatus label={calculationStatusLabel} />
               ) : null}
               <div className="table-shell">
                 <table className="transactions-table performance-calculation-table">
                   <thead>
                     <tr>
-                      <th>Line</th>
-                      <th>P&L / Flow</th>
-                      <th>Start Value</th>
-                      <th>End Value</th>
-                      <th>Avg Weight</th>
-                      <th>End Weight</th>
-                      <th>Realized Gain</th>
-                      <th>Unrealized Gain</th>
-                      <th>Income</th>
-                      <th>Fees</th>
-                      <th>Taxes</th>
-                      <th>FX P&L</th>
-                      <th>TWR</th>
-                      <th>Contribution</th>
+                      {visibleCalculationColumns.map((column) => (
+                        <th key={column}>{CALCULATION_COLUMN_LABELS[column]}</th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
-                    <tr className="performance-calculation-boundary-row">
-                      <th scope="row">Initial Value</th>
-                      <td className="performance-cell-number">—</td>
-                      <td className="performance-cell-number">{formatCurrency(initialValue, baseCurrency)}</td>
-                      <EmptyNumberCells count={11} />
-                    </tr>
-                    {calculationRows.length ? (
-                      calculationRows.map((row) => {
-                        return (
-                          <Fragment key={row.group_key}>
-                            {renderCalculationDataRow(
-                              row,
-                              `group:${row.group_key}`,
-                              row.children?.length ? 'performance-calculation-group-row' : undefined,
-                            )}
-                            {(row.children ?? []).map((child) =>
-                              renderCalculationDataRow(
-                                child,
-                                `child:${child.parent_group_key}:${child.item_kind}:${child.item_key}`,
-                                'performance-calculation-child-row',
-                              ),
-                            )}
-                          </Fragment>
-                        )
-                      })
+                    {calculationTableRows.length ? (
+                      calculationTableRows.map((row) => renderCalculationTableRow(row))
                     ) : calculationGroupsLoading ? (
-                      <TableStatusRow colSpan={14} label={`Loading ${calculationGroupLabel.toLowerCase()} calculation…`} />
+                      <TableStatusRow
+                        colSpan={visibleCalculationColumns.length}
+                        label={`Loading ${calculationGroupLabel.toLowerCase()} calculation…`}
+                      />
                     ) : calculationGroupsError ? (
-                      <TableStatusRow colSpan={14} label={calculationGroupsError} tone="error" />
+                      <TableStatusRow colSpan={visibleCalculationColumns.length} label={calculationGroupsError} tone="error" />
                     ) : (
-                      <TableStatusRow colSpan={14} label={`No ${calculationGroupLabel.toLowerCase()} calculation rows available.`} />
+                      <TableStatusRow
+                        colSpan={visibleCalculationColumns.length}
+                        label={`No ${calculationGroupLabel.toLowerCase()} calculation rows available.`}
+                      />
                     )}
-                    <tr className="performance-calculation-external-row">
-                      <th scope="row">Deposits</th>
-                      <td className={`performance-cell-number ${signedValueClass(calculationSummary?.deposits)}`}>
-                        {formatSignedCurrency(calculationSummary?.deposits, baseCurrency)}
-                      </td>
-                      <EmptyNumberCells count={12} />
-                    </tr>
-                    <tr className="performance-calculation-external-row">
-                      <th scope="row">Withdrawals</th>
-                      <td className={`performance-cell-number ${signedValueClass(expenseImpact(calculationSummary?.withdrawals))}`}>
-                        {formatSignedCurrency(expenseImpact(calculationSummary?.withdrawals), baseCurrency)}
-                      </td>
-                      <EmptyNumberCells count={12} />
-                    </tr>
-                    <tr className="performance-calculation-total-row">
-                      <th scope="row">Portfolio Total</th>
-                      <td className={`performance-cell-number ${signedValueClass(portfolioPeriodPnl)}`}>
-                        {formatSignedCurrency(portfolioPeriodPnl, baseCurrency)}
-                      </td>
-                      <td className="performance-cell-number">{formatCurrency(summary.start_nav, baseCurrency)}</td>
-                      <td className="performance-cell-number">{formatCurrency(summary.end_nav, baseCurrency)}</td>
-                      <td className="performance-cell-number">{formatPercent(1)}</td>
-                      <td className="performance-cell-number">{formatPercent(1)}</td>
-                      <td className={`performance-cell-number ${signedValueClass(portfolioRealizedGain)}`}>
-                        {formatSignedCurrency(portfolioRealizedGain, baseCurrency)}
-                      </td>
-                      <td className={`performance-cell-number ${signedValueClass(portfolioUnrealizedGain)}`}>
-                        {formatSignedCurrency(portfolioUnrealizedGain, baseCurrency)}
-                      </td>
-                      <td className={`performance-cell-number ${signedValueClass(portfolioIncome)}`}>
-                        {formatSignedCurrency(portfolioIncome, baseCurrency)}
-                      </td>
-                      <td className={`performance-cell-number ${signedValueClass(portfolioFees)}`}>
-                        {formatSignedCurrency(portfolioFees, baseCurrency)}
-                      </td>
-                      <td className={`performance-cell-number ${signedValueClass(portfolioTaxes)}`}>
-                        {formatSignedCurrency(portfolioTaxes, baseCurrency)}
-                      </td>
-                      <td className={`performance-cell-number ${signedValueClass(portfolioFxPnl)}`}>
-                        {formatSignedCurrency(portfolioFxPnl, baseCurrency)}
-                      </td>
-                      <td className={`performance-cell-number ${signedValueClass(summary.cumulative_twr)}`}>
-                        {signedPercent(summary.cumulative_twr)}
-                      </td>
-                      <td className={`performance-cell-number ${signedValueClass(portfolioContribution)}`}>
-                        {signedPercent(portfolioContribution)}
-                      </td>
-                    </tr>
-                    {showContributionResidual ? (
-                      <tr className="performance-calculation-residual-row">
-                        <th scope="row">Contribution Residual</th>
-                        <EmptyNumberCells count={12} />
-                        <td className={`performance-cell-number ${signedValueClass(contributionResidual)}`}>
-                          {signedPercent(contributionResidual)}
-                        </td>
-                      </tr>
-                    ) : null}
-                    <tr className="performance-calculation-boundary-row performance-calculation-final-row">
-                      <th scope="row">Final Value</th>
-                      <td className="performance-cell-number">—</td>
-                      <td className="performance-cell-number">—</td>
-                      <td className="performance-cell-number">{formatCurrency(finalValue, baseCurrency)}</td>
-                      <EmptyNumberCells count={10} />
-                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -1427,6 +2246,124 @@ function PerformancePage() {
           </div>
         ) : null}
       </section>
+      {calculationColumnsOpen ? (
+        <div className="holdings-modal-backdrop" onClick={() => setCalculationColumnsOpen(false)}>
+          <div className="holdings-modal holdings-columns-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="holdings-modal-header">
+              <div>
+                <div className="panel-title">Data &amp; Columns</div>
+                <div className="section-heading">Manage Calculation Table View</div>
+              </div>
+              <button type="button" onClick={() => setCalculationColumnsOpen(false)}>
+                Close
+              </button>
+            </div>
+
+            <div className="performance-calculation-mode-panel">
+              <button
+                type="button"
+                className={`holdings-groupby-option ${
+                  calculationModeDraft === 'risk_attribution' ? 'holdings-groupby-option-active' : ''
+                }`}
+                onClick={() => setCalculationModeDraft('risk_attribution')}
+              >
+                <span>Group Attribution Rows</span>
+                <small>Show top-level group lines with portfolio-relative risk attribution metrics.</small>
+              </button>
+              <button
+                type="button"
+                className={`holdings-groupby-option ${
+                  calculationModeDraft === 'calculation' ? 'holdings-groupby-option-active' : ''
+                }`}
+                onClick={() => setCalculationModeDraft('calculation')}
+              >
+                <span>Calculation Ledger Rows</span>
+                <small>Show initial/final value, flows, group rows, and available child rows.</small>
+              </button>
+            </div>
+
+            <div className="holdings-modal-search">
+              <input
+                className="holdings-modal-search-input"
+                placeholder="Search by field name or code"
+                value={calculationColumnSearch}
+                onChange={(event) => setCalculationColumnSearch(event.target.value)}
+              />
+            </div>
+
+            <div className="holdings-modal-grid">
+              <div className="holdings-modal-categories">
+                {CALCULATION_COLUMN_GROUPS.map((group) => (
+                  <button
+                    type="button"
+                    className={
+                      group.label === calculationColumnCategory
+                        ? 'holdings-category-item holdings-category-item-active'
+                        : 'holdings-category-item'
+                    }
+                    key={group.label}
+                    onClick={() => setCalculationColumnCategory(group.label)}
+                  >
+                    {group.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="holdings-modal-fields">
+                {filteredCalculationColumns.length ? (
+                  filteredCalculationColumns.map(({ column, groupLabel }) => {
+                    const locked = column === LOCKED_CALCULATION_COLUMN
+                    return (
+                      <label className="holdings-field-item" key={`${groupLabel}:${column}`}>
+                        <input
+                          type="checkbox"
+                          checked={calculationColumnDraft.includes(column)}
+                          disabled={locked}
+                          onChange={(event) => handleCalculationColumnDraftToggle(column, event.target.checked)}
+                        />
+                        <div>
+                          <div className="holdings-field-label">{CALCULATION_COLUMN_LABELS[column]}</div>
+                          <div className="holdings-field-meta">
+                            {column}
+                            {calculationColumnSearch.trim() ? ` · ${groupLabel}` : ''}
+                            {locked ? ' · required' : ''}
+                          </div>
+                        </div>
+                      </label>
+                    )
+                  })
+                ) : (
+                  <div className="holdings-field-empty">No fields matched the current search.</div>
+                )}
+              </div>
+            </div>
+
+            <div className="holdings-modal-actions holdings-modal-actions-sticky">
+              <button
+                type="button"
+                onClick={() => {
+                  setCalculationColumnDraft(calculationColumns)
+                  setCalculationModeDraft(calculationTableMode)
+                  setCalculationColumnsOpen(false)
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button-primary"
+                onClick={() => {
+                  setCalculationColumns(normalizeCalculationColumns(calculationColumnDraft))
+                  setCalculationTableMode(calculationModeDraft)
+                  setCalculationColumnsOpen(false)
+                }}
+              >
+                Update
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {calculationGroupByOpen ? (
         <div className="holdings-modal-backdrop" onClick={() => setCalculationGroupByOpen(false)}>
           <div className="holdings-modal holdings-compact-modal" onClick={(event) => event.stopPropagation()}>
@@ -1444,7 +2381,7 @@ function PerformancePage() {
                 <button
                   type="button"
                   className={`holdings-groupby-option ${
-                    option.value === resolvedCalculationGroupBy ? 'holdings-groupby-option-active' : ''
+                    option.value === effectiveCalculationGroupBy ? 'holdings-groupby-option-active' : ''
                   }`}
                   key={option.value}
                   onClick={() => handleCalculationGroupByChange(option.value)}

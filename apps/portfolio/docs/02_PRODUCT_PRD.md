@@ -885,7 +885,7 @@ MVP 先支持**全球公开市场的标准化资产**：
 - 相对 benchmark 如何？
 - 收益与回撤由谁驱动？
 
-页面默认由两块组成：区间 `Return & Risk Metrics`、合并 calculation / contribution / boundary holdings 的 `Calculation` 审计表。Performance 不维护独立 view selector；区间由 start / end date 直接驱动；benchmark compare 与 Overview 的图表 compare 分开选择。
+页面默认由两块组成：区间 `Return & Risk Metrics`、合并 calculation / contribution / realized risk attribution 的 `Calculation` 审计表。Calculation 使用和 Holdings 一致的表格 view selector；系统默认视图命名为 `Default`，展示区间平均权重、区间收益、收益贡献和 realized risk attribution。区间由 start / end date 直接驱动；benchmark compare 与 Overview 的图表 compare 分开选择。
 
 ### 12.6 Risk
 
@@ -893,7 +893,8 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 - 当前有哪些风险超标？
 - 当前漂移、集中度和 risk budget gap 是否过大？
-- 过去这段时间波动、drawdown 和 worst days 是怎么走出来的？
+- 过去这段时间滚动波动率和滚动 Sharpe 是怎么走出来的？
+- 当前 as-of date 下，不同资产和 taxonomy sleeve 的相关性与风险贡献是什么？
 - 当前更应该对比 `SAA` 还是某条 `TAA`？
 - 当前命中的 alert breaches 是什么？
 

@@ -95,6 +95,7 @@ npm --prefix apps/watchlist/frontend run build
 ## 当前行为边界
 
 - Watchlist 主表当前按页加载，默认每页 `50` 行；页面上的 `Download` 会导出当前筛选/排序结果的全量行，而不是只导出当前页
+- Watchlist 顶部 view / Data & Columns / Group By / Filter / Download / row action controls 保持本 app 自己的实现和 class，但视觉 contract 与 Portfolio toolbar controls 一致，不引入跨 app 组件依赖
 - Watchlist filter 菜单会基于当前 watchlist 的全量行构建选项，不再只采样前几页；当前页执行 add / delete / move 后，filter 选项也会随之刷新
 - Watchlist 的 `move` / `copy` 只允许操作 source watchlist 里已经存在的资产，不再把这两个接口当成隐式 `add`
 - 自定义 view 会把展示名称映射成 path-safe 的 slug id；复制 watchlist 时也会清洗 legacy custom view id，避免把不可路由的旧 id 继续扩散

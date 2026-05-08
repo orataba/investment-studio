@@ -438,6 +438,12 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert "weight_schedule" not in run_payload["detail"]
     assert len(run_payload["detail"]["member_targets"]) == 2
     assert len(run_payload["detail"]["leaf_targets"]) == 2
+    member_targets_by_label = {item["label"]: item for item in run_payload["detail"]["member_targets"]}
+    assert member_targets_by_label["Defensive Equity"]["configured_risk_share"] == pytest.approx(0.45)
+    assert member_targets_by_label["Hong Kong Beta"]["configured_risk_share"] == pytest.approx(0.55)
+    leaf_targets_by_member = {item["member_id"]: item for item in run_payload["detail"]["leaf_targets"]}
+    assert leaf_targets_by_member["equity-us-abbv"]["configured_risk_share"] is None
+    assert leaf_targets_by_member["fund-hk-2800"]["configured_risk_share"] == pytest.approx(1.0)
     assert len(run_payload["detail"]["target_assumptions"]) >= 1
     assert len(run_payload["detail"]["target_rows"]) == 2
     assert any(item["label"] == "Defensive Equity" for item in run_payload["detail"]["member_targets"])
@@ -694,3 +700,7 @@ def test_research_run_allows_sparse_current_covariance_window(client):
     assert solve_event["risk_contribution_mode"] in {"signed", "abs"}
     assert solve_event["covariance_observations"] >= 2
     assert len(run_payload["detail"]["target_rows"]) >= 1
+    leaf_targets_by_member = {item["member_id"]: item for item in run_payload["detail"]["leaf_targets"]}
+    assert leaf_targets_by_member["equity-us-abbv"]["configured_risk_share"] is None
+    assert leaf_targets_by_member["fund-hk-2800"]["configured_risk_share"] == pytest.approx(1.0)
+    assert leaf_targets_by_member["fund-us-agg"]["configured_risk_share"] is None

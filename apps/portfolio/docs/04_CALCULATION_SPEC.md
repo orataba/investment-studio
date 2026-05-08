@@ -1,6 +1,6 @@
 # PMS 正式版计算口径规格
 
-更新时间：`2026-05-04`
+更新时间：`2026-05-08`
 关联文档：
 
 - [`01_PMS_REFERENCE_BASELINE.md`](./01_PMS_REFERENCE_BASELINE.md)
@@ -483,10 +483,11 @@ Overview 展示 `Monthly Return Matrix`，按 year x month 展示月度 TWR，YT
 Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要结构为：
 
 - `Return & Risk Metrics`：组合级 TWR / annualized TWR、IRR / MWR、risk、drawdown。return / risk 类指标可选择 benchmark price series 做 period return、annualized return、volatility、drawdown 的轻量对比；
-- `Calculation`：合并 initial value、group rows、external flow、portfolio total 与 final value。group rows 可按 asset / asset type / currency / account / default planning taxonomy 聚合；asset type 与 currency 是底层 contribution axis，不允许仅在前端把 asset rows 相加；`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
+- `Calculation`：合并 realized risk attribution、initial value、group rows、external flow、portfolio total 与 final value。表格有和 Holdings 一致的 view selector；系统默认视图命名为 `Default`，展示区间平均权重、期末权重、区间收益、收益贡献、资产自身风险和风险贡献。Group By 默认是 `None`，语义是直接展示 instrument / asset lines，不做额外分组；也可按 asset type / currency / account / default planning taxonomy 聚合。asset type 与 currency 是底层 contribution axis，不允许仅在前端把 asset rows 相加；`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
 - Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。期初已有持仓按 start date 的 beginning market value 重置为期间成本，区间内买入按成交 gross amount 建立期间成本，期末未卖出的持仓用 end date market value 计算 `Unrealized Gain`。
 - `Capital Gain = Realized Gain + Unrealized Gain`；`Realized Gain` 是期间卖出部分相对于期间成本的资本利得，`Unrealized Gain` 是期末仍持有部分相对于期间成本的资本利得。FIFO / moving average 只影响 Holdings / book P&L，不改变 Performance Calculation 的期间资本利得拆分。
 - `Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes、FX P&L 分列。P&L 与 book attribution 不和 benchmark 对比。
+- Performance 中的区间风险贡献是 realized attribution，不另设 Risk tab。对每个 group，`Own Vol / Own Sharpe / Own Corr / Beta` 使用 group daily return 与 portfolio daily return；`Contribution Vol` 使用 group daily contribution 序列；`Risk Contribution` 使用 `Cov(Contribution_g, R_p) / Var(R_p)`。这些指标服务区间复盘，不使用 Risk 页的 point-in-time covariance lookback。
 
 Overview 的 chart compare 与 Performance 的 benchmark compare 是独立选择状态，因为用户可能对图表和区间绩效选择不同对比对象。
 
@@ -985,41 +986,57 @@ $$
 
 ### 10.3 Marginal / Component Risk Contribution
 
-### Marginal contribution to risk
+Risk 页和 Research solver 使用同一套 covariance model id 与 contribution mode：
+
+- `ewma_vol_shrinkage_corr_covariance`
+- `ewma_covariance`
+- `sample_covariance`
+- contribution mode: `signed` / `abs`
+
+### Marginal contribution to variance
 
 $$
-MCTR_i = \frac{(\Sigma w)_i}{\sigma_p}
+MCV_i = (\Sigma w)_i
 $$
 
-### Signed component contribution
+### Signed component contribution to variance
 
 $$
-CTR_i^{signed} = w_i \times MCTR_i
+VCTR_i^{signed} = w_i \times MCV_i
 $$
 
-### Absolute component contribution
+### Absolute component contribution to variance
 
 $$
-CTR_i^{abs} = |CTR_i^{signed}|
+VCTR_i^{abs} = |VCTR_i^{signed}|
 $$
 
 ### 10.4 Realized risk share
 
-正式版默认把 **目标风险份额对比口径** 定义为 `absolute risk share`：
+正式版同时保留 `signed` 与 `abs` 两种风险份额口径，并在 UI 和 Research 中使用同一组选项。Research solver 的 primary mode 是 `signed`；当 signed shares 因对冲或负相关导致目标预算不可稳定匹配时，可以切换或 fallback 到 `abs`。
+
+Signed share:
 
 $$
-RiskShare_i = \frac{CTR_i^{abs}}{\sum_j CTR_j^{abs}}
+RiskShare_i^{signed} = \frac{VCTR_i^{signed}}{w^\top \Sigma w}
 $$
 
-原因：
+Absolute share:
+
+$$
+RiskShare_i^{abs} = \frac{VCTR_i^{abs}}{\sum_j VCTR_j^{abs}}
+$$
+
+解释：
 
 - 对冲或负相关位置可能产生负的 signed contribution；
-- 用 absolute share 更适合做 PM 视角的 target risk share comparison；
-- advanced analytics 仍可单独暴露 `signed contribution`。
+- `signed` 更忠实地描述边际组合风险，适合 research solver 的 primary diagnostic；
+- `abs` 更适合做 PM 视角的 target risk share comparison fallback；
+- 页面展示必须标明当前 contribution mode，不能把两种口径混合比较。
 
 ### 10.5 Risk budget gap
 
-若 `TargetRiskShare_i` 为目标风险预算占比：
+若 `TargetRiskShare_i` 为目标风险预算占比，`RiskShare_i` 必须来自页面或 solver 当前选定的 contribution mode：
 
 $$
 RiskBudgetGap_i = RiskShare_i - TargetRiskShare_i

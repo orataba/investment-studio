@@ -791,8 +791,8 @@ export default function ResearchPage() {
                           <th>Current Weight</th>
                           <th>Target Weight</th>
                           <th>Gap</th>
-                          <th>Current RC</th>
-                          <th>Risk Target</th>
+                          <th>Local RC</th>
+                          <th>Local Risk Target</th>
                           <th>Target Dim</th>
                           <th>Source</th>
                         </tr>

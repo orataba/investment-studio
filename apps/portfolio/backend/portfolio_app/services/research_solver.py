@@ -46,7 +46,6 @@ RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
 RESEARCH_FALLBACK_RISK_CONTRIBUTION_MODE = "abs"
 RESEARCH_FALLBACK_SHARE_GAP_THRESHOLD = 0.05
 RESEARCH_FALLBACK_NEGATIVE_SHARE_TOLERANCE = 0.0
-ABS_RISK_CONTRIBUTION_EPS = 1e-12
 
 
 @dataclass(frozen=True)
@@ -624,7 +623,7 @@ def _risk_contribution_shares(
     if mode == "signed":
         contributions = signed
     elif mode == "abs":
-        contributions = np.sqrt(np.square(signed) + ABS_RISK_CONTRIBUTION_EPS)
+        contributions = np.abs(signed)
     else:
         raise ValueError(f"Unsupported risk contribution mode: {contribution_mode}.")
     contribution_total = float(contributions.sum())
@@ -1696,24 +1695,11 @@ def _solve_current_scope(
         )
         child_result = child_results_by_key.get(member_key)
         if child_result is not None:
-            parent_risk_target = _safe_float(resolved_target.get("target_risk_share")) if resolved_target else None
             for child_leaf in child_result.leaf_target_rows:
                 child_current_weight = _safe_float(child_leaf.get("current_weight"))
                 child_target_weight = _safe_float(child_leaf.get("target_weight"))
                 child_current_risk_share = _safe_float(child_leaf.get("current_risk_share"))
                 child_risk_target = _safe_float(child_leaf.get("configured_risk_share"))
-                if child_risk_target is None:
-                    child_risk_target = child_target_weight
-                leaf_current_risk_share = (
-                    None
-                    if current_risk_share is None or child_current_risk_share is None
-                    else float(current_risk_share * child_current_risk_share)
-                )
-                leaf_risk_target = (
-                    float(parent_risk_target * child_risk_target)
-                    if parent_risk_target is not None and child_risk_target is not None
-                    else child_risk_target
-                )
                 target_weight = (
                     None
                     if implementation_weight is None or child_target_weight is None
@@ -1735,7 +1721,7 @@ def _solve_current_scope(
                         "selected_target_dimension": child_leaf.get("selected_target_dimension"),
                         "source_target_set_type": child_leaf.get("source_target_set_type"),
                         "current_weight": current_leaf_weight,
-                        "current_risk_share": leaf_current_risk_share,
+                        "current_risk_share": child_current_risk_share,
                         "target_weight": target_weight,
                         "weight_change": (
                             float(target_weight - current_leaf_weight)
@@ -1743,7 +1729,7 @@ def _solve_current_scope(
                             else None
                         ),
                         "configured_weight": child_leaf.get("configured_weight"),
-                        "configured_risk_share": leaf_risk_target,
+                        "configured_risk_share": child_risk_target,
                         "selected_target_value": child_leaf.get("selected_target_value"),
                     }
                 )

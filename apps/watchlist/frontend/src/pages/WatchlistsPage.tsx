@@ -2149,7 +2149,7 @@ export default function WatchlistsPage() {
             {!activeWatchlistIsAllCoverage ? (
               <button
                 type="button"
-                className="button-primary watchlists-toolbar-button"
+                className="watchlists-toolbar-button"
                 onClick={() => {
                   setInstrumentSearch('')
                   setSharedInstrumentResults([])

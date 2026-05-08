@@ -56,6 +56,7 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 下面这些已经在代码里成立：
 
 - watchlist 主表按页加载，默认每页 `50` 行；页面支持翻页
+- watchlist 顶部操作控件与 Portfolio toolbar 视觉一致，但仍使用 watchlist 本 app 的局部样式和页面实现，不建立跨 app 组件依赖
 - watchlist `Download` 会导出当前筛选/排序结果的全量行，而不是只导当前页
 - watchlist filter 选项按当前名单的全量结果计算，而不是固定采样前几页
 - 当前页 add / delete / move 后，filter 选项会重新拉取

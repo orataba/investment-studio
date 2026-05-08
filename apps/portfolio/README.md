@@ -9,7 +9,7 @@
 - 持仓、lots、ledger、performance 由内核服务按需推导
 - `Holdings / Accounts / Transactions / Performance` 已有真实 API 与页面支撑
   `Transactions` 当前支持 create / update / delete 原始事实；内部转仓仍按成对事实管理
-- `Risk` 已有真实工作台，分为 `Current` 与 `Realized` 两部分，分别回答当前风险结构与过去区间的风险路径
+- `Risk` 已有真实工作台，包含 rolling annualized volatility / Sharpe、相关性矩阵、Current Drift 和 point-in-time Risk Contribution；风险窗口、协方差方法和风险贡献模式与 Research 使用同一组口径选项
 - `Taxonomies` 已有真实配置工作台，支持层级 sleeve tree、assignment、`TargetSet`、`default planning taxonomy` 与 `cash_bucket` 维护
 - `Research` 已有真实工作台，支持基于 planning taxonomy / TargetSet / 当前持仓的 target-weight solve、run history、target weights、member targets、风险预算求解诊断和调仓缺口
 - `Review` 已有真实 period review pack 页面
@@ -94,14 +94,14 @@ npm --prefix apps/portfolio/frontend run build
 
 ## 计算层阶段性状态
 
-截至 `2026-05-07`：
+截至 `2026-05-08`：
 
 - 组合级 TWR 使用日频 true time-weighted 口径：外部流入进分母，外部流出加回分子，区间结果几何复合。
 - FIFO / moving average 只影响 book cost、book realized gain、book unrealized P&L 和 lot 展示；不影响 fair-value based TWR。
-- Performance `Calculation` 使用 `Initial Value + Net External Flow + Period P&L = Final Value` 的期间桥接。资本利得拆分使用期初市值重置后的期间成本，而不是账户 book cost。Calculation group rows 支持 asset / asset type / currency / account / taxonomy，TWR 与 contribution 在后端按对应轴计算，表格可导出 CSV。
+- Performance `Calculation` 使用 `Initial Value + Net External Flow + Period P&L = Final Value` 的期间桥接。资本利得拆分使用期初市值重置后的期间成本，而不是账户 book cost。Calculation 默认视图命名为 `Default`，展示 realized risk attribution；用户可像 Holdings 一样保存自定义表格视图。Group By 默认是 `None`，内部映射到底层 instrument lines；也支持 asset type / currency / account / taxonomy，TWR 与 contribution 在后端按对应轴计算，表格可导出 CSV。
 - `moving_average` 在底层按 `account + asset` 维护一个 rolling average cost bucket；API 为 UI 和转仓审计输出一个 synthetic position lot。
 - `Overview`、`Performance`、`Review` 的 TWR index、daily series 和 drawdown 均按查询窗口重新复合；不得复用 inception-to-date 的累计 TWR 作为区间曲线。
-- `Risk` 的 realized volatility、rolling volatility、Sharpe / Sortino 输入来自 `daily_twr` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。
+- `Risk` 的 rolling volatility / Sharpe 输入来自 `daily_twr` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。相关性矩阵和风险贡献使用 as-of date + lookback covariance 的单点风险口径；区间风险贡献归入 Performance `Calculation` 的 realized risk attribution columns。
 - `IRR / MWROR` 是资金效率补充指标；若数学上不可解，不应降低 TWR 口径的 coverage。
 - 绩效方法参考 Portfolio Performance 的账本模型，并吸收 GIPS 的 TWR 优先、外部现金流政策、估值频率和方法一致性原则；本项目不声称 GIPS compliance，详见 [docs/06_GIPS_ALIGNMENT.md](./docs/06_GIPS_ALIGNMENT.md)。
 

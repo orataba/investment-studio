@@ -840,7 +840,8 @@ def _build_target_assumptions(
         covariance_model = str((solve_event or {}).get("covariance_model") or "research covariance").replace("_", " ")
         contribution_mode = str((solve_event or {}).get("risk_contribution_mode") or "risk").upper()
         assumptions.append(
-            f"Risk-budget sleeves solve current implementation weights from the trailing local {covariance_model} window using {contribution_mode} risk contributions."
+            f"Risk-budget sleeves solve current implementation weights from the trailing local {covariance_model} window using {contribution_mode} risk contributions; "
+            "leaf implementation weights can roll up through the sleeve tree, but risk targets remain local and are not multiplied by ancestor risk targets."
         )
     if str(settings_payload.get("capital_mode") or "unit_notional") == "target_volatility":
         assumptions.append("After recursive sleeve targets are resolved, Research estimates risky-sleeve volatility, scales gross exposure toward target volatility, and sends the residual into cash.")

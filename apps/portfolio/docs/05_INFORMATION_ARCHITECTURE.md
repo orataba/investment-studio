@@ -310,7 +310,7 @@
 **Core blocks**
 
 - `Return & Risk Metrics` for the selected custom period: TWR, annualized TWR, IRR / MWR, volatility, downside volatility, Sharpe / Sortino, and drawdown. These rows can use an independently selected benchmark.
-- `Calculation`: one audit table combining period boundary values, group-level contribution, return breakdown, non-performance external flows, portfolio total, and final value. Rows can group by asset, asset type, currency, account, or the default planning taxonomy. Group By and Download controls sit on the left side of the Calculation header, matching Holdings toolbar behavior. The table follows `Initial Value + Deposits - Withdrawals + Period P&L = Final Value`; capital gain uses period-reset fair-value basis, not account book cost. Accounting attribution rows do not compare to a benchmark.
+- `Calculation`: one configurable audit table combining realized risk attribution, period boundary values, group-level contribution, return breakdown, non-performance external flows, portfolio total, and final value. It uses the same view-selector pattern as Holdings; the system default view is named `Default` and shows realized risk attribution columns. `Group By: None` means direct instrument / asset lines, while asset type, currency, account, and default planning taxonomy aggregate through backend calculation/contribution axes. Group By and Download controls match Holdings toolbar behavior. The ledger view follows `Initial Value + Deposits - Withdrawals + Period P&L = Final Value`; capital gain uses period-reset fair-value basis, not account book cost. Accounting attribution rows do not compare to a benchmark.
 - Benchmark-relative comparison / contribution where a benchmark is available.
 
 `NAV Trend` and `Monthly Return Matrix` remain `Overview` blocks. `Performance` should not duplicate them. Overview chart compare and Performance benchmark compare are independent controls.
@@ -353,18 +353,11 @@
 
 **Core blocks**
 
-- `Current`
-- exposure
-- target weight drift / `target_weight_gap`
-- optional intended / unintended drift
-- target risk budget gap / `target_risk_budget_gap`
-- concentration
-- limits & alerts
-- `Realized`
-- realized risk path
-- drawdown / worst-day / volatility summary
-- recent monitoring tape
-- scenario results
+- Rolling risk path: rolling annualized volatility and rolling Sharpe, with optional benchmark compare.
+- Correlation Matrix: all-asset matrix and selected planning-taxonomy scope matrix, rendered as tables and controlled by an as-of timeline.
+- Current Drift: SAA/TAA weight target gap and SAA/TAA risk target gap against the default planning taxonomy.
+- Risk Contribution: point-in-time asset risk contribution using selected as-of date, covariance lookback, covariance model, and contribution mode.
+- Limits & alerts and scenarios remain later risk-management blocks; they should not be mixed into the calculation table.
 
 **Comparator**
 
@@ -384,7 +377,8 @@
 - target resolution mode（按 `weight` / `risk_budget` 分维度解析）
 - comparison denominator label（`portfolio_total_risk` 或 sleeve drilldown 时的 `parent_local_risk`）
 - `as_of_date`
-- realized-risk window
+- realized-risk window / covariance lookback
+- covariance model and contribution mode, using the same option ids as Research
 
 **Rule management**
 

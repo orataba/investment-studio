@@ -1664,7 +1664,7 @@ export function getPortfolioPerformanceCalculationGroups(
 
 export function getPortfolioPerformanceContribution(
   portfolioId: string,
-  filters: PortfolioPerformanceFilters & { axis?: PortfolioContributionAxis } = {},
+  filters: PortfolioPerformanceFilters & { axis?: PortfolioContributionAxis; taxonomy_id?: string; group_key?: string } = {},
 ) {
   const query = buildQuery(filters)
   return fetchJson<PortfolioContributionReportResponse>(
