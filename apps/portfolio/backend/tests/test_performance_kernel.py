@@ -6846,6 +6846,10 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(cash_group["final_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(cash_group["cash_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(cash_group["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    instrument_cash_child = next(item for item in cash_group["children"] if item["item_kind"] == "cash")
+    assert instrument_cash_child["item_key"] == "cash:cash-hkd-main:HKD"
+    assert instrument_cash_child["item_label"] == "Main HKD Cash (HKD)"
+    assert isclose(instrument_cash_child["final_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
 
     asset_type_groups_response = client.get("/api/portfolios/cash-fx-test/performance/calculation/groups?axis=asset_type")
     assert asset_type_groups_response.status_code == 200
@@ -6853,7 +6857,8 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
         item for item in asset_type_groups_response.json()["groups"] if item["group_key"] == "cash"
     )
     cash_child = next(item for item in asset_type_cash_group["children"] if item["item_kind"] == "cash")
-    assert cash_child["item_label"] == "Cash"
+    assert cash_child["item_key"] == "cash:cash-hkd-main:HKD"
+    assert cash_child["item_label"] == "Main HKD Cash (HKD)"
     assert isclose(cash_child["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(cash_child["final_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(cash_child["cash_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)

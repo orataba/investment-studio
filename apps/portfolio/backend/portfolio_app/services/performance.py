@@ -70,7 +70,7 @@ def _normalized_currency(value: object, *, fallback: str = "USD") -> str:
 
 _CALCULATION_DETAIL_SUFFIX = "_detail"
 _CALCULATION_DETAIL_GROUP_SEPARATOR = "\x1f"
-_CALCULATION_DETAIL_PARENT_AXES = {"account", "asset_type", "currency", "taxonomy"}
+_CALCULATION_DETAIL_PARENT_AXES = {"instrument", "account", "asset_type", "currency", "taxonomy"}
 
 
 def _calculation_detail_axis(axis: str) -> str:
@@ -103,12 +103,23 @@ def _decode_calculation_detail_group_key(value: object) -> tuple[str, str, str] 
     return (parent_group_key, item_kind, item_key)
 
 
-def _cash_detail_item_key(*, parent_axis: str, account_id: str, currency: str) -> str:
+def _cash_detail_item_key(*, account_id: str, currency: str) -> str:
+    return f"cash:{account_id or 'unassigned'}:{currency or 'unassigned'}"
+
+
+def _cash_detail_item_label(
+    *,
+    parent_axis: str,
+    account_id: str,
+    currency: str,
+    account_name_map: dict[str, str],
+) -> str:
     if parent_axis == "account":
-        return f"cash:{account_id or 'unassigned'}"
-    if parent_axis == "currency":
-        return f"cash:{currency or 'unassigned'}"
-    return "cash"
+        return f"Cash ({currency})" if currency else "Cash"
+    account_label = account_name_map.get(account_id, account_id)
+    if account_label and currency:
+        return f"{account_label} ({currency})"
+    return account_label or "Cash"
 
 
 def _transaction_sort_key(transaction: dict[str, object]) -> tuple[str, str, str, str, str]:
@@ -1255,7 +1266,7 @@ def _period_unrealized_capital_gains_by_group(
                 coverage_complete = False
                 continue
             stale_fx_flag = stale_fx_flag or _is_stale
-            if detail_parent_axis in {"account", "asset_type", "currency"}:
+            if detail_parent_axis in {"instrument", "account", "asset_type", "currency"}:
                 parent_group_key, _parent_group_label = _position_group_for_axis(
                     axis=detail_parent_axis,
                     position_lot=lot,
@@ -3485,7 +3496,7 @@ def _account_name_map(accounts: list[dict[str, object]]) -> dict[str, str]:
 def _axis_includes_cash_balance(axis: str) -> bool:
     parent_axis = _calculation_detail_parent_axis(axis)
     if parent_axis is not None:
-        return parent_axis in {"account", "asset_type", "currency"}
+        return parent_axis in {"instrument", "account", "asset_type", "currency"}
     return axis in {"instrument", "account", "asset_type", "currency"}
 
 
@@ -3511,7 +3522,7 @@ def _position_group_for_axis(
     base_currency: str,
 ) -> tuple[str, str]:
     detail_parent_axis = _calculation_detail_parent_axis(axis)
-    if detail_parent_axis in {"account", "asset_type", "currency"}:
+    if detail_parent_axis in {"instrument", "account", "asset_type", "currency"}:
         parent_group_key, _parent_group_label = _position_group_for_axis(
             axis=detail_parent_axis,
             position_lot=position_lot,
@@ -3555,7 +3566,7 @@ def _cash_group_for_axis(
     account_name_map: dict[str, str],
 ) -> tuple[str, str]:
     detail_parent_axis = _calculation_detail_parent_axis(axis)
-    if detail_parent_axis in {"account", "asset_type", "currency"}:
+    if detail_parent_axis in {"instrument", "account", "asset_type", "currency"}:
         parent_group_key, _parent_group_label = _cash_group_for_axis(
             axis=detail_parent_axis,
             account_id=account_id,
@@ -3566,13 +3577,14 @@ def _cash_group_for_axis(
             _encode_calculation_detail_group_key(
                 parent_group_key=parent_group_key,
                 item_kind="cash",
-                item_key=_cash_detail_item_key(
-                    parent_axis=detail_parent_axis,
-                    account_id=account_id,
-                    currency=currency,
-                ),
+                item_key=_cash_detail_item_key(account_id=account_id, currency=currency),
             ),
-            "Cash",
+            _cash_detail_item_label(
+                parent_axis=detail_parent_axis,
+                account_id=account_id,
+                currency=currency,
+                account_name_map=account_name_map,
+            ),
         )
     if axis == "instrument":
         return ("cash", "Cash")
@@ -3597,7 +3609,7 @@ def _transaction_group_for_axis(
     asset_id = str(transaction.get("asset_id") or instrument_ref.get("asset_id") or "")
     currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
     detail_parent_axis = _calculation_detail_parent_axis(axis)
-    if detail_parent_axis in {"account", "asset_type", "currency"}:
+    if detail_parent_axis in {"instrument", "account", "asset_type", "currency"}:
         parent_group_key, _parent_group_label = _transaction_group_for_axis(
             axis=detail_parent_axis,
             transaction=transaction,
@@ -3610,12 +3622,13 @@ def _transaction_group_for_axis(
             item_label = str(instrument_ref.get("asset_name") or asset_id)
         else:
             item_kind = "cash"
-            item_key = _cash_detail_item_key(
+            item_key = _cash_detail_item_key(account_id=account_id, currency=currency)
+            item_label = _cash_detail_item_label(
                 parent_axis=detail_parent_axis,
                 account_id=account_id,
                 currency=currency,
+                account_name_map=account_name_map,
             )
-            item_label = "Cash"
         return (
             _encode_calculation_detail_group_key(
                 parent_group_key=parent_group_key,
@@ -5731,7 +5744,10 @@ def _build_taxonomy_calculation_detail_report(
         )
 
     target_scope = str(taxonomy.get("primary_assignment_scope") or "")
-    base_axis = _calculation_detail_axis("account") if target_scope in {"account", "cash_bucket"} else "instrument"
+    if target_scope in {"account", "cash_bucket"}:
+        base_axis = _calculation_detail_axis("account")
+    else:
+        base_axis = _calculation_detail_axis("instrument")
     base_report = build_contribution_report(
         portfolio,
         accounts,
@@ -5783,11 +5799,15 @@ def _build_taxonomy_calculation_detail_report(
             target_entity_id, item_kind, item_key = decoded
             if target_scope == "cash_bucket" and target_entity_id not in cash_bucket_ids:
                 continue
-            detail_item_key = "cash" if item_kind == "cash" else item_key
+            detail_item_key = item_key
         else:
-            target_entity_id = base_group_key
-            item_kind = "cash" if base_group_key == "cash" else "asset"
-            detail_item_key = "cash" if item_kind == "cash" else base_group_key
+            decoded = _decode_calculation_detail_group_key(base_group_key)
+            if decoded is None:
+                target_entity_id = base_group_key
+                item_kind = "cash" if base_group_key == "cash" else "asset"
+                detail_item_key = base_group_key
+            else:
+                target_entity_id, item_kind, detail_item_key = decoded
 
         parent_group_key, _parent_group_label = _resolve_taxonomy_group_for_date(
             taxonomy=taxonomy,
@@ -5841,11 +5861,11 @@ def _build_period_calculation_child_records(
         for item in parent_groups
         if str(item.get("group_key") or "")
     }
-    if not parent_labels or axis == "instrument":
+    if not parent_labels:
         return {}
 
     detail_axis = _calculation_detail_axis(axis)
-    if axis in {"account", "asset_type", "currency"}:
+    if axis in {"instrument", "account", "asset_type", "currency"}:
         detail_report = build_contribution_report(
             portfolio,
             accounts,
@@ -5928,6 +5948,8 @@ def _build_period_calculation_child_records(
         if decoded is None:
             continue
         parent_group_key, item_kind, item_key = decoded
+        if axis == "instrument" and (parent_group_key != "cash" or item_kind != "cash"):
+            continue
         parent_group_label = parent_labels.get(parent_group_key)
         if parent_group_label is None:
             continue
