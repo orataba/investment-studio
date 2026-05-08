@@ -2093,8 +2093,8 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
     )
     monkeypatch.setattr(
         workspace_routes,
-        "build_asset_sparkline",
-        lambda *_args, **_kwargs: [],
+        "build_asset_holdings_market_profile",
+        lambda *_args, **_kwargs: {"price_chart": []},
     )
     monkeypatch.setattr(
         performance,

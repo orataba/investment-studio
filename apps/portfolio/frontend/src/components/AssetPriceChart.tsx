@@ -87,13 +87,20 @@ export default function AssetPriceChart({
       label: formatUnitPrice(maxValue - span * fraction, currency),
       y: paddingTop + innerHeight * fraction,
     }))
+    const bands = [0, 1, 2, 3].map((index) => ({
+      x: paddingLeft + (innerWidth / 4) * index,
+      y: paddingTop,
+      width: innerWidth / 4,
+      height: innerHeight,
+    }))
     return {
       projectedPoints,
       linePath,
       areaPath,
       gridValues,
+      bands,
     }
-  }, [currency, points])
+  }, [currency, height, paddingBottom, paddingLeft, paddingRight, paddingTop, points, width])
 
   const activeProjectedPoint =
     chartGeometry && activePoint
@@ -171,6 +178,16 @@ export default function AssetPriceChart({
               setHoverIndex(nextIndex)
             }}
           >
+            {chartGeometry.bands.map((band, index) => (
+              <rect
+                key={`band-${index}`}
+                className="price-chart-band"
+                x={band.x}
+                y={band.y}
+                width={band.width}
+                height={band.height}
+              />
+            ))}
             {chartGeometry.gridValues.map((gridValue) => (
               <g key={`grid-${gridValue.y}`}>
                 <line

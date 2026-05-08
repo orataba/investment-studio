@@ -413,7 +413,14 @@ export type PortfolioHoldingRow = {
   asset_return_mtd?: number | null
   asset_return_ytd?: number | null
   asset_return_1y?: number | null
+  asset_volatility_1m?: number | null
+  asset_volatility_3m?: number | null
+  asset_volatility_6m?: number | null
+  asset_volatility_1y?: number | null
   asset_current_drawdown?: number | null
+  asset_max_drawdown?: number | null
+  asset_holding_max_drawdown?: number | null
+  asset_holding_start_date?: string | null
   coverage_status: string
   account_count?: number
   open_position_lot_count?: number
@@ -424,6 +431,7 @@ export type HoldingsWorkspaceResponse = {
   portfolio_name: string
   base_currency: string
   as_of_date: string
+  price_chart_range: '1m' | '3m' | '6m' | '1y'
   view_label: string
   coverage_note: string
   summary_cards: HoldingsSummaryCard[]
@@ -439,6 +447,7 @@ export type HoldingsWorkspaceResponse = {
 
 export type HoldingsWorkspaceFilters = {
   as_of_date?: string
+  price_chart_range?: '1m' | '3m' | '6m' | '1y'
 }
 
 export type SharedMarketDataPoint = {
@@ -745,7 +754,10 @@ export type PortfolioResearchMemberTargetRecord = {
 
 export type PortfolioResearchSolveEventRecord = {
   as_of_date: string
+  scope_node_id?: string | null
   scope_label: string
+  scope_path?: string | null
+  scope_depth?: number | null
   requested_target_dimension?: string | null
   taxonomy_default_target_dimension?: 'weight' | 'risk_budget' | null
   target_dimension?: PortfolioResearchTargetDimension | null
@@ -765,6 +777,7 @@ export type PortfolioResearchSolveEventRecord = {
   gross_exposure?: number | null
   risk_asset_scaling_factor?: number | null
   member_count: number
+  scope_solve_count?: number | null
 }
 
 export type PortfolioResearchTargetWeightGapRecord = {
@@ -812,6 +825,7 @@ export type PortfolioResearchRunDetailRecord = {
   member_targets: PortfolioResearchMemberTargetRecord[]
   leaf_targets: PortfolioResearchMemberTargetRecord[]
   solve_event?: PortfolioResearchSolveEventRecord | null
+  scope_solve_events: PortfolioResearchSolveEventRecord[]
   target_weight_gaps: PortfolioResearchTargetWeightGapRecord[]
   warnings: string[]
 }
@@ -1480,6 +1494,7 @@ export function getHoldingsWorkspace(
   const query = buildQuery({
     portfolio_id: portfolioId,
     as_of_date: filters.as_of_date,
+    price_chart_range: filters.price_chart_range,
   })
   return fetchJson<HoldingsWorkspaceResponse>(API_BASE_URL, `/api/workspace/holdings${query}`)
 }

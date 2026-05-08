@@ -23,9 +23,9 @@ import {
 
 const LOOKBACK_OPTIONS = [90, 180, 366, 730] as const
 const TARGET_DIMENSION_OPTIONS = [
-  { value: 'scope_default', label: 'Scope Default' },
-  { value: 'weight', label: 'Weight' },
-  { value: 'risk_budget', label: 'Risk Budget' },
+  { value: 'scope_default', label: 'Scope Defaults' },
+  { value: 'weight', label: 'Selected Scope: Weight' },
+  { value: 'risk_budget', label: 'Selected Scope: RC Share' },
 ] as const
 const CAPITAL_MODE_OPTIONS = [
   { value: 'unit_notional', label: 'Unit Notional' },
@@ -91,6 +91,12 @@ function formatSolverKind(value: string | null | undefined) {
   }
   if (value === 'risk-budget') {
     return 'Risk Budget'
+  }
+  if (value === 'weight-fixed-members') {
+    return 'Weight + Frozen'
+  }
+  if (value === 'fixed-members') {
+    return 'Frozen Members'
   }
   if (value === 'single-member') {
     return 'Single Member'
@@ -186,6 +192,7 @@ export default function ResearchPage() {
   const [grossExposure, setGrossExposure] = useState('')
   const [targetVolatilityPct, setTargetVolatilityPct] = useState('')
   const [maxGrossExposure, setMaxGrossExposure] = useState('')
+  const [frozenNodeIds, setFrozenNodeIds] = useState<string[]>([])
   const [notes, setNotes] = useState('')
 
   function updateSearchParams(updates: Record<string, string | null>) {
@@ -251,6 +258,7 @@ export default function ResearchPage() {
     setMaxGrossExposure(
       workbench.settings.max_gross_exposure != null ? String(workbench.settings.max_gross_exposure) : '',
     )
+    setFrozenNodeIds(workbench.settings.frozen_taxonomy_node_ids ?? [])
     setNotes(workbench.settings.notes ?? '')
   }, [workbench])
 
@@ -260,6 +268,7 @@ export default function ResearchPage() {
     }
     if (planningTaxonomyId !== (workbench.settings.planning_taxonomy_id ?? '')) {
       setComparatorScopeId('')
+      setFrozenNodeIds([])
     }
   }, [planningTaxonomyId, workbench])
 
@@ -329,11 +338,16 @@ export default function ResearchPage() {
   const leafTargets = selectedRun?.detail?.leaf_targets ?? []
   const solvedTargets = leafTargets.length ? leafTargets : memberTargets
   const solveEvent = selectedRun?.detail?.solve_event ?? null
+  const scopeSolveEvents = selectedRun?.detail?.scope_solve_events ?? []
   const savedPlanningTaxonomyId = workbench?.settings.planning_taxonomy_id ?? ''
   const scopeOptionsPending = Boolean(
     planningTaxonomyId && planningTaxonomyId !== savedPlanningTaxonomyId && !dynamicScopeOptions && !scopeOptionsError,
   )
   const scopeActionBlocked = scopeOptionsLoading || scopeOptionsPending || Boolean(scopeOptionsError)
+  const selectableFrozenScopes = useMemo(
+    () => selectedScopeOptions.filter((option) => Boolean(option.taxonomy_node_id)),
+    [selectedScopeOptions],
+  )
 
   const summaryPlanningName =
     workbench?.planning_taxonomy_options.find((item) => item.taxonomy_id === planningTaxonomyId)?.name ??
@@ -345,6 +359,19 @@ export default function ResearchPage() {
     workbench?.settings.comparator_taxonomy_node_name ??
     'Top Level'
 
+  const selectedScopeDefaultDimension =
+    selectedScopeOptions.find((item) => (item.taxonomy_node_id ?? '') === comparatorScopeId)?.default_target_dimension ??
+    'weight'
+
+  function toggleFrozenNode(nodeId: string) {
+    setFrozenNodeIds((current) => {
+      if (current.includes(nodeId)) {
+        return current.filter((item) => item !== nodeId)
+      }
+      return [...current, nodeId]
+    })
+  }
+
   async function persistSettings() {
     if (!portfolioId) {
       return null
@@ -352,8 +379,8 @@ export default function ResearchPage() {
     const parsedGrossExposure = grossExposure.trim() ? Number(grossExposure) : null
     const parsedTargetVolatility = targetVolatilityPct.trim() ? Number(targetVolatilityPct) / 100 : null
     const parsedMaxGrossExposure = maxGrossExposure.trim() ? Number(maxGrossExposure) : null
-    const frozenTaxonomyNodeIds =
-      planningTaxonomyId === savedPlanningTaxonomyId ? (workbench?.settings.frozen_taxonomy_node_ids ?? []) : []
+    const validFrozenNodeIds = new Set(selectableFrozenScopes.map((item) => item.taxonomy_node_id ?? ''))
+    const frozenTaxonomyNodeIds = frozenNodeIds.filter((nodeId) => validFrozenNodeIds.has(nodeId))
     return updatePortfolioResearchSettings(portfolioId, {
       planning_taxonomy_id: planningTaxonomyId || null,
       comparator_taxonomy_node_id: comparatorScopeId || null,
@@ -465,8 +492,12 @@ export default function ResearchPage() {
                 <table className="performance-summary-table">
                   <tbody>
                     <tr>
-                      <th>Target Dimension</th>
-                      <td>{formatLabel(targetDimension)}</td>
+                      <th>Scope Policy</th>
+                      <td>{TARGET_DIMENSION_OPTIONS.find((option) => option.value === targetDimension)?.label ?? formatLabel(targetDimension)}</td>
+                    </tr>
+                    <tr>
+                      <th>Selected Default</th>
+                      <td>{formatResearchDimension(selectedScopeDefaultDimension)}</td>
                     </tr>
                     <tr>
                       <th>Lookback</th>
@@ -610,12 +641,35 @@ export default function ResearchPage() {
                   />
                 </label>
               </div>
+              {planningTaxonomyId && selectableFrozenScopes.length ? (
+                <div className="research-freeze-panel">
+                  <div className="research-freeze-panel-header">
+                    <span>Frozen Sleeves</span>
+                    <strong>{frozenNodeIds.length ? frozenNodeIds.length : '—'}</strong>
+                  </div>
+                  <div className="research-freeze-grid">
+                    {selectableFrozenScopes.map((option) => {
+                      const nodeId = option.taxonomy_node_id ?? ''
+                      return (
+                        <label key={nodeId} className="research-freeze-option">
+                          <input
+                            type="checkbox"
+                            checked={frozenNodeIds.includes(nodeId)}
+                            onChange={() => toggleFrozenNode(nodeId)}
+                          />
+                          <span>{option.path}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : null}
               {scopeOptionsError ? <div className="inline-notice inline-notice-error">{scopeOptionsError}</div> : null}
               <div className="transaction-form-footer">
                 <span className="portfolio-detail-meta">
                   {scopeOptionsLoading
-                    ? 'Loading scope tree for the selected planning taxonomy.'
-                    : 'Research resolves current target weights from holdings, taxonomy, active targets, covariance lookback, and capital overlay.'}
+                    ? 'Loading scope tree.'
+                    : 'Settings ready.'}
                 </span>
                 <div className="toolbar">
                   <button type="submit" className="toolbar-link" disabled={actionPending === 'save' || scopeActionBlocked}>
@@ -714,7 +768,7 @@ export default function ResearchPage() {
                           <td>{selectedRun.detail?.selected_scope?.path ?? 'Top Level'}</td>
                         </tr>
                         <tr>
-                          <th>Target Dimension</th>
+                          <th>Scope Policy</th>
                           <td>{selectedRunSignalMap.get('Target Dimension') ?? formatResearchDimension(solveEvent?.target_dimension)}</td>
                         </tr>
                         <tr>
@@ -771,6 +825,46 @@ export default function ResearchPage() {
                           <th>Lookback</th>
                           <td>{selectedRunSignalMap.get('Lookback') ?? '—'}</td>
                         </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="performance-section-block">
+                  <div className="panel-header panel-header-inline">
+                    <div>
+                      <div className="panel-title">Scope Solver Path</div>
+                    </div>
+                  </div>
+                  <div className="table-shell">
+                    <table className="transactions-table research-scope-solver-table">
+                      <thead>
+                        <tr>
+                          <th>Scope</th>
+                          <th>Default</th>
+                          <th>Used</th>
+                          <th>Solver</th>
+                          <th>RC Mode</th>
+                          <th>Risk Gap</th>
+                          <th>Members</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {!scopeSolveEvents.length ? (
+                          <TableStatusRow colSpan={7} label="No scope solver events were recorded for the selected run." />
+                        ) : (
+                          scopeSolveEvents.map((event) => (
+                            <tr key={`${event.scope_path ?? event.scope_label}:${event.scope_depth ?? 0}`}>
+                              <td>{event.scope_path ?? event.scope_label}</td>
+                              <td>{formatResearchDimension(event.taxonomy_default_target_dimension)}</td>
+                              <td>{formatResearchDimension(event.target_dimension)}</td>
+                              <td>{formatSolverKind(event.solver_detail ?? event.solver_kind)}</td>
+                              <td>{event.risk_contribution_mode ? formatLabel(event.risk_contribution_mode) : '—'}</td>
+                              <td>{formatPercent(event.max_risk_share_gap, 3)}</td>
+                              <td>{event.member_count}</td>
+                            </tr>
+                          ))
+                        )}
                       </tbody>
                     </table>
                   </div>

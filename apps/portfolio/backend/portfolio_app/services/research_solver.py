@@ -79,6 +79,7 @@ class ScopeTargetSolveResult:
     member_target_rows: list[dict[str, object]]
     leaf_target_rows: list[dict[str, object]]
     solve_event: dict[str, object]
+    scope_solve_events: list[dict[str, object]]
     warnings: list[str]
     resolved_target_rows: list[dict[str, object]]
 
@@ -1087,12 +1088,18 @@ def _scope_target_sets(
     *,
     scope_node_id: str | None,
     target_set_type: str,
+    as_of_date: date,
 ) -> dict[str, object] | None:
     candidates = state.target_sets_by_scope_type.get((scope_node_id, target_set_type), [])
     configured = [
         item
         for item in candidates
         if str(item.get("status") or "active") == "active"
+        and _period_active(
+            effective_from=item.get("effective_from"),
+            effective_to=item.get("effective_to"),
+            as_of_date=as_of_date,
+        )
     ]
     if not configured:
         return None
@@ -1116,68 +1123,60 @@ def _resolve_dimension_target_rows(
 ) -> tuple[list[dict[str, object]], list[str]]:
     warnings: list[str] = []
 
-    preferred_dimensions = [selected_dimension]
-    if selected_dimension == TARGET_DIMENSION_SCOPE_DEFAULT:
-        default_dimension = _scope_default_target_dimension(state, scope_node_id)
-        preferred_dimensions = [default_dimension]
-        alternate_dimension = (
-            TARGET_DIMENSION_RISK_BUDGET
-            if default_dimension == TARGET_DIMENSION_WEIGHT
-            else TARGET_DIMENSION_WEIGHT
-        )
-        preferred_dimensions.append(alternate_dimension)
+    resolved_dimension = (
+        _scope_default_target_dimension(state, scope_node_id)
+        if selected_dimension == TARGET_DIMENSION_SCOPE_DEFAULT
+        else selected_dimension
+    )
 
     candidate_types = ["taa", "saa"]
     line_keys = [(member.member_type, member.member_id) for member in scope_members]
-    fallback_notice: str | None = None
 
-    for dimension_index, resolved_dimension in enumerate(preferred_dimensions):
-        enabled_field = "weight_enabled" if resolved_dimension == TARGET_DIMENSION_WEIGHT else "risk_budget_enabled"
-        value_field = "target_weight" if resolved_dimension == TARGET_DIMENSION_WEIGHT else "target_risk_share"
-        for target_set_type in candidate_types:
-            target_set = _scope_target_sets(
-                state,
-                scope_node_id=scope_node_id,
-                target_set_type=target_set_type,
+    enabled_field = "weight_enabled" if resolved_dimension == TARGET_DIMENSION_WEIGHT else "risk_budget_enabled"
+    value_field = "target_weight" if resolved_dimension == TARGET_DIMENSION_WEIGHT else "target_risk_share"
+    for target_set_type in candidate_types:
+        target_set = _scope_target_sets(
+            state,
+            scope_node_id=scope_node_id,
+            target_set_type=target_set_type,
+            as_of_date=as_of_date,
+        )
+        if target_set is None or not bool(target_set.get(enabled_field)):
+            continue
+        line_map = state.target_lines_by_set_id.get(str(target_set.get("target_set_id") or ""), {})
+        rendered_rows: list[dict[str, object]] = []
+        complete = True
+        for member in scope_members:
+            line = line_map.get((member.member_type, member.member_id))
+            if line is None or line.get(value_field) is None:
+                complete = False
+                break
+            rendered_rows.append(
+                {
+                    "member_type": member.member_type,
+                    "member_id": member.member_id,
+                    "label": member.label,
+                    "taxonomy_node_id": member.taxonomy_node_id,
+                    "default_target_dimension": member.default_target_dimension,
+                    "selected_dimension": resolved_dimension,
+                    "selected_value": float(line.get(value_field)),
+                    "target_weight": _safe_float(line.get("target_weight")),
+                    "target_risk_share": _safe_float(line.get("target_risk_share")),
+                    "source_target_set_id": target_set.get("target_set_id"),
+                    "source_target_set_type": target_set_type,
+                }
             )
-            if target_set is None or not bool(target_set.get(enabled_field)):
-                continue
-            line_map = state.target_lines_by_set_id.get(str(target_set.get("target_set_id") or ""), {})
-            rendered_rows: list[dict[str, object]] = []
-            complete = True
-            for member in scope_members:
-                line = line_map.get((member.member_type, member.member_id))
-                if line is None or line.get(value_field) is None:
-                    complete = False
-                    break
-                rendered_rows.append(
-                    {
-                        "member_type": member.member_type,
-                        "member_id": member.member_id,
-                        "label": member.label,
-                        "taxonomy_node_id": member.taxonomy_node_id,
-                        "default_target_dimension": member.default_target_dimension,
-                        "selected_dimension": resolved_dimension,
-                        "selected_value": float(line.get(value_field)),
-                        "target_weight": _safe_float(line.get("target_weight")),
-                        "target_risk_share": _safe_float(line.get("target_risk_share")),
-                        "source_target_set_id": target_set.get("target_set_id"),
-                        "source_target_set_type": target_set_type,
-                    }
-                )
-            if complete and len(rendered_rows) == len(line_keys):
-                if fallback_notice:
-                    warnings.append(fallback_notice)
-                return rendered_rows, warnings
-        if selected_dimension == TARGET_DIMENSION_SCOPE_DEFAULT and dimension_index == 0:
-            fallback_notice = (
-                f"Scope default target for {state.node_by_id.get(scope_node_id, {}).get('node_name') or ROOT_SCOPE_LABEL} "
-                f"could not be resolved as {preferred_dimensions[0]}; falling back to {preferred_dimensions[1]}."
-            )
+        if complete and len(rendered_rows) == len(line_keys):
+            return rendered_rows, warnings
 
     if scope_members:
-        resolved_dimension = preferred_dimensions[0]
-        equal_share = 1.0 / float(len(scope_members))
+        non_cash_members = [
+            member
+            for member in scope_members
+            if not _member_is_cash_like(state, member)
+        ]
+        equal_weight = 1.0 / float(len(scope_members))
+        equal_risk_share = 1.0 / float(len(non_cash_members)) if non_cash_members else 0.0
         scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
         warnings.append(
             f"{scope_label} does not have a configured {resolved_dimension} target set, so Research is using an equal-{resolved_dimension.replace('_', '-')} local default."
@@ -1190,9 +1189,17 @@ def _resolve_dimension_target_rows(
                 "taxonomy_node_id": member.taxonomy_node_id,
                 "default_target_dimension": member.default_target_dimension,
                 "selected_dimension": resolved_dimension,
-                "selected_value": equal_share,
-                "target_weight": equal_share if resolved_dimension == TARGET_DIMENSION_WEIGHT else None,
-                "target_risk_share": equal_share if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET else None,
+                "selected_value": (
+                    equal_weight
+                    if resolved_dimension == TARGET_DIMENSION_WEIGHT
+                    else (0.0 if _member_is_cash_like(state, member) else equal_risk_share)
+                ),
+                "target_weight": equal_weight if resolved_dimension == TARGET_DIMENSION_WEIGHT else None,
+                "target_risk_share": (
+                    (0.0 if _member_is_cash_like(state, member) else equal_risk_share)
+                    if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET
+                    else None
+                ),
                 "source_target_set_id": None,
                 "source_target_set_type": None,
             }
@@ -1369,6 +1376,7 @@ def _solve_current_scope(
     current_nav_series_by_member: dict[tuple[str, str], pd.Series] = {}
     member_by_key: dict[str, ScopeMemberRecord] = {}
     child_results_by_key: dict[str, ScopeTargetSolveResult] = {}
+    child_scope_solve_events: list[dict[str, object]] = []
     warnings: list[str] = []
 
     for member in members:
@@ -1380,7 +1388,7 @@ def _solve_current_scope(
                 scope_node_id=member.member_id,
                 as_of_date=as_of_date,
                 lookback_days=lookback_days,
-                target_dimension=target_dimension,
+                target_dimension=TARGET_DIMENSION_SCOPE_DEFAULT,
                 capital_mode=capital_mode,
                 gross_exposure=gross_exposure,
                 target_volatility=target_volatility,
@@ -1388,6 +1396,7 @@ def _solve_current_scope(
                 apply_capital_overlay=False,
             )
             child_results_by_key[member_key] = child_result
+            child_scope_solve_events.extend(child_result.scope_solve_events)
             nav_series_by_member[(member.member_type, member.member_id)] = _series_to_nav(
                 child_result.return_series,
                 as_of_date=as_of_date,
@@ -1445,6 +1454,10 @@ def _solve_current_scope(
         },
         dtype="float64",
     ).reindex(member_keys, fill_value=0.0)
+    configured_weight_by_key = {
+        f"{row['member_type']}::{row['member_id']}": _safe_float(row.get("target_weight"))
+        for row in resolved_rows
+    }
     cash_like_keys = [key for key in member_keys if _member_is_cash_like(state, member_by_key[key])]
     frozen_keys = [
         key
@@ -1457,15 +1470,15 @@ def _solve_current_scope(
     ]
     fixed_weight_targets = pd.Series(
         {
-            key: current_actual_weight_by_key.get(
-                key,
-                float(target_values.get(key, 0.0)),
-            )
+            key: current_actual_weight_by_key[key]
+            if key in current_actual_weight_by_key
+            else float(configured_weight_by_key.get(key) or 0.0)
             for key in frozen_keys
         },
         dtype="float64",
     ).clip(lower=0.0)
     risk_keys = [key for key in member_keys if key not in cash_like_keys and key not in frozen_keys]
+    non_cash_keys = [key for key in member_keys if key not in cash_like_keys]
     preferred_cash_weights = pd.Series(
         {
             f"{row['member_type']}::{row['member_id']}": float(_safe_float(row.get("target_weight")) or 0.0)
@@ -1567,15 +1580,33 @@ def _solve_current_scope(
         risk_gap = None
         solver_kind = "weight-fixed-members" if frozen_keys else "weight"
 
+    overlay_applies_to_risk_sleeves = apply_capital_overlay and capital_mode in {
+        CAPITAL_MODE_FIXED_GROSS,
+        CAPITAL_MODE_TARGET_VOLATILITY,
+    }
+    if overlay_applies_to_risk_sleeves and non_cash_keys:
+        non_cash_total = float(implementation_weights.reindex(non_cash_keys, fill_value=0.0).sum())
+        if non_cash_total > 1e-12:
+            implementation_weights.loc[non_cash_keys] = (
+                implementation_weights.reindex(non_cash_keys, fill_value=0.0) / non_cash_total
+            )
+            implementation_weights.loc[cash_like_keys] = 0.0
+        else:
+            implementation_weights.loc[non_cash_keys] = 1.0 / float(len(non_cash_keys))
+            implementation_weights.loc[cash_like_keys] = 0.0
+            warnings.append(
+                f"{scope_label} had no positive risky target weight before capital overlay, so Research used equal risky-sleeve weights."
+            )
+
     estimated_risk_sleeve_volatility = None
     effective_gross_exposure = None
     risk_asset_scaling_factor = None
-    if apply_capital_overlay and risk_keys:
-        risky_weights = implementation_weights.reindex(risk_keys, fill_value=0.0)
+    if overlay_applies_to_risk_sleeves and non_cash_keys:
+        risky_weights = implementation_weights.reindex(non_cash_keys, fill_value=0.0)
         if capital_mode == CAPITAL_MODE_FIXED_GROSS:
             effective_gross_exposure = float(gross_exposure or 1.0)
         elif capital_mode == CAPITAL_MODE_TARGET_VOLATILITY:
-            solver_members = [member_by_key[key] for key in risk_keys]
+            solver_members = [member_by_key[key] for key in non_cash_keys]
             return_window = _solver_return_window(
                 members=solver_members,
                 nav_series_by_member=nav_series_by_member,
@@ -1599,20 +1630,19 @@ def _solve_current_scope(
                 effective_gross_exposure = min(float(effective_gross_exposure), float(max_gross_exposure))
         if effective_gross_exposure is not None:
             risk_asset_scaling_factor = float(effective_gross_exposure)
-            implementation_weights.loc[risk_keys] = risky_weights * risk_asset_scaling_factor
+            implementation_weights.loc[non_cash_keys] = risky_weights * risk_asset_scaling_factor
             if cash_like_keys:
                 implementation_weights.loc[cash_like_keys] = _allocate_cash_weights(
                     cash_index=cash_like_keys,
                     preferred_weights=preferred_cash_weights,
                     total_cash_weight=1.0
-                    - float(implementation_weights.loc[risk_keys].sum())
-                    - float(implementation_weights.loc[frozen_keys].sum()),
+                    - float(implementation_weights.loc[non_cash_keys].sum()),
                 )
             else:
-                residual_cash = 1.0 - float(implementation_weights.loc[risk_keys].sum()) - float(implementation_weights.loc[frozen_keys].sum())
+                residual_cash = 1.0 - float(implementation_weights.loc[non_cash_keys].sum())
                 if abs(residual_cash) > 1e-9:
                     warnings.append(
-                        f"{scope_label} has no cash-like member, so {residual_cash:.2%} target-volatility residual is implicit cash."
+                        f"{scope_label} has no cash-like member, so {residual_cash:.2%} capital-overlay residual is implicit cash."
                     )
 
     for row in resolved_rows:
@@ -1623,7 +1653,7 @@ def _solve_current_scope(
     current_risk_share_by_key = _estimate_scope_risk_share_map(
         members=members,
         nav_series_by_member=current_nav_series_by_member,
-        risk_keys=risk_keys,
+        risk_keys=non_cash_keys,
         weights_by_key=current_weights,
         as_of_date=as_of_date,
         lookback_days=lookback_days,
@@ -1635,7 +1665,10 @@ def _solve_current_scope(
     max_weight_gap = float(np.max(np.abs(current_weights - implementation_weights))) if len(member_keys) else 0.0
     solve_event = {
         "as_of_date": as_of_date.isoformat(),
+        "scope_node_id": scope_node_id,
         "scope_label": scope_label,
+        "scope_path": scope_path,
+        "scope_depth": scope_depth,
         "requested_target_dimension": target_dimension,
         "taxonomy_default_target_dimension": default_target_dimension,
         "target_dimension": target_dimension_used,
@@ -1655,6 +1688,7 @@ def _solve_current_scope(
         "gross_exposure": effective_gross_exposure,
         "risk_asset_scaling_factor": risk_asset_scaling_factor,
         "member_count": len(members),
+        "scope_solve_count": len(child_scope_solve_events) + 1,
     }
 
     summary_rows: list[dict[str, object]] = []
@@ -1794,6 +1828,7 @@ def _solve_current_scope(
         member_target_rows=summary_rows,
         leaf_target_rows=leaf_rows,
         solve_event=solve_event,
+        scope_solve_events=[*child_scope_solve_events, deepcopy(solve_event)],
         warnings=list(dict.fromkeys(item for item in warnings if item)),
         resolved_target_rows=deepcopy(resolved_rows),
     )
@@ -2195,6 +2230,7 @@ def solve_current_target_weights(
         "actual_rows": deepcopy(actual_rows),
         "resolved_target_rows": deepcopy(scope_result.resolved_target_rows),
         "solve_event": deepcopy(scope_result.solve_event),
+        "scope_solve_events": deepcopy(scope_result.scope_solve_events),
         "target_weight_gaps": target_weight_gaps,
         "warnings": warnings,
         "return_observations": float(len(scope_result.return_series)),

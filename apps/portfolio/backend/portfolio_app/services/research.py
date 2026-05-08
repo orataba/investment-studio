@@ -843,6 +843,8 @@ def _build_target_assumptions(
             f"Risk-budget sleeves solve current implementation weights from the trailing local {covariance_model} window using {contribution_mode} risk contributions; "
             "leaf implementation weights can roll up through the sleeve tree, but risk targets remain local and are not multiplied by ancestor risk targets."
         )
+    if str(settings_payload.get("target_dimension") or "") != "scope_default":
+        assumptions.append("The selected scope can use an explicit target-dimension override; child sleeves still use their own configured default target dimension.")
     if str(settings_payload.get("capital_mode") or "unit_notional") == "target_volatility":
         assumptions.append("After recursive sleeve targets are resolved, Research estimates risky-sleeve volatility, scales gross exposure toward target volatility, and sends the residual into cash.")
     elif str(settings_payload.get("capital_mode") or "unit_notional") == "fixed_gross":
@@ -896,6 +898,7 @@ def _build_current_target_detail(
         "member_targets": deepcopy(solution.get("member_targets") or []),
         "leaf_targets": deepcopy(solution.get("leaf_targets") or []),
         "solve_event": deepcopy(solve_event),
+        "scope_solve_events": deepcopy(solution.get("scope_solve_events") or []),
         "target_weight_gaps": deepcopy(solution.get("target_weight_gaps") or []),
         "warnings": deepcopy(solution.get("warnings") or []),
     }
@@ -939,6 +942,7 @@ def _write_artifacts(
     member_targets_path = run_root / "member_targets.csv"
     leaf_targets_path = run_root / "leaf_targets.csv"
     solve_event_path = run_root / "solve_event.csv"
+    scope_solve_events_path = run_root / "scope_solve_events.csv"
     target_weight_gaps_path = run_root / "target_weight_gaps.csv"
 
     report_path.write_text(
@@ -986,6 +990,7 @@ def _write_artifacts(
     _write_csv(leaf_targets_path, list(detail.get("leaf_targets") or []))
     solve_event = detail.get("solve_event") if isinstance(detail.get("solve_event"), dict) else None
     _write_csv(solve_event_path, [solve_event] if solve_event else [])
+    _write_csv(scope_solve_events_path, list(detail.get("scope_solve_events") or []))
     _write_csv(target_weight_gaps_path, list(detail.get("target_weight_gaps") or []))
 
     artifacts = []
@@ -1000,6 +1005,7 @@ def _write_artifacts(
         ("member_targets", "Member Targets CSV", member_targets_path),
         ("leaf_targets", "Leaf Targets CSV", leaf_targets_path),
         ("solve_event", "Solve Event CSV", solve_event_path),
+        ("scope_solve_events", "Scope Solve Events CSV", scope_solve_events_path),
         ("target_weight_gaps", "Target Weight Gaps CSV", target_weight_gaps_path),
     ]:
         artifacts.append(

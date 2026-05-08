@@ -11,7 +11,7 @@
   `Transactions` 当前支持 create / update / delete 原始事实；内部转仓仍按成对事实管理
 - `Risk` 已有真实工作台，包含 rolling annualized volatility / Sharpe、相关性矩阵、Current Drift 和 point-in-time Risk Contribution；风险窗口、协方差方法和风险贡献模式与 Research 使用同一组口径选项
 - `Taxonomies` 已有真实配置工作台，支持层级 sleeve tree、assignment、`TargetSet`、`default planning taxonomy` 与 `cash_bucket` 维护
-- `Research` 已有真实工作台，支持基于 planning taxonomy / TargetSet / 当前持仓的 target-weight solve、run history、target weights、member targets、风险预算求解诊断和调仓缺口
+- `Research` 已有真实工作台，支持基于 planning taxonomy / TargetSet / 当前持仓的递归 target-weight solve、run history、target weights、member targets、scope solver path、风险预算求解诊断和调仓缺口
 - `Review` 已有真实 period review pack 页面
 - `Overview` 已作为组合默认首页发布，主图按 `Portfolio Value / TWR Index` 两种组合管理口径展示，回撤固定基于 TWR；页面同时承载 sleeve 结构和 top holdings 总览，`Snapshot` 不再作为独立工作面保留
 
@@ -56,7 +56,7 @@ uvicorn portfolio_app.main:app --reload --host 127.0.0.1 --port 8001
 - 数据库连接通过 `YUNGU_PORTFOLIO_DATABASE_URL` 配置；本机账号和密码只应放在未提交的 `.env` 或 shell 环境里
 - `portfolio` 使用 `portfolio` schema
 - 测试使用临时 SQLite，不会污染默认运行库
-- research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理；当前产物以 target weights、member targets、leaf targets、solve event 和 target weight gaps 为主
+- research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理；当前产物以 target weights、member targets、leaf targets、solve event、scope solve events 和 target weight gaps 为主
 - backend 顶层包名现在是 `portfolio_app`
 - daily snapshots 已物化到数据库，并显式保存每日 `beginning_nav` / `ending_nav`；`Performance`、`Holdings`、instrument/account contribution 读路径默认复用物化结果。交易、账户或行情变更会用 `refresh_request_id` 把相关组合标记为 stale 并触发刷新。若刷新中又收到新数据，当前计算不会清掉新的 stale 标记，而是串行再跑一轮后才置为 current。
 
@@ -102,6 +102,7 @@ npm --prefix apps/portfolio/frontend run build
 - `moving_average` 在底层按 `account + asset` 维护一个 rolling average cost bucket；API 为 UI 和转仓审计输出一个 synthetic position lot。
 - `Overview`、`Performance`、`Review` 的 TWR index、daily series 和 drawdown 均按查询窗口重新复合；不得复用 inception-to-date 的累计 TWR 作为区间曲线。
 - `Risk` 的 rolling volatility / Sharpe 输入来自 `daily_twr` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。相关性矩阵和风险贡献使用 as-of date + lookback covariance 的单点风险口径；区间风险贡献归入 Performance `Calculation` 的 realized risk attribution columns。
+- `Research` 的当前 target solve 从最末端 sleeve 递归向上求解；scope default 只使用该 scope 自身的默认目标维度，不静默切到另一个维度。顶层 capital overlay 在风险 sleeve 权重求出后再按目标波动率或总敞口缩放，并把剩余权重放到现金。
 - `IRR / MWROR` 是资金效率补充指标；若数学上不可解，不应降低 TWR 口径的 coverage。
 - 绩效方法参考 Portfolio Performance 的账本模型，并吸收 GIPS 的 TWR 优先、外部现金流政策、估值频率和方法一致性原则；本项目不声称 GIPS compliance，详见 [docs/06_GIPS_ALIGNMENT.md](./docs/06_GIPS_ALIGNMENT.md)。
 

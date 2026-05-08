@@ -30,7 +30,7 @@
 系统优先服务以下真实工作流：
 
 1. 每日开盘前/收盘后查看组合状态。
-2. 跟踪组合相对 benchmark / 当前 resolved target（`weight` 与 `risk_budget` 各自按 active `TAA` fallback `SAA`）的偏离。
+2. 跟踪组合相对 benchmark，以及 `SAA Weight` / `SAA Risk` / `TAA Weight` / `TAA Risk` 四个显式 target comparator 的偏离。
 3. 计算区间绩效、收益来源和风险来源。
 4. 在市场冲击或组合偏离时快速定位风险问题。
 5. 做月度/季度 review，并形成可内部讨论的专业材料。
@@ -407,14 +407,14 @@ MVP 先支持**全球公开市场的标准化资产**：
 - 当前风险结构是什么？
 - 当前偏离、集中和风险预算是否过大？
 - 过去这段时间风险是怎么走出来的？
-- 情景冲击下会发生什么？
+- 哪些资产或 sleeve 正在贡献主要风险？
 
 这是本项目相对 Morningstar Web Portfolio 的新增核心工作面。
 
 首版页面结构分为两部分：
 
-- `Risk / Current`：当前结构、当前 drift、当前 risk budget、当前监控与脆弱点
-- `Risk / Realized`：区间风险路径、drawdown、波动、worst days、realized monitoring tape
+- `Risk / Current`：当前结构、当前 drift、当前 risk budget gap、相关性与风险贡献
+- `Risk / Realized`：rolling volatility、rolling Sharpe 与 benchmark-relative risk path
 
 #### Transactions
 
@@ -571,16 +571,15 @@ MVP 先支持**全球公开市场的标准化资产**：
 - `Snapshot`：默认比较 `primary benchmark`
 - `Holdings`：相对列默认比较 `primary benchmark`
 - `Performance`：默认比较 `primary benchmark`
-- `Risk / Drift`：默认比较当前 taxonomy 下 resolved target 的 `weight` 维度（active `TAA` 若定义 `weight`，否则回退 `SAA`）
-- `Risk / Limits / Alerts`：默认比较已配置 `AlertRule`
-- `Risk / Target Risk Budget`：默认比较当前 taxonomy 下 resolved target 的 `risk_budget` 维度（active `TAA` 若定义 `risk_budget`，否则回退 `SAA`）
+- `Risk / Drift`：展示当前 planning taxonomy 下 `SAA Weight` 与 `TAA Weight` 两个显式 comparator；某一来源未配置该维度时，该 comparator 标记为 unavailable
+- `Risk / Target Risk Budget`：展示当前 planning taxonomy 下 `SAA Risk` 与 `TAA Risk` 两个显式 comparator；某一来源未配置该维度时，该 comparator 标记为 unavailable
 - `Review`：按固定顺序输出 `absolute result -> primary benchmark -> resolved target timeline -> alert breaches`
 
 关键原则：
 
 - `benchmark`、`TargetSet`、`AlertRule` 语义不同，系统不得静默互相替代；
 - 若某页面缺少其 canonical comparator，则退回 absolute view，并明确标记 comparator missing；
-- `Risk` 的 drift / target gap 结果都必须显式展示当前 `taxonomy` 与按维度解析后的 `target_resolution_mode`，而不是只显示单一 `saa/taa`；
+- `Risk` 的 drift / target gap 结果都必须显式展示当前 `taxonomy` 与四个 comparator 的独立可用性，不得把 `TAA` 缺失维度静默回退到 `SAA`；
 - `Review` 必须显式展示 `target_resolution_mode` 与 `target timeline summary`；若 review period 内发生 target 切换，则标记 `Mixed Targets`，并按生效段分别汇总 `target drift summary` 与 `target risk budget summary`；
 - `Review` 不复用 `Risk` 的单点 target comparator，而是按 review period 解析 resolved target timeline；
 - 只有用户显式切换时，页面才允许改用其他比较对象。
@@ -617,7 +616,7 @@ MVP 先支持**全球公开市场的标准化资产**：
 4. 若某个 sleeve 采用内部 risk parity / optimizer，其子层预算属于 research / construction recipe，而不是直接录入 portfolio-level `TargetSetLine`。
 5. 计算 actual portfolio 的 realized exposure 和 risk share。
 6. 首版允许每套 `TargetSet` 只定义资金权重目标、只定义风险预算目标，或同时定义两者。
-7. active `TAA` 只覆盖其已定义的维度；未定义维度必须回退到 active `SAA`，不得把整套 target compare 直接打成 unavailable。
+7. `Risk` 页面必须把 active `SAA` 与 active `TAA` 的 `weight` / `risk_budget` 维度拆成四个 comparator 独立展示；缺失的 `TAA` 维度只影响对应 `TAA` comparator，不回退到 `SAA`。
 8. 若配置了 `target_weight`，则跟踪 `weight drift`；若配置了 `target_risk_share`，则跟踪 `risk budget gap`。
 9. 风险预算比较只允许拿同一分母下的 realized risk share 与 `target_risk_share` 对比；若 drill into 某个 sleeve，则必须切到 sleeve-local denominator 并显式标记。
 10. 在 `resolved target / optional intended target / actual` 之间识别偏离；首版 canonical 输出优先为 `intentional gap` 与 `unintended gap`。
@@ -727,6 +726,8 @@ MVP 先支持**全球公开市场的标准化资产**：
 - 当前组合是否失去环境平衡。
 
 #### G. 风险告警（Risk Alerts）
+
+`Risk` analytics 页面首版不承载告警管理；告警属于后续独立风控工作流，不与当前风险归因表格混在一起。
 
 首版至少支持阈值型告警：
 

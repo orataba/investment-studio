@@ -668,12 +668,24 @@ select {
 .sparkline,
 .mini-sparkline {
   width: 88px;
-  height: 24px;
+  height: 26px;
   display: block;
 }
 
 .holdings-main-table .mini-sparkline {
   width: 100%;
+}
+
+.mini-sparkline-area {
+  fill: rgba(31, 111, 188, 0.16);
+}
+
+.mini-sparkline-path {
+  fill: none;
+  stroke: var(--portfolio-accent);
+  stroke-width: 1.85;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .sparkline-path {
@@ -1927,8 +1939,24 @@ select {
 }
 
 .holdings-filter-group {
-  grid-template-columns: minmax(0, var(--portfolio-date-control-width));
+  display: flex;
+  align-items: center;
+  gap: 16px;
   flex: 0 1 auto;
+}
+
+.holdings-filter-group label {
+  width: var(--portfolio-date-control-width);
+}
+
+.holdings-chart-range-strip {
+  align-items: center;
+  gap: 12px;
+  min-height: 30px;
+}
+
+.holdings-chart-range-strip .price-chart-range-button {
+  padding-bottom: 5px;
 }
 
 .holdings-filter-actions {
@@ -2882,31 +2910,41 @@ select {
   width: 100%;
   height: auto;
   display: block;
+  background: #ffffff;
+}
+
+.price-chart-band {
+  fill: rgba(17, 24, 39, 0.05);
 }
 
 .price-chart-grid-line {
-  stroke: var(--portfolio-line);
-  stroke-width: 1;
+  stroke: #111827;
+  stroke-width: 0.5;
+  vector-effect: non-scaling-stroke;
+  shape-rendering: crispEdges;
 }
 
 .price-chart-axis-label {
-  fill: #6b7280;
+  fill: var(--portfolio-ink);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .price-chart-area {
-  fill: rgba(11, 92, 171, 0.10);
+  fill: rgba(31, 111, 188, 0.16);
 }
 
 .price-chart-line {
   fill: none;
-  stroke: var(--portfolio-accent);
-  stroke-width: 2;
+  stroke: #1f6fbc;
+  stroke-width: 1.85;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .price-chart-guide-line {
-  stroke: #b8c6d7;
-  stroke-width: 1;
+  stroke: rgba(17, 24, 39, 0.35);
+  stroke-width: 1.1;
   stroke-dasharray: 4 4;
 }
 
@@ -3831,6 +3869,57 @@ select {
 
 .research-settings-grid {
   align-items: end;
+}
+
+.research-freeze-panel {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--portfolio-line);
+}
+
+.research-freeze-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--portfolio-muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.research-freeze-panel-header strong {
+  color: var(--portfolio-ink);
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.research-freeze-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 14px;
+}
+
+.research-freeze-option {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: var(--portfolio-ink);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.research-freeze-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-scope-solver-table td:first-child {
+  min-width: 220px;
 }
 
 .research-context-grid,
@@ -5186,7 +5275,8 @@ th {
   .taxonomy-topbar-form-grid,
   .taxonomy-sidebar-form-grid,
   .taxonomy-inline-create-grid,
-  .taxonomy-form-grid-wide {
+  .taxonomy-form-grid-wide,
+  .research-freeze-grid {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -5241,7 +5331,8 @@ th {
   .performance-summary-grid,
   .overview-nav-grid,
   .overview-panel-grid,
-  .portfolio-nav-chart-stats {
+  .portfolio-nav-chart-stats,
+  .research-freeze-grid {
     grid-template-columns: 1fr;
   }
 
@@ -6628,8 +6719,8 @@ input[type='date']::-webkit-calendar-picker-indicator {
 }
 
 .asset-price-chart-instrument .price-chart-grid-line {
-  stroke: rgba(17, 24, 39, 0.36);
-  stroke-width: 0.65;
+  stroke: #111827;
+  stroke-width: 0.5;
 }
 
 .asset-price-chart-instrument .price-chart-axis-label {
@@ -6642,7 +6733,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .asset-price-chart-instrument .price-chart-line {
   stroke: #1f6fbc;
-  stroke-width: 2;
+  stroke-width: 1.85;
 }
 
 .asset-price-chart-instrument .price-chart-footer {
@@ -7062,10 +7153,10 @@ input[type='date']::-webkit-calendar-picker-indicator {
   padding: 12px 14px;
   border-color: #cbd5e1;
   border-radius: 0;
-  background: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.88);
   color: #4b5563;
-  box-shadow: 0 16px 32px rgba(17, 24, 39, 0.12);
-  backdrop-filter: none;
+  box-shadow: 0 12px 26px rgba(17, 24, 39, 0.10);
+  backdrop-filter: blur(6px);
 }
 
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-drawdown-shell {

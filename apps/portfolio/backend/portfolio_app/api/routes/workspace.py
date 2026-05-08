@@ -1,10 +1,15 @@
+from copy import deepcopy
 from datetime import date
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from portfolio_app.db.models import PortfolioCalculationStateModel
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.asset_charts import build_asset_sparkline, build_asset_trend_metrics
+from portfolio_app.services.asset_charts import (
+    build_asset_holdings_market_profile,
+    empty_asset_holdings_market_profile,
+    normalize_chart_range_key,
+)
 from portfolio_app.services.workspace_cache import (
     get_cached_materialized_holdings_workspace,
     preload_portfolio_workspace_cache,
@@ -23,6 +28,79 @@ from portfolio_app.services.portfolio_store import (
 )
 
 router = APIRouter()
+HOLDINGS_PRICE_CHART_RANGE_KEYS = {"1m", "3m", "6m", "1y"}
+
+
+def _normalize_holdings_price_chart_range(value: str | None) -> str:
+    normalized = normalize_chart_range_key(value)
+    return normalized if normalized in HOLDINGS_PRICE_CHART_RANGE_KEYS else "6m"
+
+
+def _parse_iso_date(value: object) -> date | None:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        try:
+            return date.fromisoformat(normalized[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _holding_start_dates_by_asset(position_lots: list[dict[str, object]]) -> dict[str, date]:
+    start_dates: dict[str, date] = {}
+    for position_lot in position_lots:
+        if str(position_lot.get("status") or "") != "open":
+            continue
+        asset_id = str(position_lot.get("asset_id") or "")
+        if not asset_id:
+            continue
+        holding_start_date = _parse_iso_date(position_lot.get("acquisition_date")) or _parse_iso_date(
+            position_lot.get("opened_at")
+        )
+        if holding_start_date is None:
+            continue
+        current_start_date = start_dates.get(asset_id)
+        if current_start_date is None or holding_start_date < current_start_date:
+            start_dates[asset_id] = holding_start_date
+    return start_dates
+
+
+def _enrich_holdings_workspace_market_data(
+    workspace: dict[str, object],
+    *,
+    as_of_date: date,
+    position_lots: list[dict[str, object]],
+    price_chart_range_key: str,
+) -> dict[str, object]:
+    enriched_workspace = deepcopy(workspace)
+    enriched_workspace["price_chart_range"] = price_chart_range_key
+    holding_start_dates = _holding_start_dates_by_asset(position_lots)
+    rows = enriched_workspace.get("rows")
+    if not isinstance(rows, list):
+        return enriched_workspace
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        asset_core = row.get("asset_core") if isinstance(row.get("asset_core"), dict) else {}
+        asset_id = str(asset_core.get("asset_id") or row.get("line_id") or "")
+        if not asset_id:
+            row.update(empty_asset_holdings_market_profile())
+            continue
+        holding_start_date = holding_start_dates.get(asset_id)
+        row.update(
+            build_asset_holdings_market_profile(
+                asset_id,
+                as_of_date=as_of_date,
+                price_chart_range_key=price_chart_range_key,
+                holding_start_date=holding_start_date,
+            )
+        )
+    return enriched_workspace
 
 
 def _materialized_summary_is_current(portfolio_id: str) -> bool:
@@ -102,6 +180,7 @@ def preload_workspace(
 def holdings_workspace(
     portfolio_id: str | None = None,
     as_of_date: date | None = None,
+    price_chart_range: str | None = None,
 ) -> dict[str, object]:
     resolved_portfolio = _require_portfolio(portfolio_id)
 
@@ -112,12 +191,28 @@ def holdings_workspace(
     )
     resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
     resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
+    resolved_price_chart_range = _normalize_holdings_price_chart_range(price_chart_range)
     materialized_workspace = get_cached_materialized_holdings_workspace(
         resolved_portfolio_id,
         as_of_date=resolved_as_of_date,
     )
     if materialized_workspace is not None:
-        return materialized_workspace
+        accounts = list_accounts(resolved_portfolio_id)
+        position_lots = build_position_lots(
+            resolved_portfolio_id,
+            accounts,
+            list_transactions(resolved_portfolio_id, end_date=resolved_as_of_date),
+            as_of_date=resolved_as_of_date,
+        )
+        try:
+            return _enrich_holdings_workspace_market_data(
+                materialized_workspace,
+                as_of_date=resolved_as_of_date,
+                position_lots=position_lots,
+                price_chart_range_key=resolved_price_chart_range,
+            )
+        except InstrumentRegistryError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
 
     accounts = list_accounts(resolved_portfolio_id)
     transactions = list_transactions(resolved_portfolio_id)
@@ -134,18 +229,13 @@ def holdings_workspace(
             list_transactions(resolved_portfolio_id, end_date=resolved_as_of_date),
             as_of_date=resolved_as_of_date,
         )
-        sparkline_by_asset = {
-            str(position.get("asset_id") or ""): build_asset_sparkline(
+        holding_start_dates = _holding_start_dates_by_asset(position_lots)
+        market_profile_by_asset = {
+            str(position.get("asset_id") or ""): build_asset_holdings_market_profile(
                 str(position.get("asset_id") or ""),
                 as_of_date=resolved_as_of_date,
-            )
-            for position in statement.get("positions", [])
-            if str(position.get("asset_id") or "")
-        }
-        trend_metrics_by_asset = {
-            str(position.get("asset_id") or ""): build_asset_trend_metrics(
-                str(position.get("asset_id") or ""),
-                as_of_date=resolved_as_of_date,
+                price_chart_range_key=resolved_price_chart_range,
+                holding_start_date=holding_start_dates.get(str(position.get("asset_id") or "")),
             )
             for position in statement.get("positions", [])
             if str(position.get("asset_id") or "")
@@ -156,6 +246,15 @@ def holdings_workspace(
     position_count = len(positions)
     priced_position_count = sum(1 for position in positions if position.get("last_price") is not None)
     position_lot_summary = summarize_position_lots(position_lots)
+
+    def market_profile_for_position(position: dict[str, object]) -> dict[str, object]:
+        asset_id = str(position.get("asset_id") or "")
+        return (
+            market_profile_by_asset[asset_id]
+            if asset_id
+            else empty_asset_holdings_market_profile()
+        )
+
     rows = [
         {
             "line_id": str(position.get("position_id") or position.get("asset_id") or ""),
@@ -175,8 +274,7 @@ def holdings_workspace(
             "cost_basis": position.get("cost_basis"),
             "cost_basis_base": position.get("cost_basis_base"),
             "allocation": position.get("portfolio_weight"),
-            "price_chart": sparkline_by_asset.get(str(position.get("asset_id") or ""), []),
-            **trend_metrics_by_asset.get(str(position.get("asset_id") or ""), {}),
+            **market_profile_for_position(position),
             "coverage_status": "price-nav-fx" if position.get("market_value_base") is not None else "unpriced",
             "account_count": int(position.get("account_count") or 0),
             "open_position_lot_count": int(position.get("open_position_lot_count") or 0),
@@ -196,6 +294,7 @@ def holdings_workspace(
         "portfolio_name": resolved_portfolio["portfolio_name"],
         "base_currency": statement["base_currency"],
         "as_of_date": resolved_as_of_date.isoformat(),
+        "price_chart_range": resolved_price_chart_range,
         "view_label": "View: Holdings",
         "coverage_note": (
             "Statement of assets now replays portfolio facts to the selected as-of date and values holdings "

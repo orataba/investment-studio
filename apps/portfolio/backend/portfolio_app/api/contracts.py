@@ -1050,7 +1050,10 @@ class ResearchMemberTargetRecord(BaseModel):
 
 class ResearchSolveEventRecord(BaseModel):
     as_of_date: str
+    scope_node_id: str | None = None
     scope_label: str
+    scope_path: str | None = None
+    scope_depth: int | None = None
     requested_target_dimension: str | None = None
     taxonomy_default_target_dimension: DefaultTargetDimension | None = None
     target_dimension: ResearchTargetDimension | None = None
@@ -1070,6 +1073,7 @@ class ResearchSolveEventRecord(BaseModel):
     gross_exposure: float | None = None
     risk_asset_scaling_factor: float | None = None
     member_count: int = 0
+    scope_solve_count: int | None = None
 
 
 class ResearchTargetWeightGapRecord(BaseModel):
@@ -1117,6 +1121,7 @@ class ResearchRunDetailRecord(BaseModel):
     member_targets: list[ResearchMemberTargetRecord] = Field(default_factory=list)
     leaf_targets: list[ResearchMemberTargetRecord] = Field(default_factory=list)
     solve_event: ResearchSolveEventRecord | None = None
+    scope_solve_events: list[ResearchSolveEventRecord] = Field(default_factory=list)
     target_weight_gaps: list[ResearchTargetWeightGapRecord] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 

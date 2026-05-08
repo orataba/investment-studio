@@ -430,7 +430,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert run_payload["status"] == "completed"
     assert run_payload["planning_taxonomy_id"] == taxonomy_id
     assert "run_template" not in run_payload
-    assert run_payload["artifact_count"] == 11
+    assert run_payload["artifact_count"] == 12
     assert run_payload["detail"]["selected_scope"]["taxonomy_node_id"] == node_ids["Risk Assets"]
     assert run_payload["detail"]["selected_scope"]["label"] == "Risk Assets"
     assert "backtest_metrics" not in run_payload["detail"]
@@ -462,6 +462,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert any(item["artifact_id"] == "leaf_targets" for item in run_payload["artifacts"])
     assert all(item["artifact_id"] != "backtest_curve" for item in run_payload["artifacts"])
     assert any(item["artifact_id"] == "solve_event" for item in run_payload["artifacts"])
+    assert any(item["artifact_id"] == "scope_solve_events" for item in run_payload["artifacts"])
     assert any(item["artifact_id"] == "target_weight_gaps" for item in run_payload["artifacts"])
     assert all(item["label"] != "Daily NAV CSV" for item in run_payload["artifacts"])
 
@@ -568,6 +569,66 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
     assert top_level_scope["default_target_dimension"] == "risk_budget"
 
 
+def test_research_scope_default_does_not_fallback_to_alternate_dimension(client):
+    taxonomy_id, node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
+    target_set_response = client.post(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/target-sets",
+        json={
+            "target_set_type": "taa",
+            "name": "Root Weight Only",
+            "effective_from": "2026-04-01",
+            "weight_enabled": True,
+            "risk_budget_enabled": False,
+            "lines": [
+                {
+                    "target_member_type": "taxonomy_node",
+                    "target_member_id": node_ids["Risk Assets"],
+                    "target_weight": 0.7,
+                },
+                {
+                    "target_member_type": "taxonomy_node",
+                    "target_member_id": node_ids["Rates"],
+                    "target_weight": 0.2,
+                },
+                {
+                    "target_member_type": "taxonomy_node",
+                    "target_member_id": node_ids["Cash Reserve"],
+                    "target_weight": 0.1,
+                },
+            ],
+        },
+    )
+    assert target_set_response.status_code == 200
+    settings_response = client.put(
+        "/api/portfolios/yungu/research/settings",
+        json={
+            "planning_taxonomy_id": taxonomy_id,
+            "comparator_taxonomy_node_id": None,
+            "as_of_date": "2026-04-15",
+            "lookback_days": 180,
+            "target_dimension": "scope_default",
+            "capital_mode": "unit_notional",
+        },
+    )
+    assert settings_response.status_code == 200
+
+    run_response = client.post(
+        "/api/portfolios/yungu/research/runs",
+        json={"requested_by": "pytest"},
+    )
+    assert run_response.status_code == 200, run_response.json()
+    run_payload = run_response.json()
+    solve_event = run_payload["detail"]["solve_event"]
+    target_rows_by_label = {item["label"]: item for item in run_payload["detail"]["target_rows"]}
+
+    assert solve_event["taxonomy_default_target_dimension"] == "risk_budget"
+    assert solve_event["target_dimension"] == "risk_budget"
+    assert target_rows_by_label["Risk Assets"]["source_target_set_type"] is None
+    assert target_rows_by_label["Risk Assets"]["target_risk_share"] == pytest.approx(0.5)
+    assert target_rows_by_label["Rates"]["target_risk_share"] == pytest.approx(0.5)
+    assert target_rows_by_label["Cash Reserve"]["target_risk_share"] == pytest.approx(0.0)
+
+
 def test_deleting_selected_research_taxonomy_clears_settings(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
 
@@ -634,17 +695,17 @@ def test_research_target_volatility_scales_risk_assets_into_cash(client):
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
-            "lookback_days": 7,
+            "lookback_days": 180,
             "target_dimension": "weight",
             "capital_mode": "target_volatility",
-            "target_volatility": 0.01,
+            "target_volatility": 0.0001,
             "max_gross_exposure": 1.0,
         },
     )
     assert settings_response.status_code == 200
     settings_payload = settings_response.json()
     assert settings_payload["capital_mode"] == "target_volatility"
-    assert settings_payload["target_volatility"] == pytest.approx(0.01)
+    assert settings_payload["target_volatility"] == pytest.approx(0.0001)
     assert settings_payload["max_gross_exposure"] == pytest.approx(1.0)
 
     run_response = client.post(
@@ -655,7 +716,7 @@ def test_research_target_volatility_scales_risk_assets_into_cash(client):
     run_payload = run_response.json()
     signal_map = {item["label"]: item["value"] for item in run_payload["detail"]["signals"]}
     assert signal_map["Capital Mode"] == "Target Volatility"
-    assert signal_map["Target Volatility"] == "1.00%"
+    assert signal_map["Target Volatility"] == "0.01%"
 
     cash_row = next(
         item
@@ -664,6 +725,51 @@ def test_research_target_volatility_scales_risk_assets_into_cash(client):
     )
     assert cash_row["implementation_weight"] is not None
     assert cash_row["implementation_weight"] > (cash_row["target_weight"] or 0.0)
+    leaf_targets_by_member = {item["member_id"]: item for item in run_payload["detail"]["leaf_targets"]}
+    assert leaf_targets_by_member["fund-hk-2800"]["selected_target_dimension"] == "risk_budget"
+
+
+def test_research_target_volatility_starts_from_full_risk_sleeve_weights(client):
+    taxonomy_id, node_ids = _create_planning_taxonomy(client, root_default_target_dimension="weight")
+    _create_target_sets(client, taxonomy_id, node_ids)
+
+    settings_response = client.put(
+        "/api/portfolios/yungu/research/settings",
+        json={
+            "planning_taxonomy_id": taxonomy_id,
+            "comparator_taxonomy_node_id": None,
+            "as_of_date": "2026-04-15",
+            "lookback_days": 180,
+            "target_dimension": "weight",
+            "capital_mode": "target_volatility",
+            "target_volatility": 1.0,
+            "max_gross_exposure": 1.0,
+        },
+    )
+    assert settings_response.status_code == 200
+
+    run_response = client.post(
+        "/api/portfolios/yungu/research/runs",
+        json={"requested_by": "pytest"},
+    )
+    assert run_response.status_code == 200, run_response.json()
+    run_payload = run_response.json()
+    cash_row = next(
+        item
+        for item in run_payload["detail"]["target_rows"]
+        if item["label"] == "Cash Reserve"
+    )
+    risk_rows = [
+        item
+        for item in run_payload["detail"]["target_rows"]
+        if item["label"] != "Cash Reserve" and item["implementation_weight"] is not None
+    ]
+
+    assert cash_row["target_weight"] == pytest.approx(0.15)
+    assert cash_row["implementation_weight"] == pytest.approx(0.0, abs=1e-9)
+    assert sum(item["implementation_weight"] for item in risk_rows) == pytest.approx(1.0)
+    assert run_payload["detail"]["solve_event"]["gross_exposure"] == pytest.approx(1.0)
+    assert len(run_payload["detail"]["scope_solve_events"]) >= 3
 
 
 def test_research_run_allows_sparse_current_covariance_window(client):

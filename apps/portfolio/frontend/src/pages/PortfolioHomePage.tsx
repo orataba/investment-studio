@@ -66,14 +66,18 @@ type HoldingsColumnKey =
   | 'asset_return_ytd'
   | 'asset_return_1y'
   | 'asset_current_drawdown'
-  | 'chart_return'
-  | 'chart_volatility'
-  | 'chart_max_drawdown'
+  | 'asset_max_drawdown'
+  | 'asset_holding_max_drawdown'
+  | 'asset_volatility_1m'
+  | 'asset_volatility_3m'
+  | 'asset_volatility_6m'
+  | 'asset_volatility_1y'
   | 'price_chart'
   | 'coverage'
 
 type HoldingsGroupByKey = 'none' | 'taxonomy_top' | 'taxonomy_leaf' | 'asset_type' | 'currency' | 'coverage'
 type HoldingsSortDirection = 'asc' | 'desc'
+type HoldingsPriceChartRangeKey = '1m' | '3m' | '6m' | '1y'
 type SortableValue = number | string | null | undefined
 
 type HoldingTaxonomyLabels = {
@@ -134,6 +138,13 @@ const HOLDINGS_VIEWS_STORAGE_KEY = 'yungu.portfolio.holdings.views.v2'
 const HOLDINGS_COLUMN_MIN_WIDTH = 84
 const HOLDINGS_COLUMN_MAX_WIDTH = 520
 
+const HOLDINGS_PRICE_CHART_RANGE_OPTIONS: Array<{ value: HoldingsPriceChartRangeKey; label: string }> = [
+  { value: '1m', label: '1M' },
+  { value: '3m', label: '3M' },
+  { value: '6m', label: '6M' },
+  { value: '1y', label: '1Y' },
+]
+
 const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[] }> = [
   {
     label: 'Identity',
@@ -151,7 +162,6 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
       'asset_return_mtd',
       'asset_return_ytd',
       'asset_return_1y',
-      'asset_current_drawdown',
     ],
   },
   {
@@ -177,11 +187,19 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
   },
   {
     label: 'P&L',
-    columns: ['day_change_pct', 'day_change_value', 'unrealized_value', 'unrealized_pct', 'chart_return'],
+    columns: ['day_change_pct', 'day_change_value', 'unrealized_value', 'unrealized_pct'],
   },
   {
     label: 'Risk',
-    columns: ['chart_volatility', 'chart_max_drawdown'],
+    columns: [
+      'asset_volatility_1m',
+      'asset_volatility_3m',
+      'asset_volatility_6m',
+      'asset_volatility_1y',
+      'asset_current_drawdown',
+      'asset_max_drawdown',
+      'asset_holding_max_drawdown',
+    ],
   },
 ]
 
@@ -233,9 +251,12 @@ const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
   asset_return_ytd: 112,
   asset_return_1y: 112,
   asset_current_drawdown: 120,
-  chart_return: 128,
-  chart_volatility: 112,
-  chart_max_drawdown: 132,
+  asset_max_drawdown: 124,
+  asset_holding_max_drawdown: 136,
+  asset_volatility_1m: 112,
+  asset_volatility_3m: 112,
+  asset_volatility_6m: 112,
+  asset_volatility_1y: 112,
   price_chart: 132,
   coverage: 132,
 }
@@ -272,9 +293,12 @@ const COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS: Partial<Record<HoldingsColumnKey, numb
   asset_return_ytd: 92,
   asset_return_1y: 92,
   asset_current_drawdown: 100,
-  chart_return: 96,
-  chart_volatility: 96,
-  chart_max_drawdown: 104,
+  asset_max_drawdown: 100,
+  asset_holding_max_drawdown: 112,
+  asset_volatility_1m: 92,
+  asset_volatility_3m: 92,
+  asset_volatility_6m: 92,
+  asset_volatility_1y: 92,
   price_chart: 104,
   coverage: 104,
 }
@@ -311,7 +335,7 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
   {
     id: 'asset-trend',
     name: 'Asset Trend',
-    description: 'Recent quote-series returns and current drawdown.',
+    description: 'Selected-range chart and quote-series returns.',
     readonly: true,
     state: {
       columns: [
@@ -337,7 +361,7 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
   {
     id: 'return-risk',
     name: 'Return & Risk',
-    description: 'Return and risk metrics for broad scanning.',
+    description: 'Return, full-series realized volatility, and drawdown metrics.',
     readonly: true,
     state: {
       columns: [
@@ -349,14 +373,17 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
         'asset_return_1w',
         'asset_return_mtd',
         'asset_return_ytd',
-        'asset_current_drawdown',
         'day_change_pct',
         'day_change_value',
         'unrealized_value',
         'unrealized_pct',
-        'chart_return',
-        'chart_volatility',
-        'chart_max_drawdown',
+        'asset_volatility_1m',
+        'asset_volatility_3m',
+        'asset_volatility_6m',
+        'asset_volatility_1y',
+        'asset_current_drawdown',
+        'asset_max_drawdown',
+        'asset_holding_max_drawdown',
       ],
       columnWidths: {},
       groupBy: 'none',
@@ -575,58 +602,6 @@ function totalUnrealizedPct(rows: PortfolioHoldingRow[]) {
     return null
   }
   return unrealized / Math.abs(costBasis)
-}
-
-function chartReturn(row: PortfolioHoldingRow) {
-  const points = row.price_chart.filter((point) => Number.isFinite(point.value))
-  const first = points[0]?.value
-  const last = points[points.length - 1]?.value
-  if (first == null || last == null || Math.abs(first) <= 1e-12) {
-    return null
-  }
-  return last / first - 1
-}
-
-function chartReturns(row: PortfolioHoldingRow) {
-  const points = row.price_chart.filter((point) => Number.isFinite(point.value))
-  const returns: number[] = []
-  points.slice(1).forEach((point, index) => {
-    const previous = points[index]
-    if (previous.value > 1e-12) {
-      returns.push(point.value / previous.value - 1)
-    }
-  })
-  return returns
-}
-
-function sampleStddev(values: number[]) {
-  if (values.length < 2) {
-    return null
-  }
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length
-  const variance = values.reduce((sum, value) => sum + (value - mean) * (value - mean), 0) / (values.length - 1)
-  return Math.sqrt(Math.max(variance, 0))
-}
-
-function chartVolatility(row: PortfolioHoldingRow) {
-  const stddev = sampleStddev(chartReturns(row))
-  return stddev == null ? null : stddev * Math.sqrt(252)
-}
-
-function chartMaxDrawdown(row: PortfolioHoldingRow) {
-  const points = row.price_chart.filter((point) => Number.isFinite(point.value))
-  if (points.length < 2) {
-    return null
-  }
-  let peak = points[0].value
-  let maxDrawdown = 0
-  points.forEach((point) => {
-    peak = Math.max(peak, point.value)
-    if (peak > 1e-12) {
-      maxDrawdown = Math.min(maxDrawdown, point.value / peak - 1)
-    }
-  })
-  return maxDrawdown
 }
 
 function totalMarketValueBase(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {
@@ -950,6 +925,12 @@ function parseHoldingsGroupBy(value: string | null): HoldingsGroupByKey {
   return HOLDINGS_GROUP_BY_OPTIONS.some((option) => option.value === value) ? (value as HoldingsGroupByKey) : 'none'
 }
 
+function parseHoldingsPriceChartRange(value: string | null): HoldingsPriceChartRangeKey {
+  return HOLDINGS_PRICE_CHART_RANGE_OPTIONS.some((option) => option.value === value)
+    ? (value as HoldingsPriceChartRangeKey)
+    : '6m'
+}
+
 function compareSortableValue(left: SortableValue, right: SortableValue, direction: HoldingsSortDirection) {
   const leftMissing = left == null || left === ''
   const rightMissing = right == null || right === ''
@@ -1037,12 +1018,18 @@ function holdingColumnExportValue(
       return row.asset_return_1y ?? null
     case 'asset_current_drawdown':
       return row.asset_current_drawdown ?? null
-    case 'chart_return':
-      return chartReturn(row)
-    case 'chart_volatility':
-      return chartVolatility(row)
-    case 'chart_max_drawdown':
-      return chartMaxDrawdown(row)
+    case 'asset_max_drawdown':
+      return row.asset_max_drawdown ?? null
+    case 'asset_holding_max_drawdown':
+      return row.asset_holding_max_drawdown ?? null
+    case 'asset_volatility_1m':
+      return row.asset_volatility_1m ?? null
+    case 'asset_volatility_3m':
+      return row.asset_volatility_3m ?? null
+    case 'asset_volatility_6m':
+      return row.asset_volatility_6m ?? null
+    case 'asset_volatility_1y':
+      return row.asset_volatility_1y ?? null
     case 'price_chart':
       return row.price_chart.map((point) => `${point.date}:${point.value}`).join(' | ')
     case 'coverage':
@@ -1107,8 +1094,8 @@ function MiniSparkline({ values }: { values: SparklinePoint[] }) {
 
   return (
     <svg className="mini-sparkline" viewBox="0 0 88 24" aria-hidden="true">
-      <path d={`M ${line}`} fill="none" stroke="#ef4444" strokeWidth="1.8" />
-      <path d={`M ${area}`} fill="rgba(239, 68, 68, 0.14)" />
+      <path className="mini-sparkline-area" d={`M ${area}`} />
+      <path className="mini-sparkline-path" d={`M ${line}`} />
     </svg>
   )
 }
@@ -1365,35 +1352,56 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     sortValue: (row) => row.asset_current_drawdown,
     className: (row) => signedValueClass(row.asset_current_drawdown),
   },
-  chart_return: {
-    key: 'chart_return',
-    label: 'Chart Return',
+  asset_volatility_1m: {
+    key: 'asset_volatility_1m',
+    label: '1M Vol',
     align: 'right',
-    render: (row) => signedPercent(chartReturn(row)),
-    sortValue: (row) => chartReturn(row),
-    className: (row) => signedValueClass(chartReturn(row)),
+    render: (row) => formatPercent(row.asset_volatility_1m),
+    sortValue: (row) => row.asset_volatility_1m,
   },
-  chart_volatility: {
-    key: 'chart_volatility',
-    label: 'Chart Vol',
+  asset_volatility_3m: {
+    key: 'asset_volatility_3m',
+    label: '3M Vol',
     align: 'right',
-    render: (row) => formatPercent(chartVolatility(row)),
-    sortValue: (row) => chartVolatility(row),
+    render: (row) => formatPercent(row.asset_volatility_3m),
+    sortValue: (row) => row.asset_volatility_3m,
   },
-  chart_max_drawdown: {
-    key: 'chart_max_drawdown',
-    label: 'Chart Max DD',
+  asset_volatility_6m: {
+    key: 'asset_volatility_6m',
+    label: '6M Vol',
     align: 'right',
-    render: (row) => signedPercent(chartMaxDrawdown(row)),
-    sortValue: (row) => chartMaxDrawdown(row),
-    className: (row) => signedValueClass(chartMaxDrawdown(row)),
+    render: (row) => formatPercent(row.asset_volatility_6m),
+    sortValue: (row) => row.asset_volatility_6m,
+  },
+  asset_volatility_1y: {
+    key: 'asset_volatility_1y',
+    label: '1Y Vol',
+    align: 'right',
+    render: (row) => formatPercent(row.asset_volatility_1y),
+    sortValue: (row) => row.asset_volatility_1y,
+  },
+  asset_max_drawdown: {
+    key: 'asset_max_drawdown',
+    label: 'Max DD',
+    align: 'right',
+    render: (row) => signedPercent(row.asset_max_drawdown),
+    sortValue: (row) => row.asset_max_drawdown,
+    className: (row) => signedValueClass(row.asset_max_drawdown),
+  },
+  asset_holding_max_drawdown: {
+    key: 'asset_holding_max_drawdown',
+    label: 'Held Max DD',
+    align: 'right',
+    render: (row) => signedPercent(row.asset_holding_max_drawdown),
+    sortValue: (row) => row.asset_holding_max_drawdown,
+    className: (row) => signedValueClass(row.asset_holding_max_drawdown),
   },
   price_chart: {
     key: 'price_chart',
-    label: 'Spark Chart',
+    label: 'Chart',
     render: (row) =>
       row.price_chart.length ? <MiniSparkline values={row.price_chart} /> : <span className="sparkline-empty">—</span>,
-    sortValue: (row) => row.asset_return_mtd ?? chartReturn(row),
+    sortValue: (row) => row.asset_return_mtd ?? row.asset_return_1y,
   },
   coverage: {
     key: 'coverage',
@@ -1533,6 +1541,7 @@ export default function PortfolioHomePage() {
   const holdingsTableShellRef = useRef<HTMLDivElement | null>(null)
   const [holdingsTableShellWidth, setHoldingsTableShellWidth] = useState(0)
   const requestedAsOfDate = searchParams.get('as_of_date') ?? ''
+  const holdingsPriceChartRange = parseHoldingsPriceChartRange(searchParams.get('price_chart_range'))
   const selectedAssetId = searchParams.get('asset_id')
   const holdingsViews = useMemo(() => getHoldingsViews(holdingsViewStore), [holdingsViewStore])
   const activeHoldingsView = useMemo(
@@ -2051,7 +2060,10 @@ export default function PortfolioHomePage() {
     setLoading(true)
 
     Promise.allSettled([
-      getHoldingsWorkspace(portfolioId || undefined, { as_of_date: requestedAsOfDate || undefined }),
+      getHoldingsWorkspace(portfolioId || undefined, {
+        as_of_date: requestedAsOfDate || undefined,
+        price_chart_range: holdingsPriceChartRange,
+      }),
       getPortfolioTaxonomyCatalog(portfolioId),
     ])
       .then(([holdingsResult, taxonomyResult]) => {
@@ -2092,7 +2104,7 @@ export default function PortfolioHomePage() {
     return () => {
       cancelled = true
     }
-  }, [portfolioId, requestedAsOfDate])
+  }, [holdingsPriceChartRange, portfolioId, requestedAsOfDate])
 
   useEffect(() => {
     if (!workspace || !selectedAssetId) {
@@ -2127,6 +2139,18 @@ export default function PortfolioHomePage() {
                 onChange={(event) => updateSearchParam('as_of_date', event.target.value || null)}
               />
             </label>
+            <div className="price-chart-range-strip holdings-chart-range-strip" role="tablist" aria-label="Holdings chart range">
+              {HOLDINGS_PRICE_CHART_RANGE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`price-chart-range-button ${option.value === holdingsPriceChartRange ? 'price-chart-range-button-active' : ''}`}
+                  onClick={() => updateSearchParam('price_chart_range', option.value === '6m' ? null : option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="transaction-filter-actions holdings-filter-actions">
             <PortfolioTableViewControls

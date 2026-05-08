@@ -730,19 +730,16 @@ canonical 规则如下：
 
 - market-relative return / active contribution / snapshot relative columns：使用 `primary benchmark`
 - benchmark_active_weight / benchmark-relative exposure / benchmark-active bets：使用 `primary benchmark`，且仅在 benchmark composition 可用时启用
-- target_weight_gap / construction drift / rebalance diagnostics：使用 selected taxonomy 下 resolved target 的 `weight` 维度
+- target_weight_gap / construction drift / rebalance diagnostics：在 `Risk` 中分别使用 selected planning taxonomy 下 active `SAA` 与 active `TAA` 的 `weight` 维度
 - limit checks / alerts：使用 configured `AlertRule`
-- risk budget gap：使用 selected taxonomy 下 resolved target 的 `risk_budget` 维度
+- risk budget gap：在 `Risk` 中分别使用 selected planning taxonomy 下 active `SAA` 与 active `TAA` 的 `risk_budget` 维度
 - review target weight drift / target risk budget summary：使用 selected planning taxonomy 在 `[period_start, period_end]` 上的 resolved target timeline，并按已启用维度分别解释
 
 其中：
 
 - 被用于 drift / risk budget gap 的 selected taxonomy 必须是 `planning_enabled = true`；
-- resolved target 必须按维度解析，而不是整套 `TargetSet` 整体替换：
-  - `weight` 维度：若 active `TAA` 启用了 `weight`，则取 active `TAA`；否则回退到 active `SAA`
-  - `risk_budget` 维度：若 active `TAA` 启用了 `risk_budget`，则取 active `TAA`；否则回退到 active `SAA`
-- resolved target 结果必须显式携带 `resolved_weight_target_set_id/type` 与 `resolved_risk_budget_target_set_id/type`；
-- 若两个维度来源不同，`target_resolution_mode` 必须标记为 `mixed_dimensions`；若区间内来源随时间变化，则标记为 `mixed_timeline`
+- `Risk` 必须把 `SAA Weight` / `SAA Risk` / `TAA Weight` / `TAA Risk` 作为四个显式 comparator 计算；任一来源或维度未配置时，只标记对应 comparator unavailable，不跨 `SAA` / `TAA` 或 `weight` / `risk_budget` 回退；
+- review timeline 仍必须显式携带各段 target source 信息；若区间内来源随时间变化，则标记为 `mixed_timeline`
 - period analytics 必须把上述结果 materialize 为正式 `ResolvedTargetTimeline` / `ResolvedTargetSegment`，而不是匿名 timeline blob；
 - `TargetSet(type = taa)` 在存储层必须已物化为对已启用维度完整的目标集，运行时不做稀疏 overlay 解析；
 - review period 内若 target 发生切换，系统必须按生效区间分段汇总，而不是拿单一期初或期末 target 解释整个区间；
@@ -898,7 +895,7 @@ $$
 - canonical target 只能在 selected taxonomy 的 `budgeting_level` 上直接录入；父层节点目标必须派生汇总
 - 首版 canonical target weight 固定为 `portfolio_nav` basis
 - drift 计算前必须先校验 selected `TargetSet` 启用了 `weight` 维度，且在 budgeting level 上形成完整节点集；若存在 gross leverage / overlay，`target_weight` 总和可以大于 `100%`
-- 若 active `TAA` 未启用 `weight` 维度，则必须回退到 active `SAA` 的 `weight` 维度；只有当 `SAA` 也未提供该维度时，target drift 才记为 `unavailable` / `comparator missing`
+- `Risk` 的 `SAA Weight` 与 `TAA Weight` comparator 独立计算；若某个 target source 未启用 `weight` 维度，只有该 comparator 记为 `unavailable` / `comparator missing`
 
 ### 9.2 Total drift
 
@@ -1013,7 +1010,7 @@ $$
 
 ### 10.4 Realized risk share
 
-正式版同时保留 `signed` 与 `abs` 两种风险份额口径，并在 UI 和 Research 中使用同一组选项。Research solver 的 primary mode 是 `signed`；当 signed shares 因对冲或负相关导致目标预算不可稳定匹配时，可以切换或 fallback 到 `abs`。
+正式版同时保留 `signed` 与 `abs` 两种风险份额口径，并在 UI 和 Research 中使用同一组选项。Research solver 的 primary mode 是 `signed`；当 signed shares 因对冲或负相关导致目标预算不可稳定匹配时，可以显式切换到 `abs` 作为 alternate diagnostic view。
 
 Signed share:
 
@@ -1031,7 +1028,7 @@ $$
 
 - 对冲或负相关位置可能产生负的 signed contribution；
 - `signed` 更忠实地描述边际组合风险，适合 research solver 的 primary diagnostic；
-- `abs` 更适合做 PM 视角的 target risk share comparison fallback；
+- `abs` 更适合做 PM 视角的 alternate target risk share comparison；
 - 页面展示必须标明当前 contribution mode，不能把两种口径混合比较。
 
 ### 10.5 Risk budget gap
@@ -1050,13 +1047,13 @@ $$
 
 其中：
 
-- `TargetRiskShare_i` 来自按维度解析后的 resolved `TargetSetLine.target_risk_share`
+- `TargetRiskShare_i` 来自当前选定的显式 risk comparator（`SAA Risk` 或 `TAA Risk`）对应 `TargetSetLine.target_risk_share`
 - canonical target 只能在 selected taxonomy 的 `budgeting_level` 上直接录入；父层节点目标必须派生汇总
 - `RiskShare_i` 与 `TargetRiskShare_i` 必须使用同一风险分母；首版 canonical top-level compare 的分母是 selected taxonomy 下的 portfolio-level absolute risk share
 - 层级 sleeve 内部的 `25%` 这类 local risk budget 表示“占父 sleeve 内部风险的 25%”，不是全组合风险的 `25% × 父层预算`
 - 因而禁止通过祖先 `target_risk_share` 乘法把 local sleeve risk budget 铺平成全局 risk-budget target；若需要全局 leaf comparator，必须先由 solver / resolved implementation target 在全组合协方差下显式解出
 - risk budget gap 计算前必须先校验 resolved risk-budget target 可用，且其非现金节点的 `target_risk_share` 加总为 `100% ± epsilon`，现金节点 `target_risk_share = 0`
-- 若 active `TAA` 未启用 `risk_budget` 维度，则必须回退到 active `SAA` 的 `risk_budget` 维度；只有当 `SAA` 也未提供该维度时，risk budget gap 才记为 `unavailable` / `comparator missing`
+- `Risk` 的 `SAA Risk` 与 `TAA Risk` comparator 独立计算；若某个 target source 未启用 `risk_budget` 维度，只有该 comparator 记为 `unavailable` / `comparator missing`
 
 说明：
 
@@ -1078,6 +1075,20 @@ $$
 - 它可以在 SAA 或 TAA `target_weight` 中存在；
 - 但在 covariance-based realized risk share 中通常为 `0`；
 - UI 必须解释“capital share != risk share”。
+
+### 10.7 Research target solve
+
+Research current target solve 使用 planning taxonomy 的层级 scope 做递归求解：
+
+- 从最末端 sleeve 开始求解，再把每个子 sleeve 的目标权重和收益序列上卷到父 scope；
+- `scope_default` 只解析当前 scope 自己的 `default_target_dimension`，不得因为目标集缺失而静默切到另一个维度；
+- 若当前选中 scope 显式指定 `weight` 或 `risk_budget`，该 override 只作用于选中 scope；子 sleeve 仍按自己的 scope default 求解；
+- `weight` scope 使用该 scope direct members 的 `target_weight` 拟合本地权重；
+- `risk_budget` scope 使用非现金 direct members 的 `target_risk_share` 求本地目标权重，现金的 `target_risk_share` 必须为 `0`，非现金风险份额加总为 `100%`；
+- 若某个成员被标记为 frozen，优先使用该成员 as-of actual weight；若 actual weight 不存在，只能使用已配置的 `target_weight`，不能把 `target_risk_share` 当作资金权重；
+- 根 scope 完成风险 sleeve 权重后，`target_volatility` / `fixed_gross` capital overlay 才对非现金目标权重整体放缩，并把残差写入 cash-like member；没有 cash-like member 时残差只作为显式诊断披露。
+
+每次 run 必须输出 root `solve_event` 和完整 `scope_solve_events`，用于复核每层 scope 的默认维度、实际维度、solver、RC mode、risk gap 与成员数。
 
 ## 11. Scenario P&L 口径
 

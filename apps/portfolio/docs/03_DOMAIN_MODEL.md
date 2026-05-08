@@ -186,7 +186,7 @@ flowchart LR
 - `Portfolio` 本体不再维护独立的 benchmark truth pointer；任何 analytic comparator 都必须从 `PortfolioBenchmarkAssignment` 的生效区间解析。
 - 若存在多套 planning-enabled taxonomies，则系统必须能解析出默认 planning taxonomy。
 - 对任意 `as_of_date` 和 selected planning taxonomy，系统必须能解析出 active `TargetSet(type = saa)` 与最多一条 active `TargetSet(type = taa)`。
-- 对任意 `as_of_date` 和 selected planning taxonomy，`weight` 与 `risk_budget` 两个维度必须可独立解析：active `TAA` 仅覆盖其已启用维度，未启用维度回退到 active `SAA`。
+- 对任意 `as_of_date` 和 selected planning taxonomy，系统必须能分别解析 active `SAA` 与 active `TAA` 的 `weight` / `risk_budget` 维度；`Risk` comparator 不在 `SAA` 与 `TAA` 之间做静默回退。
 - 若存在多套 taxonomies，则系统必须能解析出默认展示 taxonomy 与默认 planning taxonomy。
 
 ### 4.2 Account
@@ -759,7 +759,7 @@ flowchart LR
 - 若启用 `risk_budget` 维度，则非现金节点的 `TargetSet.target_risk_share` 在 budgeting level 上必须逐节点显式定义且加总为 `100% ± epsilon`；现金节点的 `target_risk_share` 必须固定为 `0`。
 - 若未启用 `risk_budget` 维度，则 `TargetSet.target_risk_share` 必须全部为 `null`。
 - 同一个 canonical `TargetSet` 不得混用 portfolio-level comparator 与 parent-local sleeve comparator。
-- 若 active `TAA` 未启用某个维度，则该维度的 resolved target 必须回退到 active `SAA`，不得把整套 target compare 直接记为 `unavailable`。
+- `Risk` comparator 必须按 `SAA Weight` / `SAA Risk` / `TAA Weight` / `TAA Risk` 独立可用；若 active `TAA` 未启用某个维度，对应 `TAA` comparator 为 unavailable，不得静默使用 `SAA` 代替。
 - 父节点目标只能派生汇总，不得与 budgeting level 叶子节点目标并列录入为 canonical 输入。
 
 ### 5.4 AlertRule

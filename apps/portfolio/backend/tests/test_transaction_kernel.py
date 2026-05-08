@@ -590,6 +590,7 @@ def test_holdings_workspace_includes_shared_price_sparklines(client):
     response = client.get("/api/workspace/holdings", params={"portfolio_id": "yungu"})
     assert response.status_code == 200
     holdings = response.json()
+    assert holdings["price_chart_range"] == "6m"
 
     abbv_row = next(row for row in holdings["rows"] if row["asset_core"]["asset_id"] == "equity-us-abbv")
     assert abbv_row["price_chart"]
@@ -602,6 +603,28 @@ def test_holdings_workspace_includes_shared_price_sparklines(client):
     assert abbv_row["asset_return_ytd"] == pytest.approx(0)
     assert abbv_row["asset_return_1y"] is None
     assert abbv_row["asset_current_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
+    assert abbv_row["asset_max_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
+    assert abbv_row["asset_holding_max_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
+    assert abbv_row["asset_holding_start_date"] == "2026-02-10"
+    assert abbv_row["asset_volatility_1m"] is not None
+    assert abbv_row["asset_volatility_3m"] is not None
+    assert abbv_row["asset_volatility_6m"] is not None
+    assert abbv_row["asset_volatility_1y"] is not None
+
+    one_month_response = client.get(
+        "/api/workspace/holdings",
+        params={"portfolio_id": "yungu", "price_chart_range": "1m"},
+    )
+    assert one_month_response.status_code == 200
+    one_month_holdings = one_month_response.json()
+    assert one_month_holdings["price_chart_range"] == "1m"
+    one_month_abbv_row = next(
+        row for row in one_month_holdings["rows"] if row["asset_core"]["asset_id"] == "equity-us-abbv"
+    )
+    assert one_month_abbv_row["price_chart"][0]["date"] == "2026-03-15"
+    assert one_month_abbv_row["asset_return_mtd"] == pytest.approx(206.47 / 210.20 - 1)
+    assert one_month_abbv_row["asset_volatility_6m"] == pytest.approx(abbv_row["asset_volatility_6m"])
+    assert one_month_abbv_row["asset_max_drawdown"] == pytest.approx(abbv_row["asset_max_drawdown"])
 
 
 def test_asset_price_chart_endpoint_returns_filtered_shared_history(client):

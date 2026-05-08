@@ -87,7 +87,7 @@
 
 - `Portfolio Configure`
 - `Portfolio Configure / Taxonomies`
-- `Risk` 工作面中的 `Limits & Alerts` 管理区
+- 后续独立风控配置工作流；当前 `Risk` analytics 页面不承载告警管理
 
 ## 3. Global Shell
 
@@ -174,7 +174,7 @@
 | `resolved_primary_benchmark_assignment_id` | `Overview` / `Holdings` / `Risk` | resolved active assignment at `as_of_date` | 当前状态页不读取 portfolio 固定 benchmark pointer |
 | `benchmark_resolution_mode` | `Performance` / `Review` | resolved primary benchmark over selected period | 区间内发生 benchmark assignment 切换时显示 `Mixed Benchmark` |
 | `selected_taxonomy_id` | `Holdings` / `Performance` / `Risk` / `Review` | page-specific default | 非 planning taxonomy 不能进入 target compare |
-| `target_resolution_mode` | `Risk` | dimension-aware resolved target source | `weight` / `risk_budget` 各自按 active `TAA` fallback `SAA` 解析；若来源不同显示 `Mixed Target Dimensions` |
+| `target_resolution_mode` | `Risk` | explicit target comparator source | 展示 `SAA Weight` / `SAA Risk` / `TAA Weight` / `TAA Risk` 四个独立 comparator；缺失维度只标记对应 comparator unavailable |
 | `resolved_target_timeline_id` | `Review` | resolved target timeline over selected period | 指向正式 `ResolvedTargetTimeline` 对象，而不是页面临时拼装结果 |
 | `target_resolution_mode` | `Review` | resolved target timeline over selected period | 区间内发生 target 切换或维度来源不同均显示 `Mixed Targets` |
 | `base_currency` | all analytic pages | portfolio base currency | 允许展示本地补充字段，但 canonical 输出以 base 为准 |
@@ -249,7 +249,7 @@
 - composition block -> `Holdings` grouped view
 - benchmark-relative summary -> `Performance` or `Risk`
 - risk highlights -> `Risk`
-- alert highlights -> `Risk / Limits & Alerts`
+- alert highlights -> future risk-control workflow
 
 **Not this page**
 
@@ -347,9 +347,7 @@
 **Primary objects**
 
 - `RiskSnapshot`
-- `AlertEvent`
-- `AlertRule`
-- resolved `TargetSet`
+- explicit `SAA` / `TAA` `TargetSet` comparators
 
 **Core blocks**
 
@@ -357,24 +355,21 @@
 - Correlation Matrix: all-asset matrix and selected planning-taxonomy scope matrix, rendered as tables and controlled by an as-of timeline.
 - Current Drift: SAA/TAA weight target gap and SAA/TAA risk target gap against the default planning taxonomy.
 - Risk Contribution: point-in-time asset risk contribution using selected as-of date, covariance lookback, covariance model, and contribution mode.
-- Limits & alerts and scenarios remain later risk-management blocks; they should not be mixed into the calculation table.
+- Limits, alerts, and scenarios remain outside the current Risk analytics page; they should not be mixed into these calculation blocks.
 
 **Comparator**
 
-- target weight drift / target risk budget gap: resolved `TargetSet`
-- limits / alerts: configured `AlertRule`
+- target weight drift / target risk budget gap: explicit `SAA Weight` / `SAA Risk` / `TAA Weight` / `TAA Risk` comparators
 - benchmark-relative risk blocks: only when benchmark composition is available
 
 **Conditional blocks**
 
-- 若 resolved `TargetSet` 启用了 `weight` 维度，则展示 target weight drift
-- 若 resolved `TargetSet` 启用了 `risk_budget` 维度，则展示 target risk budget gap
-- 若某一维度未配置，则对应 block 不展示，并标记 `target dimension not configured`
+- 每个 target comparator 独立可用；若某一来源未配置某一维度，只标记该 comparator `target dimension not configured`
 
 **Page-local contexts**
 
 - selected planning taxonomy
-- target resolution mode（按 `weight` / `risk_budget` 分维度解析）
+- target comparators（`SAA Weight` / `SAA Risk` / `TAA Weight` / `TAA Risk`）
 - comparison denominator label（`portfolio_total_risk` 或 sleeve drilldown 时的 `parent_local_risk`）
 - `as_of_date`
 - realized-risk window / covariance lookback
@@ -382,15 +377,12 @@
 
 **Rule management**
 
-- `AlertRule` 的查看与维护放在 `Risk / Limits & Alerts`
-- 首版不再单独做 `Alert Rules` 一级导航
+- 当前 `Risk` analytics 页面不做 `AlertRule` 查看、维护或 monitor tape
 
 **Drill-down**
 
 - drift line -> filtered `Holdings`
-- target risk budget gap line -> grouped holdings + scenario context
-- alert event -> related holdings / accounts / transactions
-- scenario result -> affected positions
+- target risk budget gap line -> grouped holdings
 
 **Not this page**
 
@@ -531,8 +523,9 @@
 - status / rerun / update
 - target weights
 - member targets / leaf targets
-- solve event diagnostics
+- solve event diagnostics / scope solver path
 - target weight gaps
+- frozen sleeve controls
 - handoff to portfolio context
 - current context 与 target solve actual rows 必须共享同一 `as_of_date` 边界；dated positions 不得配 undated cash
 
@@ -599,6 +592,7 @@
 - `account taxonomy` 可用于分析和报表，但不承载 `TargetSet`
 - `TargetSet` 对已启用维度必须覆盖当前 scope 的 direct members；未启用维度保持空值
 - `Risk / Review` 只比较当前层 siblings，不把层级 risk budget 静默铺平成全局 leaf target
+- `Research` 的选中 scope override 不下传到子 sleeve；子 sleeve 只能使用自身 default target dimension
 
 **Not this page**
 
@@ -668,8 +662,8 @@ taxonomy node、risk_sleeve node、benchmark-relative group 等分组对象，�
 | `AttributionReport` | `Performance` | `Review` |
 | `RiskSnapshot` | `Risk` | `Overview` |
 | `PeriodRiskSummary` | `Review` | exports |
-| `AlertRule` | `Risk / Limits & Alerts` | monitor engine |
-| `AlertEvent` | `Risk / Limits & Alerts` | `Review` |
+| `AlertRule` | future risk-control workflow | monitor engine |
+| `AlertEvent` | future risk-control workflow | `Review` |
 | `ReviewPack` | `Review` | exports |
 | `ResolvedTargetTimeline` | `Review` | `PeriodRiskSummary` |
 | `ExportArtifact` | `Review` | archived export list / artifact viewer |
@@ -712,8 +706,8 @@ taxonomy node、risk_sleeve node、benchmark-relative group 等分组对象，�
 
 若无 active `TAA`：
 
-- 页面默认回退到 active `SAA`
-- UI 必须明确标识当前 target mode = `SAA`
+- `TAA Weight` 与 `TAA Risk` comparator 进入 unavailable
+- `SAA Weight` 与 `SAA Risk` comparator 仍按 active `SAA` 独立展示
 
 ### 9.5 Coverage Problems
 

@@ -107,6 +107,8 @@ type CurrentPlanningGroup = {
   label: string
   currentWeight: number | null
   currentValueBase: number | null
+  hasMarketRiskInput: boolean
+  hasCashLikeInput: boolean
 }
 
 type RiskContributionRow = {
@@ -138,7 +140,7 @@ const RISK_MODEL_OPTIONS: Array<{ value: RiskModelId; label: string; detail: str
 
 const CONTRIBUTION_MODE_OPTIONS: Array<{ value: RiskContributionMode; label: string; detail: string }> = [
   { value: 'signed', label: 'Signed', detail: 'Matches research primary mode' },
-  { value: 'abs', label: 'Absolute', detail: 'Fallback when signed shares are unstable' },
+  { value: 'abs', label: 'Absolute', detail: 'Alternate view when signed shares are unstable' },
 ]
 
 const CHART_STYLE_OPTIONS: Array<{ value: RiskChartDisplayStyle; label: string }> = [
@@ -254,6 +256,9 @@ function buildBenchmarkReturnPoints(chart: PortfolioAssetPriceChartResponse | nu
 }
 
 function returnPointsInWindow(returnPoints: ReturnPoint[], asOfDate: string, lookbackDays: number) {
+  if (!asOfDate) {
+    return []
+  }
   const startDate = riskWindowStart(asOfDate, lookbackDays)
   return returnPoints.filter((point) => point.date >= startDate && point.date <= asOfDate)
 }
@@ -822,28 +827,37 @@ function buildCurrentPlanningGroups({
     targetScope,
     entityId,
     valueBase,
-    fallbackWeight,
+    weightInput,
+    cashLike,
   }: {
     targetScope: TaxonomyAssignmentScope
     entityId: string
     valueBase: number | null
-    fallbackWeight: number | null
+    weightInput: number | null
+    cashLike: boolean
   }) {
     const assignment = findActiveAssignment(catalog, taxonomyId, targetScope, entityId, currentReferenceDate)
     const topLevelNode = resolveScopedTaxonomyNode(assignment?.taxonomy_node_id, nodeById, '')
     const groupKey = topLevelNode?.taxonomy_node_id ?? `unassigned:${taxonomyId}`
     const label = topLevelNode?.node_name ?? 'Unassigned'
+    const hasExposure = Math.abs(valueBase ?? 0) > 1e-9 || Math.abs(weightInput ?? 0) > 1e-9
     const current = groups.get(groupKey) ?? {
       groupKey,
       label,
       currentWeight: null,
       currentValueBase: null,
+      hasMarketRiskInput: false,
+      hasCashLikeInput: false,
     }
-    if (fallbackWeight != null) {
-      current.currentWeight = (current.currentWeight ?? 0) + fallbackWeight
+    if (weightInput != null) {
+      current.currentWeight = (current.currentWeight ?? 0) + weightInput
     }
     if (valueBase != null) {
       current.currentValueBase = (current.currentValueBase ?? 0) + valueBase
+    }
+    if (hasExposure) {
+      current.hasMarketRiskInput = current.hasMarketRiskInput || !cashLike
+      current.hasCashLikeInput = current.hasCashLikeInput || cashLike
     }
     groups.set(groupKey, current)
   }
@@ -871,12 +885,13 @@ function buildCurrentPlanningGroups({
 
     holdingsWorkspace.rows.forEach((row) => {
       const valueBase = finiteNumber(row.market_value_base)
-      const fallbackWeight = totalValueBase > 1e-9 && valueBase != null ? valueBase / totalValueBase : row.allocation
+      const weightInput = totalValueBase > 1e-9 && valueBase != null ? valueBase / totalValueBase : row.allocation
       addEntity({
         targetScope: 'instrument',
         entityId: row.asset_core.asset_id,
         valueBase,
-        fallbackWeight,
+        weightInput,
+        cashLike: false,
       })
     })
 
@@ -886,7 +901,8 @@ function buildCurrentPlanningGroups({
         targetScope: 'cash_bucket',
         entityId: accountRow.account.account_id,
         valueBase,
-        fallbackWeight: totalValueBase > 1e-9 && valueBase != null ? valueBase / totalValueBase : null,
+        weightInput: totalValueBase > 1e-9 && valueBase != null ? valueBase / totalValueBase : null,
+        cashLike: true,
       })
     })
   } else if (taxonomy.primary_assignment_scope === 'cash_bucket') {
@@ -903,7 +919,8 @@ function buildCurrentPlanningGroups({
         targetScope: 'cash_bucket',
         entityId: accountRow.account.account_id,
         valueBase,
-        fallbackWeight: totalValueBase > 1e-9 && valueBase != null ? valueBase / totalValueBase : null,
+        weightInput: totalValueBase > 1e-9 && valueBase != null ? valueBase / totalValueBase : null,
+        cashLike: true,
       })
     })
   } else {
@@ -911,11 +928,13 @@ function buildCurrentPlanningGroups({
     const totalValueBase = accountRows.reduce((total, accountRow) => total + accountValueBase(accountRow), 0)
     accountRows.forEach((accountRow) => {
       const valueBase = accountValueBase(accountRow)
+      const positionValue = finiteNumber(accountRow.position_market_value) ?? 0
       addEntity({
         targetScope: 'account',
         entityId: accountRow.account.account_id,
         valueBase,
-        fallbackWeight: totalValueBase > 1e-9 ? valueBase / totalValueBase : null,
+        weightInput: totalValueBase > 1e-9 ? valueBase / totalValueBase : null,
+        cashLike: accountRow.account.account_type === 'deposit_account' && Math.abs(positionValue) <= 1e-9,
       })
     })
   }
@@ -978,7 +997,14 @@ function buildTargetGapRows({
   allKeys.forEach((key) => {
     const currentGroup = currentGroupByKey.get(key) ?? null
     const line = lineByKey.get(key) ?? null
-    const current = dimension === 'weight' ? currentGroup?.currentWeight ?? null : riskSharesByGroup.get(key) ?? null
+    const current =
+      dimension === 'weight'
+        ? currentGroup?.currentWeight ?? null
+        : riskSharesByGroup.has(key)
+          ? riskSharesByGroup.get(key) ?? null
+          : currentGroup?.hasCashLikeInput && !currentGroup.hasMarketRiskInput
+            ? 0
+            : null
     const target = line ? (dimension === 'weight' ? line.target_weight ?? null : line.target_risk_share ?? null) : null
     if (current == null && target == null) {
       return
@@ -1719,10 +1745,12 @@ export default function RiskPage() {
           <thead>
             <tr>
               <th>Asset</th>
-              <th>Weight</th>
+              <th title="Normalized within assets that participate in covariance risk. Cash is excluded unless modelled as a market factor.">
+                Risk Weight
+              </th>
               <th>Annualized Vol</th>
               <th>Risk Share</th>
-              <th>Variance Contribution</th>
+              <th title="Signed daily component contribution to variance before risk-share normalization.">Daily Var Ctr</th>
               <th>Obs</th>
             </tr>
           </thead>
