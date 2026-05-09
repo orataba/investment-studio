@@ -102,6 +102,66 @@ def test_valuation_quote_selection_rejects_reference_and_total_return_fallbacks(
     assert total_return_point["quote_basis"] == "adjusted_close"
 
 
+def test_quote_selection_uses_only_complete_market_data():
+    detail = {
+        "asset_id": "equity-us-status-test",
+        "asset_name": "Status Test Equity",
+        "asset_type": "equity",
+        "currency": "USD",
+        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
+        "market_data": [
+            {
+                "metric_family": "price",
+                "quote_basis": "close",
+                "as_of_date": "2026-01-01",
+                "value": "100.00",
+                "currency": "USD",
+                "status": "complete",
+            },
+            {
+                "metric_family": "price",
+                "quote_basis": "close",
+                "as_of_date": "2026-01-02",
+                "value": "110.00",
+                "currency": "USD",
+                "status": "partial",
+            },
+        ],
+        "latest_market_data": [
+            {
+                "metric_family": "price",
+                "quote_basis": "close",
+                "as_of_date": "2026-01-02",
+                "value": "110.00",
+                "currency": "USD",
+                "status": "partial",
+            },
+            {
+                "metric_family": "price",
+                "quote_basis": "close",
+                "as_of_date": "2026-01-01",
+                "value": "100.00",
+                "currency": "USD",
+                "status": "complete",
+            },
+        ],
+    }
+
+    point = performance._select_market_point_as_of(
+        detail=deepcopy(detail),
+        role="valuation",
+        as_of_date=date(2026, 1, 2),
+    )
+
+    assert point is not None
+    assert point["value"] == 100.0
+    assert point["as_of_date"] == date(2026, 1, 1)
+    assert point["status"] == "complete"
+    assert point["stale"] is True
+    assert ledger._select_quote_value(deepcopy(detail), role="valuation", as_of_date=date(2026, 1, 2)) == 100.0
+    assert ledger._select_quote_value(deepcopy(detail), role="valuation") == 100.0
+
+
 def _daily_snapshot_row_count(portfolio_id: str) -> int:
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -1011,7 +1071,12 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
     risk_returns = [0.10, 105.0 / 110.0 - 1.0]
     mean_return = sum(risk_returns) / len(risk_returns)
     daily_stddev = sqrt(sum((value - mean_return) ** 2 for value in risk_returns) / (len(risk_returns) - 1))
+    downside_deviation = sqrt(sum(min(0.0, value) ** 2 for value in risk_returns) / len(risk_returns))
     expected_periods_per_year = 2 / 4 * performance.DAYS_PER_YEAR
+    expected_annualized_twr = (1.05 ** (performance.DAYS_PER_YEAR / 4)) - 1
+    expected_annualized_mean = mean_return * expected_periods_per_year
+    expected_annualized_volatility = daily_stddev * sqrt(expected_periods_per_year)
+    expected_annualized_downside_volatility = downside_deviation * sqrt(expected_periods_per_year)
 
     assert by_date["2026-01-03"]["market_observation_count"] == 0
     assert by_date["2026-01-03"]["return_observation_eligible"] is False
@@ -1025,7 +1090,12 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
     assert summary["risk_return_observation_count"] == 2
     assert isclose(summary["risk_annualization_periods_per_year"], expected_periods_per_year, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["mean_daily_return"], sum(risk_returns) / len(risk_returns), rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["annualized_volatility"], daily_stddev * sqrt(expected_periods_per_year), rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["annualized_return_from_daily_mean"], expected_annualized_mean, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["annualized_twr"], expected_annualized_twr, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["annualized_volatility"], expected_annualized_volatility, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["annualized_downside_volatility"], expected_annualized_downside_volatility, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["sharpe_ratio"], expected_annualized_mean / expected_annualized_volatility, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["sortino_ratio"], expected_annualized_mean / expected_annualized_downside_volatility, rel_tol=0.0, abs_tol=1e-12)
 
     window_response = client.get(
         "/api/portfolios/non-trading-risk-test/performance?start_date=2026-01-05&end_date=2026-01-06"
@@ -2149,7 +2219,12 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
     monkeypatch.setattr(
         workspace_routes,
         "build_asset_holdings_market_profile",
-        lambda *_args, **_kwargs: {"price_chart": []},
+        lambda *_args, **_kwargs: {
+            "price_chart_1m": [],
+            "price_chart_3m": [],
+            "price_chart_6m": [],
+            "price_chart_1y": [],
+        },
     )
     monkeypatch.setattr(
         performance,

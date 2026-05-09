@@ -590,12 +590,15 @@ def test_holdings_workspace_includes_shared_price_sparklines(client):
     response = client.get("/api/workspace/holdings", params={"portfolio_id": "yungu"})
     assert response.status_code == 200
     holdings = response.json()
-    assert holdings["price_chart_range"] == "6m"
+    assert "price_chart_range" not in holdings
 
     abbv_row = next(row for row in holdings["rows"] if row["asset_core"]["asset_id"] == "equity-us-abbv")
-    assert abbv_row["price_chart"]
-    assert abbv_row["price_chart"][-1]["date"] == "2026-04-15"
-    assert abbv_row["price_chart"][-1]["value"] == pytest.approx(206.47)
+    assert "price_chart" not in abbv_row
+    assert abbv_row["price_chart_1m"][0]["date"] == "2026-03-15"
+    assert abbv_row["price_chart_6m"]
+    assert abbv_row["price_chart_6m"][-1]["date"] == "2026-04-15"
+    assert abbv_row["price_chart_6m"][-1]["value"] == pytest.approx(206.47)
+    assert abbv_row["price_chart_1y"][-1]["value"] == pytest.approx(206.47)
     assert abbv_row["asset_trend_as_of_date"] == "2026-04-15"
     assert abbv_row["asset_trend_basis"] == "close"
     assert abbv_row["asset_return_1w"] == pytest.approx(206.47 / 207.18 - 1)
@@ -611,20 +614,8 @@ def test_holdings_workspace_includes_shared_price_sparklines(client):
     assert abbv_row["asset_volatility_6m"] is not None
     assert abbv_row["asset_volatility_1y"] is not None
 
-    one_month_response = client.get(
-        "/api/workspace/holdings",
-        params={"portfolio_id": "yungu", "price_chart_range": "1m"},
-    )
-    assert one_month_response.status_code == 200
-    one_month_holdings = one_month_response.json()
-    assert one_month_holdings["price_chart_range"] == "1m"
-    one_month_abbv_row = next(
-        row for row in one_month_holdings["rows"] if row["asset_core"]["asset_id"] == "equity-us-abbv"
-    )
-    assert one_month_abbv_row["price_chart"][0]["date"] == "2026-03-15"
-    assert one_month_abbv_row["asset_return_mtd"] == pytest.approx(206.47 / 210.20 - 1)
-    assert one_month_abbv_row["asset_volatility_6m"] == pytest.approx(abbv_row["asset_volatility_6m"])
-    assert one_month_abbv_row["asset_max_drawdown"] == pytest.approx(abbv_row["asset_max_drawdown"])
+    assert abbv_row["price_chart_3m"][0]["date"] == "2026-02-10"
+    assert abbv_row["asset_return_mtd"] == pytest.approx(206.47 / 210.20 - 1)
 
 
 def test_asset_price_chart_endpoint_returns_filtered_shared_history(client):

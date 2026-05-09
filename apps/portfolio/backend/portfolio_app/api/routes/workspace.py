@@ -1,14 +1,18 @@
 from copy import deepcopy
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
+from portfolio_app.services.calculation_frequency import (
+    calculation_frequency_profile,
+    infer_observation_frequency,
+    selected_observation_dates_from_detail,
+)
 from portfolio_app.db.models import PortfolioCalculationStateModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.asset_charts import (
     build_asset_holdings_market_profile,
     empty_asset_holdings_market_profile,
-    normalize_chart_range_key,
 )
 from portfolio_app.services.workspace_cache import (
     get_cached_materialized_holdings_workspace,
@@ -19,6 +23,7 @@ from portfolio_app.services.ledger import (
     summarize_position_lots,
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
+from portfolio_app.services.instrument_registry import get_registry_instrument_detail
 from portfolio_app.services.performance import build_statement_of_assets_report
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
@@ -28,12 +33,6 @@ from portfolio_app.services.portfolio_store import (
 )
 
 router = APIRouter()
-HOLDINGS_PRICE_CHART_RANGE_KEYS = {"1m", "3m", "6m", "1y"}
-
-
-def _normalize_holdings_price_chart_range(value: str | None) -> str:
-    normalized = normalize_chart_range_key(value)
-    return normalized if normalized in HOLDINGS_PRICE_CHART_RANGE_KEYS else "6m"
 
 
 def _parse_iso_date(value: object) -> date | None:
@@ -74,10 +73,9 @@ def _enrich_holdings_workspace_market_data(
     *,
     as_of_date: date,
     position_lots: list[dict[str, object]],
-    price_chart_range_key: str,
 ) -> dict[str, object]:
     enriched_workspace = deepcopy(workspace)
-    enriched_workspace["price_chart_range"] = price_chart_range_key
+    enriched_workspace.pop("price_chart_range", None)
     holding_start_dates = _holding_start_dates_by_asset(position_lots)
     rows = enriched_workspace.get("rows")
     if not isinstance(rows, list):
@@ -89,14 +87,15 @@ def _enrich_holdings_workspace_market_data(
         asset_core = row.get("asset_core") if isinstance(row.get("asset_core"), dict) else {}
         asset_id = str(asset_core.get("asset_id") or row.get("line_id") or "")
         if not asset_id:
+            row.pop("price_chart", None)
             row.update(empty_asset_holdings_market_profile())
             continue
         holding_start_date = holding_start_dates.get(asset_id)
+        row.pop("price_chart", None)
         row.update(
             build_asset_holdings_market_profile(
                 asset_id,
                 as_of_date=as_of_date,
-                price_chart_range_key=price_chart_range_key,
                 holding_start_date=holding_start_date,
             )
         )
@@ -122,11 +121,56 @@ def _require_portfolio(portfolio_id: str | None, *, live_if_materialized_stale: 
     return resolved_portfolio
 
 
+def _portfolio_calculation_frequency_status(portfolio: dict[str, object], *, as_of_date: date) -> str:
+    portfolio_id = str(portfolio.get("portfolio_id") or "")
+    if not portfolio_id:
+        return "Risk basis unavailable"
+    materialized_workspace = get_cached_materialized_holdings_workspace(
+        portfolio_id,
+        as_of_date=as_of_date,
+    )
+    if not isinstance(materialized_workspace, dict):
+        return "Risk basis unavailable"
+
+    start_date = as_of_date - timedelta(days=366)
+    source_frequencies = []
+    asset_ids: list[str] = []
+    for row in list(materialized_workspace.get("rows") or []):
+        if not isinstance(row, dict):
+            continue
+        asset_core = row.get("asset_core") if isinstance(row.get("asset_core"), dict) else {}
+        asset_id = str(asset_core.get("asset_id") or row.get("line_id") or "").strip()
+        if asset_id and asset_id not in asset_ids:
+            asset_ids.append(asset_id)
+    for asset_id in asset_ids:
+        if not asset_id:
+            continue
+        try:
+            detail = get_registry_instrument_detail(asset_id)
+        except InstrumentRegistryError:
+            return "Risk basis unavailable"
+        if not isinstance(detail, dict):
+            continue
+        dates = [
+            point_date
+            for point_date in selected_observation_dates_from_detail(detail, end_date=as_of_date)
+            if start_date <= point_date <= as_of_date
+        ]
+        source_frequencies.append(infer_observation_frequency(dates))
+    profile = calculation_frequency_profile(requested_frequency="auto", source_frequencies=source_frequencies)
+    return str(profile["status_label"])
+
+
 @router.get("/summary")
 def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
     resolved_portfolio = _require_portfolio(portfolio_id, live_if_materialized_stale=True)
 
     as_of_date = str(resolved_portfolio.get("as_of_date") or date.today().isoformat())
+    parsed_as_of_date = date.fromisoformat(as_of_date)
+    calculation_frequency_status = _portfolio_calculation_frequency_status(
+        resolved_portfolio,
+        as_of_date=parsed_as_of_date,
+    )
     return {
         "portfolio_id": resolved_portfolio["portfolio_id"],
         "portfolio_name": resolved_portfolio["portfolio_name"],
@@ -138,6 +182,7 @@ def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
         "default_planning_taxonomy_id": resolved_portfolio.get("default_planning_taxonomy_id"),
         "toolbar_label": "View: Portfolio Summary",
         "badges": [
+            calculation_frequency_status,
             "Ledger and performance kernel live",
             "Planning taxonomy and target sets live",
             "Current research target-weight solve live",
@@ -180,7 +225,6 @@ def preload_workspace(
 def holdings_workspace(
     portfolio_id: str | None = None,
     as_of_date: date | None = None,
-    price_chart_range: str | None = None,
 ) -> dict[str, object]:
     resolved_portfolio = _require_portfolio(portfolio_id)
 
@@ -191,7 +235,6 @@ def holdings_workspace(
     )
     resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
     resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
-    resolved_price_chart_range = _normalize_holdings_price_chart_range(price_chart_range)
     materialized_workspace = get_cached_materialized_holdings_workspace(
         resolved_portfolio_id,
         as_of_date=resolved_as_of_date,
@@ -209,7 +252,6 @@ def holdings_workspace(
                 materialized_workspace,
                 as_of_date=resolved_as_of_date,
                 position_lots=position_lots,
-                price_chart_range_key=resolved_price_chart_range,
             )
         except InstrumentRegistryError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
@@ -234,7 +276,6 @@ def holdings_workspace(
             str(position.get("asset_id") or ""): build_asset_holdings_market_profile(
                 str(position.get("asset_id") or ""),
                 as_of_date=resolved_as_of_date,
-                price_chart_range_key=resolved_price_chart_range,
                 holding_start_date=holding_start_dates.get(str(position.get("asset_id") or "")),
             )
             for position in statement.get("positions", [])
@@ -294,7 +335,6 @@ def holdings_workspace(
         "portfolio_name": resolved_portfolio["portfolio_name"],
         "base_currency": statement["base_currency"],
         "as_of_date": resolved_as_of_date.isoformat(),
-        "price_chart_range": resolved_price_chart_range,
         "view_label": "View: Holdings",
         "coverage_note": (
             "Statement of assets now replays portfolio facts to the selected as-of date and values holdings "

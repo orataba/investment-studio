@@ -88,7 +88,7 @@ textarea {
 .hero-kicker,
 .registry-kicker {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--platform-accent);
@@ -98,8 +98,10 @@ textarea {
 .registry-pagehead h1 {
   margin: 0;
   max-width: 980px;
-  font-size: clamp(34px, 5vw, 58px);
-  line-height: 0.96;
+  font-size: clamp(30px, 4vw, 46px);
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.04;
 }
 
 .hero-copy {
@@ -150,7 +152,9 @@ textarea {
 .app-card h2,
 .registry-panel h2 {
   margin: 0 0 12px;
-  font-size: 32px;
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: 0;
   line-height: 1;
 }
 
@@ -222,7 +226,7 @@ textarea {
 .registry-form-title,
 .registry-table-meta {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.04em;
   color: #6b7280;
   text-transform: uppercase;
@@ -230,6 +234,7 @@ textarea {
 
 .registry-stat strong {
   font-size: 24px;
+  font-weight: 500;
   line-height: 1;
 }
 
@@ -401,7 +406,7 @@ textarea {
 
 .registry-form label span {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 400;
   color: #4b5563;
   text-transform: uppercase;
 }
@@ -556,7 +561,7 @@ textarea {
 
 .registry-op-meta span {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 400;
   color: #6b7280;
   text-transform: uppercase;
 }
@@ -850,56 +855,4 @@ textarea {
   .registry-toolbar-actions {
     width: 100%;
   }
-}
-
-/* Minimal typography pass shared with the workspace apps. */
-.platform-shell :is(h1, h2, h3, h4, h5, h6, strong, b, th, button, select, input, textarea) {
-  letter-spacing: 0;
-}
-
-.platform-shell :is(.hero h1, .registry-pagehead h1) {
-  font-size: clamp(30px, 4vw, 46px);
-  font-weight: 500;
-  line-height: 1.04;
-}
-
-.platform-shell :is(.app-card h2, .registry-panel h2) {
-  font-size: 28px;
-  font-weight: 500;
-}
-
-.platform-shell :is(
-  .hero-kicker,
-  .registry-kicker,
-  .app-eyebrow,
-  .registry-stat-label,
-  .registry-form-title,
-  .registry-table-meta,
-  .registry-form label span,
-  .registry-op-meta span,
-  .registry-preview-header span,
-  .registry-table th
-) {
-  font-weight: 500;
-  letter-spacing: 0.01em;
-}
-
-.platform-shell :is(
-  .platform-nav-link,
-  .app-link,
-  .registry-submit,
-  .registry-row-toggle,
-  .metric-chip,
-  .coverage-badge,
-  .lifecycle-badge
-) {
-  font-weight: 500;
-}
-
-.platform-shell :is(th, td, td strong, td b) {
-  font-weight: 400;
-}
-
-.platform-shell :is(th, .registry-table th, .instrument-id-stack strong, .registry-stat strong) {
-  font-weight: 500;
 }

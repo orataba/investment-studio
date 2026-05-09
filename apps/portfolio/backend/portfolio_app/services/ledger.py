@@ -10,6 +10,7 @@ from portfolio_app.services.instrument_registry import (
     get_registry_instrument_detail,
     list_registry_instruments,
 )
+from portfolio_app.services.market_data import is_usable_market_data_point
 
 
 def _safe_float(value: object) -> float | None:
@@ -70,7 +71,7 @@ def resolve_fx_rate_map() -> dict[tuple[str, str], float]:
         if str(currency or "").strip()
     }
     for item in payload.get("rates", []):
-        if not isinstance(item, dict):
+        if not is_usable_market_data_point(item):
             continue
         base_currency = str(item.get("base_currency") or "").strip().upper()
         quote_currency = str(item.get("quote_currency") or "").strip().upper()
@@ -89,7 +90,7 @@ def resolve_fx_rate_map() -> dict[tuple[str, str], float]:
 def _direct_fx_asset_map(fx_payload: dict[str, object]) -> dict[tuple[str, str], str]:
     direct_assets: dict[tuple[str, str], str] = {}
     for item in fx_payload.get("rates", []):
-        if not isinstance(item, dict):
+        if not is_usable_market_data_point(item):
             continue
         if str(item.get("source_kind") or "") != "direct":
             continue
@@ -146,7 +147,7 @@ def _market_points_by_basis(detail: dict[str, object]) -> dict[str, list[dict[st
     if not isinstance(market_data, list):
         return points_by_basis
     for point in market_data:
-        if not isinstance(point, dict):
+        if not is_usable_market_data_point(point):
             continue
         quote_basis = str(point.get("quote_basis") or "").strip()
         if not quote_basis:
@@ -177,7 +178,7 @@ def _latest_points_by_basis(instrument: dict[str, object]) -> dict[str, dict[str
 
     latest_by_basis: dict[str, dict[str, object]] = {}
     for point in latest_market_data:
-        if not isinstance(point, dict):
+        if not is_usable_market_data_point(point):
             continue
         quote_basis = str(point.get("quote_basis") or "").strip()
         if not quote_basis:

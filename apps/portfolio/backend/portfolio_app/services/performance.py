@@ -20,6 +20,7 @@ from portfolio_app.services.ledger import (
     derive_ledger_postings,
     ledger_posting_effective_date_iso,
 )
+from portfolio_app.services.market_data import is_usable_market_data_point, market_data_status
 
 
 DEFAULT_VALUATION_CUTOFF_POLICY = "latest_complete_eod"
@@ -212,7 +213,7 @@ def _market_points_by_basis(detail: dict[str, object]) -> dict[str, list[dict[st
     if not isinstance(market_data, list):
         return points_by_basis
     for point in market_data:
-        if not isinstance(point, dict):
+        if not is_usable_market_data_point(point):
             continue
         quote_basis = str(point.get("quote_basis") or "").strip()
         if not quote_basis:
@@ -262,7 +263,7 @@ def _select_market_point_as_of(
                 "metric_family": str(point.get("metric_family") or ""),
                 "quote_basis": quote_basis,
                 "provider": point.get("provider"),
-                "status": str(point.get("status") or "complete"),
+                "status": market_data_status(point),
                 "stale": point_date is not None and point_date < as_of_date,
             }
     return None
@@ -298,7 +299,7 @@ def _direct_fx_point_as_of(
     points = [
         point
         for point in market_data
-        if isinstance(point, dict)
+        if is_usable_market_data_point(point)
         and str(point.get("metric_family") or "") == "fx"
         and str(point.get("quote_basis") or "") == "spot"
     ]
@@ -313,7 +314,7 @@ def _direct_fx_point_as_of(
     return {
         "rate": rate,
         "as_of_date": point_date,
-        "status": str(point.get("status") or "complete"),
+        "status": market_data_status(point),
         "stale": point_date < as_of_date,
     }
 
@@ -393,7 +394,7 @@ def resolve_fx_rate_on(
     return {
         "rate": quote_rate / base_rate,
         "as_of_date": min(base_date, quote_date),
-        "status": "partial" if "partial" in {base_leg.get("status"), quote_leg.get("status")} else "complete",
+        "status": "complete",
         "stale": bool(base_leg.get("stale")) or bool(quote_leg.get("stale")),
     }
 
@@ -2201,9 +2202,15 @@ def build_portfolio_performance_report_from_snapshots(
         if mean_daily_return is not None and periods_per_year is not None
         else None
     )
-    sharpe_ratio = (
-        annualized_return_from_daily_mean / annualized_volatility
+    annualized_risk_free_rate = 0.0
+    annualized_mean_excess_return = (
+        annualized_return_from_daily_mean - annualized_risk_free_rate
         if annualized_return_from_daily_mean is not None
+        else None
+    )
+    sharpe_ratio = (
+        annualized_mean_excess_return / annualized_volatility
+        if annualized_mean_excess_return is not None
         and annualized_volatility is not None
         and annualized_volatility > 1e-12
         else None
@@ -2215,8 +2222,8 @@ def build_portfolio_performance_report_from_snapshots(
         else None
     )
     sortino_ratio = (
-        annualized_return_from_daily_mean / annualized_downside_volatility
-        if annualized_return_from_daily_mean is not None
+        annualized_mean_excess_return / annualized_downside_volatility
+        if annualized_mean_excess_return is not None
         and annualized_downside_volatility is not None
         and annualized_downside_volatility > 1e-12
         else None
@@ -4359,6 +4366,8 @@ def _group_contribution_slices_by_taxonomy(
 
     grouped: dict[tuple[date, str], dict[str, object]] = {}
     coverage_states_by_group: dict[tuple[date, str], list[str]] = defaultdict(list)
+    eligibility_by_group: dict[tuple[date, str], list[bool]] = defaultdict(list)
+    eligibility_by_group: dict[tuple[date, str], list[bool]] = defaultdict(list)
 
     for base_slice in base_daily_slices:
         as_of_date = base_slice.get("as_of_date")
@@ -4400,9 +4409,11 @@ def _group_contribution_slices_by_taxonomy(
                 "total_pnl": 0.0,
                 "daily_return": None,
                 "daily_contribution": 0.0,
+                "return_observation_eligible": False,
             },
         )
         coverage_states_by_group[slice_key].append(str(base_slice.get("coverage_state") or "unavailable"))
+        eligibility_by_group[slice_key].append(bool(base_slice.get("return_observation_eligible")))
 
         for field_name in (
             "beginning_value_base",
@@ -4443,6 +4454,12 @@ def _group_contribution_slices_by_taxonomy(
             total_pnl / beginning_value_base
             if total_pnl is not None and beginning_value_base is not None and beginning_value_base > 1e-9
             else None
+        )
+        grouped_slice["return_observation_eligible"] = (
+            grouped_slice["daily_return"] is not None
+            and grouped_slice["coverage_state"] == "complete"
+            and bool(eligibility_by_group[slice_key])
+            and all(eligibility_by_group[slice_key])
         )
     return grouped_slices
 
@@ -5679,6 +5696,7 @@ def _merge_calculation_detail_daily_slices(
 ) -> list[dict[str, object]]:
     grouped: dict[tuple[date, str], dict[str, object]] = {}
     coverage_states_by_group: dict[tuple[date, str], list[str]] = defaultdict(list)
+    eligibility_by_group: dict[tuple[date, str], list[bool]] = defaultdict(list)
 
     for daily_slice in daily_slices:
         as_of_date = daily_slice.get("as_of_date")
@@ -5701,9 +5719,7 @@ def _merge_calculation_detail_daily_slices(
             },
         )
         coverage_states_by_group[slice_key].append(str(daily_slice.get("coverage_state") or "unavailable"))
-        grouped_slice["return_observation_eligible"] = bool(grouped_slice.get("return_observation_eligible")) or bool(
-            daily_slice.get("return_observation_eligible")
-        )
+        eligibility_by_group[slice_key].append(bool(daily_slice.get("return_observation_eligible")))
         grouped_slice["market_observation_count"] = max(
             int(grouped_slice.get("market_observation_count") or 0),
             int(daily_slice.get("market_observation_count") or 0),
@@ -5728,6 +5744,12 @@ def _merge_calculation_detail_daily_slices(
             total_pnl / beginning_value_base
             if total_pnl is not None and beginning_value_base is not None and beginning_value_base > 1e-9
             else None
+        )
+        grouped_slice["return_observation_eligible"] = (
+            grouped_slice["daily_return"] is not None
+            and grouped_slice["coverage_state"] == "complete"
+            and bool(eligibility_by_group[slice_key])
+            and all(eligibility_by_group[slice_key])
         )
     return grouped_slices
 

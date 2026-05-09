@@ -1,0 +1,54 @@
+.yungu-sparkline-cell {
+  --yungu-sparkline-stroke: #1f6fbc;
+  --yungu-sparkline-area: rgba(31, 111, 188, 0.14);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 96px;
+  max-width: 100%;
+  min-width: 0;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.yungu-sparkline-cell[data-trend='positive'] {
+  --yungu-sparkline-stroke: #0f766e;
+  --yungu-sparkline-area: rgba(15, 118, 110, 0.14);
+}
+
+.yungu-sparkline-cell[data-trend='negative'] {
+  --yungu-sparkline-stroke: #b42318;
+  --yungu-sparkline-area: rgba(180, 35, 24, 0.14);
+}
+
+.yungu-sparkline {
+  display: block;
+  width: 96px;
+  max-width: 100%;
+  min-width: 0;
+  height: 24px;
+  overflow: visible;
+}
+
+.yungu-sparkline-area {
+  fill: var(--yungu-sparkline-area);
+}
+
+.yungu-sparkline-path {
+  fill: none;
+  stroke: var(--yungu-sparkline-stroke);
+  stroke-width: 1.85;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.yungu-sparkline-empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 96px;
+  max-width: 100%;
+  min-width: 0;
+  color: #9ca3af;
+  line-height: 1;
+}

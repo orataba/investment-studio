@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 from datetime import date
+from math import sqrt
 
+import pandas as pd
 import pytest
 
-from portfolio_app.services.asset_charts import _candidate_chart_bases
-import pandas as pd
+from portfolio_app.services.asset_charts import _annualized_volatility, _candidate_chart_bases
 
 from portfolio_app.services.research_solver import (
     TARGET_MEMBER_INSTRUMENT,
     ScopeMemberRecord,
     _align_member_series,
+    _estimate_covariance,
     _infer_periods_per_year,
     _selected_price_points,
 )
@@ -206,6 +208,8 @@ def test_research_workbench_returns_target_solve_defaults(client):
     assert payload["settings"]["planning_taxonomy_id"] is None
     assert payload["settings"]["target_dimension"] == "scope_default"
     assert payload["settings"]["capital_mode"] == "unit_notional"
+    assert payload["settings"]["calculation_frequency"] == "auto"
+    assert payload["calculation_frequency"]["resolved_frequency"] == "daily"
     assert payload["settings"]["gross_exposure"] is None
     assert payload["settings"]["target_volatility"] is None
     assert payload["settings"]["max_gross_exposure"] is None
@@ -277,6 +281,42 @@ def test_research_series_prefers_total_return_nav_for_funds() -> None:
     ]
 
 
+def test_research_series_uses_only_complete_market_data() -> None:
+    detail = {
+        "asset_id": "fund-status-test",
+        "asset_type": "fund",
+        "currency": "USD",
+        "quote_selection_policy": {
+            "valuation": ["official_nav"],
+            "reference": ["official_nav"],
+            "chart": ["total_return_nav", "official_nav"],
+            "total_return": ["total_return_nav", "official_nav"],
+        },
+        "market_data": [
+            {
+                "metric_family": "nav",
+                "quote_basis": "total_return_nav",
+                "as_of_date": "2026-04-14",
+                "value": "1.1200",
+                "currency": "USD",
+                "status": "complete",
+            },
+            {
+                "metric_family": "nav",
+                "quote_basis": "total_return_nav",
+                "as_of_date": "2026-04-15",
+                "value": "1.1350",
+                "currency": "USD",
+                "status": "partial",
+            },
+        ],
+    }
+
+    points = _selected_price_points(detail, end_date=date(2026, 4, 15))
+
+    assert [(item[0].isoformat(), item[1]) for item in points] == [("2026-04-14", 1.12)]
+
+
 def test_asset_chart_bases_prefer_total_return_role() -> None:
     detail = {
         "quote_selection_policy": {
@@ -287,6 +327,20 @@ def test_asset_chart_bases_prefer_total_return_role() -> None:
     }
 
     assert _candidate_chart_bases(detail) == ["total_return_nav", "official_nav"]
+
+
+def test_asset_trend_volatility_uses_quote_observation_density() -> None:
+    points = [
+        {"date": date(2026, 1, 1), "value": 100.0},
+        {"date": date(2026, 1, 8), "value": 102.0},
+        {"date": date(2026, 1, 15), "value": 99.0},
+    ]
+    returns = [0.02, 99.0 / 102.0 - 1.0]
+    mean_return = sum(returns) / len(returns)
+    sample_stddev = sqrt(sum((item - mean_return) ** 2 for item in returns) / (len(returns) - 1))
+    periods_per_year = 2 / 14 * 365.25
+
+    assert _annualized_volatility(points) == pytest.approx(sample_stddev * sqrt(periods_per_year))
 
 
 def test_research_series_prefers_adjusted_close_for_equities() -> None:
@@ -344,7 +398,7 @@ def test_research_series_prefers_adjusted_close_for_equities() -> None:
     ]
 
 
-def test_research_returns_do_not_create_zero_observations_from_stale_prices() -> None:
+def test_research_daily_alignment_does_not_span_missing_dates() -> None:
     members = [
         ScopeMemberRecord(
             member_type=TARGET_MEMBER_INSTRUMENT,
@@ -380,14 +434,110 @@ def test_research_returns_do_not_create_zero_observations_from_stale_prices() ->
         nav_series_by_member,
         start_date=date(2026, 1, 1),
         end_date=date(2026, 1, 5),
+        calculation_frequency="daily",
     )
 
     returns_by_member = {item.member.member_id: item.returns for item in aligned_members}
     assert calendar == [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 5)]
     assert pd.isna(returns_by_member["asset-a"].loc[date(2026, 1, 2)])
-    assert returns_by_member["asset-a"].loc[date(2026, 1, 5)] == pytest.approx(0.1)
+    assert pd.isna(returns_by_member["asset-a"].loc[date(2026, 1, 5)])
     assert returns_by_member["asset-b"].loc[date(2026, 1, 2)] == pytest.approx(0.02)
-    assert _infer_periods_per_year([date(2026, 1, 2), date(2026, 1, 5)]) == pytest.approx(2 / 3 * 365.25)
+    assert _infer_periods_per_year([date(2026, 1, 2), date(2026, 1, 5)]) == pytest.approx(2 / 6 * 365.25)
+
+
+def test_research_weekly_alignment_uses_period_end_observations() -> None:
+    members = [
+        ScopeMemberRecord(
+            member_type=TARGET_MEMBER_INSTRUMENT,
+            member_id="asset-a",
+            label="Asset A",
+        ),
+        ScopeMemberRecord(
+            member_type=TARGET_MEMBER_INSTRUMENT,
+            member_id="asset-b",
+            label="Asset B",
+        ),
+    ]
+    nav_series_by_member = {
+        (TARGET_MEMBER_INSTRUMENT, "asset-a"): pd.Series(
+            {
+                date(2026, 1, 1): 100.0,
+                date(2026, 1, 5): 110.0,
+            },
+            dtype="float64",
+        ),
+        (TARGET_MEMBER_INSTRUMENT, "asset-b"): pd.Series(
+            {
+                date(2026, 1, 1): 100.0,
+                date(2026, 1, 2): 102.0,
+                date(2026, 1, 5): 101.0,
+            },
+            dtype="float64",
+        ),
+    }
+
+    aligned_members, calendar, _warnings = _align_member_series(
+        members,
+        nav_series_by_member,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 5),
+        calculation_frequency="weekly",
+    )
+
+    returns_by_member = {item.member.member_id: item.returns for item in aligned_members}
+    assert calendar == [date(2026, 1, 2), date(2026, 1, 5)]
+    assert returns_by_member["asset-a"].loc[date(2026, 1, 5)] == pytest.approx(0.1)
+    assert returns_by_member["asset-b"].loc[date(2026, 1, 5)] == pytest.approx(101.0 / 102.0 - 1.0)
+
+
+def test_research_covariance_annualizes_each_pair_from_valid_dates() -> None:
+    returns = pd.DataFrame(
+        {
+            "daily": [0.01, 0.02, 0.03, 0.04],
+            "weekly": [0.05, None, 0.07, None],
+        },
+        index=[date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 8), date(2026, 1, 9)],
+        dtype="float64",
+    )
+
+    covariance = _estimate_covariance(
+        returns,
+        model_id="sample_covariance",
+        lookback_days=30,
+        parameters={"min_observations": 2},
+    )
+
+    expected_daily_variance = (
+        returns[["daily"]].dropna(how="any").cov(ddof=0).loc["daily", "daily"]
+        * _infer_periods_per_year([date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 8), date(2026, 1, 9)])
+    )
+    expected_pair_covariance = (
+        returns[["daily", "weekly"]].dropna(how="any").cov(ddof=0).loc["daily", "weekly"]
+        * _infer_periods_per_year([date(2026, 1, 1), date(2026, 1, 8)])
+    )
+
+    assert covariance.loc["daily", "daily"] == pytest.approx(expected_daily_variance, abs=1e-11)
+    assert covariance.loc["daily", "weekly"] == pytest.approx(expected_pair_covariance)
+    assert covariance.loc["weekly", "daily"] == pytest.approx(expected_pair_covariance)
+
+
+def test_research_covariance_rejects_missing_pair_overlap() -> None:
+    returns = pd.DataFrame(
+        {
+            "asset_a": [0.01, 0.02, None, None],
+            "asset_b": [None, None, -0.01, 0.03],
+        },
+        index=[date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3), date(2026, 1, 4)],
+        dtype="float64",
+    )
+
+    with pytest.raises(ValueError, match="overlapping observations"):
+        _estimate_covariance(
+            returns,
+            model_id="sample_covariance",
+            lookback_days=30,
+            parameters={"min_observations": 2},
+        )
 
 
 def test_research_run_creates_current_target_weight_outputs(client):
@@ -685,7 +835,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
     assert clear_response.json()["frozen_taxonomy_node_ids"] == []
 
 
-def test_research_target_volatility_scales_risk_assets_into_cash(client):
+def test_research_target_volatility_keeps_unit_gross_without_aligned_risk_history(client):
     taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
     _create_target_sets(client, taxonomy_id, _node_ids)
 
@@ -724,7 +874,11 @@ def test_research_target_volatility_scales_risk_assets_into_cash(client):
         if item["label"] == "Cash Reserve"
     )
     assert cash_row["implementation_weight"] is not None
-    assert cash_row["implementation_weight"] > (cash_row["target_weight"] or 0.0)
+    assert cash_row["implementation_weight"] == pytest.approx(0.0)
+    assert any(
+        "could not estimate risky-sleeve volatility" in item
+        for item in run_payload["detail"]["warnings"]
+    )
     leaf_targets_by_member = {item["member_id"]: item for item in run_payload["detail"]["leaf_targets"]}
     assert leaf_targets_by_member["fund-hk-2800"]["selected_target_dimension"] == "risk_budget"
 
@@ -772,7 +926,7 @@ def test_research_target_volatility_starts_from_full_risk_sleeve_weights(client)
     assert len(run_payload["detail"]["scope_solve_events"]) >= 3
 
 
-def test_research_run_allows_sparse_current_covariance_window(client):
+def test_research_run_uses_insufficient_history_fallback_for_unaligned_sparse_window(client):
     taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
     _create_target_sets(client, taxonomy_id, _node_ids)
 
@@ -801,10 +955,10 @@ def test_research_run_allows_sparse_current_covariance_window(client):
     assert solve_event["requested_target_dimension"] == "scope_default"
     assert solve_event["taxonomy_default_target_dimension"] == "risk_budget"
     assert solve_event["target_dimension"] == "risk_budget"
-    assert solve_event["solver_kind"] == "risk-budget"
+    assert solve_event["solver_kind"] == "fallback-insufficient-history"
     assert solve_event["covariance_model"] == "ewma_vol_shrinkage_corr_covariance"
     assert solve_event["risk_contribution_mode"] in {"signed", "abs"}
-    assert solve_event["covariance_observations"] >= 2
+    assert solve_event["covariance_observations"] < 2
     assert len(run_payload["detail"]["target_rows"]) >= 1
     leaf_targets_by_member = {item["member_id"]: item for item in run_payload["detail"]["leaf_targets"]}
     assert leaf_targets_by_member["equity-us-abbv"]["configured_risk_share"] is None

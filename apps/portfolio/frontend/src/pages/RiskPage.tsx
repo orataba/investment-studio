@@ -42,6 +42,7 @@ const DEFAULT_RISK_MODEL_ID = 'ewma_vol_shrinkage_corr_covariance'
 
 type RiskModelId = 'ewma_vol_shrinkage_corr_covariance' | 'ewma_covariance' | 'sample_covariance'
 type RiskContributionMode = 'signed' | 'abs'
+type CalculationFrequency = 'daily' | 'weekly' | 'monthly'
 
 type RiskSettingsState = {
   lookbackDays: number
@@ -89,6 +90,11 @@ type GroupReturnSeries = {
   endingWeightByDate: Map<string, number>
   latestWeight: number | null
   observationCount: number
+}
+
+type RiskFrequencyProfile = {
+  frequency: CalculationFrequency
+  statusLabel: string
 }
 
 type CorrelationMatrix = {
@@ -191,6 +197,172 @@ function dayDiff(left: string, right: string) {
   return Math.max(0, (rightTime - leftTime) / 86_400_000)
 }
 
+const CALCULATION_FREQUENCY_LABELS: Record<CalculationFrequency, string> = {
+  daily: 'Daily',
+  weekly: 'Weekly',
+  monthly: 'Monthly',
+}
+
+const CALCULATION_FREQUENCY_RANK: Record<CalculationFrequency, number> = {
+  daily: 0,
+  weekly: 1,
+  monthly: 2,
+}
+
+function inferObservationFrequency(dateKeys: string[]): CalculationFrequency {
+  const sortedDates = [...new Set(dateKeys)].sort()
+  if (sortedDates.length < 2) {
+    return 'daily'
+  }
+  const gaps = sortedDates
+    .slice(1)
+    .map((dateKey, index) => dayDiff(sortedDates[index], dateKey))
+    .filter((value): value is number => value != null && value > 0)
+  if (!gaps.length) {
+    return 'daily'
+  }
+  const sortedGaps = [...gaps].sort((left, right) => left - right)
+  const medianGap = sortedGaps[Math.floor(sortedGaps.length / 2)]
+  const dailyLikeCount = gaps.filter((gap) => gap <= 3).length
+  const weeklyLikeCount = gaps.filter((gap) => gap >= 4 && gap <= 10).length
+  const monthlyLikeCount = gaps.filter((gap) => gap >= 18 && gap <= 45).length
+
+  if (gaps.length < 5) {
+    if (dailyLikeCount) {
+      return 'daily'
+    }
+    if (weeklyLikeCount === gaps.length) {
+      return 'weekly'
+    }
+    if (monthlyLikeCount === gaps.length) {
+      return 'monthly'
+    }
+    return 'daily'
+  }
+
+  if (medianGap <= 3) {
+    return 'daily'
+  }
+  if (medianGap <= 10) {
+    return 'weekly'
+  }
+  if (dailyLikeCount && monthlyLikeCount < gaps.length * 0.6) {
+    return 'daily'
+  }
+  return 'monthly'
+}
+
+function defaultCalculationFrequency(series: GroupReturnSeries[]): CalculationFrequency {
+  return series
+    .map((item) => inferObservationFrequency([...item.returnsByDate.keys()]))
+    .reduce<CalculationFrequency>(
+      (current, next) =>
+        CALCULATION_FREQUENCY_RANK[next] > CALCULATION_FREQUENCY_RANK[current] ? next : current,
+      'daily',
+    )
+}
+
+function riskFrequencyProfile(series: GroupReturnSeries[]): RiskFrequencyProfile {
+  const frequency = defaultCalculationFrequency(series)
+  const frequencies = series.map((item) => inferObservationFrequency([...item.returnsByDate.keys()]))
+  const unique = new Set(frequencies)
+  const mixLabel =
+    unique.size > 1
+      ? unique.has('daily') && unique.has('weekly') && !unique.has('monthly')
+        ? 'mixed daily/weekly data'
+        : 'mixed frequencies'
+      : `${CALCULATION_FREQUENCY_LABELS[frequency].toLowerCase()} data`
+  return {
+    frequency,
+    statusLabel: `${CALCULATION_FREQUENCY_LABELS[frequency]} risk basis - ${mixLabel}`,
+  }
+}
+
+function periodEndKey(dateKey: string, frequency: CalculationFrequency, finalDate: string) {
+  if (frequency === 'daily') {
+    return dateKey
+  }
+  const [year, month, day] = dateKey.split('-').map(Number)
+  const current = new Date(year, (month || 1) - 1, day || 1)
+  if (frequency === 'weekly') {
+    const dayOfWeek = current.getDay()
+    const mondayBasedDay = dayOfWeek === 0 ? 6 : dayOfWeek - 1
+    current.setDate(current.getDate() + (4 - mondayBasedDay))
+  } else {
+    current.setMonth(current.getMonth() + 1, 0)
+  }
+  const resolved = localDateIso(current)
+  return resolved > finalDate ? finalDate : resolved
+}
+
+function compoundReturns(values: number[]) {
+  return values.reduce((growth, value) => growth * (1 + value), 1) - 1
+}
+
+function alignReturnSeriesToFrequency(
+  series: GroupReturnSeries[],
+  frequency: CalculationFrequency,
+  finalDate: string,
+) {
+  if (frequency === 'daily' || !finalDate) {
+    return series
+  }
+  return series
+    .map((item) => {
+      const returnBuckets = new Map<string, number[]>()
+      item.returnsByDate.forEach((value, dateKey) => {
+        if (!Number.isFinite(value) || dateKey > finalDate) {
+          return
+        }
+        const bucketKey = periodEndKey(dateKey, frequency, finalDate)
+        const bucket = returnBuckets.get(bucketKey) ?? []
+        bucket.push(value)
+        returnBuckets.set(bucketKey, bucket)
+      })
+      const returnsByDate = new Map<string, number>()
+      returnBuckets.forEach((values, bucketKey) => {
+        if (values.length) {
+          returnsByDate.set(bucketKey, compoundReturns(values))
+        }
+      })
+
+      const endingWeightByDate = new Map<string, number>()
+      item.endingWeightByDate.forEach((weight, dateKey) => {
+        if (!Number.isFinite(weight) || dateKey > finalDate) {
+          return
+        }
+        endingWeightByDate.set(periodEndKey(dateKey, frequency, finalDate), weight)
+      })
+
+      return {
+        ...item,
+        returnsByDate,
+        endingWeightByDate,
+        observationCount: returnsByDate.size,
+      } satisfies GroupReturnSeries
+    })
+    .filter((item) => item.observationCount > 0)
+}
+
+function alignReturnPointsToFrequency(returnPoints: ReturnPoint[], frequency: CalculationFrequency, finalDate: string) {
+  if (frequency === 'daily' || !finalDate) {
+    return returnPoints
+  }
+  const buckets = new Map<string, number[]>()
+  returnPoints.forEach((point) => {
+    if (!Number.isFinite(point.value) || point.date > finalDate) {
+      return
+    }
+    const bucketKey = periodEndKey(point.date, frequency, finalDate)
+    const bucket = buckets.get(bucketKey) ?? []
+    bucket.push(point.value)
+    buckets.set(bucketKey, bucket)
+  })
+  return [...buckets.entries()]
+    .map(([dateKey, values]) => ({ date: dateKey, value: compoundReturns(values) }))
+    .sort((left, right) => left.date.localeCompare(right.date))
+}
+
 function annualizationPeriodsPerYear(dateKeys: string[], observationCount = dateKeys.length) {
   const sortedDates = [...dateKeys].sort()
   if (observationCount < 1 || sortedDates.length < 2) {
@@ -208,6 +380,13 @@ function annualizationPeriodsPerYear(dateKeys: string[], observationCount = date
   const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 1
   const observationSpanDays = elapsedDays + medianGap
   return observationSpanDays > 0 ? (observationCount / observationSpanDays) * DAYS_PER_YEAR : null
+}
+
+function annualizedMeanReturn(values: number[], periodsPerYear: number | null) {
+  if (!values.length || periodsPerYear == null) {
+    return null
+  }
+  return (values.reduce((total, value) => total + value, 0) / values.length) * periodsPerYear
 }
 
 function windowLabel(lookbackDays: number) {
@@ -351,29 +530,84 @@ function estimateCovarianceFromValues(leftValues: number[], rightValues: number[
   }
   const correlation = sampleCorrelation(leftValues, rightValues)
   if (correlation == null) {
-    return 0
+    return null
   }
   const shrunkCorrelation = correlation * 0.85
   return shrunkCorrelation * Math.sqrt(Math.max(leftVariance, 0)) * Math.sqrt(Math.max(rightVariance, 0))
 }
 
+function estimateCorrelationFromValues(leftValues: number[], rightValues: number[], modelId: RiskModelId) {
+  if (leftValues.length < 2 || rightValues.length !== leftValues.length) {
+    return null
+  }
+  if (modelId === 'sample_covariance') {
+    return sampleCorrelation(leftValues, rightValues)
+  }
+  if (modelId === 'ewma_covariance') {
+    const covariance = ewmaCovariance(leftValues, rightValues, 0.94)
+    const leftVariance = ewmaCovariance(leftValues, leftValues, 0.94)
+    const rightVariance = ewmaCovariance(rightValues, rightValues, 0.94)
+    if (covariance == null || leftVariance == null || rightVariance == null || leftVariance <= 0 || rightVariance <= 0) {
+      return null
+    }
+    return covariance / Math.sqrt(leftVariance * rightVariance)
+  }
+
+  const correlation = sampleCorrelation(leftValues, rightValues)
+  return correlation == null ? null : correlation * 0.85
+}
+
+function windowReturnPoints(series: GroupReturnSeries, asOfDate: string, lookbackDays: number) {
+  const startDate = riskWindowStart(asOfDate, lookbackDays)
+  const points: ReturnPoint[] = []
+  series.returnsByDate.forEach((value, dateKey) => {
+    if (dateKey >= startDate && dateKey <= asOfDate && Number.isFinite(value)) {
+      points.push({ date: dateKey, value })
+    }
+  })
+  return points.sort((left, right) => left.date.localeCompare(right.date))
+}
+
+function annualizedVarianceFromValues(values: number[], dates: string[], modelId: RiskModelId) {
+  if (values.length < 2) {
+    return null
+  }
+  const variance =
+    modelId === 'sample_covariance'
+      ? populationCovariance(values, values)
+      : ewmaCovariance(values, values, modelId === 'ewma_covariance' ? 0.94 : 0.97)
+  const periodsPerYear = annualizationPeriodsPerYear(dates, values.length)
+  return variance == null || periodsPerYear == null ? null : variance * periodsPerYear
+}
+
+function annualizedCovarianceFromValues(
+  leftValues: number[],
+  rightValues: number[],
+  dates: string[],
+  modelId: RiskModelId,
+) {
+  const covariance = estimateCovarianceFromValues(leftValues, rightValues, modelId)
+  const periodsPerYear = annualizationPeriodsPerYear(dates, leftValues.length)
+  return covariance == null || periodsPerYear == null ? null : covariance * periodsPerYear
+}
+
 function estimateWindowRisk(returnPoints: ReturnPoint[], asOfDate: string, lookbackDays: number, modelId: RiskModelId) {
   const windowPoints = returnPointsInWindow(returnPoints, asOfDate, lookbackDays)
   const values = windowPoints.map((point) => point.value)
+  const dates = windowPoints.map((point) => point.date)
   if (values.length < 2) {
     return { volatility: null, sharpe: null, observationCount: values.length }
   }
-  const variance = estimateCovarianceFromValues(values, values, modelId)
-  const periodsPerYear = annualizationPeriodsPerYear(windowPoints.map((point) => point.date), values.length)
+  const variance = annualizedVarianceFromValues(values, dates, modelId)
+  const periodsPerYear = annualizationPeriodsPerYear(dates, values.length)
   if (variance == null || periodsPerYear == null) {
     return { volatility: null, sharpe: null, observationCount: values.length }
   }
-  const volatility = Math.sqrt(Math.max(variance, 0) * periodsPerYear)
-  const meanReturn = values.reduce((total, value) => total + value, 0) / values.length
-  const annualizedMeanReturn = meanReturn * periodsPerYear
+  const volatility = Math.sqrt(Math.max(variance, 0))
+  const annualizedMean = annualizedMeanReturn(values, periodsPerYear)
   return {
     volatility,
-    sharpe: volatility > 1e-12 ? annualizedMeanReturn / volatility : null,
+    sharpe: annualizedMean != null && volatility > 1e-12 ? annualizedMean / volatility : null,
     observationCount: values.length,
   }
 }
@@ -403,14 +637,47 @@ function covarianceCell(
   lookbackDays: number,
   modelId: RiskModelId,
 ) {
+  if (left.groupKey === right.groupKey) {
+    const points = windowReturnPoints(left, asOfDate, lookbackDays)
+    const values = points.map((point) => point.value)
+    const dates = points.map((point) => point.date)
+    return {
+      value: annualizedVarianceFromValues(values, dates, modelId),
+      observationCount: values.length,
+    }
+  }
+
   const pairs = pairWindowReturns(left.returnsByDate, right.returnsByDate, asOfDate, lookbackDays)
   if (pairs.length < 2) {
     return { value: null, observationCount: pairs.length }
   }
   const leftValues = pairs.map((pair) => pair.left)
   const rightValues = pairs.map((pair) => pair.right)
+  const dates = pairs.map((pair) => pair.date)
+  if (modelId === 'ewma_vol_shrinkage_corr_covariance') {
+    const leftWindowPoints = windowReturnPoints(left, asOfDate, lookbackDays)
+    const rightWindowPoints = windowReturnPoints(right, asOfDate, lookbackDays)
+    const leftVariance = annualizedVarianceFromValues(
+      leftWindowPoints.map((point) => point.value),
+      leftWindowPoints.map((point) => point.date),
+      modelId,
+    )
+    const rightVariance = annualizedVarianceFromValues(
+      rightWindowPoints.map((point) => point.value),
+      rightWindowPoints.map((point) => point.date),
+      modelId,
+    )
+    const correlation = estimateCorrelationFromValues(leftValues, rightValues, modelId)
+    if (leftVariance == null || rightVariance == null || correlation == null) {
+      return { value: null, observationCount: pairs.length }
+    }
+    return {
+      value: correlation * Math.sqrt(Math.max(leftVariance, 0)) * Math.sqrt(Math.max(rightVariance, 0)),
+      observationCount: pairs.length,
+    }
+  }
   return {
-    value: estimateCovarianceFromValues(leftValues, rightValues, modelId),
+    value: annualizedCovarianceFromValues(leftValues, rightValues, dates, modelId),
     observationCount: pairs.length,
   }
 }
@@ -422,18 +689,19 @@ function correlationCell(
   lookbackDays: number,
   modelId: RiskModelId,
 ) {
-  const covariance = covarianceCell(left, right, asOfDate, lookbackDays, modelId)
-  if (covariance.value == null) {
-    return { value: null, observationCount: covariance.observationCount }
+  const pairs = pairWindowReturns(left.returnsByDate, right.returnsByDate, asOfDate, lookbackDays)
+  if (pairs.length < 2) {
+    return { value: null, observationCount: pairs.length }
   }
-  const leftVariance = covarianceCell(left, left, asOfDate, lookbackDays, modelId).value
-  const rightVariance = covarianceCell(right, right, asOfDate, lookbackDays, modelId).value
-  if (leftVariance == null || rightVariance == null || leftVariance <= 0 || rightVariance <= 0) {
-    return { value: null, observationCount: covariance.observationCount }
+  const leftValues = pairs.map((pair) => pair.left)
+  const rightValues = pairs.map((pair) => pair.right)
+  const correlation = estimateCorrelationFromValues(leftValues, rightValues, modelId)
+  if (correlation == null) {
+    return { value: null, observationCount: pairs.length }
   }
   return {
-    value: Math.max(-1, Math.min(1, covariance.value / Math.sqrt(leftVariance * rightVariance))),
-    observationCount: covariance.observationCount,
+    value: Math.max(-1, Math.min(1, correlation)),
+    observationCount: pairs.length,
   }
 }
 
@@ -584,19 +852,44 @@ function buildRiskContributionRows(
     return [] satisfies RiskContributionRow[]
   }
 
+  const firstActiveSeries = activeSeries[0]
+  if (!firstActiveSeries) {
+    return [] satisfies RiskContributionRow[]
+  }
   const weights = activeSeries.map((item) => (item.weight ?? 0) / grossWeight)
-  const covarianceMatrix = activeSeries.map((rowSeries) =>
-    activeSeries.map(
-      (columnSeries) =>
-        covarianceCell(
-          rowSeries.item,
-          columnSeries.item,
-          asOfDate,
-          settings.lookbackDays,
-          settings.modelId,
-        ).value ?? 0,
-    ),
+  const startDate = riskWindowStart(asOfDate, settings.lookbackDays)
+  const commonDates = [...firstActiveSeries.item.returnsByDate.keys()]
+    .filter((dateKey) => dateKey >= startDate && dateKey <= asOfDate)
+    .filter((dateKey) =>
+      activeSeries.every((series) => {
+        const value = series.item.returnsByDate.get(dateKey)
+        return value != null && Number.isFinite(value)
+      }),
+    )
+    .sort()
+  if (commonDates.length < 2) {
+    return [] satisfies RiskContributionRow[]
+  }
+  const valuesByGroup = new Map(
+    activeSeries.map((series) => [
+      series.item.groupKey,
+      commonDates.map((dateKey) => series.item.returnsByDate.get(dateKey) as number),
+    ]),
   )
+  const covarianceMatrix: number[][] = []
+  for (const rowSeries of activeSeries) {
+    const covarianceRow: number[] = []
+    for (const columnSeries of activeSeries) {
+      const leftValues = valuesByGroup.get(rowSeries.item.groupKey) ?? []
+      const rightValues = valuesByGroup.get(columnSeries.item.groupKey) ?? []
+      const covarianceValue = annualizedCovarianceFromValues(leftValues, rightValues, commonDates, settings.modelId)
+      if (covarianceValue == null || !Number.isFinite(covarianceValue)) {
+        return [] satisfies RiskContributionRow[]
+      }
+      covarianceRow.push(covarianceValue)
+    }
+    covarianceMatrix.push(covarianceRow)
+  }
   const marginal = covarianceMatrix.map((row) =>
     row.reduce((total, covarianceValue, columnIndex) => total + covarianceValue * weights[columnIndex], 0),
   )
@@ -605,13 +898,9 @@ function buildRiskContributionRows(
   const absoluteContributionTotal = signedContributions.reduce((total, contribution) => total + Math.abs(contribution), 0)
 
   return activeSeries
-    .map(({ item, observationCount }, index) => {
-      const ownVariance =
-        covarianceCell(item, item, asOfDate, settings.lookbackDays, settings.modelId).value ?? null
-      const ownDates = [...item.returnsByDate.keys()].filter(
-        (dateKey) => dateKey >= riskWindowStart(asOfDate, settings.lookbackDays) && dateKey <= asOfDate,
-      )
-      const periodsPerYear = annualizationPeriodsPerYear(ownDates, ownDates.length)
+    .map(({ item }, index) => {
+      const ownValues = valuesByGroup.get(item.groupKey) ?? []
+      const ownVariance = annualizedVarianceFromValues(ownValues, commonDates, settings.modelId)
       const contributionToVariance = signedContributions[index]
       const riskShare =
         settings.contributionMode === 'abs'
@@ -625,11 +914,10 @@ function buildRiskContributionRows(
         groupKey: item.groupKey,
         groupLabel: item.groupLabel,
         weight: weights[index],
-        annualizedVolatility:
-          ownVariance != null && periodsPerYear != null ? Math.sqrt(Math.max(ownVariance, 0) * periodsPerYear) : null,
+        annualizedVolatility: ownVariance != null ? Math.sqrt(Math.max(ownVariance, 0)) : null,
         riskShare,
         contributionToVariance,
-        observationCount,
+        observationCount: commonDates.length,
       } satisfies RiskContributionRow
     })
     .sort((left, right) => Math.abs(right.riskShare ?? 0) - Math.abs(left.riskShare ?? 0))
@@ -743,6 +1031,7 @@ function buildScopedTaxonomySlices(
       return_observation_eligible: boolean
     }
   >()
+  const eligibilityByGroup = new Map<string, boolean[]>()
 
   slices.forEach((slice) => {
     const assignment = findActiveAssignment(
@@ -780,17 +1069,24 @@ function buildScopedTaxonomySlices(
     current.ending_weight = addMeasure(current.ending_weight, finiteNumber(slice.ending_weight))
     current.total_pnl = addMeasure(current.total_pnl, finiteNumber(slice.total_pnl))
     current.daily_contribution = addMeasure(current.daily_contribution, finiteNumber(slice.daily_contribution))
-    current.return_observation_eligible = current.return_observation_eligible || Boolean(slice.return_observation_eligible)
+    const eligibility = eligibilityByGroup.get(aggregateKey) ?? []
+    eligibility.push(Boolean(slice.return_observation_eligible))
+    eligibilityByGroup.set(aggregateKey, eligibility)
     grouped.set(aggregateKey, current)
   })
 
-  return [...grouped.values()].map((slice) => ({
-    ...slice,
-    daily_return:
+  return [...grouped.values()].map((slice) => {
+    const dailyReturn =
       slice.total_pnl != null && slice.beginning_value_base != null && slice.beginning_value_base > 1e-9
         ? slice.total_pnl / slice.beginning_value_base
-        : null,
-  })) satisfies ReturnSlice[]
+        : null
+    const eligibility = eligibilityByGroup.get(`${slice.as_of_date}:${slice.group_key}`) ?? []
+    return {
+      ...slice,
+      daily_return: dailyReturn,
+      return_observation_eligible: dailyReturn != null && eligibility.length > 0 && eligibility.every(Boolean),
+    }
+  }) satisfies ReturnSlice[]
 }
 
 function accountValueBase(accountRow: PortfolioAccountsWorkspaceResponse['accounts'][number]) {
@@ -1042,6 +1338,14 @@ function formatCorrelation(value: number | null | undefined) {
 
 function uniqueSortedDates(slices: ReturnSlice[]) {
   return [...new Set(slices.map((slice) => slice.as_of_date).filter(Boolean))].sort()
+}
+
+function uniqueSortedSeriesDates(series: GroupReturnSeries[]) {
+  const dates = new Set<string>()
+  series.forEach((item) => {
+    item.returnsByDate.forEach((_value, dateKey) => dates.add(dateKey))
+  })
+  return [...dates].sort()
 }
 
 function taxonomyScopeOptions(
@@ -1501,11 +1805,41 @@ export default function RiskPage() {
   const selectedBenchmarkInstrument =
     benchmarkInstruments.find((instrument) => instrument.asset_id === benchmarkAssetId) ?? null
   const benchmarkLabel = selectedBenchmarkInstrument ? instrumentPrimaryIdentifier(selectedBenchmarkInstrument) : null
-  const portfolioReturnPoints = useMemo(
+  const instrumentSlices = instrumentContribution?.daily_slices ?? []
+  const rawAssetReturnSeries = useMemo(() => buildGroupReturnSeries(instrumentSlices), [instrumentSlices])
+  const portfolioRiskFrequency = useMemo(() => riskFrequencyProfile(rawAssetReturnSeries), [rawAssetReturnSeries])
+  const assetReturnSeries = useMemo(
+    () =>
+      alignReturnSeriesToFrequency(
+        rawAssetReturnSeries,
+        portfolioRiskFrequency.frequency,
+        holdingsWorkspace?.as_of_date ?? riskWindowEndDate,
+      ),
+    [holdingsWorkspace?.as_of_date, portfolioRiskFrequency.frequency, rawAssetReturnSeries, riskWindowEndDate],
+  )
+  const portfolioReturnPointsRaw = useMemo(
     () => buildPortfolioReturnPoints(performanceWorkspace?.daily_series ?? []),
     [performanceWorkspace?.daily_series],
   )
-  const benchmarkReturnPoints = useMemo(() => buildBenchmarkReturnPoints(benchmarkChart), [benchmarkChart])
+  const portfolioReturnPoints = useMemo(
+    () =>
+      alignReturnPointsToFrequency(
+        portfolioReturnPointsRaw,
+        portfolioRiskFrequency.frequency,
+        holdingsWorkspace?.as_of_date ?? riskWindowEndDate,
+      ),
+    [holdingsWorkspace?.as_of_date, portfolioReturnPointsRaw, portfolioRiskFrequency.frequency, riskWindowEndDate],
+  )
+  const benchmarkReturnPointsRaw = useMemo(() => buildBenchmarkReturnPoints(benchmarkChart), [benchmarkChart])
+  const benchmarkReturnPoints = useMemo(
+    () =>
+      alignReturnPointsToFrequency(
+        benchmarkReturnPointsRaw,
+        portfolioRiskFrequency.frequency,
+        holdingsWorkspace?.as_of_date ?? riskWindowEndDate,
+      ),
+    [benchmarkReturnPointsRaw, holdingsWorkspace?.as_of_date, portfolioRiskFrequency.frequency, riskWindowEndDate],
+  )
   const rollingWindow = windowLabel(rollingSettings.lookbackDays)
   const rollingVolatilityPoints = useMemo(
     () =>
@@ -1536,8 +1870,7 @@ export default function RiskPage() {
     [benchmarkReturnPoints, rollingSettings.lookbackDays, rollingSettings.modelId],
   )
 
-  const instrumentSlices = instrumentContribution?.daily_slices ?? []
-  const riskDates = useMemo(() => uniqueSortedDates(instrumentSlices), [instrumentSlices])
+  const riskDates = useMemo(() => uniqueSortedSeriesDates(assetReturnSeries), [assetReturnSeries])
 
   useEffect(() => {
     if (riskDates.length && !riskDates.includes(matrixAsOfDate)) {
@@ -1551,7 +1884,6 @@ export default function RiskPage() {
     }
   }, [contributionAsOfDate, riskDates])
 
-  const assetReturnSeries = useMemo(() => buildGroupReturnSeries(instrumentSlices), [instrumentSlices])
   const matrixTaxonomyScopeOptions = useMemo(
     () => taxonomyScopeOptions(defaultPlanningTaxonomy, taxonomyCatalog),
     [defaultPlanningTaxonomy, taxonomyCatalog],
@@ -1561,6 +1893,15 @@ export default function RiskPage() {
     [defaultPlanningTaxonomy, instrumentSlices, matrixScopeNodeId, taxonomyCatalog],
   )
   const matrixTaxonomySeries = useMemo(() => buildGroupReturnSeries(matrixTaxonomySlices), [matrixTaxonomySlices])
+  const alignedMatrixTaxonomySeries = useMemo(
+    () =>
+      alignReturnSeriesToFrequency(
+        matrixTaxonomySeries,
+        portfolioRiskFrequency.frequency,
+        holdingsWorkspace?.as_of_date ?? riskWindowEndDate,
+      ),
+    [holdingsWorkspace?.as_of_date, matrixTaxonomySeries, portfolioRiskFrequency.frequency, riskWindowEndDate],
+  )
   const topLevelTaxonomySlices = useMemo(
     () => buildScopedTaxonomySlices(instrumentSlices, taxonomyCatalog, defaultPlanningTaxonomy, ''),
     [defaultPlanningTaxonomy, instrumentSlices, taxonomyCatalog],
@@ -1569,17 +1910,26 @@ export default function RiskPage() {
     () => buildGroupReturnSeries(topLevelTaxonomySlices),
     [topLevelTaxonomySlices],
   )
+  const alignedTopLevelTaxonomySeries = useMemo(
+    () =>
+      alignReturnSeriesToFrequency(
+        topLevelTaxonomySeries,
+        portfolioRiskFrequency.frequency,
+        holdingsWorkspace?.as_of_date ?? riskWindowEndDate,
+      ),
+    [holdingsWorkspace?.as_of_date, portfolioRiskFrequency.frequency, riskWindowEndDate, topLevelTaxonomySeries],
+  )
   const assetCorrelationMatrix = useMemo(
     () => buildCorrelationMatrix(assetReturnSeries, matrixAsOfDate, matrixSettings),
     [assetReturnSeries, matrixAsOfDate, matrixSettings],
   )
   const taxonomyCorrelationMatrix = useMemo(
-    () => buildCorrelationMatrix(matrixTaxonomySeries, matrixAsOfDate, matrixSettings),
-    [matrixAsOfDate, matrixSettings, matrixTaxonomySeries],
+    () => buildCorrelationMatrix(alignedMatrixTaxonomySeries, matrixAsOfDate, matrixSettings),
+    [alignedMatrixTaxonomySeries, matrixAsOfDate, matrixSettings],
   )
   const topLevelRiskContributionRows = useMemo(
-    () => buildRiskContributionRows(topLevelTaxonomySeries, holdingsWorkspace?.as_of_date ?? '', driftSettings),
-    [driftSettings, holdingsWorkspace?.as_of_date, topLevelTaxonomySeries],
+    () => buildRiskContributionRows(alignedTopLevelTaxonomySeries, holdingsWorkspace?.as_of_date ?? '', driftSettings),
+    [alignedTopLevelTaxonomySeries, driftSettings, holdingsWorkspace?.as_of_date],
   )
   const riskSharesByTopLevelGroup = useMemo(
     () => new Map(topLevelRiskContributionRows.map((row) => [row.groupKey, row.riskShare] as const)),
@@ -1750,7 +2100,7 @@ export default function RiskPage() {
               </th>
               <th>Annualized Vol</th>
               <th>Risk Share</th>
-              <th title="Signed daily component contribution to variance before risk-share normalization.">Daily Var Ctr</th>
+              <th title="Signed annualized component contribution to variance before risk-share normalization.">Ann Var Ctr</th>
               <th>Obs</th>
             </tr>
           </thead>
@@ -1860,7 +2210,7 @@ export default function RiskPage() {
                   <div className="panel-title">Correlation Matrix</div>
                   <div className="portfolio-detail-meta">
                     {matrixAsOfDate
-                      ? `${matrixAsOfDate}; ${windowLabel(matrixSettings.lookbackDays)} ${riskModelLabel(matrixSettings.modelId)}`
+                      ? `${matrixAsOfDate}; ${portfolioRiskFrequency.statusLabel}; ${windowLabel(matrixSettings.lookbackDays)} ${riskModelLabel(matrixSettings.modelId)}`
                       : 'No active matrix date'}
                   </div>
                 </div>
@@ -1911,7 +2261,7 @@ export default function RiskPage() {
                   <div className="panel-title">Current Drift</div>
                   <div className="portfolio-detail-meta">
                     {defaultPlanningTaxonomy
-                      ? `${defaultPlanningTaxonomy.name}; ${holdingsWorkspace.as_of_date}; ${windowLabel(driftSettings.lookbackDays)} ${riskModelLabel(driftSettings.modelId)}`
+                      ? `${defaultPlanningTaxonomy.name}; ${holdingsWorkspace.as_of_date}; ${portfolioRiskFrequency.statusLabel}; ${windowLabel(driftSettings.lookbackDays)} ${riskModelLabel(driftSettings.modelId)}`
                       : 'Default planning taxonomy is not configured'}
                   </div>
                 </div>
@@ -1968,7 +2318,7 @@ export default function RiskPage() {
                   <div className="panel-title">Risk Contribution</div>
                   <div className="portfolio-detail-meta">
                     {contributionAsOfDate
-                      ? `${contributionAsOfDate}; point-in-time weights with ${windowLabel(contributionSettings.lookbackDays)} covariance`
+                      ? `${contributionAsOfDate}; ${portfolioRiskFrequency.statusLabel}; point-in-time weights with ${windowLabel(contributionSettings.lookbackDays)} covariance`
                       : 'No active risk contribution date'}
                   </div>
                 </div>

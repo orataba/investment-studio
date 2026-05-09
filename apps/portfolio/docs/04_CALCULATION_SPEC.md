@@ -233,6 +233,19 @@
 
 若观察频率是稳定交易日频，`periods_per_year` 通常接近 `252`；若存在节假日、缺价或非交易日 carry-forward，系统必须记录并使用实际有效收益观察密度，避免把无市场观察的 0 return 当作风险样本。
 
+协方差 / 相关性计算必须先对每一对序列取共有有效收益日期。协方差矩阵的每个 entry 使用该 entry 自身有效配对日期推断 `periods_per_year` 后年化；相关性矩阵的协方差和两侧方差必须来自同一组配对样本，不能用全量单边方差拼接。Research 的 `ewma_vol_shrinkage_corr_covariance` 使用各资产自身有效日期估计年化 EWMA volatility，再用共有有效日期估计 correlation。
+
+### 2.6.1 计算频率与节假日
+
+Risk 与 Research 的 covariance / correlation / risk contribution 必须先确定一个 target calculation frequency，再把各资产 NAV/price series 对齐到该频率：
+
+- `auto` 规则：全部资产可判定为日频时使用 `daily`；日频和周频混合时使用 `weekly`；存在月频资产时使用 `monthly`。样本很短且间隔不规则时，不得把缺失观测误判为周频或月频，除非所有间隔都一致落在对应频率区间。
+- Research 允许用户显式选择 `daily` / `weekly` / `monthly`，但不能选择高于数据支持的频率。例如日频+周频混合不能强制按日频计算。
+- 对齐规则：每个资产在目标 period 内只取最后一个有效观测点；不得跨目标 period 前向填充生成假 NAV。若某资产缺少某个目标 period，该资产该 period 的 return 为 missing。
+- 节假日规则：若标准资产在某个交易所共同节假日都没有更新，则该日期不会进入共同收益样本；若只有单个资产缺失，而其他资产在该目标 period 有观测，则这是该资产的缺失数据，不应被当作 0 return 或 stale return。
+- 周频 period end 使用自然周五；若 as-of date 落在周中，则最后一个未完整周以 as-of date 作为 capped period end。月频使用自然月末，同样以 as-of date cap 最后一个 period。
+- 若未来传入显式交易日日历，日频对齐应以日历校验 holiday vs missing：共同非交易日不生成样本；日历交易日缺价必须进入 coverage / missing 诊断，而不是隐式填值。
+
 ### 2.7 缺失数据与覆盖率
 
 如果某一估值日存在缺失数据：
@@ -346,7 +359,7 @@ Holdings 是当前持仓状态表，只展示当前仍然 open 的 quantity、qu
 
 Holdings 可以展示 quote-derived asset market trend 指标，作为扫描当前持仓资产自身近期市场表现的辅助列：
 
-- `Spark Chart` 使用同一 selected quote series 的 6M 路径；
+- `Chart 6M` 使用同一 selected quote series 的 6M 路径；
 - `1W Return / MTD / YTD / 1Y` 只使用资产自身 selected quote series，计算为 `latest_quote / anchor_quote - 1`；
 - selected quote series 按 `quote_selection_policy.total_return -> chart -> valuation -> reference` 选择；若策略为空，则选用截至 as-of 最新的一条 quote basis，不能混用多个 basis；
 - `1W Return` / `1Y` 的 anchor quote 是目标日期或之前最近 quote；
@@ -483,11 +496,11 @@ Overview 展示 `Monthly Return Matrix`，按 year x month 展示月度 TWR，YT
 Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要结构为：
 
 - `Return & Risk Metrics`：组合级 TWR / annualized TWR、IRR / MWR、risk、drawdown。return / risk 类指标可选择 benchmark price series 做 period return、annualized return、volatility、drawdown 的轻量对比；
-- `Calculation`：合并 realized risk attribution、initial value、group rows、external flow、portfolio total 与 final value。表格有和 Holdings 一致的 view selector；系统默认视图命名为 `Default`，展示区间平均权重、期末权重、区间收益、收益贡献、资产自身风险和风险贡献。Group By 默认是 `None`，语义是直接展示 instrument / asset lines，不做额外分组；也可按 asset type / currency / account / default planning taxonomy 聚合。asset type 与 currency 是底层 contribution axis，不允许仅在前端把 asset rows 相加；`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
+- `Calculation`：合并 realized risk attribution、initial value、group rows、external flow、portfolio total 与 final value。表格有和 Holdings 一致的 view selector；系统默认视图命名为 `Default`，展示区间平均权重、期末权重、区间收益、收益贡献、资产自身风险、相关性和风险贡献；`Beta to Portfolio` 保留为高级可选列，不进入默认视图。Group By 默认是 `None`，语义是直接展示 instrument / asset lines，不做额外分组；也可按 asset type / currency / account / default planning taxonomy 聚合。asset type 与 currency 是底层 contribution axis，不允许仅在前端把 asset rows 相加；`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
 - Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。期初已有持仓按 start date 的 beginning market value 重置为期间成本，区间内买入按成交 gross amount 建立期间成本，期末未卖出的持仓用 end date market value 计算 `Unrealized Gain`。
 - `Capital Gain = Realized Gain + Unrealized Gain`；`Realized Gain` 是期间卖出部分相对于期间成本的资本利得，`Unrealized Gain` 是期末仍持有部分相对于期间成本的资本利得。FIFO / moving average 只影响 Holdings / book P&L，不改变 Performance Calculation 的期间资本利得拆分。
 - `Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes、FX P&L 分列。P&L 与 book attribution 不和 benchmark 对比。
-- Performance 中的区间风险贡献是 realized attribution，不另设 Risk tab。对每个 group，`Own Vol / Own Sharpe / Own Corr / Beta` 使用 group daily return 与 portfolio daily return；`Contribution Vol` 使用 group daily contribution 序列；`Risk Contribution` 使用 `Cov(Contribution_g, R_p) / Var(R_p)`。这些指标服务区间复盘，不使用 Risk 页的 point-in-time covariance lookback。
+- Performance 中的区间风险贡献是 realized attribution，不另设 Risk tab。对每个 group，`Vol / Sharpe` 使用 group 自身 daily return；`Corr to Portfolio` 使用 group daily return 与 portfolio daily TWR；`Beta to Portfolio = Cov(R_g, R_p) / Var(R_p)` 保留为高级可选列；`Realized RC` 使用 `Cov(Contribution_g, R_p) / Var(R_p)`，衡量该 group 的 contribution 路径对组合已实现方差的协方差占比。这些指标服务区间复盘，不使用 Risk 页的 point-in-time covariance lookback。
 
 Overview 的 chart compare 与 Performance 的 benchmark compare 是独立选择状态，因为用户可能对图表和区间绩效选择不同对比对象。
 
@@ -650,7 +663,7 @@ $$
 
 ### Portfolio volatility
 
-默认使用组合 `daily_twr` 的 simple returns 构造风险统计；当需要对齐 PP 风格展示时，可额外输出 log-return 版本，但 canonical risk API 默认仍以 simple returns 为主。资产规模 `NAV_t` 的变化不得作为组合级 volatility / Sharpe / Sortino 的输入。
+默认使用组合 `daily_twr` 的 simple returns 构造内部区间风险统计；当输出正式 GIPS Report 风格披露时，ex-post standard deviation 必须改用 monthly returns，并按同一方法同时计算组合和 benchmark。资产规模 `NAV_t` 的变化不得作为组合级 volatility / Sharpe / Sortino 的输入。
 
 $$
 \sigma_{ann} = std(r_t) \times \sqrt{periods\_per\_year}
@@ -665,7 +678,8 @@ $$
 MVP 默认：
 
 - `r_f = 0`，除非显式提供 risk-free series；
-- `\mu_{ann}` 由日均收益年化得到。
+- `\mu_{ann}` 使用同一区间、同一 periodicity 的 arithmetic mean return 年化；`annualized_twr` 是收益展示字段，不作为 Sharpe / Sortino 的分子。
+- 若未来接入 risk-free series，必须按同一日期窗口、同一 periodicity 构造 excess return，不得混用静态年化收益率和日/月收益率。
 
 ### Sortino ratio
 
@@ -675,20 +689,20 @@ $$
 
 ### Tracking error
 
-给定 benchmark 日收益 `r_{b,t}`：
+给定 benchmark 同频收益 `r_{b,t}`：
 
 $$
 a_t = r_{p,t} - r_{b,t}
 $$
 
 $$
-TE_{ann} = std(a_t) \times \sqrt{252}
+TE_{ann} = std(a_t) \times \sqrt{periods\_per\_year}
 $$
 
 ### Information ratio
 
 $$
-IR = \frac{mean(a_t) \times 252}{TE_{ann}}
+IR = \frac{mean(a_t) \times periods\_per\_year}{TE_{ann}}
 $$
 
 ## 6. Benchmark-relative 口径
@@ -990,6 +1004,8 @@ Risk 页和 Research solver 使用同一套 covariance model id 与 contribution
 - `sample_covariance`
 - contribution mode: `signed` / `abs`
 
+这里的 `\Sigma` 是年化 covariance matrix。混合日频 / 周频 / 稀疏 NAV 时，先按 2.6.1 的 target calculation frequency 取 period-end 观测，再计算收益；不做 stale 价格生成的 0 return。每个 covariance entry 只使用两侧共同存在的有效 return date，并按这些日期的实际观察密度年化。若共同有效收益不足两期，solver 必须进入 insufficient-history 诊断，而不是用不同长度的持有期收益硬拼协方差。
+
 ### Marginal contribution to variance
 
 $$
@@ -1089,6 +1105,8 @@ Research current target solve 使用 planning taxonomy 的层级 scope 做递归
 - 根 scope 完成风险 sleeve 权重后，`target_volatility` / `fixed_gross` capital overlay 才对非现金目标权重整体放缩，并把残差写入 cash-like member；没有 cash-like member 时残差只作为显式诊断披露。
 
 每次 run 必须输出 root `solve_event` 和完整 `scope_solve_events`，用于复核每层 scope 的默认维度、实际维度、solver、RC mode、risk gap 与成员数。
+
+每次 run 还必须输出 `calculation_frequency` profile，包括用户请求频率、最终解析频率、可选频率、源数据频率计数和状态文案。组合 workspace 的组合名状态栏展示当前组合的默认 risk basis，方便用户确认当前是 daily / weekly / monthly 口径。
 
 ## 11. Scenario P&L 口径
 

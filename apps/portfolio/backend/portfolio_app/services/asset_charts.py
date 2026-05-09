@@ -5,14 +5,17 @@ from datetime import date, timedelta
 from math import sqrt
 
 from portfolio_app.services.instrument_registry import get_registry_instrument_detail
+from portfolio_app.services.market_data import is_usable_market_data_point
 
 SUPPORTED_CHART_RANGE_KEYS: tuple[str, ...] = ("1m", "3m", "6m", "ytd", "1y", "all")
+HOLDINGS_PRICE_CHART_RANGE_KEYS: tuple[str, ...] = ("1m", "3m", "6m", "1y")
 ASSET_RISK_WINDOW_DAYS: dict[str, int] = {
     "1m": 31,
     "3m": 92,
     "6m": 183,
     "1y": 366,
 }
+DAYS_PER_YEAR = 365.25
 
 
 def empty_asset_trend_metrics(
@@ -43,7 +46,10 @@ def empty_asset_holdings_market_profile(
     holding_start_date: date | None = None,
 ) -> dict[str, object]:
     return {
-        "price_chart": [],
+        "price_chart_1m": [],
+        "price_chart_3m": [],
+        "price_chart_6m": [],
+        "price_chart_1y": [],
         **empty_asset_trend_metrics(holding_start_date=holding_start_date),
     }
 
@@ -112,7 +118,7 @@ def _basis_points(detail: dict[str, object]) -> dict[str, list[dict[str, object]
         return points_by_basis
 
     for raw_point in market_data:
-        if not isinstance(raw_point, dict):
+        if not is_usable_market_data_point(raw_point):
             continue
         quote_basis = str(raw_point.get("quote_basis") or "").strip()
         point_date = _parse_iso_date(raw_point.get("as_of_date"))
@@ -182,16 +188,7 @@ def _selected_chart_points(
     if selected_points:
         return selected_points, selected_basis
 
-    fallback_basis: str | None = None
-    fallback_points: list[dict[str, object]] = []
-    for quote_basis, basis_points in points_by_basis.items():
-        eligible_points = [point for point in basis_points if point["date"] <= as_of_date]
-        if not eligible_points:
-            continue
-        if not fallback_points or str(eligible_points[-1]["date_iso"]) > str(fallback_points[-1]["date_iso"]):
-            fallback_basis = quote_basis
-            fallback_points = eligible_points
-    return fallback_points, fallback_basis
+    return [], None
 
 
 def _latest_point_on_or_before(
@@ -276,22 +273,37 @@ def _sample_stddev(values: list[float]) -> float | None:
     return sqrt(max(variance, 0.0))
 
 
-def _period_returns(points: list[dict[str, object]]) -> list[float]:
+def _period_return_observations(points: list[dict[str, object]]) -> tuple[list[float], date | None, date | None]:
     returns: list[float] = []
+    first_return_start_date: date | None = None
+    last_return_end_date: date | None = None
+    previous_date: date | None = None
     previous_value: float | None = None
     for point in points:
+        point_date = point.get("date")
         value = _safe_float(point.get("value"))
-        if value is None:
+        if value is None or not isinstance(point_date, date):
             continue
-        if previous_value is not None and previous_value > 1e-12:
+        if previous_value is not None and previous_value > 1e-12 and previous_date is not None and previous_date < point_date:
             returns.append(value / previous_value - 1)
+            if first_return_start_date is None:
+                first_return_start_date = previous_date
+            last_return_end_date = point_date
+        previous_date = point_date
         previous_value = value
-    return returns
+    return returns, first_return_start_date, last_return_end_date
 
 
 def _annualized_volatility(points: list[dict[str, object]]) -> float | None:
-    stddev = _sample_stddev(_period_returns(points))
-    return stddev * sqrt(252) if stddev is not None else None
+    returns, first_return_start_date, last_return_end_date = _period_return_observations(points)
+    stddev = _sample_stddev(returns)
+    if stddev is None or first_return_start_date is None or last_return_end_date is None:
+        return None
+    elapsed_days = (last_return_end_date - first_return_start_date).days
+    if elapsed_days <= 0:
+        return None
+    periods_per_year = float(len(returns)) / float(elapsed_days) * DAYS_PER_YEAR
+    return stddev * sqrt(periods_per_year)
 
 
 def _max_drawdown(points: list[dict[str, object]]) -> float | None:
@@ -560,34 +572,44 @@ def build_asset_sparkline(
     ]
 
 
+def _chart_points_payload(chart: dict[str, object] | None) -> list[dict[str, object]]:
+    points = chart.get("points", []) if isinstance(chart, dict) else []
+    if not isinstance(points, list):
+        return []
+    return [
+        {
+            "date": str(point.get("date") or ""),
+            "value": float(point.get("value")),
+        }
+        for point in points
+        if isinstance(point, dict) and _safe_float(point.get("value")) is not None
+    ]
+
+
 def build_asset_holdings_market_profile(
     asset_id: str,
     *,
     as_of_date: date,
-    price_chart_range_key: str | None = "6m",
     holding_start_date: date | None = None,
     max_points: int = 48,
 ) -> dict[str, object]:
     detail = get_registry_instrument_detail(asset_id)
     if not isinstance(detail, dict):
         return empty_asset_holdings_market_profile(holding_start_date=holding_start_date)
-    chart = build_asset_price_chart_from_detail(
-        detail,
-        asset_id=asset_id,
-        as_of_date=as_of_date,
-        range_key=price_chart_range_key,
-        max_points=max_points,
-    )
-    chart_points = chart.get("points", []) if isinstance(chart, dict) else []
+    charts = {
+        f"price_chart_{range_key}": _chart_points_payload(
+            build_asset_price_chart_from_detail(
+                detail,
+                asset_id=asset_id,
+                as_of_date=as_of_date,
+                range_key=range_key,
+                max_points=max_points,
+            )
+        )
+        for range_key in HOLDINGS_PRICE_CHART_RANGE_KEYS
+    }
     return {
-        "price_chart": [
-            {
-                "date": str(point.get("date") or ""),
-                "value": float(point.get("value")),
-            }
-            for point in chart_points
-            if isinstance(point, dict) and _safe_float(point.get("value")) is not None
-        ],
+        **charts,
         **build_asset_trend_metrics_from_detail(
             detail,
             as_of_date=as_of_date,

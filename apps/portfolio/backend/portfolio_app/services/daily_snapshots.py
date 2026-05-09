@@ -19,7 +19,7 @@ from portfolio_app.db.models import (
 )
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import performance
-from portfolio_app.services.asset_charts import build_asset_trend_metrics
+from portfolio_app.services.asset_charts import HOLDINGS_PRICE_CHART_RANGE_KEYS, build_asset_trend_metrics
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.portfolio_store import (
     _resolve_live_portfolio_as_of_date,
@@ -32,7 +32,7 @@ _LOCAL_REFRESH_LOCKS: dict[str, Lock] = {}
 _LOCAL_REFRESH_LOCKS_GUARD = Lock()
 _RUNNING_REFRESH_WAIT_SECONDS = 30.0
 _RUNNING_REFRESH_POLL_SECONDS = 0.1
-DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260506-asset-trend"
+DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260509-holdings-chart-columns"
 
 
 def _current_utc_timestamp() -> str:
@@ -670,14 +670,18 @@ def _aggregate_holding_rows(
                 if str(row.get("cost_basis_method") or "")
             }
         )
-        price_chart = next(
-            (
-                row.get("price_chart")
-                for row in asset_rows
-                if isinstance(row.get("price_chart"), list) and row.get("price_chart")
-            ),
-            [],
-        )
+        price_charts = {
+            f"price_chart_{range_key}": next(
+                (
+                    row.get(f"price_chart_{range_key}")
+                    for row in asset_rows
+                    if isinstance(row.get(f"price_chart_{range_key}"), list)
+                    and row.get(f"price_chart_{range_key}")
+                ),
+                [],
+            )
+            for range_key in HOLDINGS_PRICE_CHART_RANGE_KEYS
+        }
         trend_metrics = {
             "asset_return_1w": _first_present(asset_rows, "asset_return_1w"),
             "asset_return_mtd": _first_present(asset_rows, "asset_return_mtd"),
@@ -726,7 +730,7 @@ def _aggregate_holding_rows(
                     if market_value_base is not None and total_nav_base is not None and total_nav_base > 1e-9
                     else None
                 ),
-                "price_chart": price_chart,
+                **price_charts,
                 **trend_metrics,
                 "coverage_status": "price-nav-fx" if market_value_base is not None else "unpriced",
                 "account_count": len(account_ids),

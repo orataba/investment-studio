@@ -397,6 +397,7 @@ class ResearchSettingsRecordModel(Base):
     comparator_taxonomy_node_id: Mapped[str | None] = mapped_column(String)
     as_of_date: Mapped[date | None] = mapped_column(Date)
     lookback_days: Mapped[int] = mapped_column(nullable=False, default=90)
+    calculation_frequency: Mapped[str] = mapped_column(String, nullable=False, default="auto")
     target_dimension: Mapped[str] = mapped_column(String, nullable=False, default="scope_default")
     capital_mode: Mapped[str] = mapped_column(String, nullable=False, default="unit_notional")
     gross_exposure: Mapped[float | None]

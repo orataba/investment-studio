@@ -9,6 +9,7 @@ import {
   getPortfolioResearchWorkbench,
   updatePortfolioResearchSettings,
   type PortfolioResearchCapitalMode,
+  type PortfolioResearchCalculationFrequency,
   type PortfolioResearchPlanningScopeOption,
   type PortfolioResearchRunRecord,
   type PortfolioResearchTargetDimension,
@@ -32,6 +33,13 @@ const CAPITAL_MODE_OPTIONS = [
   { value: 'fixed_gross', label: 'Fixed Gross' },
   { value: 'target_volatility', label: 'Target Volatility' },
 ] as const
+
+const CALCULATION_FREQUENCY_OPTIONS: Array<{ value: PortfolioResearchCalculationFrequency; label: string }> = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+]
 
 function TableStatusRow({
   colSpan,
@@ -78,6 +86,16 @@ function resolveStatusLabel(status: string) {
 function formatResearchDimension(value: string | null | undefined) {
   if (!value) {
     return '—'
+  }
+  return formatLabel(value)
+}
+
+function formatCalculationFrequency(value: string | null | undefined) {
+  if (!value) {
+    return '—'
+  }
+  if (value === 'auto') {
+    return 'Auto'
   }
   return formatLabel(value)
 }
@@ -187,6 +205,7 @@ export default function ResearchPage() {
   const [comparatorScopeId, setComparatorScopeId] = useState('')
   const [asOfDate, setAsOfDate] = useState('')
   const [lookbackDays, setLookbackDays] = useState(String(LOOKBACK_OPTIONS[2]))
+  const [calculationFrequency, setCalculationFrequency] = useState<PortfolioResearchCalculationFrequency>('auto')
   const [targetDimension, setTargetDimension] = useState<PortfolioResearchTargetDimension>('scope_default')
   const [capitalMode, setCapitalMode] = useState<PortfolioResearchCapitalMode>('unit_notional')
   const [grossExposure, setGrossExposure] = useState('')
@@ -249,6 +268,7 @@ export default function ResearchPage() {
     setComparatorScopeId(workbench.settings.comparator_taxonomy_node_id ?? '')
     setAsOfDate(workbench.settings.as_of_date ?? workbench.as_of_date)
     setLookbackDays(String(workbench.settings.lookback_days))
+    setCalculationFrequency(workbench.settings.calculation_frequency ?? 'auto')
     setTargetDimension(workbench.settings.target_dimension)
     setCapitalMode(workbench.settings.capital_mode)
     setGrossExposure(workbench.settings.gross_exposure != null ? String(workbench.settings.gross_exposure) : '')
@@ -362,6 +382,21 @@ export default function ResearchPage() {
   const selectedScopeDefaultDimension =
     selectedScopeOptions.find((item) => (item.taxonomy_node_id ?? '') === comparatorScopeId)?.default_target_dimension ??
     'weight'
+  const frequencyProfile = workbench?.calculation_frequency ?? null
+  const availableFrequencyOptions = useMemo(() => {
+    const optionByFrequency = new Map((frequencyProfile?.options ?? []).map((option) => [option.frequency, option]))
+    return CALCULATION_FREQUENCY_OPTIONS.map((option) => {
+      if (option.value === 'auto') {
+        return { ...option, available: true, reason: null }
+      }
+      const profileOption = optionByFrequency.get(option.value)
+      return {
+        ...option,
+        available: profileOption?.available ?? true,
+        reason: profileOption?.reason ?? null,
+      }
+    })
+  }, [frequencyProfile])
 
   function toggleFrozenNode(nodeId: string) {
     setFrozenNodeIds((current) => {
@@ -386,6 +421,7 @@ export default function ResearchPage() {
       comparator_taxonomy_node_id: comparatorScopeId || null,
       as_of_date: asOfDate || null,
       lookback_days: Number(lookbackDays) || 90,
+      calculation_frequency: calculationFrequency,
       target_dimension: targetDimension,
       capital_mode: capitalMode,
       gross_exposure: capitalMode === 'fixed_gross' ? parsedGrossExposure : null,
@@ -504,6 +540,10 @@ export default function ResearchPage() {
                       <td>{lookbackDays}D</td>
                     </tr>
                     <tr>
+                      <th>Frequency</th>
+                      <td>{frequencyProfile?.status_label ?? formatCalculationFrequency(calculationFrequency)}</td>
+                    </tr>
+                    <tr>
                       <th>Runs</th>
                       <td>{workbench.runs.length}</td>
                     </tr>
@@ -566,6 +606,25 @@ export default function ResearchPage() {
                     {LOOKBACK_OPTIONS.map((option) => (
                       <option key={option} value={option}>
                         {option}D
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Frequency</span>
+                  <select
+                    value={calculationFrequency}
+                    onChange={(event) => setCalculationFrequency(event.target.value as PortfolioResearchCalculationFrequency)}
+                  >
+                    {availableFrequencyOptions.map((option) => (
+                      <option
+                        key={option.value}
+                        value={option.value}
+                        disabled={!option.available}
+                        title={option.reason ?? undefined}
+                      >
+                        {option.label}
+                        {option.available ? '' : ' unavailable'}
                       </option>
                     ))}
                   </select>
@@ -669,7 +728,7 @@ export default function ResearchPage() {
                 <span className="portfolio-detail-meta">
                   {scopeOptionsLoading
                     ? 'Loading scope tree.'
-                    : 'Settings ready.'}
+                    : frequencyProfile?.status_label ?? 'Settings ready.'}
                 </span>
                 <div className="toolbar">
                   <button type="submit" className="toolbar-link" disabled={actionPending === 'save' || scopeActionBlocked}>
@@ -719,7 +778,12 @@ export default function ResearchPage() {
                         <td>{formatTimestamp(run.requested_at)}</td>
                         <td>{resolveStatusLabel(run.status)}</td>
                         <td>{run.detail?.selected_scope?.label ?? 'Top Level'}</td>
-                        <td>{run.as_of_date ?? '—'} · {run.lookback_days}D</td>
+                        <td>
+                          {run.as_of_date ?? '—'} · {run.lookback_days}D
+                          {run.detail?.solve_event?.calculation_frequency
+                            ? ` · ${formatCalculationFrequency(run.detail.solve_event.calculation_frequency)}`
+                            : ''}
+                        </td>
                         <td>{run.detail?.signals.find((signal) => signal.label === 'Target Layer')?.value ?? '—'}</td>
                         <td className="transaction-note-cell">{run.headline ?? '—'}</td>
                       </tr>
@@ -782,6 +846,10 @@ export default function ResearchPage() {
                               ? `${formatLabel(solveEvent.covariance_model)} · ${solveEvent.covariance_observations ?? 0}`
                               : '—'}
                           </td>
+                        </tr>
+                        <tr>
+                          <th>Frequency</th>
+                          <td>{selectedRunSignalMap.get('Frequency') ?? formatCalculationFrequency(solveEvent?.calculation_frequency)}</td>
                         </tr>
                         <tr>
                           <th>RC Mode</th>

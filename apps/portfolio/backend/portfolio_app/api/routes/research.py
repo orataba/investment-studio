@@ -32,6 +32,8 @@ def get_portfolio_research_workbench(
         workbench = get_research_workbench(portfolio_id, selected_run_id=selected_run_id)
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     if workbench is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return ResearchWorkbenchResponse.model_validate(workbench)
@@ -51,6 +53,7 @@ def update_portfolio_research_settings(
             comparator_taxonomy_node_id=payload.comparator_taxonomy_node_id,
             as_of_date=payload.as_of_date,
             lookback_days=payload.lookback_days,
+            calculation_frequency=payload.calculation_frequency,
             target_dimension=payload.target_dimension,
             capital_mode=payload.capital_mode,
             gross_exposure=payload.gross_exposure,

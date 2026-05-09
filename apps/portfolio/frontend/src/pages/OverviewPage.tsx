@@ -9,6 +9,7 @@ import CalculationStatus from '../components/CalculationStatus'
 import PerformanceNavChart from '../components/PerformanceNavChart'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import RiskRankedBars from '../components/RiskRankedBars'
+import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import {
   getHoldingsWorkspace,
   getPortfolioAssetPriceChart,
@@ -73,6 +74,7 @@ type TopHoldingColumnKey =
 type TopHoldingColumnDefinition = {
   key: TopHoldingColumnKey
   label: string
+  align?: 'center'
   render: (row: PortfolioHoldingRow) => ReactNode
 }
 
@@ -99,7 +101,7 @@ const TOP_HOLDING_COLUMN_LABELS: Record<TopHoldingColumnKey, string> = {
   asset: 'Asset',
   identifier: 'Identifier',
   sleeve: 'Sleeve',
-  sparkline: 'Sparkchart',
+  sparkline: 'Chart 6M',
   quantity: 'Quantity',
   last_price: 'Last Price',
   market_value: 'Market Value',
@@ -216,7 +218,7 @@ function periodReturnFromTwr(
   fallbackToFirst = true,
 ) {
   const sortedPoints = points
-    .filter((point) => point.cumulative_twr != null || point.ending_nav != null)
+    .filter((point) => point.cumulative_twr != null)
     .slice()
     .sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
   if (sortedPoints.length < 2) {
@@ -234,10 +236,6 @@ function periodReturnFromTwr(
   if (latestPoint.cumulative_twr != null && anchorPoint.cumulative_twr != null) {
     const anchorGrowth = 1 + anchorPoint.cumulative_twr
     return anchorGrowth !== 0 ? (1 + latestPoint.cumulative_twr) / anchorGrowth - 1 : null
-  }
-
-  if (latestPoint.ending_nav != null && anchorPoint.ending_nav != null && anchorPoint.ending_nav !== 0) {
-    return latestPoint.ending_nav / anchorPoint.ending_nav - 1
   }
 
   return null
@@ -325,6 +323,13 @@ function sampleStandardDeviation(values: number[]) {
   return Math.sqrt(variance)
 }
 
+function annualizedMeanReturn(values: number[], periodsPerYear: number | null) {
+  if (!values.length || periodsPerYear == null) {
+    return null
+  }
+  return (values.reduce((sum, value) => sum + value, 0) / values.length) * periodsPerYear
+}
+
 function buildDrawdownMetrics(points: PortfolioAssetPriceChartPoint[]) {
   let highWater = points[0]?.value ?? 0
   let maxDrawdown: number | null = null
@@ -379,6 +384,7 @@ function buildBenchmarkMetrics(points: PortfolioAssetPriceChartPoint[]) {
       ? (1 + sinceInception) ** (365.25 / daySpan) - 1
       : null
   const annualizedVolatility = volatility == null || periodsPerYear == null ? null : volatility * Math.sqrt(periodsPerYear)
+  const annualizedMean = annualizedMeanReturn(dailyReturns.map((point) => point.value), periodsPerYear)
   const drawdowns = buildDrawdownMetrics(sortedPoints)
 
   return {
@@ -389,8 +395,8 @@ function buildBenchmarkMetrics(points: PortfolioAssetPriceChartPoint[]) {
     annualizedReturn,
     annualizedVolatility,
     sharpe:
-      annualizedReturn != null && annualizedVolatility != null && annualizedVolatility !== 0
-        ? annualizedReturn / annualizedVolatility
+      annualizedMean != null && annualizedVolatility != null && annualizedVolatility !== 0
+        ? annualizedMean / annualizedVolatility
         : null,
     currentDrawdown: drawdowns.currentDrawdown,
     maxDrawdown: drawdowns.maxDrawdown,
@@ -410,42 +416,6 @@ function benchmarkNote(
     return 'BM loading'
   }
   return `BM ${formatter(value)}`
-}
-
-function MiniSparkline({ values }: { values: SparklinePoint[] }) {
-  if (values.length < 2) {
-    return <span className="sparkline-empty">—</span>
-  }
-
-  const sliced = values.length > 120 ? values.slice(-120) : values
-  const width = 88
-  const height = 24
-  const min = Math.min(...sliced.map((point) => point.value))
-  const max = Math.max(...sliced.map((point) => point.value))
-  const span = max - min || 1
-  const points = sliced
-    .map((point, index) => {
-      const x = (index / (sliced.length - 1)) * (width - 1)
-      const y = height - ((point.value - min) / span) * (height - 6) - 2
-      return `${x.toFixed(1)},${y.toFixed(1)}`
-    })
-    .join(' ')
-
-  const firstValue = sliced[0]?.value ?? 0
-  const lastValue = sliced[sliced.length - 1]?.value ?? firstValue
-  const isPositive = lastValue >= firstValue
-  const stroke = isPositive ? '#0f766e' : '#b42318'
-  const fill = isPositive ? 'rgba(15, 118, 110, 0.12)' : 'rgba(180, 35, 24, 0.12)'
-  const areaPoints = `0,${height} ${points} ${width},${height}`
-
-  return (
-    <span className="sparkline-cell">
-      <svg className="sparkline" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-        <polygon points={areaPoints} fill={fill} />
-        <polyline points={points} className="sparkline-path" style={{ stroke }} />
-      </svg>
-    </span>
-  )
 }
 
 function StrategySleeveDonut({
@@ -1010,7 +980,8 @@ export default function OverviewPage() {
     {
       key: 'sparkline',
       label: TOP_HOLDING_COLUMN_LABELS.sparkline,
-      render: (row) => <MiniSparkline values={row.price_chart} />,
+      align: 'center',
+      render: (row) => <Sparkline values={row.price_chart_6m} maxPoints={120} />,
     },
     {
       key: 'quantity',
@@ -1074,7 +1045,7 @@ export default function OverviewPage() {
       key: 'return_1w',
       label: TOP_HOLDING_COLUMN_LABELS.return_1w,
       render: (row) => {
-        const value = buildPriceReturnMetrics(row.price_chart).oneWeek
+        const value = buildPriceReturnMetrics(row.price_chart_6m).oneWeek
         return <span className={signedValueClass(value)}>{signedPercent(value)}</span>
       },
     },
@@ -1082,7 +1053,7 @@ export default function OverviewPage() {
       key: 'return_mtd',
       label: TOP_HOLDING_COLUMN_LABELS.return_mtd,
       render: (row) => {
-        const value = buildPriceReturnMetrics(row.price_chart).mtd
+        const value = buildPriceReturnMetrics(row.price_chart_6m).mtd
         return <span className={signedValueClass(value)}>{signedPercent(value)}</span>
       },
     },
@@ -1090,7 +1061,7 @@ export default function OverviewPage() {
       key: 'return_ytd',
       label: TOP_HOLDING_COLUMN_LABELS.return_ytd,
       render: (row) => {
-        const value = buildPriceReturnMetrics(row.price_chart).ytd
+        const value = buildPriceReturnMetrics(row.price_chart_6m).ytd
         return <span className={signedValueClass(value)}>{signedPercent(value)}</span>
       },
     },
@@ -1290,7 +1261,9 @@ export default function OverviewPage() {
                     <thead>
                       <tr>
                         {visibleTopHoldingColumns.map((column) => (
-                          <th key={column.key}>{column.label}</th>
+                          <th key={column.key} className={column.align === 'center' ? 'chart-cell' : undefined}>
+                            {column.label}
+                          </th>
                         ))}
                       </tr>
                     </thead>
@@ -1299,7 +1272,9 @@ export default function OverviewPage() {
                         sortedHoldings.slice(0, TOP_HOLDINGS_LIMIT).map((row) => (
                           <tr key={row.line_id}>
                             {visibleTopHoldingColumns.map((column) => (
-                              <td key={column.key}>{column.render(row)}</td>
+                              <td key={column.key} className={column.align === 'center' ? 'chart-cell' : undefined}>
+                                {column.render(row)}
+                              </td>
                             ))}
                           </tr>
                         ))

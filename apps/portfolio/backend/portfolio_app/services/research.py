@@ -22,7 +22,11 @@ from portfolio_app.services.asset_charts import build_asset_sparkline
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_statement_of_assets_report
-from portfolio_app.services.research_solver import build_research_scope_options, solve_current_target_weights
+from portfolio_app.services.research_solver import (
+    build_research_calculation_frequency_profile,
+    build_research_scope_options,
+    solve_current_target_weights,
+)
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
     list_target_sets,
@@ -159,6 +163,9 @@ def _ensure_research_settings_record(
         if not record.capital_mode:
             record.capital_mode = "unit_notional"
             changed = True
+        if not getattr(record, "calculation_frequency", None):
+            record.calculation_frequency = "auto"
+            changed = True
         if record.frozen_taxonomy_node_ids_json is None:
             record.frozen_taxonomy_node_ids_json = []
             changed = True
@@ -173,6 +180,7 @@ def _ensure_research_settings_record(
         comparator_taxonomy_node_id=None,
         as_of_date=default_as_of_date,
         lookback_days=90,
+        calculation_frequency="auto",
         target_dimension="scope_default",
         capital_mode="unit_notional",
         gross_exposure=None,
@@ -286,6 +294,7 @@ def _serialize_settings_row(
         ),
         "as_of_date": _iso_date(row.as_of_date),
         "lookback_days": int(row.lookback_days or 90),
+        "calculation_frequency": row.calculation_frequency or "auto",
         "target_dimension": row.target_dimension or "scope_default",
         "capital_mode": row.capital_mode or "unit_notional",
         "gross_exposure": _safe_float(row.gross_exposure),
@@ -697,6 +706,11 @@ def _build_current_target_signals(
             "tone": "neutral",
         },
         {
+            "label": "Frequency",
+            "value": str(event.get("calculation_frequency") or settings_payload.get("calculation_frequency") or "auto").replace("_", " ").title(),
+            "tone": "neutral",
+        },
+        {
             "label": "Frozen Sleeves",
             "value": str(len(list(settings_payload.get("frozen_taxonomy_node_ids") or []))) if list(settings_payload.get("frozen_taxonomy_node_ids") or []) else "—",
             "tone": "neutral",
@@ -834,6 +848,10 @@ def _build_target_assumptions(
     assumptions = [
         "Local target solves are long-only and fully invested within each selected scope; member weights are bounded between 0% and 100%.",
     ]
+    frequency = str((solve_event or {}).get("calculation_frequency") or settings_payload.get("calculation_frequency") or "auto")
+    assumptions.append(
+        f"Risk inputs are first aligned to a {frequency.replace('_', ' ')} calculation frequency, using the last valid observation inside each target period."
+    )
     if str(settings_payload.get("target_dimension") or "") == "scope_default":
         assumptions.append("Scope Default resolves each sleeve using that sleeve's own default target dimension before rolling results upward.")
     if str((solve_event or {}).get("target_dimension") or "") == "risk_budget":
@@ -853,7 +871,7 @@ def _build_target_assumptions(
         assumptions.append("If local covariance is weak or history is too short, the solver falls back to target shares instead of forcing an unstable optimization.")
     if any(not item.get("source_target_set_id") for item in target_rows):
         assumptions.append("Missing scoped target sets resolve to equal local defaults inside the affected sleeve until an explicit SAA/TAA set is configured.")
-    return assumptions[:4]
+    return assumptions[:5]
 
 
 def _build_current_target_detail(
@@ -1062,6 +1080,14 @@ def get_research_workbench(
         as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
         lookback_days=int(settings_payload.get("lookback_days") or 90),
     )
+    calculation_frequency_profile = build_research_calculation_frequency_profile(
+        portfolio_id,
+        planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
+        comparator_taxonomy_node_id=str(settings_payload.get("comparator_taxonomy_node_id") or "").strip() or None,
+        as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
+        lookback_days=int(settings_payload.get("lookback_days") or 90),
+        requested_frequency=str(settings_payload.get("calculation_frequency") or "auto"),
+    )
 
     return {
         "portfolio_id": portfolio_id,
@@ -1075,6 +1101,7 @@ def get_research_workbench(
             planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
             as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
         ),
+        "calculation_frequency": calculation_frequency_profile,
         "settings": settings_payload,
         "current_context": context,
         "runs": runs,
@@ -1089,6 +1116,7 @@ def update_research_settings(
     comparator_taxonomy_node_id: str | None,
     as_of_date: date | None,
     lookback_days: int,
+    calculation_frequency: str,
     target_dimension: str,
     capital_mode: str,
     gross_exposure: float | None,
@@ -1138,6 +1166,7 @@ def update_research_settings(
         row.as_of_date = as_of_date or _default_as_of_date(portfolio)
         row.comparator_taxonomy_node_id = resolved_scope_node_id
         row.lookback_days = int(lookback_days or 90)
+        row.calculation_frequency = (calculation_frequency or "auto").strip() or "auto"
         row.target_dimension = (target_dimension or "scope_default").strip() or "scope_default"
         row.capital_mode = (capital_mode or "unit_notional").strip() or "unit_notional"
         row.gross_exposure = gross_exposure
@@ -1205,6 +1234,7 @@ def run_portfolio_research(
                 "comparator_taxonomy_node_id": resolved_scope_node_id,
                 "as_of_date": _iso_date(effective_as_of_date),
                 "lookback_days": int(settings_row.lookback_days or 90),
+                "calculation_frequency": settings_row.calculation_frequency or "auto",
                 "target_dimension": settings_row.target_dimension or "scope_default",
                 "capital_mode": settings_row.capital_mode or "unit_notional",
                 "gross_exposure": _safe_float(settings_row.gross_exposure),
@@ -1232,6 +1262,7 @@ def run_portfolio_research(
                 comparator_taxonomy_node_id=resolved_scope_node_id,
                 as_of_date=effective_as_of_date,
                 lookback_days=int(settings_row.lookback_days or 90),
+                calculation_frequency=settings_row.calculation_frequency or "auto",
                 target_dimension=settings_row.target_dimension or "scope_default",
                 capital_mode=settings_row.capital_mode or "unit_notional",
                 gross_exposure=_safe_float(settings_row.gross_exposure),

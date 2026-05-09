@@ -406,7 +406,10 @@ export type PortfolioHoldingRow = {
   cost_basis: number | null
   cost_basis_base?: number | null
   allocation: number | null
-  price_chart: SparklinePoint[]
+  price_chart_1m: SparklinePoint[]
+  price_chart_3m: SparklinePoint[]
+  price_chart_6m: SparklinePoint[]
+  price_chart_1y: SparklinePoint[]
   asset_trend_as_of_date?: string | null
   asset_trend_basis?: string | null
   asset_return_1w?: number | null
@@ -431,7 +434,6 @@ export type HoldingsWorkspaceResponse = {
   portfolio_name: string
   base_currency: string
   as_of_date: string
-  price_chart_range: '1m' | '3m' | '6m' | '1y'
   view_label: string
   coverage_note: string
   summary_cards: HoldingsSummaryCard[]
@@ -447,7 +449,6 @@ export type HoldingsWorkspaceResponse = {
 
 export type HoldingsWorkspaceFilters = {
   as_of_date?: string
-  price_chart_range?: '1m' | '3m' | '6m' | '1y'
 }
 
 export type SharedMarketDataPoint = {
@@ -598,6 +599,7 @@ export type PortfolioDefaultPlanningTaxonomyResponse = {
 export type PortfolioResearchRunStatus = 'running' | 'completed' | 'failed'
 export type PortfolioResearchTargetDimension = 'scope_default' | 'weight' | 'risk_budget'
 export type PortfolioResearchCapitalMode = 'unit_notional' | 'fixed_gross' | 'target_volatility'
+export type PortfolioResearchCalculationFrequency = 'auto' | 'daily' | 'weekly' | 'monthly'
 export type PortfolioResearchArtifactPreviewKind = 'text' | 'html' | 'binary'
 
 export type PortfolioResearchPlanningTaxonomyOption = {
@@ -624,6 +626,7 @@ export type PortfolioResearchSettingsRecord = {
   comparator_taxonomy_node_name?: string | null
   as_of_date?: string | null
   lookback_days: number
+  calculation_frequency: PortfolioResearchCalculationFrequency
   target_dimension: PortfolioResearchTargetDimension
   capital_mode: PortfolioResearchCapitalMode
   gross_exposure?: number | null
@@ -639,6 +642,7 @@ export type PortfolioResearchSettingsUpdatePayload = {
   comparator_taxonomy_node_id?: string | null
   as_of_date?: string | null
   lookback_days: number
+  calculation_frequency?: PortfolioResearchCalculationFrequency
   target_dimension?: PortfolioResearchTargetDimension
   capital_mode?: PortfolioResearchCapitalMode
   gross_exposure?: number | null
@@ -652,6 +656,20 @@ export type PortfolioResearchContextSignalRecord = {
   label: string
   value: string
   tone: string
+}
+
+export type PortfolioResearchCalculationFrequencyProfile = {
+  requested_frequency: PortfolioResearchCalculationFrequency
+  resolved_frequency: Exclude<PortfolioResearchCalculationFrequency, 'auto'>
+  default_frequency: Exclude<PortfolioResearchCalculationFrequency, 'auto'>
+  source_frequency_counts: Record<string, number>
+  options: Array<{
+    frequency: Exclude<PortfolioResearchCalculationFrequency, 'auto'>
+    label: string
+    available: boolean
+    reason?: string | null
+  }>
+  status_label: string
 }
 
 export type PortfolioResearchHoldingSnapshotRecord = {
@@ -767,6 +785,7 @@ export type PortfolioResearchSolveEventRecord = {
   covariance_model?: string | null
   covariance_observations?: number | null
   risk_contribution_mode?: string | null
+  calculation_frequency?: Exclude<PortfolioResearchCalculationFrequency, 'auto'> | null
   gap_turnover?: number | null
   current_weight_total?: number | null
   target_weight_total?: number | null
@@ -870,6 +889,7 @@ export type PortfolioResearchWorkbenchResponse = {
   default_planning_taxonomy_id?: string | null
   planning_taxonomy_options: PortfolioResearchPlanningTaxonomyOption[]
   planning_scope_options: PortfolioResearchPlanningScopeOption[]
+  calculation_frequency: PortfolioResearchCalculationFrequencyProfile
   settings: PortfolioResearchSettingsRecord
   current_context: PortfolioResearchCurrentContextRecord
   runs: PortfolioResearchRunRecord[]
@@ -1494,7 +1514,6 @@ export function getHoldingsWorkspace(
   const query = buildQuery({
     portfolio_id: portfolioId,
     as_of_date: filters.as_of_date,
-    price_chart_range: filters.price_chart_range,
   })
   return fetchJson<HoldingsWorkspaceResponse>(API_BASE_URL, `/api/workspace/holdings${query}`)
 }

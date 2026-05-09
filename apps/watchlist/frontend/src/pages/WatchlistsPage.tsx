@@ -35,6 +35,7 @@ import {
   buildWatchlistPath,
   PLATFORM_HOME_URL,
 } from '../lib/navigation'
+import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import {
   formatBoolean,
   formatCompactCurrency,
@@ -372,7 +373,7 @@ function getWatchlistCompactMinWidth(fieldKey: string, field: FieldRegistryRecor
   if (fieldKey === 'ticker_or_isin') {
     return 96
   }
-  if (fieldKey.includes('price_chart') || fieldKey.includes('sparkline')) {
+  if (isChartFieldKey(fieldKey)) {
     return 104
   }
   if (fieldKey.endsWith('_date') || fieldKey.endsWith('_at')) {
@@ -397,6 +398,10 @@ function getWatchlistCompactMinWidth(fieldKey: string, field: FieldRegistryRecor
     return 104
   }
   return 104
+}
+
+function isChartFieldKey(fieldKey: string) {
+  return fieldKey.startsWith('price_chart_') || fieldKey.includes('sparkline')
 }
 
 function isAverageSummaryField(fieldKey: string, field: FieldRegistryRecord | undefined) {
@@ -451,28 +456,20 @@ function formatGroupAverageCell(fieldKey: string, field: FieldRegistryRecord | u
   return formatNumber(value)
 }
 
-function priceChartWindowLabel(fieldKey: string) {
-  if (fieldKey.endsWith('1d')) {
-    return '1D'
-  }
-  if (fieldKey.endsWith('1w')) {
-    return '1W'
+function priceChartMaxPoints(fieldKey: string) {
+  if (fieldKey.endsWith('1y')) {
+    return 120
   }
   if (fieldKey.endsWith('1m')) {
-    return '1M'
+    return 40
   }
-  if (fieldKey.endsWith('1y')) {
-    return '1Y'
+  if (fieldKey.endsWith('1w')) {
+    return 20
   }
-  return ''
-}
-
-function columnHeaderLabel(fieldKey: string, fallbackLabel: string) {
-  if (fieldKey.startsWith('price_chart_')) {
-    const windowLabel = priceChartWindowLabel(fieldKey)
-    return windowLabel ? `${fallbackLabel} (${windowLabel})` : fallbackLabel
+  if (fieldKey.endsWith('1d')) {
+    return 10
   }
-  return fallbackLabel
+  return undefined
 }
 
 function renderCell(
@@ -506,52 +503,8 @@ function renderCell(
     return <span className={statusClass(value)}>{formatLabel(String(value || 'Unknown'))}</span>
   }
 
-  if (fieldKey.includes('price_chart') || fieldKey.includes('sparkline')) {
-    if (!sparklinePoints || sparklinePoints.length < 2) {
-      return <span className="sparkline-empty">—</span>
-    }
-    const rangeSize = fieldKey.endsWith('1y')
-      ? 120
-      : fieldKey.endsWith('1m')
-      ? 40
-      : fieldKey.endsWith('1w')
-      ? 20
-      : 10
-    const sliced =
-      sparklinePoints.length > rangeSize
-        ? sparklinePoints.slice(-rangeSize)
-        : sparklinePoints
-    const min = Math.min(...sliced.map((point) => point.value))
-    const max = Math.max(...sliced.map((point) => point.value))
-    const span = max - min || 1
-    const width = 88
-    const height = 24
-    const areaBottom = height
-    const points = sliced
-      .map((point, index) => {
-        const x = (index / (sliced.length - 1)) * (width - 1)
-        const y = height - ((point.value - min) / span) * (height - 6) - 2
-        return `${x.toFixed(1)},${y.toFixed(1)}`
-      })
-      .join(' ')
-    const areaPoints = `0,${areaBottom} ${points} ${width},${areaBottom}`
-    const firstValue = sliced[0]?.value ?? 0
-    const lastValue = sliced[sliced.length - 1]?.value ?? firstValue
-    const isPositive = lastValue >= firstValue
-    const stroke = isPositive ? '#0f766e' : '#b42318'
-    const fill = isPositive ? 'rgba(15, 118, 110, 0.12)' : 'rgba(180, 35, 24, 0.12)'
-
-    return (
-      <span className="sparkline-cell">
-        <svg
-          viewBox={`0 0 ${width} ${height}`}
-          className="sparkline"
-          >
-          <polygon points={areaPoints} fill={fill} />
-          <polyline points={points} className="sparkline-path" style={{ stroke }} />
-        </svg>
-      </span>
-    )
+  if (isChartFieldKey(fieldKey)) {
+    return <Sparkline values={sparklinePoints} maxPoints={priceChartMaxPoints(fieldKey)} />
   }
 
   if (fieldKey === 'aum') {
@@ -1027,7 +980,7 @@ export default function WatchlistsPage() {
   const visibleSparklineColumns = useMemo(
     () =>
       workingColumns.filter(
-        (column) => column.startsWith('price_chart_') || column.includes('sparkline'),
+        (column) => isChartFieldKey(column),
       ),
     [workingColumns],
   )
@@ -1183,7 +1136,7 @@ export default function WatchlistsPage() {
       ...fieldRegistry,
       {
         field_key: 'price_chart_1d',
-        label: 'Spark Chart',
+        label: 'Chart 1D',
         description: '1 day',
         category_code: 'market_data',
         data_type: 'sparkline',
@@ -1201,7 +1154,7 @@ export default function WatchlistsPage() {
       },
       {
         field_key: 'price_chart_1w',
-        label: 'Spark Chart',
+        label: 'Chart 1W',
         description: '1 week',
         category_code: 'market_data',
         data_type: 'sparkline',
@@ -1219,7 +1172,7 @@ export default function WatchlistsPage() {
       },
       {
         field_key: 'price_chart_1m',
-        label: 'Spark Chart',
+        label: 'Chart 1M',
         description: '1 month',
         category_code: 'market_data',
         data_type: 'sparkline',
@@ -1237,7 +1190,7 @@ export default function WatchlistsPage() {
       },
       {
         field_key: 'price_chart_1y',
-        label: 'Spark Chart',
+        label: 'Chart 1Y',
         description: '1 year',
         category_code: 'market_data',
         data_type: 'sparkline',
@@ -2568,6 +2521,7 @@ export default function WatchlistsPage() {
                       key={column}
                       className={[
                         requiredColumns.includes(column) ? '' : 'watchlists-column-draggable',
+                        isChartFieldKey(column) ? 'chart-cell' : '',
                         columnDropTarget === column ? 'watchlists-column-drop-target' : '',
                       ]
                         .filter(Boolean)
@@ -2605,7 +2559,7 @@ export default function WatchlistsPage() {
                         <span>
                           {column === primaryDisplayColumn
                             ? 'Name'
-                            : columnHeaderLabel(column, fieldLabelByKey.get(column) || formatLabel(column))}
+                            : fieldLabelByKey.get(column) || formatLabel(column)}
                         </span>
                         {sortField === column ? (
                           <span className="watchlists-sort-indicator">
@@ -2682,7 +2636,15 @@ export default function WatchlistsPage() {
                             const field = fieldByKey.get(column)
                             const average = buildGroupAverageCell(column, field, group.summaryRows)
                             return (
-                              <td key={column} className="watchlists-group-summary-cell">
+                              <td
+                                key={column}
+                                className={[
+                                  'watchlists-group-summary-cell',
+                                  isChartFieldKey(column) ? 'chart-cell' : '',
+                                ]
+                                  .filter(Boolean)
+                                  .join(' ')}
+                              >
                                 {average ? (
                                   <span
                                     className="watchlists-group-summary-value"
@@ -2725,6 +2687,7 @@ export default function WatchlistsPage() {
                               return (
                                 <td
                                   key={column}
+                                  className={isChartFieldKey(column) ? 'chart-cell' : undefined}
                                   style={
                                     isGroupedAssetName
                                       ? {

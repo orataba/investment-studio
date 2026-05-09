@@ -2527,7 +2527,8 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     assert fields_by_key["latest_quote"]["asset_scope_json"] == []
     assert fields_by_key["latest_quote"]["source_metric_code"] == "asset_chart_read_model.series.latest_quote"
     assert fields_by_key["latest_quote_date"]["data_type"] == "date"
-    assert fields_by_key["price_chart_1m"]["label"] == "Spark Chart"
+    assert fields_by_key["price_chart_1m"]["label"] == "Chart 1M"
+    assert fields_by_key["price_chart_1m"]["description"] == "1-month NAV chart from the current chart read model."
     assert fields_by_key["return_1w"]["label"] == "1W Return"
     assert fields_by_key["return_mtd"]["label"] == "MTD"
     assert fields_by_key["return_ytd"]["label"] == "YTD"

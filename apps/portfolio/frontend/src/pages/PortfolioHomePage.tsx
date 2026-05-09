@@ -13,6 +13,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import { downloadCsv } from '../lib/csv'
 import {
   formatCurrency,
@@ -30,7 +31,6 @@ import {
   type PortfolioHoldingRow,
   type PortfolioTaxonomyCatalogResponse,
   type PortfolioTaxonomyNodeRecord,
-  type SparklinePoint,
 } from '../lib/api'
 import { buildPortfolioHoldingDetailPath } from '../lib/navigation'
 
@@ -72,12 +72,14 @@ type HoldingsColumnKey =
   | 'asset_volatility_3m'
   | 'asset_volatility_6m'
   | 'asset_volatility_1y'
-  | 'price_chart'
+  | 'price_chart_1m'
+  | 'price_chart_3m'
+  | 'price_chart_6m'
+  | 'price_chart_1y'
   | 'coverage'
 
 type HoldingsGroupByKey = 'none' | 'taxonomy_top' | 'taxonomy_leaf' | 'asset_type' | 'currency' | 'coverage'
 type HoldingsSortDirection = 'asc' | 'desc'
-type HoldingsPriceChartRangeKey = '1m' | '3m' | '6m' | '1y'
 type SortableValue = number | string | null | undefined
 
 type HoldingTaxonomyLabels = {
@@ -133,17 +135,10 @@ type HoldingsViewStore = {
 }
 
 const LOCKED_HOLDINGS_COLUMN: HoldingsColumnKey = 'asset'
-const HOLDINGS_COLUMN_WIDTHS_STORAGE_KEY = 'yungu.portfolio.holdings.columnWidths.v2'
-const HOLDINGS_VIEWS_STORAGE_KEY = 'yungu.portfolio.holdings.views.v2'
+const HOLDINGS_COLUMN_WIDTHS_STORAGE_KEY = 'yungu.portfolio.holdings.columnWidths.v3'
+const HOLDINGS_VIEWS_STORAGE_KEY = 'yungu.portfolio.holdings.views.v3'
 const HOLDINGS_COLUMN_MIN_WIDTH = 84
 const HOLDINGS_COLUMN_MAX_WIDTH = 520
-
-const HOLDINGS_PRICE_CHART_RANGE_OPTIONS: Array<{ value: HoldingsPriceChartRangeKey; label: string }> = [
-  { value: '1m', label: '1M' },
-  { value: '3m', label: '3M' },
-  { value: '6m', label: '6M' },
-  { value: '1y', label: '1Y' },
-]
 
 const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[] }> = [
   {
@@ -157,7 +152,10 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
   {
     label: 'Asset Trend',
     columns: [
-      'price_chart',
+      'price_chart_1m',
+      'price_chart_3m',
+      'price_chart_6m',
+      'price_chart_1y',
       'asset_return_1w',
       'asset_return_mtd',
       'asset_return_ytd',
@@ -209,7 +207,7 @@ const DEFAULT_HOLDINGS_COLUMNS: HoldingsColumnKey[] = [
   'asset',
   'last_price',
   'quote_date',
-  'price_chart',
+  'price_chart_6m',
   'quantity',
   'avg_cost_book',
   'cost_basis',
@@ -257,7 +255,10 @@ const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
   asset_volatility_3m: 112,
   asset_volatility_6m: 112,
   asset_volatility_1y: 112,
-  price_chart: 132,
+  price_chart_1m: 132,
+  price_chart_3m: 132,
+  price_chart_6m: 132,
+  price_chart_1y: 132,
   coverage: 132,
 }
 
@@ -299,7 +300,10 @@ const COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS: Partial<Record<HoldingsColumnKey, numb
   asset_volatility_3m: 92,
   asset_volatility_6m: 92,
   asset_volatility_1y: 92,
-  price_chart: 104,
+  price_chart_1m: 104,
+  price_chart_3m: 104,
+  price_chart_6m: 104,
+  price_chart_1y: 104,
   coverage: 104,
 }
 
@@ -335,14 +339,17 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
   {
     id: 'asset-trend',
     name: 'Asset Trend',
-    description: 'Selected-range chart and quote-series returns.',
+    description: 'Per-range price charts and quote-series returns.',
     readonly: true,
     state: {
       columns: [
         'asset',
         'last_price',
         'quote_date',
-        'price_chart',
+        'price_chart_1m',
+        'price_chart_3m',
+        'price_chart_6m',
+        'price_chart_1y',
         'asset_return_1w',
         'asset_return_mtd',
         'asset_return_ytd',
@@ -369,7 +376,7 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
         'asset_type',
         'market_value_base',
         'weight',
-        'price_chart',
+        'price_chart_6m',
         'asset_return_1w',
         'asset_return_mtd',
         'asset_return_ytd',
@@ -565,7 +572,39 @@ function quoteDate(row: PortfolioHoldingRow) {
   if (row.quote_as_of_date) {
     return row.quote_as_of_date
   }
-  return row.price_chart[row.price_chart.length - 1]?.date ?? null
+  return row.price_chart_6m[row.price_chart_6m.length - 1]?.date ?? null
+}
+
+function chartPointsForColumn(row: PortfolioHoldingRow, column: HoldingsColumnKey) {
+  switch (column) {
+    case 'price_chart_1m':
+      return row.price_chart_1m
+    case 'price_chart_3m':
+      return row.price_chart_3m
+    case 'price_chart_6m':
+      return row.price_chart_6m
+    case 'price_chart_1y':
+      return row.price_chart_1y
+    default:
+      return []
+  }
+}
+
+function isHoldingsChartColumn(column: HoldingsColumnKey) {
+  return column.startsWith('price_chart_')
+}
+
+function chartReturnForColumn(row: PortfolioHoldingRow, column: HoldingsColumnKey) {
+  const points = chartPointsForColumn(row, column)
+  if (points.length < 2) {
+    return null
+  }
+  const firstPoint = points.find((point) => Number.isFinite(point.value) && point.value !== 0)
+  const lastPoint = points[points.length - 1]
+  if (!firstPoint || !lastPoint || !Number.isFinite(lastPoint.value)) {
+    return null
+  }
+  return (lastPoint.value - firstPoint.value) / Math.abs(firstPoint.value)
 }
 
 function unrealizedValue(row: PortfolioHoldingRow) {
@@ -925,12 +964,6 @@ function parseHoldingsGroupBy(value: string | null): HoldingsGroupByKey {
   return HOLDINGS_GROUP_BY_OPTIONS.some((option) => option.value === value) ? (value as HoldingsGroupByKey) : 'none'
 }
 
-function parseHoldingsPriceChartRange(value: string | null): HoldingsPriceChartRangeKey {
-  return HOLDINGS_PRICE_CHART_RANGE_OPTIONS.some((option) => option.value === value)
-    ? (value as HoldingsPriceChartRangeKey)
-    : '6m'
-}
-
 function compareSortableValue(left: SortableValue, right: SortableValue, direction: HoldingsSortDirection) {
   const leftMissing = left == null || left === ''
   const rightMissing = right == null || right === ''
@@ -1030,8 +1063,11 @@ function holdingColumnExportValue(
       return row.asset_volatility_6m ?? null
     case 'asset_volatility_1y':
       return row.asset_volatility_1y ?? null
-    case 'price_chart':
-      return row.price_chart.map((point) => `${point.date}:${point.value}`).join(' | ')
+    case 'price_chart_1m':
+    case 'price_chart_3m':
+    case 'price_chart_6m':
+    case 'price_chart_1y':
+      return chartPointsForColumn(row, column).map((point) => `${point.date}:${point.value}`).join(' | ')
     case 'coverage':
       return formatLabel(row.coverage_status)
     default:
@@ -1070,34 +1106,6 @@ function holdingColumnTotalExportValue(
     default:
       return null
   }
-}
-
-function MiniSparkline({ values }: { values: SparklinePoint[] }) {
-  if (values.length < 2) {
-    return <span className="sparkline-empty">—</span>
-  }
-
-  const width = 88
-  const height = 24
-  const min = Math.min(...values.map((point) => point.value))
-  const max = Math.max(...values.map((point) => point.value))
-  const span = max - min || 1
-  const line = values
-    .map((point, index) => {
-      const x = (index / (values.length - 1)) * (width - 1)
-      const y = height - ((point.value - min) / span) * (height - 6) - 2
-      return `${x.toFixed(1)} ${y.toFixed(1)}`
-    })
-    .join(' L ')
-
-  const area = `${line} L ${width - 1} ${height} L 0 ${height} Z`
-
-  return (
-    <svg className="mini-sparkline" viewBox="0 0 88 24" aria-hidden="true">
-      <path className="mini-sparkline-area" d={`M ${area}`} />
-      <path className="mini-sparkline-path" d={`M ${line}`} />
-    </svg>
-  )
 }
 
 function TableStatusRow({
@@ -1396,12 +1404,29 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     sortValue: (row) => row.asset_holding_max_drawdown,
     className: (row) => signedValueClass(row.asset_holding_max_drawdown),
   },
-  price_chart: {
-    key: 'price_chart',
-    label: 'Chart',
-    render: (row) =>
-      row.price_chart.length ? <MiniSparkline values={row.price_chart} /> : <span className="sparkline-empty">—</span>,
-    sortValue: (row) => row.asset_return_mtd ?? row.asset_return_1y,
+  price_chart_1m: {
+    key: 'price_chart_1m',
+    label: 'Chart 1M',
+    render: (row) => <Sparkline values={row.price_chart_1m} />,
+    sortValue: (row) => chartReturnForColumn(row, 'price_chart_1m'),
+  },
+  price_chart_3m: {
+    key: 'price_chart_3m',
+    label: 'Chart 3M',
+    render: (row) => <Sparkline values={row.price_chart_3m} />,
+    sortValue: (row) => chartReturnForColumn(row, 'price_chart_3m'),
+  },
+  price_chart_6m: {
+    key: 'price_chart_6m',
+    label: 'Chart 6M',
+    render: (row) => <Sparkline values={row.price_chart_6m} />,
+    sortValue: (row) => chartReturnForColumn(row, 'price_chart_6m'),
+  },
+  price_chart_1y: {
+    key: 'price_chart_1y',
+    label: 'Chart 1Y',
+    render: (row) => <Sparkline values={row.price_chart_1y} />,
+    sortValue: (row) => chartReturnForColumn(row, 'price_chart_1y'),
   },
   coverage: {
     key: 'coverage',
@@ -1541,7 +1566,6 @@ export default function PortfolioHomePage() {
   const holdingsTableShellRef = useRef<HTMLDivElement | null>(null)
   const [holdingsTableShellWidth, setHoldingsTableShellWidth] = useState(0)
   const requestedAsOfDate = searchParams.get('as_of_date') ?? ''
-  const holdingsPriceChartRange = parseHoldingsPriceChartRange(searchParams.get('price_chart_range'))
   const selectedAssetId = searchParams.get('asset_id')
   const holdingsViews = useMemo(() => getHoldingsViews(holdingsViewStore), [holdingsViewStore])
   const activeHoldingsView = useMemo(
@@ -1948,6 +1972,7 @@ export default function PortfolioHomePage() {
         {visibleColumns.map((column, index) => {
           const classNames = [
             column.align === 'right' ? 'numeric-cell' : '',
+            isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
             column.totalClassName?.(rows, columnContext) ?? '',
           ]
             .filter(Boolean)
@@ -1971,6 +1996,7 @@ export default function PortfolioHomePage() {
         {visibleColumns.map((column, index) => {
           const classNames = [
             column.align === 'right' ? 'numeric-cell' : '',
+            isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
             column.totalClassName?.(group.rows, columnContext) ?? '',
             index === 0 ? 'holdings-group-name-cell' : '',
           ]
@@ -2062,7 +2088,6 @@ export default function PortfolioHomePage() {
     Promise.allSettled([
       getHoldingsWorkspace(portfolioId || undefined, {
         as_of_date: requestedAsOfDate || undefined,
-        price_chart_range: holdingsPriceChartRange,
       }),
       getPortfolioTaxonomyCatalog(portfolioId),
     ])
@@ -2104,7 +2129,7 @@ export default function PortfolioHomePage() {
     return () => {
       cancelled = true
     }
-  }, [holdingsPriceChartRange, portfolioId, requestedAsOfDate])
+  }, [portfolioId, requestedAsOfDate])
 
   useEffect(() => {
     if (!workspace || !selectedAssetId) {
@@ -2139,18 +2164,6 @@ export default function PortfolioHomePage() {
                 onChange={(event) => updateSearchParam('as_of_date', event.target.value || null)}
               />
             </label>
-            <div className="price-chart-range-strip holdings-chart-range-strip" role="tablist" aria-label="Holdings chart range">
-              {HOLDINGS_PRICE_CHART_RANGE_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={`price-chart-range-button ${option.value === holdingsPriceChartRange ? 'price-chart-range-button-active' : ''}`}
-                  onClick={() => updateSearchParam('price_chart_range', option.value === '6m' ? null : option.value)}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
           </div>
           <div className="transaction-filter-actions holdings-filter-actions">
             <PortfolioTableViewControls
@@ -2219,6 +2232,7 @@ export default function PortfolioHomePage() {
                         key={column.key}
                         className={[
                           column.align === 'right' ? 'numeric-cell' : '',
+                          isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
                           column.key !== LOCKED_HOLDINGS_COLUMN ? 'holdings-column-draggable' : '',
                           holdingsColumnDropTarget === column.key ? 'holdings-column-drop-target' : '',
                         ]
@@ -2272,6 +2286,7 @@ export default function PortfolioHomePage() {
                             {visibleColumns.map((column) => {
                               const className = [
                                 column.align === 'right' ? 'numeric-cell' : '',
+                                isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
                                 column.className?.(row, columnContext) ?? '',
                                 column.key === 'asset' ? 'holding-name-cell' : '',
                               ]

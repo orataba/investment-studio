@@ -110,7 +110,6 @@ type CalculationColumnKey =
   | 'own_sharpe'
   | 'own_corr'
   | 'beta'
-  | 'contribution_vol'
   | 'risk_contribution'
   | 'observations'
 
@@ -169,7 +168,6 @@ type RiskAttributionStats = {
   sharpe: number | null
   correlationToPortfolio: number | null
   betaToPortfolio: number | null
-  contributionVolatility: number | null
   realizedRiskContribution: number | null
 }
 
@@ -185,8 +183,6 @@ const RISK_ATTRIBUTION_COLUMNS: CalculationColumnKey[] = [
   'own_vol',
   'own_sharpe',
   'own_corr',
-  'beta',
-  'contribution_vol',
   'risk_contribution',
   'observations',
 ]
@@ -226,7 +222,7 @@ const CALCULATION_COLUMN_GROUPS: Array<{ label: string; columns: CalculationColu
   },
   {
     label: 'Risk Attribution',
-    columns: ['own_vol', 'own_sharpe', 'own_corr', 'beta', 'contribution_vol', 'risk_contribution', 'observations'],
+    columns: ['own_vol', 'own_sharpe', 'own_corr', 'beta', 'risk_contribution', 'observations'],
   },
 ]
 
@@ -236,7 +232,6 @@ const RISK_CALCULATION_COLUMN_KEYS = new Set<CalculationColumnKey>([
   'own_sharpe',
   'own_corr',
   'beta',
-  'contribution_vol',
   'risk_contribution',
   'observations',
 ])
@@ -270,13 +265,22 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
   fx_pnl: 'FX P&L',
   period_return: 'Period Return',
   return_contribution: 'Return Contribution',
-  own_vol: 'Own Vol',
-  own_sharpe: 'Own Sharpe',
-  own_corr: 'Own Corr',
-  beta: 'Beta',
-  contribution_vol: 'Contribution Vol',
-  risk_contribution: 'Risk Contribution',
+  own_vol: 'Vol',
+  own_sharpe: 'Sharpe',
+  own_corr: 'Corr to Portfolio',
+  beta: 'Beta to Portfolio',
+  risk_contribution: 'Realized RC',
   observations: 'Obs',
+}
+
+const CALCULATION_COLUMN_DESCRIPTIONS: Partial<Record<CalculationColumnKey, string>> = {
+  own_vol: 'Annualized volatility of this group’s own daily return during the selected period.',
+  own_sharpe: 'Annualized mean return divided by annualized volatility for this group’s own daily return.',
+  own_corr: 'Sample correlation between this group’s daily return and the portfolio daily TWR in the selected period.',
+  beta: 'Covariance of this group’s daily return with portfolio daily TWR divided by portfolio daily TWR variance.',
+  risk_contribution:
+    'Realized variance contribution share: Cov(group daily contribution, portfolio daily TWR) divided by portfolio daily TWR variance.',
+  observations: 'Number of eligible daily observations used for the realized risk attribution metrics.',
 }
 
 const DEFAULT_CALCULATION_TABLE_VIEW_STATE: CalculationTableViewState = {
@@ -644,22 +648,19 @@ function annualizedDownsideVolatility(values: number[], dateKeys: string[] = [],
   return Math.sqrt(downsideSquares.reduce((total, value) => total + value, 0) / values.length) * Math.sqrt(periodsPerYear)
 }
 
+function annualizedMeanReturn(values: number[], dateKeys: string[], startDate?: string | null) {
+  const periodsPerYear = annualizationPeriodsPerYear(dateKeys, values.length, startDate)
+  if (!values.length || periodsPerYear == null) {
+    return null
+  }
+  return (values.reduce((total, value) => total + value, 0) / values.length) * periodsPerYear
+}
+
 function compoundReturn(values: number[]) {
   if (!values.length) {
     return null
   }
   return values.reduce((growthIndex, value) => growthIndex * (1 + value), 1) - 1
-}
-
-function annualizedReturnFromDailyReturns(values: number[], dateKeys: string[], startDate?: string | null) {
-  const periodReturn = compoundReturn(values)
-  const sortedDates = [...dateKeys].sort()
-  const firstDate = startDate ?? sortedDates[0]
-  const lastDate = sortedDates[sortedDates.length - 1]
-  const elapsedDays = firstDate && lastDate ? dayDiff(firstDate, lastDate) : null
-  return periodReturn != null && elapsedDays != null && elapsedDays > 0
-    ? (1 + periodReturn) ** (DAYS_PER_YEAR / elapsedDays) - 1
-    : null
 }
 
 function ratioToDrawdown(returnValue: number | null | undefined, maxDrawdown: number | null | undefined) {
@@ -702,6 +703,7 @@ function buildBenchmarkPeriodMetrics(
   const dailyReturnDates = dailyReturns.map((point) => point.date)
   const annualizedVol = annualizedVolatility(dailyReturnValues, dailyReturnDates, firstPoint.date)
   const annualizedDownsideVol = annualizedDownsideVolatility(dailyReturnValues, dailyReturnDates, firstPoint.date)
+  const annualizedMean = annualizedMeanReturn(dailyReturnValues, dailyReturnDates, firstPoint.date)
 
   let highWater = firstPoint.value
   let currentDrawdown: number | null = null
@@ -721,12 +723,12 @@ function buildBenchmarkPeriodMetrics(
     annualizedVolatility: annualizedVol,
     annualizedDownsideVolatility: annualizedDownsideVol,
     sharpe:
-      annualizedReturn != null && annualizedVol != null && annualizedVol !== 0
-        ? annualizedReturn / annualizedVol
+      annualizedMean != null && annualizedVol != null && annualizedVol !== 0
+        ? annualizedMean / annualizedVol
         : null,
     sortino:
-      annualizedReturn != null && annualizedDownsideVol != null && annualizedDownsideVol !== 0
-        ? annualizedReturn / annualizedDownsideVol
+      annualizedMean != null && annualizedDownsideVol != null && annualizedDownsideVol !== 0
+        ? annualizedMean / annualizedDownsideVol
         : null,
     calmar: ratioToDrawdown(annualizedReturn, maxDrawdown),
     currentDrawdown,
@@ -761,13 +763,8 @@ function buildRelativePerformanceMetrics(
   const portfolioReturns = pairs.map((point) => point.portfolioReturn)
   const benchmarkReturns = pairs.map((point) => point.benchmarkReturn)
   const activeReturns = pairs.map((point) => point.portfolioReturn - point.benchmarkReturn)
-  const trackingError = annualizedVolatility(activeReturns, dates, dates[0])
-  const portfolioAnnualizedReturn = annualizedReturnFromDailyReturns(portfolioReturns, dates, dates[0])
-  const benchmarkAnnualizedReturn = annualizedReturnFromDailyReturns(benchmarkReturns, dates, dates[0])
-  const activeAnnualizedReturn =
-    portfolioAnnualizedReturn != null && benchmarkAnnualizedReturn != null
-      ? portfolioAnnualizedReturn - benchmarkAnnualizedReturn
-      : null
+  const trackingError = annualizedVolatility(activeReturns, dates)
+  const activeAnnualizedMean = annualizedMeanReturn(activeReturns, dates)
 
   const benchmarkMean = benchmarkReturns.reduce((total, value) => total + value, 0) / benchmarkReturns.length
   const portfolioMean = portfolioReturns.reduce((total, value) => total + value, 0) / portfolioReturns.length
@@ -797,8 +794,8 @@ function buildRelativePerformanceMetrics(
 
   return {
     informationRatio:
-      activeAnnualizedReturn != null && trackingError != null && trackingError !== 0
-        ? activeAnnualizedReturn / trackingError
+      activeAnnualizedMean != null && trackingError != null && trackingError !== 0
+        ? activeAnnualizedMean / trackingError
         : null,
     trackingError,
     beta: benchmarkVariance > 0 ? covariance / benchmarkVariance : null,
@@ -1092,11 +1089,9 @@ function buildRealizedRiskAttributionStats(
     const ownReturnValues = item.ownReturns.map((point) => point.value)
     const ownReturnDates = item.ownReturns.map((point) => point.date)
     const annualizedVol = annualizedVolatility(ownReturnValues, ownReturnDates)
-    const annualizedReturn = annualizedReturnFromDailyReturns(ownReturnValues, ownReturnDates, ownReturnDates[0])
+    const annualizedMean = annualizedMeanReturn(ownReturnValues, ownReturnDates)
     const contributionValues = item.contributionPairs.map((point) => point.contribution)
-    const contributionDates = item.contributionPairs.map((point) => point.date)
     const portfolioReturnsForContribution = item.contributionPairs.map((point) => point.portfolioReturn)
-    const contributionVol = annualizedVolatility(contributionValues, contributionDates)
     const contributionCovariance = sampleCovariance(contributionValues, portfolioReturnsForContribution)
     const portfolioVariance = sampleCovariance(portfolioReturnsForContribution, portfolioReturnsForContribution)
     const ownReturnPairValues = item.ownReturnPairs.map((point) => point.groupReturn)
@@ -1110,15 +1105,14 @@ function buildRealizedRiskAttributionStats(
       ownObservationCount: item.ownReturns.length,
       annualizedVolatility: annualizedVol,
       sharpe:
-        annualizedReturn != null && annualizedVol != null && annualizedVol > 1e-12
-          ? annualizedReturn / annualizedVol
+        annualizedMean != null && annualizedVol != null && annualizedVol > 1e-12
+          ? annualizedMean / annualizedVol
           : null,
       correlationToPortfolio: sampleCorrelation(ownReturnPairValues, portfolioReturnsForOwn),
       betaToPortfolio:
         ownPairCovariance != null && ownPairPortfolioVariance != null && ownPairPortfolioVariance > 1e-12
           ? ownPairCovariance / ownPairPortfolioVariance
           : null,
-      contributionVolatility: contributionVol,
       realizedRiskContribution:
         contributionCovariance != null && portfolioVariance != null && portfolioVariance > 1e-12
           ? contributionCovariance / portfolioVariance
@@ -1929,7 +1923,6 @@ function PerformancePage() {
             case 'return_contribution':
               return finiteNumber(portfolioContribution)
             case 'own_vol':
-            case 'contribution_vol':
               return finiteNumber(summary?.annualized_volatility)
             case 'own_sharpe':
               return finiteNumber(summary?.sharpe_ratio)
@@ -1984,8 +1977,6 @@ function PerformancePage() {
         return finiteNumber(stats?.correlationToPortfolio)
       case 'beta':
         return finiteNumber(stats?.betaToPortfolio)
-      case 'contribution_vol':
-        return finiteNumber(stats?.contributionVolatility)
       case 'risk_contribution':
         return finiteNumber(stats?.realizedRiskContribution)
       case 'observations':
@@ -2023,7 +2014,6 @@ function PerformancePage() {
       case 'avg_weight':
       case 'end_weight':
       case 'own_vol':
-      case 'contribution_vol':
         return formatPercent(value)
       case 'period_return':
       case 'return_contribution':
@@ -2218,9 +2208,14 @@ function PerformancePage() {
                 <table className="transactions-table performance-calculation-table">
                   <thead>
                     <tr>
-                      {visibleCalculationColumns.map((column) => (
-                        <th key={column}>{CALCULATION_COLUMN_LABELS[column]}</th>
-                      ))}
+                      {visibleCalculationColumns.map((column) => {
+                        const description = CALCULATION_COLUMN_DESCRIPTIONS[column]
+                        return (
+                          <th key={column} title={description}>
+                            {CALCULATION_COLUMN_LABELS[column]}
+                          </th>
+                        )
+                      })}
                     </tr>
                   </thead>
                   <tbody>
@@ -2313,8 +2308,9 @@ function PerformancePage() {
                 {filteredCalculationColumns.length ? (
                   filteredCalculationColumns.map(({ column, groupLabel }) => {
                     const locked = column === LOCKED_CALCULATION_COLUMN
+                    const description = CALCULATION_COLUMN_DESCRIPTIONS[column]
                     return (
-                      <label className="holdings-field-item" key={`${groupLabel}:${column}`}>
+                      <label className="holdings-field-item" key={`${groupLabel}:${column}`} title={description}>
                         <input
                           type="checkbox"
                           checked={calculationColumnDraft.includes(column)}

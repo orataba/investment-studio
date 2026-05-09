@@ -1063,8 +1063,8 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "price_chart_1m",
-        "label": "Spark Chart",
-        "description": "1-month NAV spark chart from the current chart read model.",
+        "label": "Chart 1M",
+        "description": "1-month NAV chart from the current chart read model.",
         "category_code": "performance_risk",
         "data_type": "sparkline",
         "formatter_code": "sparkline",

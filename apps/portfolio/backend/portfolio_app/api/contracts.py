@@ -61,6 +61,7 @@ ResearchRunStatus = Literal["running", "completed", "failed"]
 ResearchArtifactPreviewKind = Literal["text", "html", "binary"]
 ResearchTargetDimension = Literal["scope_default", "weight", "risk_budget"]
 ResearchCapitalMode = Literal["unit_notional", "fixed_gross", "target_volatility"]
+ResearchCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
 TargetSetType = Literal["saa", "taa"]
 
 SUPPORTED_PORTFOLIO_CURRENCIES: tuple[SupportedCurrency, ...] = ("USD", "HKD", "CNY")
@@ -877,6 +878,22 @@ class ResearchPlanningScopeOption(BaseModel):
     has_children: bool = False
 
 
+class ResearchCalculationFrequencyOption(BaseModel):
+    frequency: Literal["daily", "weekly", "monthly"]
+    label: str
+    available: bool
+    reason: str | None = None
+
+
+class ResearchCalculationFrequencyProfile(BaseModel):
+    requested_frequency: ResearchCalculationFrequency = "auto"
+    resolved_frequency: Literal["daily", "weekly", "monthly"] = "daily"
+    default_frequency: Literal["daily", "weekly", "monthly"] = "daily"
+    source_frequency_counts: dict[str, int] = Field(default_factory=dict)
+    options: list[ResearchCalculationFrequencyOption] = Field(default_factory=list)
+    status_label: str
+
+
 class ResearchSettingsRecord(BaseModel):
     portfolio_id: str
     planning_taxonomy_id: str | None = None
@@ -885,6 +902,7 @@ class ResearchSettingsRecord(BaseModel):
     comparator_taxonomy_node_name: str | None = None
     as_of_date: date | None = None
     lookback_days: int = Field(default=90, ge=7, le=366)
+    calculation_frequency: ResearchCalculationFrequency = "auto"
     target_dimension: ResearchTargetDimension = "scope_default"
     capital_mode: ResearchCapitalMode = "unit_notional"
     gross_exposure: float | None = Field(default=None, gt=0)
@@ -900,6 +918,7 @@ class ResearchSettingsUpdateRequest(BaseModel):
     comparator_taxonomy_node_id: str | None = None
     as_of_date: date | None = None
     lookback_days: int = Field(default=90, ge=7, le=366)
+    calculation_frequency: ResearchCalculationFrequency = "auto"
     target_dimension: ResearchTargetDimension = "scope_default"
     capital_mode: ResearchCapitalMode = "unit_notional"
     gross_exposure: float | None = Field(default=None, gt=0)
@@ -1063,6 +1082,7 @@ class ResearchSolveEventRecord(BaseModel):
     covariance_model: str | None = None
     covariance_observations: int | None = None
     risk_contribution_mode: str | None = None
+    calculation_frequency: Literal["daily", "weekly", "monthly"] | None = None
     gap_turnover: float | None = None
     current_weight_total: float | None = None
     target_weight_total: float | None = None
@@ -1171,6 +1191,7 @@ class ResearchWorkbenchResponse(BaseModel):
     default_planning_taxonomy_id: str | None = None
     planning_taxonomy_options: list[ResearchPlanningTaxonomyOption] = Field(default_factory=list)
     planning_scope_options: list[ResearchPlanningScopeOption] = Field(default_factory=list)
+    calculation_frequency: ResearchCalculationFrequencyProfile
     settings: ResearchSettingsRecord
     current_context: ResearchCurrentContextRecord
     runs: list[ResearchRunRecord] = Field(default_factory=list)

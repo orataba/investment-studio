@@ -95,7 +95,7 @@ button:disabled {
 .panel-title {
   color: var(--portfolio-ink);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -131,7 +131,7 @@ button:disabled {
   background: transparent;
   color: var(--portfolio-ink);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.2;
   box-shadow: none;
 }
@@ -161,7 +161,7 @@ button:disabled {
   background: var(--portfolio-band);
   color: var(--portfolio-muted);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .stub-body {
@@ -283,7 +283,7 @@ button:disabled {
   background: transparent;
   color: var(--portfolio-ink);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.2;
   box-shadow: none;
 }
@@ -386,7 +386,7 @@ button:disabled {
   background: transparent;
   color: var(--portfolio-accent);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
 }
 
@@ -665,7 +665,7 @@ button:disabled {
   padding: 8px 0;
   color: var(--portfolio-muted);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
 }
 
@@ -710,7 +710,7 @@ button:disabled {
 }
 
 .holding-name-cell {
-  font-weight: 500;
+  font-weight: 400;
   min-width: 0;
 }
 
@@ -783,7 +783,7 @@ input[type='checkbox'] {
   background: var(--portfolio-band);
   color: var(--portfolio-ink);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .positive-cell,
@@ -810,51 +810,6 @@ input[type='checkbox'] {
 .negative-cell strong,
 .neutral-cell strong {
   font-weight: inherit;
-}
-
-.sparkline-cell {
-  display: inline-flex;
-  align-items: center;
-}
-
-.holdings-main-table .sparkline-cell {
-  display: block;
-  width: 100%;
-  min-width: 0;
-}
-
-.sparkline,
-.mini-sparkline {
-  width: 88px;
-  height: 26px;
-  display: block;
-}
-
-.holdings-main-table .mini-sparkline {
-  width: 100%;
-}
-
-.mini-sparkline-area {
-  fill: rgba(31, 111, 188, 0.16);
-}
-
-.mini-sparkline-path {
-  fill: none;
-  stroke: var(--portfolio-accent);
-  stroke-width: 1.85;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.sparkline-path {
-  fill: none;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.sparkline-empty {
-  color: #9ca3af;
 }
 
 .loading-state,
@@ -908,7 +863,7 @@ input[type='checkbox'] {
 }
 
 .total-row td {
-  font-weight: 500;
+  font-weight: 400;
   background: var(--portfolio-band);
 }
 
@@ -1014,7 +969,7 @@ input[type='checkbox'] {
   gap: 8px;
   color: var(--portfolio-ink);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .overview-benchmark-search-box {
@@ -1050,7 +1005,7 @@ input[type='checkbox'] {
   color: var(--portfolio-muted);
   cursor: pointer;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .overview-benchmark-search-box > button:hover {
@@ -1139,7 +1094,7 @@ input[type='checkbox'] {
   background: transparent;
   color: var(--portfolio-ink);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
   text-transform: none;
 }
@@ -1162,7 +1117,7 @@ input[type='checkbox'] {
   padding-right: 16px;
   color: var(--portfolio-muted);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   white-space: normal;
 }
 
@@ -1178,7 +1133,7 @@ input[type='checkbox'] {
   display: block;
   color: var(--portfolio-ink);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .overview-key-metrics-table tbody td small {
@@ -1252,7 +1207,7 @@ input[type='checkbox'] {
 .overview-sleeve-donut-center span {
   color: var(--portfolio-muted);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
   text-transform: uppercase;
 }
@@ -1308,7 +1263,7 @@ input[type='checkbox'] {
   color: var(--portfolio-ink);
   font-size: 13px;
   font-style: normal;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .overview-columns-button {
@@ -1320,7 +1275,7 @@ input[type='checkbox'] {
   color: var(--portfolio-ink);
   cursor: pointer;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.2;
   box-shadow: none;
 }
@@ -1376,7 +1331,7 @@ input[type='checkbox'] {
   color: var(--portfolio-ink);
   cursor: pointer;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.2;
   box-shadow: none;
 }
@@ -1424,7 +1379,7 @@ input[type='checkbox'] {
   border-bottom: 1px solid var(--portfolio-line);
   color: var(--portfolio-ink);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .overview-columns-arrange {
@@ -1443,7 +1398,7 @@ input[type='checkbox'] {
   border-bottom: 1px solid var(--portfolio-line);
   color: var(--portfolio-ink);
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 400;
 }
 
 .overview-columns-arrange-list {
@@ -1464,7 +1419,7 @@ input[type='checkbox'] {
   border-bottom: 1px solid var(--portfolio-line);
   color: var(--portfolio-ink);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .overview-columns-arrange-item div {
@@ -1495,7 +1450,7 @@ input[type='checkbox'] {
 }
 
 .performance-summary-table tbody td {
-  font-weight: 600;
+  font-weight: 400;
   color: var(--portfolio-ink);
   white-space: normal;
 }
@@ -1608,7 +1563,7 @@ input[type='checkbox'] {
 .rolling-risk-x-label {
   fill: #4b5563;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .risk-section-toolbar {
@@ -1632,7 +1587,7 @@ input[type='checkbox'] {
 .risk-scope-select span {
   color: var(--portfolio-muted);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -1663,13 +1618,13 @@ input[type='checkbox'] {
 .risk-date-timeline span {
   color: var(--portfolio-muted);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .risk-date-timeline strong {
   color: var(--portfolio-ink);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .risk-date-timeline input[type='range'] {
@@ -1772,7 +1727,7 @@ input[type='checkbox'] {
 }
 
 .risk-heatmap-cell {
-  font-weight: 500;
+  font-weight: 400;
   color: var(--portfolio-ink);
 }
 
@@ -1895,12 +1850,12 @@ input[type='checkbox'] {
   gap: 7px;
   justify-content: end;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 400;
   white-space: nowrap;
 }
 
 .performance-line-label {
-  font-weight: 600;
+  font-weight: 400;
 }
 
 .performance-line-label-child {
@@ -1909,7 +1864,7 @@ input[type='checkbox'] {
 
 .summary-card-label {
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
   color: var(--portfolio-muted);
 }
@@ -1928,7 +1883,7 @@ input[type='checkbox'] {
   border: 1px solid transparent;
   border-radius: 0;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .coverage-pill-live {
@@ -2040,7 +1995,7 @@ input[type='checkbox'] {
 
 .performance-filter-group span {
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
   color: var(--portfolio-muted);
 }
@@ -2057,7 +2012,7 @@ input[type='checkbox'] {
 
 .review-filter-grid span {
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
   color: var(--portfolio-muted);
 }
@@ -2077,7 +2032,7 @@ input[type='checkbox'] {
   background: transparent;
   color: var(--portfolio-ink);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.2;
   box-shadow: none;
 }
@@ -2104,7 +2059,7 @@ input[type='checkbox'] {
 
 .account-toolbar-label span {
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
   color: var(--portfolio-muted);
 }
@@ -2131,16 +2086,6 @@ input[type='checkbox'] {
 
 .holdings-filter-group label {
   width: var(--portfolio-date-control-width);
-}
-
-.holdings-chart-range-strip {
-  align-items: center;
-  gap: 12px;
-  min-height: 30px;
-}
-
-.holdings-chart-range-strip .price-chart-range-button {
-  padding-bottom: 5px;
 }
 
 .holdings-filter-actions {
@@ -2594,7 +2539,7 @@ input[type='checkbox'] {
 
 .holdings-main-table thead th {
   position: relative;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
 }
 
@@ -2616,6 +2561,18 @@ input[type='checkbox'] {
 
 .holdings-main-table th.numeric-cell .holdings-th-sortable {
   justify-content: flex-end;
+}
+
+.holdings-main-table th.chart-cell,
+.holdings-main-table td.chart-cell,
+.transactions-table th.chart-cell,
+.transactions-table td.chart-cell {
+  text-align: center;
+}
+
+.holdings-main-table th.chart-cell .holdings-th-label {
+  justify-content: center;
+  width: 100%;
 }
 
 .holdings-column-draggable {
@@ -2650,7 +2607,7 @@ input[type='checkbox'] {
   border-bottom: 1px solid var(--portfolio-line);
   background: var(--portfolio-band);
   color: var(--portfolio-muted);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .holdings-group-row .holdings-group-name-cell {
@@ -2954,7 +2911,7 @@ input[type='checkbox'] {
   border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--portfolio-muted);
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
   text-align: left;
 }
@@ -2966,7 +2923,7 @@ input[type='checkbox'] {
 
 .holdings-detail-tab-label {
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .holdings-detail-tab-meta {
@@ -2994,7 +2951,7 @@ input[type='checkbox'] {
   background: transparent;
   color: var(--portfolio-muted);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
 }
 
@@ -3014,7 +2971,7 @@ input[type='checkbox'] {
 
 .holdings-summary-matrix tbody td {
   font-size: 18px;
-  font-weight: 700;
+  font-weight: 400;
   color: var(--portfolio-ink);
 }
 
@@ -3024,7 +2981,7 @@ input[type='checkbox'] {
 }
 
 .holdings-summary-table tbody td {
-  font-weight: 600;
+  font-weight: 400;
   color: var(--portfolio-ink);
 }
 
@@ -3068,7 +3025,7 @@ input[type='checkbox'] {
   background: transparent;
   color: var(--portfolio-muted);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
 }
 
@@ -3214,7 +3171,7 @@ input[type='checkbox'] {
 .portfolio-nav-chart-currency {
   color: var(--portfolio-ink);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
 }
 
@@ -3249,7 +3206,7 @@ input[type='checkbox'] {
 .portfolio-series-label strong {
   color: var(--portfolio-ink);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   white-space: nowrap;
 }
 
@@ -3258,7 +3215,7 @@ input[type='checkbox'] {
   max-width: min(36vw, 230px);
   color: var(--portfolio-ink);
   font-size: 16px;
-  font-weight: 500;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3359,13 +3316,13 @@ input[type='checkbox'] {
 .portfolio-nav-settings-control-group > span {
   color: var(--portfolio-muted);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .portfolio-nav-settings-block-head strong {
   color: var(--portfolio-ink);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .portfolio-nav-settings-control-group {
@@ -3388,7 +3345,7 @@ input[type='checkbox'] {
   color: var(--portfolio-ink);
   cursor: pointer;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.2;
   box-shadow: none;
 }
@@ -3426,7 +3383,7 @@ input[type='checkbox'] {
   color: var(--portfolio-muted);
   cursor: pointer;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
 }
 
@@ -3502,7 +3459,11 @@ input[type='checkbox'] {
   font-size: 12px;
 }
 
-.portfolio-nav-drawdown-header span,
+.portfolio-nav-drawdown-header span {
+  color: var(--portfolio-ink);
+  font-weight: 400;
+}
+
 .portfolio-nav-drawdown-header strong {
   color: var(--portfolio-ink);
   font-weight: 500;
@@ -3586,7 +3547,7 @@ input[type='checkbox'] {
 .portfolio-nav-chart-stats span {
   color: var(--portfolio-muted);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
   text-transform: uppercase;
 }
@@ -3713,7 +3674,7 @@ input[type='checkbox'] {
 .risk-ranked-title,
 .risk-account-title {
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 400;
   color: var(--portfolio-ink);
   white-space: nowrap;
   overflow: hidden;
@@ -3782,7 +3743,7 @@ input[type='checkbox'] {
   text-align: right;
   white-space: nowrap;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 400;
   color: #111827;
 }
 
@@ -3834,11 +3795,11 @@ input[type='checkbox'] {
 
 .risk-ribbon-label {
   min-width: 0;
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .risk-ribbon-value {
-  font-weight: 700;
+  font-weight: 400;
   white-space: nowrap;
 }
 
@@ -3928,7 +3889,7 @@ input[type='checkbox'] {
 .transaction-picker-search span,
 .transaction-notes-field span {
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
   color: var(--portfolio-muted);
 }
@@ -4080,14 +4041,14 @@ input[type='checkbox'] {
   gap: 12px;
   color: var(--portfolio-muted);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 400;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 .research-freeze-panel-header strong {
   color: var(--portfolio-ink);
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0;
 }
 
@@ -4173,7 +4134,7 @@ input[type='checkbox'] {
   padding: 12px 18px;
   border-bottom: 1px solid var(--portfolio-line);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
   color: var(--portfolio-muted);
 }
@@ -4255,7 +4216,7 @@ input[type='checkbox'] {
   background: transparent !important;
   color: var(--portfolio-accent) !important;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .taxonomy-page-table .toolbar-link:hover {
@@ -4436,7 +4397,7 @@ input[type='checkbox'] {
   background: transparent;
   color: var(--portfolio-accent);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
 }
 
@@ -4536,7 +4497,7 @@ input[type='checkbox'] {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   color: var(--portfolio-muted);
 }
 
@@ -4587,7 +4548,7 @@ input[type='checkbox'] {
 .taxonomy-subsection-row td {
   background: transparent;
   color: var(--portfolio-muted);
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .taxonomy-asset-row {
@@ -4700,7 +4661,7 @@ input[type='checkbox'] {
 }
 
 .taxonomy-target-status {
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .taxonomy-target-status-configured {
@@ -4721,7 +4682,7 @@ input[type='checkbox'] {
   background: transparent;
   color: #6b7280;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
 }
 
@@ -4767,7 +4728,7 @@ input[type='checkbox'] {
   padding: 14px 18px;
   color: #4b5563;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .taxonomy-collapsed-summary-muted {
@@ -4880,7 +4841,7 @@ input[type='checkbox'] {
 }
 
 .taxonomy-target-validation-label {
-  font-weight: 500;
+  font-weight: 400;
   color: #374151;
 }
 
@@ -4925,7 +4886,7 @@ input[type='checkbox'] {
   background: transparent;
   color: #6b7280;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
 }
 
@@ -4968,7 +4929,7 @@ input[type='checkbox'] {
 .transactions-table thead th,
 .risk-heatmap-table thead th,
 .risk-heatmap-table tbody th {
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
 }
 
@@ -4991,7 +4952,7 @@ input[type='checkbox'] {
 .table-inline-link {
   color: var(--portfolio-accent);
   text-decoration: none;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .table-inline-link:hover {
@@ -5065,7 +5026,7 @@ input[type='checkbox'] {
   background: transparent;
   color: var(--portfolio-ink);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.2;
   box-shadow: none;
 }
@@ -5147,7 +5108,7 @@ input[type='checkbox'] {
 
 .transaction-ticket-summary-row span {
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
   color: var(--portfolio-muted);
   text-transform: uppercase;
@@ -5178,7 +5139,7 @@ input[type='checkbox'] {
 .transaction-form-fieldset legend {
   padding: 0 6px;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
   color: var(--portfolio-muted);
 }
@@ -5435,7 +5396,7 @@ input[type='checkbox'] {
 .placeholder-row-header {
   background: var(--portfolio-band);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
   color: var(--portfolio-muted);
 }
@@ -5465,7 +5426,7 @@ th {
   background: var(--portfolio-band);
   color: #4b5563;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
   text-transform: uppercase;
 }
@@ -5481,7 +5442,7 @@ td b {
 .taxonomy-tree-table .holding-name-cell,
 .total-row td,
 .risk-heatmap-cell {
-  font-weight: 500;
+  font-weight: 400;
 }
 
 @media (max-width: 960px) {
@@ -5868,7 +5829,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
   padding: 0 0 7px;
   color: var(--portfolio-ink);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .performance-metric-table {
@@ -5894,7 +5855,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
   border-bottom: 1px solid var(--portfolio-line-strong);
   color: var(--portfolio-muted);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .performance-metric-table tbody tr:last-child th,
@@ -5925,7 +5886,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
   overflow: hidden;
   color: var(--portfolio-ink);
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5949,7 +5910,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
   gap: 6px;
   color: var(--portfolio-ink);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
 }
@@ -6048,7 +6009,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .performance-calculation-group-row th,
 .performance-calculation-group-row td {
   background: #f8fafc;
-  font-weight: 600;
+  font-weight: 400;
 }
 
 .performance-calculation-child-row th,
@@ -6058,14 +6019,14 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .performance-calculation-child-row .performance-line-label {
   color: #4b5563;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .performance-calculation-total-row th,
 .performance-calculation-total-row td {
   border-top: 1px solid var(--portfolio-line-strong);
   background: #fff;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .performance-calculation-final-row th,
@@ -6179,7 +6140,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .portfolio-security-fact span {
   color: var(--portfolio-muted);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0.01em;
 }
 
@@ -6255,7 +6216,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .asset-price-chart-instrument .portfolio-instrument-series-label strong {
   color: var(--portfolio-ink);
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .asset-price-chart-instrument .portfolio-instrument-series-label span {
@@ -6273,7 +6234,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .asset-price-chart-instrument .price-chart-readout strong {
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .asset-price-chart-instrument .price-chart-shell {
@@ -6384,7 +6345,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
   padding: 13px 0 12px;
   color: var(--portfolio-muted);
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .portfolio-workspace-page .portfolio-tab-active {
@@ -6442,7 +6403,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .portfolio-workspace-page .portfolio-nav-chart-currency,
 .portfolio-workspace-page .portfolio-nav-range-button {
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
 }
 
@@ -6506,7 +6467,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .portfolio-workspace-page .portfolio-nav-chart-stats span {
   color: var(--portfolio-ink);
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
 }
@@ -6530,13 +6491,13 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .portfolio-workspace-page .overview-key-metrics-table thead th {
   color: var(--portfolio-ink);
-  font-weight: 500;
+  font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
 }
 
 .portfolio-workspace-page .overview-key-metrics-table tbody td strong {
-  font-weight: 500;
+  font-weight: 400;
 }
 
 /* Portfolio overview chart follows the Fund Detail overview chart grammar. */
@@ -6596,7 +6557,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
   border: 1px solid transparent;
   color: #475467;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1;
 }
 
@@ -6639,7 +6600,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-series-label strong {
   color: #111827;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 400;
 }
 
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-series-label span {
@@ -6677,7 +6638,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
   align-items: center;
   color: #111827;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 400;
   line-height: 28px;
 }
 
@@ -6755,7 +6716,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-settings-control-group > span {
   color: #4b5563;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -6763,7 +6724,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-settings-block-head strong {
   color: #6b7280;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 400;
   line-height: 1.25;
   text-align: left;
   overflow-wrap: anywhere;
@@ -6844,7 +6805,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-x-axis-label {
   fill: #4b5563;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 400;
   text-anchor: middle;
   font-variant-numeric: tabular-nums;
 }
@@ -6917,7 +6878,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-drawdown-header span {
   color: #111827;
-  font-weight: 600;
+  font-weight: 400;
 }
 
 .portfolio-workspace-page .portfolio-nav-chart-overview .portfolio-nav-drawdown-header strong {

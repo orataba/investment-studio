@@ -83,7 +83,9 @@ Calculation 的 group axis 包括 asset、asset type、currency、account 与 pl
 
 Holdings 只作为当前持仓状态表。资产级 TWR、区间 contribution、realized gain、income 和 closed positions 必须从 `Performance` 或 security detail 读取，避免把 current holdings 和 period performance 混成一个口径。
 
-Holdings 中允许出现 `Spark Chart`、`1W Return / MTD / YTD / 1Y` 和 `Current DD`，但它们必须明确是 quote-derived asset market trend：只基于资产自身 selected quote series，不读取组合现金流、数量、成本法或 realized / income events。它们用于持仓扫盘，不作为 GIPS-informed portfolio return 或 contribution disclosure。
+Holdings 中允许出现 `Chart 6M`、`1W Return / MTD / YTD / 1Y` 和 `Current DD`，但它们必须明确是 quote-derived asset market trend：只基于资产自身 selected quote series，不读取组合现金流、数量、成本法或 realized / income events。它们用于持仓扫盘，不作为 GIPS-informed portfolio return 或 contribution disclosure。
+
+Risk / Research 的风险统计也必须保持估值频率一致性：先按 daily / weekly / monthly calculation basis 对齐目标 period，再用 period-end 有效观测计算收益；共同节假日不生成样本，单资产缺价进入 missing / insufficient-history 诊断。不得用跨 period stale price 或不同长度持有期收益去补 covariance、correlation、Sharpe 或 target-volatility overlay。
 
 ### 2.6 风险统计必须来自收益序列
 
@@ -91,7 +93,8 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 
 本项目采用：
 
-- portfolio realized volatility、rolling volatility、Sharpe、Sortino 默认使用 `daily_twr` simple returns；
+- portfolio realized volatility、rolling volatility 默认使用 `daily_twr` simple returns 做标准差并年化；Sharpe、Sortino 作为 additional risk measures，使用同一区间、同一 periodicity 的 arithmetic mean excess return 年化后除以年化 volatility / downside volatility（MVP `r_f = 0`）；
+- 若输出正式 GIPS Composite / Pooled Fund Report 风格披露，ex-post standard deviation 必须使用 monthly returns，组合与 benchmark 必须使用同一 periodicity 与同一计算方法；
 - 非市场观察日的 stale-price carry-forward 0 return 不进入风险样本；
 - `NAV_t` 只用于资产规模和现金流调节，不作为组合级波动率输入。
 

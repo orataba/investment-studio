@@ -10,6 +10,13 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
+from portfolio_app.services.calculation_frequency import (
+    CalculationFrequency,
+    calculation_frequency_profile,
+    infer_observation_frequency,
+    period_end_date,
+)
+from portfolio_app.services.market_data import is_usable_market_data_point
 import portfolio_app.services.performance as performance_service
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_statement_of_assets_report
@@ -186,7 +193,7 @@ def _build_direct_fx_asset_map() -> dict[tuple[str, str], str]:
     if not isinstance(payload, dict):
         return direct_assets
     for item in payload.get("rates", []):
-        if not isinstance(item, dict):
+        if not is_usable_market_data_point(item):
             continue
         if str(item.get("source_kind") or "") != "direct":
             continue
@@ -235,7 +242,7 @@ def _selected_price_points(
         return []
     points_by_basis: dict[str, list[tuple[date, float, str]]] = defaultdict(list)
     for raw_point in market_data:
-        if not isinstance(raw_point, dict):
+        if not is_usable_market_data_point(raw_point):
             continue
         point_date = _parse_iso_date(raw_point.get("as_of_date"))
         point_value = _safe_float(raw_point.get("value"))
@@ -255,12 +262,7 @@ def _selected_price_points(
     for quote_basis in _candidate_quote_bases(detail):
         if points_by_basis.get(quote_basis):
             return points_by_basis[quote_basis]
-
-    fallback_points = sorted(
-        (item for values in points_by_basis.values() for item in values),
-        key=lambda item: item[0],
-    )
-    return fallback_points
+    return []
 
 
 def _convert_price_to_base(
@@ -406,8 +408,7 @@ def _annualized_portfolio_volatility(
     variance = float(vector @ matrix @ vector)
     if variance <= 1e-12:
         return 0.0
-    periods_per_year = _infer_periods_per_year([item for item in aligned.index.tolist() if item is not None])
-    return float(sqrt(max(variance, 0.0)) * sqrt(periods_per_year))
+    return float(sqrt(max(variance, 0.0)))
 
 
 def _allocate_cash_weights(
@@ -431,11 +432,51 @@ def _allocate_cash_weights(
 def _infer_periods_per_year(dates: list[date]) -> float:
     if len(dates) < 2:
         return 1.0
-    timestamps = pd.to_datetime(pd.Series(list(dates))).sort_values()
+    timestamps = pd.to_datetime(pd.Series(list(dates))).drop_duplicates().sort_values()
     elapsed_days = int((timestamps.iloc[-1] - timestamps.iloc[0]).days)
     if elapsed_days <= 0:
         return 1.0
-    return float(len(dates)) / float(elapsed_days) * 365.25
+    gaps = [
+        int((timestamps.iloc[index] - timestamps.iloc[index - 1]).days)
+        for index in range(1, len(timestamps))
+        if int((timestamps.iloc[index] - timestamps.iloc[index - 1]).days) > 0
+    ]
+    median_gap = sorted(gaps)[len(gaps) // 2] if gaps else 1
+    observation_span_days = elapsed_days + median_gap
+    if observation_span_days <= 0:
+        return 1.0
+    return float(len(timestamps)) / float(observation_span_days) * 365.25
+
+
+def _index_dates(index: pd.Index) -> list[date]:
+    dates: list[date] = []
+    for item in index.tolist():
+        if item is None:
+            continue
+        timestamp = pd.Timestamp(item)
+        if pd.isna(timestamp):
+            continue
+        dates.append(timestamp.date())
+    return dates
+
+
+def _pair_periods_per_year(returns: pd.DataFrame, left_column: object, right_column: object) -> float:
+    if left_column not in returns.columns or right_column not in returns.columns:
+        return 1.0
+    pair = returns[[left_column, right_column]].dropna(how="any")
+    return _infer_periods_per_year(_index_dates(pair.index))
+
+
+def _annualize_pairwise_covariance(covariance: pd.DataFrame, returns: pd.DataFrame) -> pd.DataFrame:
+    if covariance.empty:
+        return covariance
+    cleaned = _clean_return_frame(returns).reindex(columns=covariance.columns)
+    annualized = covariance.copy().astype("float64")
+    for row_label in covariance.index:
+        for column_label in covariance.columns:
+            factor = _pair_periods_per_year(cleaned, row_label, column_label)
+            annualized.loc[row_label, column_label] = float(covariance.loc[row_label, column_label]) * factor
+    return annualized
 
 
 def _clean_return_frame(returns: pd.DataFrame) -> pd.DataFrame:
@@ -460,13 +501,39 @@ def _select_return_window(
     start_date = end_date - pd.Timedelta(days=max(int(lookback_days), 1))
     start_day = start_date.date() if hasattr(start_date, "date") else start_date
     window = cleaned.loc[cleaned.index >= start_day].copy()
-    required = min(max(int(min_observations), 2), max(len(window), 2))
+    required = max(int(min_observations), 2)
     if len(window) < required:
         raise ValueError(
             "Covariance estimation requires at least "
             f"{required} return observations in the selected lookback window."
         )
     return window
+
+
+def _pair_observation_count(returns: pd.DataFrame, left_label: object, right_label: object) -> int:
+    pair_values = returns.loc[:, [left_label, right_label]].to_numpy(dtype="float64")
+    return int(np.isfinite(pair_values).all(axis=1).sum())
+
+
+def _validate_pairwise_return_coverage(
+    returns: pd.DataFrame,
+    *,
+    min_observations: int,
+    label: str,
+) -> None:
+    required = max(int(min_observations), 2)
+    columns = list(returns.columns)
+    insufficient: list[str] = []
+    for row_index, row_label in enumerate(columns):
+        for column_label in columns[row_index:]:
+            count = _pair_observation_count(returns, row_label, column_label)
+            if count < required:
+                insufficient.append(f"{row_label}/{column_label}: {count}")
+    if insufficient:
+        raise ValueError(
+            f"{label} requires at least {required} overlapping observations for every active return pair. "
+            f"Insufficient pairs: {', '.join(insufficient[:8])}."
+        )
 
 
 def _apply_diagonal_shrinkage(covariance: pd.DataFrame, shrinkage: float) -> pd.DataFrame:
@@ -478,9 +545,14 @@ def _apply_diagonal_shrinkage(covariance: pd.DataFrame, shrinkage: float) -> pd.
     return pd.DataFrame(shrunk, index=covariance.index, columns=covariance.columns)
 
 
-def _estimate_ewma_covariance(returns: pd.DataFrame, *, decay: float) -> pd.DataFrame:
+def _estimate_ewma_covariance(returns: pd.DataFrame, *, decay: float, min_observations: int) -> pd.DataFrame:
     if not 0.0 < decay < 1.0:
         raise ValueError("EWMA decay must be in (0, 1).")
+    _validate_pairwise_return_coverage(
+        returns,
+        min_observations=min_observations,
+        label="EWMA covariance estimation",
+    )
     values = returns.to_numpy(dtype="float64")
     covariance = np.zeros((values.shape[1], values.shape[1]), dtype="float64")
     for row_index in range(values.shape[1]):
@@ -489,19 +561,35 @@ def _estimate_ewma_covariance(returns: pd.DataFrame, *, decay: float) -> pd.Data
             valid_mask = np.isfinite(pair_values).all(axis=1)
             valid_values = pair_values[valid_mask]
             periods = len(valid_values)
-            if periods == 0:
-                pair_covariance = 0.0
-            else:
-                raw_weights = np.asarray([decay ** (periods - 1 - index) for index in range(periods)], dtype="float64")
-                weights = raw_weights / float(raw_weights.sum())
-                mean = np.average(valid_values, axis=0, weights=weights)
-                centered = valid_values - mean
-                pair_covariance = float(
-                    sum(
-                        float(weight) * float(left) * float(right)
-                        for weight, (left, right) in zip(weights, centered, strict=True)
-                    )
+            raw_weights = np.asarray([decay ** (periods - 1 - index) for index in range(periods)], dtype="float64")
+            weights = raw_weights / float(raw_weights.sum())
+            mean = np.average(valid_values, axis=0, weights=weights)
+            centered = valid_values - mean
+            pair_covariance = float(
+                sum(
+                    float(weight) * float(left) * float(right)
+                    for weight, (left, right) in zip(weights, centered, strict=True)
                 )
+            )
+            covariance[row_index, column_index] = pair_covariance
+            covariance[column_index, row_index] = pair_covariance
+    return pd.DataFrame(covariance, index=returns.columns, columns=returns.columns)
+
+
+def _estimate_pairwise_population_covariance(returns: pd.DataFrame, *, min_observations: int) -> pd.DataFrame:
+    _validate_pairwise_return_coverage(
+        returns,
+        min_observations=min_observations,
+        label="Sample covariance estimation",
+    )
+    values = returns.to_numpy(dtype="float64")
+    covariance = np.zeros((values.shape[1], values.shape[1]), dtype="float64")
+    for row_index in range(values.shape[1]):
+        for column_index in range(row_index, values.shape[1]):
+            pair_values = values[:, [row_index, column_index]]
+            valid_values = pair_values[np.isfinite(pair_values).all(axis=1)]
+            centered = valid_values - valid_values.mean(axis=0, keepdims=True)
+            pair_covariance = float(np.mean(centered[:, 0] * centered[:, 1]))
             covariance[row_index, column_index] = pair_covariance
             covariance[column_index, row_index] = pair_covariance
     return pd.DataFrame(covariance, index=returns.columns, columns=returns.columns)
@@ -537,21 +625,35 @@ def _estimate_ewma_vol_shrinkage_corr_covariance(
     lookback_days: int,
     parameters: dict[str, object],
 ) -> pd.DataFrame:
+    vol_min_observations = int(parameters.get("min_observations", 2))
     vol_window = _select_return_window(
         returns,
         lookback_days=lookback_days,
-        min_observations=int(parameters.get("min_observations", 2)),
+        min_observations=vol_min_observations,
     )
     vol_decay = float(parameters.get("vol_decay", parameters.get("decay", 0.97)))
-    ewma_covariance = _estimate_ewma_covariance(vol_window, decay=vol_decay)
-    ewma_vol = np.sqrt(np.maximum(np.diag(ewma_covariance.to_numpy(dtype="float64")), 1e-12))
+    ewma_covariance = _estimate_ewma_covariance(
+        vol_window,
+        decay=vol_decay,
+        min_observations=vol_min_observations,
+    )
+    annualized_ewma_covariance = _annualize_pairwise_covariance(ewma_covariance, vol_window)
+    ewma_vol = np.sqrt(np.maximum(np.diag(annualized_ewma_covariance.to_numpy(dtype="float64")), 1e-12))
 
+    corr_min_observations = int(parameters.get("corr_min_observations", parameters.get("min_observations", 2)))
     corr_window = _select_return_window(
         returns,
         lookback_days=int(parameters.get("corr_lookback_days", lookback_days)),
-        min_observations=int(parameters.get("corr_min_observations", parameters.get("min_observations", 2))),
+        min_observations=corr_min_observations,
     )
-    corr_matrix = corr_window.corr().fillna(0.0).to_numpy(dtype="float64")
+    _validate_pairwise_return_coverage(
+        corr_window,
+        min_observations=corr_min_observations,
+        label="Correlation estimation",
+    )
+    corr_matrix = corr_window.corr().to_numpy(dtype="float64")
+    if not np.isfinite(corr_matrix).all():
+        raise ValueError("Correlation estimation requires non-zero variance for every active return series.")
     corr_matrix = 0.5 * (corr_matrix + corr_matrix.T)
     np.fill_diagonal(corr_matrix, 1.0)
 
@@ -572,18 +674,26 @@ def _estimate_covariance(
     parameters: dict[str, object] | None = None,
 ) -> pd.DataFrame:
     parameters = dict(parameters or {})
+    min_observations = int(parameters.get("min_observations", 2))
     if model_id in {"sample_covariance", "simple_covariance", "lw_covariance", "lw", "ewma_covariance"}:
         window = _select_return_window(
             returns,
             lookback_days=lookback_days,
-            min_observations=int(parameters.get("min_observations", 2)),
+            min_observations=min_observations,
         )
     if model_id in {"sample_covariance", "simple_covariance"}:
-        covariance = window.cov(ddof=0)
+        covariance = _estimate_pairwise_population_covariance(window, min_observations=min_observations)
+        covariance = _annualize_pairwise_covariance(covariance, window)
     elif model_id in {"lw_covariance", "lw"}:
         covariance = _estimate_ledoit_wolf_covariance(window)
+        covariance = covariance * _infer_periods_per_year(_index_dates(window.dropna(how="any").index))
     elif model_id == "ewma_covariance":
-        covariance = _estimate_ewma_covariance(window, decay=float(parameters.get("decay", 0.94)))
+        covariance = _estimate_ewma_covariance(
+            window,
+            decay=float(parameters.get("decay", 0.94)),
+            min_observations=min_observations,
+        )
+        covariance = _annualize_pairwise_covariance(covariance, window)
     elif model_id in {"ewma_vol_shrinkage_corr_covariance", "ewma_vol_corr_covariance"}:
         covariance = _estimate_ewma_vol_shrinkage_corr_covariance(
             returns,
@@ -598,9 +708,14 @@ def _estimate_covariance(
         covariance = _apply_diagonal_shrinkage(covariance, shrinkage)
 
     matrix = covariance.to_numpy(dtype="float64")
-    matrix = np.where(np.isfinite(matrix), matrix, 0.0)
+    if not np.isfinite(matrix).all():
+        raise ValueError("Covariance estimation produced non-finite values.")
     matrix = 0.5 * (matrix + matrix.T)
-    matrix += np.eye(len(matrix), dtype="float64") * 1e-12
+    if len(matrix):
+        eigenvalues, eigenvectors = np.linalg.eigh(matrix)
+        clipped = np.clip(eigenvalues, 1e-12, None)
+        matrix = (eigenvectors * clipped) @ eigenvectors.T
+        matrix = 0.5 * (matrix + matrix.T)
     return pd.DataFrame(matrix, index=covariance.index, columns=covariance.columns)
 
 
@@ -631,7 +746,9 @@ def _risk_contribution_shares(
     if contribution_total <= 1e-12:
         return np.full(len(weights), 1.0 / max(len(weights), 1), dtype="float64")
     shares = contributions / contribution_total
-    return np.where(np.isfinite(shares), shares, 0.0)
+    if not np.isfinite(shares).all():
+        raise ValueError("Risk contribution produced non-finite shares.")
+    return shares
 
 
 def _project_to_bounded_simplex(
@@ -1019,7 +1136,59 @@ def _solve_risk_budget_weights(
     )
 
 
-def _aligned_calendar(series_list: list[pd.Series], *, start_date: date, end_date: date) -> tuple[list[date], date]:
+def _series_observation_frequency(series: pd.Series) -> CalculationFrequency:
+    return infer_observation_frequency(_index_dates(series.index))
+
+
+def _periodic_nav_series(
+    series: pd.Series,
+    *,
+    calculation_frequency: CalculationFrequency,
+    start_date: date,
+    end_date: date,
+) -> pd.Series:
+    if series.empty:
+        return pd.Series(dtype="float64")
+    visible = series.loc[(series.index >= start_date) & (series.index <= end_date)].sort_index()
+    if visible.empty:
+        return pd.Series(dtype="float64")
+    rows: dict[date, tuple[date, float]] = {}
+    for raw_date, raw_value in visible.items():
+        point_date = raw_date if isinstance(raw_date, date) else pd.Timestamp(raw_date).date()
+        point_value = _safe_float(raw_value)
+        if point_value is None:
+            continue
+        target_date = period_end_date(point_date, calculation_frequency, final_date=end_date)
+        current = rows.get(target_date)
+        if current is None or point_date >= current[0]:
+            rows[target_date] = (point_date, point_value)
+    return pd.Series({target_date: value for target_date, (_point_date, value) in rows.items()}, dtype="float64").sort_index()
+
+
+def _periodic_series_by_member(
+    nav_series_by_member: dict[tuple[str, str], pd.Series],
+    *,
+    calculation_frequency: CalculationFrequency,
+    start_date: date,
+    end_date: date,
+) -> dict[tuple[str, str], pd.Series]:
+    return {
+        member_key: _periodic_nav_series(
+            series,
+            calculation_frequency=calculation_frequency,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        for member_key, series in nav_series_by_member.items()
+    }
+
+
+def _aligned_calendar(
+    series_list: list[pd.Series],
+    *,
+    start_date: date,
+    end_date: date,
+) -> tuple[list[date], date]:
     if not series_list:
         raise ValueError("Selected scope does not contain any research members.")
     first_dates = []
@@ -1045,9 +1214,16 @@ def _align_member_series(
     *,
     start_date: date,
     end_date: date,
+    calculation_frequency: CalculationFrequency = "daily",
 ) -> tuple[list[MemberSeries], list[date], list[str]]:
+    periodic_nav_series_by_member = _periodic_series_by_member(
+        nav_series_by_member,
+        calculation_frequency=calculation_frequency,
+        start_date=start_date,
+        end_date=end_date,
+    )
     calendar, effective_start = _aligned_calendar(
-        list(nav_series_by_member.values()),
+        list(periodic_nav_series_by_member.values()),
         start_date=start_date,
         end_date=end_date,
     )
@@ -1055,19 +1231,21 @@ def _align_member_series(
     warnings: list[str] = []
     for member in members:
         raw_series = nav_series_by_member[(member.member_type, member.member_id)].sort_index()
-        visible = raw_series.loc[raw_series.index <= end_date]
-        aligned = visible.reindex(calendar, method="ffill")
-        if aligned.isna().any():
+        periodic_series = periodic_nav_series_by_member[(member.member_type, member.member_id)]
+        aligned = periodic_series.reindex(calendar)
+        first_valid_index = aligned.first_valid_index()
+        if first_valid_index is None:
             raise ValueError(f"{member.label} does not have enough history for aligned research dates.")
-        base_value = float(aligned.iloc[0])
+        base_value = float(aligned.loc[first_valid_index])
         if abs(base_value) <= 1e-12:
             raise ValueError(f"{member.label} starts with a non-positive base value.")
         normalized_nav = aligned / base_value
-        actual_returns = (visible / base_value).pct_change(fill_method=None).reindex(calendar)
+        actual_returns = normalized_nav.pct_change(fill_method=None)
         if len(calendar) > 0:
             actual_returns.loc[calendar[0]] = np.nan
         returns = actual_returns.astype("float64")
-        cumulative_return = float(normalized_nav.iloc[-1] - 1.0)
+        last_valid_value = normalized_nav.dropna().iloc[-1]
+        cumulative_return = float(last_valid_value - 1.0)
         if raw_series.index[0] > start_date:
             warnings.append(
                 f"{member.label} history begins on {raw_series.index[0].isoformat()}, clipping selected research start to {effective_start.isoformat()}."
@@ -1264,6 +1442,39 @@ def _scope_members(
     return members, "direct_members"
 
 
+def _scope_source_frequencies(
+    state: TaxonomyResearchState,
+    *,
+    scope_node_id: str | None,
+    start_date: date,
+    end_date: date,
+) -> list[CalculationFrequency]:
+    if scope_node_id is None:
+        node_ids = set(state.node_by_id)
+    else:
+        node_ids = state.node_subtree_by_id.get(scope_node_id, {scope_node_id})
+    frequencies: list[CalculationFrequency] = []
+    seen_asset_ids: set[str] = set()
+    for node_id in node_ids:
+        for assignment in state.direct_assignments_by_node.get(node_id, []):
+            if str(assignment.get("target_scope") or "") != TARGET_MEMBER_INSTRUMENT:
+                continue
+            asset_id = str(assignment.get("target_entity_id") or "").strip()
+            if not asset_id or asset_id in seen_asset_ids:
+                continue
+            seen_asset_ids.add(asset_id)
+            detail = _instrument_detail(state, asset_id)
+            if not isinstance(detail, dict):
+                continue
+            dates = [
+                point_date
+                for point_date, _point_value, _point_currency in _selected_price_points(detail, end_date=end_date)
+                if start_date <= point_date <= end_date
+            ]
+            frequencies.append(_series_observation_frequency(pd.Series(1.0, index=pd.Index(dates, dtype="object"))))
+    return frequencies
+
+
 def _scope_default_target_dimension(state: TaxonomyResearchState, scope_node_id: str | None) -> str:
     if scope_node_id:
         return str(state.node_by_id.get(scope_node_id, {}).get("default_target_dimension") or TARGET_DIMENSION_WEIGHT)
@@ -1276,6 +1487,7 @@ def _solver_return_window(
     nav_series_by_member: dict[tuple[str, str], pd.Series],
     as_of_date: date,
     lookback_days: int,
+    calculation_frequency: CalculationFrequency,
 ) -> pd.DataFrame:
     if not members:
         return pd.DataFrame()
@@ -1287,6 +1499,7 @@ def _solver_return_window(
             nav_series_by_member,
             start_date=start_day,
             end_date=as_of_date,
+            calculation_frequency=calculation_frequency,
         )
     except ValueError:
         return pd.DataFrame()
@@ -1305,6 +1518,22 @@ def _series_to_nav(return_series: pd.Series, *, as_of_date: date) -> pd.Series:
     return (1.0 + return_series.astype("float64")).cumprod()
 
 
+def _weighted_complete_return_series(return_window: pd.DataFrame, weights: pd.Series) -> pd.Series:
+    if return_window.empty or weights.empty:
+        return pd.Series(dtype="float64")
+    aligned_weights = weights.reindex(return_window.columns, fill_value=0.0).astype("float64")
+    active_columns = [column for column in return_window.columns if abs(float(aligned_weights.get(column, 0.0))) > 1e-12]
+    if not active_columns:
+        return pd.Series(0.0, index=return_window.index, dtype="float64")
+    active_returns = return_window.reindex(columns=active_columns)
+    complete_mask = active_returns.notna().all(axis=1)
+    result = pd.Series(np.nan, index=return_window.index, dtype="float64")
+    result.loc[complete_mask] = (
+        active_returns.loc[complete_mask] * aligned_weights.reindex(active_columns, fill_value=0.0)
+    ).sum(axis=1)
+    return result.astype("float64")
+
+
 def _estimate_scope_risk_share_map(
     *,
     members: list[ScopeMemberRecord],
@@ -1313,6 +1542,7 @@ def _estimate_scope_risk_share_map(
     weights_by_key: pd.Series,
     as_of_date: date,
     lookback_days: int,
+    calculation_frequency: CalculationFrequency,
     contribution_mode: str,
 ) -> dict[str, float]:
     if not risk_keys:
@@ -1331,6 +1561,7 @@ def _estimate_scope_risk_share_map(
         nav_series_by_member=nav_series_by_member,
         as_of_date=as_of_date,
         lookback_days=lookback_days,
+        calculation_frequency=calculation_frequency,
     )
     if return_window.empty:
         return {}
@@ -1357,6 +1588,7 @@ def _solve_current_scope(
     scope_node_id: str | None,
     as_of_date: date,
     lookback_days: int,
+    calculation_frequency: CalculationFrequency,
     target_dimension: str,
     capital_mode: str,
     gross_exposure: float | None,
@@ -1388,6 +1620,7 @@ def _solve_current_scope(
                 scope_node_id=member.member_id,
                 as_of_date=as_of_date,
                 lookback_days=lookback_days,
+                calculation_frequency=calculation_frequency,
                 target_dimension=TARGET_DIMENSION_SCOPE_DEFAULT,
                 capital_mode=capital_mode,
                 gross_exposure=gross_exposure,
@@ -1500,6 +1733,7 @@ def _solve_current_scope(
                     nav_series_by_member=nav_series_by_member,
                     as_of_date=as_of_date,
                     lookback_days=lookback_days,
+                    calculation_frequency=calculation_frequency,
                 )
             else:
                 return_window = pd.DataFrame()
@@ -1612,6 +1846,7 @@ def _solve_current_scope(
                 nav_series_by_member=nav_series_by_member,
                 as_of_date=as_of_date,
                 lookback_days=lookback_days,
+                calculation_frequency=calculation_frequency,
             )
             estimated_risk_sleeve_volatility = _annualized_portfolio_volatility(
                 return_window,
@@ -1657,6 +1892,7 @@ def _solve_current_scope(
         weights_by_key=current_weights,
         as_of_date=as_of_date,
         lookback_days=lookback_days,
+        calculation_frequency=calculation_frequency,
         contribution_mode=risk_solve.risk_contribution_mode or RESEARCH_RISK_CONTRIBUTION_MODE,
     )
     for key in cash_like_keys:
@@ -1678,6 +1914,7 @@ def _solve_current_scope(
         "covariance_model": risk_solve.covariance_model,
         "covariance_observations": risk_solve.covariance_observations,
         "risk_contribution_mode": risk_solve.risk_contribution_mode,
+        "calculation_frequency": calculation_frequency,
         "gap_turnover": gap_turnover,
         "current_weight_total": float(current_weights.sum()),
         "target_weight_total": float(implementation_weights.sum()),
@@ -1798,23 +2035,23 @@ def _solve_current_scope(
         nav_series_by_member=nav_series_by_member,
         as_of_date=as_of_date,
         lookback_days=lookback_days,
+        calculation_frequency=calculation_frequency,
     )
     if scope_return_window.empty:
         scope_returns = pd.Series(dtype="float64")
     else:
-        aligned_weights = implementation_weights.reindex(scope_return_window.columns, fill_value=0.0)
-        scope_returns = (scope_return_window.fillna(0.0) * aligned_weights).sum(axis=1)
+        scope_returns = _weighted_complete_return_series(scope_return_window, implementation_weights)
     current_scope_return_window = _solver_return_window(
         members=members,
         nav_series_by_member=current_nav_series_by_member,
         as_of_date=as_of_date,
         lookback_days=lookback_days,
+        calculation_frequency=calculation_frequency,
     )
     if current_scope_return_window.empty:
         current_scope_returns = pd.Series(dtype="float64")
     else:
-        aligned_current_weights = current_weights.reindex(current_scope_return_window.columns, fill_value=0.0)
-        current_scope_returns = (current_scope_return_window.fillna(0.0) * aligned_current_weights).sum(axis=1)
+        current_scope_returns = _weighted_complete_return_series(current_scope_return_window, current_weights)
 
     return ScopeTargetSolveResult(
         scope_node_id=scope_node_id,
@@ -2164,8 +2401,43 @@ def build_research_scope_options(
                 "default_target_dimension": str(node.get("default_target_dimension") or TARGET_DIMENSION_WEIGHT),
                 "has_children": bool(state.children_by_parent.get(node_id)),
             }
-        )
+            )
     return options
+
+
+def build_research_calculation_frequency_profile(
+    portfolio_id: str,
+    *,
+    planning_taxonomy_id: str | None,
+    comparator_taxonomy_node_id: str | None,
+    as_of_date: date,
+    lookback_days: int,
+    requested_frequency: str,
+) -> dict[str, object]:
+    if not planning_taxonomy_id:
+        return calculation_frequency_profile(
+            requested_frequency=requested_frequency,
+            source_frequencies=[],
+        )
+    state = _build_taxonomy_state(
+        portfolio_id,
+        planning_taxonomy_id=planning_taxonomy_id,
+        as_of_date=as_of_date,
+    )
+    if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
+        raise ValueError("Selected research scope was not found in the planning taxonomy.")
+    start_date = as_of_date - pd.Timedelta(days=max(int(lookback_days), 1))
+    start_day = start_date.date() if hasattr(start_date, "date") else start_date
+    source_frequencies = _scope_source_frequencies(
+        state,
+        scope_node_id=comparator_taxonomy_node_id,
+        start_date=start_day,
+        end_date=as_of_date,
+    )
+    return calculation_frequency_profile(
+        requested_frequency=requested_frequency,
+        source_frequencies=source_frequencies,
+    )
 
 
 def solve_current_target_weights(
@@ -2175,6 +2447,7 @@ def solve_current_target_weights(
     comparator_taxonomy_node_id: str | None,
     as_of_date: date,
     lookback_days: int,
+    calculation_frequency: str = "auto",
     target_dimension: str,
     capital_mode: str,
     gross_exposure: float | None,
@@ -2190,12 +2463,26 @@ def solve_current_target_weights(
     )
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
         raise ValueError("Selected research scope was not found in the planning taxonomy.")
+    start_date = as_of_date - pd.Timedelta(days=max(int(lookback_days), 1))
+    start_day = start_date.date() if hasattr(start_date, "date") else start_date
+    source_frequencies = _scope_source_frequencies(
+        state,
+        scope_node_id=comparator_taxonomy_node_id,
+        start_date=start_day,
+        end_date=as_of_date,
+    )
+    frequency_profile = calculation_frequency_profile(
+        requested_frequency=calculation_frequency,
+        source_frequencies=source_frequencies,
+    )
+    resolved_calculation_frequency = str(frequency_profile["resolved_frequency"])
 
     scope_result = _solve_current_scope(
         state,
         scope_node_id=comparator_taxonomy_node_id,
         as_of_date=as_of_date,
         lookback_days=lookback_days,
+        calculation_frequency=resolved_calculation_frequency,  # type: ignore[arg-type]
         target_dimension=target_dimension,
         capital_mode=capital_mode,
         gross_exposure=gross_exposure,
@@ -2234,4 +2521,5 @@ def solve_current_target_weights(
         "target_weight_gaps": target_weight_gaps,
         "warnings": warnings,
         "return_observations": float(len(scope_result.return_series)),
+        "calculation_frequency": frequency_profile,
     }

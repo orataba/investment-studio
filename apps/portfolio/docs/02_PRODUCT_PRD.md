@@ -379,7 +379,7 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 - 高密度表格；
 - 可排序、可筛选、可分组、可切换列；
-- 默认展示 asset、quote、quote date、Spark Chart、quantity、avg cost、cost basis、market value、weight、unrealized P&L；
+- 默认展示 asset、quote、quote date、Chart 6M、quantity、avg cost、cost basis、market value、weight、unrealized P&L；
 - 允许按 taxonomy / selected planning taxonomy / account 聚合。
 - 允许展示 quote-derived asset market trend 指标，用于扫当前持仓资产最近市场表现；这些指标不读取组合数量、成本法、现金流或 realized / income events。
 - 不在 Holdings 默认承载资产级 TWR、realized gain、dividend / coupon income 或 closed positions；这些属于 Performance / security detail 的区间绩效视图。
