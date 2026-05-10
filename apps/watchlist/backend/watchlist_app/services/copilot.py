@@ -12,7 +12,7 @@ from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
     SQLAlchemyInstrumentAttributeRepository,
 )
 from watchlist_app.repositories.sqlalchemy.manual_profiles import (
-    SQLAlchemyAssetManualProfileRepository,
+    SQLAlchemyInstrumentManualProfileRepository,
 )
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
 from watchlist_app.repositories.sqlalchemy.watchlists import SQLAlchemyWatchlistRepository
@@ -181,7 +181,7 @@ class StubCopilotProvider:
         answer_lines = [
             f"基于当前 Watchlist「{watchlist_name}」的 {total_rows} 条可见记录，我先按{focus}给出摘要。",
             f"当前视图是「{view_name or '当前视图'}」；{f'按 {group_by} 分组，最大组是 {largest_group.get('group_value')}（{largest_group.get('row_count')} 条）。' if group_by and group_by != 'none' and largest_group else '当前未分组。'}",
-            f"数据新鲜度方面，需优先关注 {len(stale_rows)} 条记录；最近需要核查的对象包括 {_list_join([str(row.get('ticker_or_isin') or row.get('asset_name') or '') for row in stale_rows[:3]])}。",
+            f"数据新鲜度方面，需优先关注 {len(stale_rows)} 条记录；最近需要核查的对象包括 {_list_join([str(row.get('ticker_or_isin') or row.get('instrument_name') or '') for row in stale_rows[:3]])}。",
             f"表现上，1Y 平均回报约 {_format_percent(avg_one_year)}；最好的是 {best_return_row.get('ticker_or_isin') if best_return_row else '—'}（{_format_percent(best_return_row.get('return_1y')) if best_return_row else '—'}）。",
             f"风险上，最大回撤最深的是 {worst_drawdown_row.get('ticker_or_isin') if worst_drawdown_row else '—'}（{_format_percent(worst_drawdown_row.get('max_drawdown')) if worst_drawdown_row else '—'}）；当前最高内部评分的是 {highest_rating_row.get('ticker_or_isin') if highest_rating_row else '—'}（{_format_number(highest_rating_row.get('overall_rating'), 0) if highest_rating_row else '—'}）。",
         ]
@@ -214,7 +214,7 @@ class StubCopilotProvider:
                     "ref_type": "instrument",
                     "ref_id": (
                         str(
-                            best_return_row.get("asset_id")
+                            best_return_row.get("instrument_id")
                         )
                         if best_return_row
                         else None
@@ -240,7 +240,7 @@ class StubCopilotProvider:
     def answer_fund(
         self,
         *,
-        asset_id: str,
+        instrument_id: str,
         question: str,
         active_tab: str | None,
         summary: dict[str, object],
@@ -254,8 +254,8 @@ class StubCopilotProvider:
         research: dict[str, object],
         nav_series: dict[str, object],
     ) -> dict[str, object]:
-        fund_name = str(summary.get("fund_name") or asset_id.upper())
-        ticker = str(summary.get("ticker_or_isin") or asset_id.upper())
+        fund_name = str(summary.get("fund_name") or instrument_id.upper())
+        ticker = str(summary.get("ticker_or_isin") or instrument_id.upper())
         active_tab = (active_tab or "quote").lower()
         nav_rows = list(nav_series.get("rows") or [])
         latest_nav = nav_rows[-1] if nav_rows else {}
@@ -346,25 +346,25 @@ class StubCopilotProvider:
                 {
                     "label": "Instrument summary",
                     "ref_type": "fund",
-                    "ref_id": asset_id,
+                    "ref_id": instrument_id,
                     "note": f"{fund_name} / {ticker}",
                 },
                 {
                     "label": "NAV history",
                     "ref_type": "nav_series",
-                    "ref_id": asset_id,
+                    "ref_id": instrument_id,
                     "note": f"{len(nav_rows)} rows available; latest {_format_date(latest_nav_date)}.",
                 },
                 {
                     "label": "Research profile",
                     "ref_type": "research",
-                    "ref_id": asset_id,
+                    "ref_id": instrument_id,
                     "note": f"{len(research_notes)} notes, {len(document_rows)} adopted documents.",
                 },
             ],
             "context_summary": {
                 "entity_type": "instrument",
-                "asset_id": asset_id,
+                "instrument_id": instrument_id,
                 "fund_name": fund_name,
                 "active_tab": active_tab,
                 "nav_rows": len(nav_rows),
@@ -379,7 +379,7 @@ class CopilotService:
         self.read_model_repository = SQLAlchemyReadModelRepository()
         self.watchlist_repository = SQLAlchemyWatchlistRepository()
         self.attribute_repository = SQLAlchemyInstrumentAttributeRepository()
-        self.manual_profile_repository = SQLAlchemyAssetManualProfileRepository()
+        self.manual_profile_repository = SQLAlchemyInstrumentManualProfileRepository()
 
     def chat_watchlist(
         self,
@@ -411,7 +411,7 @@ class CopilotService:
             else None
         )
         analysis_fields = [
-            "asset_name",
+            "instrument_name",
             "ticker_or_isin",
             "attr.fund_taxonomy_path",
             "overall_rating",
@@ -446,22 +446,22 @@ class CopilotService:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         question: str,
         active_tab: str | None,
     ) -> dict[str, object]:
-        summary_record = self.read_model_repository.get_summary(session, asset_id)
-        performance_record = self.read_model_repository.get_performance(session, asset_id)
-        risk_record = self.read_model_repository.get_risk(session, asset_id)
-        exposure_record = self.read_model_repository.get_exposure_summary(session, asset_id)
-        manual_profile = self.manual_profile_repository.get(session, asset_id)
+        summary_record = self.read_model_repository.get_summary(session, instrument_id)
+        performance_record = self.read_model_repository.get_performance(session, instrument_id)
+        risk_record = self.read_model_repository.get_risk(session, instrument_id)
+        exposure_record = self.read_model_repository.get_exposure_summary(session, instrument_id)
+        manual_profile = self.manual_profile_repository.get(session, instrument_id)
         attributes = collapse_latest_attribute_values(
-            self.attribute_repository.get_values_for_asset(session, asset_id)
+            self.attribute_repository.get_values_for_asset(session, instrument_id)
         )
         summary_payload = (
             serialize_payload(summary_record.payload_json)
             if summary_record is not None
-            else default_fund_summary_payload(asset_id, instrument_attributes=attributes)
+            else default_fund_summary_payload(instrument_id, instrument_attributes=attributes)
         )
         summary_payload = merge_summary_attributes(summary_payload, attributes)
         performance_payload = (
@@ -485,7 +485,7 @@ class CopilotService:
             else {}
         )
         nav_rows = []
-        chart_record = self.read_model_repository.get_chart(session, asset_id)
+        chart_record = self.read_model_repository.get_chart(session, instrument_id)
         if chart_record is not None:
             chart_payload = serialize_payload(chart_record.payload_json)
             primary_series = next(
@@ -520,7 +520,7 @@ class CopilotService:
             else _default_price_payload()
         )
         return self.provider.answer_fund(
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             question=question,
             active_tab=active_tab,
             summary=summary_payload,

@@ -1416,12 +1416,6 @@ function getRowsForCurrency(rows: FundNavSeriesResponse['rows'], currency: strin
   return rows.filter((row) => !currency || !row.currency || row.currency === currency)
 }
 
-function toSelectedBasisPoints(series: FundNavSeriesResponse['series']) {
-  return [...series]
-    .sort((left, right) => left.date.localeCompare(right.date))
-    .map((point) => ({ date: point.date, value: point.nav }))
-}
-
 function resolvePreferredQuoteBasis(value: string | null | undefined): QuoteBasis | null {
   return value === 'nav' || value === 'nav_with_dividend' ? value : null
 }
@@ -1443,7 +1437,6 @@ function resolveReturnQuoteBasis(
 
 function buildQuoteSeriesContext(
   rows: FundNavSeriesResponse['rows'],
-  series: FundNavSeriesResponse['series'],
   {
     currency,
     requestedBasis,
@@ -1463,17 +1456,14 @@ function buildQuoteSeriesContext(
       ? requestedBasis
       : preferred && availableBases.includes(preferred)
         ? preferred
-        : availableBases[0] || preferred
+        : availableBases[0] || null
   const seriesFromRows = activeBasis ? buildBasisSeries(scopedRows, activeBasis) : []
-  const fallbackSeries =
-    activeBasis && preferred === activeBasis && series.length > 0 ? toSelectedBasisPoints(series) : []
-  const basisSeries = seriesFromRows.length ? seriesFromRows : fallbackSeries
 
   return {
     rows: scopedRows,
     availableBases,
     activeBasis,
-    basisSeries,
+    basisSeries: seriesFromRows,
     latestRow: scopedRows[scopedRows.length - 1],
   }
 }
@@ -2626,6 +2616,12 @@ function resampleSeries(points: FundChartPoint[], frequency: ChartFrequency) {
   return Array.from(buckets.values()).sort((left, right) => left.date.localeCompare(right.date))
 }
 
+function buildCalculationPointSeries(series: Array<{ date: string; nav: number }>) {
+  return series
+    .map((point) => ({ date: point.date, value: point.nav }))
+    .sort((left, right) => left.date.localeCompare(right.date))
+}
+
 function getChartTickValues(points: FundChartPoint[], count = 5) {
   if (!points.length) {
     return []
@@ -3362,7 +3358,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       } catch {
         if (!cancelled) {
           setProductFrameworkAttributes({
-            asset_id: fundId,
+            instrument_id: fundId,
             definitions: [],
             values: {},
             taxonomy: {
@@ -3458,7 +3454,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     )
     const effectiveCurrency =
       currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || bundle.chart.currency || 'USD'
-    const quoteContext = buildQuoteSeriesContext(bundle.navSeries.rows, bundle.navSeries.series, {
+    const quoteContext = buildQuoteSeriesContext(bundle.navSeries.rows, {
       currency: effectiveCurrency,
       requestedBasis: quoteBasis,
       preferredBasis: bundle.navSeries.nav_basis_type,
@@ -3589,7 +3585,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     )
     const effectiveCurrency =
       currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || bundle.chart.currency || 'USD'
-    const quoteContext = buildQuoteSeriesContext(bundle.navSeries.rows, bundle.navSeries.series, {
+    const quoteContext = buildQuoteSeriesContext(bundle.navSeries.rows, {
       currency: effectiveCurrency,
       requestedBasis: quoteBasis,
       preferredBasis: bundle.navSeries.nav_basis_type,
@@ -4124,7 +4120,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const effectiveCurrency = availableCurrencies.includes(selectedCurrency)
     ? selectedCurrency
     : availableCurrencies[0] || chart.currency || 'USD'
-  const quoteSeriesContext = buildQuoteSeriesContext(navSeries.rows, navSeries.series, {
+  const quoteSeriesContext = buildQuoteSeriesContext(navSeries.rows, {
     currency: effectiveCurrency,
     requestedBasis: quoteBasis,
     preferredBasis: navSeries.nav_basis_type,
@@ -4136,6 +4132,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const latestQuoteRow = quoteSeriesContext.latestRow || navSeries.rows[navSeries.rows.length - 1]
   const navBasisSeries = quoteSeriesContext.basisSeries
   const returnBasisSeries = returnQuoteBasis ? buildBasisSeries(currencyFilteredRows, returnQuoteBasis) : []
+  const calculationFrequencyProfile = navSeries.calculation_frequency_profile
+  const calculationFrequencyStatus = calculationFrequencyProfile.status_label
+  // Metrics use the backend-selected calculation series, never the zoomed or downsampled chart display series.
+  const calculationBasisSeries = buildCalculationPointSeries(navSeries.calculation_series)
   const defaultWindow = getRangeWindow(navBasisSeries, chartRange)
   const effectiveStartDate = chartRange === 'CUSTOM' ? chartStartDate : defaultWindow.start
   const effectiveEndDate = chartRange === 'CUSTOM' ? chartEndDate : defaultWindow.end
@@ -4196,6 +4196,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     metricBenchmarkReturnBasis
       ? buildBasisSeries(metricBenchmarkSourceRows, metricBenchmarkReturnBasis)
       : []
+  const metricBenchmarkCalculationSeries = metricBenchmarkNavSeries
+    ? buildCalculationPointSeries(metricBenchmarkNavSeries.calculation_series)
+    : []
   const shouldIndexCompareSeries = Boolean(selectedBenchmark)
   const indexedNavSeries = shouldIndexCompareSeries ? rebaseSeries(visibleNavSeries, 1) : []
   const indexedBenchmarkSeries = shouldIndexCompareSeries ? rebaseSeries(benchmarkVisibleNavSeries, 1) : []
@@ -5040,9 +5043,25 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const navSnapshotRows = [
     { label: 'Selected Basis', value: quoteBasisLabel },
     { label: 'Research Basis', value: navBasisLabel },
+    { label: 'Calculation Basis', value: calculationFrequencyStatus },
+    {
+      label: 'Calc Observations',
+      value: formatNumber(calculationFrequencyProfile.observation_count, 0),
+    },
+    {
+      label: 'Annualization',
+      value:
+        calculationFrequencyProfile.annualization_periods_per_year == null
+          ? '—'
+          : `${formatNumber(calculationFrequencyProfile.annualization_periods_per_year, 1)} / yr`,
+    },
+    {
+      label: 'Gaps',
+      value: `${formatNumber(calculationFrequencyProfile.gap_count, 0)} gaps`,
+    },
     { label: 'Basis Source', value: formatNavBasisSource(navSeries.nav_basis_source) },
     { label: 'Series Count', value: String(navSeries.count || navSeries.rows.length || 0) },
-    { label: 'NAV Date', value: formatDate(latestPoint?.date || navSeries.rows[navSeries.rows.length - 1]?.as_of_date) },
+    { label: 'NAV Date', value: formatDate(latestQuoteRow?.as_of_date || navSeries.rows[navSeries.rows.length - 1]?.as_of_date) },
     { label: 'Currency', value: getString(navSeries.rows[navSeries.rows.length - 1]?.currency || chart.currency) },
   ]
   const distributionRowsSummary = [
@@ -5063,11 +5082,11 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       value: latestDistribution ? formatDateTime(latestDistribution.adopted_at) : '—',
     },
   ]
-  const performanceReferenceEndDate = returnBasisSeries[returnBasisSeries.length - 1]?.date || null
+  const performanceReferenceEndDate = calculationBasisSeries[calculationBasisSeries.length - 1]?.date || null
   const performancePeriodSnapshots = PERFORMANCE_METRIC_PERIODS.map((period) => {
-    const fundWindow = getAnchoredWindow(returnBasisSeries, period.key, performanceReferenceEndDate)
+    const fundWindow = getAnchoredWindow(calculationBasisSeries, period.key, performanceReferenceEndDate)
     const benchmarkWindow = getAnchoredWindow(
-      metricBenchmarkReturnBasisSeries,
+      metricBenchmarkCalculationSeries,
       period.key,
       performanceReferenceEndDate,
     )
@@ -5079,7 +5098,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
         benchmarkWindow.length >= 2 ? buildPerformanceRelativeSnapshot(fundWindow, benchmarkWindow) : null,
     }
   })
-  const monthlyReturnMatrixRows = buildMonthlyReturnMatrix(returnBasisSeries)
+  const monthlyReturnMatrixRows = buildMonthlyReturnMatrix(calculationBasisSeries)
   const monthlyReturnMatrixMaxAbs = monthlyReturnMatrixRows.reduce((maxAbs, row) => {
     const rowMax = Math.max(
       ...[...row.months, row.ytd]
@@ -5365,8 +5384,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     : 'Not selected'
   const riskMatrixSnapshots = performancePeriodSnapshots.filter(({ key }) => RISK_MATRIX_PERIOD_KEYS.has(key))
   const lifetimeRiskSnapshot =
-    riskMatrixSnapshots.find(({ key }) => key === 'SI')?.fund || buildPerformanceMetricSnapshot(returnBasisSeries)
-  const returnDrawdownSeries = buildDrawdownSeries(returnBasisSeries)
+    riskMatrixSnapshots.find(({ key }) => key === 'SI')?.fund || buildPerformanceMetricSnapshot(calculationBasisSeries)
+  const returnDrawdownSeries = buildDrawdownSeries(calculationBasisSeries)
   const formatRecoveryStatus = (snapshot: PerformanceMetricSnapshot | null) => {
     if (!snapshot || snapshot.maxDrawdown == null) {
       return '—'
@@ -5378,7 +5397,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   }
   const riskProfileSeries = resampleSeries(
     returnDrawdownSeries,
-    returnBasisSeries.length > 260 ? 'weekly' : 'daily',
+    calculationBasisSeries.length > 260 ? 'weekly' : 'daily',
   )
   const riskProfileBounds = getDrawdownAxisBounds(riskProfileSeries)
   const riskProfileTickValues = getLinearTickValues(riskProfileBounds.min, riskProfileBounds.max, 4)
@@ -5413,7 +5432,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     monthlyDrawdownBounds.min,
     monthlyDrawdownBounds.max,
   )
-  const monthlyVolatilitySeries = buildMonthlyAnnualizedVolatilitySeries(returnBasisSeries).slice(-36)
+  const monthlyVolatilitySeries = buildMonthlyAnnualizedVolatilitySeries(calculationBasisSeries).slice(-36)
   const monthlyVolatilityBounds = monthlyVolatilitySeries.length
     ? getPaddedAxisBounds(
         Math.min(0, ...monthlyVolatilitySeries.map((point) => point.value)),
@@ -5451,6 +5470,17 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       value: riskBenchmarkLabel,
     },
     {
+      label: 'Risk Basis',
+      value: calculationFrequencyStatus,
+    },
+    {
+      label: 'Ann. Factor',
+      value:
+        calculationFrequencyProfile.annualization_periods_per_year == null
+          ? '—'
+          : `${formatNumber(calculationFrequencyProfile.annualization_periods_per_year, 1)} / yr`,
+    },
+    {
       label: 'Current DD',
       value:
         returnDrawdownSeries.length > 0
@@ -5477,7 +5507,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     ROLLING_RISK_WINDOW_OPTIONS.find((option) => option.months === rollingRiskWindowMonths)?.label ||
     `${rollingRiskWindowMonths}M`
   const rollingVolatilitySeries = buildRollingAnnualizedVolatilitySeries(
-    returnBasisSeries,
+    calculationBasisSeries,
     rollingRiskWindowMonths,
   ).slice(-ROLLING_CHART_MAX_POINTS)
   const rollingVolatilityBounds = rollingVolatilitySeries.length
@@ -5508,7 +5538,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     0,
   )
   const rollingAnnualizedReturnSeries = buildRollingAnnualizedReturnSeries(
-    returnBasisSeries,
+    calculationBasisSeries,
     rollingRiskWindowMonths,
   ).slice(-ROLLING_CHART_MAX_POINTS)
   const rollingReturnVolSeries = [...rollingAnnualizedReturnSeries, ...rollingVolatilitySeries]
@@ -5541,7 +5571,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     rollingReturnVolBounds.min,
     rollingReturnVolBounds.max,
   )
-  const rollingSharpeSeries = buildRollingSharpeSeries(returnBasisSeries, rollingRiskWindowMonths).slice(
+  const rollingSharpeSeries = buildRollingSharpeSeries(calculationBasisSeries, rollingRiskWindowMonths).slice(
     -ROLLING_CHART_MAX_POINTS,
   )
   const rollingSharpeBounds = rollingSharpeSeries.length
@@ -5566,8 +5596,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     rollingSharpeBounds.max,
   )
   const rollingBetaSeries =
-    selectedMetricBenchmark && metricBenchmarkReturnBasisSeries.length > 0
-      ? buildRollingBetaSeries(returnBasisSeries, metricBenchmarkReturnBasisSeries).slice(-60)
+    selectedMetricBenchmark && metricBenchmarkCalculationSeries.length > 0
+      ? buildRollingBetaSeries(calculationBasisSeries, metricBenchmarkCalculationSeries).slice(-60)
       : []
   const rollingBetaBounds = rollingBetaSeries.length
     ? getPaddedAxisBounds(
@@ -5621,7 +5651,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       value: riskBenchmarkLabel,
     },
   ]
-  const monthlyReturnSeries = buildMonthlyReturnSeries(returnBasisSeries)
+  const monthlyReturnSeries = buildMonthlyReturnSeries(calculationBasisSeries)
   const latestMonthlyReturnValue =
     monthlyReturnSeries.length > 0 ? monthlyReturnSeries[monthlyReturnSeries.length - 1].value : null
   const medianMonthlyReturnValue = getMedianValue(monthlyReturnSeries.map((point) => point.value))
@@ -5773,7 +5803,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     watchScore >= 5 ? 'High' : watchScore >= 2 ? 'Elevated' : watchScore >= 0 ? 'Normal' : 'N/A'
   const latestYtdReturn = performancePeriodSnapshots.find(({ key }) => key === 'YTD')?.fund.periodReturn ?? null
   const lifetimePerformanceSnapshot =
-    performancePeriodSnapshots.find(({ key }) => key === 'SI')?.fund || buildPerformanceMetricSnapshot(returnBasisSeries)
+    performancePeriodSnapshots.find(({ key }) => key === 'SI')?.fund || buildPerformanceMetricSnapshot(calculationBasisSeries)
   const overviewRatingValue =
     ratings.overall_rating == null ? '—' : formatStarRating(ratings.overall_rating)
   const overviewRatingNote =
@@ -6474,6 +6504,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
               ) : null}
               <span className="context-chip" data-yungu-i18n-ignore="true">
                 {localize(language, SYSTEM_LABELS.basis)}: {navBasisLabel}
+              </span>
+              <span className="context-chip" data-yungu-i18n-ignore="true">
+                Risk basis: {calculationFrequencyStatus}
               </span>
               <span className="context-chip" data-yungu-i18n-ignore="true">
                 {localize(language, SYSTEM_LABELS.analystStance)}:{' '}

@@ -6,7 +6,7 @@
 
 - `frontend/` 与 `backend/` 都已可运行
 - `Platform` 只负责平台首页、app switcher 和 `Database Dashboard`
-- `Platform` 直接维护 `shared_asset` schema，并在共享市场数据更新后通知 downstream app 刷新物化读模型
+- `Platform` 直接维护 `instrument_registry` schema，并在共享市场数据更新后通知 downstream app 刷新物化读模型
 - `Platform` 对 `Watchlist` 的入口和 app registry 文案应反映当前真实发布范围：fund-only，Copilot 仅保留 backend extension boundary
 
 ## 当前职责
@@ -32,9 +32,9 @@
 - `backend/`
   平台 backend，提供健康检查、app registry 与 `Database Dashboard` API
 
-## Shared Asset Migration
+## Instrument Registry Migration
 
-`shared_asset` schema 的 Alembic 入口在 [infra/shared_asset](../../infra/shared_asset/README.md)，不在 `apps/platform/backend`。
+`instrument_registry` schema 的 Alembic 入口在 [infra/instrument_registry](../../infra/instrument_registry/README.md)，不在 `apps/platform/backend`。
 
 跨 app 的数据库和平台边界说明见 [../../docs/README.md](../../docs/README.md)。
 
@@ -50,7 +50,7 @@
 
 `Database Dashboard` 更新共享市场数据后，Platform 会通过后台通知刷新 downstream app：
 
-- `Watchlist`: 调用 `/api/recalc/assets/{asset_id}/all`，重算 summary / chart / performance / risk / row read models。
+- `Watchlist`: 调用 `/api/recalc/instruments/{instrument_id}/all`，重算 summary / chart / performance / risk / row read models。
 - `Portfolio`: 调用 `/api/portfolios/snapshots/daily/refresh`，按受影响资产刷新 daily snapshots；FX 更新会刷新全部组合。
 
 这些通知要求本地 `YUNGU_PLATFORM_WATCHLIST_API_URL` 和 `YUNGU_PLATFORM_PORTFOLIO_API_URL` 指向正在运行的 app backend。通知失败不会回滚共享数据写入；Watchlist 仍保留读路径 stale repair，Portfolio 也会在读路径发现状态过期时修复。
@@ -73,8 +73,8 @@ uvicorn platform_app.main:app --reload --host 127.0.0.1 --port 8002
 
 - 数据库连接通过 `YUNGU_PLATFORM_DATABASE_URL` 配置；本机账号和密码只应放在未提交的 `.env` 或 shell 环境里
 - backend 顶层包名现在是 `platform_app`
-- `platform` 运行时默认使用 `shared_asset` schema
-- shared schema 的迁移请去 `infra/shared_asset`
+- `platform` 运行时默认使用 `instrument_registry` schema
+- instrument registry schema 的迁移请去 `infra/instrument_registry`
 
 ### 2. 前端
 
@@ -111,5 +111,5 @@ platform frontend 不再把 backend / watchlist / portfolio 地址写死在代�
 ```bash
 (cd apps/platform/backend && pytest)
 npm --prefix apps/platform/frontend run build
-(cd infra/shared_asset && alembic upgrade head)
+(cd infra/instrument_registry && alembic upgrade head)
 ```

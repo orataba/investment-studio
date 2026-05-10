@@ -7,12 +7,12 @@ export function instrumentPrimaryIdentifier(instrument: SharedInstrumentRecord) 
   return (
     instrument.identifiers.find((item) => item.is_primary)?.identifier_value ??
     instrument.identifiers[0]?.identifier_value ??
-    instrument.asset_id
+    instrument.instrument_id
   )
 }
 
 export function benchmarkInstrumentLabel(instrument: SharedInstrumentRecord) {
-  return `${instrumentPrimaryIdentifier(instrument)} · ${instrument.asset_name}`
+  return `${instrumentPrimaryIdentifier(instrument)} · ${instrument.instrument_name}`
 }
 
 function instrumentTypeRank(type: string) {
@@ -21,7 +21,7 @@ function instrumentTypeRank(type: string) {
 
 type BenchmarkSearchBoxProps = {
   instruments: SharedInstrumentRecord[]
-  selectedAssetId: string
+  selectedInstrumentId: string
   searchValue: string
   onSearchChange: (value: string) => void
   onSelectInstrument: (instrument: SharedInstrumentRecord) => void
@@ -32,7 +32,7 @@ type BenchmarkSearchBoxProps = {
 
 export default function BenchmarkSearchBox({
   instruments,
-  selectedAssetId,
+  selectedInstrumentId,
   searchValue,
   onSearchChange,
   onSelectInstrument,
@@ -42,7 +42,7 @@ export default function BenchmarkSearchBox({
 }: BenchmarkSearchBoxProps) {
   const [focused, setFocused] = useState(false)
   const deferredSearch = useDeferredValue(searchValue)
-  const selectedInstrument = instruments.find((instrument) => instrument.asset_id === selectedAssetId) ?? null
+  const selectedInstrument = instruments.find((instrument) => instrument.instrument_id === selectedInstrumentId) ?? null
   const selectedLabel = selectedInstrument ? benchmarkInstrumentLabel(selectedInstrument) : ''
   const inputValue = selectedInstrument && !searchValue ? selectedLabel : searchValue
 
@@ -53,9 +53,9 @@ export default function BenchmarkSearchBox({
         .slice()
         .sort(
           (left, right) =>
-            instrumentTypeRank(left.asset_type) - instrumentTypeRank(right.asset_type) ||
+            instrumentTypeRank(left.instrument_type) - instrumentTypeRank(right.instrument_type) ||
             instrumentPrimaryIdentifier(left).localeCompare(instrumentPrimaryIdentifier(right)) ||
-            left.asset_name.localeCompare(right.asset_name),
+            left.instrument_name.localeCompare(right.instrument_name),
         )
         .slice(0, 12)
     }
@@ -63,8 +63,8 @@ export default function BenchmarkSearchBox({
     return instruments
       .filter((instrument) => {
         const haystack = [
-          instrument.asset_name,
-          instrument.asset_type,
+          instrument.instrument_name,
+          instrument.instrument_type,
           instrument.currency,
           instrumentPrimaryIdentifier(instrument),
           benchmarkInstrumentLabel(instrument),
@@ -122,16 +122,16 @@ export default function BenchmarkSearchBox({
               filteredOptions.map((instrument) => (
                 <button
                   type="button"
-                  key={instrument.asset_id}
+                  key={instrument.instrument_id}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => {
                     onSelectInstrument(instrument)
                     setFocused(false)
                   }}
                 >
-                  <strong>{instrument.asset_name}</strong>
+                  <strong>{instrument.instrument_name}</strong>
                   <span>
-                    {instrumentPrimaryIdentifier(instrument)} · {formatLabel(instrument.asset_type)} · {instrument.currency}
+                    {instrumentPrimaryIdentifier(instrument)} · {formatLabel(instrument.instrument_type)} · {instrument.currency}
                   </span>
                 </button>
               ))

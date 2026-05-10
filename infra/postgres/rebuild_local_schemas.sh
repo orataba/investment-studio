@@ -9,11 +9,11 @@ echo "Rebuilding local schemas in ${PSQL_URL}"
 psql "${PSQL_URL}" <<'SQL'
 DROP SCHEMA IF EXISTS watchlist CASCADE;
 DROP SCHEMA IF EXISTS portfolio CASCADE;
-DROP SCHEMA IF EXISTS shared_asset CASCADE;
+DROP SCHEMA IF EXISTS instrument_registry CASCADE;
 SQL
 
 (
-  cd "${ROOT_DIR}/infra/shared_asset"
+  cd "${ROOT_DIR}/infra/instrument_registry"
   alembic upgrade head
 )
 

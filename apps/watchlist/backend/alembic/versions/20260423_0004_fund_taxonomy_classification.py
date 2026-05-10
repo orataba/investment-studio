@@ -31,7 +31,7 @@ FIELD_KEY_MAP = {
     "attr.fund_category_l3": "attr.fund_classification_level_3",
 }
 FUND_SCREENING_VIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("attr.fund_regime", 2, 120),
     ("attr.fund_classification_level_1", 3, 150),
     ("attr.fund_classification_level_2", 4, 170),
@@ -143,7 +143,7 @@ def upgrade() -> None:
         "instrument_taxonomy_node",
         sa.Column("node_id", sa.String(), nullable=False),
         sa.Column("taxonomy_code", sa.String(), nullable=False),
-        sa.Column("asset_type", sa.String(), nullable=False),
+        sa.Column("instrument_type", sa.String(), nullable=False),
         sa.Column("label", sa.String(), nullable=False),
         sa.Column("parent_node_id", sa.String(), nullable=True),
         sa.Column("level_index", sa.Integer(), nullable=False),
@@ -166,14 +166,14 @@ def upgrade() -> None:
 
     op.create_table(
         "instrument_taxonomy_assignment",
-        sa.Column("asset_id", sa.String(), nullable=False),
+        sa.Column("instrument_id", sa.String(), nullable=False),
         sa.Column("taxonomy_code", sa.String(), nullable=False),
         sa.Column("node_id", sa.String(), nullable=True),
         sa.Column("assigned_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("source_record_id", sa.String(), nullable=True),
-        sa.ForeignKeyConstraint(["asset_id"], ["asset_detail.asset_id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["instrument_id"], ["instrument_detail.instrument_id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["node_id"], ["instrument_taxonomy_node.node_id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("asset_id", "taxonomy_code"),
+        sa.PrimaryKeyConstraint("instrument_id", "taxonomy_code"),
     )
     op.create_index(
         "idx_instrument_taxonomy_assignment_taxonomy_node",
@@ -186,7 +186,7 @@ def upgrade() -> None:
         "instrument_taxonomy_node",
         sa.column("node_id", sa.String()),
         sa.column("taxonomy_code", sa.String()),
-        sa.column("asset_type", sa.String()),
+        sa.column("instrument_type", sa.String()),
         sa.column("label", sa.String()),
         sa.column("parent_node_id", sa.String()),
         sa.column("level_index", sa.Integer()),
@@ -198,7 +198,7 @@ def upgrade() -> None:
     value_table = sa.table(
         "instrument_attribute_value",
         sa.column("instrument_attribute_value_id", sa.Integer()),
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("attribute_key", sa.String()),
         sa.column("value_json", sa.JSON()),
         sa.column("adopted_at", sa.DateTime(timezone=True)),
@@ -225,7 +225,7 @@ def upgrade() -> None:
         sa.column("sort_mode", sa.String()),
         sa.column("filter_mode", sa.String()),
         sa.column("group_mode", sa.String()),
-        sa.column("asset_scope_json", sa.JSON()),
+        sa.column("instrument_scope_json", sa.JSON()),
         sa.column("product_scope_json", sa.JSON()),
         sa.column("availability_rule_json", sa.JSON()),
         sa.column("source_domain", sa.String()),
@@ -254,12 +254,12 @@ def upgrade() -> None:
     watchlist_row_table = sa.table(
         "watchlist_row_read_model",
         sa.column("watchlist_id", sa.String()),
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("attributes_json", sa.JSON()),
     )
     summary_table = sa.table(
-        "asset_summary_read_model",
-        sa.column("asset_id", sa.String()),
+        "instrument_summary_read_model",
+        sa.column("instrument_id", sa.String()),
         sa.column("payload_json", sa.JSON()),
     )
 
@@ -360,7 +360,7 @@ def upgrade() -> None:
         )
 
     for row in bind.execute(sa.select(watchlist_row_table)).mappings():
-        asset_id = str(row["asset_id"])
+        instrument_id = str(row["instrument_id"])
         next_attributes = merge_taxonomy_attributes(
             taxonomy_context=empty_taxonomy_context,
             instrument_attributes=row["attributes_json"] if isinstance(row["attributes_json"], dict) else {},
@@ -369,17 +369,17 @@ def upgrade() -> None:
             sa.update(watchlist_row_table)
             .where(
                 watchlist_row_table.c.watchlist_id == row["watchlist_id"],
-                watchlist_row_table.c.asset_id == asset_id,
+                watchlist_row_table.c.instrument_id == instrument_id,
             )
             .values(attributes_json=_serialize_json(next_attributes))
         )
 
     for row in bind.execute(sa.select(summary_table)).mappings():
-        asset_id = str(row["asset_id"])
+        instrument_id = str(row["instrument_id"])
         payload = row["payload_json"] if isinstance(row["payload_json"], dict) else {}
         bind.execute(
             sa.update(summary_table)
-            .where(summary_table.c.asset_id == asset_id)
+            .where(summary_table.c.instrument_id == instrument_id)
             .values(
                 payload_json=_serialize_json(
                     {

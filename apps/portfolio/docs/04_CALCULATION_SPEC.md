@@ -233,7 +233,7 @@
 
 若观察频率是稳定交易日频，`periods_per_year` 通常接近 `252`；若存在节假日、缺价或非交易日 carry-forward，系统必须记录并使用实际有效收益观察密度，避免把无市场观察的 0 return 当作风险样本。
 
-协方差 / 相关性计算必须先对每一对序列取共有有效收益日期。协方差矩阵的每个 entry 使用该 entry 自身有效配对日期推断 `periods_per_year` 后年化；相关性矩阵的协方差和两侧方差必须来自同一组配对样本，不能用全量单边方差拼接。Research 的 `ewma_vol_shrinkage_corr_covariance` 使用各资产自身有效日期估计年化 EWMA volatility，再用共有有效日期估计 correlation。
+协方差 / 相关性计算必须先对每一对序列取共有有效收益日期。协方差矩阵的每个 entry 使用该 entry 自身有效配对日期推断 `periods_per_year` 后年化；相关性矩阵的协方差和两侧方差必须来自同一组配对样本，不能用全量单边方差拼接。Research 的 `ewma_vol_shrinkage_corr_covariance` 使用各标的自身有效日期估计年化 EWMA volatility，再用共有有效日期估计 correlation。
 
 ### 2.6.1 计算频率与节假日
 
@@ -317,7 +317,7 @@ Portfolio 级 TWR、IRR、drawdown 和 contribution 必须基于 fair value、ca
 
 - 新建 `securities_account` 未显式选择时默认 `FIFO`；
 - `FIFO` 保留真实 open lots，并按交易时间顺序释放成本；
-- `moving_average` 对每个 `account + asset` 保留一个滚动平均成本 bucket；API 仍输出一个 synthetic position lot 以支持 UI、转仓链路和审计引用；
+- `moving_average` 对每个 `account + instrument` 保留一个滚动平均成本 bucket；API 仍输出一个 synthetic position lot 以支持 UI、转仓链路和审计引用；
 - 修改账户成本法会从交易事实重新推导 holdings、lots、ledger postings 与 snapshots，不保留“历史旧算法”的兼容分支。
 
 对导入边界上的 opening positions：
@@ -357,10 +357,10 @@ $$
 
 Holdings 是当前持仓状态表，只展示当前仍然 open 的 quantity、quote、market value、weight、open-position cost basis 与 unrealized P&L。资产级 TWR、period contribution、realized gain、dividend / coupon income、fees / taxes impact 和 closed positions 属于 `Performance` / security detail 的区间绩效视图，不进入 Holdings 默认列，也不作为 Holdings 的 canonical 语义。
 
-Holdings 可以展示 quote-derived asset market trend 指标，作为扫描当前持仓资产自身近期市场表现的辅助列：
+Holdings 可以展示 quote-derived instrument market trend 指标，作为扫描当前持仓标的自身近期市场表现的辅助列：
 
 - `Chart 6M` 使用同一 selected quote series 的 6M 路径；
-- `1W Return / MTD / YTD / 1Y` 只使用资产自身 selected quote series，计算为 `latest_quote / anchor_quote - 1`；
+- `1W Return / MTD / YTD / 1Y` 只使用标的自身 selected quote series，计算为 `latest_quote / anchor_quote - 1`；
 - selected quote series 按 `quote_selection_policy.total_return -> chart -> valuation -> reference` 选择；若策略为空，则选用截至 as-of 最新的一条 quote basis，不能混用多个 basis；
 - `1W Return` / `1Y` 的 anchor quote 是目标日期或之前最近 quote；
 - `MTD` / `YTD` 的 anchor quote 是月初 / 年初之前最近 quote；若历史不足，则使用期间内第一条 quote 作为 partial-data fallback；
@@ -496,7 +496,7 @@ Overview 展示 `Monthly Return Matrix`，按 year x month 展示月度 TWR，YT
 Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要结构为：
 
 - `Return & Risk Metrics`：组合级 TWR / annualized TWR、IRR / MWR、risk、drawdown。return / risk 类指标可选择 benchmark price series 做 period return、annualized return、volatility、drawdown 的轻量对比；
-- `Calculation`：合并 realized risk attribution、initial value、group rows、external flow、portfolio total 与 final value。表格有和 Holdings 一致的 view selector；系统默认视图命名为 `Default`，展示区间平均权重、期末权重、区间收益、收益贡献、资产自身风险、相关性和风险贡献；`Beta to Portfolio` 保留为高级可选列，不进入默认视图。Group By 默认是 `None`，语义是直接展示 instrument / asset lines，不做额外分组；也可按 asset type / currency / account / default planning taxonomy 聚合。asset type 与 currency 是底层 contribution axis，不允许仅在前端把 asset rows 相加；`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
+- `Calculation`：合并 realized risk attribution、initial value、group rows、external flow、portfolio total 与 final value。表格有和 Holdings 一致的 view selector；系统默认视图命名为 `Default`，展示区间平均权重、期末权重、区间收益、收益贡献、标的自身风险、相关性和风险贡献；`Beta to Portfolio` 保留为高级可选列，不进入默认视图。Group By 默认是 `None`，语义是直接展示 instrument lines，不做额外分组；也可按 instrument type / currency / account / default planning taxonomy 聚合。instrument type 与 currency 是底层 contribution axis，不允许仅在前端把 instrument rows 相加；`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
 - Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。期初已有持仓按 start date 的 beginning market value 重置为期间成本，区间内买入按成交 gross amount 建立期间成本，期末未卖出的持仓用 end date market value 计算 `Unrealized Gain`。
 - `Capital Gain = Realized Gain + Unrealized Gain`；`Realized Gain` 是期间卖出部分相对于期间成本的资本利得，`Unrealized Gain` 是期末仍持有部分相对于期间成本的资本利得。FIFO / moving average 只影响 Holdings / book P&L，不改变 Performance Calculation 的期间资本利得拆分。
 - `Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes、FX P&L 分列。P&L 与 book attribution 不和 benchmark 对比。

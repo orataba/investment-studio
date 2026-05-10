@@ -13,15 +13,15 @@ class WatchlistCreateRequest(BaseModel):
 
 
 class WatchlistItemsCreateRequest(BaseModel):
-    asset_ids: list[str] = Field(default_factory=list)
+    instrument_ids: list[str] = Field(default_factory=list)
 
 
 class WatchlistItemsDeleteRequest(BaseModel):
-    asset_ids: list[str] = Field(default_factory=list)
+    instrument_ids: list[str] = Field(default_factory=list)
 
 
 class WatchlistItemsTransferRequest(BaseModel):
-    asset_ids: list[str] = Field(default_factory=list)
+    instrument_ids: list[str] = Field(default_factory=list)
     target_watchlist_id: str
 
 
@@ -127,7 +127,7 @@ class InstrumentAttributeDefinitionCreateRequest(BaseModel):
     group_code: str
     display_order: int = 999
     options: list[str] = Field(default_factory=list)
-    asset_scope_json: list[str] = Field(default_factory=lambda: ["fund"])
+    instrument_scope_json: list[str] = Field(default_factory=lambda: ["fund"])
     applicability_json: dict[str, list[str]] = Field(default_factory=dict)
     rubric_json: dict[str, Any] = Field(default_factory=dict)
     is_groupable: bool = True
@@ -196,8 +196,8 @@ class ManualProfileUpsertRequest(BaseModel):
 
 class NavSettingsUpsertRequest(BaseModel):
     nav_basis_preference: Literal["auto", "nav_with_dividend"] | None = None
-    default_benchmark_asset_id: str | None = None
-    peer_baseline_asset_ids: list[str] | None = None
+    default_benchmark_instrument_id: str | None = None
+    peer_baseline_instrument_ids: list[str] | None = None
     updated_by: str | None = None
 
 

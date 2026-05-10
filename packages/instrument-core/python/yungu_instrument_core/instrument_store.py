@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
-from yungu_asset_core.db_models import (
+from yungu_instrument_core.db_models import (
     Instrument,
     InstrumentIdentifier,
     InstrumentMarketData,
@@ -148,14 +148,14 @@ VALID_QUOTE_BASES = {
 }
 
 
-def _default_quote_selection_policy(asset_type: str) -> dict[str, object]:
-    normalized_asset_type = asset_type if asset_type in QUOTE_SELECTION_POLICY_DEFAULTS else "other"
-    return deepcopy(QUOTE_SELECTION_POLICY_DEFAULTS[normalized_asset_type])
+def _default_quote_selection_policy(instrument_type: str) -> dict[str, object]:
+    normalized_instrument_type = instrument_type if instrument_type in QUOTE_SELECTION_POLICY_DEFAULTS else "other"
+    return deepcopy(QUOTE_SELECTION_POLICY_DEFAULTS[normalized_instrument_type])
 
 
 def _normalized_quote_selection_policy(item: dict[str, object]) -> dict[str, object]:
-    asset_type = str(item.get("asset_type") or "other")
-    policy = _default_quote_selection_policy(asset_type)
+    instrument_type = str(item.get("instrument_type") or "other")
+    policy = _default_quote_selection_policy(instrument_type)
     raw_policy = item.get("quote_selection_policy", {})
     if not isinstance(raw_policy, dict):
         return policy
@@ -189,7 +189,7 @@ def _sort_market_data(points: list[dict[str, object]]) -> list[dict[str, object]
 
 
 def _normalized_market_data(item: dict[str, object]) -> list[dict[str, object]]:
-    asset_currency = str(item.get("currency") or "USD").strip().upper() or "USD"
+    instrument_currency = str(item.get("currency") or "USD").strip().upper() or "USD"
     normalized_points: list[dict[str, object]] = []
     for raw_point in list(item.get("market_data", [])):
         point = dict(raw_point)
@@ -207,7 +207,7 @@ def _normalized_market_data(item: dict[str, object]) -> list[dict[str, object]]:
                 "quote_basis": quote_basis,
                 "as_of_date": str(point.get("as_of_date") or ""),
                 "value": "" if point.get("value") is None else str(point.get("value")),
-                "currency": str(point.get("currency") or asset_currency).strip().upper() or asset_currency,
+                "currency": str(point.get("currency") or instrument_currency).strip().upper() or instrument_currency,
                 "provider": point.get("provider"),
                 "status": str(point.get("status") or "complete"),
             }
@@ -271,9 +271,9 @@ def _instrument_to_store_dict(item: Instrument) -> dict[str, object]:
         ]
     )
     return {
-        "asset_id": item.asset_id,
-        "asset_name": item.asset_name,
-        "asset_type": item.asset_type,
+        "instrument_id": item.instrument_id,
+        "instrument_name": item.instrument_name,
+        "instrument_type": item.instrument_type,
         "currency": item.currency,
         "identifiers": identifiers,
         "market_data": market_data,
@@ -306,16 +306,16 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
             continue
         item = dict(raw_item)
         instrument = Instrument(
-            asset_id=str(item.get("asset_id") or "").strip(),
-            asset_name=str(item.get("asset_name") or "").strip(),
-            asset_type=str(item.get("asset_type") or "").strip() or "other",
+            instrument_id=str(item.get("instrument_id") or "").strip(),
+            instrument_name=str(item.get("instrument_name") or "").strip(),
+            instrument_type=str(item.get("instrument_type") or "").strip() or "other",
             currency=str(item.get("currency") or "USD").strip().upper() or "USD",
             quote_selection_policy_json=_normalized_quote_selection_policy(item),
             source_settings_json=_normalized_source_settings(item),
             refresh_status_json=_normalized_refresh_status(item),
             lifecycle_state_json=_normalized_lifecycle_state(item),
         )
-        if not instrument.asset_id or not instrument.asset_name:
+        if not instrument.instrument_id or not instrument.instrument_name:
             continue
         session.add(instrument)
         session.flush()
@@ -329,7 +329,7 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
                 continue
             session.add(
                 InstrumentIdentifier(
-                    asset_id=instrument.asset_id,
+                    instrument_id=instrument.instrument_id,
                     identifier_type=identifier_type,
                     identifier_value=identifier_value,
                     is_primary=bool(raw_identifier.get("is_primary")),
@@ -343,7 +343,7 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
                 continue
             session.add(
                 InstrumentMarketData(
-                    asset_id=instrument.asset_id,
+                    instrument_id=instrument.instrument_id,
                     metric_family=str(raw_point.get("metric_family") or "").strip(),
                     quote_basis=str(raw_point.get("quote_basis") or "").strip(),
                     as_of_date=as_of_date,
@@ -363,7 +363,7 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
 def _slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
     slug = slug.strip("-")
-    return slug or "asset"
+    return slug or "instrument"
 
 
 def _latest_market_data(points: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -440,9 +440,9 @@ def _is_active(item: dict[str, object]) -> bool:
 def _serialize_record(item: dict[str, object]) -> dict[str, object]:
     market_data = _normalized_market_data(item)
     return {
-        "asset_id": item["asset_id"],
-        "asset_name": item["asset_name"],
-        "asset_type": item["asset_type"],
+        "instrument_id": item["instrument_id"],
+        "instrument_name": item["instrument_name"],
+        "instrument_type": item["instrument_type"],
         "currency": item["currency"],
         "identifiers": deepcopy(item.get("identifiers", [])),
         "latest_market_data": _latest_market_data(market_data),
@@ -465,9 +465,9 @@ def _matches_instrument_search(item: dict[str, object], normalized_search: str) 
         return True
 
     haystack_parts = [
-        str(item.get("asset_id") or ""),
-        str(item.get("asset_name") or ""),
-        str(item.get("asset_type") or ""),
+        str(item.get("instrument_id") or ""),
+        str(item.get("instrument_name") or ""),
+        str(item.get("instrument_type") or ""),
         str(item.get("currency") or ""),
     ]
     for identifier in item.get("identifiers", []):
@@ -494,18 +494,18 @@ def list_instruments(
     session_factory: SessionFactory,
     *,
     search: str | None = None,
-    asset_type: str | None = None,
+    instrument_type: str | None = None,
     limit: int | None = None,
     include_inactive: bool = False,
 ) -> list[dict[str, object]]:
     normalized_search = search.strip().lower() if search else ""
-    normalized_asset_type = asset_type.strip().lower() if asset_type else None
+    normalized_instrument_type = instrument_type.strip().lower() if instrument_type else None
 
     with session_factory() as session:
         instruments = [
             _instrument_to_store_dict(item)
             for item in session.scalars(
-                _instrument_query().order_by(Instrument.asset_name, Instrument.asset_id)
+                _instrument_query().order_by(Instrument.instrument_name, Instrument.instrument_id)
             ).all()
         ]
 
@@ -513,8 +513,8 @@ def list_instruments(
     for item in instruments:
         if not include_inactive and not _is_active(item):
             continue
-        current_asset_type = str(item.get("asset_type") or "").strip().lower()
-        if normalized_asset_type and current_asset_type != normalized_asset_type:
+        current_instrument_type = str(item.get("instrument_type") or "").strip().lower()
+        if normalized_instrument_type and current_instrument_type != normalized_instrument_type:
             continue
         if normalized_search and not _matches_instrument_search(item, normalized_search):
             continue
@@ -525,9 +525,9 @@ def list_instruments(
     return [_serialize_record(item) for item in filtered]
 
 
-def get_instrument(session_factory: SessionFactory, asset_id: str) -> dict[str, object] | None:
+def get_instrument(session_factory: SessionFactory, instrument_id: str) -> dict[str, object] | None:
     with session_factory() as session:
-        target = session.scalar(_instrument_query().where(Instrument.asset_id == asset_id))
+        target = session.scalar(_instrument_query().where(Instrument.instrument_id == instrument_id))
         if target is None:
             return None
         return _serialize_detail_record(_instrument_to_store_dict(target))
@@ -554,7 +554,7 @@ def find_instrument_by_identifier(
             _instrument_query()
             .join(InstrumentIdentifier)
             .where(*identifier_filters)
-            .order_by(Instrument.asset_name, Instrument.asset_id)
+            .order_by(Instrument.instrument_name, Instrument.instrument_id)
         ).all()
         for candidate in candidates:
             item = _instrument_to_store_dict(candidate)
@@ -575,8 +575,8 @@ def find_instrument_by_identifier(
 def create_instrument(
     session_factory: SessionFactory,
     *,
-    asset_name: str,
-    asset_type: str,
+    instrument_name: str,
+    instrument_type: str,
     currency: str,
     identifiers: list[dict[str, object]],
 ) -> dict[str, object]:
@@ -600,11 +600,11 @@ def create_instrument(
         if existing is not None:
             raise ValueError(
                 f'Identifier "{identifier_type}:{identifier_value}" already belongs to '
-                f'"{existing["asset_name"]}" ({existing["asset_id"]}).'
+                f'"{existing["instrument_name"]}" ({existing["instrument_id"]}).'
             )
 
     with session_factory() as session:
-        existing_ids = {item for item in session.scalars(select(Instrument.asset_id)).all()}
+        existing_ids = {item for item in session.scalars(select(Instrument.instrument_id)).all()}
         primary_identifier = next(
             (
                 str(item.get("identifier_value") or "")
@@ -613,7 +613,7 @@ def create_instrument(
             ),
             "",
         )
-        base_id = _slugify(primary_identifier or asset_name)
+        base_id = _slugify(primary_identifier or instrument_name)
         candidate = base_id
         suffix = 2
         while candidate in existing_ids:
@@ -621,13 +621,13 @@ def create_instrument(
             suffix += 1
 
         record = {
-            "asset_id": candidate,
-            "asset_name": asset_name.strip(),
-            "asset_type": asset_type,
+            "instrument_id": candidate,
+            "instrument_name": instrument_name.strip(),
+            "instrument_type": instrument_type,
             "currency": currency.strip().upper(),
             "identifiers": identifiers,
             "market_data": [],
-            "quote_selection_policy": _default_quote_selection_policy(asset_type),
+            "quote_selection_policy": _default_quote_selection_policy(instrument_type),
             "source_settings": _default_source_settings(),
             "refresh_status": _default_refresh_status(),
             "lifecycle_state": _default_lifecycle_state(),
@@ -644,9 +644,9 @@ def create_instrument(
 
         session.add(
             Instrument(
-                asset_id=record["asset_id"],
-                asset_name=record["asset_name"],
-                asset_type=record["asset_type"],
+                instrument_id=record["instrument_id"],
+                instrument_name=record["instrument_name"],
+                instrument_type=record["instrument_type"],
                 currency=record["currency"],
                 quote_selection_policy_json=record["quote_selection_policy"],
                 source_settings_json=record["source_settings"],
@@ -661,7 +661,7 @@ def create_instrument(
                 continue
             session.add(
                 InstrumentIdentifier(
-                    asset_id=record["asset_id"],
+                    instrument_id=record["instrument_id"],
                     identifier_type=identifier_type,
                     identifier_value=identifier_value,
                     is_primary=bool(raw_identifier.get("is_primary")),
@@ -674,7 +674,7 @@ def create_instrument(
 def upsert_market_data(
     session_factory: SessionFactory,
     *,
-    asset_id: str,
+    instrument_id: str,
     metric_family: str,
     quote_basis: str,
     as_of_date: date,
@@ -684,13 +684,13 @@ def upsert_market_data(
     status: str,
 ) -> dict[str, object] | None:
     with session_factory() as session:
-        target = session.scalar(_instrument_query().where(Instrument.asset_id == asset_id))
+        target = session.scalar(_instrument_query().where(Instrument.instrument_id == instrument_id))
         if target is None:
             return None
 
         existing = session.scalar(
             select(InstrumentMarketData).where(
-                InstrumentMarketData.asset_id == asset_id,
+                InstrumentMarketData.instrument_id == instrument_id,
                 InstrumentMarketData.metric_family == metric_family,
                 InstrumentMarketData.quote_basis == quote_basis,
                 InstrumentMarketData.as_of_date == as_of_date,
@@ -700,7 +700,7 @@ def upsert_market_data(
         if existing is None:
             session.add(
                 InstrumentMarketData(
-                    asset_id=asset_id,
+                    instrument_id=instrument_id,
                     metric_family=metric_family,
                     quote_basis=quote_basis,
                     as_of_date=as_of_date,
@@ -716,14 +716,14 @@ def upsert_market_data(
             existing.status = status
 
         session.commit()
-    refreshed = get_instrument(session_factory, asset_id)
+    refreshed = get_instrument(session_factory, instrument_id)
     return _serialize_record(refreshed) if refreshed is not None else None
 
 
 def upsert_source_settings(
     session_factory: SessionFactory,
     *,
-    asset_id: str,
+    instrument_id: str,
     source_mode: str,
     source_email: str | None,
     source_location: str | None,
@@ -731,7 +731,7 @@ def upsert_source_settings(
     source_email_rules: list[dict[str, object]] | None,
 ) -> dict[str, object] | None:
     with session_factory() as session:
-        target = session.get(Instrument, asset_id)
+        target = session.get(Instrument, instrument_id)
         if target is None:
             return None
 
@@ -753,14 +753,14 @@ def upsert_source_settings(
         target.source_settings_json = source_settings
         target.refresh_status_json = refresh_status
         session.commit()
-    refreshed = get_instrument(session_factory, asset_id)
+    refreshed = get_instrument(session_factory, instrument_id)
     return _serialize_record(refreshed) if refreshed is not None else None
 
 
 def replace_nav_history(
     session_factory: SessionFactory,
     *,
-    asset_id: str,
+    instrument_id: str,
     rows: list[dict[str, object]],
     provider: str | None,
     point_status: str,
@@ -770,7 +770,7 @@ def replace_nav_history(
     mode: str | None = None,
 ) -> dict[str, object] | None:
     with session_factory() as session:
-        target = session.get(Instrument, asset_id)
+        target = session.get(Instrument, instrument_id)
         if target is None:
             return None
 
@@ -788,7 +788,7 @@ def replace_nav_history(
         if replaced_dates:
             session.execute(
                 delete(InstrumentMarketData).where(
-                    InstrumentMarketData.asset_id == asset_id,
+                    InstrumentMarketData.instrument_id == instrument_id,
                     InstrumentMarketData.metric_family == "nav",
                     InstrumentMarketData.quote_basis.in_(
                         [
@@ -825,7 +825,7 @@ def replace_nav_history(
                     continue
                 session.add(
                     InstrumentMarketData(
-                        asset_id=asset_id,
+                        instrument_id=instrument_id,
                         metric_family="nav",
                         quote_basis=quote_basis,
                         as_of_date=point_date,
@@ -845,21 +845,21 @@ def replace_nav_history(
             "mode": mode or str(source_settings.get("source_mode") or "manual"),
         }
         session.commit()
-    refreshed = get_instrument(session_factory, asset_id)
+    refreshed = get_instrument(session_factory, instrument_id)
     return _serialize_record(refreshed) if refreshed is not None else None
 
 
 def update_refresh_status(
     session_factory: SessionFactory,
     *,
-    asset_id: str,
+    instrument_id: str,
     status: str,
     message: str,
     updated_by: str | None,
     mode: str | None = None,
 ) -> dict[str, object] | None:
     with session_factory() as session:
-        target = session.get(Instrument, asset_id)
+        target = session.get(Instrument, instrument_id)
         if target is None:
             return None
         source_mode = mode or str(
@@ -873,14 +873,14 @@ def update_refresh_status(
             "mode": source_mode,
         }
         session.commit()
-    refreshed = get_instrument(session_factory, asset_id)
+    refreshed = get_instrument(session_factory, instrument_id)
     return _serialize_record(refreshed) if refreshed is not None else None
 
 
 def set_instrument_lifecycle_state(
     session_factory: SessionFactory,
     *,
-    asset_id: str,
+    instrument_id: str,
     status: str,
     updated_by: str | None,
 ) -> dict[str, object] | None:
@@ -888,7 +888,7 @@ def set_instrument_lifecycle_state(
     if normalized_status not in {"active", "archived"}:
         raise ValueError(f'Unsupported lifecycle status "{status}".')
     with session_factory() as session:
-        target = session.get(Instrument, asset_id)
+        target = session.get(Instrument, instrument_id)
         if target is None:
             return None
         current_state = _normalized_lifecycle_state(_instrument_to_store_dict(target))
@@ -901,19 +901,19 @@ def set_instrument_lifecycle_state(
                 changed_by=(updated_by or "platform_ui").strip() or "platform_ui",
             )
         session.commit()
-    refreshed = get_instrument(session_factory, asset_id)
+    refreshed = get_instrument(session_factory, instrument_id)
     return _serialize_record(refreshed) if refreshed is not None else None
 
 
 def archive_instrument(
     session_factory: SessionFactory,
     *,
-    asset_id: str,
+    instrument_id: str,
     updated_by: str | None,
 ) -> dict[str, object] | None:
     return set_instrument_lifecycle_state(
         session_factory,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         status="archived",
         updated_by=updated_by,
     )
@@ -922,12 +922,12 @@ def archive_instrument(
 def restore_instrument(
     session_factory: SessionFactory,
     *,
-    asset_id: str,
+    instrument_id: str,
     updated_by: str | None,
 ) -> dict[str, object] | None:
     return set_instrument_lifecycle_state(
         session_factory,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         status="active",
         updated_by=updated_by,
     )

@@ -37,7 +37,7 @@ def test_live_portfolio_as_of_uses_current_holding_market_date(monkeypatch) -> N
         institution=None,
         default_settlement_cash_account_id=None,
         cost_basis_method="fifo",
-        allowed_asset_types_json=None,
+        allowed_instrument_types_json=None,
         opened_at=None,
         closed_at=None,
         status="active",
@@ -54,8 +54,8 @@ def test_live_portfolio_as_of_uses_current_holding_market_date(monkeypatch) -> N
             trade_time_is_estimated=True,
             settlement_date=date(2026, 4, 1),
             account_id="broker",
-            asset_id="sold",
-            instrument_ref_json={"asset_id": "sold"},
+            instrument_id="sold",
+            instrument_ref_json={"instrument_id": "sold"},
             quantity=100.0,
             price=1.0,
             gross_amount=100.0,
@@ -74,8 +74,8 @@ def test_live_portfolio_as_of_uses_current_holding_market_date(monkeypatch) -> N
             trade_time_is_estimated=True,
             settlement_date=date(2026, 4, 20),
             account_id="broker",
-            asset_id="sold",
-            instrument_ref_json={"asset_id": "sold"},
+            instrument_id="sold",
+            instrument_ref_json={"instrument_id": "sold"},
             quantity=100.0,
             price=1.0,
             gross_amount=100.0,
@@ -94,8 +94,8 @@ def test_live_portfolio_as_of_uses_current_holding_market_date(monkeypatch) -> N
             trade_time_is_estimated=True,
             settlement_date=date(2026, 4, 24),
             account_id="broker",
-            asset_id="open",
-            instrument_ref_json={"asset_id": "open"},
+            instrument_id="open",
+            instrument_ref_json={"instrument_id": "open"},
             quantity=100.0,
             price=1.0,
             gross_amount=100.0,
@@ -105,18 +105,18 @@ def test_live_portfolio_as_of_uses_current_holding_market_date(monkeypatch) -> N
         ),
     ]
 
-    def fake_latest_market_date(_session, asset_ids):
-        if asset_ids == {"sold", "open"}:
+    def fake_latest_market_date(_session, instrument_ids):
+        if instrument_ids == {"sold", "open"}:
             return date(2026, 4, 29)
-        if asset_ids == {"open"}:
+        if instrument_ids == {"open"}:
             return date(2026, 4, 28)
         return None
 
-    monkeypatch.setattr(portfolio_store, "_latest_market_data_date_for_assets", fake_latest_market_date)
+    monkeypatch.setattr(portfolio_store, "_latest_market_data_date_for_instruments", fake_latest_market_date)
     monkeypatch.setattr(
         portfolio_store,
         "build_position_lots",
-        lambda *args, **kwargs: [{"asset_id": "open"}],
+        lambda *args, **kwargs: [{"instrument_id": "open"}],
     )
 
     assert portfolio_store._resolve_live_portfolio_as_of_date(

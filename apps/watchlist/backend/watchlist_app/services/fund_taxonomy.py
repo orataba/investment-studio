@@ -124,7 +124,7 @@ def taxonomy_tree_payload(
         )
     return {
         "taxonomy_code": FUND_TAXONOMY_CODE,
-        "asset_type": "fund",
+        "instrument_type": "fund",
         "max_depth": max_depth,
         "nodes": serialized_nodes,
     }

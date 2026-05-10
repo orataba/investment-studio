@@ -23,7 +23,7 @@ from watchlist_app.api.presenters import (
     present_watchlist_view,
 )
 from watchlist_app.db.session import get_db_session
-from watchlist_app.repositories.sqlalchemy.assets import SQLAlchemyAssetRepository
+from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.field_registry import SQLAlchemyFieldRegistryRepository
 from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
     SQLAlchemyInstrumentAttributeRepository,
@@ -55,7 +55,7 @@ from watchlist_app.services.shared_instrument_registry import (
 router = APIRouter()
 watchlist_repository = SQLAlchemyWatchlistRepository()
 field_registry_repository = SQLAlchemyFieldRegistryRepository()
-asset_repository = SQLAlchemyAssetRepository()
+instrument_repository = SQLAlchemyInstrumentRepository()
 attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 read_model_repository = SQLAlchemyReadModelRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
@@ -124,23 +124,23 @@ def _require_watchlist(session: Session, watchlist_id: str):
     return record
 
 
-def _field_supports_asset_types(
-    asset_scope: list[str] | None,
-    asset_types: set[str],
+def _field_supports_instrument_types(
+    instrument_scope: list[str] | None,
+    instrument_types: set[str],
     *,
     require_all: bool,
 ) -> bool:
     normalized_scope = {
         str(value).strip().lower()
-        for value in (asset_scope or [])
+        for value in (instrument_scope or [])
         if str(value).strip()
     }
     if not normalized_scope:
         return True
-    if not asset_types:
+    if not instrument_types:
         return False
-    return normalized_scope.issuperset(asset_types) if require_all else bool(
-        normalized_scope.intersection(asset_types)
+    return normalized_scope.issuperset(instrument_types) if require_all else bool(
+        normalized_scope.intersection(instrument_types)
     )
 
 
@@ -170,30 +170,30 @@ def _primary_shared_identifier(
 
 
 def _supports_local_detail(shared_instrument: dict[str, object]) -> bool:
-    return str(shared_instrument.get("asset_type") or "").strip().lower() == "fund"
+    return str(shared_instrument.get("instrument_type") or "").strip().lower() == "fund"
 
 
-def _ensure_local_asset_detail(
+def _ensure_local_instrument_detail(
     session: Session,
     shared_instrument: dict[str, object],
 ) -> str | None:
     if not _supports_local_detail(shared_instrument):
         return None
 
-    shared_asset_id = str(shared_instrument.get("asset_id") or "").strip()
-    if not shared_asset_id:
+    instrument_registry_id = str(shared_instrument.get("instrument_id") or "").strip()
+    if not instrument_registry_id:
         return None
 
-    asset_repository.upsert_from_shared_instrument(
+    instrument_repository.upsert_from_shared_instrument(
         session,
         shared_instrument=shared_instrument,
         detail_view_type="fund",
     )
-    return shared_asset_id
+    return instrument_registry_id
 
 
 def _ensure_required_columns(columns: list[dict[str, object]]) -> list[dict[str, object]]:
-    required = ["asset_name"]
+    required = ["instrument_name"]
     existing = [str(item.get("field_key")) for item in columns]
     merged: list[dict[str, object]] = []
     display_order = 0
@@ -222,10 +222,10 @@ def _ensure_required_columns(columns: list[dict[str, object]]) -> list[dict[str,
     return merged
 
 
-def _normalize_asset_ids(asset_ids: list[str]) -> list[str]:
+def _normalize_instrument_ids(instrument_ids: list[str]) -> list[str]:
     normalized: list[str] = []
-    for asset_id in asset_ids:
-        candidate = asset_id.strip()
+    for instrument_id in instrument_ids:
+        candidate = instrument_id.strip()
         if candidate and candidate not in normalized:
             normalized.append(candidate)
     return normalized
@@ -234,22 +234,22 @@ def _normalize_asset_ids(asset_ids: list[str]) -> list[str]:
 def _assert_source_membership(
     *,
     source_watchlist: object,
-    asset_ids: list[str],
+    instrument_ids: list[str],
 ) -> None:
-    source_asset_ids = {
-        str(item.asset_id).strip()
+    source_instrument_ids = {
+        str(item.instrument_id).strip()
         for item in getattr(source_watchlist, "items", [])
-        if str(item.asset_id).strip()
+        if str(item.instrument_id).strip()
     }
-    missing_asset_ids = [
-        asset_id for asset_id in asset_ids if asset_id not in source_asset_ids
+    missing_instrument_ids = [
+        instrument_id for instrument_id in instrument_ids if instrument_id not in source_instrument_ids
     ]
-    if missing_asset_ids:
+    if missing_instrument_ids:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Assets not found in source watchlist: "
-                f"{', '.join(missing_asset_ids)}."
+                "Instruments not found in source watchlist: "
+                f"{', '.join(missing_instrument_ids)}."
             ),
         )
 
@@ -370,17 +370,17 @@ def _materialize_watchlist_rows(
     session: Session,
     *,
     watchlist_id: str,
-    asset_ids: list[str],
+    instrument_ids: list[str],
 ) -> None:
-    for requested_asset_id in asset_ids:
-        instrument = resolve_watchlist_instrument(session, asset_id=requested_asset_id)
-        canonical_asset_id = (
-            str(instrument.get("canonical_asset_id") or requested_asset_id).strip()
+    for requested_instrument_id in instrument_ids:
+        instrument = resolve_watchlist_instrument(session, instrument_id=requested_instrument_id)
+        canonical_instrument_id = (
+            str(instrument.get("canonical_instrument_id") or requested_instrument_id).strip()
             if isinstance(instrument, dict)
-            else requested_asset_id
+            else requested_instrument_id
         )
-        asset_type = (
-            str(instrument.get("asset_type") or "other")
+        instrument_type = (
+            str(instrument.get("instrument_type") or "other")
             if isinstance(instrument, dict)
             else "other"
         )
@@ -388,7 +388,7 @@ def _materialize_watchlist_rows(
             read_model_repository.get_watchlist_row(
                 session,
                 watchlist_id=watchlist_id,
-                asset_id=canonical_asset_id,
+                instrument_id=canonical_instrument_id,
             )
             is not None
         ):
@@ -396,18 +396,18 @@ def _materialize_watchlist_rows(
 
         source_row = read_model_repository.find_any_watchlist_row_for_asset(
             session,
-            canonical_asset_id,
+            canonical_instrument_id,
         )
-        summary_record = read_model_repository.get_summary(session, canonical_asset_id)
+        summary_record = read_model_repository.get_summary(session, canonical_instrument_id)
         summary_payload = summary_record.payload_json if summary_record is not None else {}
-        risk_record = read_model_repository.get_risk(session, canonical_asset_id)
+        risk_record = read_model_repository.get_risk(session, canonical_instrument_id)
         risk_payload = risk_record.payload_json if risk_record is not None else {}
         freshness = summary_payload.get("freshness", {})
-        asset = asset_repository.get(session, canonical_asset_id)
+        instrument = instrument_repository.get(session, canonical_instrument_id)
         attributes = collapse_latest_attribute_values(
-            attribute_repository.get_values_for_asset(session, canonical_asset_id)
+            attribute_repository.get_values_for_asset(session, canonical_instrument_id)
         )
-        assignment = taxonomy_repository.get_assignment(session, asset_id=canonical_asset_id)
+        assignment = taxonomy_repository.get_assignment(session, instrument_id=canonical_instrument_id)
         node = (
             taxonomy_repository.get_node(session, node_id=str(assignment.node_id))
             if assignment is not None and assignment.node_id
@@ -421,29 +421,29 @@ def _materialize_watchlist_rows(
         if isinstance(risk_payload, dict) and risk_payload.get("current_drawdown") is not None:
             row_attributes["current_drawdown"] = risk_payload["current_drawdown"]
         display_name = (
-            asset.asset_name
-            if asset is not None
+            instrument.instrument_name
+            if instrument is not None
             else summary_payload.get("fund_name")
             or (
-                str(instrument.get("asset_name") or canonical_asset_id)
+                str(instrument.get("instrument_name") or canonical_instrument_id)
                 if isinstance(instrument, dict)
-                else canonical_asset_id
+                else canonical_instrument_id
             )
         )
         read_model_repository.upsert_watchlist_row(
             session,
             watchlist_id=watchlist_id,
-            asset_id=canonical_asset_id,
+            instrument_id=canonical_instrument_id,
             data=build_watchlist_row_materialization(
                 watchlist_id=watchlist_id,
-                asset_id=canonical_asset_id,
-                asset_type=asset_type,
+                instrument_id=canonical_instrument_id,
+                instrument_type=instrument_type,
                 source_row=source_row,
                 display_name=display_name,
                 share_class=None,
                 ticker_or_isin=(
-                    asset.primary_identifier_value
-                    if asset is not None
+                    instrument.primary_identifier_value
+                    if instrument is not None
                     else (
                         str(instrument.get("primary_identifier") or "").strip() or None
                         if isinstance(instrument, dict)
@@ -496,62 +496,62 @@ def _materialize_watchlist_rows(
 def _sync_all_coverage_watchlist(session: Session):
     record = watchlist_repository.ensure_all_coverage_watchlist(session)
     try:
-        shared_funds = list_shared_instruments(asset_type="fund", limit=None)
+        shared_funds = list_shared_instruments(instrument_type="fund", limit=None)
     except SharedInstrumentRegistryError:
         return record
 
-    active_asset_ids: list[str] = []
+    active_instrument_ids: list[str] = []
     for shared_instrument in shared_funds:
-        detail_asset_id = _ensure_local_asset_detail(session, shared_instrument)
-        if detail_asset_id and detail_asset_id not in active_asset_ids:
-            active_asset_ids.append(detail_asset_id)
+        detail_instrument_id = _ensure_local_instrument_detail(session, shared_instrument)
+        if detail_instrument_id and detail_instrument_id not in active_instrument_ids:
+            active_instrument_ids.append(detail_instrument_id)
 
     refreshed_record = watchlist_repository.get(session, ALL_COVERAGE_WATCHLIST_ID) or record
-    existing_asset_ids = {
-        str(item.asset_id).strip()
+    existing_instrument_ids = {
+        str(item.instrument_id).strip()
         for item in refreshed_record.items
-        if str(item.asset_id).strip()
+        if str(item.instrument_id).strip()
     }
-    active_asset_id_set = set(active_asset_ids)
-    stale_asset_ids = [
-        asset_id for asset_id in existing_asset_ids if asset_id not in active_asset_id_set
+    active_instrument_id_set = set(active_instrument_ids)
+    stale_instrument_ids = [
+        instrument_id for instrument_id in existing_instrument_ids if instrument_id not in active_instrument_id_set
     ]
-    if stale_asset_ids:
+    if stale_instrument_ids:
         watchlist_repository.delete_items(
             session,
             watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
-            asset_ids=stale_asset_ids,
+            instrument_ids=stale_instrument_ids,
         )
         read_model_repository.delete_watchlist_rows(
             session,
             watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
-            asset_ids=stale_asset_ids,
+            instrument_ids=stale_instrument_ids,
         )
 
     created = watchlist_repository.add_items(
         session,
         watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
-        asset_ids=active_asset_ids,
+        instrument_ids=active_instrument_ids,
         added_by="system",
     )
     existing_rows = {
-        row.asset_id
+        row.instrument_id
         for row in read_model_repository.list_watchlist_rows(
             session,
             ALL_COVERAGE_WATCHLIST_ID,
         )
     }
-    created_asset_ids = {item.asset_id for item in created}
-    materialize_asset_ids = [
-        asset_id
-        for asset_id in active_asset_ids
-        if asset_id not in existing_rows or asset_id in created_asset_ids
+    created_instrument_ids = {item.instrument_id for item in created}
+    materialize_instrument_ids = [
+        instrument_id
+        for instrument_id in active_instrument_ids
+        if instrument_id not in existing_rows or instrument_id in created_instrument_ids
     ]
     try:
         _materialize_watchlist_rows(
             session,
             watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
-            asset_ids=materialize_asset_ids,
+            instrument_ids=materialize_instrument_ids,
         )
     except SharedInstrumentRegistryError:
         return record
@@ -616,7 +616,7 @@ def copy_watchlist_record(
 ) -> dict[str, object]:
     source = _require_watchlist(session, watchlist_id)
     copied_name = f"{source.name} Copy"
-    source_asset_ids = [item.asset_id for item in source.items]
+    source_instrument_ids = [item.instrument_id for item in source.items]
     record = _duplicate_watchlist_with_retry(
         session,
         source_watchlist_id=watchlist_id,
@@ -634,7 +634,7 @@ def copy_watchlist_record(
         _materialize_watchlist_rows(
             session,
             watchlist_id=record.watchlist_id,
-            asset_ids=source_asset_ids,
+            instrument_ids=source_instrument_ids,
         )
     except SharedInstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
@@ -671,17 +671,17 @@ def get_watchlist(
     record = _require_watchlist(session, watchlist_id)
     fields = field_registry_repository.list_fields(session)
     watchlist_rows = read_model_repository.list_watchlist_rows(session, watchlist_id)
-    active_asset_types = {
-        str(row.asset_type or "").strip().lower()
+    active_instrument_types = {
+        str(row.instrument_type or "").strip().lower()
         for row in watchlist_rows
-        if str(row.asset_type or "").strip()
+        if str(row.instrument_type or "").strip()
     } or {"fund"}
     scoped_fields = [
         field
         for field in fields
-        if _field_supports_asset_types(
-            field.asset_scope_json,
-            active_asset_types,
+        if _field_supports_instrument_types(
+            field.instrument_scope_json,
+            active_instrument_types,
             require_all=True,
         )
     ]
@@ -712,20 +712,20 @@ def add_items_to_watchlist(
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     _require_watchlist(session, watchlist_id)
-    canonical_asset_ids: list[str] = []
-    missing_asset_ids: list[str] = []
-    unsupported_asset_ids: list[str] = []
+    canonical_instrument_ids: list[str] = []
+    missing_instrument_ids: list[str] = []
+    unsupported_instrument_ids: list[str] = []
     resolved_instruments: list[dict[str, object]] = []
-    for asset_id in payload.asset_ids:
-        requested_asset_id = asset_id.strip()
-        if not requested_asset_id:
+    for instrument_id in payload.instrument_ids:
+        requested_instrument_id = instrument_id.strip()
+        if not requested_instrument_id:
             continue
         try:
-            shared_instrument = get_shared_instrument(requested_asset_id)
+            shared_instrument = get_shared_instrument(requested_instrument_id)
         except SharedInstrumentRegistryError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
         if not isinstance(shared_instrument, dict):
-            missing_asset_ids.append(requested_asset_id)
+            missing_instrument_ids.append(requested_instrument_id)
             continue
         lifecycle_state = shared_instrument.get("lifecycle_state")
         lifecycle_status = (
@@ -734,30 +734,30 @@ def add_items_to_watchlist(
             else "active"
         )
         if lifecycle_status == "archived":
-            missing_asset_ids.append(requested_asset_id)
+            missing_instrument_ids.append(requested_instrument_id)
             continue
         if not _supports_local_detail(shared_instrument):
-            unsupported_asset_ids.append(requested_asset_id)
+            unsupported_instrument_ids.append(requested_instrument_id)
             continue
 
-        canonical_asset_id = str(
-            shared_instrument.get("asset_id") or requested_asset_id
+        canonical_instrument_id = str(
+            shared_instrument.get("instrument_id") or requested_instrument_id
         ).strip()
         resolved_instruments.append(shared_instrument)
-        if canonical_asset_id and canonical_asset_id not in canonical_asset_ids:
-            canonical_asset_ids.append(canonical_asset_id)
+        if canonical_instrument_id and canonical_instrument_id not in canonical_instrument_ids:
+            canonical_instrument_ids.append(canonical_instrument_id)
 
-    if missing_asset_ids:
-        missing_label = ", ".join(missing_asset_ids)
+    if missing_instrument_ids:
+        missing_label = ", ".join(missing_instrument_ids)
         raise HTTPException(
             status_code=404,
             detail=(
                 f'Instrument not found in shared registry: {missing_label}. '
-                "Add the asset in Database Dashboard first."
+                "Add the instrument in Database Dashboard first."
             ),
         )
-    if unsupported_asset_ids:
-        unsupported_label = ", ".join(unsupported_asset_ids)
+    if unsupported_instrument_ids:
+        unsupported_label = ", ".join(unsupported_instrument_ids)
         raise HTTPException(
             status_code=400,
             detail=(
@@ -767,42 +767,42 @@ def add_items_to_watchlist(
         )
 
     for shared_instrument in resolved_instruments:
-        _ensure_local_asset_detail(session, shared_instrument)
+        _ensure_local_instrument_detail(session, shared_instrument)
 
     created = watchlist_repository.add_items(
         session,
         watchlist_id=watchlist_id,
-        asset_ids=canonical_asset_ids,
+        instrument_ids=canonical_instrument_ids,
         added_by="api",
     )
-    created_asset_ids = [item.asset_id for item in created]
+    created_instrument_ids = [item.instrument_id for item in created]
     try:
         _materialize_watchlist_rows(
             session,
             watchlist_id=watchlist_id,
-            asset_ids=created_asset_ids,
+            instrument_ids=created_instrument_ids,
         )
     except SharedInstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
-    recalculated_asset_ids: list[str] = []
-    for asset_id in created_asset_ids:
+    recalculated_instrument_ids: list[str] = []
+    for instrument_id in created_instrument_ids:
         canonical_recalc_service.execute_recalc(
             session,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             job_type="all",
             trigger_type="watchlist_membership_added",
             trigger_ref_type="watchlist",
             trigger_ref_id=watchlist_id,
         )
-        recalculated_asset_ids.append(asset_id)
+        recalculated_instrument_ids.append(instrument_id)
 
     session.commit()
     return {
         "watchlist_id": watchlist_id,
         "accepted_count": len(created),
-        "pending_recalc_asset_ids": created_asset_ids,
-        "recalculated_asset_ids": recalculated_asset_ids,
+        "pending_recalc_instrument_ids": created_instrument_ids,
+        "recalculated_instrument_ids": recalculated_instrument_ids,
     }
 
 
@@ -817,12 +817,12 @@ def delete_items_from_watchlist(
     deleted_count = watchlist_repository.delete_items(
         session,
         watchlist_id=watchlist_id,
-        asset_ids=payload.asset_ids,
+        instrument_ids=payload.instrument_ids,
     )
     read_model_repository.delete_watchlist_rows(
         session,
         watchlist_id=watchlist_id,
-        asset_ids=payload.asset_ids,
+        instrument_ids=payload.instrument_ids,
     )
     session.commit()
     return {
@@ -846,8 +846,8 @@ def move_items_to_watchlist(
         raise HTTPException(status_code=400, detail="Target watchlist must be different.")
     _require_watchlist(session, target_watchlist_id)
 
-    asset_ids = _normalize_asset_ids(payload.asset_ids)
-    if not asset_ids:
+    instrument_ids = _normalize_instrument_ids(payload.instrument_ids)
+    if not instrument_ids:
         return {
             "source_watchlist_id": watchlist_id,
             "target_watchlist_id": target_watchlist_id,
@@ -855,19 +855,19 @@ def move_items_to_watchlist(
             "added_count": 0,
             "already_present_count": 0,
         }
-    _assert_source_membership(source_watchlist=source_watchlist, asset_ids=asset_ids)
+    _assert_source_membership(source_watchlist=source_watchlist, instrument_ids=instrument_ids)
 
     created = watchlist_repository.add_items(
         session,
         watchlist_id=target_watchlist_id,
-        asset_ids=asset_ids,
+        instrument_ids=instrument_ids,
         added_by="api",
     )
     try:
         _materialize_watchlist_rows(
             session,
             watchlist_id=target_watchlist_id,
-            asset_ids=[item.asset_id for item in created],
+            instrument_ids=[item.instrument_id for item in created],
         )
     except SharedInstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
@@ -875,12 +875,12 @@ def move_items_to_watchlist(
     deleted_count = watchlist_repository.delete_items(
         session,
         watchlist_id=watchlist_id,
-        asset_ids=asset_ids,
+        instrument_ids=instrument_ids,
     )
     read_model_repository.delete_watchlist_rows(
         session,
         watchlist_id=watchlist_id,
-        asset_ids=asset_ids,
+        instrument_ids=instrument_ids,
     )
     session.commit()
     return {
@@ -888,7 +888,7 @@ def move_items_to_watchlist(
         "target_watchlist_id": target_watchlist_id,
         "moved_count": deleted_count,
         "added_count": len(created),
-        "already_present_count": len(asset_ids) - len(created),
+        "already_present_count": len(instrument_ids) - len(created),
     }
 
 
@@ -906,8 +906,8 @@ def copy_items_to_watchlist(
         raise HTTPException(status_code=400, detail="Target watchlist must be different.")
     _require_watchlist(session, target_watchlist_id)
 
-    asset_ids = _normalize_asset_ids(payload.asset_ids)
-    if not asset_ids:
+    instrument_ids = _normalize_instrument_ids(payload.instrument_ids)
+    if not instrument_ids:
         return {
             "source_watchlist_id": watchlist_id,
             "target_watchlist_id": target_watchlist_id,
@@ -915,19 +915,19 @@ def copy_items_to_watchlist(
             "added_count": 0,
             "already_present_count": 0,
         }
-    _assert_source_membership(source_watchlist=source_watchlist, asset_ids=asset_ids)
+    _assert_source_membership(source_watchlist=source_watchlist, instrument_ids=instrument_ids)
 
     created = watchlist_repository.add_items(
         session,
         watchlist_id=target_watchlist_id,
-        asset_ids=asset_ids,
+        instrument_ids=instrument_ids,
         added_by="api",
     )
     try:
         _materialize_watchlist_rows(
             session,
             watchlist_id=target_watchlist_id,
-            asset_ids=[item.asset_id for item in created],
+            instrument_ids=[item.instrument_id for item in created],
         )
     except SharedInstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
@@ -936,9 +936,9 @@ def copy_items_to_watchlist(
     return {
         "source_watchlist_id": watchlist_id,
         "target_watchlist_id": target_watchlist_id,
-        "copied_count": len(asset_ids),
+        "copied_count": len(instrument_ids),
         "added_count": len(created),
-        "already_present_count": len(asset_ids) - len(created),
+        "already_present_count": len(instrument_ids) - len(created),
     }
 
 

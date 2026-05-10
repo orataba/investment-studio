@@ -85,7 +85,7 @@ def create_account_record(
         institution=payload.institution,
         default_settlement_cash_account_id=settlement_account_id,
         cost_basis_method=payload.cost_basis_method,
-        allowed_asset_types=payload.allowed_asset_types,
+        allowed_instrument_types=payload.allowed_instrument_types,
         opened_at=payload.opened_at,
         closed_at=payload.closed_at,
         status=payload.status,
@@ -127,11 +127,11 @@ def update_account_record(
             raise HTTPException(status_code=400, detail="deposit_account must not carry default_settlement_cash_account_id.")
         if payload.cost_basis_method is not None:
             raise HTTPException(status_code=400, detail="deposit_account must not carry cost_basis_method.")
-        if payload.allowed_asset_types is not None:
-            raise HTTPException(status_code=400, detail="deposit_account must not carry allowed_asset_types.")
+        if payload.allowed_instrument_types is not None:
+            raise HTTPException(status_code=400, detail="deposit_account must not carry allowed_instrument_types.")
         settlement_account_id = None
         cost_basis_method = None
-        allowed_asset_types = None
+        allowed_instrument_types = None
     else:
         settlement_account_id = (
             payload.default_settlement_cash_account_id
@@ -145,10 +145,10 @@ def update_account_record(
         )
         current_cost_basis_method = str(existing_account.get("cost_basis_method") or "fifo")
         cost_basis_method = payload.cost_basis_method or current_cost_basis_method
-        allowed_asset_types = (
-            payload.allowed_asset_types
-            if "allowed_asset_types" in payload.model_fields_set
-            else existing_account.get("allowed_asset_types")
+        allowed_instrument_types = (
+            payload.allowed_instrument_types
+            if "allowed_instrument_types" in payload.model_fields_set
+            else existing_account.get("allowed_instrument_types")
         )
 
     record = update_account(
@@ -158,7 +158,7 @@ def update_account_record(
         institution=institution if isinstance(institution, str) else None,
         default_settlement_cash_account_id=settlement_account_id if isinstance(settlement_account_id, str) else None,
         cost_basis_method=cost_basis_method,
-        allowed_asset_types=allowed_asset_types if isinstance(allowed_asset_types, list) else None,
+        allowed_instrument_types=allowed_instrument_types if isinstance(allowed_instrument_types, list) else None,
         opened_at=opened_at if isinstance(opened_at, date) else date.fromisoformat(str(opened_at)) if opened_at else None,
         closed_at=closed_at if isinstance(closed_at, date) else date.fromisoformat(str(closed_at)) if closed_at else None,
         status=str(status or "active"),

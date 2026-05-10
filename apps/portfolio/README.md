@@ -30,7 +30,7 @@
 
 ## 开发原则
 
-- 只依赖共享 `asset-core` contract 与 `shared_asset` schema，不通过 `platform` API 取数
+- 只依赖共享 `instrument-core` contract 与 `instrument_registry` schema，不通过 `platform` API 取数
 - 不复用 `Watchlist` 的业务模型
 - 维持 `portfolio / account / transaction / performance / risk / research` 的独立边界
 - `Taxonomy / TargetSet` 是组合 planning truth；`Research` 消费这套结构求解当前 target weights，不反向创造另一套目标体系
@@ -98,8 +98,8 @@ npm --prefix apps/portfolio/frontend run build
 
 - 组合级 TWR 使用日频 true time-weighted 口径：外部流入进分母，外部流出加回分子，区间结果几何复合。
 - FIFO / moving average 只影响 book cost、book realized gain、book unrealized P&L 和 lot 展示；不影响 fair-value based TWR。
-- Performance `Calculation` 使用 `Initial Value + Net External Flow + Period P&L = Final Value` 的期间桥接。资本利得拆分使用期初市值重置后的期间成本，而不是账户 book cost。Calculation 默认视图命名为 `Default`，展示 realized risk attribution；用户可像 Holdings 一样保存自定义表格视图。Group By 默认是 `None`，内部映射到底层 instrument lines；也支持 asset type / currency / account / taxonomy，TWR 与 contribution 在后端按对应轴计算，表格可导出 CSV。
-- `moving_average` 在底层按 `account + asset` 维护一个 rolling average cost bucket；API 为 UI 和转仓审计输出一个 synthetic position lot。
+- Performance `Calculation` 使用 `Initial Value + Net External Flow + Period P&L = Final Value` 的期间桥接。资本利得拆分使用期初市值重置后的期间成本，而不是账户 book cost。Calculation 默认视图命名为 `Default`，展示 realized risk attribution；用户可像 Holdings 一样保存自定义表格视图。Group By 默认是 `None`，内部映射到底层 instrument lines；也支持 instrument type / currency / account / taxonomy，TWR 与 contribution 在后端按对应轴计算，表格可导出 CSV。
+- `moving_average` 在底层按 `account + instrument` 维护一个 rolling average cost bucket；API 为 UI 和转仓审计输出一个 synthetic position lot。
 - `Overview`、`Performance`、`Review` 的 TWR index、daily series 和 drawdown 均按查询窗口重新复合；不得复用 inception-to-date 的累计 TWR 作为区间曲线。
 - `Risk` 的 rolling volatility / Sharpe 输入来自 `daily_twr` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。相关性矩阵和风险贡献使用 as-of date + lookback covariance 的单点风险口径；混合频率和稀疏序列先解析 daily / weekly / monthly calculation basis，再按目标 period 的最后有效观测对齐，不跨期前向填充，用共同有效日期和实际观察密度年化 covariance。区间风险贡献归入 Performance `Calculation` 的 realized risk attribution columns。
 - `Research` 的当前 target solve 从最末端 sleeve 递归向上求解；scope default 只使用该 scope 自身的默认目标维度，不静默切到另一个维度。顶层 capital overlay 在风险 sleeve 权重求出后再按目标波动率或总敞口缩放，并把剩余权重放到现金；若共同有效收益不足两期，进入 insufficient-history 诊断，不用稀疏异步价格硬算风险。
@@ -108,9 +108,9 @@ npm --prefix apps/portfolio/frontend run build
 
 ## 加载速度排查记录
 
-2026-05-02 对 Portfolio 页面加载链路做了一次只读排查。当前本地 portfolio 数据量不大：`portfolio` 2 条、`transaction` 39 条、`taxonomy_node` 28 条、`target_set_line` 168 条；但共享资产库已有 `instrument_market_data` 约 27,439 条。因此加载慢主要不是 portfolio 私有表过大，而是页面首屏并行触发多条重计算链路，每条链路又独立重放交易、重建 position lots、读取 shared asset 行情。
+2026-05-02 对 Portfolio 页面加载链路做了一次只读排查。当前本地 portfolio 数据量不大：`portfolio` 2 条、`transaction` 39 条、`taxonomy_node` 28 条、`target_set_line` 168 条；但 shared instrument registry 已有 `instrument_market_data` 约 27,439 条。因此加载慢主要不是 portfolio 私有表过大，而是页面首屏并行触发多条重计算链路，每条链路又独立重放交易、重建 position lots、读取 shared instrument 行情。
 
-2026-05-03 已完成 daily snapshot / holding snapshot / contribution slice 的物化读模型，核心 performance 和 holdings 读路径不再每次从零生成全窗口 daily snapshots。下面记录保留为历史排查背景；后续性能工作重点转为增量刷新、shared asset detail 缓存和 Review/Risk 多接口结果复用。
+2026-05-03 已完成 daily snapshot / holding snapshot / contribution slice 的物化读模型，核心 performance 和 holdings 读路径不再每次从零生成全窗口 daily snapshots。下面记录保留为历史排查背景；后续性能工作重点转为增量刷新、shared instrument detail 缓存和 Review/Risk 多接口结果复用。
 
 主要慢点：
 
@@ -118,7 +118,7 @@ npm --prefix apps/portfolio/frontend run build
 - `build_daily_portfolio_snapshots()` 按日期窗口逐日重放交易，并在每天重新派生 ledger postings、position lots、估值和 FX。`/performance` 依赖它，portfolio `3` 实测 7 天约 `3.8s`，30 天约 `15s`。
 - `build_period_calculation_report()` 和 `build_period_boundary_holdings_report()` 会为起止边界再次构造 snapshot，其中 `_build_single_date_snapshot()` 为了一个日期也会从历史开始生成 daily snapshots。portfolio `3` 实测 7 天分别约 `25s` 和 `26s`。
 - `build_contribution_report()` 先生成 daily snapshots，又在日期循环中反复重建 group end states / position lots。portfolio `3` 实测 7 天约 `11s`。
-- shared asset 行情读取被重复放大。profile 显示慢链路的大头在 `list_registry_instruments()` / instrument detail 序列化和 market data 扫描上，而不是 portfolio 表查询本身。
+- shared instrument 行情读取被重复放大。profile 显示慢链路的大头在 `list_registry_instruments()` / instrument detail 序列化和 market data 扫描上，而不是 portfolio 表查询本身。
 
 页面层的放大点：
 
@@ -126,4 +126,4 @@ npm --prefix apps/portfolio/frontend run build
 - `Risk` 会并行请求 holdings、accounts、taxonomy，再请求 performance 和 contribution。
 - `Review` 一次加载 performance、calculation、contribution、boundary holdings、taxonomy、research workbench，其中多个接口都会触发上述重计算。
 
-后续优化优先级应先放在：把 portfolio 存在性查询与实时 rollup 分离；缓存或物化 daily snapshots / position lots；避免同一页面内重复拉 shared asset detail；让 Review / Risk 这类页面复用同一批 performance 中间结果。
+后续优化优先级应先放在：把 portfolio 存在性查询与实时 rollup 分离；缓存或物化 daily snapshots / position lots；避免同一页面内重复拉 shared instrument detail；让 Review / Risk 这类页面复用同一批 performance 中间结果。

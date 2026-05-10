@@ -10,31 +10,31 @@ from sqlalchemy import engine_from_config, pool, text
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-ASSET_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "asset-core" / "python"
-asset_core_path = str(ASSET_CORE_PYTHON)
-if asset_core_path not in sys.path:
-    sys.path.insert(0, asset_core_path)
+INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "instrument-core" / "python"
+instrument_core_path = str(INSTRUMENT_CORE_PYTHON)
+if instrument_core_path not in sys.path:
+    sys.path.insert(0, instrument_core_path)
 
-from yungu_asset_core.db_models import SharedAssetBase
+from yungu_instrument_core.db_models import InstrumentRegistryBase
 
 
 config = context.config
 
 database_url = (
-    os.getenv("YUNGU_SHARED_ASSET_ALEMBIC_DATABASE_URL")
-    or os.getenv("YUNGU_SHARED_ASSET_DATABASE_URL")
+    os.getenv("YUNGU_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL")
+    or os.getenv("YUNGU_INSTRUMENT_REGISTRY_DATABASE_URL")
     or config.get_main_option("sqlalchemy.url")
 )
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
 
-raw_schema = os.getenv("YUNGU_SHARED_ASSET_SCHEMA", "shared_asset")
+raw_schema = os.getenv("YUNGU_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry")
 schema = raw_schema.strip() if raw_schema and raw_schema.strip() else None
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = SharedAssetBase.metadata
+target_metadata = InstrumentRegistryBase.metadata
 
 
 def run_migrations_offline() -> None:

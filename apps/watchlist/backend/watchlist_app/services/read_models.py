@@ -5,7 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from watchlist_app.db.models.read_models import AssetChartReadModel, WatchlistRowReadModel
+from watchlist_app.db.models.read_models import InstrumentChartReadModel, WatchlistRowReadModel
 from watchlist_app.db.models.watchlists import InstrumentAttributeValue, WatchlistView
 
 
@@ -52,9 +52,9 @@ def collapse_latest_attribute_values(
 def watchlist_row_to_dict(record: WatchlistRowReadModel) -> dict[str, object]:
     return {
         "watchlist_id": record.watchlist_id,
-        "asset_id": record.asset_id,
-        "asset_type": record.asset_type,
-        "asset_name": record.asset_name,
+        "instrument_id": record.instrument_id,
+        "instrument_type": record.instrument_type,
+        "instrument_name": record.instrument_name,
         "share_class": record.share_class,
         "ticker_or_isin": record.ticker_or_isin,
         "management_firm_name": record.management_firm_name,
@@ -115,21 +115,21 @@ def _extract_latest_quote(payload: object) -> dict[str, object] | None:
 
 
 def build_latest_quote_overrides(
-    charts: Sequence[AssetChartReadModel] | None,
+    charts: Sequence[InstrumentChartReadModel] | None,
 ) -> dict[str, dict[str, object]]:
     overrides: dict[str, dict[str, object]] = {}
     for chart in charts or []:
         latest_quote = _extract_latest_quote(chart.payload_json)
         if latest_quote is not None:
-            overrides[chart.asset_id] = latest_quote
+            overrides[chart.instrument_id] = latest_quote
     return overrides
 
 
 def build_watchlist_row_materialization(
     *,
     watchlist_id: str,
-    asset_id: str,
-    asset_type: str,
+    instrument_id: str,
+    instrument_type: str,
     source_row: WatchlistRowReadModel | None,
     display_name: str | None,
     share_class: str | None,
@@ -146,7 +146,7 @@ def build_watchlist_row_materialization(
     ) -> dict[str, object]:
     if source_row is None:
         payload: dict[str, object] = {
-            "asset_name": display_name or asset_id.upper(),
+            "instrument_name": display_name or instrument_id.upper(),
             "share_class": share_class,
             "ticker_or_isin": ticker_or_isin,
             "management_firm_name": management_firm_name,
@@ -172,7 +172,7 @@ def build_watchlist_row_materialization(
         }
     else:
         payload = {
-            "asset_name": source_row.asset_name,
+            "instrument_name": source_row.instrument_name,
             "share_class": source_row.share_class,
             "ticker_or_isin": source_row.ticker_or_isin,
             "management_firm_name": source_row.management_firm_name,
@@ -198,9 +198,9 @@ def build_watchlist_row_materialization(
         }
 
     payload["watchlist_id"] = watchlist_id
-    payload["asset_id"] = asset_id
-    payload["asset_type"] = asset_type
-    payload["asset_name"] = display_name or payload.get("asset_name") or asset_id.upper()
+    payload["instrument_id"] = instrument_id
+    payload["instrument_type"] = instrument_type
+    payload["instrument_name"] = display_name or payload.get("instrument_name") or instrument_id.upper()
     payload["share_class"] = share_class or payload.get("share_class")
     payload["ticker_or_isin"] = ticker_or_isin or payload.get("ticker_or_isin")
     payload["management_firm_name"] = management_firm_name or payload.get("management_firm_name")
@@ -423,7 +423,7 @@ def _latest_date(rows: Sequence[dict[str, object]]) -> date | None:
 def execute_watchlist_query(
     *,
     rows: Sequence[WatchlistRowReadModel],
-    charts: Sequence[AssetChartReadModel] | None = None,
+    charts: Sequence[InstrumentChartReadModel] | None = None,
     payload: dict[str, object],
     view: WatchlistView | None,
 ) -> dict[str, object]:
@@ -433,7 +433,7 @@ def execute_watchlist_query(
         serialized_rows = [
             {
                 **row,
-                **latest_quote_overrides.get(str(row.get("asset_id")), {}),
+                **latest_quote_overrides.get(str(row.get("instrument_id")), {}),
             }
             for row in serialized_rows
         ]
@@ -475,7 +475,7 @@ def execute_watchlist_query(
             if column.is_visible
         ]
     if not selected_fields:
-        selected_fields = ["asset_name", "overall_rating", "attr.fund_taxonomy_path"]
+        selected_fields = ["instrument_name", "overall_rating", "attr.fund_taxonomy_path"]
     if group_by == TAXONOMY_GROUP_BY_CODE:
         for field in TAXONOMY_GROUP_FIELDS:
             if field not in selected_fields:
@@ -483,8 +483,8 @@ def execute_watchlist_query(
 
     projected_rows = [
         {
-            "asset_id": row["asset_id"],
-            "asset_type": row["asset_type"],
+            "instrument_id": row["instrument_id"],
+            "instrument_type": row["instrument_type"],
             **{field: _resolve_field_value(row, field) for field in selected_fields},
         }
         for row in filtered_rows
@@ -530,13 +530,13 @@ def execute_watchlist_query(
 
 
 def default_fund_summary_payload(
-    asset_id: str,
+    instrument_id: str,
     instrument_attributes: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return {
-        "asset_id": asset_id,
+        "instrument_id": instrument_id,
         "fund_name": "Sample Fund",
-        "ticker_or_isin": asset_id.upper(),
+        "ticker_or_isin": instrument_id.upper(),
         "rating_as_of": "2026-04-10",
         "management_firm_name": None,
         "overall_rating": None,
@@ -564,9 +564,9 @@ def default_fund_summary_payload(
     }
 
 
-def default_fund_chart_payload(asset_id: str) -> dict[str, object]:
+def default_fund_chart_payload(instrument_id: str) -> dict[str, object]:
     return {
-        "asset_id": asset_id,
+        "instrument_id": instrument_id,
         "base_series_type": "nav",
         "currency": "USD",
         "date_range": None,
@@ -582,6 +582,7 @@ def default_fund_performance_payload() -> dict[str, object]:
         "trailing_returns": [],
         "ranking": None,
         "peer_comparison": None,
+        "calculation_frequency_profile": None,
         "snapshot_metadata": None,
     }
 
@@ -595,6 +596,7 @@ def default_fund_risk_payload() -> dict[str, object]:
         "risk_structure": {"rows": []},
         "current_watch": {"overall_level": None, "rows": [], "note": None},
         "change_monitor": {"rows": [], "note": None},
+        "calculation_frequency_profile": None,
         "snapshot_metadata": None,
     }
 

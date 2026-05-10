@@ -7,7 +7,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Integer, and_, cast, delete, func, or_, select
-from yungu_asset_core.db_models import InstrumentMarketData
+from yungu_instrument_core.db_models import InstrumentMarketData
 
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
@@ -120,8 +120,8 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
             portfolio.setdefault("valuation_cutoff_policy", "latest_complete_eod")
             portfolio.setdefault("default_planning_taxonomy_id", None)
     for account in normalized["accounts"]:
-        if isinstance(account, dict) and "allowed_asset_types" not in account:
-            account["allowed_asset_types"] = None
+        if isinstance(account, dict) and "allowed_instrument_types" not in account:
+            account["allowed_instrument_types"] = None
     for transaction in normalized["transactions"]:
         if not isinstance(transaction, dict):
             continue
@@ -254,7 +254,7 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "institution": item.institution,
                 "default_settlement_cash_account_id": item.default_settlement_cash_account_id,
                 "cost_basis_method": item.cost_basis_method,
-                "allowed_asset_types": deepcopy(item.allowed_asset_types_json),
+                "allowed_instrument_types": deepcopy(item.allowed_instrument_types_json),
                 "opened_at": item.opened_at.isoformat() if item.opened_at is not None else None,
                 "closed_at": item.closed_at.isoformat() if item.closed_at is not None else None,
                 "status": item.status,
@@ -280,7 +280,7 @@ def _load_store_from_db(session) -> dict[str, object]:
                 else None,
                 "account_id": item.account_id,
                 "settlement_cash_account_id": item.settlement_cash_account_id,
-                "asset_id": item.asset_id,
+                "instrument_id": item.instrument_id,
                 "instrument_ref": deepcopy(item.instrument_ref_json),
                 "quantity": item.quantity,
                 "price": item.price,
@@ -447,15 +447,15 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                     if raw_account.get("cost_basis_method")
                     else None
                 ),
-                allowed_asset_types_json=(
+                allowed_instrument_types_json=(
                     sorted(
                         {
                             str(item).strip()
-                            for item in raw_account.get("allowed_asset_types", [])
+                            for item in raw_account.get("allowed_instrument_types", [])
                             if str(item).strip()
                         }
                     )
-                    if isinstance(raw_account.get("allowed_asset_types"), list)
+                    if isinstance(raw_account.get("allowed_instrument_types"), list)
                     else None
                 ),
                 opened_at=date.fromisoformat(str(opened_at)) if opened_at else None,
@@ -620,7 +620,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                     if raw_transaction.get("settlement_cash_account_id")
                     else None
                 ),
-                asset_id=str(raw_transaction.get("asset_id")).strip() if raw_transaction.get("asset_id") else None,
+                instrument_id=str(raw_transaction.get("instrument_id")).strip() if raw_transaction.get("instrument_id") else None,
                 instrument_ref_json=(
                     deepcopy(raw_transaction.get("instrument_ref"))
                     if isinstance(raw_transaction.get("instrument_ref"), dict)
@@ -713,14 +713,14 @@ def _max_transaction_trade_date(transactions: list[TransactionRecordModel]) -> d
     return max((transaction.trade_date for transaction in transactions if transaction.trade_date is not None), default=None)
 
 
-def _latest_market_data_date_for_assets(session, asset_ids: set[str]) -> date | None:
-    normalized_asset_ids = {asset_id for asset_id in asset_ids if asset_id}
-    if not normalized_asset_ids:
+def _latest_market_data_date_for_instruments(session, instrument_ids: set[str]) -> date | None:
+    normalized_instrument_ids = {instrument_id for instrument_id in instrument_ids if instrument_id}
+    if not normalized_instrument_ids:
         return None
 
     return session.scalar(
         select(func.max(InstrumentMarketData.as_of_date)).where(
-            InstrumentMarketData.asset_id.in_(normalized_asset_ids),
+            InstrumentMarketData.instrument_id.in_(normalized_instrument_ids),
             InstrumentMarketData.metric_family.in_(("price", "nav")),
             InstrumentMarketData.status != "error",
         )
@@ -737,10 +737,10 @@ def _resolve_live_portfolio_as_of_date(
     transaction_rows = [_serialize_transaction_row(transaction) for transaction in transactions]
     portfolio_as_of_date = item.as_of_date
     latest_trade_date = _max_transaction_trade_date(transactions)
-    transacted_asset_ids = {
-        str(transaction.asset_id or "")
+    transacted_instrument_ids = {
+        str(transaction.instrument_id or "")
         for transaction in transactions
-        if str(transaction.asset_id or "")
+        if str(transaction.instrument_id or "")
     }
 
     candidate_dates = [
@@ -748,7 +748,7 @@ def _resolve_live_portfolio_as_of_date(
         for candidate in (
             portfolio_as_of_date,
             latest_trade_date,
-            _latest_market_data_date_for_assets(session, transacted_asset_ids),
+            _latest_market_data_date_for_instruments(session, transacted_instrument_ids),
         )
         if candidate is not None
     ]
@@ -759,8 +759,8 @@ def _resolve_live_portfolio_as_of_date(
         for transaction in transaction_rows
         if (_safe_date(transaction.get("trade_date")) or date.min) <= candidate_as_of_date
     ]
-    open_asset_ids = {
-        str(position_lot.get("asset_id") or "")
+    open_instrument_ids = {
+        str(position_lot.get("instrument_id") or "")
         for position_lot in build_position_lots(
             item.portfolio_id,
             [_serialize_account_row(account) for account in accounts],
@@ -768,9 +768,9 @@ def _resolve_live_portfolio_as_of_date(
             status="open",
             as_of_date=candidate_as_of_date,
         )
-        if str(position_lot.get("asset_id") or "")
+        if str(position_lot.get("instrument_id") or "")
     }
-    latest_open_market_date = _latest_market_data_date_for_assets(session, open_asset_ids)
+    latest_open_market_date = _latest_market_data_date_for_instruments(session, open_instrument_ids)
     return max(
         (
             candidate
@@ -880,7 +880,7 @@ def _serialize_account_row(item: AccountRecordModel) -> dict[str, object]:
         "institution": item.institution,
         "default_settlement_cash_account_id": item.default_settlement_cash_account_id,
         "cost_basis_method": item.cost_basis_method,
-        "allowed_asset_types": deepcopy(item.allowed_asset_types_json),
+        "allowed_instrument_types": deepcopy(item.allowed_instrument_types_json),
         "opened_at": item.opened_at.isoformat() if item.opened_at is not None else None,
         "closed_at": item.closed_at.isoformat() if item.closed_at is not None else None,
         "status": item.status,
@@ -902,7 +902,7 @@ def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object
         "acquisition_date": item.acquisition_date.isoformat() if item.acquisition_date is not None else None,
         "account_id": item.account_id,
         "settlement_cash_account_id": item.settlement_cash_account_id,
-        "asset_id": item.asset_id,
+        "instrument_id": item.instrument_id,
         "instrument_ref": deepcopy(item.instrument_ref_json),
         "quantity": item.quantity,
         "price": item.price,
@@ -2558,7 +2558,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                         else None
                     ),
                     cost_basis_method=account.cost_basis_method,
-                    allowed_asset_types_json=deepcopy(account.allowed_asset_types_json),
+                    allowed_instrument_types_json=deepcopy(account.allowed_instrument_types_json),
                     opened_at=account.opened_at,
                     closed_at=account.closed_at,
                     status=account.status,
@@ -2747,9 +2747,9 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                         if copied_transaction.get("settlement_cash_account_id")
                         else None
                     ),
-                    asset_id=(
-                        str(copied_transaction["asset_id"])
-                        if copied_transaction.get("asset_id")
+                    instrument_id=(
+                        str(copied_transaction["instrument_id"])
+                        if copied_transaction.get("instrument_id")
                         else None
                     ),
                     instrument_ref_json=deepcopy(copied_transaction.get("instrument_ref")),
@@ -2943,7 +2943,7 @@ def create_account(
     institution: str | None,
     default_settlement_cash_account_id: str | None,
     cost_basis_method: str | None,
-    allowed_asset_types: list[str] | None,
+    allowed_instrument_types: list[str] | None,
     opened_at: date | None,
     closed_at: date | None,
     status: str,
@@ -2966,7 +2966,7 @@ def create_account(
             institution=(institution or "").strip() or None,
             default_settlement_cash_account_id=default_settlement_cash_account_id,
             cost_basis_method=cost_basis_method,
-            allowed_asset_types_json=sorted(set(allowed_asset_types or [])) or None,
+            allowed_instrument_types_json=sorted(set(allowed_instrument_types or [])) or None,
             opened_at=opened_at,
             closed_at=closed_at,
             status=(status or "active").strip() or "active",
@@ -2985,7 +2985,7 @@ def update_account(
     institution: str | None,
     default_settlement_cash_account_id: str | None,
     cost_basis_method: str | None,
-    allowed_asset_types: list[str] | None,
+    allowed_instrument_types: list[str] | None,
     opened_at: date | None,
     closed_at: date | None,
     status: str,
@@ -3003,9 +3003,9 @@ def update_account(
 
         previous_opened_at = record.opened_at
         previous_cost_basis_method = record.cost_basis_method
-        first_asset_transaction_date = None
+        first_instrument_transaction_date = None
         if cost_basis_method != previous_cost_basis_method:
-            first_asset_transaction_date = session.scalar(
+            first_instrument_transaction_date = session.scalar(
                 select(func.min(TransactionRecordModel.trade_date)).where(
                     TransactionRecordModel.portfolio_id == portfolio_id,
                     or_(
@@ -3013,7 +3013,7 @@ def update_account(
                         TransactionRecordModel.counterparty_account_id == account_id,
                     ),
                     or_(
-                        TransactionRecordModel.asset_id.is_not(None),
+                        TransactionRecordModel.instrument_id.is_not(None),
                         TransactionRecordModel.transfer_object_type == "position",
                     ),
                 )
@@ -3023,7 +3023,7 @@ def update_account(
         record.institution = (institution or "").strip() or None
         record.default_settlement_cash_account_id = default_settlement_cash_account_id
         record.cost_basis_method = cost_basis_method
-        record.allowed_asset_types_json = sorted(set(allowed_asset_types or [])) or None
+        record.allowed_instrument_types_json = sorted(set(allowed_instrument_types or [])) or None
         record.opened_at = opened_at
         record.closed_at = closed_at
         record.status = (status or "active").strip() or "active"
@@ -3031,7 +3031,7 @@ def update_account(
         dirty_from = min(
             (
                 candidate
-                for candidate in (first_asset_transaction_date, previous_opened_at, opened_at)
+                for candidate in (first_instrument_transaction_date, previous_opened_at, opened_at)
                 if candidate is not None
             ),
             default=None,
@@ -3045,7 +3045,7 @@ def list_transactions(
     *,
     account_id: str | None = None,
     transaction_type: str | None = None,
-    asset_id: str | None = None,
+    instrument_id: str | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> list[dict[str, object]]:
@@ -3064,8 +3064,8 @@ def list_transactions(
             )
         if transaction_type:
             statement = statement.where(TransactionRecordModel.transaction_type == transaction_type)
-        if asset_id:
-            statement = statement.where(TransactionRecordModel.asset_id == asset_id)
+        if instrument_id:
+            statement = statement.where(TransactionRecordModel.instrument_id == instrument_id)
         if start_date is not None:
             statement = statement.where(TransactionRecordModel.trade_date >= start_date)
         if end_date is not None:
@@ -3100,7 +3100,7 @@ def create_transaction(
     acquisition_date: date | None,
     account_id: str,
     settlement_cash_account_id: str | None,
-    asset_id: str | None,
+    instrument_id: str | None,
     instrument_ref: dict[str, object] | None,
     quantity: float | None,
     price: float | None,
@@ -3129,7 +3129,7 @@ def create_transaction(
                 "acquisition_date": acquisition_date,
                 "account_id": account_id,
                 "settlement_cash_account_id": settlement_cash_account_id,
-                "asset_id": asset_id,
+                "instrument_id": instrument_id,
                 "instrument_ref": instrument_ref,
                 "quantity": quantity,
                 "price": price,
@@ -3181,7 +3181,7 @@ def create_transactions(
                     if values.get("settlement_cash_account_id")
                     else None
                 ),
-                asset_id=str(values["asset_id"]) if values.get("asset_id") else None,
+                instrument_id=str(values["instrument_id"]) if values.get("instrument_id") else None,
                 instrument_ref=(
                     values["instrument_ref"]
                     if isinstance(values.get("instrument_ref"), dict)
@@ -3229,7 +3229,7 @@ def update_transaction(
     acquisition_date: date | None,
     account_id: str,
     settlement_cash_account_id: str | None,
-    asset_id: str | None,
+    instrument_id: str | None,
     instrument_ref: dict[str, object] | None,
     quantity: float | None,
     price: float | None,
@@ -3267,7 +3267,7 @@ def update_transaction(
             acquisition_date=acquisition_date,
             account_id=account_id,
             settlement_cash_account_id=settlement_cash_account_id,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             instrument_ref=instrument_ref,
             quantity=quantity,
             price=price,
@@ -3335,7 +3335,7 @@ def _apply_transaction_record(
     acquisition_date: date | None,
     account_id: str,
     settlement_cash_account_id: str | None,
-    asset_id: str | None,
+    instrument_id: str | None,
     instrument_ref: dict[str, object] | None,
     quantity: float | None,
     price: float | None,
@@ -3364,7 +3364,7 @@ def _apply_transaction_record(
     record.acquisition_date = acquisition_date
     record.account_id = account_id
     record.settlement_cash_account_id = settlement_cash_account_id
-    record.asset_id = asset_id
+    record.instrument_id = instrument_id
     record.instrument_ref_json = deepcopy(instrument_ref) if isinstance(instrument_ref, dict) else None
     record.quantity = quantity
     record.price = price

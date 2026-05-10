@@ -9,13 +9,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 from watchlist_app.db.base import Base
 
 
-class AssetScoreSnapshot(Base):
-    __tablename__ = "asset_score_snapshot"
-    __table_args__ = (Index("idx_score_snapshot_current", "asset_id", "is_current"),)
+class InstrumentScoreSnapshot(Base):
+    __tablename__ = "instrument_score_snapshot"
+    __table_args__ = (Index("idx_score_snapshot_current", "instrument_id", "is_current"),)
 
     snapshot_id: Mapped[str] = mapped_column(primary_key=True)
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         nullable=False,
     )
     as_of_date: Mapped[date] = mapped_column(Date, nullable=False)

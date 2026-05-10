@@ -9,11 +9,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from watchlist_app.db.base import Base
 
 
-class AssetManualProfile(Base):
-    __tablename__ = "asset_manual_profile"
+class InstrumentManualProfile(Base):
+    __tablename__ = "instrument_manual_profile"
 
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
     people_payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)

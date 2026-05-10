@@ -1,4 +1,4 @@
-export type AssetType = 'fund' | 'bond' | 'equity' | 'cash' | 'fx' | 'other'
+export type InstrumentType = 'fund' | 'bond' | 'equity' | 'cash' | 'fx' | 'other'
 export type IdentifierType = 'ticker' | 'isin' | 'cusip' | 'sedol' | 'internal' | 'fund_name' | 'other'
 export type MetricFamily = 'price' | 'nav' | 'fx'
 export type QuoteBasis =
@@ -14,18 +14,18 @@ export type QuoteBasis =
 export type QuoteRole = 'trading' | 'valuation' | 'total_return' | 'chart' | 'reference'
 export type DataStatus = 'complete' | 'partial' | 'unavailable'
 
-export interface AssetIdentifier {
+export interface InstrumentIdentifier {
   identifier_type: IdentifierType
   identifier_value: string
   is_primary: boolean
 }
 
-export interface AssetCore {
-  asset_id: string
-  asset_name: string
-  asset_type: AssetType
+export interface InstrumentCore {
+  instrument_id: string
+  instrument_name: string
+  instrument_type: InstrumentType
   currency: string
-  identifiers: AssetIdentifier[]
+  identifiers: InstrumentIdentifier[]
 }
 
 export interface QuoteSelectionPolicy {
@@ -37,7 +37,7 @@ export interface QuoteSelectionPolicy {
 }
 
 export interface MarketDataPoint {
-  asset_id: string
+  instrument_id: string
   metric_family: MetricFamily
   quote_basis: QuoteBasis
   as_of_date: string

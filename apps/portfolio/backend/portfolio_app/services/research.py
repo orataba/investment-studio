@@ -18,7 +18,7 @@ from portfolio_app.db.models import (
     TaxonomyRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.asset_charts import build_asset_sparkline
+from portfolio_app.services.instrument_charts import build_instrument_sparkline
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_statement_of_assets_report
@@ -349,9 +349,9 @@ def _build_top_holdings_snapshot(
         instrument_ref = position.get("instrument_ref") or {}
         rendered.append(
             {
-                "asset_id": str(position.get("asset_id") or ""),
-                "asset_name": str(instrument_ref.get("asset_name") or position.get("asset_id") or ""),
-                "asset_type": str(instrument_ref.get("asset_type") or ""),
+                "instrument_id": str(position.get("instrument_id") or ""),
+                "instrument_name": str(instrument_ref.get("instrument_name") or position.get("instrument_id") or ""),
+                "instrument_type": str(instrument_ref.get("instrument_type") or ""),
                 "allocation": _safe_float(position.get("portfolio_weight")),
                 "market_value_base": _safe_float(position.get("market_value_base")),
                 "cost_basis_base": _safe_float(position.get("cost_basis_base")),
@@ -420,8 +420,8 @@ def _build_planning_group_snapshot(
 
     buckets: dict[str, dict[str, object]] = {}
     for position in statement_positions:
-        asset_id = str(position.get("asset_id") or "")
-        assignment = assignment_by_entity.get(("instrument", asset_id))
+        instrument_id = str(position.get("instrument_id") or "")
+        assignment = assignment_by_entity.get(("instrument", instrument_id))
         if assignment is None:
             group_key = "unassigned"
             group_label = "Unassigned"
@@ -579,11 +579,11 @@ def _build_research_context(
     daily_points: list[dict[str, object]] = []
     if top_holdings:
         reference_asset = top_holdings[0]
-        daily_points = build_asset_sparkline(str(reference_asset.get("asset_id") or ""), as_of_date=as_of_date, max_points=20)
+        daily_points = build_instrument_sparkline(str(reference_asset.get("instrument_id") or ""), as_of_date=as_of_date, max_points=20)
         chart_label = "Reference Tape"
         chart_currency = str(reference_asset.get("base_currency") or statement.get("base_currency") or "USD")
         chart_note = (
-            f"Using the six-month sparkline for {reference_asset.get('asset_name') or reference_asset.get('asset_id')} "
+            f"Using the six-month sparkline for {reference_asset.get('instrument_name') or reference_asset.get('instrument_id')} "
             "until a cheaper portfolio daily tape is wired into the research workbench."
         )
 

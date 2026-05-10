@@ -25,7 +25,7 @@ def list_portfolio_ledger_postings(
     portfolio_id: str,
     account_id: str | None = None,
     transaction_id: str | None = None,
-    asset_id: str | None = None,
+    instrument_id: str | None = None,
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
 ) -> LedgerPostingListResponse:
@@ -48,7 +48,7 @@ def list_portfolio_ledger_postings(
         account_currency_map=account_currency_map,
         account_id=account_id,
         transaction_id=transaction_id,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         start_date=start_date,
         end_date=end_date,
     )

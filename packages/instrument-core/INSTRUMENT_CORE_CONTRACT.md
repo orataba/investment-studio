@@ -1,4 +1,4 @@
-# Asset Core Contract
+# Instrument Core Contract
 
 ## 目标
 
@@ -6,15 +6,15 @@
 
 ## Shared Objects
 
-### `AssetCore`
+### `InstrumentCore`
 
-- `asset_id`
-- `asset_name`
-- `asset_type`
+- `instrument_id`
+- `instrument_name`
+- `instrument_type`
 - `currency`
 - `identifiers[]`
 
-### `AssetIdentifier`
+### `InstrumentIdentifier`
 
 - `identifier_type`
 - `identifier_value`
@@ -22,7 +22,7 @@
 
 ### `MarketDataPoint`
 
-- `asset_id`
+- `instrument_id`
 - `metric_family`
 - `quote_basis`
 - `as_of_date`
@@ -78,7 +78,7 @@
 
 ## Non-goals
 
-下面这些不属于 shared asset core：
+下面这些不属于 shared instrument core：
 
 - watchlist row
 - fund detail read model
@@ -90,6 +90,6 @@
 ## 当前消费方式
 
 - `Watchlist` 用它承接 fund identity 和 canonical NAV / market data
-- `Portfolio` 用它承接 asset identity 和 role-based quote selection
+- `Portfolio` 用它承接 instrument identity 和 role-based quote selection
 
 但两个 app 的派生结果都必须在各自 app 内部完成。

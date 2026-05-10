@@ -9,7 +9,7 @@
 2. [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)
    单库多 schema 的数据库拓扑、迁移入口、重建脚本和 PostgreSQL integration test 路径。
 3. [PLATFORM_BOUNDARIES.md](./PLATFORM_BOUNDARIES.md)
-   `Platform / Watchlist / Portfolio / asset-core / shared_asset` 之间的当前职责和数据边界。
+   `Platform / Watchlist / Portfolio / instrument-core / instrument_registry` 之间的当前职责和数据边界。
 4. [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md)
    当前阶段的前端设计基线：白底数据终端、tab-to-content 节奏、字体层级和跨 app UI 边界。
 5. [PHASE1_PLATFORM_SETUP_PLAN.md](./PHASE1_PLATFORM_SETUP_PLAN.md)

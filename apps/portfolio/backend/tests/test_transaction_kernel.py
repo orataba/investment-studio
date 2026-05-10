@@ -17,15 +17,15 @@ def test_portfolio_instruments_endpoint_reads_shared_registry_via_portfolio_back
 
     payload = response.json()
     assert payload["portfolio_id"] == "yungu"
-    assert {item["asset_core"]["asset_id"] for item in payload["instruments"]} >= {
+    assert {item["instrument_core"]["instrument_id"] for item in payload["instruments"]} >= {
         "equity-us-abbv",
         "fund-us-agg",
         "fund-hk-2800",
     }
     abbv = next(
-        item for item in payload["instruments"] if item["asset_core"]["asset_id"] == "equity-us-abbv"
+        item for item in payload["instruments"] if item["instrument_core"]["instrument_id"] == "equity-us-abbv"
     )
-    assert abbv["asset_core"]["identifiers"][0]["identifier_value"] == "ABBV"
+    assert abbv["instrument_core"]["identifiers"][0]["identifier_value"] == "ABBV"
     assert abbv["coverage_state"] == "complete"
 
 
@@ -78,7 +78,7 @@ def test_transaction_update_marks_daily_snapshots_dirty_from_old_trade_date():
         acquisition_date=None,
         account_id=str(existing["account_id"]),
         settlement_cash_account_id=None,
-        asset_id=None,
+        instrument_id=None,
         instrument_ref=None,
         quantity=None,
         price=None,
@@ -122,7 +122,7 @@ def test_daily_snapshot_refresh_replays_when_data_changes_mid_refresh(monkeypatc
                 acquisition_date=None,
                 account_id="cash-usd-main",
                 settlement_cash_account_id=None,
-                asset_id=None,
+                instrument_id=None,
                 instrument_ref=None,
                 quantity=None,
                 price=None,
@@ -177,7 +177,7 @@ def test_securities_account_defaults_to_fifo_when_cost_basis_omitted(client):
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
-            "allowed_asset_types": ["fund"],
+            "allowed_instrument_types": ["fund"],
             "opened_at": "2026-04-22",
             "status": "active",
         },
@@ -187,7 +187,7 @@ def test_securities_account_defaults_to_fifo_when_cost_basis_omitted(client):
     assert response.json()["cost_basis_method"] == "fifo"
 
 
-def test_account_cost_method_can_be_updated_before_asset_history(client):
+def test_account_cost_method_can_be_updated_before_instrument_history(client):
     created_response = client.post(
         "/api/portfolios/yungu/accounts",
         json={
@@ -197,7 +197,7 @@ def test_account_cost_method_can_be_updated_before_asset_history(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-22",
             "status": "active",
         },
@@ -212,7 +212,7 @@ def test_account_cost_method_can_be_updated_before_asset_history(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "moving_average",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-22",
             "status": "active",
         },
@@ -222,7 +222,7 @@ def test_account_cost_method_can_be_updated_before_asset_history(client):
     assert updated_response.json()["cost_basis_method"] == "moving_average"
 
 
-def test_account_cost_method_change_restates_asset_history(client):
+def test_account_cost_method_change_restates_instrument_history(client):
     created_response = client.post(
         "/api/portfolios/yungu/accounts",
         json={
@@ -232,7 +232,7 @@ def test_account_cost_method_change_restates_asset_history(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -252,7 +252,7 @@ def test_account_cost_method_change_restates_asset_history(client):
                 "trade_date": trade_date,
                 "account_id": account["account_id"],
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-abbv",
+                "instrument_id": "equity-us-abbv",
                 "quantity": quantity,
                 "price": price,
                 "gross_amount": quantity * price,
@@ -265,7 +265,7 @@ def test_account_cost_method_change_restates_asset_history(client):
 
     fifo_lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
-        params={"account_id": account["account_id"], "asset_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert fifo_lots_response.status_code == 200
     fifo_lots = fifo_lots_response.json()["position_lots"]
@@ -280,7 +280,7 @@ def test_account_cost_method_change_restates_asset_history(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "moving_average",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -290,7 +290,7 @@ def test_account_cost_method_change_restates_asset_history(client):
 
     restated_lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
-        params={"account_id": account["account_id"], "asset_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert restated_lots_response.status_code == 200
     restated_lots = restated_lots_response.json()["position_lots"]
@@ -387,7 +387,7 @@ def test_create_transactions_rolls_back_whole_batch_on_later_failure(client):
                     "acquisition_date": None,
                     "account_id": "cash-usd-main",
                     "settlement_cash_account_id": None,
-                    "asset_id": None,
+                    "instrument_id": None,
                     "instrument_ref": None,
                     "quantity": None,
                     "price": None,
@@ -430,7 +430,7 @@ def test_rejects_cross_currency_security_facts(client):
             "trade_date": "2026-04-15",
             "account_id": "broker-us-core",
             "settlement_cash_account_id": "cash-hkd-main",
-            "asset_id": "fund-hk-2800",
+            "instrument_id": "fund-hk-2800",
             "quantity": 100.0,
             "price": 21.0,
             "gross_amount": 2100.0,
@@ -449,7 +449,7 @@ def test_rejects_cross_currency_security_facts(client):
             "from_account_id": "broker-us-core",
             "to_account_id": "broker-hk-core",
             "transfer_object_type": "position",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
         },
     )
@@ -465,13 +465,13 @@ def test_holdings_and_account_workspace_use_base_currency_valuation(client):
 
     fx_to_usd = {"USD": 1.0, "HKD": 1 / 7.8, "CNY": 1 / 7.2}
     expected_total_market_value = sum(
-        (row["market_value"] or 0.0) * fx_to_usd[row["asset_core"]["currency"]]
+        (row["market_value"] or 0.0) * fx_to_usd[row["instrument_core"]["currency"]]
         for row in holdings["rows"]
         if row["market_value"] is not None
     )
     assert holdings["totals"]["market_value"] == pytest.approx(expected_total_market_value)
 
-    hkd_row = next(row for row in holdings["rows"] if row["asset_core"]["asset_id"] == "fund-hk-2800")
+    hkd_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "fund-hk-2800")
     expected_total_nav = holdings["totals"]["nav"]
     assert expected_total_nav != pytest.approx(expected_total_market_value)
     expected_hkd_allocation = (hkd_row["market_value"] * fx_to_usd["HKD"]) / expected_total_nav
@@ -497,15 +497,15 @@ def test_holdings_workspace_replays_requested_as_of_date(client):
     holdings = response.json()
     assert holdings["as_of_date"] == "2026-04-02"
 
-    abbv_row = next(row for row in holdings["rows"] if row["asset_core"]["asset_id"] == "equity-us-abbv")
+    abbv_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "equity-us-abbv")
     assert abbv_row["quantity"] == pytest.approx(1000.0)
     assert abbv_row["last_price"] == pytest.approx(210.20)
 
-    agg_row = next(row for row in holdings["rows"] if row["asset_core"]["asset_id"] == "fund-us-agg")
+    agg_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "fund-us-agg")
     assert agg_row["quantity"] == pytest.approx(304.236)
     assert agg_row["last_price"] == pytest.approx(97.62)
 
-    hkd_row = next(row for row in holdings["rows"] if row["asset_core"]["asset_id"] == "fund-hk-2800")
+    hkd_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "fund-hk-2800")
     assert hkd_row["last_price"] == pytest.approx(21.05)
     assert hkd_row["market_value"] == pytest.approx(105250.0)
     assert hkd_row["market_value_base"] == pytest.approx(105250.0 / 7.82)
@@ -536,7 +536,7 @@ def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
             "settlement_date": "2026-04-16",
             "account_id": "broker-us-core",
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
             "price": 206.47,
             "gross_amount": 206.47,
@@ -592,42 +592,42 @@ def test_holdings_workspace_includes_shared_price_sparklines(client):
     holdings = response.json()
     assert "price_chart_range" not in holdings
 
-    abbv_row = next(row for row in holdings["rows"] if row["asset_core"]["asset_id"] == "equity-us-abbv")
+    abbv_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "equity-us-abbv")
     assert "price_chart" not in abbv_row
     assert abbv_row["price_chart_1m"][0]["date"] == "2026-03-15"
     assert abbv_row["price_chart_6m"]
     assert abbv_row["price_chart_6m"][-1]["date"] == "2026-04-15"
     assert abbv_row["price_chart_6m"][-1]["value"] == pytest.approx(206.47)
     assert abbv_row["price_chart_1y"][-1]["value"] == pytest.approx(206.47)
-    assert abbv_row["asset_trend_as_of_date"] == "2026-04-15"
-    assert abbv_row["asset_trend_basis"] == "close"
-    assert abbv_row["asset_return_1w"] == pytest.approx(206.47 / 207.18 - 1)
-    assert abbv_row["asset_return_mtd"] == pytest.approx(206.47 / 210.20 - 1)
-    assert abbv_row["asset_return_ytd"] == pytest.approx(0)
-    assert abbv_row["asset_return_1y"] is None
-    assert abbv_row["asset_current_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
-    assert abbv_row["asset_max_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
-    assert abbv_row["asset_holding_max_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
-    assert abbv_row["asset_holding_start_date"] == "2026-02-10"
-    assert abbv_row["asset_volatility_1m"] is not None
-    assert abbv_row["asset_volatility_3m"] is not None
-    assert abbv_row["asset_volatility_6m"] is not None
-    assert abbv_row["asset_volatility_1y"] is not None
+    assert abbv_row["instrument_trend_as_of_date"] == "2026-04-15"
+    assert abbv_row["instrument_trend_basis"] == "close"
+    assert abbv_row["instrument_return_1w"] == pytest.approx(206.47 / 207.18 - 1)
+    assert abbv_row["instrument_return_mtd"] == pytest.approx(206.47 / 210.20 - 1)
+    assert abbv_row["instrument_return_ytd"] == pytest.approx(0)
+    assert abbv_row["instrument_return_1y"] is None
+    assert abbv_row["instrument_current_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
+    assert abbv_row["instrument_max_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
+    assert abbv_row["instrument_holding_max_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
+    assert abbv_row["instrument_holding_start_date"] == "2026-02-10"
+    assert abbv_row["instrument_volatility_1m"] is not None
+    assert abbv_row["instrument_volatility_3m"] is not None
+    assert abbv_row["instrument_volatility_6m"] is not None
+    assert abbv_row["instrument_volatility_1y"] is not None
 
     assert abbv_row["price_chart_3m"][0]["date"] == "2026-02-10"
-    assert abbv_row["asset_return_mtd"] == pytest.approx(206.47 / 210.20 - 1)
+    assert abbv_row["instrument_return_mtd"] == pytest.approx(206.47 / 210.20 - 1)
 
 
-def test_asset_price_chart_endpoint_returns_filtered_shared_history(client):
+def test_instrument_price_chart_endpoint_returns_filtered_shared_history(client):
     response = client.get(
-        "/api/portfolios/yungu/assets/equity-us-abbv/price-chart",
+        "/api/portfolios/yungu/instruments/equity-us-abbv/price-chart",
         params={"as_of_date": "2026-04-15", "range": "1m"},
     )
     assert response.status_code == 200
     payload = response.json()
 
     assert payload["portfolio_id"] == "yungu"
-    assert payload["asset_core"]["asset_id"] == "equity-us-abbv"
+    assert payload["instrument_core"]["instrument_id"] == "equity-us-abbv"
     assert payload["range_key"] == "1m"
     assert payload["chart_basis"] == "close"
     assert [point["date"] for point in payload["points"]] == ["2026-03-15", "2026-04-08", "2026-04-15"]
@@ -642,7 +642,7 @@ def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client
         "/api/portfolios/yungu/transactions/position-preview",
         params={
             "account_id": "broker-us-core",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "as_of_date": "2026-04-15",
         },
     )
@@ -651,7 +651,7 @@ def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client
 
     assert payload["portfolio_id"] == "yungu"
     assert payload["account_id"] == "broker-us-core"
-    assert payload["asset_id"] == "equity-us-abbv"
+    assert payload["instrument_id"] == "equity-us-abbv"
     assert payload["as_of_date"] == "2026-04-15"
     assert payload["quantity"] == pytest.approx(880.0)
 
@@ -659,7 +659,7 @@ def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client
 def test_position_lots_support_historical_as_of_date(client):
     response = client.get(
         "/api/portfolios/yungu/position-lots",
-        params={"asset_id": "equity-us-abbv", "status": "open", "as_of_date": "2026-04-02"},
+        params={"instrument_id": "equity-us-abbv", "status": "open", "as_of_date": "2026-04-02"},
     )
     assert response.status_code == 200
     payload = response.json()
@@ -681,7 +681,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "moving_average",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "status": "active",
         },
     ).json()
@@ -694,7 +694,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-reserve",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "status": "active",
         },
     ).json()
@@ -707,7 +707,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
                 "trade_date": trade_date,
                 "account_id": source_account["account_id"],
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-abbv",
+                "instrument_id": "equity-us-abbv",
                 "quantity": 100.0,
                 "price": price,
                 "gross_amount": gross_amount,
@@ -725,7 +725,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
             "from_account_id": source_account["account_id"],
             "to_account_id": destination_account["account_id"],
             "transfer_object_type": "position",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 150.0,
         },
     )
@@ -735,7 +735,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
 
     destination_lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
-        params={"account_id": destination_account["account_id"], "asset_id": "equity-us-abbv"},
+        params={"account_id": destination_account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert destination_lots_response.status_code == 200
     destination_lots = destination_lots_response.json()["position_lots"]
@@ -745,7 +745,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
 
     source_lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
-        params={"account_id": source_account["account_id"], "asset_id": "equity-us-abbv", "status": "open"},
+        params={"account_id": source_account["account_id"], "instrument_id": "equity-us-abbv", "status": "open"},
     )
     assert source_lots_response.status_code == 200
     source_lots = source_lots_response.json()["position_lots"]
@@ -766,7 +766,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -780,7 +780,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -792,7 +792,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
             "transaction_type": "opening_balance",
             "trade_date": "2026-04-20",
             "account_id": source_account["account_id"],
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "gross_amount": 0.0,
             "currency": "USD",
@@ -807,7 +807,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
             "transfer_object_type": "position",
             "from_account_id": source_account["account_id"],
             "to_account_id": destination_account["account_id"],
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 4.0,
         },
     )
@@ -816,11 +816,11 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
 
     source_lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
-        params={"account_id": source_account["account_id"], "asset_id": "equity-us-abbv"},
+        params={"account_id": source_account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     destination_lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
-        params={"account_id": destination_account["account_id"], "asset_id": "equity-us-abbv"},
+        params={"account_id": destination_account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert source_lots_response.status_code == 200
     assert destination_lots_response.status_code == 200
@@ -841,7 +841,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
             "trade_date": "2026-04-22",
             "account_id": destination_account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 2.0,
             "price": 100.0,
             "gross_amount": 200.0,
@@ -890,7 +890,7 @@ def test_rejects_backdated_sell_before_position_exists(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-reserve-yungu-copy",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-01-15",
             "status": "active",
         },
@@ -905,7 +905,7 @@ def test_rejects_backdated_sell_before_position_exists(client):
             "trade_date": "2026-01-20",
             "account_id": "broker-us-core-yungu-copy",
             "settlement_cash_account_id": "cash-usd-main-yungu-copy",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "price": 200.0,
             "gross_amount": 2000.0,
@@ -924,7 +924,7 @@ def test_rejects_backdated_sell_before_position_exists(client):
             "from_account_id": "broker-us-core-yungu-copy",
             "to_account_id": destination_account["account_id"],
             "transfer_object_type": "position",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
         },
     )
@@ -940,7 +940,7 @@ def test_rejects_inconsistent_buy_sell_amount_contracts(client):
             "trade_date": "2026-04-15",
             "account_id": "broker-us-core",
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "price": 100.0,
             "gross_amount": 1.0,
@@ -959,7 +959,7 @@ def test_rejects_inconsistent_buy_sell_amount_contracts(client):
             "trade_date": "2026-04-15",
             "account_id": "broker-us-core",
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
             "price": 206.47,
             "gross_amount": 999999.0,
@@ -980,7 +980,7 @@ def test_accepts_display_rounded_price_when_gross_amount_is_authoritative(client
             "trade_date": "2026-04-15",
             "account_id": "broker-us-core",
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "fund-us-agg",
+            "instrument_id": "fund-us-agg",
             "quantity": 700.0,
             "price": 11.5436,
             "gross_amount": 8080.50,
@@ -1003,7 +1003,7 @@ def test_normalizes_transaction_precision_conventions(client):
             "trade_date": "2026-04-15",
             "account_id": "broker-us-core",
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "fund-us-agg",
+            "instrument_id": "fund-us-agg",
             "quantity": 700.004,
             "price": 11.54364,
             "gross_amount": 8080.504,
@@ -1031,7 +1031,7 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1043,7 +1043,7 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
             "transaction_type": "opening_balance",
             "trade_date": "2026-04-15",
             "account_id": opening_account["account_id"],
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "price": 999.0,
             "gross_amount": 1.0,
@@ -1059,7 +1059,7 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
             "account_id": "broker-us-core",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "price": 999.0,
             "gross_amount": 1.0,
@@ -1091,7 +1091,7 @@ def test_rejects_opening_balance_settlement_account_and_deposit_account_instrume
             "transaction_type": "opening_balance",
             "trade_date": "2026-04-15",
             "account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "gross_amount": 1000.0,
             "currency": "USD",
@@ -1108,7 +1108,7 @@ def test_rejects_deposit_account_fee_with_instrument_reference(client):
             "transaction_type": "fee",
             "trade_date": "2026-04-15",
             "account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "gross_amount": 25.0,
             "currency": "USD",
         },
@@ -1183,7 +1183,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
             "account_id": "broker-us-core",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
             "gross_amount": 100.0,
             "settlement_cash_account_id": "cash-usd-main",
@@ -1214,7 +1214,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
             "trade_date": "2026-04-15",
             "account_id": "broker-us-core",
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
             "gross_amount": 10.0,
             "currency": "USD",
@@ -1234,7 +1234,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1247,7 +1247,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
             "trade_date": "2026-04-10",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 100.0,
             "price": 100.0,
             "gross_amount": 10000.0,
@@ -1265,7 +1265,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
             "trade_date": "2026-04-15",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "gross_amount": 100.0,
             "fees": 0.0,
             "taxes": 15.0,
@@ -1281,7 +1281,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
             "trade_date": "2026-04-16",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "gross_amount": 40.0,
             "fees": 0.0,
             "taxes": 5.0,
@@ -1292,7 +1292,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
 
     lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
-        params={"account_id": account["account_id"], "asset_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
     lot = lots_response.json()["position_lots"][0]
@@ -1312,7 +1312,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1326,7 +1326,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-reserve",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1339,7 +1339,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
             "trade_date": "2026-04-10",
             "account_id": source_account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "price": 100.0,
             "gross_amount": 1000.0,
@@ -1355,7 +1355,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
             "trade_date": "2026-04-11",
             "account_id": source_account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "price": 110.0,
             "gross_amount": 1100.0,
@@ -1371,7 +1371,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
             "trade_date": "2026-04-12",
             "account_id": source_account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
             "price": 120.0,
             "gross_amount": 120.0,
@@ -1388,7 +1388,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
             "from_account_id": source_account["account_id"],
             "to_account_id": destination_account["account_id"],
             "transfer_object_type": "position",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
         },
     )
@@ -1402,7 +1402,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
             "trade_date": "2026-04-12",
             "account_id": source_account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "gross_amount": 10.0,
             "currency": "USD",
         },
@@ -1421,7 +1421,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1434,7 +1434,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
             "trade_date": "2026-04-10",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "price": 100.0,
             "gross_amount": 1000.0,
@@ -1450,7 +1450,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
             "trade_date": "2026-04-11",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "price": 110.0,
             "gross_amount": 1100.0,
@@ -1466,7 +1466,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
             "trade_date": "2026-04-12",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "gross_amount": 50.0,
             "currency": "USD",
         },
@@ -1481,7 +1481,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
             "trade_date": "2026-04-13",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "gross_amount": 5.0,
             "currency": "USD",
         },
@@ -1531,7 +1531,7 @@ def test_rejects_dividend_reinvestment_without_existing_position(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1543,7 +1543,7 @@ def test_rejects_dividend_reinvestment_without_existing_position(client):
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
             "account_id": account["account_id"],
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
             "price": 100.0,
             "gross_amount": 100.0,
@@ -1562,7 +1562,7 @@ def test_rejects_entitlement_date_on_dividend_reinvestment(client):
             "trade_date": "2026-04-15",
             "entitlement_date": "2026-04-10",
             "account_id": "broker-us-core",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
             "price": 100.0,
             "gross_amount": 100.0,
@@ -1583,7 +1583,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1597,7 +1597,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
                 "trade_date": trade_date,
                 "account_id": account["account_id"],
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-abbv",
+                "instrument_id": "equity-us-abbv",
                 "quantity": 50.0,
                 "price": 100.0,
                 "gross_amount": 5000.0,
@@ -1613,7 +1613,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
             "trade_date": "2026-04-12",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 50.0,
             "price": 110.0,
             "gross_amount": 5500.0,
@@ -1630,7 +1630,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
             "entitlement_date": "2026-04-10",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "gross_amount": 100.0,
             "currency": "USD",
         },
@@ -1640,7 +1640,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
 
     lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
-        params={"account_id": account["account_id"], "asset_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
     lots = lots_response.json()["position_lots"]
@@ -1660,7 +1660,7 @@ def test_rejects_late_paid_dividend_reinvestment_and_preserves_workspace_reads(c
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1673,7 +1673,7 @@ def test_rejects_late_paid_dividend_reinvestment_and_preserves_workspace_reads(c
             "trade_date": "2026-04-01",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 100.0,
             "price": 100.0,
             "gross_amount": 10000.0,
@@ -1689,7 +1689,7 @@ def test_rejects_late_paid_dividend_reinvestment_and_preserves_workspace_reads(c
             "trade_date": "2026-04-12",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 100.0,
             "price": 110.0,
             "gross_amount": 11000.0,
@@ -1705,7 +1705,7 @@ def test_rejects_late_paid_dividend_reinvestment_and_preserves_workspace_reads(c
             "trade_date": "2026-04-15",
             "entitlement_date": "2026-04-10",
             "account_id": account["account_id"],
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
             "price": 100.0,
             "gross_amount": 100.0,
@@ -1730,7 +1730,7 @@ def test_rejects_entitlement_date_on_return_of_capital(client):
             "entitlement_date": "2026-04-10",
             "account_id": "broker-us-core",
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "gross_amount": 10.0,
             "currency": "USD",
         },
@@ -1741,9 +1741,9 @@ def test_rejects_entitlement_date_on_return_of_capital(client):
 
 def test_ledger_postings_sort_by_trade_time_within_same_day():
     instrument_ref = {
-        "asset_id": "equity-us-abbv",
-        "asset_name": "AbbVie Inc",
-        "asset_type": "equity",
+        "instrument_id": "equity-us-abbv",
+        "instrument_name": "AbbVie Inc",
+        "instrument_type": "equity",
         "currency": "USD",
         "identifiers": [],
     }
@@ -1757,7 +1757,7 @@ def test_ledger_postings_sort_by_trade_time_within_same_day():
             "settlement_date": "2026-04-15",
             "account_id": "broker",
             "settlement_cash_account_id": "cash",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "instrument_ref": instrument_ref,
             "gross_amount": 5.0,
             "currency": "USD",
@@ -1772,7 +1772,7 @@ def test_ledger_postings_sort_by_trade_time_within_same_day():
             "settlement_date": "2026-04-15",
             "account_id": "broker",
             "settlement_cash_account_id": "cash",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "instrument_ref": instrument_ref,
             "quantity": 10.0,
             "price": 100.0,
@@ -1791,7 +1791,7 @@ def test_ledger_postings_sort_by_trade_time_within_same_day():
             "settlement_date": "2026-04-15",
             "account_id": "broker",
             "settlement_cash_account_id": "cash",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "instrument_ref": instrument_ref,
             "quantity": 10.0,
             "price": 105.0,
@@ -1828,7 +1828,7 @@ def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -1841,7 +1841,7 @@ def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client
             "trade_date": "2026-04-10",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 100.0,
             "price": 100.0,
             "gross_amount": 10000.0,
@@ -1856,7 +1856,7 @@ def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
             "account_id": account["account_id"],
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
             "price": 100.0,
             "gross_amount": 100.0,
@@ -1867,7 +1867,7 @@ def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client
 
     lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
-        params={"account_id": account["account_id"], "asset_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
     lots = lots_response.json()["position_lots"]
@@ -1902,11 +1902,11 @@ def test_transfer_derivation_rejects_missing_source_lots():
             "trade_at": "2026-04-10T04:00:00Z",
             "settlement_date": "2026-04-10",
             "account_id": "src",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "instrument_ref": {
-                "asset_id": "equity-us-abbv",
-                "asset_name": "AbbVie Inc",
-                "asset_type": "equity",
+                "instrument_id": "equity-us-abbv",
+                "instrument_name": "AbbVie Inc",
+                "instrument_type": "equity",
                 "currency": "USD",
                 "identifiers": [],
             },
@@ -1924,11 +1924,11 @@ def test_transfer_derivation_rejects_missing_source_lots():
             "trade_at": "2026-04-10T04:00:00Z",
             "settlement_date": "2026-04-10",
             "account_id": "dst",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "instrument_ref": {
-                "asset_id": "equity-us-abbv",
-                "asset_name": "AbbVie Inc",
-                "asset_type": "equity",
+                "instrument_id": "equity-us-abbv",
+                "instrument_name": "AbbVie Inc",
+                "instrument_type": "equity",
                 "currency": "USD",
                 "identifiers": [],
             },
@@ -1965,9 +1965,9 @@ def test_lot_kernels_reject_oversell_when_route_validation_is_bypassed():
         },
     ]
     instrument_ref = {
-        "asset_id": "equity-us-abbv",
-        "asset_name": "AbbVie Inc",
-        "asset_type": "equity",
+        "instrument_id": "equity-us-abbv",
+        "instrument_name": "AbbVie Inc",
+        "instrument_type": "equity",
         "currency": "USD",
         "identifiers": [],
     }
@@ -1981,7 +1981,7 @@ def test_lot_kernels_reject_oversell_when_route_validation_is_bypassed():
             "settlement_date": "2026-04-10",
             "account_id": "broker",
             "settlement_cash_account_id": "cash",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "instrument_ref": instrument_ref,
             "quantity": 1.0,
             "price": 100.0,
@@ -2000,7 +2000,7 @@ def test_lot_kernels_reject_oversell_when_route_validation_is_bypassed():
             "settlement_date": "2026-04-11",
             "account_id": "broker",
             "settlement_cash_account_id": "cash",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "instrument_ref": instrument_ref,
             "quantity": 2.0,
             "price": 110.0,
@@ -2036,7 +2036,7 @@ def test_rejects_settlement_before_trade_date(client):
             "settlement_date": "2026-04-01",
             "account_id": "broker-us-core",
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
             "price": 206.47,
             "gross_amount": 206.47,
@@ -2073,7 +2073,7 @@ def test_rejects_transactions_outside_account_lifecycle(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-01-01",
             "closed_at": "2026-02-01",
             "status": "closed",
@@ -2089,7 +2089,7 @@ def test_rejects_transactions_outside_account_lifecycle(client):
             "trade_date": "2026-04-15",
             "account_id": closed_account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
             "price": 206.47,
             "gross_amount": 206.47,
@@ -2206,7 +2206,7 @@ def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -2220,7 +2220,7 @@ def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
             "trade_time": "15:00",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 100.0,
             "price": 100.0,
             "gross_amount": 10000.0,
@@ -2239,7 +2239,7 @@ def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
             "trade_time": "09:00",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 100.0,
             "price": 110.0,
             "gross_amount": 11000.0,
@@ -2262,7 +2262,7 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -2277,7 +2277,7 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
             "settlement_date": "2026-04-17",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 100.0,
             "price": 100.0,
             "gross_amount": 10000.0,
@@ -2297,7 +2297,7 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
             "settlement_date": "2026-04-16",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 100.0,
             "price": 110.0,
             "gross_amount": 11000.0,
@@ -2317,7 +2317,7 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
 
     lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
-        params={"account_id": account["account_id"], "asset_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
     lots = lots_response.json()["position_lots"]
@@ -2348,7 +2348,7 @@ def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -2361,7 +2361,7 @@ def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
             "trade_date": "2026-04-16",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "price": 100.0,
             "gross_amount": 1000.0,
@@ -2374,7 +2374,7 @@ def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
 
     lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
-        params={"account_id": account["account_id"], "asset_id": "equity-us-abbv", "status": "open"},
+        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv", "status": "open"},
     )
     assert lots_response.status_code == 200
     lots = lots_response.json()["position_lots"]
@@ -2398,7 +2398,7 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "moving_average",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -2412,7 +2412,7 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
                 "trade_date": trade_date,
                 "account_id": account["account_id"],
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-abbv",
+                "instrument_id": "equity-us-abbv",
                 "quantity": 100.0,
                 "price": price,
                 "gross_amount": price * 100.0,
@@ -2430,7 +2430,7 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
             "trade_date": "2026-04-12",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 50.0,
             "price": 130.0,
             "gross_amount": 6500.0,
@@ -2449,13 +2449,13 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
     account_position = next(
         row
         for row in account_workspace_response.json()["positions"]
-        if row["asset_id"] == "equity-us-abbv"
+        if row["instrument_id"] == "equity-us-abbv"
     )
     assert account_position["cost_basis"] == pytest.approx(16500.0)
 
     lots_response = client.get(
         "/api/portfolios/yungu/position-lots",
-        params={"account_id": account["account_id"], "asset_id": "equity-us-abbv"},
+        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
     lots = lots_response.json()["position_lots"]
@@ -2478,7 +2478,7 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -2492,7 +2492,7 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-reserve",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -2505,7 +2505,7 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
             "trade_date": "2026-04-10",
             "account_id": source_account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 100.0,
             "price": 100.0,
             "gross_amount": 10000.0,
@@ -2523,7 +2523,7 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
             "from_account_id": source_account["account_id"],
             "to_account_id": destination_account["account_id"],
             "transfer_object_type": "position",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 50.0,
             "gross_amount": 1.0,
         },
@@ -2542,7 +2542,7 @@ def test_rejects_return_of_capital_above_remaining_cost_basis(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -2555,7 +2555,7 @@ def test_rejects_return_of_capital_above_remaining_cost_basis(client):
             "trade_date": "2026-04-10",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "price": 100.0,
             "gross_amount": 1000.0,
@@ -2573,7 +2573,7 @@ def test_rejects_return_of_capital_above_remaining_cost_basis(client):
             "trade_date": "2026-04-15",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "gross_amount": 1500.0,
             "fees": 0.0,
             "taxes": 0.0,
@@ -2635,7 +2635,7 @@ def test_security_trade_cash_posting_uses_settlement_effective_date(client):
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -2649,7 +2649,7 @@ def test_security_trade_cash_posting_uses_settlement_effective_date(client):
             "settlement_date": "2026-04-12",
             "account_id": account["account_id"],
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "price": 100.0,
             "gross_amount": 1000.0,
@@ -2683,7 +2683,7 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
-            "allowed_asset_types": ["equity"],
+            "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
             "status": "active",
         },
@@ -2696,7 +2696,7 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
             "trade_date": "2026-04-10",
             "settlement_date": "2026-04-10",
             "account_id": account["account_id"],
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 100.0,
             "gross_amount": 10000.0,
             "fees": 0.0,
@@ -2712,7 +2712,7 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
         "/api/portfolios/yungu/position-lots",
         params={
             "account_id": account["account_id"],
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "status": "open",
             "as_of_date": "2026-04-15",
         },

@@ -5,9 +5,9 @@ import binascii
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from yungu_asset_core.models import AssetIdentifier as PlatformAssetIdentifier
-from yungu_asset_core.models import AssetType, DataStatus, IdentifierType, MetricFamily, QuoteBasis, QuoteRole
-from yungu_asset_core.models import QuoteSelectionPolicy as PlatformQuoteSelectionPolicy
+from yungu_instrument_core.models import InstrumentIdentifier as PlatformInstrumentIdentifier
+from yungu_instrument_core.models import InstrumentType, DataStatus, IdentifierType, MetricFamily, QuoteBasis, QuoteRole
+from yungu_instrument_core.models import QuoteSelectionPolicy as PlatformQuoteSelectionPolicy
 
 
 class PlatformAppCard(BaseModel):
@@ -123,11 +123,11 @@ class PlatformLifecycleState(BaseModel):
 
 
 class PlatformInstrumentRecord(BaseModel):
-    asset_id: str
-    asset_name: str
-    asset_type: AssetType
+    instrument_id: str
+    instrument_name: str
+    instrument_type: InstrumentType
     currency: str
-    identifiers: list[PlatformAssetIdentifier]
+    identifiers: list[PlatformInstrumentIdentifier]
     latest_market_data: list[PlatformMarketDataPoint]
     quote_selection_policy: PlatformQuoteSelectionPolicy
     coverage_state: DataStatus
@@ -146,10 +146,10 @@ class PlatformInstrumentsResponse(BaseModel):
 
 
 class PlatformInstrumentCreateRequest(BaseModel):
-    asset_name: str = Field(min_length=1)
-    asset_type: AssetType
+    instrument_name: str = Field(min_length=1)
+    instrument_type: InstrumentType
     currency: str = Field(min_length=1, max_length=8)
-    identifiers: list[PlatformAssetIdentifier] = Field(default_factory=list)
+    identifiers: list[PlatformInstrumentIdentifier] = Field(default_factory=list)
 
 
 class PlatformMarketDataUpsertRequest(BaseModel):
@@ -179,8 +179,8 @@ class PlatformFxRateRecord(BaseModel):
     rate: Decimal
     as_of_date: date
     source_kind: FxRateSourceKind
-    asset_id: str | None = None
-    source_asset_ids: list[str] = Field(default_factory=list)
+    instrument_id: str | None = None
+    source_instrument_ids: list[str] = Field(default_factory=list)
     provider: str | None = None
     status: DataStatus = "complete"
 
@@ -291,8 +291,8 @@ class PlatformNavImportPreviewRow(BaseModel):
     nav_with_dividend: Decimal | None = None
     currency: str = Field(min_length=1, max_length=8)
     frequency: str = Field(min_length=1)
-    asset_code: str | None = None
-    asset_name: str | None = None
+    instrument_code: str | None = None
+    instrument_name: str | None = None
 
 
 class PlatformNavImportPreviewResponse(BaseModel):

@@ -23,7 +23,7 @@ def upgrade() -> None:
         sa.Column("portfolio_id", sa.String(), sa.ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"), nullable=False),
         sa.Column("as_of_date", sa.Date(), nullable=False),
         sa.Column("account_id", sa.String(), nullable=False),
-        sa.Column("asset_id", sa.String(), nullable=False),
+        sa.Column("instrument_id", sa.String(), nullable=False),
         sa.Column("currency", sa.String(), nullable=False),
         sa.Column("quantity", sa.Float(), nullable=False),
         sa.Column("cost_basis", sa.Float(), nullable=True),
@@ -34,7 +34,7 @@ def upgrade() -> None:
         sa.Column("portfolio_weight", sa.Float(), nullable=True),
         sa.Column("holding_json", sa.JSON(), nullable=False),
         sa.Column("calculated_at", sa.String(), nullable=False),
-        sa.PrimaryKeyConstraint("portfolio_id", "as_of_date", "account_id", "asset_id"),
+        sa.PrimaryKeyConstraint("portfolio_id", "as_of_date", "account_id", "instrument_id"),
     )
     op.create_index(
         "ix_portfolio_daily_holding_portfolio_date",
@@ -42,9 +42,9 @@ def upgrade() -> None:
         ["portfolio_id", "as_of_date"],
     )
     op.create_index(
-        "ix_portfolio_daily_holding_asset_date",
+        "ix_portfolio_daily_holding_instrument_date",
         "portfolio_daily_holding_snapshot",
-        ["portfolio_id", "asset_id", "as_of_date"],
+        ["portfolio_id", "instrument_id", "as_of_date"],
     )
     op.create_index(
         "ix_portfolio_daily_holding_account_date",
@@ -85,6 +85,6 @@ def downgrade() -> None:
     op.drop_index("ix_portfolio_daily_contribution_axis_date", table_name="portfolio_daily_contribution_slice")
     op.drop_table("portfolio_daily_contribution_slice")
     op.drop_index("ix_portfolio_daily_holding_account_date", table_name="portfolio_daily_holding_snapshot")
-    op.drop_index("ix_portfolio_daily_holding_asset_date", table_name="portfolio_daily_holding_snapshot")
+    op.drop_index("ix_portfolio_daily_holding_instrument_date", table_name="portfolio_daily_holding_snapshot")
     op.drop_index("ix_portfolio_daily_holding_portfolio_date", table_name="portfolio_daily_holding_snapshot")
     op.drop_table("portfolio_daily_holding_snapshot")

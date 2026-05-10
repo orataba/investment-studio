@@ -1,4 +1,4 @@
-from yungu_asset_core.db_models import (
+from yungu_instrument_core.db_models import (
     Instrument,
     InstrumentIdentifier,
     InstrumentMarketData,

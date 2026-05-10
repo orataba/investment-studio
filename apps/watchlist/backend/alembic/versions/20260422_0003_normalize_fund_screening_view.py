@@ -20,14 +20,14 @@ depends_on = None
 LEGACY_VIEW_ID = "private-fund-screening"
 LEGACY_VIEW_NAME = "私募分类筛选"
 LEGACY_VIEW_DESCRIPTION = "先按分类树缩小私募基金池，再叠加研究标签和监控判断。"
-LEGACY_DEFAULT_FILTERS = {"asset_type": ["fund"], "attr.fund_regime": ["私募"]}
+LEGACY_DEFAULT_FILTERS = {"instrument_type": ["fund"], "attr.fund_regime": ["私募"]}
 
 FUND_VIEW_ID = "fund-screening"
 FUND_VIEW_NAME = "基金分类筛选"
 FUND_VIEW_DESCRIPTION = "先按分类树缩小基金池，再叠加研究标签和监控判断。"
-FUND_DEFAULT_FILTERS = {"asset_type": ["fund"]}
+FUND_DEFAULT_FILTERS = {"instrument_type": ["fund"]}
 FUND_VIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("attr.fund_regime", 2, 120),
     ("attr.fund_category_l1", 3, 150),
     ("attr.fund_category_l2", 4, 170),

@@ -28,7 +28,7 @@ REMOVED_DEFAULT_COLUMN_KEYS = [
 ]
 
 PREVIOUS_OVERVIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("attr.fund_regime", 2, 120),
     ("attr.fund_taxonomy_level_1", 3, 150),
     ("attr.fund_taxonomy_level_2", 4, 170),
@@ -43,7 +43,7 @@ PREVIOUS_OVERVIEW_COLUMNS = [
 ]
 
 PREVIOUS_FUND_SCREENING_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("attr.fund_regime", 2, 120),
     ("attr.fund_taxonomy_level_1", 3, 150),
     ("attr.fund_taxonomy_level_2", 4, 170),

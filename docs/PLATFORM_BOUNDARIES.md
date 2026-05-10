@@ -13,7 +13,7 @@
 
 数据库拓扑是：
 
-- `shared_asset` schema
+- `instrument_registry` schema
 - `watchlist` schema
 - `portfolio` schema
 
@@ -27,35 +27,35 @@
 
 ### Platform
 
-- 只直接读写 `shared_asset`
+- 只直接读写 `instrument_registry`
 - 提供平台首页、app registry 和 Database Dashboard API
 - 可以下线；`watchlist` 和 `portfolio` 的核心读写路径不应受影响
 
 ### Watchlist
 
 - 直接读写 `watchlist`
-- 直接读取 `shared_asset`
+- 直接读取 `instrument_registry`
 - 当前已发布范围收口为 `fund` 资产类型
 - 在本地维护自己的 read models、recalc jobs、manual profile 和产品框架；Copilot 仅保留 backend extension boundary
 
 ### Portfolio
 
 - 直接读写 `portfolio`
-- 直接读取 `shared_asset`
+- 直接读取 `instrument_registry`
 - 在本地维护自己的 ledger、lots、performance、risk、taxonomy、target set、research
 
 ## Shared Layer
 
 当前共享层分成三部分：
 
-### `packages/asset-core`
+### `packages/instrument-core`
 
 承载跨 app 稳定 contract 和共享持久化 helper：
 
-- `asset_id`
-- `asset_name`
+- `instrument_id`
+- `instrument_name`
 - identifiers
-- `asset_type`
+- `instrument_type`
 - `currency`
 - typed market data / FX
 - quote selection policy
@@ -71,7 +71,7 @@
 
 后续如果沉淀 layout、基础组件或设计系统，也优先放在这里，而不是复制到各 app。
 
-### `shared_asset` schema
+### `instrument_registry` schema
 
 承载共享资产主档和共享市场事实：
 
@@ -80,15 +80,15 @@
 - instrument_market_data
 - registry metadata
 
-`shared_asset` 的 Alembic 入口独立放在 [infra/shared_asset](../infra/shared_asset/README.md)，不再挂在 `platform` app 下。
+`instrument_registry` 的 Alembic 入口独立放在 [infra/instrument_registry](../infra/instrument_registry/README.md)，不再挂在 `platform` app 下。
 
 ## Storage Boundary
 
 共享资产身份由数据库直接约束，而不是靠 app 约定：
 
-- `portfolio.transaction_record.asset_id -> shared_asset.instrument.asset_id`
-- `watchlist.watchlist_item.asset_id -> shared_asset.instrument.asset_id`
-- `watchlist.asset_detail.asset_id -> shared_asset.instrument.asset_id`
+- `portfolio.transaction_record.instrument_id -> instrument_registry.instrument.instrument_id`
+- `watchlist.watchlist_item.instrument_id -> instrument_registry.instrument.instrument_id`
+- `watchlist.instrument_detail.instrument_id -> instrument_registry.instrument.instrument_id`
 
 这意味着：
 
@@ -102,8 +102,8 @@
 
 1. 在 `Database Dashboard` 维护共享资产主档、identifier、价格、净值、FX
    支持手工录入、CSV/Excel 文件导入、邮件刷新，并能直接查看选中资产的共享市场数据与净值历史
-2. 数据写入 `shared_asset`
-3. `Watchlist` 和 `Portfolio` 直接从 `shared_asset` 读取
+2. 数据写入 `instrument_registry`
+3. `Watchlist` 和 `Portfolio` 直接从 `instrument_registry` 读取
 
 ### Watchlist Read Models
 
@@ -116,7 +116,7 @@
 
 1. 用户显式创建 portfolio / account / transaction，或用导入脚本导入
 2. `portfolio` 只在自己的 schema 持久化业务事实
-3. valuation / holdings / charts / performance 使用 `shared_asset` 的 canonical instrument 和 market data
+3. valuation / holdings / charts / performance 使用 `instrument_registry` 的 canonical instrument 和 market data
 
 ## Non-goals
 
@@ -137,5 +137,5 @@
 
 如果未来再新增功能，默认遵守这条判断：
 
-- 如果是共享资产身份或共享市场事实，优先放 `asset-core + shared_asset`
+- 如果是共享资产身份或共享市场事实，优先放 `instrument-core + instrument_registry`
 - 如果是某个 app 的工作流、派生读模型、研究判断、展示状态，必须留在 app 私域

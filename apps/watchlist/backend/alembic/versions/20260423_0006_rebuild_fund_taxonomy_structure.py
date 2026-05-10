@@ -147,7 +147,7 @@ def upgrade() -> None:
         "instrument_taxonomy_node",
         sa.column("node_id", sa.String()),
         sa.column("taxonomy_code", sa.String()),
-        sa.column("asset_type", sa.String()),
+        sa.column("instrument_type", sa.String()),
         sa.column("label", sa.String()),
         sa.column("parent_node_id", sa.String()),
         sa.column("level_index", sa.Integer()),
@@ -158,19 +158,19 @@ def upgrade() -> None:
     )
     assignment_table = sa.table(
         "instrument_taxonomy_assignment",
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("taxonomy_code", sa.String()),
         sa.column("node_id", sa.String()),
     )
     watchlist_row_table = sa.table(
         "watchlist_row_read_model",
         sa.column("watchlist_id", sa.String()),
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("attributes_json", sa.JSON()),
     )
     summary_table = sa.table(
-        "asset_summary_read_model",
-        sa.column("asset_id", sa.String()),
+        "instrument_summary_read_model",
+        sa.column("instrument_id", sa.String()),
         sa.column("payload_json", sa.JSON()),
     )
 
@@ -179,13 +179,13 @@ def upgrade() -> None:
     assignment_rows = list(
         bind.execute(
             sa.select(
-                assignment_table.c.asset_id,
+                assignment_table.c.instrument_id,
                 assignment_table.c.node_id,
             ).where(assignment_table.c.taxonomy_code == FUND_TAXONOMY_CODE)
         ).mappings()
     )
     mapped_node_by_asset = {
-        str(row["asset_id"]): _map_node_id(
+        str(row["instrument_id"]): _map_node_id(
             str(row["node_id"]) if row["node_id"] is not None else None,
             new_node_ids,
         )
@@ -205,11 +205,11 @@ def upgrade() -> None:
         [{key: _serialize_json(value) for key, value in row.items()} for row in new_nodes],
     )
 
-    for asset_id, node_id in mapped_node_by_asset.items():
+    for instrument_id, node_id in mapped_node_by_asset.items():
         bind.execute(
             sa.update(assignment_table)
             .where(
-                assignment_table.c.asset_id == asset_id,
+                assignment_table.c.instrument_id == instrument_id,
                 assignment_table.c.taxonomy_code == FUND_TAXONOMY_CODE,
             )
             .values(node_id=node_id)
@@ -218,17 +218,17 @@ def upgrade() -> None:
     taxonomy_by_asset: dict[str, dict[str, object]] = {}
     node_by_id = {str(row["node_id"]): row for row in new_nodes}
     empty_context = build_taxonomy_context(None)
-    for asset_id, node_id in mapped_node_by_asset.items():
-        taxonomy_by_asset[asset_id] = (
+    for instrument_id, node_id in mapped_node_by_asset.items():
+        taxonomy_by_asset[instrument_id] = (
             build_taxonomy_context(node_by_id[node_id])
             if node_id is not None and node_id in node_by_id
             else empty_context
         )
 
     for row in bind.execute(sa.select(watchlist_row_table)).mappings():
-        asset_id = str(row["asset_id"])
+        instrument_id = str(row["instrument_id"])
         next_attributes = merge_taxonomy_attributes(
-            taxonomy_context=taxonomy_by_asset.get(asset_id, empty_context),
+            taxonomy_context=taxonomy_by_asset.get(instrument_id, empty_context),
             instrument_attributes=(
                 row["attributes_json"] if isinstance(row["attributes_json"], dict) else {}
             ),
@@ -237,22 +237,22 @@ def upgrade() -> None:
             sa.update(watchlist_row_table)
             .where(
                 watchlist_row_table.c.watchlist_id == row["watchlist_id"],
-                watchlist_row_table.c.asset_id == asset_id,
+                watchlist_row_table.c.instrument_id == instrument_id,
             )
             .values(attributes_json=_serialize_json(next_attributes))
         )
 
     for row in bind.execute(sa.select(summary_table)).mappings():
-        asset_id = str(row["asset_id"])
+        instrument_id = str(row["instrument_id"])
         payload = row["payload_json"] if isinstance(row["payload_json"], dict) else {}
         bind.execute(
             sa.update(summary_table)
-            .where(summary_table.c.asset_id == asset_id)
+            .where(summary_table.c.instrument_id == instrument_id)
             .values(
                 payload_json=_serialize_json(
                     {
                         **payload,
-                        "taxonomy": taxonomy_by_asset.get(asset_id, empty_context),
+                        "taxonomy": taxonomy_by_asset.get(instrument_id, empty_context),
                     }
                 )
             )

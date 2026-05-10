@@ -73,9 +73,9 @@ export type WatchlistItemsCopyResponse = {
 }
 
 export type SharedInstrumentRecord = {
-  asset_id: string
-  asset_name: string
-  asset_type: string
+  instrument_id: string
+  instrument_name: string
+  instrument_type: string
   currency: string
   identifiers: Array<{
     identifier_type: string
@@ -113,7 +113,7 @@ export type FieldRegistryRecord = {
   sort_mode: string
   filter_mode: string
   group_mode: string
-  asset_scope_json: string[]
+  instrument_scope_json: string[]
   product_scope_json: string[]
   availability_rule_json: Record<string, unknown>
   source_domain: string
@@ -137,7 +137,7 @@ export type InstrumentAttributeDefinition = {
   group_code: string
   display_order: number
   options: string[]
-  asset_scope_json: string[]
+  instrument_scope_json: string[]
   applicability_json: Record<string, string[]>
   rubric_json: Record<string, unknown>
   is_groupable: boolean
@@ -170,23 +170,23 @@ export type FundTaxonomyTreeNode = {
 
 export type FundTaxonomyTreeResponse = {
   taxonomy_code: string
-  asset_type: string
+  instrument_type: string
   max_depth: number
   nodes: FundTaxonomyTreeNode[]
 }
 
 export type InstrumentAttributeValuesResponse = {
-  asset_id: string
+  instrument_id: string
   definitions: InstrumentAttributeDefinition[]
   values: Record<string, unknown>
   taxonomy: FundTaxonomyContext
 }
 
 export type InstrumentResolveResponse = {
-  requested_asset_id: string
-  canonical_asset_id: string | null
-  asset_name: string
-  asset_type: string
+  requested_instrument_id: string
+  canonical_instrument_id: string | null
+  instrument_name: string
+  instrument_type: string
   primary_identifier: string | null
   detail_view_type: string
   detail_subject_id: string | null
@@ -203,7 +203,7 @@ export type InstrumentAttributeDefinitionCreatePayload = {
   group_code: string
   display_order?: number
   options?: string[]
-  asset_scope_json?: string[]
+  instrument_scope_json?: string[]
   applicability_json?: Record<string, string[]>
   rubric_json?: Record<string, unknown>
   is_groupable?: boolean
@@ -259,10 +259,10 @@ export type MonitoringWatchlistSummary = {
   last_activity_at: string | null
 }
 
-export type MonitoringAssetRecord = {
-  asset_id: string
-  asset_name: string
-  asset_type: string
+export type MonitoringInstrumentRecord = {
+  instrument_id: string
+  instrument_name: string
+  instrument_type: string
   ticker_or_isin: string | null
   management_firm_name: string | null
   data_freshness_status: string
@@ -282,8 +282,8 @@ export type MonitoringAssetRecord = {
 
 export type MonitoringRecalcJobRecord = {
   recalc_job_id: string
-  asset_id: string
-  asset_name: string
+  instrument_id: string
+  instrument_name: string
   job_type: string
   job_status: string
   trigger_type: string
@@ -300,7 +300,7 @@ export type MonitoringDashboardResponse = {
   generated_at: string | null
   overview: {
     watchlist_count: number
-    unique_asset_count: number
+    unique_instrument_count: number
     needs_refresh_count: number
     missing_quote_count: number
     missing_label_count: number
@@ -308,8 +308,8 @@ export type MonitoringDashboardResponse = {
     failed_recalc_job_count: number
   }
   watchlists: MonitoringWatchlistSummary[]
-  needs_attention_assets: MonitoringAssetRecord[]
-  missing_label_assets: MonitoringAssetRecord[]
+  needs_attention_instruments: MonitoringInstrumentRecord[]
+  missing_label_instruments: MonitoringInstrumentRecord[]
   open_recalc_jobs: MonitoringRecalcJobRecord[]
 }
 
@@ -320,7 +320,7 @@ export type RecalcExecuteResponse = {
 }
 
 export type FundSummaryResponse = {
-  asset_id?: string
+  instrument_id?: string
   fund_id: string
   fund_name: string
   ticker_or_isin: string
@@ -356,14 +356,32 @@ export type FundLibraryItem = {
 }
 
 type RawFundLibraryItem = {
-  asset_id: string
-  asset_name: string
-  asset_type: string
+  instrument_id: string
+  instrument_name: string
+  instrument_type: string
   detail_view_type: string
   primary_identifier: string | null
 }
 
 export type FundChartPoint = { date: string; value: number }
+
+export type CalculationFrequency = 'daily' | 'weekly' | 'monthly'
+
+export type CalculationFrequencyProfile = {
+  requested_frequency: 'auto'
+  resolved_frequency: CalculationFrequency
+  inferred_frequency: CalculationFrequency
+  source_frequency_counts: Record<CalculationFrequency | 'unknown', number>
+  raw_observation_count: number
+  observation_count: number
+  start_date: string | null
+  end_date: string | null
+  annualization_periods_per_year: number | null
+  largest_gap_days: number | null
+  gap_count: number
+  gap_status: 'aligned' | 'calendar_gaps'
+  status_label: string
+}
 
 export type FundChartResponse = {
   fund_id: string
@@ -419,6 +437,7 @@ export type FundPerformanceResponse = {
       overall_percentile?: number | null
     }
   } | null
+  calculation_frequency_profile: CalculationFrequencyProfile | null
   snapshot_metadata: {
     as_of_date: string | null
     methodology_version: string
@@ -443,6 +462,7 @@ export type FundRiskResponse = {
     rows: Array<Record<string, unknown>>
     note: string | null
   } | null
+  calculation_frequency_profile: CalculationFrequencyProfile | null
   snapshot_metadata: {
     as_of_date: string | null
     methodology_version: string
@@ -541,9 +561,10 @@ export type FundNavSeriesResponse = {
   nav_basis_type: string | null
   nav_basis_source: string
   nav_basis_status: string
+  calculation_frequency_profile: CalculationFrequencyProfile
   compare_settings?: {
-    default_benchmark_asset_id: string | null
-    peer_asset_ids: string[]
+    default_benchmark_instrument_id: string | null
+    peer_instrument_ids: string[]
   }
   refresh_status?: {
     status: string
@@ -553,6 +574,7 @@ export type FundNavSeriesResponse = {
     mode: string
   }
   series: Array<{ date: string; nav: number }>
+  calculation_series: Array<{ date: string; nav: number }>
   rows: Array<{
     as_of_date: string
     nav: number | null
@@ -566,15 +588,16 @@ export type FundNavSeriesResponse = {
 }
 
 type RawFundNavSeriesResponse = {
-  asset_id: string
+  instrument_id: string
   count: number
   nav_basis_preference: 'auto' | 'nav_with_dividend'
   nav_basis_type: string | null
   nav_basis_source: string
   nav_basis_status: string
+  calculation_frequency_profile: CalculationFrequencyProfile
   compare_settings?: {
-    default_benchmark_asset_id: string | null
-    peer_asset_ids: string[]
+    default_benchmark_instrument_id: string | null
+    peer_instrument_ids: string[]
   }
   refresh_status?: {
     status: string
@@ -584,6 +607,7 @@ type RawFundNavSeriesResponse = {
     mode: string
   }
   series: Array<{ date: string; nav: number }>
+  calculation_series: Array<{ date: string; nav: number }>
   rows: Array<{
     date: string
     nav: number | null
@@ -639,24 +663,26 @@ async function fetchForm<T>(
 
 function normalizeFundLibraryItem(item: RawFundLibraryItem): FundLibraryItem {
   return {
-    fund_id: item.asset_id,
-    fund_name: item.asset_name,
+    fund_id: item.instrument_id,
+    fund_name: item.instrument_name,
     ticker_or_isin: item.primary_identifier,
-    product_type: item.asset_type || item.detail_view_type || 'fund',
+    product_type: item.instrument_type || item.detail_view_type || 'fund',
   }
 }
 
 function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): FundNavSeriesResponse {
   return {
-    fund_id: response.asset_id,
+    fund_id: response.instrument_id,
     count: response.count,
     nav_basis_preference: response.nav_basis_preference,
     nav_basis_type: response.nav_basis_type,
     nav_basis_source: response.nav_basis_source,
     nav_basis_status: response.nav_basis_status,
+    calculation_frequency_profile: response.calculation_frequency_profile,
     compare_settings: response.compare_settings,
     refresh_status: response.refresh_status,
     series: response.series,
+    calculation_series: response.calculation_series,
     rows: response.rows.map((row) => ({
       as_of_date: row.date,
       nav: row.nav,
@@ -678,8 +704,8 @@ export function getMonitoringDashboard() {
   return fetchJson<MonitoringDashboardResponse>('/api/monitoring/dashboard')
 }
 
-export function executeAssetRecalc(
-  assetId: string,
+export function executeInstrumentRecalc(
+  instrumentId: string,
   payload?: {
     job_type?: 'performance' | 'exposure' | 'ratings' | 'all'
     trigger_type?: string
@@ -687,7 +713,7 @@ export function executeAssetRecalc(
     trigger_ref_id?: string | null
   },
 ) {
-  return fetchJson<RecalcExecuteResponse>(`/api/recalc/assets/${encodeURIComponent(assetId)}/execute`, {
+  return fetchJson<RecalcExecuteResponse>(`/api/recalc/instruments/${encodeURIComponent(instrumentId)}/execute`, {
     method: 'POST',
     body: JSON.stringify({
       job_type: payload?.job_type ?? 'performance',
@@ -728,23 +754,23 @@ export function getWatchlistDetail(watchlistId: string) {
   return fetchJson<WatchlistDetail>(`/api/watchlists/${watchlistId}`)
 }
 
-export function resolveInstrumentDetail(assetId: string) {
+export function resolveInstrumentDetail(instrumentId: string) {
   return fetchJson<InstrumentResolveResponse>(
-    `/api/instruments/${encodeURIComponent(assetId)}/resolve`,
+    `/api/instruments/${encodeURIComponent(instrumentId)}/resolve`,
   )
 }
 
 export function getSharedInstruments(options?: {
   search?: string
-  asset_type?: string
+  instrument_type?: string
   limit?: number
 }) {
   const params = new URLSearchParams()
   if (options?.search?.trim()) {
     params.set('search', options.search.trim())
   }
-  if (options?.asset_type?.trim()) {
-    params.set('asset_type', options.asset_type.trim())
+  if (options?.instrument_type?.trim()) {
+    params.set('instrument_type', options.instrument_type.trim())
   }
   if (typeof options?.limit === 'number') {
     params.set('limit', String(options.limit))
@@ -785,40 +811,40 @@ export function updateWatchlistView(
   })
 }
 
-export function addWatchlistItems(watchlistId: string, assetIds: string[]) {
+export function addWatchlistItems(watchlistId: string, instrumentIds: string[]) {
   return fetchJson<{
     watchlist_id: string
     accepted_count: number
-    pending_recalc_asset_ids: string[]
-    recalculated_asset_ids: string[]
+    pending_recalc_instrument_ids: string[]
+    recalculated_instrument_ids: string[]
   }>(
     `/api/watchlists/${watchlistId}/items`,
     {
       method: 'POST',
-      body: JSON.stringify({ asset_ids: assetIds }),
+      body: JSON.stringify({ instrument_ids: instrumentIds }),
     },
   )
 }
 
-export function deleteWatchlistItems(watchlistId: string, assetIds: string[]) {
+export function deleteWatchlistItems(watchlistId: string, instrumentIds: string[]) {
   return fetchJson<{ watchlist_id: string; deleted_count: number }>(
     `/api/watchlists/${watchlistId}/items/delete`,
     {
       method: 'POST',
-      body: JSON.stringify({ asset_ids: assetIds }),
+      body: JSON.stringify({ instrument_ids: instrumentIds }),
     },
   )
 }
 
 export function moveWatchlistItems(
   watchlistId: string,
-  assetIds: string[],
+  instrumentIds: string[],
   targetWatchlistId: string,
 ) {
   return fetchJson<WatchlistItemsMoveResponse>(`/api/watchlists/${watchlistId}/items/move`, {
     method: 'POST',
     body: JSON.stringify({
-      asset_ids: assetIds,
+      instrument_ids: instrumentIds,
       target_watchlist_id: targetWatchlistId,
     }),
   })
@@ -826,30 +852,30 @@ export function moveWatchlistItems(
 
 export function copyWatchlistItems(
   watchlistId: string,
-  assetIds: string[],
+  instrumentIds: string[],
   targetWatchlistId: string,
 ) {
   return fetchJson<WatchlistItemsCopyResponse>(`/api/watchlists/${watchlistId}/items/copy`, {
     method: 'POST',
     body: JSON.stringify({
-      asset_ids: assetIds,
+      instrument_ids: instrumentIds,
       target_watchlist_id: targetWatchlistId,
     }),
   })
 }
 
 export function getFieldRegistry(options?: {
-  asset_type?: string | string[]
+  instrument_type?: string | string[]
   product_type?: string
   search?: string
 }) {
   const params = new URLSearchParams()
-  if (options?.asset_type) {
-    const assetType = Array.isArray(options.asset_type)
-      ? options.asset_type.join(',')
-      : options.asset_type
-    if (assetType.trim()) {
-      params.set('asset_type', assetType)
+  if (options?.instrument_type) {
+    const instrumentType = Array.isArray(options.instrument_type)
+      ? options.instrument_type.join(',')
+      : options.instrument_type
+    if (instrumentType.trim()) {
+      params.set('instrument_type', instrumentType)
     }
   }
   if (options?.product_type?.trim()) {
@@ -875,9 +901,9 @@ export function createInstrumentAttributeDefinition(
   })
 }
 
-export function getInstrumentAttributes(assetId: string) {
+export function getInstrumentAttributes(instrumentId: string) {
   return fetchJson<InstrumentAttributeValuesResponse>(
-    `/api/instrument-attributes/assets/${assetId}`,
+    `/api/instrument-attributes/instruments/${instrumentId}`,
   )
 }
 
@@ -886,14 +912,14 @@ export function getFundTaxonomyTree() {
 }
 
 export function updateFundTaxonomy(
-  assetId: string,
+  instrumentId: string,
   payload: {
     node_id: string | null
     updated_by?: string
   },
 ) {
-  return fetchJson<FundTaxonomyContext & { asset_id: string; updated: boolean }>(
-    `/api/taxonomies/fund-taxonomy/assets/${encodeURIComponent(assetId)}`,
+  return fetchJson<FundTaxonomyContext & { instrument_id: string; updated: boolean }>(
+    `/api/taxonomies/fund-taxonomy/instruments/${encodeURIComponent(instrumentId)}`,
     {
       method: 'PUT',
       body: JSON.stringify(payload),
@@ -902,11 +928,11 @@ export function updateFundTaxonomy(
 }
 
 export function updateInstrumentAttributes(
-  assetId: string,
+  instrumentId: string,
   payload: InstrumentAttributeUpdatePayload,
 ) {
   return fetchJson<InstrumentAttributeValuesResponse & { updated: boolean }>(
-    `/api/instrument-attributes/assets/${assetId}`,
+    `/api/instrument-attributes/instruments/${instrumentId}`,
     {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -921,12 +947,12 @@ export function runScreenerQuery(payload: Record<string, unknown>) {
   })
 }
 
-function buildInstrumentDetailApiPath(assetId: string, suffix: string) {
-  return `/api/instruments/${encodeURIComponent(assetId)}/${suffix}`
+function buildInstrumentDetailApiPath(instrumentId: string, suffix: string) {
+  return `/api/instruments/${encodeURIComponent(instrumentId)}/${suffix}`
 }
 
-export function getInstrumentSummary(assetId: string) {
-  return fetchJson<FundSummaryResponse>(buildInstrumentDetailApiPath(assetId, 'summary'))
+export function getInstrumentSummary(instrumentId: string) {
+  return fetchJson<FundSummaryResponse>(buildInstrumentDetailApiPath(instrumentId, 'summary'))
 }
 
 export function getInstrumentLibrary() {
@@ -935,63 +961,63 @@ export function getInstrumentLibrary() {
   )
 }
 
-export function getInstrumentChart(assetId: string) {
-  return fetchJson<FundChartResponse>(buildInstrumentDetailApiPath(assetId, 'chart'))
+export function getInstrumentChart(instrumentId: string) {
+  return fetchJson<FundChartResponse>(buildInstrumentDetailApiPath(instrumentId, 'chart'))
 }
 
-export function getInstrumentPerformance(assetId: string) {
-  return fetchJson<FundPerformanceResponse>(buildInstrumentDetailApiPath(assetId, 'performance'))
+export function getInstrumentPerformance(instrumentId: string) {
+  return fetchJson<FundPerformanceResponse>(buildInstrumentDetailApiPath(instrumentId, 'performance'))
 }
 
-export function getInstrumentRisk(assetId: string) {
-  return fetchJson<FundRiskResponse>(buildInstrumentDetailApiPath(assetId, 'risk'))
+export function getInstrumentRisk(instrumentId: string) {
+  return fetchJson<FundRiskResponse>(buildInstrumentDetailApiPath(instrumentId, 'risk'))
 }
 
-export function getInstrumentExposureSummary(assetId: string) {
+export function getInstrumentExposureSummary(instrumentId: string) {
   return fetchJson<FundExposureResponse>(
-    buildInstrumentDetailApiPath(assetId, 'exposure/summary'),
+    buildInstrumentDetailApiPath(instrumentId, 'exposure/summary'),
   )
 }
 
-export function getInstrumentExposureHoldings(assetId: string) {
+export function getInstrumentExposureHoldings(instrumentId: string) {
   return fetchJson<FundExposureHoldingsResponse>(
-    buildInstrumentDetailApiPath(assetId, 'exposure/holdings'),
+    buildInstrumentDetailApiPath(instrumentId, 'exposure/holdings'),
   )
 }
 
-export function getInstrumentRatings(assetId: string) {
-  return fetchJson<FundRatingsResponse>(buildInstrumentDetailApiPath(assetId, 'ratings'))
+export function getInstrumentRatings(instrumentId: string) {
+  return fetchJson<FundRatingsResponse>(buildInstrumentDetailApiPath(instrumentId, 'ratings'))
 }
 
-export function getInstrumentPeople(assetId: string) {
-  return fetchJson<FundPeopleResponse>(buildInstrumentDetailApiPath(assetId, 'people'))
+export function getInstrumentPeople(instrumentId: string) {
+  return fetchJson<FundPeopleResponse>(buildInstrumentDetailApiPath(instrumentId, 'people'))
 }
 
-export function getInstrumentStrategy(assetId: string) {
-  return fetchJson<FundStrategyResponse>(buildInstrumentDetailApiPath(assetId, 'strategy'))
+export function getInstrumentStrategy(instrumentId: string) {
+  return fetchJson<FundStrategyResponse>(buildInstrumentDetailApiPath(instrumentId, 'strategy'))
 }
 
-export function getInstrumentPrice(assetId: string) {
-  return fetchJson<FundPriceResponse>(buildInstrumentDetailApiPath(assetId, 'price'))
+export function getInstrumentPrice(instrumentId: string) {
+  return fetchJson<FundPriceResponse>(buildInstrumentDetailApiPath(instrumentId, 'price'))
 }
 
-export function getInstrumentDocuments(assetId: string) {
-  return fetchJson<FundDocumentsResponse>(buildInstrumentDetailApiPath(assetId, 'documents'))
+export function getInstrumentDocuments(instrumentId: string) {
+  return fetchJson<FundDocumentsResponse>(buildInstrumentDetailApiPath(instrumentId, 'documents'))
 }
 
-export function getInstrumentResearch(assetId: string) {
-  return fetchJson<FundResearchResponse>(buildInstrumentDetailApiPath(assetId, 'research'))
+export function getInstrumentResearch(instrumentId: string) {
+  return fetchJson<FundResearchResponse>(buildInstrumentDetailApiPath(instrumentId, 'research'))
 }
 
-export function getInstrumentNavSeries(assetId: string) {
+export function getInstrumentNavSeries(instrumentId: string) {
   return fetchJson<RawFundNavSeriesResponse>(
-    buildInstrumentDetailApiPath(assetId, 'nav-series'),
+    buildInstrumentDetailApiPath(instrumentId, 'nav-series'),
   ).then(normalizeFundNavSeriesResponse)
 }
 
-export function updateInstrumentNavSettings(assetId: string, payload: unknown) {
+export function updateInstrumentNavSettings(instrumentId: string, payload: unknown) {
   return fetchJson<Record<string, unknown>>(
-    buildInstrumentDetailApiPath(assetId, 'nav-settings'),
+    buildInstrumentDetailApiPath(instrumentId, 'nav-settings'),
     {
       method: 'PUT',
       body: JSON.stringify(payload),
@@ -1000,47 +1026,47 @@ export function updateInstrumentNavSettings(assetId: string, payload: unknown) {
 }
 
 export function updateInstrumentPeople(
-  assetId: string,
+  instrumentId: string,
   payload: ManualProfileUpdatePayload,
 ) {
-  return fetchJson<FundPeopleResponse>(buildInstrumentDetailApiPath(assetId, 'people'), {
+  return fetchJson<FundPeopleResponse>(buildInstrumentDetailApiPath(instrumentId, 'people'), {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
 }
 
 export function updateInstrumentStrategy(
-  assetId: string,
+  instrumentId: string,
   payload: ManualProfileUpdatePayload,
 ) {
-  return fetchJson<FundStrategyResponse>(buildInstrumentDetailApiPath(assetId, 'strategy'), {
+  return fetchJson<FundStrategyResponse>(buildInstrumentDetailApiPath(instrumentId, 'strategy'), {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
 }
 
 export function updateInstrumentPrice(
-  assetId: string,
+  instrumentId: string,
   payload: ManualProfileUpdatePayload,
 ) {
-  return fetchJson<FundPriceResponse>(buildInstrumentDetailApiPath(assetId, 'price'), {
+  return fetchJson<FundPriceResponse>(buildInstrumentDetailApiPath(instrumentId, 'price'), {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
 }
 
 export function updateInstrumentDocuments(
-  assetId: string,
+  instrumentId: string,
   payload: ManualProfileUpdatePayload,
 ) {
-  return fetchJson<FundDocumentsResponse>(buildInstrumentDetailApiPath(assetId, 'documents'), {
+  return fetchJson<FundDocumentsResponse>(buildInstrumentDetailApiPath(instrumentId, 'documents'), {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
 }
 
 export function uploadInstrumentDocument(
-  assetId: string,
+  instrumentId: string,
   payload: InstrumentDocumentUploadPayload,
 ) {
   const formData = new FormData()
@@ -1054,17 +1080,17 @@ export function uploadInstrumentDocument(
   if (payload.notes) formData.append('notes', payload.notes)
   if (payload.updated_by) formData.append('updated_by', payload.updated_by)
 
-  return fetchForm<FundDocumentsResponse>(buildInstrumentDetailApiPath(assetId, 'documents/upload'), {
+  return fetchForm<FundDocumentsResponse>(buildInstrumentDetailApiPath(instrumentId, 'documents/upload'), {
     method: 'POST',
     body: formData,
   })
 }
 
 export function updateInstrumentResearch(
-  assetId: string,
+  instrumentId: string,
   payload: ManualProfileUpdatePayload,
 ) {
-  return fetchJson<FundResearchResponse>(buildInstrumentDetailApiPath(assetId, 'research'), {
+  return fetchJson<FundResearchResponse>(buildInstrumentDetailApiPath(instrumentId, 'research'), {
     method: 'PUT',
     body: JSON.stringify(payload),
   })

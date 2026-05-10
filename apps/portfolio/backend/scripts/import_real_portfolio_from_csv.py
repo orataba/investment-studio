@@ -27,7 +27,7 @@ PRICE_DISPLAY_QUANTUM = Decimal("0.0001")
 @dataclass(frozen=True)
 class ParsedTradeRow:
     instrument_name: str
-    asset_type: str
+    instrument_type: str
     trade_date: date
     transaction_type: str
     quantity: Decimal
@@ -37,9 +37,9 @@ class ParsedTradeRow:
 
 @dataclass(frozen=True)
 class InstrumentRef:
-    asset_id: str
-    asset_name: str
-    asset_type: str
+    instrument_id: str
+    instrument_name: str
+    instrument_type: str
     currency: str
     identifiers: list[dict[str, object]]
 
@@ -88,7 +88,7 @@ def load_trade_rows(csv_path: Path) -> list[ParsedTradeRow]:
             rows.append(
                 ParsedTradeRow(
                     instrument_name=instrument_name,
-                    asset_type=str(raw_row.get("asset type") or "").strip().lower(),
+                    instrument_type=str(raw_row.get("instrument type") or "").strip().lower(),
                     trade_date=datetime.strptime(
                         str(raw_row.get("date") or "").strip(),
                         "%Y/%m/%d",
@@ -113,9 +113,9 @@ def load_shared_instruments(session) -> dict[str, InstrumentRef]:
         text(
             """
             select
-              instrument.asset_id,
-              instrument.asset_name,
-              instrument.asset_type,
+              instrument.instrument_id,
+              instrument.instrument_name,
+              instrument.instrument_type,
               instrument.currency,
               coalesce(
                 json_agg(
@@ -128,10 +128,10 @@ def load_shared_instruments(session) -> dict[str, InstrumentRef]:
                 ) filter (where identifier.instrument_identifier_id is not null),
                 '[]'::json
               ) as identifiers
-            from shared_asset.instrument as instrument
-            left join shared_asset.instrument_identifier as identifier
-              on identifier.asset_id = instrument.asset_id
-            group by instrument.asset_id, instrument.asset_name, instrument.asset_type, instrument.currency
+            from instrument_registry.instrument as instrument
+            left join instrument_registry.instrument_identifier as identifier
+              on identifier.instrument_id = instrument.instrument_id
+            group by instrument.instrument_id, instrument.instrument_name, instrument.instrument_type, instrument.currency
             """
         )
     ).mappings()
@@ -139,14 +139,14 @@ def load_shared_instruments(session) -> dict[str, InstrumentRef]:
     lookup: dict[str, InstrumentRef] = {}
     for row in rows:
         instrument = InstrumentRef(
-            asset_id=str(row["asset_id"]),
-            asset_name=str(row["asset_name"]),
-            asset_type=str(row["asset_type"]),
+            instrument_id=str(row["instrument_id"]),
+            instrument_name=str(row["instrument_name"]),
+            instrument_type=str(row["instrument_type"]),
             currency=str(row["currency"]),
             identifiers=list(row["identifiers"] or []),
         )
-        lookup[instrument.asset_name] = instrument
-        lookup[normalize_instrument_name(instrument.asset_name)] = instrument
+        lookup[instrument.instrument_name] = instrument
+        lookup[normalize_instrument_name(instrument.instrument_name)] = instrument
     return lookup
 
 
@@ -187,7 +187,7 @@ def trade_payload(
     settlement_date: date,
     account_id: str,
     settlement_cash_account_id: str | None,
-    asset_id: str | None,
+    instrument_id: str | None,
     instrument_ref: dict[str, object] | None,
     quantity: Decimal | None,
     price: Decimal | None,
@@ -210,7 +210,7 @@ def trade_payload(
         entitlement_date=None,
         account_id=account_id,
         settlement_cash_account_id=settlement_cash_account_id,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         instrument_ref_json=instrument_ref,
         quantity=decimal_to_float(quantity),
         price=decimal_to_float(price),
@@ -240,7 +240,7 @@ def trade_payload(
         "entitlement_date": None,
         "account_id": account_id,
         "settlement_cash_account_id": settlement_cash_account_id,
-        "asset_id": asset_id,
+        "instrument_id": instrument_id,
         "instrument_ref": instrument_ref,
         "quantity": decimal_to_float(quantity),
         "price": decimal_to_float(price),
@@ -313,7 +313,7 @@ def main() -> None:
             institution="Imported from CSV",
             default_settlement_cash_account_id=None,
             cost_basis_method=None,
-            allowed_asset_types_json=None,
+            allowed_instrument_types_json=None,
             opened_at=min(row.trade_date for row in rows),
             closed_at=None,
             status="active",
@@ -327,7 +327,7 @@ def main() -> None:
             institution="Imported from CSV",
             default_settlement_cash_account_id=cash_account_id,
             cost_basis_method="fifo",
-            allowed_asset_types_json=["fund"],
+            allowed_instrument_types_json=["fund"],
             opened_at=min(row.trade_date for row in rows),
             closed_at=None,
             status="active",
@@ -345,7 +345,7 @@ def main() -> None:
                 "institution": cash_account.institution,
                 "default_settlement_cash_account_id": cash_account.default_settlement_cash_account_id,
                 "cost_basis_method": cash_account.cost_basis_method,
-                "allowed_asset_types": None,
+                "allowed_instrument_types": None,
                 "opened_at": cash_account.opened_at.isoformat() if cash_account.opened_at else None,
                 "closed_at": None,
                 "status": cash_account.status,
@@ -359,7 +359,7 @@ def main() -> None:
                 "institution": securities_account.institution,
                 "default_settlement_cash_account_id": securities_account.default_settlement_cash_account_id,
                 "cost_basis_method": securities_account.cost_basis_method,
-                "allowed_asset_types": ["fund"],
+                "allowed_instrument_types": ["fund"],
                 "opened_at": securities_account.opened_at.isoformat() if securities_account.opened_at else None,
                 "closed_at": None,
                 "status": securities_account.status,
@@ -381,7 +381,7 @@ def main() -> None:
             settlement_date=imported_trade_date,
             account_id=cash_account_id,
             settlement_cash_account_id=None,
-            asset_id=None,
+            instrument_id=None,
             instrument_ref=None,
             quantity=None,
             price=None,
@@ -396,10 +396,10 @@ def main() -> None:
 
         for index, row in enumerate(rows, start=1):
             instrument = resolve_instrument(row, instrument_lookup)
-            if row.asset_type and row.asset_type != instrument.asset_type:
+            if row.instrument_type and row.instrument_type != instrument.instrument_type:
                 raise ValueError(
-                    f"Imported trade asset type mismatch for {row.instrument_name}: "
-                    f"csv={row.asset_type}, registry={instrument.asset_type}"
+                    f"Imported trade instrument type mismatch for {row.instrument_name}: "
+                    f"csv={row.instrument_type}, registry={instrument.instrument_type}"
                 )
             if instrument.currency != "CNY":
                 raise ValueError(
@@ -432,11 +432,11 @@ def main() -> None:
                 settlement_date=row.trade_date,
                 account_id=securities_account_id,
                 settlement_cash_account_id=cash_account_id,
-                asset_id=instrument.asset_id,
+                instrument_id=instrument.instrument_id,
                 instrument_ref={
-                    "asset_id": instrument.asset_id,
-                    "asset_name": instrument.asset_name,
-                    "asset_type": instrument.asset_type,
+                    "instrument_id": instrument.instrument_id,
+                    "instrument_name": instrument.instrument_name,
+                    "instrument_type": instrument.instrument_type,
                     "currency": instrument.currency,
                     "identifiers": instrument.identifiers,
                 },

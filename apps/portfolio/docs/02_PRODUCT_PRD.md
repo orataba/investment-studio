@@ -94,8 +94,8 @@
 系统不仅记录资金配置，还要记录：
 
 - planning taxonomy
-- `SAA`（Strategic Asset Allocation，长期战略目标）
-- `TAA`（Tactical Asset Allocation，时变战术目标）
+- `SAA`（Strategic Instrument Allocation，长期战略目标）
+- `TAA`（Tactical Instrument Allocation，时变战术目标）
 - active tilt
 - realized risk share
 
@@ -379,9 +379,9 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 - 高密度表格；
 - 可排序、可筛选、可分组、可切换列；
-- 默认展示 asset、quote、quote date、Chart 6M、quantity、avg cost、cost basis、market value、weight、unrealized P&L；
+- 默认展示 instrument、quote、quote date、Chart 6M、quantity、avg cost、cost basis、market value、weight、unrealized P&L；
 - 允许按 taxonomy / selected planning taxonomy / account 聚合。
-- 允许展示 quote-derived asset market trend 指标，用于扫当前持仓资产最近市场表现；这些指标不读取组合数量、成本法、现金流或 realized / income events。
+- 允许展示 quote-derived instrument market trend 指标，用于扫当前持仓标的最近市场表现；这些指标不读取组合数量、成本法、现金流或 realized / income events。
 - 不在 Holdings 默认承载资产级 TWR、realized gain、dividend / coupon income 或 closed positions；这些属于 Performance / security detail 的区间绩效视图。
 
 #### Performance
@@ -395,7 +395,7 @@ MVP 先支持**全球公开市场的标准化资产**：
 首屏结构：
 
 - `Return & Risk Metrics`：基于用户选择的自定义区间展示 TWR、annualized TWR、IRR / MWR、volatility、downside volatility、Sharpe / Sortino、drawdown 等收益风险指标；这些 fair-value return / risk 指标可选择独立 benchmark 做对比；
-- `Calculation`：把 period boundary、group contribution 和 waterfall calculation 合并成一张可审计表。顶部为 initial value，group rows 可按 asset / asset type / currency / account / taxonomy 展示 start / end value、weights、realized gain、unrealized gain、income、fees、taxes、FX P&L、period P&L、group TWR、contribution；外部现金流按 deposits / withdrawals 单独列出，底部为 portfolio total 与 final value，并支持导出当前表格 CSV。
+- `Calculation`：把 period boundary、group contribution 和 waterfall calculation 合并成一张可审计表。顶部为 initial value，group rows 可按 instrument / instrument type / currency / account / taxonomy 展示 start / end value、weights、realized gain、unrealized gain、income、fees、taxes、FX P&L、period P&L、group TWR、contribution；外部现金流按 deposits / withdrawals 单独列出，底部为 portfolio total 与 final value，并支持导出当前表格 CSV。
   Calculation 的桥接公式是 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value`。capital gain 作为底层派生值用于 reconciliation；表格直接展示 realized gain 与 unrealized gain，避免把合计项误读为第三类收益来源。拆分使用期间绩效成本：期初已有持仓按期初市值重置，区间买入按成交 gross amount 入期间成本，期末仍持有部分形成 unrealized gain；账户 FIFO / moving average 不改变 Performance 的期间资本利得拆分。
 
 `NAV Trend` 与 `Monthly Return Matrix` 属于 Overview，不在 Performance 重复展示。Overview 图表 compare 与 Performance benchmark 独立选择，避免把不同分析场景绑死到同一个 benchmark。
@@ -543,7 +543,7 @@ MVP 先支持**全球公开市场的标准化资产**：
 - 每套 planning-enabled taxonomy 可维护多条 `TargetSet(type = taa)`，但同一时点最多一条 active TAA target set
 - assignment 至少支持 `instrument`、`account`、`cash_bucket` 三种 target scope
 
-### 7.5 Security Detail Pane
+### 7.5 Instrument Detail Pane
 
 在 `Holdings` 工作面中，选中单个资产后，应进入统一的 security detail pane，而不是跳转到一个完全不同的系统。
 
@@ -641,7 +641,7 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 展示并聚合：
 
-- asset class exposure
+- instrument class exposure
 - region exposure
 - country exposure
 - sector / industry exposure
@@ -787,7 +787,7 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 首版归因至少支持：
 
-- asset / taxonomy contribution
+- instrument / taxonomy contribution
 - region contribution
 - sector contribution
 - planning taxonomy contribution
@@ -874,7 +874,7 @@ MVP 先支持**全球公开市场的标准化资产**：
 
 它也应该支持：
 
-- `group by asset type / currency`
+- `group by instrument type / currency`
 - `group by taxonomy`
 - `group by selected planning taxonomy`
 

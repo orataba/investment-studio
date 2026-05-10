@@ -7,33 +7,33 @@ from sqlalchemy.orm import Session
 from watchlist_app.api.contracts import RecalcExecuteRequest
 from watchlist_app.api.presenters import present_recalc_job
 from watchlist_app.db.session import get_db_session
-from watchlist_app.repositories.sqlalchemy.assets import SQLAlchemyAssetRepository
+from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
 from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
 
 
 router = APIRouter()
-asset_repository = SQLAlchemyAssetRepository()
+instrument_repository = SQLAlchemyInstrumentRepository()
 recalc_repository = SQLAlchemyRecalcJobRepository()
 canonical_recalc_service = CanonicalRecalcService()
 
 
-def _ensure_asset_exists(session: Session, asset_id: str) -> None:
-    if asset_repository.get(session, asset_id) is None:
-        raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}")
+def _ensure_instrument_exists(session: Session, instrument_id: str) -> None:
+    if instrument_repository.get(session, instrument_id) is None:
+        raise HTTPException(status_code=404, detail=f"Instrument not found: {instrument_id}")
 
 
 def _enqueue_recalc(
     session: Session,
     *,
-    asset_id: str,
+    instrument_id: str,
     job_type: str,
 ) -> dict[str, object]:
-    _ensure_asset_exists(session, asset_id)
+    _ensure_instrument_exists(session, instrument_id)
     existing = recalc_repository.find_open_job(
         session,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         job_type=job_type,
         trigger_type="manual_api",
         trigger_ref_type="api_request",
@@ -44,7 +44,7 @@ def _enqueue_recalc(
 
     dedupe_key = make_recalc_dedupe_key(
         job_type=job_type,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         trigger_type="manual_api",
         trigger_ref_type="api_request",
         trigger_ref_id=None,
@@ -54,7 +54,7 @@ def _enqueue_recalc(
             session,
             recalc_job_id=make_recalc_job_id(),
             job_type=job_type,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             trigger_type="manual_api",
             trigger_ref_type="api_request",
             trigger_ref_id=None,
@@ -68,7 +68,7 @@ def _enqueue_recalc(
         session.rollback()
         existing = recalc_repository.find_open_job(
             session,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             job_type=job_type,
             trigger_type="manual_api",
             trigger_ref_type="api_request",
@@ -80,49 +80,49 @@ def _enqueue_recalc(
     return present_recalc_job(record)
 
 
-@router.post("/assets/{asset_id}/performance")
+@router.post("/instruments/{instrument_id}/performance")
 def enqueue_performance_recalc(
-    asset_id: str,
+    instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    return _enqueue_recalc(session, asset_id=asset_id, job_type="performance")
+    return _enqueue_recalc(session, instrument_id=instrument_id, job_type="performance")
 
 
-@router.post("/assets/{asset_id}/exposure")
+@router.post("/instruments/{instrument_id}/exposure")
 def enqueue_exposure_recalc(
-    asset_id: str,
+    instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    return _enqueue_recalc(session, asset_id=asset_id, job_type="exposure")
+    return _enqueue_recalc(session, instrument_id=instrument_id, job_type="exposure")
 
 
-@router.post("/assets/{asset_id}/ratings")
+@router.post("/instruments/{instrument_id}/ratings")
 def enqueue_ratings_recalc(
-    asset_id: str,
+    instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    return _enqueue_recalc(session, asset_id=asset_id, job_type="ratings")
+    return _enqueue_recalc(session, instrument_id=instrument_id, job_type="ratings")
 
 
-@router.post("/assets/{asset_id}/all")
+@router.post("/instruments/{instrument_id}/all")
 def enqueue_full_recalc(
-    asset_id: str,
+    instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    return _enqueue_recalc(session, asset_id=asset_id, job_type="all")
+    return _enqueue_recalc(session, instrument_id=instrument_id, job_type="all")
 
 
-@router.post("/assets/{asset_id}/execute")
+@router.post("/instruments/{instrument_id}/execute")
 def execute_recalc_now(
-    asset_id: str,
+    instrument_id: str,
     payload: RecalcExecuteRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_asset_exists(session, asset_id)
+    _ensure_instrument_exists(session, instrument_id)
     try:
         return canonical_recalc_service.execute_recalc(
             session,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             job_type=payload.job_type,
             trigger_type=payload.trigger_type,
             trigger_ref_type=payload.trigger_ref_type,
@@ -130,7 +130,7 @@ def execute_recalc_now(
             commit=True,
         )
     except ValueError as error:
-        if str(error).startswith("Asset not found:"):
+        if str(error).startswith("Instrument not found:"):
             raise HTTPException(status_code=404, detail=str(error)) from error
         raise
 
@@ -141,7 +141,7 @@ def get_recalc_jobs(session: Session = Depends(get_db_session)) -> list[dict[str
         {
             "recalc_job_id": item.recalc_job_id,
             "job_type": item.job_type,
-            "asset_id": item.asset_id,
+            "instrument_id": item.instrument_id,
             "trigger_type": item.trigger_type,
             "trigger_ref_type": item.trigger_ref_type,
             "trigger_ref_id": item.trigger_ref_id,
@@ -169,7 +169,7 @@ def get_recalc_job_detail(
     return {
         "recalc_job_id": record.recalc_job_id,
         "job_type": record.job_type,
-        "asset_id": record.asset_id,
+        "instrument_id": record.instrument_id,
         "trigger_type": record.trigger_type,
         "trigger_ref_type": record.trigger_ref_type,
         "trigger_ref_id": record.trigger_ref_id,

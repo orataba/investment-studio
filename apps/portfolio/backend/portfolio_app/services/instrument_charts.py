@@ -18,30 +18,30 @@ ASSET_RISK_WINDOW_DAYS: dict[str, int] = {
 DAYS_PER_YEAR = 365.25
 
 
-def empty_asset_trend_metrics(
+def empty_instrument_trend_metrics(
     *,
     selected_basis: str | None = None,
     holding_start_date: date | None = None,
 ) -> dict[str, object]:
     return {
-        "asset_trend_as_of_date": None,
-        "asset_trend_basis": selected_basis,
-        "asset_return_1w": None,
-        "asset_return_mtd": None,
-        "asset_return_ytd": None,
-        "asset_return_1y": None,
-        "asset_volatility_1m": None,
-        "asset_volatility_3m": None,
-        "asset_volatility_6m": None,
-        "asset_volatility_1y": None,
-        "asset_current_drawdown": None,
-        "asset_max_drawdown": None,
-        "asset_holding_max_drawdown": None,
-        "asset_holding_start_date": holding_start_date.isoformat() if holding_start_date else None,
+        "instrument_trend_as_of_date": None,
+        "instrument_trend_basis": selected_basis,
+        "instrument_return_1w": None,
+        "instrument_return_mtd": None,
+        "instrument_return_ytd": None,
+        "instrument_return_1y": None,
+        "instrument_volatility_1m": None,
+        "instrument_volatility_3m": None,
+        "instrument_volatility_6m": None,
+        "instrument_volatility_1y": None,
+        "instrument_current_drawdown": None,
+        "instrument_max_drawdown": None,
+        "instrument_holding_max_drawdown": None,
+        "instrument_holding_start_date": holding_start_date.isoformat() if holding_start_date else None,
     }
 
 
-def empty_asset_holdings_market_profile(
+def empty_instrument_holdings_market_profile(
     *,
     holding_start_date: date | None = None,
 ) -> dict[str, object]:
@@ -50,7 +50,7 @@ def empty_asset_holdings_market_profile(
         "price_chart_3m": [],
         "price_chart_6m": [],
         "price_chart_1y": [],
-        **empty_asset_trend_metrics(holding_start_date=holding_start_date),
+        **empty_instrument_trend_metrics(holding_start_date=holding_start_date),
     }
 
 
@@ -346,7 +346,7 @@ def _period_return(
     return _return_between_points(start_point, end_point)
 
 
-def build_asset_trend_metrics_from_detail(
+def build_instrument_trend_metrics_from_detail(
     detail: dict[str, object],
     *,
     as_of_date: date,
@@ -354,7 +354,7 @@ def build_asset_trend_metrics_from_detail(
 ) -> dict[str, object]:
     selected_points, selected_basis = _selected_chart_points(detail, as_of_date=as_of_date)
     if not selected_points:
-        return empty_asset_trend_metrics(selected_basis=selected_basis, holding_start_date=holding_start_date)
+        return empty_instrument_trend_metrics(selected_basis=selected_basis, holding_start_date=holding_start_date)
 
     end_point = selected_points[-1]
     end_date = end_point.get("date") if isinstance(end_point.get("date"), date) else as_of_date
@@ -363,69 +363,69 @@ def build_asset_trend_metrics_from_detail(
     holding_points = _points_since(selected_points, start_date=holding_start_date) if holding_start_date else []
 
     return {
-        "asset_trend_as_of_date": end_date.isoformat(),
-        "asset_trend_basis": selected_basis,
-        "asset_return_1w": _period_return(
+        "instrument_trend_as_of_date": end_date.isoformat(),
+        "instrument_trend_basis": selected_basis,
+        "instrument_return_1w": _period_return(
             selected_points,
             end_point=end_point,
             anchor_date=end_date - timedelta(days=7),
         ),
-        "asset_return_mtd": _period_return(
+        "instrument_return_mtd": _period_return(
             selected_points,
             end_point=end_point,
             anchor_date=month_start - timedelta(days=1),
             fallback_start_date=month_start,
         ),
-        "asset_return_ytd": _period_return(
+        "instrument_return_ytd": _period_return(
             selected_points,
             end_point=end_point,
             anchor_date=year_start - timedelta(days=1),
             fallback_start_date=year_start,
         ),
-        "asset_return_1y": _period_return(
+        "instrument_return_1y": _period_return(
             selected_points,
             end_point=end_point,
             anchor_date=end_date - timedelta(days=365),
         ),
-        "asset_volatility_1m": _annualized_volatility(
+        "instrument_volatility_1m": _annualized_volatility(
             _window_points(selected_points, as_of_date=end_date, days=ASSET_RISK_WINDOW_DAYS["1m"])
         ),
-        "asset_volatility_3m": _annualized_volatility(
+        "instrument_volatility_3m": _annualized_volatility(
             _window_points(selected_points, as_of_date=end_date, days=ASSET_RISK_WINDOW_DAYS["3m"])
         ),
-        "asset_volatility_6m": _annualized_volatility(
+        "instrument_volatility_6m": _annualized_volatility(
             _window_points(selected_points, as_of_date=end_date, days=ASSET_RISK_WINDOW_DAYS["6m"])
         ),
-        "asset_volatility_1y": _annualized_volatility(
+        "instrument_volatility_1y": _annualized_volatility(
             _window_points(selected_points, as_of_date=end_date, days=ASSET_RISK_WINDOW_DAYS["1y"])
         ),
-        "asset_current_drawdown": _current_drawdown(selected_points),
-        "asset_max_drawdown": _max_drawdown(selected_points),
-        "asset_holding_max_drawdown": _max_drawdown(holding_points) if holding_start_date else None,
-        "asset_holding_start_date": holding_start_date.isoformat() if holding_start_date else None,
+        "instrument_current_drawdown": _current_drawdown(selected_points),
+        "instrument_max_drawdown": _max_drawdown(selected_points),
+        "instrument_holding_max_drawdown": _max_drawdown(holding_points) if holding_start_date else None,
+        "instrument_holding_start_date": holding_start_date.isoformat() if holding_start_date else None,
     }
 
 
-def build_asset_trend_metrics(
-    asset_id: str,
+def build_instrument_trend_metrics(
+    instrument_id: str,
     *,
     as_of_date: date,
     holding_start_date: date | None = None,
 ) -> dict[str, object]:
-    detail = get_registry_instrument_detail(asset_id)
+    detail = get_registry_instrument_detail(instrument_id)
     if not isinstance(detail, dict):
-        return empty_asset_trend_metrics(holding_start_date=holding_start_date)
-    return build_asset_trend_metrics_from_detail(
+        return empty_instrument_trend_metrics(holding_start_date=holding_start_date)
+    return build_instrument_trend_metrics_from_detail(
         detail,
         as_of_date=as_of_date,
         holding_start_date=holding_start_date,
     )
 
 
-def build_asset_price_chart_from_detail(
+def build_instrument_price_chart_from_detail(
     detail: dict[str, object],
     *,
-    asset_id: str,
+    instrument_id: str,
     as_of_date: date,
     range_key: str | None = None,
     max_points: int | None = None,
@@ -458,10 +458,10 @@ def build_asset_price_chart_from_detail(
     )
 
     return {
-        "asset_core": {
-            "asset_id": str(detail.get("asset_id") or asset_id),
-            "asset_name": str(detail.get("asset_name") or asset_id),
-            "asset_type": str(detail.get("asset_type") or "other"),
+        "instrument_core": {
+            "instrument_id": str(detail.get("instrument_id") or instrument_id),
+            "instrument_name": str(detail.get("instrument_name") or instrument_id),
+            "instrument_type": str(detail.get("instrument_type") or "other"),
             "currency": str(detail.get("currency") or "USD"),
             "identifiers": list(detail.get("identifiers", [])) if isinstance(detail.get("identifiers"), list) else [],
         },
@@ -495,36 +495,36 @@ def build_asset_price_chart_from_detail(
     }
 
 
-def build_asset_price_chart(
-    asset_id: str,
+def build_instrument_price_chart(
+    instrument_id: str,
     *,
     as_of_date: date,
     range_key: str | None = None,
     max_points: int | None = None,
 ) -> dict[str, object] | None:
-    detail = get_registry_instrument_detail(asset_id)
+    detail = get_registry_instrument_detail(instrument_id)
     if not isinstance(detail, dict):
         return None
-    return build_asset_price_chart_from_detail(
+    return build_instrument_price_chart_from_detail(
         detail,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         as_of_date=as_of_date,
         range_key=range_key,
         max_points=max_points,
     )
 
 
-def build_asset_sparkline_from_detail(
+def build_instrument_sparkline_from_detail(
     detail: dict[str, object],
     *,
-    asset_id: str,
+    instrument_id: str,
     as_of_date: date,
     range_key: str | None = "6m",
     max_points: int = 48,
 ) -> list[dict[str, object]]:
-    chart = build_asset_price_chart_from_detail(
+    chart = build_instrument_price_chart_from_detail(
         detail,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         as_of_date=as_of_date,
         range_key=range_key,
         max_points=max_points,
@@ -544,15 +544,15 @@ def build_asset_sparkline_from_detail(
     ]
 
 
-def build_asset_sparkline(
-    asset_id: str,
+def build_instrument_sparkline(
+    instrument_id: str,
     *,
     as_of_date: date,
     range_key: str | None = "6m",
     max_points: int = 48,
 ) -> list[dict[str, object]]:
-    chart = build_asset_price_chart(
-        asset_id,
+    chart = build_instrument_price_chart(
+        instrument_id,
         as_of_date=as_of_date,
         range_key=range_key,
         max_points=max_points,
@@ -586,21 +586,21 @@ def _chart_points_payload(chart: dict[str, object] | None) -> list[dict[str, obj
     ]
 
 
-def build_asset_holdings_market_profile(
-    asset_id: str,
+def build_instrument_holdings_market_profile(
+    instrument_id: str,
     *,
     as_of_date: date,
     holding_start_date: date | None = None,
     max_points: int = 48,
 ) -> dict[str, object]:
-    detail = get_registry_instrument_detail(asset_id)
+    detail = get_registry_instrument_detail(instrument_id)
     if not isinstance(detail, dict):
-        return empty_asset_holdings_market_profile(holding_start_date=holding_start_date)
+        return empty_instrument_holdings_market_profile(holding_start_date=holding_start_date)
     charts = {
         f"price_chart_{range_key}": _chart_points_payload(
-            build_asset_price_chart_from_detail(
+            build_instrument_price_chart_from_detail(
                 detail,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 as_of_date=as_of_date,
                 range_key=range_key,
                 max_points=max_points,
@@ -610,7 +610,7 @@ def build_asset_holdings_market_profile(
     }
     return {
         **charts,
-        **build_asset_trend_metrics_from_detail(
+        **build_instrument_trend_metrics_from_detail(
             detail,
             as_of_date=as_of_date,
             holding_start_date=holding_start_date,

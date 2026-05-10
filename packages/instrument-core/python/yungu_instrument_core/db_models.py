@@ -15,23 +15,23 @@ NAMING_CONVENTION = {
 }
 
 
-class SharedAssetBase(DeclarativeBase):
+class InstrumentRegistryBase(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
-class RegistryMetadata(SharedAssetBase):
+class RegistryMetadata(InstrumentRegistryBase):
     __tablename__ = "registry_metadata"
 
     registry_key: Mapped[str] = mapped_column(String, primary_key=True, default="shared")
     registry_name: Mapped[str] = mapped_column(String, nullable=False)
 
 
-class Instrument(SharedAssetBase):
+class Instrument(InstrumentRegistryBase):
     __tablename__ = "instrument"
 
-    asset_id: Mapped[str] = mapped_column(String, primary_key=True)
-    asset_name: Mapped[str] = mapped_column(String, nullable=False)
-    asset_type: Mapped[str] = mapped_column(String, nullable=False)
+    instrument_id: Mapped[str] = mapped_column(String, primary_key=True)
+    instrument_name: Mapped[str] = mapped_column(String, nullable=False)
+    instrument_type: Mapped[str] = mapped_column(String, nullable=False)
     currency: Mapped[str] = mapped_column(String, nullable=False)
     quote_selection_policy_json: Mapped[dict[str, object]] = mapped_column(
         JSON,
@@ -64,7 +64,7 @@ class Instrument(SharedAssetBase):
     )
 
 
-class InstrumentIdentifier(SharedAssetBase):
+class InstrumentIdentifier(InstrumentRegistryBase):
     __tablename__ = "instrument_identifier"
     __table_args__ = (
         UniqueConstraint(
@@ -75,8 +75,8 @@ class InstrumentIdentifier(SharedAssetBase):
     )
 
     instrument_identifier_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("instrument.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument.instrument_id", ondelete="CASCADE"),
         nullable=False,
     )
     identifier_type: Mapped[str] = mapped_column(String, nullable=False)
@@ -86,22 +86,22 @@ class InstrumentIdentifier(SharedAssetBase):
     instrument: Mapped[Instrument] = relationship(back_populates="identifiers")
 
 
-class InstrumentMarketData(SharedAssetBase):
+class InstrumentMarketData(InstrumentRegistryBase):
     __tablename__ = "instrument_market_data"
     __table_args__ = (
         UniqueConstraint(
-            "asset_id",
+            "instrument_id",
             "metric_family",
             "quote_basis",
             "as_of_date",
             "currency",
-            name="uq_instrument_market_data_asset_metric_basis_date_currency",
+            name="uq_instrument_market_data_instrument_metric_basis_date_currency",
         ),
     )
 
     instrument_market_data_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("instrument.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument.instrument_id", ondelete="CASCADE"),
         nullable=False,
     )
     metric_family: Mapped[str] = mapped_column(String, nullable=False)

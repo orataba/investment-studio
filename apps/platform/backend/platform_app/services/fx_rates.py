@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from yungu_asset_core import fx_rates as shared_fx_rates
+from yungu_instrument_core import fx_rates as shared_fx_rates
 
 from platform_app.db.session import get_session_factory
 

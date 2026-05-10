@@ -6,7 +6,7 @@ from fastapi import HTTPException
 
 from portfolio_app.api.contracts import (
     AccountRecord,
-    AssetCoreContract,
+    InstrumentCoreContract,
     TransactionListSummary,
     TransactionRecord,
 )
@@ -91,8 +91,8 @@ def serialize_transaction(
         settlement_cash_account=(
             AccountRecord.model_validate(settlement_account) if settlement_account is not None else None
         ),
-        asset_id=str(record.get("asset_id")) if record.get("asset_id") else None,
-        instrument_ref=AssetCoreContract.model_validate(instrument_ref) if instrument_ref else None,
+        instrument_id=str(record.get("instrument_id")) if record.get("instrument_id") else None,
+        instrument_ref=InstrumentCoreContract.model_validate(instrument_ref) if instrument_ref else None,
         quantity=float(record["quantity"]) if record.get("quantity") is not None else None,
         price=float(record["price"]) if record.get("price") is not None else None,
         gross_amount=float(record.get("gross_amount") or 0.0),
@@ -118,7 +118,7 @@ def serialize_transaction(
 def summarize_transactions(records: list[dict[str, object]]) -> TransactionListSummary:
     return TransactionListSummary(
         total_transactions=len(records),
-        instrument_transactions=sum(1 for item in records if item.get("asset_id")),
+        instrument_transactions=sum(1 for item in records if item.get("instrument_id")),
         external_cash_flows=sum(1 for item in records if item.get("transaction_type") in {"deposit", "withdrawal"}),
         opening_balance_records=sum(1 for item in records if item.get("transaction_type") == "opening_balance"),
     )

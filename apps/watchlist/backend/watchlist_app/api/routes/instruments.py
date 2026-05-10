@@ -16,11 +16,11 @@ router = APIRouter()
 @router.get("")
 def list_instrument_records(
     search: str | None = Query(default=None),
-    asset_type: str | None = Query(default=None),
+    instrument_type: str | None = Query(default=None),
     limit: int | None = Query(default=20, ge=1, le=100),
 ) -> list[dict[str, object]]:
     try:
-        return list_shared_instruments(search=search, asset_type=asset_type, limit=limit)
+        return list_shared_instruments(search=search, instrument_type=instrument_type, limit=limit)
     except SharedInstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
@@ -42,13 +42,13 @@ def resolve_shared_instrument_record(
     return record
 
 
-@router.get("/{asset_id}/resolve")
+@router.get("/{instrument_id}/resolve")
 def resolve_instrument_detail(
-    asset_id: str,
+    instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     try:
-        record = resolve_watchlist_instrument(session, asset_id=asset_id)
+        record = resolve_watchlist_instrument(session, instrument_id=instrument_id)
     except SharedInstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     if record is None:

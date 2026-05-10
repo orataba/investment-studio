@@ -21,14 +21,14 @@ if BACKEND_ROOT_STR in sys.path:
 sys.path.insert(0, BACKEND_ROOT_STR)
 
 WORKSPACE_ROOT = BACKEND_ROOT.parents[2]
-ASSET_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "asset-core" / "python"
-ASSET_CORE_PYTHON_STR = str(ASSET_CORE_PYTHON)
-if ASSET_CORE_PYTHON_STR in sys.path:
-    sys.path.remove(ASSET_CORE_PYTHON_STR)
-sys.path.insert(0, ASSET_CORE_PYTHON_STR)
+INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "instrument-core" / "python"
+INSTRUMENT_CORE_PYTHON_STR = str(INSTRUMENT_CORE_PYTHON)
+if INSTRUMENT_CORE_PYTHON_STR in sys.path:
+    sys.path.remove(INSTRUMENT_CORE_PYTHON_STR)
+sys.path.insert(0, INSTRUMENT_CORE_PYTHON_STR)
 
 from portfolio_app.db.models import PortfolioRecordModel, TransactionRecordModel
-from yungu_asset_core import instrument_store as shared_store
+from yungu_instrument_core import instrument_store as shared_store
 
 
 pytestmark = pytest.mark.postgresql_integration
@@ -36,11 +36,11 @@ pytestmark = pytest.mark.postgresql_integration
 DEFAULT_POSTGRES_URL = "postgresql+psycopg://yungu:yungu@127.0.0.1:5432/yungu"
 
 
-def _run_shared_asset_upgrade() -> None:
-    config = Config(str(WORKSPACE_ROOT / "infra" / "shared_asset" / "alembic.ini"))
+def _run_instrument_registry_upgrade() -> None:
+    config = Config(str(WORKSPACE_ROOT / "infra" / "instrument_registry" / "alembic.ini"))
     config.set_main_option(
         "script_location",
-        str(WORKSPACE_ROOT / "infra" / "shared_asset" / "alembic"),
+        str(WORKSPACE_ROOT / "infra" / "instrument_registry" / "alembic"),
     )
     command.upgrade(config, "head")
 
@@ -72,8 +72,8 @@ def postgres_portfolio_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     finally:
         admin_engine.dispose()
 
-    monkeypatch.setenv("YUNGU_SHARED_ASSET_DATABASE_URL", database_url)
-    monkeypatch.setenv("YUNGU_SHARED_ASSET_SCHEMA", "shared_asset")
+    monkeypatch.setenv("YUNGU_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
+    monkeypatch.setenv("YUNGU_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry")
     monkeypatch.setenv("YUNGU_PORTFOLIO_DATABASE_URL", database_url)
     monkeypatch.setenv("YUNGU_PORTFOLIO_ALEMBIC_DATABASE_URL", database_url)
     monkeypatch.setenv("YUNGU_PORTFOLIO_DATABASE_SCHEMA", "portfolio")
@@ -85,15 +85,15 @@ def postgres_portfolio_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
 
-    _run_shared_asset_upgrade()
+    _run_instrument_registry_upgrade()
     _run_portfolio_upgrade(database_url)
 
     session_factory = session_module.get_session_factory()
     identifier_value = f"PORTFK{uuid4().hex[:8].upper()}"
     instrument = shared_store.create_instrument(
         session_factory,
-        asset_name="Portfolio FK Integration Asset",
-        asset_type="equity",
+        instrument_name="Portfolio FK Integration Asset",
+        instrument_type="equity",
         currency="USD",
         identifiers=[
             {
@@ -107,7 +107,7 @@ def postgres_portfolio_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     yield {
         "database_url": database_url,
         "database_schema": "portfolio",
-        "asset_id": str(instrument["asset_id"]),
+        "instrument_id": str(instrument["instrument_id"]),
     }
 
     cleanup_engine = create_engine(_admin_database_url(base_database_url), isolation_level="AUTOCOMMIT")
@@ -133,7 +133,7 @@ def postgres_portfolio_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     session_module.get_session_factory.cache_clear()
 
 
-def test_transaction_record_shared_asset_fk_is_enforced(
+def test_transaction_record_instrument_registry_fk_is_enforced(
     postgres_portfolio_env: dict[str, str],
 ) -> None:
     from portfolio_app.db import session as session_module
@@ -159,7 +159,7 @@ def test_transaction_record_shared_asset_fk_is_enforced(
                         ON ref_ns.oid = ref_cls.relnamespace
                     WHERE cls_ns.nspname = :schema
                       AND cls.relname = 'transaction_record'
-                      AND con.conname = 'fk_transaction_record_asset_id_instrument'
+                      AND con.conname = 'fk_transaction_record_instrument_id_instrument'
                     """
                 ),
                 {"schema": postgres_portfolio_env["database_schema"]},
@@ -168,7 +168,7 @@ def test_transaction_record_shared_asset_fk_is_enforced(
         engine.dispose()
 
     assert constraint is not None
-    assert constraint["referred_schema"] == "shared_asset"
+    assert constraint["referred_schema"] == "instrument_registry"
     assert constraint["referred_table"] == "instrument"
 
     session_factory = session_module.get_session_factory()
@@ -200,7 +200,7 @@ def test_transaction_record_shared_asset_fk_is_enforced(
                 trade_timezone="UTC",
                 settlement_date=date(2026, 4, 23),
                 account_id="account-fk-valid",
-                asset_id=postgres_portfolio_env["asset_id"],
+                instrument_id=postgres_portfolio_env["instrument_id"],
                 gross_amount=1000.0,
                 currency="USD",
             )
@@ -219,7 +219,7 @@ def test_transaction_record_shared_asset_fk_is_enforced(
                 trade_timezone="UTC",
                 settlement_date=date(2026, 4, 23),
                 account_id="account-fk-invalid",
-                asset_id=f"missing-{uuid4().hex[:8]}",
+                instrument_id=f"missing-{uuid4().hex[:8]}",
                 gross_amount=1200.0,
                 currency="USD",
             )

@@ -166,7 +166,7 @@ Monitoring 页面不会再静态要求所有 fund 补同一套字段；它只检
 - `domain_code`
 - `group_code`
 - `display_order`
-- `asset_scope_json`
+- `instrument_scope_json`
 - `applicability_json`
 - `rubric_json`
 - `required_for_monitoring`

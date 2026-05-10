@@ -28,27 +28,27 @@ function localTodayIso() {
 }
 
 function primaryIdentifier(position: {
-  asset_id?: string | null
+  instrument_id?: string | null
   instrument_ref?: { identifiers: Array<{ identifier_value: string; is_primary: boolean }> } | null
 }) {
   return (
     position.instrument_ref?.identifiers.find((item) => item.is_primary)?.identifier_value ??
     position.instrument_ref?.identifiers[0]?.identifier_value ??
-    position.asset_id ??
+    position.instrument_id ??
     '—'
   )
 }
 
-function formatAccountAssetScope(account: PortfolioAccountRecord) {
+function formatAccountInstrumentScope(account: PortfolioAccountRecord) {
   if (account.account_type !== 'securities_account') {
     return '—'
   }
 
-  if (!account.allowed_asset_types?.length) {
+  if (!account.allowed_instrument_types?.length) {
     return 'All supported'
   }
 
-  return account.allowed_asset_types.map((assetType) => formatLabel(assetType)).join(' / ')
+  return account.allowed_instrument_types.map((instrumentType) => formatLabel(instrumentType)).join(' / ')
 }
 
 function accountTransactionHref(portfolioId: string, accountId: string, transactionId: string) {
@@ -164,13 +164,13 @@ export default function AccountsPage() {
       if (
         form.default_settlement_cash_account_id ||
         form.cost_basis_method !== 'fifo' ||
-        form.allowed_asset_types.length
+        form.allowed_instrument_types.length
       ) {
         setForm((current) => ({
           ...current,
           default_settlement_cash_account_id: '',
           cost_basis_method: 'fifo',
-          allowed_asset_types: [],
+          allowed_instrument_types: [],
         }))
       }
       return
@@ -190,7 +190,7 @@ export default function AccountsPage() {
   }, [
     compatibleDepositAccounts,
     form.account_type,
-    form.allowed_asset_types.length,
+    form.allowed_instrument_types.length,
     form.cost_basis_method,
     form.default_settlement_cash_account_id,
   ])
@@ -219,9 +219,9 @@ export default function AccountsPage() {
       default_settlement_cash_account_id:
         form.account_type === 'securities_account' ? form.default_settlement_cash_account_id || null : null,
       cost_basis_method: form.account_type === 'securities_account' ? form.cost_basis_method : null,
-      allowed_asset_types:
-        form.account_type === 'securities_account' && form.allowed_asset_types.length
-          ? [...form.allowed_asset_types]
+      allowed_instrument_types:
+        form.account_type === 'securities_account' && form.allowed_instrument_types.length
+          ? [...form.allowed_instrument_types]
           : null,
       opened_at: form.opened_at || null,
       closed_at: form.closed_at || null,
@@ -259,7 +259,7 @@ export default function AccountsPage() {
           institution: payload.institution,
           default_settlement_cash_account_id: payload.default_settlement_cash_account_id,
           cost_basis_method: payload.cost_basis_method,
-          allowed_asset_types: payload.allowed_asset_types,
+          allowed_instrument_types: payload.allowed_instrument_types,
           opened_at: payload.opened_at,
           closed_at: payload.closed_at,
           status: payload.status,
@@ -408,7 +408,7 @@ export default function AccountsPage() {
                         <th>Type</th>
                         <th>Default Cash</th>
                         <th>Cost Method</th>
-                        <th>Asset Scope</th>
+                        <th>Instrument Scope</th>
                         <th>Cash Balance</th>
                         <th>Position Lines</th>
                         <th>Linked Facts</th>
@@ -438,7 +438,7 @@ export default function AccountsPage() {
                             <td>{formatLabel(accountRow.account.account_type)}</td>
                             <td>{accountRow.default_settlement_cash_account_name || '—'}</td>
                             <td>{accountRow.account.cost_basis_method ? formatLabel(accountRow.account.cost_basis_method) : '—'}</td>
-                            <td>{formatAccountAssetScope(accountRow.account)}</td>
+                            <td>{formatAccountInstrumentScope(accountRow.account)}</td>
                             <td>{formatCurrency(accountRow.derived_cash_balance, accountRow.account.currency)}</td>
                             <td>{accountRow.position_line_count}</td>
                             <td>
@@ -491,8 +491,8 @@ export default function AccountsPage() {
                         <strong>{selectedAccount.account.cost_basis_method ? formatLabel(selectedAccount.account.cost_basis_method) : '—'}</strong>
                       </div>
                       <div className="account-summary-row">
-                        <span>Asset Scope</span>
-                        <strong>{formatAccountAssetScope(selectedAccount.account)}</strong>
+                        <span>Instrument Scope</span>
+                        <strong>{formatAccountInstrumentScope(selectedAccount.account)}</strong>
                       </div>
                       <div className="account-summary-row">
                         <span>Opened</span>
@@ -526,7 +526,7 @@ export default function AccountsPage() {
                         </thead>
                         <tbody>
                           {visiblePositions.map((position) => (
-                            <PositionRow key={`${position.account_id}-${position.asset_id}`} position={position} />
+                            <PositionRow key={`${position.account_id}-${position.instrument_id}`} position={position} />
                           ))}
                         </tbody>
                       </table>
@@ -769,33 +769,33 @@ export default function AccountsPage() {
 
                 {form.account_type === 'securities_account' ? (
                   <fieldset className="transaction-form-fieldset">
-                    <legend>Asset Scope</legend>
+                    <legend>Instrument Scope</legend>
                     <div className="transaction-checkbox-grid">
-                      {ACCOUNT_SCOPE_OPTIONS.map((assetType) => {
-                        const checked = form.allowed_asset_types.includes(assetType)
+                      {ACCOUNT_SCOPE_OPTIONS.map((instrumentType) => {
+                        const checked = form.allowed_instrument_types.includes(instrumentType)
                         return (
-                          <label key={assetType} className="transaction-checkbox-option">
+                          <label key={instrumentType} className="transaction-checkbox-option">
                             <input
                               type="checkbox"
                               checked={checked}
                               onChange={(event) =>
                                 setForm((current) => ({
                                   ...current,
-                                  allowed_asset_types: event.target.checked
-                                    ? [...current.allowed_asset_types, assetType].filter(
+                                  allowed_instrument_types: event.target.checked
+                                    ? [...current.allowed_instrument_types, instrumentType].filter(
                                         (value, index, array) => array.indexOf(value) === index,
                                       )
-                                    : current.allowed_asset_types.filter((value) => value !== assetType),
+                                    : current.allowed_instrument_types.filter((value) => value !== instrumentType),
                                 }))
                               }
                             />
-                            <span>{formatLabel(assetType)}</span>
+                            <span>{formatLabel(instrumentType)}</span>
                           </label>
                         )
                       })}
                     </div>
                     <div className="portfolio-detail-meta">
-                      Leave empty to allow every currently supported inbound security asset type.
+                      Leave empty to allow every currently supported inbound instrument type.
                     </div>
                   </fieldset>
                 ) : (
@@ -902,7 +902,7 @@ type AccountFormState = {
   institution: string
   default_settlement_cash_account_id: string
   cost_basis_method: 'moving_average' | 'fifo'
-  allowed_asset_types: string[]
+  allowed_instrument_types: string[]
   opened_at: string
   closed_at: string
   status: string
@@ -929,7 +929,7 @@ function buildInitialAccountForm(accounts: PortfolioAccountRecord[] = []): Accou
     institution: '',
     default_settlement_cash_account_id: defaultCashAccount?.account_id ?? '',
     cost_basis_method: 'fifo',
-    allowed_asset_types: [],
+    allowed_instrument_types: [],
     opened_at: localTodayIso(),
     closed_at: '',
     status: 'active',
@@ -944,7 +944,7 @@ function buildAccountFormFromRecord(account: PortfolioAccountRecord): AccountFor
     institution: account.institution ?? '',
     default_settlement_cash_account_id: account.default_settlement_cash_account_id ?? '',
     cost_basis_method: account.cost_basis_method ?? 'fifo',
-    allowed_asset_types: account.allowed_asset_types ?? [],
+    allowed_instrument_types: account.allowed_instrument_types ?? [],
     opened_at: account.opened_at ?? '',
     closed_at: account.closed_at ?? '',
     status: account.status || 'active',
@@ -970,7 +970,7 @@ function AccountTransactionRow({
         {transaction.instrument_ref ? (
           <div className="holding-name-stack">
             <span>{primaryIdentifier(transaction.instrument_ref)}</span>
-            <span className="holding-secondary">{transaction.instrument_ref.asset_name}</span>
+            <span className="holding-secondary">{transaction.instrument_ref.instrument_name}</span>
           </div>
         ) : (
           <span className="holding-secondary">Cash ledger</span>
@@ -998,7 +998,7 @@ function PositionRow({ position }: { position: PortfolioAccountPositionRecord })
       <td className="holding-name-cell">
         <div className="holding-name-stack">
           <span>{primaryIdentifier(position)}</span>
-          <span className="holding-secondary">{position.instrument_ref.asset_name}</span>
+          <span className="holding-secondary">{position.instrument_ref.instrument_name}</span>
         </div>
       </td>
       <td>{formatNumber(position.quantity, 2)}</td>
@@ -1022,7 +1022,7 @@ function LedgerPostingRow({ posting }: { posting: PortfolioLedgerPostingRecord }
         {posting.instrument_ref ? (
           <div className="holding-name-stack">
             <span>{primaryIdentifier(posting)}</span>
-            <span className="holding-secondary">{posting.instrument_ref.asset_name}</span>
+            <span className="holding-secondary">{posting.instrument_ref.instrument_name}</span>
           </div>
         ) : (
           <span className="holding-secondary">Cash ledger</span>

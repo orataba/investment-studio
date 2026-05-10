@@ -20,9 +20,9 @@ sys.path.insert(0, BACKEND_ROOT_STR)
 from tests.store_fixture import TEST_PORTFOLIO_STORE
 
 from portfolio_app.api.routes import transactions as transaction_routes
-from portfolio_app.services import asset_charts, ledger, performance, portfolio_store
-from yungu_asset_core import instrument_store as shared_store
-from yungu_asset_core.db_models import SharedAssetBase
+from portfolio_app.services import instrument_charts, ledger, performance, portfolio_store
+from yungu_instrument_core import instrument_store as shared_store
+from yungu_instrument_core.db_models import InstrumentRegistryBase
 
 
 def _market_point(
@@ -44,9 +44,9 @@ def _market_point(
 
 REGISTRY_INSTRUMENT_DETAILS = [
     {
-        "asset_id": "equity-us-abbv",
-        "asset_name": "AbbVie Inc",
-        "asset_type": "equity",
+        "instrument_id": "equity-us-abbv",
+        "instrument_name": "AbbVie Inc",
+        "instrument_type": "equity",
         "currency": "USD",
         "identifiers": [
             {"identifier_type": "ticker", "identifier_value": "ABBV", "is_primary": True},
@@ -61,9 +61,9 @@ REGISTRY_INSTRUMENT_DETAILS = [
         ],
     },
     {
-        "asset_id": "fund-us-agg",
-        "asset_name": "iShares Core U.S. Aggregate Bond ETF",
-        "asset_type": "fund",
+        "instrument_id": "fund-us-agg",
+        "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
+        "instrument_type": "fund",
         "currency": "USD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "AGG", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
@@ -75,9 +75,9 @@ REGISTRY_INSTRUMENT_DETAILS = [
         ],
     },
     {
-        "asset_id": "fund-hk-2800",
-        "asset_name": "Tracker Fund of Hong Kong",
-        "asset_type": "fund",
+        "instrument_id": "fund-hk-2800",
+        "instrument_name": "Tracker Fund of Hong Kong",
+        "instrument_type": "fund",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "2800.HK", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
@@ -88,9 +88,9 @@ REGISTRY_INSTRUMENT_DETAILS = [
         ],
     },
     {
-        "asset_id": "fx-usd-hkd",
-        "asset_name": "USD/HKD Spot",
-        "asset_type": "fx",
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD Spot",
+        "instrument_type": "fx",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "USDHKD", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
@@ -102,9 +102,9 @@ REGISTRY_INSTRUMENT_DETAILS = [
         ],
     },
     {
-        "asset_id": "fx-usd-cny",
-        "asset_name": "USD/CNY Spot",
-        "asset_type": "fx",
+        "instrument_id": "fx-usd-cny",
+        "instrument_name": "USD/CNY Spot",
+        "instrument_type": "fx",
         "currency": "CNY",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "USDCNY", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
@@ -153,8 +153,8 @@ FX_PAYLOAD = {
             "rate": 7.8,
             "as_of_date": "2026-04-15",
             "source_kind": "direct",
-            "asset_id": "fx-usd-hkd",
-            "source_asset_ids": ["fx-usd-hkd"],
+            "instrument_id": "fx-usd-hkd",
+            "source_instrument_ids": ["fx-usd-hkd"],
             "provider": "test",
             "status": "complete",
         },
@@ -164,8 +164,8 @@ FX_PAYLOAD = {
             "rate": 1 / 7.8,
             "as_of_date": "2026-04-15",
             "source_kind": "inverse",
-            "asset_id": "fx-usd-hkd",
-            "source_asset_ids": ["fx-usd-hkd"],
+            "instrument_id": "fx-usd-hkd",
+            "source_instrument_ids": ["fx-usd-hkd"],
             "provider": "test",
             "status": "complete",
         },
@@ -175,8 +175,8 @@ FX_PAYLOAD = {
             "rate": 7.2,
             "as_of_date": "2026-04-15",
             "source_kind": "direct",
-            "asset_id": "fx-usd-cny",
-            "source_asset_ids": ["fx-usd-cny"],
+            "instrument_id": "fx-usd-cny",
+            "source_instrument_ids": ["fx-usd-cny"],
             "provider": "test",
             "status": "complete",
         },
@@ -186,8 +186,8 @@ FX_PAYLOAD = {
             "rate": 1 / 7.2,
             "as_of_date": "2026-04-15",
             "source_kind": "inverse",
-            "asset_id": "fx-usd-cny",
-            "source_asset_ids": ["fx-usd-cny"],
+            "instrument_id": "fx-usd-cny",
+            "source_instrument_ids": ["fx-usd-cny"],
             "provider": "test",
             "status": "complete",
         },
@@ -197,8 +197,8 @@ FX_PAYLOAD = {
             "rate": 7.2 / 7.8,
             "as_of_date": "2026-04-15",
             "source_kind": "cross",
-            "asset_id": None,
-            "source_asset_ids": ["fx-usd-hkd", "fx-usd-cny"],
+            "instrument_id": None,
+            "source_instrument_ids": ["fx-usd-hkd", "fx-usd-cny"],
             "provider": "test",
             "status": "complete",
         },
@@ -208,8 +208,8 @@ FX_PAYLOAD = {
             "rate": 7.8 / 7.2,
             "as_of_date": "2026-04-15",
             "source_kind": "cross",
-            "asset_id": None,
-            "source_asset_ids": ["fx-usd-hkd", "fx-usd-cny"],
+            "instrument_id": None,
+            "source_instrument_ids": ["fx-usd-hkd", "fx-usd-cny"],
             "provider": "test",
             "status": "complete",
         },
@@ -224,12 +224,12 @@ def _run_alembic_upgrade(database_url: str) -> None:
     command.upgrade(config, "head")
 
 
-def _get_registry_instrument(asset_id: str):
-    return deepcopy(next((item for item in REGISTRY_INSTRUMENTS if item["asset_id"] == asset_id), None))
+def _get_registry_instrument(instrument_id: str):
+    return deepcopy(next((item for item in REGISTRY_INSTRUMENTS if item["instrument_id"] == instrument_id), None))
 
 
-def _get_registry_instrument_detail(asset_id: str):
-    return deepcopy(next((item for item in REGISTRY_INSTRUMENT_DETAILS if item["asset_id"] == asset_id), None))
+def _get_registry_instrument_detail(instrument_id: str):
+    return deepcopy(next((item for item in REGISTRY_INSTRUMENT_DETAILS if item["instrument_id"] == instrument_id), None))
 
 
 @pytest.fixture(autouse=True)
@@ -253,7 +253,7 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     session_module.get_session_factory.cache_clear()
 
     _run_alembic_upgrade(database_url)
-    SharedAssetBase.metadata.create_all(bind=session_module.get_engine())
+    InstrumentRegistryBase.metadata.create_all(bind=session_module.get_engine())
     portfolio_store.reset_store(deepcopy(TEST_PORTFOLIO_STORE))
     shared_store.reset_store(
         session_module.get_session_factory(),
@@ -265,7 +265,7 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
 
     monkeypatch.setattr(transaction_routes, "get_registry_instrument", _get_registry_instrument)
     monkeypatch.setattr(transaction_routes, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))
-    monkeypatch.setattr(asset_charts, "get_registry_instrument_detail", _get_registry_instrument_detail)
+    monkeypatch.setattr(instrument_charts, "get_registry_instrument_detail", _get_registry_instrument_detail)
     monkeypatch.setattr(ledger, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))
     monkeypatch.setattr(ledger, "get_registry_instrument_detail", _get_registry_instrument_detail)
     monkeypatch.setattr(ledger, "get_platform_fx_rates", lambda: deepcopy(FX_PAYLOAD))

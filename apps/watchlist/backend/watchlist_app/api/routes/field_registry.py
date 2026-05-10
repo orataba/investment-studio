@@ -15,7 +15,7 @@ field_registry_repository = SQLAlchemyFieldRegistryRepository()
 @router.get("")
 def get_field_registry(
     category: str | None = Query(default=None),
-    asset_type: str | None = Query(default=None),
+    instrument_type: str | None = Query(default=None),
     product_type: str | None = Query(default=None),
     search: str | None = Query(default=None),
     session: Session = Depends(get_db_session),
@@ -24,16 +24,16 @@ def get_field_registry(
     categories = [present_field_category(item) for item in field_registry_repository.list_categories(session)]
     if category:
         fields = [item for item in fields if item["category_code"] == category]
-    if asset_type:
-        normalized_asset_types = {
-            value.strip().lower() for value in asset_type.split(",") if value.strip()
+    if instrument_type:
+        normalized_instrument_types = {
+            value.strip().lower() for value in instrument_type.split(",") if value.strip()
         }
-        if normalized_asset_types:
+        if normalized_instrument_types:
             fields = [
                 item
                 for item in fields
-                if not item["asset_scope_json"]
-                or bool(normalized_asset_types.intersection(item["asset_scope_json"]))
+                if not item["instrument_scope_json"]
+                or bool(normalized_instrument_types.intersection(item["instrument_scope_json"]))
             ]
     if product_type:
         fields = [

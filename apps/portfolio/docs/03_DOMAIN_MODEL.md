@@ -578,7 +578,7 @@ flowchart LR
 
 ### 典型 taxonomy
 
-- asset class
+- instrument class
 - region
 - country
 - sector / industry
@@ -619,7 +619,7 @@ flowchart LR
 
 `primary_assignment_scope` 的 canonical 值也限定在这三类中：
 
-- `instrument`：适用于大多数 holdings / planning / asset class 视图
+- `instrument`：适用于大多数 holdings / planning / instrument classification 视图
 - `account`：适用于账户分组视图
 - `cash_bucket`：适用于流动性或现金分桶视图
 

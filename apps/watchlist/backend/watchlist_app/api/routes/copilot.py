@@ -36,15 +36,15 @@ def chat_watchlist(
     )
 
 
-@router.post("/assets/{asset_id}/chat")
+@router.post("/instruments/{instrument_id}/chat")
 def chat_fund(
-    asset_id: str,
+    instrument_id: str,
     payload: FundCopilotChatRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
     return copilot_service.chat_fund(
         session,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         question=payload.question.strip(),
         active_tab=payload.active_tab,
     )

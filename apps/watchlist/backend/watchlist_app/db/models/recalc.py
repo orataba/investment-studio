@@ -29,8 +29,8 @@ class RecalcJob(Base):
 
     recalc_job_id: Mapped[str] = mapped_column(primary_key=True)
     job_type: Mapped[str] = mapped_column(nullable=False)
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         nullable=False,
     )
     trigger_type: Mapped[str] = mapped_column(nullable=False)

@@ -35,9 +35,9 @@ import {
 import { buildPortfolioHoldingDetailPath } from '../lib/navigation'
 
 type HoldingsColumnKey =
-  | 'asset'
+  | 'instrument'
   | 'ticker'
-  | 'asset_type'
+  | 'instrument_type'
   | 'taxonomy_top'
   | 'taxonomy_leaf'
   | 'currency'
@@ -61,24 +61,24 @@ type HoldingsColumnKey =
   | 'day_change_pct'
   | 'unrealized_value'
   | 'unrealized_pct'
-  | 'asset_return_1w'
-  | 'asset_return_mtd'
-  | 'asset_return_ytd'
-  | 'asset_return_1y'
-  | 'asset_current_drawdown'
-  | 'asset_max_drawdown'
-  | 'asset_holding_max_drawdown'
-  | 'asset_volatility_1m'
-  | 'asset_volatility_3m'
-  | 'asset_volatility_6m'
-  | 'asset_volatility_1y'
+  | 'instrument_return_1w'
+  | 'instrument_return_mtd'
+  | 'instrument_return_ytd'
+  | 'instrument_return_1y'
+  | 'instrument_current_drawdown'
+  | 'instrument_max_drawdown'
+  | 'instrument_holding_max_drawdown'
+  | 'instrument_volatility_1m'
+  | 'instrument_volatility_3m'
+  | 'instrument_volatility_6m'
+  | 'instrument_volatility_1y'
   | 'price_chart_1m'
   | 'price_chart_3m'
   | 'price_chart_6m'
   | 'price_chart_1y'
   | 'coverage'
 
-type HoldingsGroupByKey = 'none' | 'taxonomy_top' | 'taxonomy_leaf' | 'asset_type' | 'currency' | 'coverage'
+type HoldingsGroupByKey = 'none' | 'taxonomy_top' | 'taxonomy_leaf' | 'instrument_type' | 'currency' | 'coverage'
 type HoldingsSortDirection = 'asc' | 'desc'
 type SortableValue = number | string | null | undefined
 
@@ -91,7 +91,7 @@ type HoldingTaxonomyLabels = {
 
 type HoldingsColumnContext = {
   workspace: HoldingsWorkspaceResponse
-  taxonomyByAssetId: Map<string, HoldingTaxonomyLabels>
+  taxonomyByInstrumentId: Map<string, HoldingTaxonomyLabels>
 }
 
 type HoldingsColumnDefinition = {
@@ -134,32 +134,32 @@ type HoldingsViewStore = {
   customViews: HoldingsTableView[]
 }
 
-const LOCKED_HOLDINGS_COLUMN: HoldingsColumnKey = 'asset'
-const HOLDINGS_COLUMN_WIDTHS_STORAGE_KEY = 'yungu.portfolio.holdings.columnWidths.v3'
-const HOLDINGS_VIEWS_STORAGE_KEY = 'yungu.portfolio.holdings.views.v3'
+const LOCKED_HOLDINGS_COLUMN: HoldingsColumnKey = 'instrument'
+const HOLDINGS_COLUMN_WIDTHS_STORAGE_KEY = 'yungu.portfolio.holdings.columnWidths.v4'
+const HOLDINGS_VIEWS_STORAGE_KEY = 'yungu.portfolio.holdings.views.v4'
 const HOLDINGS_COLUMN_MIN_WIDTH = 84
 const HOLDINGS_COLUMN_MAX_WIDTH = 520
 
 const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[] }> = [
   {
     label: 'Identity',
-    columns: ['asset', 'ticker', 'asset_type', 'taxonomy_top', 'taxonomy_leaf', 'currency', 'coverage'],
+    columns: ['instrument', 'ticker', 'instrument_type', 'taxonomy_top', 'taxonomy_leaf', 'currency', 'coverage'],
   },
   {
     label: 'Quote',
     columns: ['last_price', 'quote_date', 'quote_basis', 'quote_provider', 'quote_status'],
   },
   {
-    label: 'Asset Trend',
+    label: 'Instrument Trend',
     columns: [
       'price_chart_1m',
       'price_chart_3m',
       'price_chart_6m',
       'price_chart_1y',
-      'asset_return_1w',
-      'asset_return_mtd',
-      'asset_return_ytd',
-      'asset_return_1y',
+      'instrument_return_1w',
+      'instrument_return_mtd',
+      'instrument_return_ytd',
+      'instrument_return_1y',
     ],
   },
   {
@@ -190,13 +190,13 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
   {
     label: 'Risk',
     columns: [
-      'asset_volatility_1m',
-      'asset_volatility_3m',
-      'asset_volatility_6m',
-      'asset_volatility_1y',
-      'asset_current_drawdown',
-      'asset_max_drawdown',
-      'asset_holding_max_drawdown',
+      'instrument_volatility_1m',
+      'instrument_volatility_3m',
+      'instrument_volatility_6m',
+      'instrument_volatility_1y',
+      'instrument_current_drawdown',
+      'instrument_max_drawdown',
+      'instrument_holding_max_drawdown',
     ],
   },
 ]
@@ -204,7 +204,7 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
 const ALL_HOLDINGS_COLUMN_KEYS = HOLDINGS_COLUMN_GROUPS.flatMap((group) => group.columns)
 
 const DEFAULT_HOLDINGS_COLUMNS: HoldingsColumnKey[] = [
-  'asset',
+  'instrument',
   'last_price',
   'quote_date',
   'price_chart_6m',
@@ -218,9 +218,9 @@ const DEFAULT_HOLDINGS_COLUMNS: HoldingsColumnKey[] = [
 ]
 
 const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
-  asset: 320,
+  instrument: 320,
   ticker: 120,
-  asset_type: 116,
+  instrument_type: 116,
   taxonomy_top: 152,
   taxonomy_leaf: 176,
   currency: 92,
@@ -244,17 +244,17 @@ const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
   day_change_pct: 120,
   unrealized_value: 148,
   unrealized_pct: 148,
-  asset_return_1w: 128,
-  asset_return_mtd: 112,
-  asset_return_ytd: 112,
-  asset_return_1y: 112,
-  asset_current_drawdown: 120,
-  asset_max_drawdown: 124,
-  asset_holding_max_drawdown: 136,
-  asset_volatility_1m: 112,
-  asset_volatility_3m: 112,
-  asset_volatility_6m: 112,
-  asset_volatility_1y: 112,
+  instrument_return_1w: 128,
+  instrument_return_mtd: 112,
+  instrument_return_ytd: 112,
+  instrument_return_1y: 112,
+  instrument_current_drawdown: 120,
+  instrument_max_drawdown: 124,
+  instrument_holding_max_drawdown: 136,
+  instrument_volatility_1m: 112,
+  instrument_volatility_3m: 112,
+  instrument_volatility_6m: 112,
+  instrument_volatility_1y: 112,
   price_chart_1m: 132,
   price_chart_3m: 132,
   price_chart_6m: 132,
@@ -263,9 +263,9 @@ const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
 }
 
 const COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS: Partial<Record<HoldingsColumnKey, number>> = {
-  asset: 180,
+  instrument: 180,
   ticker: 92,
-  asset_type: 96,
+  instrument_type: 96,
   taxonomy_top: 112,
   taxonomy_leaf: 124,
   currency: 76,
@@ -289,17 +289,17 @@ const COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS: Partial<Record<HoldingsColumnKey, numb
   day_change_pct: 92,
   unrealized_value: 108,
   unrealized_pct: 104,
-  asset_return_1w: 92,
-  asset_return_mtd: 92,
-  asset_return_ytd: 92,
-  asset_return_1y: 92,
-  asset_current_drawdown: 100,
-  asset_max_drawdown: 100,
-  asset_holding_max_drawdown: 112,
-  asset_volatility_1m: 92,
-  asset_volatility_3m: 92,
-  asset_volatility_6m: 92,
-  asset_volatility_1y: 92,
+  instrument_return_1w: 92,
+  instrument_return_mtd: 92,
+  instrument_return_ytd: 92,
+  instrument_return_1y: 92,
+  instrument_current_drawdown: 100,
+  instrument_max_drawdown: 100,
+  instrument_holding_max_drawdown: 112,
+  instrument_volatility_1m: 92,
+  instrument_volatility_3m: 92,
+  instrument_volatility_6m: 92,
+  instrument_volatility_1y: 92,
   price_chart_1m: 104,
   price_chart_3m: 104,
   price_chart_6m: 104,
@@ -329,7 +329,7 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
     description: 'Grouped by the default planning taxonomy.',
     readonly: true,
     state: {
-      columns: ['asset', 'taxonomy_top', 'taxonomy_leaf', 'market_value_base', 'weight', 'day_change_pct', 'unrealized_pct', 'open_lots', 'coverage'],
+      columns: ['instrument', 'taxonomy_top', 'taxonomy_leaf', 'market_value_base', 'weight', 'day_change_pct', 'unrealized_pct', 'open_lots', 'coverage'],
       columnWidths: {},
       groupBy: 'taxonomy_top',
       sortField: 'weight',
@@ -337,31 +337,31 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
     },
   },
   {
-    id: 'asset-trend',
-    name: 'Asset Trend',
+    id: 'instrument-trend',
+    name: 'Instrument Trend',
     description: 'Per-range price charts and quote-series returns.',
     readonly: true,
     state: {
       columns: [
-        'asset',
+        'instrument',
         'last_price',
         'quote_date',
         'price_chart_1m',
         'price_chart_3m',
         'price_chart_6m',
         'price_chart_1y',
-        'asset_return_1w',
-        'asset_return_mtd',
-        'asset_return_ytd',
-        'asset_return_1y',
-        'asset_current_drawdown',
+        'instrument_return_1w',
+        'instrument_return_mtd',
+        'instrument_return_ytd',
+        'instrument_return_1y',
+        'instrument_current_drawdown',
         'market_value_base',
         'weight',
         'unrealized_pct',
       ],
       columnWidths: {},
       groupBy: 'none',
-      sortField: 'asset_return_mtd',
+      sortField: 'instrument_return_mtd',
       sortDirection: 'desc',
     },
   },
@@ -372,25 +372,25 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
     readonly: true,
     state: {
       columns: [
-        'asset',
-        'asset_type',
+        'instrument',
+        'instrument_type',
         'market_value_base',
         'weight',
         'price_chart_6m',
-        'asset_return_1w',
-        'asset_return_mtd',
-        'asset_return_ytd',
+        'instrument_return_1w',
+        'instrument_return_mtd',
+        'instrument_return_ytd',
         'day_change_pct',
         'day_change_value',
         'unrealized_value',
         'unrealized_pct',
-        'asset_volatility_1m',
-        'asset_volatility_3m',
-        'asset_volatility_6m',
-        'asset_volatility_1y',
-        'asset_current_drawdown',
-        'asset_max_drawdown',
-        'asset_holding_max_drawdown',
+        'instrument_volatility_1m',
+        'instrument_volatility_3m',
+        'instrument_volatility_6m',
+        'instrument_volatility_1y',
+        'instrument_current_drawdown',
+        'instrument_max_drawdown',
+        'instrument_holding_max_drawdown',
       ],
       columnWidths: {},
       groupBy: 'none',
@@ -405,8 +405,8 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
     readonly: true,
     state: {
       columns: [
-        'asset',
-        'asset_type',
+        'instrument',
+        'instrument_type',
         'holding_date',
         'quantity',
         'cost_method',
@@ -419,7 +419,7 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
         'open_lots',
       ],
       columnWidths: {},
-      groupBy: 'asset_type',
+      groupBy: 'instrument_type',
       sortField: 'open_lots',
       sortDirection: 'desc',
     },
@@ -431,7 +431,7 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
     readonly: true,
     state: {
       columns: [
-        'asset',
+        'instrument',
         'ticker',
         'currency',
         'quantity',
@@ -453,9 +453,9 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
 ]
 
 const TEXT_HOLDINGS_SORT_FIELDS = new Set<HoldingsColumnKey>([
-  'asset',
+  'instrument',
   'ticker',
-  'asset_type',
+  'instrument_type',
   'taxonomy_top',
   'taxonomy_leaf',
   'currency',
@@ -476,16 +476,16 @@ const HOLDINGS_GROUP_BY_OPTIONS: Array<{
   { value: 'none', label: 'None', description: 'Flat position table.' },
   { value: 'taxonomy_top', label: 'Taxonomy', description: 'Top-level default planning taxonomy.' },
   { value: 'taxonomy_leaf', label: 'Taxonomy Leaf', description: 'Assigned terminal taxonomy node.' },
-  { value: 'asset_type', label: 'Asset Type', description: 'Fund, equity, bond, cash, FX, or other.' },
+  { value: 'instrument_type', label: 'Instrument Type', description: 'Fund, equity, bond, cash, FX, or other.' },
   { value: 'currency', label: 'Currency', description: 'Holding currency.' },
   { value: 'coverage', label: 'Coverage', description: 'Market data coverage state.' },
 ]
 
 function primaryIdentifier(row: PortfolioHoldingRow) {
   return (
-    row.asset_core.identifiers.find((item) => item.is_primary)?.identifier_value ??
-    row.asset_core.identifiers[0]?.identifier_value ??
-    row.asset_core.asset_id
+    row.instrument_core.identifiers.find((item) => item.is_primary)?.identifier_value ??
+    row.instrument_core.identifiers[0]?.identifier_value ??
+    row.instrument_core.instrument_id
   )
 }
 
@@ -715,7 +715,7 @@ function resolveGroupingTaxonomy(catalog: PortfolioTaxonomyCatalogResponse | nul
   )
 }
 
-function buildTaxonomyLabelsByAssetId(
+function buildTaxonomyLabelsByInstrumentId(
   catalog: PortfolioTaxonomyCatalogResponse | null,
   referenceDate: string | null | undefined,
 ) {
@@ -730,7 +730,7 @@ function buildTaxonomyLabelsByAssetId(
       .map((node) => [node.taxonomy_node_id, node]),
   )
 
-  const assignmentByAssetId = new Map<string, HoldingTaxonomyLabels>()
+  const assignmentByInstrumentId = new Map<string, HoldingTaxonomyLabels>()
   ;[...catalog.taxonomy_assignments]
     .filter(
       (assignment) =>
@@ -746,13 +746,13 @@ function buildTaxonomyLabelsByAssetId(
         right.assignment_id.localeCompare(left.assignment_id),
     )
     .forEach((assignment) => {
-      if (assignmentByAssetId.has(assignment.target_entity_id)) {
+      if (assignmentByInstrumentId.has(assignment.target_entity_id)) {
         return
       }
       const leafNode = nodesById.get(assignment.taxonomy_node_id) ?? null
       const path = leafNode ? resolveNodePath(leafNode.taxonomy_node_id, nodesById) : []
       const topLevelNode = path[0] ?? leafNode
-      assignmentByAssetId.set(assignment.target_entity_id, {
+      assignmentByInstrumentId.set(assignment.target_entity_id, {
         topLevelId: topLevelNode?.taxonomy_node_id ?? `unassigned:${taxonomy.taxonomy_id}`,
         topLevelLabel: topLevelNode?.node_name ?? 'Unassigned',
         leafId: leafNode?.taxonomy_node_id ?? `unassigned:${taxonomy.taxonomy_id}`,
@@ -760,7 +760,7 @@ function buildTaxonomyLabelsByAssetId(
       })
     })
 
-  return assignmentByAssetId
+  return assignmentByInstrumentId
 }
 
 function normalizeHoldingsColumns(columns: HoldingsColumnKey[]) {
@@ -989,18 +989,18 @@ function holdingColumnExportValue(
   context: HoldingsColumnContext,
 ): string | number | null {
   switch (column) {
-    case 'asset':
-      return row.asset_core.asset_name
+    case 'instrument':
+      return row.instrument_core.instrument_name
     case 'ticker':
       return primaryIdentifier(row)
-    case 'asset_type':
-      return formatLabel(row.asset_core.asset_type)
+    case 'instrument_type':
+      return formatLabel(row.instrument_core.instrument_type)
     case 'taxonomy_top':
-      return context.taxonomyByAssetId.get(row.asset_core.asset_id)?.topLevelLabel ?? 'Unassigned'
+      return context.taxonomyByInstrumentId.get(row.instrument_core.instrument_id)?.topLevelLabel ?? 'Unassigned'
     case 'taxonomy_leaf':
-      return context.taxonomyByAssetId.get(row.asset_core.asset_id)?.leafLabel ?? 'Unassigned'
+      return context.taxonomyByInstrumentId.get(row.instrument_core.instrument_id)?.leafLabel ?? 'Unassigned'
     case 'currency':
-      return row.asset_core.currency
+      return row.instrument_core.currency
     case 'holding_date':
       return context.workspace.as_of_date
     case 'quantity':
@@ -1041,28 +1041,28 @@ function holdingColumnExportValue(
       return unrealizedValue(row)
     case 'unrealized_pct':
       return unrealizedPct(row)
-    case 'asset_return_1w':
-      return row.asset_return_1w ?? null
-    case 'asset_return_mtd':
-      return row.asset_return_mtd ?? null
-    case 'asset_return_ytd':
-      return row.asset_return_ytd ?? null
-    case 'asset_return_1y':
-      return row.asset_return_1y ?? null
-    case 'asset_current_drawdown':
-      return row.asset_current_drawdown ?? null
-    case 'asset_max_drawdown':
-      return row.asset_max_drawdown ?? null
-    case 'asset_holding_max_drawdown':
-      return row.asset_holding_max_drawdown ?? null
-    case 'asset_volatility_1m':
-      return row.asset_volatility_1m ?? null
-    case 'asset_volatility_3m':
-      return row.asset_volatility_3m ?? null
-    case 'asset_volatility_6m':
-      return row.asset_volatility_6m ?? null
-    case 'asset_volatility_1y':
-      return row.asset_volatility_1y ?? null
+    case 'instrument_return_1w':
+      return row.instrument_return_1w ?? null
+    case 'instrument_return_mtd':
+      return row.instrument_return_mtd ?? null
+    case 'instrument_return_ytd':
+      return row.instrument_return_ytd ?? null
+    case 'instrument_return_1y':
+      return row.instrument_return_1y ?? null
+    case 'instrument_current_drawdown':
+      return row.instrument_current_drawdown ?? null
+    case 'instrument_max_drawdown':
+      return row.instrument_max_drawdown ?? null
+    case 'instrument_holding_max_drawdown':
+      return row.instrument_holding_max_drawdown ?? null
+    case 'instrument_volatility_1m':
+      return row.instrument_volatility_1m ?? null
+    case 'instrument_volatility_3m':
+      return row.instrument_volatility_3m ?? null
+    case 'instrument_volatility_6m':
+      return row.instrument_volatility_6m ?? null
+    case 'instrument_volatility_1y':
+      return row.instrument_volatility_1y ?? null
     case 'price_chart_1m':
     case 'price_chart_3m':
     case 'price_chart_6m':
@@ -1081,7 +1081,7 @@ function holdingColumnTotalExportValue(
   context: HoldingsColumnContext,
 ): string | number | null {
   switch (column) {
-    case 'asset':
+    case 'instrument':
       return `Portfolio Total (${context.workspace.base_currency})`
     case 'holding_date':
       return context.workspace.as_of_date
@@ -1127,15 +1127,15 @@ function TableStatusRow({
 }
 
 const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefinition> = {
-  asset: {
-    key: 'asset',
-    label: 'Asset',
+  instrument: {
+    key: 'instrument',
+    label: 'Instrument',
     render: (row) => (
       <div className="holding-name-stack">
-        <span>{row.asset_core.asset_name}</span>
+        <span>{row.instrument_core.instrument_name}</span>
       </div>
     ),
-    sortValue: (row) => row.asset_core.asset_name,
+    sortValue: (row) => row.instrument_core.instrument_name,
   },
   ticker: {
     key: 'ticker',
@@ -1143,29 +1143,29 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => <span className="ticker-pill">{primaryIdentifier(row)}</span>,
     sortValue: (row) => primaryIdentifier(row),
   },
-  asset_type: {
-    key: 'asset_type',
-    label: 'Asset Type',
-    render: (row) => formatLabel(row.asset_core.asset_type),
-    sortValue: (row) => row.asset_core.asset_type,
+  instrument_type: {
+    key: 'instrument_type',
+    label: 'Instrument Type',
+    render: (row) => formatLabel(row.instrument_core.instrument_type),
+    sortValue: (row) => row.instrument_core.instrument_type,
   },
   taxonomy_top: {
     key: 'taxonomy_top',
     label: 'Taxonomy',
-    render: (row, context) => context.taxonomyByAssetId.get(row.asset_core.asset_id)?.topLevelLabel ?? 'Unassigned',
-    sortValue: (row, context) => context.taxonomyByAssetId.get(row.asset_core.asset_id)?.topLevelLabel ?? 'Unassigned',
+    render: (row, context) => context.taxonomyByInstrumentId.get(row.instrument_core.instrument_id)?.topLevelLabel ?? 'Unassigned',
+    sortValue: (row, context) => context.taxonomyByInstrumentId.get(row.instrument_core.instrument_id)?.topLevelLabel ?? 'Unassigned',
   },
   taxonomy_leaf: {
     key: 'taxonomy_leaf',
     label: 'Taxonomy Leaf',
-    render: (row, context) => context.taxonomyByAssetId.get(row.asset_core.asset_id)?.leafLabel ?? 'Unassigned',
-    sortValue: (row, context) => context.taxonomyByAssetId.get(row.asset_core.asset_id)?.leafLabel ?? 'Unassigned',
+    render: (row, context) => context.taxonomyByInstrumentId.get(row.instrument_core.instrument_id)?.leafLabel ?? 'Unassigned',
+    sortValue: (row, context) => context.taxonomyByInstrumentId.get(row.instrument_core.instrument_id)?.leafLabel ?? 'Unassigned',
   },
   currency: {
     key: 'currency',
     label: 'Currency',
-    render: (row) => row.asset_core.currency,
-    sortValue: (row) => row.asset_core.currency,
+    render: (row) => row.instrument_core.currency,
+    sortValue: (row) => row.instrument_core.currency,
   },
   holding_date: {
     key: 'holding_date',
@@ -1191,14 +1191,14 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'avg_cost_book',
     label: 'Avg Cost',
     align: 'right',
-    render: (row) => formatUnitPrice(bookAvgCost(row), row.asset_core.currency),
+    render: (row) => formatUnitPrice(bookAvgCost(row), row.instrument_core.currency),
     sortValue: (row) => bookAvgCost(row),
   },
   last_price: {
     key: 'last_price',
     label: 'Quote',
     align: 'right',
-    render: (row) => formatUnitPrice(row.last_price, row.asset_core.currency),
+    render: (row) => formatUnitPrice(row.last_price, row.instrument_core.currency),
     sortValue: (row) => row.last_price,
   },
   quote_date: {
@@ -1229,7 +1229,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'market_value',
     label: 'Market Value',
     align: 'right',
-    render: (row) => formatCurrency(row.market_value, row.asset_core.currency),
+    render: (row) => formatCurrency(row.market_value, row.instrument_core.currency),
     sortValue: (row) => row.market_value_base ?? row.market_value,
     total: (rows, context) => formatCurrency(totalMarketValueBase(rows, context.workspace), context.workspace.base_currency),
   },
@@ -1245,7 +1245,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'cost_basis',
     label: 'Cost Basis',
     align: 'right',
-    render: (row) => formatCurrency(row.cost_basis, row.asset_core.currency),
+    render: (row) => formatCurrency(row.cost_basis, row.instrument_core.currency),
     sortValue: (row) => row.cost_basis_base ?? row.cost_basis,
     total: (rows, context) => formatCurrency(totalCostBasisBase(rows, context.workspace), context.workspace.base_currency),
   },
@@ -1284,7 +1284,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'day_change_value',
     label: 'Day Change',
     align: 'right',
-    render: (row) => signedCurrency(row.day_change_value, row.asset_core.currency),
+    render: (row) => signedCurrency(row.day_change_value, row.instrument_core.currency),
     sortValue: (row) => row.day_change_value,
     className: (row) => signedValueClass(row.day_change_value),
     total: (rows, context) => signedCurrency(totalDayChangeBase(rows, context.workspace), context.workspace.base_currency),
@@ -1304,7 +1304,7 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'unrealized_value',
     label: 'Unrealized P&L',
     align: 'right',
-    render: (row) => signedCurrency(unrealizedValue(row), row.asset_core.currency),
+    render: (row) => signedCurrency(unrealizedValue(row), row.instrument_core.currency),
     sortValue: (row) => unrealizedBaseValue(row),
     className: (row) => signedValueClass(unrealizedValue(row)),
     total: (rows, context) => signedCurrency(totalUnrealizedBase(rows), context.workspace.base_currency),
@@ -1320,89 +1320,89 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     total: (rows) => signedPercent(totalUnrealizedPct(rows)),
     totalClassName: (rows) => signedValueClass(totalUnrealizedPct(rows)),
   },
-  asset_return_1w: {
-    key: 'asset_return_1w',
+  instrument_return_1w: {
+    key: 'instrument_return_1w',
     label: '1W Return',
     align: 'right',
-    render: (row) => signedPercent(row.asset_return_1w),
-    sortValue: (row) => row.asset_return_1w,
-    className: (row) => signedValueClass(row.asset_return_1w),
+    render: (row) => signedPercent(row.instrument_return_1w),
+    sortValue: (row) => row.instrument_return_1w,
+    className: (row) => signedValueClass(row.instrument_return_1w),
   },
-  asset_return_mtd: {
-    key: 'asset_return_mtd',
+  instrument_return_mtd: {
+    key: 'instrument_return_mtd',
     label: 'MTD',
     align: 'right',
-    render: (row) => signedPercent(row.asset_return_mtd),
-    sortValue: (row) => row.asset_return_mtd,
-    className: (row) => signedValueClass(row.asset_return_mtd),
+    render: (row) => signedPercent(row.instrument_return_mtd),
+    sortValue: (row) => row.instrument_return_mtd,
+    className: (row) => signedValueClass(row.instrument_return_mtd),
   },
-  asset_return_ytd: {
-    key: 'asset_return_ytd',
+  instrument_return_ytd: {
+    key: 'instrument_return_ytd',
     label: 'YTD',
     align: 'right',
-    render: (row) => signedPercent(row.asset_return_ytd),
-    sortValue: (row) => row.asset_return_ytd,
-    className: (row) => signedValueClass(row.asset_return_ytd),
+    render: (row) => signedPercent(row.instrument_return_ytd),
+    sortValue: (row) => row.instrument_return_ytd,
+    className: (row) => signedValueClass(row.instrument_return_ytd),
   },
-  asset_return_1y: {
-    key: 'asset_return_1y',
+  instrument_return_1y: {
+    key: 'instrument_return_1y',
     label: '1Y',
     align: 'right',
-    render: (row) => signedPercent(row.asset_return_1y),
-    sortValue: (row) => row.asset_return_1y,
-    className: (row) => signedValueClass(row.asset_return_1y),
+    render: (row) => signedPercent(row.instrument_return_1y),
+    sortValue: (row) => row.instrument_return_1y,
+    className: (row) => signedValueClass(row.instrument_return_1y),
   },
-  asset_current_drawdown: {
-    key: 'asset_current_drawdown',
+  instrument_current_drawdown: {
+    key: 'instrument_current_drawdown',
     label: 'Current DD',
     align: 'right',
-    render: (row) => signedPercent(row.asset_current_drawdown),
-    sortValue: (row) => row.asset_current_drawdown,
-    className: (row) => signedValueClass(row.asset_current_drawdown),
+    render: (row) => signedPercent(row.instrument_current_drawdown),
+    sortValue: (row) => row.instrument_current_drawdown,
+    className: (row) => signedValueClass(row.instrument_current_drawdown),
   },
-  asset_volatility_1m: {
-    key: 'asset_volatility_1m',
+  instrument_volatility_1m: {
+    key: 'instrument_volatility_1m',
     label: '1M Vol',
     align: 'right',
-    render: (row) => formatPercent(row.asset_volatility_1m),
-    sortValue: (row) => row.asset_volatility_1m,
+    render: (row) => formatPercent(row.instrument_volatility_1m),
+    sortValue: (row) => row.instrument_volatility_1m,
   },
-  asset_volatility_3m: {
-    key: 'asset_volatility_3m',
+  instrument_volatility_3m: {
+    key: 'instrument_volatility_3m',
     label: '3M Vol',
     align: 'right',
-    render: (row) => formatPercent(row.asset_volatility_3m),
-    sortValue: (row) => row.asset_volatility_3m,
+    render: (row) => formatPercent(row.instrument_volatility_3m),
+    sortValue: (row) => row.instrument_volatility_3m,
   },
-  asset_volatility_6m: {
-    key: 'asset_volatility_6m',
+  instrument_volatility_6m: {
+    key: 'instrument_volatility_6m',
     label: '6M Vol',
     align: 'right',
-    render: (row) => formatPercent(row.asset_volatility_6m),
-    sortValue: (row) => row.asset_volatility_6m,
+    render: (row) => formatPercent(row.instrument_volatility_6m),
+    sortValue: (row) => row.instrument_volatility_6m,
   },
-  asset_volatility_1y: {
-    key: 'asset_volatility_1y',
+  instrument_volatility_1y: {
+    key: 'instrument_volatility_1y',
     label: '1Y Vol',
     align: 'right',
-    render: (row) => formatPercent(row.asset_volatility_1y),
-    sortValue: (row) => row.asset_volatility_1y,
+    render: (row) => formatPercent(row.instrument_volatility_1y),
+    sortValue: (row) => row.instrument_volatility_1y,
   },
-  asset_max_drawdown: {
-    key: 'asset_max_drawdown',
+  instrument_max_drawdown: {
+    key: 'instrument_max_drawdown',
     label: 'Max DD',
     align: 'right',
-    render: (row) => signedPercent(row.asset_max_drawdown),
-    sortValue: (row) => row.asset_max_drawdown,
-    className: (row) => signedValueClass(row.asset_max_drawdown),
+    render: (row) => signedPercent(row.instrument_max_drawdown),
+    sortValue: (row) => row.instrument_max_drawdown,
+    className: (row) => signedValueClass(row.instrument_max_drawdown),
   },
-  asset_holding_max_drawdown: {
-    key: 'asset_holding_max_drawdown',
+  instrument_holding_max_drawdown: {
+    key: 'instrument_holding_max_drawdown',
     label: 'Held Max DD',
     align: 'right',
-    render: (row) => signedPercent(row.asset_holding_max_drawdown),
-    sortValue: (row) => row.asset_holding_max_drawdown,
-    className: (row) => signedValueClass(row.asset_holding_max_drawdown),
+    render: (row) => signedPercent(row.instrument_holding_max_drawdown),
+    sortValue: (row) => row.instrument_holding_max_drawdown,
+    className: (row) => signedValueClass(row.instrument_holding_max_drawdown),
   },
   price_chart_1m: {
     key: 'price_chart_1m',
@@ -1447,27 +1447,27 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
 function resolveGroupForRow(
   row: PortfolioHoldingRow,
   groupBy: HoldingsGroupByKey,
-  taxonomyByAssetId: Map<string, HoldingTaxonomyLabels>,
+  taxonomyByInstrumentId: Map<string, HoldingTaxonomyLabels>,
 ) {
   if (groupBy === 'taxonomy_top') {
-    const taxonomy = taxonomyByAssetId.get(row.asset_core.asset_id)
+    const taxonomy = taxonomyByInstrumentId.get(row.instrument_core.instrument_id)
     return {
       key: taxonomy?.topLevelId ?? '__unassigned_taxonomy__',
       label: taxonomy?.topLevelLabel ?? 'Unassigned',
     }
   }
   if (groupBy === 'taxonomy_leaf') {
-    const taxonomy = taxonomyByAssetId.get(row.asset_core.asset_id)
+    const taxonomy = taxonomyByInstrumentId.get(row.instrument_core.instrument_id)
     return {
       key: taxonomy?.leafId ?? '__unassigned_taxonomy_leaf__',
       label: taxonomy?.leafLabel ?? 'Unassigned',
     }
   }
-  if (groupBy === 'asset_type') {
-    return { key: row.asset_core.asset_type, label: formatLabel(row.asset_core.asset_type) }
+  if (groupBy === 'instrument_type') {
+    return { key: row.instrument_core.instrument_type, label: formatLabel(row.instrument_core.instrument_type) }
   }
   if (groupBy === 'currency') {
-    return { key: row.asset_core.currency, label: row.asset_core.currency }
+    return { key: row.instrument_core.currency, label: row.instrument_core.currency }
   }
   if (groupBy === 'coverage') {
     return { key: row.coverage_status, label: formatLabel(row.coverage_status) }
@@ -1478,11 +1478,11 @@ function resolveGroupForRow(
 function buildGroupedRows(
   rows: PortfolioHoldingRow[],
   groupBy: HoldingsGroupByKey,
-  taxonomyByAssetId: Map<string, HoldingTaxonomyLabels>,
+  taxonomyByInstrumentId: Map<string, HoldingTaxonomyLabels>,
 ) {
   const groups = new Map<string, HoldingsGroup>()
   rows.forEach((row) => {
-    const groupRef = resolveGroupForRow(row, groupBy, taxonomyByAssetId)
+    const groupRef = resolveGroupForRow(row, groupBy, taxonomyByInstrumentId)
     const current = groups.get(groupRef.key) ?? {
       key: groupRef.key,
       label: groupRef.label,
@@ -1566,7 +1566,7 @@ export default function PortfolioHomePage() {
   const holdingsTableShellRef = useRef<HTMLDivElement | null>(null)
   const [holdingsTableShellWidth, setHoldingsTableShellWidth] = useState(0)
   const requestedAsOfDate = searchParams.get('as_of_date') ?? ''
-  const selectedAssetId = searchParams.get('asset_id')
+  const selectedInstrumentId = searchParams.get('instrument_id')
   const holdingsViews = useMemo(() => getHoldingsViews(holdingsViewStore), [holdingsViewStore])
   const activeHoldingsView = useMemo(
     () => getHoldingsViewById(holdingsViewStore, activeHoldingsViewId),
@@ -1587,8 +1587,8 @@ export default function PortfolioHomePage() {
     HOLDINGS_GROUP_BY_OPTIONS.find((option) => option.value === holdingsGroupBy) ?? HOLDINGS_GROUP_BY_OPTIONS[0]
   const columnsEdited = JSON.stringify(normalizeHoldingsColumns(holdingsColumns)) !== JSON.stringify(activeHoldingsView.state.columns)
 
-  const taxonomyByAssetId = useMemo(
-    () => buildTaxonomyLabelsByAssetId(taxonomyCatalog, workspace?.as_of_date),
+  const taxonomyByInstrumentId = useMemo(
+    () => buildTaxonomyLabelsByInstrumentId(taxonomyCatalog, workspace?.as_of_date),
     [taxonomyCatalog, workspace?.as_of_date],
   )
   const columnContext = useMemo(
@@ -1596,10 +1596,10 @@ export default function PortfolioHomePage() {
       workspace
         ? {
             workspace,
-            taxonomyByAssetId,
+            taxonomyByInstrumentId,
           }
         : null,
-    [taxonomyByAssetId, workspace],
+    [taxonomyByInstrumentId, workspace],
   )
   const visibleColumns = useMemo(
     () => normalizeHoldingsColumns(holdingsColumns).map((column) => HOLDINGS_COLUMN_DEFINITIONS[column]),
@@ -1671,8 +1671,8 @@ export default function PortfolioHomePage() {
     })
   }, [columnContext, holdingsSortDirection, holdingsSortField, workspace?.rows])
   const groupedHoldingRows = useMemo(
-    () => buildGroupedRows(sortedHoldingRows, holdingsGroupBy, taxonomyByAssetId),
-    [holdingsGroupBy, sortedHoldingRows, taxonomyByAssetId],
+    () => buildGroupedRows(sortedHoldingRows, holdingsGroupBy, taxonomyByInstrumentId),
+    [holdingsGroupBy, sortedHoldingRows, taxonomyByInstrumentId],
   )
 
   function updateSearchParam(key: string, value: string | null) {
@@ -1788,17 +1788,17 @@ export default function PortfolioHomePage() {
     }
   }
 
-  function handleSelectAsset(assetId: string | null) {
-    const normalizedAssetId = assetId?.trim() || null
-    if (!normalizedAssetId || !portfolioId) {
-      updateSearchParam('asset_id', null)
+  function handleSelectAsset(instrumentId: string | null) {
+    const normalizedInstrumentId = instrumentId?.trim() || null
+    if (!normalizedInstrumentId || !portfolioId) {
+      updateSearchParam('instrument_id', null)
       return
     }
     const next = new URLSearchParams(searchParams)
-    next.delete('asset_id')
+    next.delete('instrument_id')
     next.delete('position_lot_id')
     const query = next.toString()
-    navigate(`${buildPortfolioHoldingDetailPath(portfolioId, normalizedAssetId)}${query ? `?${query}` : ''}`)
+    navigate(`${buildPortfolioHoldingDetailPath(portfolioId, normalizedInstrumentId)}${query ? `?${query}` : ''}`)
   }
 
   function handleHoldingsSort(field: HoldingsColumnKey) {
@@ -2132,23 +2132,23 @@ export default function PortfolioHomePage() {
   }, [portfolioId, requestedAsOfDate])
 
   useEffect(() => {
-    if (!workspace || !selectedAssetId) {
+    if (!workspace || !selectedInstrumentId) {
       return
     }
 
-    if (workspace.rows.some((row) => row.asset_core.asset_id === selectedAssetId)) {
+    if (workspace.rows.some((row) => row.instrument_core.instrument_id === selectedInstrumentId)) {
       return
     }
 
     setSearchParams((current) => {
-      if (current.get('asset_id') !== selectedAssetId) {
+      if (current.get('instrument_id') !== selectedInstrumentId) {
         return current
       }
       const next = new URLSearchParams(current)
-      next.delete('asset_id')
+      next.delete('instrument_id')
       return next
     })
-  }, [workspace, selectedAssetId, setSearchParams])
+  }, [workspace, selectedInstrumentId, setSearchParams])
 
   return (
     <PortfolioWorkspaceLayout activeSection="Holdings" toolbarLabel={workspace?.view_label ?? 'View: Holdings'}>
@@ -2270,16 +2270,16 @@ export default function PortfolioHomePage() {
                     <Fragment key={group.key}>
                       {holdingsGroupBy !== 'none' ? renderHoldingsGroupRow(group) : null}
                       {group.rows.map((row) => {
-                        const isActive = selectedAssetId === row.asset_core.asset_id
+                        const isActive = selectedInstrumentId === row.instrument_core.instrument_id
                         return (
                           <tr
                             key={row.line_id}
                             className={isActive ? 'holdings-row-active' : undefined}
                             tabIndex={0}
-                            onClick={() => handleSelectAsset(row.asset_core.asset_id)}
+                            onClick={() => handleSelectAsset(row.instrument_core.instrument_id)}
                             onKeyDown={(event) => {
                               if (event.key === 'Enter') {
-                                handleSelectAsset(row.asset_core.asset_id)
+                                handleSelectAsset(row.instrument_core.instrument_id)
                               }
                             }}
                           >
@@ -2288,7 +2288,7 @@ export default function PortfolioHomePage() {
                                 column.align === 'right' ? 'numeric-cell' : '',
                                 isHoldingsChartColumn(column.key) ? 'chart-cell' : '',
                                 column.className?.(row, columnContext) ?? '',
-                                column.key === 'asset' ? 'holding-name-cell' : '',
+                                column.key === 'instrument' ? 'holding-name-cell' : '',
                               ]
                                 .filter(Boolean)
                                 .join(' ')

@@ -5,7 +5,7 @@ from typing import Protocol
 
 from sqlalchemy.orm import Session
 
-from watchlist_app.db.models.assets import AssetDetail
+from watchlist_app.db.models.instruments import InstrumentDetail
 from watchlist_app.db.models.recalc import RecalcJob
 from watchlist_app.db.models.watchlists import (
     FieldCategory,
@@ -42,7 +42,7 @@ class WatchlistRepository(Protocol):
         session: Session,
         *,
         watchlist_id: str,
-        asset_ids: list[str],
+        instrument_ids: list[str],
         added_by: str,
     ) -> Sequence[WatchlistItem]: ...
 
@@ -83,7 +83,7 @@ class FieldRegistryRepository(Protocol):
         sort_mode: str,
         filter_mode: str,
         group_mode: str,
-        asset_scope_json: list[str],
+        instrument_scope_json: list[str],
         product_scope_json: list[str],
         availability_rule_json: dict[str, object],
         source_domain: str,
@@ -111,7 +111,7 @@ class InstrumentAttributeRepository(Protocol):
         group_code: str,
         display_order: int,
         options_json: list[str],
-        asset_scope_json: list[str],
+        instrument_scope_json: list[str],
         applicability_json: dict[str, object],
         rubric_json: dict[str, object],
         is_groupable: bool,
@@ -124,14 +124,14 @@ class InstrumentAttributeRepository(Protocol):
     def get_values_for_asset(
         self,
         session: Session,
-        asset_id: str,
+        instrument_id: str,
     ) -> Sequence[InstrumentAttributeValue]: ...
 
     def add_value(
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         attribute_key: str,
         value_json: object,
         source_record_id: str | None,
@@ -149,7 +149,7 @@ class RecalcJobRepository(Protocol):
         *,
         recalc_job_id: str,
         job_type: str,
-        asset_id: str,
+        instrument_id: str,
         trigger_type: str,
         trigger_ref_type: str | None,
         trigger_ref_id: str | None,
@@ -160,5 +160,5 @@ class RecalcJobRepository(Protocol):
     ) -> RecalcJob: ...
 
 
-class AssetRepository(Protocol):
-    def get(self, session: Session, asset_id: str) -> AssetDetail | None: ...
+class InstrumentRepository(Protocol):
+    def get(self, session: Session, instrument_id: str) -> InstrumentDetail | None: ...

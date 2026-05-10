@@ -61,38 +61,38 @@ def upgrade() -> None:
     bind = op.get_bind()
     assignment_table = sa.table(
         "instrument_taxonomy_assignment",
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("taxonomy_code", sa.String()),
         sa.column("source_record_id", sa.String()),
     )
     watchlist_row_table = sa.table(
         "watchlist_row_read_model",
         sa.column("watchlist_id", sa.String()),
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("attributes_json", sa.JSON()),
     )
     summary_table = sa.table(
-        "asset_summary_read_model",
-        sa.column("asset_id", sa.String()),
+        "instrument_summary_read_model",
+        sa.column("instrument_id", sa.String()),
         sa.column("payload_json", sa.JSON()),
     )
 
-    affected_asset_ids = [
-        str(row["asset_id"])
+    affected_instrument_ids = [
+        str(row["instrument_id"])
         for row in bind.execute(
-            sa.select(assignment_table.c.asset_id).where(
+            sa.select(assignment_table.c.instrument_id).where(
                 assignment_table.c.taxonomy_code == FUND_TAXONOMY_CODE,
                 assignment_table.c.source_record_id.like(f"{AUTO_SOURCE_PREFIX}%"),
             )
         ).mappings()
     ]
-    if not affected_asset_ids:
+    if not affected_instrument_ids:
         return
 
     bind.execute(
         sa.delete(assignment_table).where(
             assignment_table.c.taxonomy_code == FUND_TAXONOMY_CODE,
-            assignment_table.c.asset_id.in_(affected_asset_ids),
+            assignment_table.c.instrument_id.in_(affected_instrument_ids),
             assignment_table.c.source_record_id.like(f"{AUTO_SOURCE_PREFIX}%"),
         )
     )
@@ -101,14 +101,14 @@ def upgrade() -> None:
 
     for row in bind.execute(
         sa.select(watchlist_row_table).where(
-            watchlist_row_table.c.asset_id.in_(affected_asset_ids)
+            watchlist_row_table.c.instrument_id.in_(affected_instrument_ids)
         )
     ).mappings():
         bind.execute(
             sa.update(watchlist_row_table)
             .where(
                 watchlist_row_table.c.watchlist_id == row["watchlist_id"],
-                watchlist_row_table.c.asset_id == row["asset_id"],
+                watchlist_row_table.c.instrument_id == row["instrument_id"],
             )
             .values(
                 attributes_json=_serialize_json(
@@ -118,7 +118,7 @@ def upgrade() -> None:
         )
 
     for row in bind.execute(
-        sa.select(summary_table).where(summary_table.c.asset_id.in_(affected_asset_ids))
+        sa.select(summary_table).where(summary_table.c.instrument_id.in_(affected_instrument_ids))
     ).mappings():
         payload = row["payload_json"] if isinstance(row["payload_json"], dict) else {}
         next_payload = dict(payload)
@@ -130,7 +130,7 @@ def upgrade() -> None:
             )
         bind.execute(
             sa.update(summary_table)
-            .where(summary_table.c.asset_id == row["asset_id"])
+            .where(summary_table.c.instrument_id == row["instrument_id"])
             .values(payload_json=_serialize_json(next_payload))
         )
 

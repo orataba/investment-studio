@@ -19,7 +19,7 @@ import {
   updatePortfolioTaxonomyAssignment,
   updatePortfolioTaxonomyNode,
   updatePortfolioTargetSet,
-  type AssetCore,
+  type InstrumentCore,
   type HoldingsWorkspaceResponse,
   type PortfolioAccountsWorkspaceResponse,
   type PortfolioTargetSetLineRecord,
@@ -140,8 +140,8 @@ function targetScopeNodeId(scopeKey: string) {
   return scopeKey === ROOT_TARGET_SCOPE_KEY ? null : scopeKey
 }
 
-function primaryIdentifier(asset: AssetCore) {
-  return asset.identifiers.find((identifier) => identifier.is_primary)?.identifier_value ?? asset.asset_id
+function primaryIdentifier(instrument: InstrumentCore) {
+  return instrument.identifiers.find((identifier) => identifier.is_primary)?.identifier_value ?? instrument.instrument_id
 }
 
 function TableStatusRow({
@@ -790,7 +790,7 @@ export default function TaxonomiesPage() {
           : 0)
 
       const holdingEntities = holdingsRows.map((row) => {
-        const assignments = activeAssignmentsByEntityKey.get(coverageEntityKey('instrument', row.asset_core.asset_id)) ?? []
+        const assignments = activeAssignmentsByEntityKey.get(coverageEntityKey('instrument', row.instrument_core.instrument_id)) ?? []
         const assignment = assignments.length === 1 ? assignments[0] : null
         const currentNode = assignment ? nodeById.get(assignment.taxonomy_node_id) ?? null : null
         let coverageState: CoverageEntity['coverage_state'] = 'unassigned'
@@ -803,10 +803,10 @@ export default function TaxonomiesPage() {
         }
 
         return {
-          entity_id: row.asset_core.asset_id,
+          entity_id: row.instrument_core.instrument_id,
           target_scope: 'instrument' as const,
-          label: `${primaryIdentifier(row.asset_core)} · ${row.asset_core.asset_name}`,
-          supporting_label: row.market_value_base != null ? `${row.asset_core.currency} · ${formatCurrency(row.market_value_base, baseCurrency)}` : row.asset_core.currency,
+          label: `${primaryIdentifier(row.instrument_core)} · ${row.instrument_core.instrument_name}`,
+          supporting_label: row.market_value_base != null ? `${row.instrument_core.currency} · ${formatCurrency(row.market_value_base, baseCurrency)}` : row.instrument_core.currency,
           allocation:
             row.market_value_base != null && totalEntityValueBase > 1e-9
               ? row.market_value_base / totalEntityValueBase
@@ -2465,7 +2465,7 @@ export default function TaxonomiesPage() {
           <TaxonomyModal
             open={showTaxonomyCreate}
             title="New Taxonomy"
-            description="Create a new taxonomy, then build sleeves and assign assets from the tree."
+            description="Create a new taxonomy, then build sleeves and assign instruments from the tree."
             onClose={() => setShowTaxonomyCreate(false)}
           >
             <form className="transaction-form taxonomy-form-compact" onSubmit={(event) => void handleCreateTaxonomy(event)}>
@@ -2479,7 +2479,7 @@ export default function TaxonomiesPage() {
                   <select value={taxonomyType} onChange={(event) => setTaxonomyType(event.target.value)}>
                     <option value="custom">Custom</option>
                     <option value="risk_sleeve">Risk Sleeve (Semantic)</option>
-                    <option value="asset_class">Asset Class</option>
+                    <option value="instrument_class">Instrument Class</option>
                     <option value="sector">Sector</option>
                     <option value="issuer">Issuer</option>
                     <option value="factor">Factor</option>
@@ -2587,7 +2587,7 @@ export default function TaxonomiesPage() {
                     <select value={selectedTaxonomyType} onChange={(event) => setSelectedTaxonomyType(event.target.value)}>
                       <option value="custom">Custom</option>
                       <option value="risk_sleeve">Risk Sleeve (Semantic)</option>
-                      <option value="asset_class">Asset Class</option>
+                      <option value="instrument_class">Instrument Class</option>
                       <option value="sector">Sector</option>
                       <option value="issuer">Issuer</option>
                       <option value="factor">Factor</option>

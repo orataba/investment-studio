@@ -92,7 +92,7 @@ class PortfolioDailyHoldingSnapshotModel(Base):
     __tablename__ = "portfolio_daily_holding_snapshot"
     __table_args__ = (
         Index("ix_portfolio_daily_holding_portfolio_date", "portfolio_id", "as_of_date"),
-        Index("ix_portfolio_daily_holding_asset_date", "portfolio_id", "asset_id", "as_of_date"),
+        Index("ix_portfolio_daily_holding_instrument_date", "portfolio_id", "instrument_id", "as_of_date"),
         Index("ix_portfolio_daily_holding_account_date", "portfolio_id", "account_id", "as_of_date"),
     )
 
@@ -102,7 +102,7 @@ class PortfolioDailyHoldingSnapshotModel(Base):
     )
     as_of_date: Mapped[date] = mapped_column(Date, primary_key=True)
     account_id: Mapped[str] = mapped_column(String, primary_key=True)
-    asset_id: Mapped[str] = mapped_column(String, primary_key=True)
+    instrument_id: Mapped[str] = mapped_column(String, primary_key=True)
     currency: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[float] = mapped_column(nullable=False, default=0.0)
     cost_basis: Mapped[float | None]
@@ -179,7 +179,7 @@ class AccountRecordModel(Base):
     institution: Mapped[str | None] = mapped_column(String)
     default_settlement_cash_account_id: Mapped[str | None] = mapped_column(String)
     cost_basis_method: Mapped[str | None] = mapped_column(String)
-    allowed_asset_types_json: Mapped[list[str] | None] = mapped_column(JSON)
+    allowed_instrument_types_json: Mapped[list[str] | None] = mapped_column(JSON)
     opened_at: Mapped[date | None] = mapped_column(Date)
     closed_at: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
@@ -207,7 +207,7 @@ class TransactionRecordModel(Base):
             "trade_at",
         ),
         Index("ix_transaction_record_portfolio_type_trade", "portfolio_id", "transaction_type", "trade_date", "trade_at"),
-        Index("ix_transaction_record_portfolio_asset_trade", "portfolio_id", "asset_id", "trade_date", "trade_at"),
+        Index("ix_transaction_record_portfolio_instrument_trade", "portfolio_id", "instrument_id", "trade_date", "trade_at"),
     )
 
     transaction_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -226,7 +226,7 @@ class TransactionRecordModel(Base):
     acquisition_date: Mapped[date | None] = mapped_column(Date)
     account_id: Mapped[str] = mapped_column(String, nullable=False)
     settlement_cash_account_id: Mapped[str | None] = mapped_column(String)
-    asset_id: Mapped[str | None] = mapped_column(String)
+    instrument_id: Mapped[str | None] = mapped_column(String)
     instrument_ref_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
     quantity: Mapped[float | None]
     price: Mapped[float | None]

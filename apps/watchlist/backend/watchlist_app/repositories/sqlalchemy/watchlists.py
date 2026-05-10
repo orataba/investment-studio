@@ -55,7 +55,7 @@ TAXONOMY_GROUP_BY_CODE = "taxonomy"
 
 def _overview_view_columns() -> list[dict[str, object]]:
     return [
-        {"field_key": "asset_name", "display_order": 1, "width": 320},
+        {"field_key": "instrument_name", "display_order": 1, "width": 320},
         {"field_key": "attr.coverage_status", "display_order": 2, "width": 110},
         {"field_key": "price_chart_1m", "display_order": 3, "width": 140},
         {"field_key": "latest_quote", "display_order": 4, "width": 130},
@@ -69,7 +69,7 @@ def _overview_view_columns() -> list[dict[str, object]]:
 
 def _fund_screening_view_columns() -> list[dict[str, object]]:
     return [
-        {"field_key": "asset_name", "display_order": 1, "width": 320},
+        {"field_key": "instrument_name", "display_order": 1, "width": 320},
         {"field_key": "attr.implementation_style", "display_order": 2, "width": 140},
         {"field_key": "attr.style_profile", "display_order": 3, "width": 220},
         {"field_key": "attr.manager_assessment", "display_order": 4, "width": 220},
@@ -168,7 +168,7 @@ class SQLAlchemyWatchlistRepository:
             kind="system",
             default_group_by=fund_screening_default_group_by,
             default_sort=[],
-            default_filters={"asset_type": ["fund"]},
+            default_filters={"instrument_type": ["fund"]},
             default_advanced_filter={},
             columns=_fund_screening_view_columns(),
             is_default=False,
@@ -256,7 +256,7 @@ class SQLAlchemyWatchlistRepository:
                 kind="system",
                 default_group_by=TAXONOMY_GROUP_BY_CODE,
                 default_sort=[],
-                default_filters={"asset_type": ["fund"]},
+                default_filters={"instrument_type": ["fund"]},
                 default_advanced_filter={},
                 columns=_fund_screening_view_columns(),
                 is_default=False,
@@ -264,7 +264,7 @@ class SQLAlchemyWatchlistRepository:
         else:
             screening.kind = "system"
             screening.default_group_by = TAXONOMY_GROUP_BY_CODE
-            screening.default_filters_json = {"asset_type": ["fund"]}
+            screening.default_filters_json = {"instrument_type": ["fund"]}
 
         default_view_key = _scoped_view_id(ALL_COVERAGE_WATCHLIST_ID, "overview")
         for view in session.scalars(
@@ -314,7 +314,7 @@ class SQLAlchemyWatchlistRepository:
             session.add(
                 WatchlistItem(
                     watchlist_id=watchlist_id,
-                    asset_id=item.asset_id,
+                    instrument_id=item.instrument_id,
                     added_at=item.added_at,
                     added_by=item.added_by,
                     note=item.note,
@@ -388,23 +388,23 @@ class SQLAlchemyWatchlistRepository:
         session: Session,
         *,
         watchlist_id: str,
-        asset_ids: list[str],
+        instrument_ids: list[str],
         added_by: str,
     ) -> Sequence[WatchlistItem]:
         existing = {
             row[0]
             for row in session.execute(
-                select(WatchlistItem.asset_id).where(WatchlistItem.watchlist_id == watchlist_id)
+                select(WatchlistItem.instrument_id).where(WatchlistItem.watchlist_id == watchlist_id)
             )
         }
         now = datetime.now(UTC).replace(microsecond=0)
         created: list[WatchlistItem] = []
-        for asset_id in asset_ids:
-            if asset_id in existing:
+        for instrument_id in instrument_ids:
+            if instrument_id in existing:
                 continue
             row = WatchlistItem(
                 watchlist_id=watchlist_id,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 added_at=now,
                 added_by=added_by,
                 note=None,
@@ -420,13 +420,13 @@ class SQLAlchemyWatchlistRepository:
         session: Session,
         *,
         watchlist_id: str,
-        asset_ids: list[str],
+        instrument_ids: list[str],
     ) -> int:
-        if not asset_ids:
+        if not instrument_ids:
             return 0
         stmt = select(WatchlistItem).where(
             WatchlistItem.watchlist_id == watchlist_id,
-            WatchlistItem.asset_id.in_(asset_ids),
+            WatchlistItem.instrument_id.in_(instrument_ids),
         )
         rows = session.scalars(stmt).all()
         for row in rows:

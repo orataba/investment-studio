@@ -5,12 +5,12 @@ from datetime import date, time
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from yungu_asset_core.models import AssetCore as AssetCoreContract
-from yungu_asset_core.models import AssetIdentifier as AssetIdentifierContract
-from yungu_asset_core.models import AssetType, DataStatus as CoverageState, IdentifierType
+from yungu_instrument_core.models import InstrumentCore as InstrumentCoreContract
+from yungu_instrument_core.models import InstrumentIdentifier as InstrumentIdentifierContract
+from yungu_instrument_core.models import InstrumentType, DataStatus as CoverageState, IdentifierType
 
 
-AccountScopedAssetType = Literal["fund", "bond", "equity", "other"]
+AccountScopedInstrumentType = Literal["fund", "bond", "equity", "other"]
 AccountType = Literal["deposit_account", "securities_account"]
 CostBasisMethod = Literal["moving_average", "fifo"]
 SupportedCurrency = Literal["USD", "HKD", "CNY"]
@@ -163,7 +163,7 @@ def _normalize_optional_text_list(value: object) -> object:
 
 
 class InstrumentOption(BaseModel):
-    asset_core: AssetCoreContract
+    instrument_core: InstrumentCoreContract
     coverage_state: CoverageState
     latest_market_data: list[dict[str, object]] = Field(default_factory=list)
     quote_selection_policy: dict[str, list[str]] = Field(default_factory=dict)
@@ -180,8 +180,8 @@ class SharedFxRateRecord(BaseModel):
     rate: float
     as_of_date: date
     source_kind: str
-    asset_id: str | None = None
-    source_asset_ids: list[str] = Field(default_factory=list)
+    instrument_id: str | None = None
+    source_instrument_ids: list[str] = Field(default_factory=list)
     provider: str | None = None
     status: CoverageState = "complete"
 
@@ -202,7 +202,7 @@ class AccountRecord(BaseModel):
     institution: str | None = None
     default_settlement_cash_account_id: str | None = None
     cost_basis_method: CostBasisMethod | None = None
-    allowed_asset_types: list[AccountScopedAssetType] | None = None
+    allowed_instrument_types: list[AccountScopedInstrumentType] | None = None
     opened_at: date | None = None
     closed_at: date | None = None
     status: str = "active"
@@ -220,7 +220,7 @@ class AccountCreateRequest(BaseModel):
     institution: str | None = None
     default_settlement_cash_account_id: str | None = None
     cost_basis_method: CostBasisMethod | None = None
-    allowed_asset_types: list[AccountScopedAssetType] | None = None
+    allowed_instrument_types: list[AccountScopedInstrumentType] | None = None
     opened_at: date | None = None
     closed_at: date | None = None
     status: str = "active"
@@ -237,24 +237,24 @@ class AccountCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_account_contract(self) -> "AccountCreateRequest":
-        if self.allowed_asset_types == []:
-            self.allowed_asset_types = None
+        if self.allowed_instrument_types == []:
+            self.allowed_instrument_types = None
         if self.account_type == "deposit_account":
             if self.default_settlement_cash_account_id is not None:
                 raise ValueError("deposit_account must not carry default_settlement_cash_account_id.")
             if self.cost_basis_method is not None:
                 raise ValueError("deposit_account must not carry cost_basis_method.")
-            if self.allowed_asset_types is not None:
-                raise ValueError("deposit_account must not carry allowed_asset_types.")
+            if self.allowed_instrument_types is not None:
+                raise ValueError("deposit_account must not carry allowed_instrument_types.")
         if self.account_type == "securities_account" and self.cost_basis_method is None:
             self.cost_basis_method = "fifo"
-        if self.allowed_asset_types:
-            normalized: list[AccountScopedAssetType] = []
-            for raw_value in self.allowed_asset_types:
+        if self.allowed_instrument_types:
+            normalized: list[AccountScopedInstrumentType] = []
+            for raw_value in self.allowed_instrument_types:
                 value = str(raw_value).strip().lower()
                 if value and value not in normalized:
                     normalized.append(value)  # type: ignore[arg-type]
-            self.allowed_asset_types = normalized or None
+            self.allowed_instrument_types = normalized or None
         if self.opened_at and self.closed_at and self.closed_at < self.opened_at:
             raise ValueError("closed_at must not be earlier than opened_at.")
         return self
@@ -265,22 +265,22 @@ class AccountUpdateRequest(BaseModel):
     institution: str | None = None
     default_settlement_cash_account_id: str | None = None
     cost_basis_method: CostBasisMethod | None = None
-    allowed_asset_types: list[AccountScopedAssetType] | None = None
+    allowed_instrument_types: list[AccountScopedInstrumentType] | None = None
     opened_at: date | None = None
     closed_at: date | None = None
     status: str | None = None
 
     @model_validator(mode="after")
     def validate_account_update_contract(self) -> "AccountUpdateRequest":
-        if self.allowed_asset_types == []:
-            self.allowed_asset_types = None
-        if self.allowed_asset_types:
-            normalized: list[AccountScopedAssetType] = []
-            for raw_value in self.allowed_asset_types:
+        if self.allowed_instrument_types == []:
+            self.allowed_instrument_types = None
+        if self.allowed_instrument_types:
+            normalized: list[AccountScopedInstrumentType] = []
+            for raw_value in self.allowed_instrument_types:
                 value = str(raw_value).strip().lower()
                 if value and value not in normalized:
                     normalized.append(value)  # type: ignore[arg-type]
-            self.allowed_asset_types = normalized or None
+            self.allowed_instrument_types = normalized or None
         if self.opened_at and self.closed_at and self.closed_at < self.opened_at:
             raise ValueError("closed_at must not be earlier than opened_at.")
         return self
@@ -301,8 +301,8 @@ class TransactionRecord(BaseModel):
     acquisition_date: date | None = None
     account: AccountRecord
     settlement_cash_account: AccountRecord | None = None
-    asset_id: str | None = None
-    instrument_ref: AssetCoreContract | None = None
+    instrument_id: str | None = None
+    instrument_ref: InstrumentCoreContract | None = None
     quantity: float | None = None
     price: float | None = None
     gross_amount: float
@@ -352,8 +352,8 @@ class LedgerPostingRecord(BaseModel):
     trade_date: date
     settlement_date: date
     effective_date: date
-    asset_id: str | None = None
-    instrument_ref: AssetCoreContract | None = None
+    instrument_id: str | None = None
+    instrument_ref: InstrumentCoreContract | None = None
     cash_amount_delta: float | None = None
     quantity_delta: float | None = None
     cost_basis_delta: float | None = None
@@ -365,8 +365,8 @@ class LedgerPostingRecord(BaseModel):
 class AccountPositionRecord(BaseModel):
     position_id: str | None = None
     account_id: str
-    asset_id: str
-    instrument_ref: AssetCoreContract
+    instrument_id: str
+    instrument_ref: InstrumentCoreContract
     quantity: float
     cost_basis: float | None = None
     last_price: float | None = None
@@ -379,8 +379,8 @@ class AccountPositionRecord(BaseModel):
 class PositionRecord(BaseModel):
     position_id: str
     portfolio_id: str
-    asset_id: str
-    instrument_ref: AssetCoreContract
+    instrument_id: str
+    instrument_ref: InstrumentCoreContract
     quantity: float
     cost_basis: float | None = None
     last_price: float | None = None
@@ -403,12 +403,12 @@ class PositionListResponse(BaseModel):
     positions: list[PositionRecord]
 
 
-class AssetPriceChartPoint(BaseModel):
+class InstrumentPriceChartPoint(BaseModel):
     date: date
     value: float
 
 
-class AssetPriceChartSummary(BaseModel):
+class InstrumentPriceChartSummary(BaseModel):
     point_count: int
     change_value: float | None = None
     change_pct: float | None = None
@@ -416,16 +416,16 @@ class AssetPriceChartSummary(BaseModel):
     low: float | None = None
 
 
-class AssetPriceChartResponse(BaseModel):
+class InstrumentPriceChartResponse(BaseModel):
     portfolio_id: str
-    asset_core: AssetCoreContract
+    instrument_core: InstrumentCoreContract
     as_of_date: date
     range_key: str
     chart_basis: str | None = None
     metric_family: str | None = None
     currency: str
-    points: list[AssetPriceChartPoint] = Field(default_factory=list)
-    summary: AssetPriceChartSummary
+    points: list[InstrumentPriceChartPoint] = Field(default_factory=list)
+    summary: InstrumentPriceChartSummary
 
 
 class PositionLotRealizationRecord(BaseModel):
@@ -448,8 +448,8 @@ class PositionLotRecord(BaseModel):
     position_lot_id: str
     portfolio_id: str
     account_id: str
-    asset_id: str
-    instrument_ref: AssetCoreContract
+    instrument_id: str
+    instrument_ref: InstrumentCoreContract
     currency: str
     cost_basis_method: CostBasisMethod
     opened_by_transaction_id: str
@@ -516,7 +516,7 @@ class TransactionWorkspaceResponse(BaseModel):
 class TransactionPositionPreviewResponse(BaseModel):
     portfolio_id: str
     account_id: str
-    asset_id: str
+    instrument_id: str
     as_of_date: date
     trade_at: str
     quantity: float
@@ -543,7 +543,7 @@ class DailySnapshotRecord(BaseModel):
     income_cash_amount: float | None = None
     expense_cash_amount: float | None = None
     cash_currency_gains: float | None = None
-    asset_currency_gains: float | None = None
+    instrument_currency_gains: float | None = None
     return_of_capital_amount: float | None = None
     total_pnl: float | None = None
     external_cash_in: float = 0.0
@@ -577,7 +577,7 @@ class DailySnapshotListResponse(BaseModel):
 
 class DailySnapshotRefreshRequest(BaseModel):
     portfolio_ids: list[str] = Field(default_factory=list)
-    asset_ids: list[str] = Field(default_factory=list)
+    instrument_ids: list[str] = Field(default_factory=list)
     dirty_from: date | None = None
     refresh_all: bool = False
 
@@ -609,7 +609,7 @@ class DailyPerformancePoint(BaseModel):
     income_cash_amount: float | None = None
     expense_cash_amount: float | None = None
     cash_currency_gains: float | None = None
-    asset_currency_gains: float | None = None
+    instrument_currency_gains: float | None = None
     return_of_capital_amount: float | None = None
     total_pnl: float | None = None
     external_cash_in: float = 0.0
@@ -647,7 +647,7 @@ class PerformanceSummary(BaseModel):
     income_cash_amount: float | None = None
     expense_cash_amount: float | None = None
     cash_currency_gains: float | None = None
-    asset_currency_gains: float | None = None
+    instrument_currency_gains: float | None = None
     return_of_capital_amount: float | None = None
     total_pnl: float | None = None
     mean_daily_return: float | None = None
@@ -696,7 +696,7 @@ class PeriodCalculationSummary(BaseModel):
     fees: float | None = None
     taxes: float | None = None
     cash_currency_gains: float | None = None
-    asset_currency_gains: float | None = None
+    instrument_currency_gains: float | None = None
     deposits: float = 0.0
     withdrawals: float = 0.0
     net_external_inflow: float = 0.0
@@ -713,8 +713,8 @@ class PeriodCalculationResponse(BaseModel):
 
 class PeriodBoundaryHoldingRecord(BaseModel):
     position_id: str
-    asset_id: str
-    instrument_ref: AssetCoreContract
+    instrument_id: str
+    instrument_ref: InstrumentCoreContract
     quantity: float
     cost_basis: float | None = None
     cost_basis_base: float | None = None
@@ -970,9 +970,9 @@ class ResearchContextSignalRecord(BaseModel):
 
 
 class ResearchHoldingSnapshotRecord(BaseModel):
-    asset_id: str
-    asset_name: str
-    asset_type: str | None = None
+    instrument_id: str
+    instrument_name: str
+    instrument_type: str | None = None
     allocation: float | None = None
     market_value_base: float | None = None
     cost_basis_base: float | None = None
@@ -1091,7 +1091,7 @@ class ResearchSolveEventRecord(BaseModel):
     estimated_risk_sleeve_volatility: float | None = None
     target_volatility: float | None = None
     gross_exposure: float | None = None
-    risk_asset_scaling_factor: float | None = None
+    risky_allocation_scaling_factor: float | None = None
     member_count: int = 0
     scope_solve_count: int | None = None
 
@@ -1479,7 +1479,7 @@ class TargetSetUpdateRequest(BaseModel):
         return self
 
 
-ContributionAxis = Literal["instrument", "account", "asset_type", "currency", "taxonomy"]
+ContributionAxis = Literal["instrument", "account", "instrument_type", "currency", "taxonomy"]
 CalculationBucket = Literal[
     "initial_value",
     "final_value",
@@ -1490,7 +1490,7 @@ CalculationBucket = Literal[
     "fees",
     "taxes",
     "cash_currency_gains",
-    "asset_currency_gains",
+    "instrument_currency_gains",
     "total_pnl",
     "period_contribution",
     "residual_delta",
@@ -1528,7 +1528,7 @@ class DailyContributionSliceRecord(BaseModel):
     fee_amount: float | None = None
     tax_amount: float | None = None
     cash_currency_gains: float | None = None
-    asset_currency_gains: float | None = None
+    instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     daily_return: float | None = None
     daily_contribution: float | None = None
@@ -1549,7 +1549,7 @@ class ContributionLineRecord(BaseModel):
     fee_amount: float | None = None
     tax_amount: float | None = None
     cash_currency_gains: float | None = None
-    asset_currency_gains: float | None = None
+    instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     period_contribution: float | None = None
 
@@ -1604,7 +1604,7 @@ class ContributionCalendarBucketRecord(BaseModel):
     fee_amount: float | None = None
     tax_amount: float | None = None
     cash_currency_gains: float | None = None
-    asset_currency_gains: float | None = None
+    instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     bucket_contribution: float | None = None
 
@@ -1645,7 +1645,7 @@ ContributionBucket = Literal[
     "fee_amount",
     "tax_amount",
     "cash_currency_gains",
-    "asset_currency_gains",
+    "instrument_currency_gains",
     "total_pnl",
     "contribution",
 ]
@@ -1751,8 +1751,8 @@ class ContributionEntryRecord(BaseModel):
     group_label: str
     account_id: str | None = None
     account_name: str | None = None
-    asset_id: str | None = None
-    asset_name: str | None = None
+    instrument_id: str | None = None
+    instrument_name: str | None = None
     currency: str
     local_amount: float | None = None
     base_amount: float | None = None
@@ -1825,7 +1825,7 @@ class BoundaryGroupRecord(BaseModel):
     group_key: str
     group_label: str
     position_count: int = 0
-    asset_count: int = 0
+    instrument_count: int = 0
     cost_basis_base: float | None = None
     market_value_base: float | None = None
     unrealized_pnl: float | None = None
@@ -1861,7 +1861,7 @@ class PeriodCalculationGroupChildRecord(BaseModel):
     parent_group_label: str
     item_key: str
     item_label: str
-    item_kind: Literal["asset", "cash"]
+    item_kind: Literal["instrument", "cash"]
     average_weight: float | None = None
     ending_weight: float | None = None
     period_return: float | None = None
@@ -1877,7 +1877,7 @@ class PeriodCalculationGroupChildRecord(BaseModel):
     fees: float | None = None
     taxes: float | None = None
     cash_currency_gains: float | None = None
-    asset_currency_gains: float | None = None
+    instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     period_contribution: float | None = None
 
@@ -1902,7 +1902,7 @@ class PeriodCalculationGroupRecord(BaseModel):
     fees: float | None = None
     taxes: float | None = None
     cash_currency_gains: float | None = None
-    asset_currency_gains: float | None = None
+    instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     period_contribution: float | None = None
     children: list[PeriodCalculationGroupChildRecord] = Field(default_factory=list)
@@ -1959,7 +1959,7 @@ class PeriodCalculationGroupCalendarBucketRecord(BaseModel):
     fees: float | None = None
     taxes: float | None = None
     cash_currency_gains: float | None = None
-    asset_currency_gains: float | None = None
+    instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     bucket_contribution: float | None = None
 
@@ -2039,8 +2039,8 @@ class PeriodCalculationEntryRecord(BaseModel):
     group_label: str
     account_id: str | None = None
     account_name: str | None = None
-    asset_id: str | None = None
-    asset_name: str | None = None
+    instrument_id: str | None = None
+    instrument_name: str | None = None
     currency: str
     local_amount: float | None = None
     base_amount: float | None = None
@@ -2164,7 +2164,7 @@ class TransactionCreateRequest(BaseModel):
     acquisition_date: date | None = None
     account_id: str
     settlement_cash_account_id: str | None = None
-    asset_id: str | None = None
+    instrument_id: str | None = None
     quantity: float | None = Field(default=None, ge=0)
     price: float | None = Field(default=None, ge=0)
     gross_amount: float = Field(ge=0)
@@ -2231,8 +2231,8 @@ class TransactionCreateRequest(BaseModel):
             raise ValueError("acquisition_date must not be later than trade_date.")
 
         if self.transaction_type in {"buy", "sell"}:
-            if not self.asset_id:
-                raise ValueError("Security transactions require asset_id.")
+            if not self.instrument_id:
+                raise ValueError("Security transactions require instrument_id.")
             if self.quantity is None or self.quantity <= 0:
                 raise ValueError("Security transactions require positive quantity.")
             if self.price is None or self.price <= 0:
@@ -2245,14 +2245,14 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("gross_amount must equal quantity multiplied by price for buy and sell.")
 
         if self.transaction_type in {"dividend", "coupon"}:
-            if not self.asset_id:
-                raise ValueError("Income transactions require asset_id.")
+            if not self.instrument_id:
+                raise ValueError("Income transactions require instrument_id.")
             if self.quantity is not None or self.price is not None:
                 raise ValueError("Dividend and coupon must not carry quantity or price.")
 
         if self.transaction_type == "interest":
-            if self.asset_id is not None:
-                raise ValueError("Interest must not carry asset_id.")
+            if self.instrument_id is not None:
+                raise ValueError("Interest must not carry instrument_id.")
             if self.quantity is not None or self.price is not None:
                 raise ValueError("Interest must not carry quantity or price.")
             if self.settlement_cash_account_id is not None:
@@ -2261,8 +2261,8 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Interest must not carry fees or taxes.")
 
         if self.transaction_type == "return_of_capital":
-            if not self.asset_id:
-                raise ValueError("Return of capital requires asset_id.")
+            if not self.instrument_id:
+                raise ValueError("Return of capital requires instrument_id.")
             if self.quantity is not None:
                 raise ValueError("Return of capital must not carry quantity.")
             if self.price is not None:
@@ -2271,8 +2271,8 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Return of capital does not yet support entitlement_date.")
 
         if self.transaction_type == "dividend_reinvestment":
-            if not self.asset_id:
-                raise ValueError("Dividend reinvestment requires asset_id.")
+            if not self.instrument_id:
+                raise ValueError("Dividend reinvestment requires instrument_id.")
             if self.quantity is None or self.quantity <= 0:
                 raise ValueError("Dividend reinvestment requires positive quantity.")
             if self.entitlement_date is not None:
@@ -2294,16 +2294,16 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Dividend reinvestment must not carry fees or taxes.")
 
         if self.transaction_type == "maturity_redemption":
-            if not self.asset_id:
-                raise ValueError("Maturity redemption requires asset_id.")
+            if not self.instrument_id:
+                raise ValueError("Maturity redemption requires instrument_id.")
             if self.quantity is None or self.quantity <= 0:
                 raise ValueError("Maturity redemption requires positive quantity.")
             if self.price is not None:
                 raise ValueError("Maturity redemption must not carry price.")
 
         if self.transaction_type in {"deposit", "withdrawal"}:
-            if self.asset_id is not None:
-                raise ValueError("Cash-flow transactions must not carry asset_id.")
+            if self.instrument_id is not None:
+                raise ValueError("Cash-flow transactions must not carry instrument_id.")
             if self.quantity is not None or self.price is not None:
                 raise ValueError("Cash-flow transactions must not carry quantity or price.")
             if self.settlement_cash_account_id is not None:
@@ -2312,8 +2312,8 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Cash-flow transactions must not carry fees or taxes.")
 
         if self.transaction_type == "fx_conversion":
-            if self.asset_id is not None:
-                raise ValueError("FX conversion must not carry asset_id.")
+            if self.instrument_id is not None:
+                raise ValueError("FX conversion must not carry instrument_id.")
             if self.quantity is not None or self.price is not None:
                 raise ValueError("FX conversion must not carry quantity or price.")
             if self.gross_amount <= 0:
@@ -2344,8 +2344,8 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Fee and tax transactions must not carry price.")
             if self.fees != 0 or self.taxes != 0:
                 raise ValueError("Fee and tax transactions must not carry nested fees or taxes.")
-            if self.entitlement_date is not None and not self.asset_id:
-                raise ValueError("entitlement_date on fee and tax requires asset_id.")
+            if self.entitlement_date is not None and not self.instrument_id:
+                raise ValueError("entitlement_date on fee and tax requires instrument_id.")
 
         if (
             self.entitlement_date is not None
@@ -2363,11 +2363,11 @@ class TransactionCreateRequest(BaseModel):
             if not self.transfer_group_id:
                 raise ValueError("Transfer transactions require transfer_group_id.")
             if self.transfer_object_type == "cash":
-                if self.asset_id is not None or self.quantity is not None or self.price is not None:
-                    raise ValueError("Cash transfers must not carry asset, quantity, or price.")
+                if self.instrument_id is not None or self.quantity is not None or self.price is not None:
+                    raise ValueError("Cash transfers must not carry instrument, quantity, or price.")
             if self.transfer_object_type == "position":
-                if not self.asset_id:
-                    raise ValueError("Position transfers require asset_id.")
+                if not self.instrument_id:
+                    raise ValueError("Position transfers require instrument_id.")
                 if self.quantity is None or self.quantity <= 0:
                     raise ValueError("Position transfers require positive quantity.")
                 if self.price is not None:
@@ -2385,7 +2385,7 @@ class TransactionCreateRequest(BaseModel):
             raise ValueError("Transfer fields are only allowed for transfer transactions.")
 
         if self.transaction_type == "opening_balance":
-            if self.asset_id:
+            if self.instrument_id:
                 if self.acquisition_date is None:
                     self.acquisition_date = self.trade_date
             elif self.acquisition_date is not None:
@@ -2394,7 +2394,7 @@ class TransactionCreateRequest(BaseModel):
                 raise ValueError("Opening balance must not carry settlement_cash_account_id.")
             if self.fees != 0 or self.taxes != 0:
                 raise ValueError("Opening balance must not carry fees or taxes.")
-            if self.asset_id:
+            if self.instrument_id:
                 if self.quantity is None or self.quantity <= 0:
                     raise ValueError("Security opening balance requires positive quantity.")
                 if self.price is not None:
@@ -2423,7 +2423,7 @@ class InternalTransferCreateRequest(BaseModel):
     transfer_object_type: TransferObjectType
     from_account_id: str
     to_account_id: str
-    asset_id: str | None = None
+    instrument_id: str | None = None
     quantity: float | None = Field(default=None, ge=0)
     gross_amount: float | None = Field(default=None, ge=0)
     note: str | None = None
@@ -2439,11 +2439,11 @@ class InternalTransferCreateRequest(BaseModel):
         if self.transfer_object_type == "cash":
             if self.gross_amount is None or self.gross_amount <= 0:
                 raise ValueError("Cash transfer requires positive amount.")
-            if self.asset_id is not None or self.quantity is not None:
-                raise ValueError("Cash transfer must not carry asset_id or quantity.")
+            if self.instrument_id is not None or self.quantity is not None:
+                raise ValueError("Cash transfer must not carry instrument_id or quantity.")
         if self.transfer_object_type == "position":
-            if not self.asset_id:
-                raise ValueError("Position transfer requires asset_id.")
+            if not self.instrument_id:
+                raise ValueError("Position transfer requires instrument_id.")
             if self.quantity is None or self.quantity <= 0:
                 raise ValueError("Position transfer requires positive quantity.")
         return self

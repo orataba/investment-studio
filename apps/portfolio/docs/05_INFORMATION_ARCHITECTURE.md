@@ -272,7 +272,7 @@
 **Core blocks**
 
 - canonical holdings table
-- group by asset type / currency / taxonomy / selected planning taxonomy / account
+- group by instrument type / currency / taxonomy / selected planning taxonomy / account
 - sortable and filterable columns
 - relative-to-benchmark columns
 - portfolio security detail page entry
@@ -310,7 +310,7 @@
 **Core blocks**
 
 - `Return & Risk Metrics` for the selected custom period: TWR, annualized TWR, IRR / MWR, volatility, downside volatility, Sharpe / Sortino, and drawdown. These rows can use an independently selected benchmark.
-- `Calculation`: one configurable audit table combining realized risk attribution, period boundary values, group-level contribution, return breakdown, non-performance external flows, portfolio total, and final value. It uses the same view-selector pattern as Holdings; the system default view is named `Default` and shows realized risk attribution columns. `Group By: None` means direct instrument / asset lines, while asset type, currency, account, and default planning taxonomy aggregate through backend calculation/contribution axes. Group By and Download controls match Holdings toolbar behavior. The ledger view follows `Initial Value + Deposits - Withdrawals + Period P&L = Final Value`; capital gain uses period-reset fair-value basis, not account book cost. Accounting attribution rows do not compare to a benchmark.
+- `Calculation`: one configurable audit table combining realized risk attribution, period boundary values, group-level contribution, return breakdown, non-performance external flows, portfolio total, and final value. It uses the same view-selector pattern as Holdings; the system default view is named `Default` and shows realized risk attribution columns. `Group By: None` means direct instrument lines, while instrument type, currency, account, and default planning taxonomy aggregate through backend calculation/contribution axes. Group By and Download controls match Holdings toolbar behavior. The ledger view follows `Initial Value + Deposits - Withdrawals + Period P&L = Final Value`; capital gain uses period-reset fair-value basis, not account book cost. Accounting attribution rows do not compare to a benchmark.
 - Benchmark-relative comparison / contribution where a benchmark is available.
 
 `NAV Trend` and `Monthly Return Matrix` remain `Overview` blocks. `Performance` should not duplicate them. Overview chart compare and Performance benchmark compare are independent controls.
@@ -352,9 +352,9 @@
 **Core blocks**
 
 - Rolling risk path: rolling annualized volatility and rolling Sharpe, with optional benchmark compare.
-- Correlation Matrix: all-asset matrix and selected planning-taxonomy scope matrix, rendered as tables and controlled by an as-of timeline.
+- Correlation Matrix: all-instrument matrix and selected planning-taxonomy scope matrix, rendered as tables and controlled by an as-of timeline.
 - Current Drift: SAA/TAA weight target gap and SAA/TAA risk target gap against the default planning taxonomy.
-- Risk Contribution: point-in-time asset risk contribution using selected as-of date, covariance lookback, covariance model, and contribution mode.
+- Risk Contribution: point-in-time instrument risk contribution using selected as-of date, covariance lookback, covariance model, and contribution mode.
 - Limits, alerts, and scenarios remain outside the current Risk analytics page; they should not be mixed into these calculation blocks.
 
 **Comparator**
@@ -601,9 +601,9 @@
 
 ## 6. Shared Detail Surfaces
 
-### 6.1 Portfolio Security Detail
+### 6.1 Portfolio Instrument Detail
 
-Portfolio-specific security detail 的 canonical 入口从 `Holdings` 行进入，但形态是独立子路由 `/portfolios/:portfolioId/holdings/:assetId`，而不是页面底部普通 section、fixed panel 或 modal。点击 holdings 行后进入组合内单资产详情页，保留 `as_of_date` 等上下文，返回 `Holdings` 时保留列表筛选/排序状态。
+Portfolio-specific security detail 的 canonical 入口从 `Holdings` 行进入，但形态是独立子路由 `/portfolios/:portfolioId/holdings/:instrumentId`，而不是页面底部普通 section、fixed panel 或 modal。点击 holdings 行后进入组合内单资产详情页，保留 `as_of_date` 等上下文，返回 `Holdings` 时保留列表筛选/排序状态。
 
 包含：
 
@@ -613,12 +613,12 @@ Portfolio-specific security detail 的 canonical 入口从 `Holdings` 行进入�
 - `Events`
 - `Data Quality`
 
-Watchlist / Instrument Detail 是 asset-level research terminal 的 canonical 入口。Portfolio Security Detail 可以使用共享资产价格/NAV 事实，并提供资产级收益风险、研究和 monitoring 的 deep link，但不复制 Watchlist detail 的完整工作面。
+Watchlist / Instrument Detail 是 instrument-level research terminal 的 canonical 入口。Portfolio Instrument Detail 可以使用共享标的价格/NAV 事实，并提供标的级收益风险、研究和 monitoring 的 deep link，但不复制 Watchlist detail 的完整工作面。
 
 其他页面如需进入单资产深层信息，应优先：
 
 - 跳转到 portfolio security detail page
-- 或在当前上下文提供明确的 `Open Security Detail` link
+- 或在当前上下文提供明确的 `Open Instrument Detail` link
 
 而不是在各工作面重复实现另一套单资产详情。
 

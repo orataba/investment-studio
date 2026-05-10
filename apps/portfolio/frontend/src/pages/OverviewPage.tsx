@@ -12,14 +12,14 @@ import RiskRankedBars from '../components/RiskRankedBars'
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import {
   getHoldingsWorkspace,
-  getPortfolioAssetPriceChart,
+  getPortfolioInstrumentPriceChart,
   getPortfolioPerformance,
   getPortfolioInstruments,
   getPortfolioTaxonomyCatalog,
   getWorkspaceSummaryForPortfolio,
   type HoldingsWorkspaceResponse,
-  type PortfolioAssetPriceChartPoint,
-  type PortfolioAssetPriceChartResponse,
+  type PortfolioInstrumentPriceChartPoint,
+  type PortfolioInstrumentPriceChartResponse,
   type PortfolioHoldingRow,
   type PortfolioDailyPerformancePoint,
   type PortfolioPerformanceCoverageState,
@@ -55,7 +55,7 @@ type AllocationBucket = {
 }
 
 type TopHoldingColumnKey =
-  | 'asset'
+  | 'instrument'
   | 'identifier'
   | 'sleeve'
   | 'sparkline'
@@ -87,7 +87,7 @@ type OverviewMetricRow = {
 }
 
 const DEFAULT_TOP_HOLDING_COLUMNS: TopHoldingColumnKey[] = [
-  'asset',
+  'instrument',
   'sparkline',
   'market_value',
   'weight',
@@ -98,7 +98,7 @@ const DEFAULT_TOP_HOLDING_COLUMNS: TopHoldingColumnKey[] = [
 ]
 
 const TOP_HOLDING_COLUMN_LABELS: Record<TopHoldingColumnKey, string> = {
-  asset: 'Asset',
+  instrument: 'Instrument',
   identifier: 'Identifier',
   sleeve: 'Sleeve',
   sparkline: 'Chart 6M',
@@ -116,7 +116,7 @@ const TOP_HOLDING_COLUMN_LABELS: Record<TopHoldingColumnKey, string> = {
 }
 
 const TOP_HOLDING_COLUMN_GROUPS: Array<{ label: string; columns: TopHoldingColumnKey[] }> = [
-  { label: 'Core', columns: ['asset', 'identifier', 'sleeve', 'coverage'] },
+  { label: 'Core', columns: ['instrument', 'identifier', 'sleeve', 'coverage'] },
   { label: 'Market', columns: ['sparkline', 'last_price', 'market_value', 'weight', 'day_change'] },
   { label: 'Position', columns: ['quantity', 'cost_basis', 'unrealized_pnl'] },
   { label: 'Return', columns: ['return_1w', 'return_mtd', 'return_ytd'] },
@@ -128,9 +128,9 @@ const DONUT_COLORS = ['#0b72d7', '#0f766e', '#64748b', '#7c3aed', '#db2777', '#1
 
 function primaryIdentifier(row: PortfolioHoldingRow) {
   return (
-    row.asset_core.identifiers.find((item) => item.is_primary)?.identifier_value ??
-    row.asset_core.identifiers[0]?.identifier_value ??
-    row.asset_core.asset_id
+    row.instrument_core.identifiers.find((item) => item.is_primary)?.identifier_value ??
+    row.instrument_core.identifiers[0]?.identifier_value ??
+    row.instrument_core.instrument_id
   )
 }
 
@@ -280,7 +280,7 @@ function periodReturnFromValuePoints(
 
   const latestPoint = sortedPoints[sortedPoints.length - 1]
   const anchorPoint = targetDate
-    ? sortedPoints.reduce<PortfolioAssetPriceChartPoint | null>(
+    ? sortedPoints.reduce<PortfolioInstrumentPriceChartPoint | null>(
         (current, point) => (point.date <= targetDate ? point : current),
         null,
       ) ?? (fallbackToFirst ? sortedPoints[0] : null)
@@ -330,7 +330,7 @@ function annualizedMeanReturn(values: number[], periodsPerYear: number | null) {
   return (values.reduce((sum, value) => sum + value, 0) / values.length) * periodsPerYear
 }
 
-function buildDrawdownMetrics(points: PortfolioAssetPriceChartPoint[]) {
+function buildDrawdownMetrics(points: PortfolioInstrumentPriceChartPoint[]) {
   let highWater = points[0]?.value ?? 0
   let maxDrawdown: number | null = null
   let currentDrawdown: number | null = null
@@ -347,7 +347,7 @@ function buildDrawdownMetrics(points: PortfolioAssetPriceChartPoint[]) {
   return { currentDrawdown, maxDrawdown }
 }
 
-function buildBenchmarkMetrics(points: PortfolioAssetPriceChartPoint[]) {
+function buildBenchmarkMetrics(points: PortfolioInstrumentPriceChartPoint[]) {
   const sortedPoints = points
     .filter((point) => Number.isFinite(point.value))
     .slice()
@@ -564,8 +564,8 @@ export default function OverviewPage() {
   const [performanceError, setPerformanceError] = useState<string | null>(null)
   const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
-  const [benchmarkAssetId, setBenchmarkAssetId] = useState('')
-  const [benchmarkChart, setBenchmarkChart] = useState<PortfolioAssetPriceChartResponse | null>(null)
+  const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
+  const [benchmarkChart, setBenchmarkChart] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
   const [topHoldingColumns, setTopHoldingColumns] = useState<TopHoldingColumnKey[]>(DEFAULT_TOP_HOLDING_COLUMNS)
@@ -679,7 +679,7 @@ export default function OverviewPage() {
 
   useEffect(() => {
     const asOfDate = summary?.as_of_date ?? holdingsWorkspace?.as_of_date
-    if (!portfolioId || !benchmarkAssetId || !asOfDate) {
+    if (!portfolioId || !benchmarkInstrumentId || !asOfDate) {
       setBenchmarkChart(null)
       setBenchmarkLoading(false)
       setBenchmarkError(null)
@@ -690,7 +690,7 @@ export default function OverviewPage() {
     setBenchmarkLoading(true)
     setBenchmarkError(null)
 
-    getPortfolioAssetPriceChart(portfolioId, benchmarkAssetId, {
+    getPortfolioInstrumentPriceChart(portfolioId, benchmarkInstrumentId, {
       as_of_date: asOfDate,
       range: 'all',
     })
@@ -714,7 +714,7 @@ export default function OverviewPage() {
     return () => {
       cancelled = true
     }
-  }, [benchmarkAssetId, holdingsWorkspace?.as_of_date, portfolioId, summary?.as_of_date])
+  }, [benchmarkInstrumentId, holdingsWorkspace?.as_of_date, portfolioId, summary?.as_of_date])
 
   const holdingsRows = holdingsWorkspace?.rows ?? []
   const resolvedBaseCurrency =
@@ -779,12 +779,12 @@ export default function OverviewPage() {
         assignment.status === 'active' &&
         isRecordActive(assignment.effective_from, assignment.effective_to, holdingsWorkspace?.as_of_date ?? summary?.as_of_date),
     )
-    const assignmentByAssetId = new Map<string, PortfolioTaxonomyAssignmentRecord>(
+    const assignmentByInstrumentId = new Map<string, PortfolioTaxonomyAssignmentRecord>(
       activeAssignments.map((assignment) => [assignment.target_entity_id, assignment]),
     )
 
     const topLevelBuckets = new Map<string, AllocationBucket>()
-    const assignedLabelByAssetId = new Map<
+    const assignedLabelByInstrumentId = new Map<
       string,
       {
         topLevelLabel: string
@@ -795,7 +795,7 @@ export default function OverviewPage() {
     holdingsRows.forEach((row) => {
       const value = row.market_value_base ?? row.market_value ?? 0
       const weight = row.allocation ?? ((summary?.nav ?? 0) > 0 ? value / (summary?.nav ?? 1) : 0)
-      const assignment = assignmentByAssetId.get(row.asset_core.asset_id)
+      const assignment = assignmentByInstrumentId.get(row.instrument_core.instrument_id)
       const leafNode = assignment ? nodesById.get(assignment.taxonomy_node_id) ?? null : null
       const path = leafNode ? resolveNodePath(leafNode.taxonomy_node_id, nodesById) : []
       const topLevelNode = path[0] ?? leafNode
@@ -812,7 +812,7 @@ export default function OverviewPage() {
         weight,
       })
 
-      assignedLabelByAssetId.set(row.asset_core.asset_id, {
+      assignedLabelByInstrumentId.set(row.instrument_core.instrument_id, {
         topLevelLabel,
         leafLabel,
       })
@@ -851,7 +851,7 @@ export default function OverviewPage() {
 
     return {
       topLevelBuckets: sortedTopLevelBuckets,
-      assignedLabelByAssetId,
+      assignedLabelByInstrumentId,
     }
   }, [
     cashValue,
@@ -873,14 +873,14 @@ export default function OverviewPage() {
   }))
   const topHoldingBarItems = sortedHoldings.slice(0, TOP_HOLDINGS_LIMIT).map((row) => ({
     id: row.line_id,
-    label: row.asset_core.asset_name,
-    subtitle: composition.assignedLabelByAssetId.get(row.asset_core.asset_id)?.leafLabel ?? formatLabel(row.asset_core.asset_type),
+    label: row.instrument_core.instrument_name,
+    subtitle: composition.assignedLabelByInstrumentId.get(row.instrument_core.instrument_id)?.leafLabel ?? formatLabel(row.instrument_core.instrument_type),
     value: row.allocation ?? 0,
     valueLabel: formatPercent(row.allocation),
     detail: formatCurrency(row.market_value_base ?? row.market_value, resolvedBaseCurrency),
   }))
   const selectedBenchmarkInstrument =
-    benchmarkInstruments.find((instrument) => instrument.asset_id === benchmarkAssetId) ?? null
+    benchmarkInstruments.find((instrument) => instrument.instrument_id === benchmarkInstrumentId) ?? null
   const benchmarkMetrics = useMemo(
     () => buildBenchmarkMetrics(benchmarkChart?.points ?? []) ?? null,
     [benchmarkChart],
@@ -963,9 +963,9 @@ export default function OverviewPage() {
   ]
   const topHoldingColumnDefinitions: TopHoldingColumnDefinition[] = [
     {
-      key: 'asset',
-      label: TOP_HOLDING_COLUMN_LABELS.asset,
-      render: (row) => row.asset_core.asset_name,
+      key: 'instrument',
+      label: TOP_HOLDING_COLUMN_LABELS.instrument,
+      render: (row) => row.instrument_core.instrument_name,
     },
     {
       key: 'identifier',
@@ -975,7 +975,7 @@ export default function OverviewPage() {
     {
       key: 'sleeve',
       label: TOP_HOLDING_COLUMN_LABELS.sleeve,
-      render: (row) => composition.assignedLabelByAssetId.get(row.asset_core.asset_id)?.leafLabel ?? 'Unassigned',
+      render: (row) => composition.assignedLabelByInstrumentId.get(row.instrument_core.instrument_id)?.leafLabel ?? 'Unassigned',
     },
     {
       key: 'sparkline',
@@ -991,7 +991,7 @@ export default function OverviewPage() {
     {
       key: 'last_price',
       label: TOP_HOLDING_COLUMN_LABELS.last_price,
-      render: (row) => formatUnitPrice(row.last_price, row.asset_core.currency),
+      render: (row) => formatUnitPrice(row.last_price, row.instrument_core.currency),
     },
     {
       key: 'market_value',
@@ -1094,16 +1094,16 @@ export default function OverviewPage() {
                     <div className="overview-chart-controls">
                       <BenchmarkSearchBox
                         instruments={benchmarkInstruments}
-                        selectedAssetId={benchmarkAssetId}
+                        selectedInstrumentId={benchmarkInstrumentId}
                         searchValue={benchmarkSearch}
                         onSearchChange={setBenchmarkSearch}
                         onSelectInstrument={(instrument) => {
-                          setBenchmarkAssetId(instrument.asset_id)
+                          setBenchmarkInstrumentId(instrument.instrument_id)
                           setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
                           setBenchmarkError(null)
                         }}
                         onClear={() => {
-                          setBenchmarkAssetId('')
+                          setBenchmarkInstrumentId('')
                           setBenchmarkSearch('')
                           setBenchmarkChart(null)
                           setBenchmarkError(null)
@@ -1311,7 +1311,7 @@ export default function OverviewPage() {
                     <section className="overview-columns-field-group" key={group.label}>
                       <div className="section-heading">{group.label}</div>
                       {group.columns.map((column) => {
-                        const locked = column === 'asset'
+                        const locked = column === 'instrument'
                         return (
                           <label className="overview-columns-field-item" key={column}>
                             <input
@@ -1374,7 +1374,7 @@ export default function OverviewPage() {
                           >
                             Down
                           </button>
-                          {column !== 'asset' ? (
+                          {column !== 'instrument' ? (
                             <button
                               type="button"
                               onClick={() => setTopHoldingColumnDraft((current) => current.filter((item) => item !== column))}
@@ -1404,9 +1404,9 @@ export default function OverviewPage() {
                   className="button-primary"
                   onClick={() => {
                     setTopHoldingColumns(
-                      topHoldingColumnDraft.includes('asset')
+                      topHoldingColumnDraft.includes('instrument')
                         ? topHoldingColumnDraft
-                        : ['asset', ...topHoldingColumnDraft],
+                        : ['instrument', ...topHoldingColumnDraft],
                     )
                     setTopHoldingColumnsOpen(false)
                   }}

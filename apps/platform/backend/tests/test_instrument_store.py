@@ -28,9 +28,9 @@ TEST_SHARED_STORE = {
     "registry_name": DEFAULT_REGISTRY_NAME,
     "instruments": [
         {
-            "asset_id": "cash-usd",
-            "asset_name": "USD Cash",
-            "asset_type": "cash",
+            "instrument_id": "cash-usd",
+            "instrument_name": "USD Cash",
+            "instrument_type": "cash",
             "currency": "USD",
             "identifiers": [
                 {
@@ -59,9 +59,9 @@ TEST_SHARED_STORE = {
             },
         },
         {
-            "asset_id": "fund-us-agg",
-            "asset_name": "iShares Core U.S. Aggregate Bond ETF",
-            "asset_type": "fund",
+            "instrument_id": "fund-us-agg",
+            "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
+            "instrument_type": "fund",
             "currency": "USD",
             "identifiers": [
                 {
@@ -95,7 +95,7 @@ TEST_SHARED_STORE = {
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = BACKEND_ROOT.parents[2]
-SHARED_ASSET_MIGRATIONS_ROOT = WORKSPACE_ROOT / "infra" / "shared_asset"
+SHARED_ASSET_MIGRATIONS_ROOT = WORKSPACE_ROOT / "infra" / "instrument_registry"
 
 
 def _run_alembic_upgrade(database_url: str) -> None:
@@ -119,7 +119,7 @@ def test_normalize_store_does_not_reinsert_missing_default_instruments() -> None
     assert normalized["registry_name"] == "Custom Registry"
     assert normalized["instruments"] == [second_default]
     assert all(
-        instrument.get("asset_id") != first_default.get("asset_id")
+        instrument.get("instrument_id") != first_default.get("instrument_id")
         for instrument in normalized["instruments"]
     )
 
@@ -156,17 +156,17 @@ def isolated_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_archive_restore_filters_default_shared_search(
     isolated_store: Path,
 ) -> None:
-    archived = archive_instrument(asset_id="fund-us-agg", updated_by="pytest")
+    archived = archive_instrument(instrument_id="fund-us-agg", updated_by="pytest")
     assert archived is not None
     assert archived["lifecycle_state"]["status"] == "archived"
     assert archived["lifecycle_state"]["changed_by"] == "pytest"
     assert archived["lifecycle_state"]["changed_at"] is not None
 
-    active_ids = {item["asset_id"] for item in list_instruments()}
+    active_ids = {item["instrument_id"] for item in list_instruments()}
     assert "fund-us-agg" not in active_ids
 
     all_records = {
-        item["asset_id"]: item for item in list_instruments(include_inactive=True)
+        item["instrument_id"]: item for item in list_instruments(include_inactive=True)
     }
     assert all_records["fund-us-agg"]["lifecycle_state"]["status"] == "archived"
 
@@ -178,18 +178,18 @@ def test_archive_restore_filters_default_shared_search(
         include_inactive=True,
     )
     assert resolved_including_inactive is not None
-    assert resolved_including_inactive["asset_id"] == "fund-us-agg"
+    assert resolved_including_inactive["instrument_id"] == "fund-us-agg"
 
     detail = get_instrument("fund-us-agg")
     assert detail is not None
     assert detail["lifecycle_state"]["status"] == "archived"
 
-    restored = restore_instrument(asset_id="fund-us-agg", updated_by="pytest")
+    restored = restore_instrument(instrument_id="fund-us-agg", updated_by="pytest")
     assert restored is not None
     assert restored["lifecycle_state"]["status"] == "active"
     assert restored["lifecycle_state"]["changed_by"] == "pytest"
 
-    restored_ids = {item["asset_id"] for item in list_instruments()}
+    restored_ids = {item["instrument_id"] for item in list_instruments()}
     assert "fund-us-agg" in restored_ids
 
 
@@ -205,13 +205,13 @@ def test_reset_store_without_payload_initializes_empty_registry(
 def test_create_rejects_identifier_collision_with_archived_instrument(
     isolated_store: Path,
 ) -> None:
-    archived = archive_instrument(asset_id="fund-us-agg", updated_by="pytest")
+    archived = archive_instrument(instrument_id="fund-us-agg", updated_by="pytest")
     assert archived is not None
 
     with pytest.raises(ValueError, match='Identifier "ticker:AGG" already belongs'):
         create_instrument(
-            asset_name="Duplicate AGG",
-            asset_type="fund",
+            instrument_name="Duplicate AGG",
+            instrument_type="fund",
             currency="USD",
             identifiers=[
                 {
@@ -227,8 +227,8 @@ def test_create_allows_same_identifier_value_across_different_types(
     isolated_store: Path,
 ) -> None:
     created = create_instrument(
-        asset_name="Internal AGG Alias",
-        asset_type="fund",
+        instrument_name="Internal AGG Alias",
+        instrument_type="fund",
         currency="USD",
         identifiers=[
             {
@@ -239,13 +239,13 @@ def test_create_allows_same_identifier_value_across_different_types(
         ],
     )
 
-    assert created["asset_id"] == "agg"
+    assert created["instrument_id"] == "agg"
     ticker_match = find_instrument_by_identifier(identifier_value="AGG", identifier_type="ticker")
     internal_match = find_instrument_by_identifier(identifier_value="AGG", identifier_type="internal")
     assert ticker_match is not None
     assert internal_match is not None
-    assert ticker_match["asset_id"] == "fund-us-agg"
-    assert internal_match["asset_id"] == "agg"
+    assert ticker_match["instrument_id"] == "fund-us-agg"
+    assert internal_match["instrument_id"] == "agg"
 
 
 def test_create_rejects_same_identifier_type_value_in_request(
@@ -253,8 +253,8 @@ def test_create_rejects_same_identifier_type_value_in_request(
 ) -> None:
     with pytest.raises(ValueError, match='Duplicate identifier "ticker:dup"'):
         create_instrument(
-            asset_name="Duplicate Request Identifier",
-            asset_type="fund",
+            instrument_name="Duplicate Request Identifier",
+            instrument_type="fund",
             currency="USD",
             identifiers=[
                 {
@@ -275,7 +275,7 @@ def test_upsert_market_data_updates_shared_store_without_app_callbacks(
     isolated_store: Path,
 ) -> None:
     record = upsert_market_data(
-        asset_id="fund-us-agg",
+        instrument_id="fund-us-agg",
         metric_family="price",
         quote_basis="close",
         as_of_date=date(2026, 4, 16),
@@ -296,7 +296,7 @@ def test_replace_nav_history_updates_shared_store_without_app_callbacks(
     isolated_store: Path,
 ) -> None:
     record = replace_nav_history(
-        asset_id="fund-us-agg",
+        instrument_id="fund-us-agg",
         rows=[
             {
                 "as_of_date": "2026-04-14",
@@ -331,9 +331,9 @@ def test_preview_nav_import_filters_rows_to_selected_instrument(
     isolated_store: Path,
 ) -> None:
     rows = preview_nav_import(
-        asset_id="fund-us-agg",
+        instrument_id="fund-us-agg",
         raw_text=(
-            "date,asset_code,asset_name,nav,nav_with_dividend,currency\n"
+            "date,instrument_code,instrument_name,nav,nav_with_dividend,currency\n"
             "2026-04-15,AGG,iShares Core U.S. Aggregate Bond ETF,100.2,100.7,USD\n"
             "2026-04-15,SPY,SPDR S&P 500 ETF Trust,500.1,500.1,USD\n"
         ),
@@ -341,7 +341,7 @@ def test_preview_nav_import_filters_rows_to_selected_instrument(
 
     assert rows is not None
     assert len(rows) == 1
-    assert rows[0]["asset_code"] == "AGG"
+    assert rows[0]["instrument_code"] == "AGG"
     assert rows[0]["as_of_date"] == "2026-04-15"
 
 
@@ -349,10 +349,10 @@ def test_import_nav_file_accepts_csv_bytes(
     isolated_store: Path,
 ) -> None:
     record = import_nav_file(
-        asset_id="fund-us-agg",
+        instrument_id="fund-us-agg",
         file_name="agg_nav.csv",
         file_bytes=(
-            "date,asset_code,asset_name,nav,nav_with_dividend,currency\n"
+            "date,instrument_code,instrument_name,nav,nav_with_dividend,currency\n"
             "2026-04-15,AGG,iShares Core U.S. Aggregate Bond ETF,100.2,100.7,USD\n"
             "2026-04-14,AGG,iShares Core U.S. Aggregate Bond ETF,100.0,100.5,USD\n"
         ).encode("utf-8"),

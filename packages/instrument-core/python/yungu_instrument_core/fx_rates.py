@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from yungu_asset_core.instrument_store import (
+from yungu_instrument_core.instrument_store import (
     SessionFactory,
     get_instrument,
     upsert_market_data,
@@ -26,8 +26,8 @@ def maintained_fx_pairs() -> list[str]:
     return [f"{base}/{quote}" for base, quote in MAINTAINED_FX_INSTRUMENTS]
 
 
-def _latest_spot_point(session_factory: SessionFactory, asset_id: str) -> dict[str, object] | None:
-    instrument = get_instrument(session_factory, asset_id)
+def _latest_spot_point(session_factory: SessionFactory, instrument_id: str) -> dict[str, object] | None:
+    instrument = get_instrument(session_factory, instrument_id)
     if instrument is None:
         return None
 
@@ -52,11 +52,11 @@ def _direct_rate_record(
     base_currency: str,
     quote_currency: str,
 ) -> dict[str, object] | None:
-    asset_id = MAINTAINED_FX_INSTRUMENTS.get((base_currency, quote_currency))
-    if asset_id is None:
+    instrument_id = MAINTAINED_FX_INSTRUMENTS.get((base_currency, quote_currency))
+    if instrument_id is None:
         return None
 
-    point = _latest_spot_point(session_factory, asset_id)
+    point = _latest_spot_point(session_factory, instrument_id)
     if point is None:
         return None
 
@@ -66,8 +66,8 @@ def _direct_rate_record(
         "rate": Decimal(str(point.get("value") or "0")),
         "as_of_date": date.fromisoformat(str(point.get("as_of_date") or date.today().isoformat())),
         "source_kind": "direct",
-        "asset_id": asset_id,
-        "source_asset_ids": [asset_id],
+        "instrument_id": instrument_id,
+        "source_instrument_ids": [instrument_id],
         "provider": point.get("provider"),
         "status": str(point.get("status") or "complete"),
     }
@@ -89,8 +89,8 @@ def _inverse_rate_record(
         "rate": rate,
         "as_of_date": direct_record["as_of_date"],
         "source_kind": "inverse",
-        "asset_id": direct_record["asset_id"],
-        "source_asset_ids": list(direct_record["source_asset_ids"]),
+        "instrument_id": direct_record["instrument_id"],
+        "source_instrument_ids": list(direct_record["source_instrument_ids"]),
         "provider": direct_record["provider"],
         "status": direct_record["status"],
     }
@@ -114,15 +114,15 @@ def _cross_rate_record(
     as_of_date = min(usd_to_base["as_of_date"], usd_to_quote["as_of_date"])
     provider_parts = [part for part in [usd_to_base.get("provider"), usd_to_quote.get("provider")] if part]
     provider = " + ".join(dict.fromkeys(provider_parts)) or None
-    source_asset_ids = list(dict.fromkeys([*usd_to_base["source_asset_ids"], *usd_to_quote["source_asset_ids"]]))
+    source_instrument_ids = list(dict.fromkeys([*usd_to_base["source_instrument_ids"], *usd_to_quote["source_instrument_ids"]]))
     return {
         "base_currency": base_currency,
         "quote_currency": quote_currency,
         "rate": rate,
         "as_of_date": as_of_date,
         "source_kind": "cross",
-        "asset_id": None,
-        "source_asset_ids": source_asset_ids,
+        "instrument_id": None,
+        "source_instrument_ids": source_instrument_ids,
         "provider": provider,
         "status": status,
     }
@@ -144,8 +144,8 @@ def get_fx_rate(
             "rate": Decimal("1"),
             "as_of_date": date.today(),
             "source_kind": "direct",
-            "asset_id": None,
-            "source_asset_ids": [],
+            "instrument_id": None,
+            "source_instrument_ids": [],
             "provider": None,
             "status": "complete",
         }
@@ -194,13 +194,13 @@ def upsert_fx_rate(
 ) -> dict[str, object]:
     normalized_base = base_currency.strip().upper()
     normalized_quote = quote_currency.strip().upper()
-    asset_id = MAINTAINED_FX_INSTRUMENTS.get((normalized_base, normalized_quote))
-    if asset_id is None:
+    instrument_id = MAINTAINED_FX_INSTRUMENTS.get((normalized_base, normalized_quote))
+    if instrument_id is None:
         raise ValueError("Only USD/HKD and USD/CNY are maintained directly in this MVP.")
 
     record = upsert_market_data(
         session_factory,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         metric_family="fx",
         quote_basis="spot",
         as_of_date=as_of_date,

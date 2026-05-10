@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from watchlist_app.api.contracts import TaxonomyAssignmentUpsertRequest
 from watchlist_app.db.session import get_db_session
-from watchlist_app.repositories.sqlalchemy.assets import SQLAlchemyAssetRepository
+from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
     SQLAlchemyInstrumentAttributeRepository,
 )
@@ -24,28 +24,28 @@ from watchlist_app.services.read_models import collapse_latest_attribute_values
 
 
 router = APIRouter()
-asset_repository = SQLAlchemyAssetRepository()
+instrument_repository = SQLAlchemyInstrumentRepository()
 attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 read_model_repository = SQLAlchemyReadModelRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
 canonical_recalc_service = CanonicalRecalcService()
 
 
-def _require_fund_asset(session: Session, asset_id: str):
-    asset = asset_repository.get(session, asset_id)
-    if asset is None:
-        raise HTTPException(status_code=404, detail="Asset not found")
-    if str(asset.asset_type or "").strip().lower() != "fund":
-        raise HTTPException(status_code=400, detail="Fund taxonomy is only available for fund assets.")
-    return asset
+def _require_fund_asset(session: Session, instrument_id: str):
+    instrument = instrument_repository.get(session, instrument_id)
+    if instrument is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    if str(instrument.instrument_type or "").strip().lower() != "fund":
+        raise HTTPException(status_code=400, detail="Fund taxonomy is only available for fund instruments.")
+    return instrument
 
 
 def _taxonomy_context_for_asset(
     session: Session,
     *,
-    asset_id: str,
+    instrument_id: str,
 ) -> dict[str, object]:
-    assignment = taxonomy_repository.get_assignment(session, asset_id=asset_id)
+    assignment = taxonomy_repository.get_assignment(session, instrument_id=instrument_id)
     node = (
         taxonomy_repository.get_node(session, node_id=str(assignment.node_id))
         if assignment is not None and assignment.node_id
@@ -54,25 +54,25 @@ def _taxonomy_context_for_asset(
     return build_taxonomy_context(node)
 
 
-def _sync_asset_context(
+def _sync_instrument_context(
     session: Session,
     *,
-    asset_id: str,
+    instrument_id: str,
     taxonomy_context: dict[str, object],
 ) -> None:
     raw_attributes = collapse_latest_attribute_values(
-        attribute_repository.get_values_for_asset(session, asset_id)
+        attribute_repository.get_values_for_asset(session, instrument_id)
     )
     read_model_repository.set_attributes_for_asset(
         session,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         attributes=merge_taxonomy_attributes(
             taxonomy_context=taxonomy_context,
             instrument_attributes=raw_attributes,
         ),
         touched_at=datetime.now(UTC).replace(microsecond=0),
     )
-    summary_record = read_model_repository.get_summary(session, asset_id)
+    summary_record = read_model_repository.get_summary(session, instrument_id)
     if summary_record is not None and isinstance(summary_record.payload_json, dict):
         summary_record.payload_json = {
             **summary_record.payload_json,
@@ -93,22 +93,22 @@ def get_fund_taxonomy_tree(
     )
 
 
-@router.get("/fund-taxonomy/assets/{asset_id}")
+@router.get("/fund-taxonomy/instruments/{instrument_id}")
 def get_fund_taxonomy_assignment(
-    asset_id: str,
+    instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _require_fund_asset(session, asset_id)
-    return _taxonomy_context_for_asset(session, asset_id=asset_id) | {"asset_id": asset_id}
+    _require_fund_asset(session, instrument_id)
+    return _taxonomy_context_for_asset(session, instrument_id=instrument_id) | {"instrument_id": instrument_id}
 
 
-@router.put("/fund-taxonomy/assets/{asset_id}")
+@router.put("/fund-taxonomy/instruments/{instrument_id}")
 def update_fund_taxonomy_assignment(
-    asset_id: str,
+    instrument_id: str,
     payload: TaxonomyAssignmentUpsertRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _require_fund_asset(session, asset_id)
+    _require_fund_asset(session, instrument_id)
     node_id = str(payload.node_id or "").strip() or None
     if node_id is not None:
         node = taxonomy_repository.get_node(session, node_id=node_id)
@@ -118,16 +118,16 @@ def update_fund_taxonomy_assignment(
             raise HTTPException(status_code=400, detail="Invalid taxonomy node")
     taxonomy_repository.upsert_assignment(
         session,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         taxonomy_code=FUND_TAXONOMY_CODE,
         node_id=node_id,
         source_record_id=str(payload.updated_by or "terminal_ui"),
     )
-    taxonomy_context = _taxonomy_context_for_asset(session, asset_id=asset_id)
-    _sync_asset_context(session, asset_id=asset_id, taxonomy_context=taxonomy_context)
+    taxonomy_context = _taxonomy_context_for_asset(session, instrument_id=instrument_id)
+    _sync_instrument_context(session, instrument_id=instrument_id, taxonomy_context=taxonomy_context)
     execution = canonical_recalc_service.execute_recalc(
         session,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         job_type="performance",
         trigger_type="taxonomy_assignment",
         trigger_ref_type="instrument_taxonomy_assignment",
@@ -135,7 +135,7 @@ def update_fund_taxonomy_assignment(
     )
     session.commit()
     return taxonomy_context | {
-        "asset_id": asset_id,
+        "instrument_id": instrument_id,
         "updated": True,
         "recalculated": True,
         "execution": execution,

@@ -34,7 +34,7 @@ def test_market_data_refresh_notifies_portfolio_and_watchlist(monkeypatch) -> No
     monkeypatch.setattr(downstream_notifications, "urlopen", fake_urlopen)
 
     downstream_notifications.notify_market_data_downstream_refresh(
-        asset_ids=[" fund-a ", "fund-a", "fx-usdcny", ""],
+        instrument_ids=[" fund-a ", "fund-a", "fx-usdcny", ""],
         dirty_from=date(2026, 5, 1),
     )
 
@@ -42,12 +42,12 @@ def test_market_data_refresh_notifies_portfolio_and_watchlist(monkeypatch) -> No
         (
             "http://portfolio.local/api/portfolios/snapshots/daily/refresh",
             {
-                "asset_ids": ["fund-a", "fx-usdcny"],
+                "instrument_ids": ["fund-a", "fx-usdcny"],
                 "dirty_from": "2026-05-01",
                 "refresh_all": False,
             },
         ),
-        ("http://watchlist.local/api/recalc/assets/fund-a/all", {}),
+        ("http://watchlist.local/api/recalc/instruments/fund-a/all", {}),
     ]
 
 
@@ -72,7 +72,7 @@ def test_fx_refresh_only_notifies_portfolio(monkeypatch) -> None:
         (
             "http://portfolio.local/api/portfolios/snapshots/daily/refresh",
             {
-                "asset_ids": [],
+                "instrument_ids": [],
                 "dirty_from": "2026-05-01",
                 "refresh_all": True,
             },

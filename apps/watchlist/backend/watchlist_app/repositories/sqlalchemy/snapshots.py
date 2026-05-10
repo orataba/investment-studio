@@ -12,19 +12,19 @@ from watchlist_app.db.models.analytics import (
     ExposureAnalyticsSnapshot,
     RiskSnapshot,
 )
-from watchlist_app.db.models.scoring import AssetScoreSnapshot
+from watchlist_app.db.models.scoring import InstrumentScoreSnapshot
 
 
 class SQLAlchemySnapshotRepository:
     def get_current_performance(
         self,
         session: Session,
-        asset_id: str,
+        instrument_id: str,
     ) -> PerformanceSnapshot | None:
         stmt = (
             select(PerformanceSnapshot)
             .where(
-                PerformanceSnapshot.asset_id == asset_id,
+                PerformanceSnapshot.instrument_id == instrument_id,
                 PerformanceSnapshot.is_current.is_(True),
             )
             .order_by(PerformanceSnapshot.as_of_date.desc())
@@ -34,20 +34,20 @@ class SQLAlchemySnapshotRepository:
     def list_current_performance(
         self,
         session: Session,
-        asset_ids: Sequence[str] | None = None,
+        instrument_ids: Sequence[str] | None = None,
     ) -> Sequence[PerformanceSnapshot]:
         stmt = select(PerformanceSnapshot).where(PerformanceSnapshot.is_current.is_(True))
-        if asset_ids is not None:
-            if not asset_ids:
+        if instrument_ids is not None:
+            if not instrument_ids:
                 return []
-            stmt = stmt.where(PerformanceSnapshot.asset_id.in_(asset_ids))
-        stmt = stmt.order_by(PerformanceSnapshot.asset_id, PerformanceSnapshot.as_of_date.desc())
+            stmt = stmt.where(PerformanceSnapshot.instrument_id.in_(instrument_ids))
+        stmt = stmt.order_by(PerformanceSnapshot.instrument_id, PerformanceSnapshot.as_of_date.desc())
         return session.scalars(stmt).all()
 
-    def get_current_risk(self, session: Session, asset_id: str) -> RiskSnapshot | None:
+    def get_current_risk(self, session: Session, instrument_id: str) -> RiskSnapshot | None:
         stmt = (
             select(RiskSnapshot)
-            .where(RiskSnapshot.asset_id == asset_id, RiskSnapshot.is_current.is_(True))
+            .where(RiskSnapshot.instrument_id == instrument_id, RiskSnapshot.is_current.is_(True))
             .order_by(RiskSnapshot.as_of_date.desc())
         )
         return session.scalars(stmt).first()
@@ -55,25 +55,25 @@ class SQLAlchemySnapshotRepository:
     def list_current_risk(
         self,
         session: Session,
-        asset_ids: Sequence[str] | None = None,
+        instrument_ids: Sequence[str] | None = None,
     ) -> Sequence[RiskSnapshot]:
         stmt = select(RiskSnapshot).where(RiskSnapshot.is_current.is_(True))
-        if asset_ids is not None:
-            if not asset_ids:
+        if instrument_ids is not None:
+            if not instrument_ids:
                 return []
-            stmt = stmt.where(RiskSnapshot.asset_id.in_(asset_ids))
-        stmt = stmt.order_by(RiskSnapshot.asset_id, RiskSnapshot.as_of_date.desc())
+            stmt = stmt.where(RiskSnapshot.instrument_id.in_(instrument_ids))
+        stmt = stmt.order_by(RiskSnapshot.instrument_id, RiskSnapshot.as_of_date.desc())
         return session.scalars(stmt).all()
 
     def get_current_exposure(
         self,
         session: Session,
-        asset_id: str,
+        instrument_id: str,
     ) -> ExposureAnalyticsSnapshot | None:
         stmt = (
             select(ExposureAnalyticsSnapshot)
             .where(
-                ExposureAnalyticsSnapshot.asset_id == asset_id,
+                ExposureAnalyticsSnapshot.instrument_id == instrument_id,
                 ExposureAnalyticsSnapshot.is_current.is_(True),
             )
             .order_by(ExposureAnalyticsSnapshot.as_of_date.desc())
@@ -83,20 +83,20 @@ class SQLAlchemySnapshotRepository:
     def get_current_score(
         self,
         session: Session,
-        asset_id: str,
-    ) -> AssetScoreSnapshot | None:
+        instrument_id: str,
+    ) -> InstrumentScoreSnapshot | None:
         stmt = (
-            select(AssetScoreSnapshot)
-            .where(AssetScoreSnapshot.asset_id == asset_id, AssetScoreSnapshot.is_current.is_(True))
-            .order_by(AssetScoreSnapshot.as_of_date.desc())
+            select(InstrumentScoreSnapshot)
+            .where(InstrumentScoreSnapshot.instrument_id == instrument_id, InstrumentScoreSnapshot.is_current.is_(True))
+            .order_by(InstrumentScoreSnapshot.as_of_date.desc())
         )
         return session.scalars(stmt).first()
 
-    def _replace_current(self, session: Session, model_class, asset_id: str) -> None:
+    def _replace_current(self, session: Session, model_class, instrument_id: str) -> None:
         now = datetime.now(UTC).replace(microsecond=0)
         for current in session.scalars(
             select(model_class).where(
-                model_class.asset_id == asset_id, model_class.is_current.is_(True)
+                model_class.instrument_id == instrument_id, model_class.is_current.is_(True)
             )
         ):
             current.is_current = False
@@ -107,45 +107,45 @@ class SQLAlchemySnapshotRepository:
         session: Session,
         *,
         snapshot_id: str,
-        asset_id: str,
+        instrument_id: str,
         data: dict[str, Any],
     ) -> PerformanceSnapshot:
-        self._replace_current(session, PerformanceSnapshot, asset_id)
-        record = PerformanceSnapshot(snapshot_id=snapshot_id, asset_id=asset_id, **data)
+        self._replace_current(session, PerformanceSnapshot, instrument_id)
+        record = PerformanceSnapshot(snapshot_id=snapshot_id, instrument_id=instrument_id, **data)
         session.add(record)
         session.flush()
         return record
 
-    def clear_performance(self, session: Session, *, asset_id: str) -> None:
-        self._replace_current(session, PerformanceSnapshot, asset_id)
+    def clear_performance(self, session: Session, *, instrument_id: str) -> None:
+        self._replace_current(session, PerformanceSnapshot, instrument_id)
 
     def replace_risk(
         self,
         session: Session,
         *,
         snapshot_id: str,
-        asset_id: str,
+        instrument_id: str,
         data: dict[str, Any],
     ) -> RiskSnapshot:
-        self._replace_current(session, RiskSnapshot, asset_id)
-        record = RiskSnapshot(snapshot_id=snapshot_id, asset_id=asset_id, **data)
+        self._replace_current(session, RiskSnapshot, instrument_id)
+        record = RiskSnapshot(snapshot_id=snapshot_id, instrument_id=instrument_id, **data)
         session.add(record)
         session.flush()
         return record
 
-    def clear_risk(self, session: Session, *, asset_id: str) -> None:
-        self._replace_current(session, RiskSnapshot, asset_id)
+    def clear_risk(self, session: Session, *, instrument_id: str) -> None:
+        self._replace_current(session, RiskSnapshot, instrument_id)
 
     def replace_exposure(
         self,
         session: Session,
         *,
         snapshot_id: str,
-        asset_id: str,
+        instrument_id: str,
         data: dict[str, Any],
     ) -> ExposureAnalyticsSnapshot:
-        self._replace_current(session, ExposureAnalyticsSnapshot, asset_id)
-        record = ExposureAnalyticsSnapshot(snapshot_id=snapshot_id, asset_id=asset_id, **data)
+        self._replace_current(session, ExposureAnalyticsSnapshot, instrument_id)
+        record = ExposureAnalyticsSnapshot(snapshot_id=snapshot_id, instrument_id=instrument_id, **data)
         session.add(record)
         session.flush()
         return record
@@ -155,11 +155,11 @@ class SQLAlchemySnapshotRepository:
         session: Session,
         *,
         snapshot_id: str,
-        asset_id: str,
+        instrument_id: str,
         data: dict[str, Any],
-    ) -> AssetScoreSnapshot:
-        self._replace_current(session, AssetScoreSnapshot, asset_id)
-        record = AssetScoreSnapshot(snapshot_id=snapshot_id, asset_id=asset_id, **data)
+    ) -> InstrumentScoreSnapshot:
+        self._replace_current(session, InstrumentScoreSnapshot, instrument_id)
+        record = InstrumentScoreSnapshot(snapshot_id=snapshot_id, instrument_id=instrument_id, **data)
         session.add(record)
         session.flush()
         return record

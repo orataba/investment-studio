@@ -11,11 +11,11 @@ from watchlist_app.db.base import Base
 
 class PerformanceSnapshot(Base):
     __tablename__ = "performance_snapshot"
-    __table_args__ = (Index("idx_performance_snapshot_current", "asset_id", "is_current"),)
+    __table_args__ = (Index("idx_performance_snapshot_current", "instrument_id", "is_current"),)
 
     snapshot_id: Mapped[str] = mapped_column(primary_key=True)
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         nullable=False,
     )
     as_of_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -42,11 +42,11 @@ class PerformanceSnapshot(Base):
 
 class RiskSnapshot(Base):
     __tablename__ = "risk_snapshot"
-    __table_args__ = (Index("idx_risk_snapshot_current", "asset_id", "is_current"),)
+    __table_args__ = (Index("idx_risk_snapshot_current", "instrument_id", "is_current"),)
 
     snapshot_id: Mapped[str] = mapped_column(primary_key=True)
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         nullable=False,
     )
     as_of_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -71,11 +71,11 @@ class RiskSnapshot(Base):
 
 class ExposureAnalyticsSnapshot(Base):
     __tablename__ = "exposure_analytics_snapshot"
-    __table_args__ = (Index("idx_exposure_snapshot_current", "asset_id", "is_current"),)
+    __table_args__ = (Index("idx_exposure_snapshot_current", "instrument_id", "is_current"),)
 
     snapshot_id: Mapped[str] = mapped_column(primary_key=True)
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         nullable=False,
     )
     as_of_date: Mapped[date] = mapped_column(Date, nullable=False)

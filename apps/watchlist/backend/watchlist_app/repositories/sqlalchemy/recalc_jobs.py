@@ -23,7 +23,7 @@ class SQLAlchemyRecalcJobRepository:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         job_type: str,
         trigger_type: str,
         trigger_ref_type: str | None,
@@ -35,7 +35,7 @@ class SQLAlchemyRecalcJobRepository:
             timeout_seconds=running_timeout_seconds,
         )
         stmt = select(RecalcJob).where(
-            RecalcJob.asset_id == asset_id,
+            RecalcJob.instrument_id == instrument_id,
             RecalcJob.job_type == job_type,
             RecalcJob.trigger_type == trigger_type,
             RecalcJob.job_status.in_(("queued", "running")),
@@ -85,7 +85,7 @@ class SQLAlchemyRecalcJobRepository:
         *,
         recalc_job_id: str,
         job_type: str,
-        asset_id: str,
+        instrument_id: str,
         trigger_type: str,
         trigger_ref_type: str | None,
         trigger_ref_id: str | None,
@@ -97,7 +97,7 @@ class SQLAlchemyRecalcJobRepository:
         record = RecalcJob(
             recalc_job_id=recalc_job_id,
             job_type=job_type,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             trigger_type=trigger_type,
             trigger_ref_type=trigger_ref_type,
             trigger_ref_id=trigger_ref_id,

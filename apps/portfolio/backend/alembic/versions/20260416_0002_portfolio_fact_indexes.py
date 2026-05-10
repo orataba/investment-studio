@@ -54,15 +54,15 @@ def upgrade() -> None:
         unique=False,
     )
     op.create_index(
-        "ix_transaction_record_portfolio_asset_trade",
+        "ix_transaction_record_portfolio_instrument_trade",
         "transaction_record",
-        ["portfolio_id", "asset_id", "trade_date", "trade_at"],
+        ["portfolio_id", "instrument_id", "trade_date", "trade_at"],
         unique=False,
     )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_transaction_record_portfolio_asset_trade", table_name="transaction_record")
+    op.drop_index("ix_transaction_record_portfolio_instrument_trade", table_name="transaction_record")
     op.drop_index("ix_transaction_record_portfolio_type_trade", table_name="transaction_record")
     op.drop_index("ix_transaction_record_portfolio_counterparty_trade", table_name="transaction_record")
     op.drop_index("ix_transaction_record_portfolio_account_trade", table_name="transaction_record")

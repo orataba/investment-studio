@@ -11,14 +11,14 @@ def make_recalc_job_id() -> str:
 def make_recalc_dedupe_key(
     *,
     job_type: str,
-    asset_id: str,
+    instrument_id: str,
     trigger_type: str,
     trigger_ref_type: str | None,
     trigger_ref_id: str | None,
 ) -> str:
     return json.dumps(
         {
-            "asset_id": asset_id,
+            "instrument_id": instrument_id,
             "job_type": job_type,
             "trigger_ref_id": trigger_ref_id,
             "trigger_ref_type": trigger_ref_type,

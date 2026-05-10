@@ -61,6 +61,28 @@ def test_risk_metrics_annualize_from_actual_observation_spacing() -> None:
     assert _compute_sharpe(nav_points) == pytest.approx(expected_sharpe, abs=1e-12)
 
 
+def test_calculation_frequency_context_resamples_declared_weekly_points() -> None:
+    from watchlist_app.services.calculation_frequency import build_calculation_frequency_context
+
+    nav_points = [
+        {"as_of_date": date(2026, 1, 5), "value": 100.0, "frequency": "daily"},
+        {"as_of_date": date(2026, 1, 6), "value": 101.0, "frequency": "daily"},
+        {"as_of_date": date(2026, 1, 9), "value": 102.0, "frequency": "weekly"},
+        {"as_of_date": date(2026, 1, 12), "value": 103.0, "frequency": "daily"},
+        {"as_of_date": date(2026, 1, 16), "value": 104.0, "frequency": "weekly"},
+    ]
+
+    context = build_calculation_frequency_context(nav_points)
+
+    assert context["profile"]["resolved_frequency"] == "weekly"
+    assert context["profile"]["raw_observation_count"] == 5
+    assert context["profile"]["observation_count"] == 2
+    assert [point["as_of_date"] for point in context["points"]] == [
+        date(2026, 1, 9),
+        date(2026, 1, 16),
+    ]
+
+
 def test_return_nav_basis_prefers_cumulative_nav_when_available() -> None:
     from watchlist_app.services.canonical_recalc import _group_shared_nav_rows, _select_nav_basis_rows
 
@@ -158,7 +180,7 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
         item for item in detail_payload["views"] if item["view_id"] == "overview"
     )
     assert overview_view["columns"] == [
-        "asset_name",
+        "instrument_name",
         "attr.coverage_status",
         "price_chart_1m",
         "latest_quote",
@@ -176,10 +198,10 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
     assert fund_screening_view["name"] == "基金分类筛选"
     assert fund_screening_view["default_group_by"] == "attr.fund_taxonomy_level_1"
     assert fund_screening_view["default_filters"] == {
-        "asset_type": ["fund"],
+        "instrument_type": ["fund"],
     }
     assert fund_screening_view["columns"] == [
-        "asset_name",
+        "instrument_name",
         "attr.implementation_style",
         "attr.style_profile",
         "attr.manager_assessment",
@@ -221,7 +243,7 @@ def test_adding_shared_registry_instrument_to_created_watchlist_materializes_row
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["fund-us-agg"]},
+        json={"instrument_ids": ["fund-us-agg"]},
     )
     assert add_response.status_code == 200
     assert add_response.json()["accepted_count"] == 1
@@ -231,7 +253,7 @@ def test_adding_shared_registry_instrument_to_created_watchlist_materializes_row
         json={
             "watchlist_id": watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["ticker_or_isin", "asset_name", "overall_rating"],
+            "selected_fields": ["ticker_or_isin", "instrument_name", "overall_rating"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -240,7 +262,7 @@ def test_adding_shared_registry_instrument_to_created_watchlist_materializes_row
     assert screener.status_code == 200
     payload = screener.json()
     assert payload["total_rows"] == 1
-    assert payload["rows"][0]["asset_name"] == "iShares Core U.S. Aggregate Bond ETF"
+    assert payload["rows"][0]["instrument_name"] == "iShares Core U.S. Aggregate Bond ETF"
     assert payload["rows"][0]["ticker_or_isin"] == "AGG"
 
 
@@ -249,9 +271,9 @@ def test_adding_non_fund_shared_registry_instrument_is_rejected(
 ) -> None:
     seed_shared_instrument(
         {
-            "asset_id": "equity-demo",
-            "asset_name": "Demo Equity",
-            "asset_type": "equity",
+            "instrument_id": "equity-demo",
+            "instrument_name": "Demo Equity",
+            "instrument_type": "equity",
             "currency": "USD",
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "DEMO", "is_primary": True},
@@ -277,7 +299,7 @@ def test_adding_non_fund_shared_registry_instrument_is_rejected(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["equity-demo"]},
+        json={"instrument_ids": ["equity-demo"]},
     )
 
     assert add_response.status_code == 400
@@ -300,13 +322,13 @@ def test_move_watchlist_items_transfers_membership_to_target_watchlist(
 
     add_response = client.post(
         f"/api/watchlists/{source_watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
     move_response = client.post(
         f"/api/watchlists/{source_watchlist_id}/items/move",
-        json={"asset_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
+        json={"instrument_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
     )
     assert move_response.status_code == 200
     assert move_response.json() == {
@@ -322,7 +344,7 @@ def test_move_watchlist_items_transfers_membership_to_target_watchlist(
         json={
             "watchlist_id": source_watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["asset_name"],
+            "selected_fields": ["instrument_name"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -336,7 +358,7 @@ def test_move_watchlist_items_transfers_membership_to_target_watchlist(
         json={
             "watchlist_id": target_watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["asset_name", "latest_quote", "latest_quote_date"],
+            "selected_fields": ["instrument_name", "latest_quote", "latest_quote_date"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -345,7 +367,7 @@ def test_move_watchlist_items_transfers_membership_to_target_watchlist(
     assert target_rows.status_code == 200
     target_payload = target_rows.json()
     assert target_payload["total_rows"] == 1
-    assert target_payload["rows"][0]["asset_name"] == "SXV264 Total Return Fund"
+    assert target_payload["rows"][0]["instrument_name"] == "SXV264 Total Return Fund"
     assert target_payload["rows"][0]["latest_quote"] == pytest.approx(101.2365, abs=1e-6)
     assert target_payload["rows"][0]["latest_quote_date"] == "2026-04-14"
 
@@ -366,13 +388,13 @@ def test_copy_watchlist_items_adds_membership_to_target_without_removing_source(
 
     add_response = client.post(
         f"/api/watchlists/{source_watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
     copy_response = client.post(
         f"/api/watchlists/{source_watchlist_id}/items/copy",
-        json={"asset_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
+        json={"instrument_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
     )
     assert copy_response.status_code == 200
     assert copy_response.json() == {
@@ -388,7 +410,7 @@ def test_copy_watchlist_items_adds_membership_to_target_without_removing_source(
         json={
             "watchlist_id": source_watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["asset_name"],
+            "selected_fields": ["instrument_name"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -402,7 +424,7 @@ def test_copy_watchlist_items_adds_membership_to_target_without_removing_source(
         json={
             "watchlist_id": target_watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["asset_name", "latest_quote", "latest_quote_date"],
+            "selected_fields": ["instrument_name", "latest_quote", "latest_quote_date"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -411,12 +433,12 @@ def test_copy_watchlist_items_adds_membership_to_target_without_removing_source(
     assert target_rows.status_code == 200
     target_payload = target_rows.json()
     assert target_payload["total_rows"] == 1
-    assert target_payload["rows"][0]["asset_name"] == "SXV264 Total Return Fund"
+    assert target_payload["rows"][0]["instrument_name"] == "SXV264 Total Return Fund"
     assert target_payload["rows"][0]["latest_quote"] == pytest.approx(101.2365, abs=1e-6)
     assert target_payload["rows"][0]["latest_quote_date"] == "2026-04-14"
 
 
-def test_move_watchlist_items_rejects_assets_missing_from_source(
+def test_move_watchlist_items_rejects_instruments_missing_from_source(
     client: TestClient,
 ) -> None:
     source = client.post(
@@ -432,17 +454,17 @@ def test_move_watchlist_items_rejects_assets_missing_from_source(
 
     move_response = client.post(
         f"/api/watchlists/{source_watchlist_id}/items/move",
-        json={"asset_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
+        json={"instrument_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
     )
     assert move_response.status_code == 400
-    assert move_response.json()["detail"] == "Assets not found in source watchlist: sxv264."
+    assert move_response.json()["detail"] == "Instruments not found in source watchlist: sxv264."
 
     target_rows = client.post(
         "/api/screener/query",
         json={
             "watchlist_id": target_watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["asset_name"],
+            "selected_fields": ["instrument_name"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -452,7 +474,7 @@ def test_move_watchlist_items_rejects_assets_missing_from_source(
     assert target_rows.json()["total_rows"] == 0
 
 
-def test_copy_watchlist_items_rejects_assets_missing_from_source(
+def test_copy_watchlist_items_rejects_instruments_missing_from_source(
     client: TestClient,
 ) -> None:
     source = client.post(
@@ -468,17 +490,17 @@ def test_copy_watchlist_items_rejects_assets_missing_from_source(
 
     copy_response = client.post(
         f"/api/watchlists/{source_watchlist_id}/items/copy",
-        json={"asset_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
+        json={"instrument_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
     )
     assert copy_response.status_code == 400
-    assert copy_response.json()["detail"] == "Assets not found in source watchlist: sxv264."
+    assert copy_response.json()["detail"] == "Instruments not found in source watchlist: sxv264."
 
     target_rows = client.post(
         "/api/screener/query",
         json={
             "watchlist_id": target_watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["asset_name"],
+            "selected_fields": ["instrument_name"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -499,11 +521,11 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
     assert add_response.json()["accepted_count"] == 1
-    assert add_response.json()["recalculated_asset_ids"] == ["sxv264"]
+    assert add_response.json()["recalculated_instrument_ids"] == ["sxv264"]
 
     screener = client.post(
         "/api/screener/query",
@@ -512,7 +534,7 @@ def test_adding_shared_nav_instrument_recalculates_last_nav_fields(
             "view_id": "overview",
             "selected_fields": [
                 "ticker_or_isin",
-                "asset_name",
+                "instrument_name",
                 "latest_quote",
                 "latest_quote_date",
                 "last_nav_date",
@@ -554,7 +576,7 @@ def test_adding_existing_watchlist_item_is_noop_without_membership_recalc(
 
     first_add = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert first_add.status_code == 200
     assert first_add.json()["accepted_count"] == 1
@@ -570,15 +592,15 @@ def test_adding_existing_watchlist_item_is_noop_without_membership_recalc(
 
     duplicate_add = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
 
     assert duplicate_add.status_code == 200
     assert duplicate_add.json() == {
         "watchlist_id": watchlist_id,
         "accepted_count": 0,
-        "pending_recalc_asset_ids": [],
-        "recalculated_asset_ids": [],
+        "pending_recalc_instrument_ids": [],
+        "recalculated_instrument_ids": [],
     }
 
 
@@ -587,9 +609,9 @@ def test_screener_sort_keeps_missing_values_last_for_descending_metrics(
 ) -> None:
     seed_shared_instrument(
         {
-            "asset_id": "fund-no-return",
-            "asset_name": "No Return Fund",
-            "asset_type": "fund",
+            "instrument_id": "fund-no-return",
+            "instrument_name": "No Return Fund",
+            "instrument_type": "fund",
             "currency": "USD",
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "NORET", "is_primary": True},
@@ -606,7 +628,7 @@ def test_screener_sort_keeps_missing_values_last_for_descending_metrics(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["fund-no-return", "sxv264"]},
+        json={"instrument_ids": ["fund-no-return", "sxv264"]},
     )
     assert add_response.status_code == 200
 
@@ -615,7 +637,7 @@ def test_screener_sort_keeps_missing_values_last_for_descending_metrics(
         json={
             "watchlist_id": watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["asset_name", "return_ytd"],
+            "selected_fields": ["instrument_name", "return_ytd"],
             "sort": [{"field": "return_ytd", "direction": "desc"}],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -624,7 +646,7 @@ def test_screener_sort_keeps_missing_values_last_for_descending_metrics(
 
     assert screener.status_code == 200
     rows = screener.json()["rows"]
-    assert [row["asset_id"] for row in rows] == ["sxv264", "fund-no-return"]
+    assert [row["instrument_id"] for row in rows] == ["sxv264", "fund-no-return"]
     assert rows[0]["return_ytd"] is not None
     assert rows[1]["return_ytd"] is None
 
@@ -634,9 +656,9 @@ def test_calendar_period_returns_use_prior_close_as_base(
 ) -> None:
     seed_shared_instrument(
         {
-            "asset_id": "calendar-boundary-fund",
-            "asset_name": "Calendar Boundary Fund",
-            "asset_type": "fund",
+            "instrument_id": "calendar-boundary-fund",
+            "instrument_name": "Calendar Boundary Fund",
+            "instrument_type": "fund",
             "currency": "USD",
             "identifiers": [
                 {"identifier_type": "ticker", "identifier_value": "CBF", "is_primary": True},
@@ -669,7 +691,7 @@ def test_calendar_period_returns_use_prior_close_as_base(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["calendar-boundary-fund"]},
+        json={"instrument_ids": ["calendar-boundary-fund"]},
     )
     assert add_response.status_code == 200
 
@@ -702,7 +724,7 @@ def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
@@ -740,12 +762,78 @@ def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
     assert risk_payload["current_watch"]["overall_level"] in {"Normal", "Elevated", "High"}
     assert risk_payload["current_watch"]["rows"]
     assert risk_payload["change_monitor"]["rows"]
+    assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
+    assert risk_payload["calculation_frequency_profile"]["gap_count"] > 0
+    assert performance_payload["calculation_frequency_profile"]["resolved_frequency"] == "daily"
+
+
+def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
+    client: TestClient,
+) -> None:
+    seed_shared_instrument(
+        {
+            "instrument_id": "weekly-risk-fund",
+            "instrument_name": "Weekly Risk Fund",
+            "instrument_type": "fund",
+            "currency": "USD",
+            "identifiers": [
+                {"identifier_type": "ticker", "identifier_value": "WRF", "is_primary": True},
+            ],
+            "market_data": [
+                {
+                    "metric_family": "nav",
+                    "quote_basis": "cumulative_nav",
+                    "as_of_date": as_of_date,
+                    "value": value,
+                    "currency": "USD",
+                    "frequency": "weekly",
+                    "status": "complete",
+                }
+                for as_of_date, value in zip(
+                    ["2026-01-02", "2026-01-09", "2026-01-16", "2026-01-23"],
+                    ["100.000000", "101.000000", "99.500000", "102.000000"],
+                )
+            ],
+            "lifecycle_state": {"status": "active"},
+        }
+    )
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Weekly Frequency Coverage", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["weekly-risk-fund"]},
+    )
+    assert add_response.status_code == 200
+
+    nav_response = client.get("/api/instruments/weekly-risk-fund/nav-series")
+    assert nav_response.status_code == 200
+    nav_payload = nav_response.json()
+    assert nav_payload["calculation_frequency_profile"]["resolved_frequency"] == "weekly"
+    assert [point["date"] for point in nav_payload["calculation_series"]] == [
+        "2026-01-02",
+        "2026-01-09",
+        "2026-01-16",
+        "2026-01-23",
+    ]
+
+    risk_response = client.get("/api/instruments/weekly-risk-fund/risk")
+    assert risk_response.status_code == 200
+    risk_payload = risk_response.json()
+    assert risk_payload["snapshot_metadata"]["methodology_version"] == "canonical-risk/v3"
+    assert risk_payload["calculation_frequency_profile"]["resolved_frequency"] == "weekly"
+    assert risk_payload["calculation_frequency_profile"]["annualization_periods_per_year"] == pytest.approx(
+        52.178571,
+        abs=1e-6,
+    )
 
 
 def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     client: TestClient,
 ) -> None:
-    for asset_id, asset_name, ticker, values in (
+    for instrument_id, instrument_name, ticker, values in (
         (
             "peer-strong",
             "Peer Strong Fund",
@@ -767,9 +855,9 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     ):
         seed_shared_instrument(
             {
-                "asset_id": asset_id,
-                "asset_name": asset_name,
-                "asset_type": "fund",
+                "instrument_id": instrument_id,
+                "instrument_name": instrument_name,
+                "instrument_type": "fund",
                 "currency": "USD",
                 "identifiers": [
                     {"identifier_type": "ticker", "identifier_value": ticker, "is_primary": True},
@@ -799,19 +887,19 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     watchlist_id = created_watchlist.json()["watchlist_id"]
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264", "peer-strong", "peer-weak", "peer-archived"]},
+        json={"instrument_ids": ["sxv264", "peer-strong", "peer-weak", "peer-archived"]},
     )
     assert add_response.status_code == 200
 
-    for asset_id in ("sxv264", "peer-strong", "peer-weak", "peer-archived"):
+    for instrument_id in ("sxv264", "peer-strong", "peer-weak", "peer-archived"):
         update_response = client.put(
-            f"/api/taxonomies/fund-taxonomy/assets/{asset_id}",
+            f"/api/taxonomies/fund-taxonomy/instruments/{instrument_id}",
             json={"node_id": "fund-private-equity-quant-long-500", "updated_by": "test"},
         )
         assert update_response.status_code == 200
 
     recalc_archived_peer_response = client.post(
-        "/api/recalc/assets/peer-archived/execute",
+        "/api/recalc/instruments/peer-archived/execute",
         json={
             "job_type": "performance",
             "trigger_type": "test",
@@ -821,28 +909,28 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     )
     assert recalc_archived_peer_response.status_code == 200
 
-    from yungu_asset_core import instrument_store as shared_store
+    from yungu_instrument_core import instrument_store as shared_store
     from watchlist_app.db import session as session_module
 
     shared_store.archive_instrument(
         session_module.get_session_factory(),
-        asset_id="peer-archived",
+        instrument_id="peer-archived",
         updated_by="test",
     )
     with session_module.get_session_factory()() as session:
         session.execute(
             text(
                 """
-                UPDATE asset_detail
+                UPDATE instrument_detail
                    SET is_active = false
-                 WHERE asset_id = 'peer-archived'
+                 WHERE instrument_id = 'peer-archived'
                 """
             )
         )
         session.commit()
 
     recalc_response = client.post(
-        "/api/recalc/assets/sxv264/execute",
+        "/api/recalc/instruments/sxv264/execute",
         json={
             "job_type": "performance",
             "trigger_type": "test",
@@ -875,7 +963,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
             "watchlist_id": watchlist_id,
             "view_id": "fund-screening",
             "selected_fields": [
-                "asset_name",
+                "instrument_name",
                 "attr.peer_group",
                 "attr.peer_sample_count",
                 "attr.peer_return_1w_percentile",
@@ -890,7 +978,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     sxv_row = next(
         row
         for row in screener_response.json()["rows"]
-        if row["asset_id"] == "sxv264"
+        if row["instrument_id"] == "sxv264"
     )
     assert sxv_row["attr.peer_group"] == "私募 / 股票策略 / 量化多头 / 500指增"
     assert sxv_row["attr.peer_sample_count"] == 3
@@ -909,7 +997,7 @@ def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
     watchlist_id = created_watchlist.json()["watchlist_id"]
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264", "savf63", "fund-us-agg"]},
+        json={"instrument_ids": ["sxv264", "savf63", "fund-us-agg"]},
     )
     assert add_response.status_code == 200
 
@@ -917,24 +1005,24 @@ def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
     assert initial_response.status_code == 200
     assert initial_response.json() == {
         "nav_basis_preference": "auto",
-        "default_benchmark_asset_id": None,
-        "peer_baseline_asset_ids": [],
+        "default_benchmark_instrument_id": None,
+        "peer_baseline_instrument_ids": [],
     }
 
     update_response = client.put(
         "/api/instruments/sxv264/nav-settings",
         json={
             "nav_basis_preference": "nav_with_dividend",
-            "default_benchmark_asset_id": "savf63",
-            "peer_baseline_asset_ids": ["fund-us-agg", "savf63", "sxv264", "fund-us-agg"],
+            "default_benchmark_instrument_id": "savf63",
+            "peer_baseline_instrument_ids": ["fund-us-agg", "savf63", "sxv264", "fund-us-agg"],
             "updated_by": "test-suite",
         },
     )
     assert update_response.status_code == 200
     assert update_response.json() == {
         "nav_basis_preference": "nav_with_dividend",
-        "default_benchmark_asset_id": "savf63",
-        "peer_baseline_asset_ids": ["fund-us-agg", "savf63"],
+        "default_benchmark_instrument_id": "savf63",
+        "peer_baseline_instrument_ids": ["fund-us-agg", "savf63"],
     }
 
     nav_series_response = client.get("/api/instruments/sxv264/nav-series")
@@ -942,21 +1030,21 @@ def test_instrument_nav_settings_round_trip_and_surface_compare_settings(
     nav_series_payload = nav_series_response.json()
     assert nav_series_payload["nav_basis_preference"] == "nav_with_dividend"
     assert nav_series_payload["compare_settings"] == {
-        "default_benchmark_asset_id": "savf63",
-        "peer_asset_ids": ["fund-us-agg", "savf63"],
+        "default_benchmark_instrument_id": "savf63",
+        "peer_instrument_ids": ["fund-us-agg", "savf63"],
     }
 
     clear_response = client.put(
         "/api/instruments/sxv264/nav-settings",
         json={
-            "default_benchmark_asset_id": None,
-            "peer_baseline_asset_ids": [],
+            "default_benchmark_instrument_id": None,
+            "peer_baseline_instrument_ids": [],
             "updated_by": "test-suite",
         },
     )
     assert clear_response.status_code == 200
-    assert clear_response.json()["default_benchmark_asset_id"] is None
-    assert clear_response.json()["peer_baseline_asset_ids"] == []
+    assert clear_response.json()["default_benchmark_instrument_id"] is None
+    assert clear_response.json()["peer_baseline_instrument_ids"] == []
 
 
 def test_watchlist_add_rolls_back_when_recalc_fails(
@@ -984,7 +1072,7 @@ def test_watchlist_add_rolls_back_when_recalc_fails(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264", "savf63"]},
+        json={"instrument_ids": ["sxv264", "savf63"]},
     )
     assert add_response.status_code == 500
     assert add_response.json()["detail"] == "recalc failed"
@@ -998,7 +1086,7 @@ def test_watchlist_add_rolls_back_when_recalc_fails(
         json={
             "watchlist_id": watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["asset_name"],
+            "selected_fields": ["instrument_name"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -1017,7 +1105,7 @@ def test_watchlist_rejects_unknown_shared_instrument_ids(client: TestClient) -> 
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["not-in-registry"]},
+        json={"instrument_ids": ["not-in-registry"]},
     )
     assert add_response.status_code == 404
     assert "Database Dashboard" in add_response.json()["detail"]
@@ -1037,7 +1125,7 @@ def test_screener_query_triggers_async_refresh_when_shared_data_is_newer(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
@@ -1045,7 +1133,7 @@ def test_screener_query_triggers_async_refresh_when_shared_data_is_newer(
 
     monkeypatch.setattr(
         screener_route,
-        "schedule_asset_refresh_if_stale",
+        "schedule_instrument_refresh_if_stale",
         lambda **kwargs: scheduled.append(kwargs) or True,
     )
 
@@ -1054,7 +1142,7 @@ def test_screener_query_triggers_async_refresh_when_shared_data_is_newer(
         json={
             "watchlist_id": watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["asset_name", "latest_quote", "latest_quote_date", "last_nav_date"],
+            "selected_fields": ["instrument_name", "latest_quote", "latest_quote_date", "last_nav_date"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -1064,7 +1152,7 @@ def test_screener_query_triggers_async_refresh_when_shared_data_is_newer(
     assert response.status_code == 200
     assert scheduled == [
         {
-            "asset_id": "sxv264",
+            "instrument_id": "sxv264",
             "local_latest_date": date(2026, 4, 14),
             "trigger_ref_type": "screener_query",
             "trigger_ref_id": watchlist_id,
@@ -1086,7 +1174,7 @@ def test_instrument_summary_triggers_async_refresh_when_shared_data_is_newer(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
@@ -1095,8 +1183,8 @@ def test_instrument_summary_triggers_async_refresh_when_shared_data_is_newer(
     monkeypatch.setattr(
         read_model_freshness,
         "get_shared_instrument",
-        lambda asset_id: {
-            "asset_id": asset_id,
+        lambda instrument_id: {
+            "instrument_id": instrument_id,
             "market_data": [
                 {
                     "metric_family": "nav",
@@ -1118,7 +1206,7 @@ def test_instrument_summary_triggers_async_refresh_when_shared_data_is_newer(
     assert response.status_code == 200
     assert scheduled == [
         {
-            "asset_id": "sxv264",
+            "instrument_id": "sxv264",
             "trigger_ref_type": "instrument_summary_read",
             "trigger_ref_id": "sxv264",
         }
@@ -1128,7 +1216,7 @@ def test_instrument_summary_triggers_async_refresh_when_shared_data_is_newer(
 def test_stale_read_repair_enqueues_single_durable_recalc_job(client: TestClient) -> None:
     from watchlist_app.db import session as session_module
     from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
-    from watchlist_app.services.read_model_freshness import schedule_asset_refresh_if_stale
+    from watchlist_app.services.read_model_freshness import schedule_instrument_refresh_if_stale
 
     created_watchlist = client.post(
         "/api/watchlists",
@@ -1138,18 +1226,18 @@ def test_stale_read_repair_enqueues_single_durable_recalc_job(client: TestClient
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
-    first = schedule_asset_refresh_if_stale(
-        asset_id="sxv264",
+    first = schedule_instrument_refresh_if_stale(
+        instrument_id="sxv264",
         local_latest_date=date(2026, 4, 13),
         trigger_ref_type="instrument_summary_read",
         trigger_ref_id="sxv264",
     )
-    second = schedule_asset_refresh_if_stale(
-        asset_id="sxv264",
+    second = schedule_instrument_refresh_if_stale(
+        instrument_id="sxv264",
         local_latest_date=date(2026, 4, 13),
         trigger_ref_type="instrument_summary_read",
         trigger_ref_id="sxv264",
@@ -1165,7 +1253,7 @@ def test_stale_read_repair_enqueues_single_durable_recalc_job(client: TestClient
     matching = [
         job
         for job in jobs
-        if job.asset_id == "sxv264"
+        if job.instrument_id == "sxv264"
         and job.job_type == "all"
         and job.trigger_type == "stale_read_repair"
         and job.trigger_ref_type == "instrument_summary_read"
@@ -1178,7 +1266,7 @@ def test_stale_read_repair_enqueues_single_durable_recalc_job(client: TestClient
 def test_stale_read_repair_commits_requeued_existing_job(client: TestClient) -> None:
     from watchlist_app.db import session as session_module
     from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
-    from watchlist_app.services.read_model_freshness import schedule_asset_refresh_if_stale
+    from watchlist_app.services.read_model_freshness import schedule_instrument_refresh_if_stale
     from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key
 
     created_watchlist = client.post(
@@ -1189,7 +1277,7 @@ def test_stale_read_repair_commits_requeued_existing_job(client: TestClient) -> 
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
@@ -1200,7 +1288,7 @@ def test_stale_read_repair_commits_requeued_existing_job(client: TestClient) -> 
             session,
             recalc_job_id="stale-repair-running",
             job_type="all",
-            asset_id="sxv264",
+            instrument_id="sxv264",
             trigger_type="stale_read_repair",
             trigger_ref_type="instrument_summary_read",
             trigger_ref_id="sxv264",
@@ -1208,7 +1296,7 @@ def test_stale_read_repair_commits_requeued_existing_job(client: TestClient) -> 
             priority=95,
             dedupe_key=make_recalc_dedupe_key(
                 job_type="all",
-                asset_id="sxv264",
+                instrument_id="sxv264",
                 trigger_type="stale_read_repair",
                 trigger_ref_type="instrument_summary_read",
                 trigger_ref_id="sxv264",
@@ -1218,8 +1306,8 @@ def test_stale_read_repair_commits_requeued_existing_job(client: TestClient) -> 
         record.started_at = datetime.now(UTC) - timedelta(seconds=600)
         session.commit()
 
-    scheduled = schedule_asset_refresh_if_stale(
-        asset_id="sxv264",
+    scheduled = schedule_instrument_refresh_if_stale(
+        instrument_id="sxv264",
         local_latest_date=date(2026, 4, 13),
         trigger_ref_type="instrument_summary_read",
         trigger_ref_id="sxv264",
@@ -1248,12 +1336,12 @@ def test_manual_recalc_enqueue_reuses_open_dedupe_job(client: TestClient) -> Non
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
-    first = client.post("/api/recalc/assets/sxv264/performance")
-    second = client.post("/api/recalc/assets/sxv264/performance")
+    first = client.post("/api/recalc/instruments/sxv264/performance")
+    second = client.post("/api/recalc/instruments/sxv264/performance")
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -1269,7 +1357,7 @@ def test_manual_recalc_enqueue_reuses_open_dedupe_job(client: TestClient) -> Non
     matching = [
         job
         for job in jobs
-        if job.asset_id == "sxv264"
+        if job.instrument_id == "sxv264"
         and job.job_type == "performance"
         and job.trigger_type == "manual_api"
         and job.trigger_ref_type == "api_request"
@@ -1294,7 +1382,7 @@ def test_manual_recalc_enqueue_returns_existing_job_after_dedupe_race(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
@@ -1305,7 +1393,7 @@ def test_manual_recalc_enqueue_returns_existing_job_after_dedupe_race(
             session,
             recalc_job_id="manual-race-existing",
             job_type="performance",
-            asset_id="sxv264",
+            instrument_id="sxv264",
             trigger_type="manual_api",
             trigger_ref_type="api_request",
             trigger_ref_id=None,
@@ -1313,7 +1401,7 @@ def test_manual_recalc_enqueue_returns_existing_job_after_dedupe_race(
             priority=85,
             dedupe_key=make_recalc_dedupe_key(
                 job_type="performance",
-                asset_id="sxv264",
+                instrument_id="sxv264",
                 trigger_type="manual_api",
                 trigger_ref_type="api_request",
                 trigger_ref_id=None,
@@ -1334,7 +1422,7 @@ def test_manual_recalc_enqueue_returns_existing_job_after_dedupe_race(
 
     monkeypatch.setattr(recalc_route.recalc_repository, "find_open_job", _find_open_job)
 
-    response = client.post("/api/recalc/assets/sxv264/performance")
+    response = client.post("/api/recalc/instruments/sxv264/performance")
 
     assert response.status_code == 200
     assert response.json()["recalc_job_id"] == "manual-race-existing"
@@ -1356,14 +1444,14 @@ def test_process_next_recalc_job_refreshes_shared_metadata_drift(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
     seed_shared_instrument(
         {
             **TEST_SHARED_INSTRUMENTS["sxv264"],
-            "asset_name": "SXV264 Renamed Total Return Fund",
+            "instrument_name": "SXV264 Renamed Total Return Fund",
             "identifiers": [
                 {
                     "identifier_type": "ticker",
@@ -1383,7 +1471,7 @@ def test_process_next_recalc_job_refreshes_shared_metadata_drift(
     queued_jobs = [
         job
         for job in jobs
-        if job.asset_id == "sxv264"
+        if job.instrument_id == "sxv264"
         and job.trigger_type == "stale_read_repair"
         and job.job_status == "queued"
     ]
@@ -1396,7 +1484,7 @@ def test_process_next_recalc_job_refreshes_shared_metadata_drift(
     completed_jobs = [
         job
         for job in jobs
-        if job.asset_id == "sxv264"
+        if job.instrument_id == "sxv264"
         and job.trigger_type == "stale_read_repair"
         and job.job_status == "completed"
     ]
@@ -1407,7 +1495,7 @@ def test_process_next_recalc_job_refreshes_shared_metadata_drift(
         json={
             "watchlist_id": watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["asset_name", "ticker_or_isin"],
+            "selected_fields": ["instrument_name", "ticker_or_isin"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -1415,7 +1503,7 @@ def test_process_next_recalc_job_refreshes_shared_metadata_drift(
     )
     assert screener.status_code == 200
     payload = screener.json()
-    assert payload["rows"][0]["asset_name"] == "SXV264 Renamed Total Return Fund"
+    assert payload["rows"][0]["instrument_name"] == "SXV264 Renamed Total Return Fund"
     assert payload["rows"][0]["ticker_or_isin"] == "SXV264X"
 
 
@@ -1435,7 +1523,7 @@ def test_process_next_recalc_job_recovers_stale_running_job(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
@@ -1447,7 +1535,7 @@ def test_process_next_recalc_job_recovers_stale_running_job(
             session,
             recalc_job_id=job_id,
             job_type="all",
-            asset_id="sxv264",
+            instrument_id="sxv264",
             trigger_type="stale_read_repair",
             trigger_ref_type="instrument_summary_read",
             trigger_ref_id="sxv264",
@@ -1478,7 +1566,7 @@ def test_legacy_funds_summary_route_is_gone(client: TestClient) -> None:
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
@@ -1487,7 +1575,7 @@ def test_legacy_funds_summary_route_is_gone(client: TestClient) -> None:
     assert response.status_code == 404
 
 
-def test_instruments_library_alias_lists_local_assets(client: TestClient) -> None:
+def test_instruments_library_alias_lists_local_instruments(client: TestClient) -> None:
     created_watchlist = client.post(
         "/api/watchlists",
         json={"name": "Library Alias", "description": None},
@@ -1496,29 +1584,29 @@ def test_instruments_library_alias_lists_local_assets(client: TestClient) -> Non
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
     response = client.get("/api/instruments/library")
 
     assert response.status_code == 200
-    assert any(item["asset_id"] == "sxv264" for item in response.json())
+    assert any(item["instrument_id"] == "sxv264" for item in response.json())
 
 
 def test_execute_recalc_returns_404_for_unknown_asset(client: TestClient) -> None:
     response = client.post(
-        "/api/recalc/assets/not-in-watchlist/execute",
+        "/api/recalc/instruments/not-in-watchlist/execute",
         json={
             "job_type": "all",
-            "trigger_type": "shared_asset_write",
+            "trigger_type": "instrument_registry_write",
             "trigger_ref_type": "instrument_nav_history_replace",
             "trigger_ref_id": "2026-04-16",
         },
     )
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "Asset not found: not-in-watchlist"
+    assert response.json()["detail"] == "Instrument not found: not-in-watchlist"
 
 
 def test_watchlist_rejects_archived_shared_instrument_ids(
@@ -1536,10 +1624,10 @@ def test_watchlist_rejects_archived_shared_instrument_ids(
     monkeypatch.setattr(
         watchlists_route,
         "get_shared_instrument",
-        lambda asset_id: {
-            "asset_id": asset_id,
-            "asset_name": "Retired Asset",
-            "asset_type": "fund",
+        lambda instrument_id: {
+            "instrument_id": instrument_id,
+            "instrument_name": "Retired Asset",
+            "instrument_type": "fund",
             "currency": "USD",
             "lifecycle_state": {"status": "archived"},
             "identifiers": [],
@@ -1548,7 +1636,7 @@ def test_watchlist_rejects_archived_shared_instrument_ids(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["fund-archived"]},
+        json={"instrument_ids": ["fund-archived"]},
     )
     assert add_response.status_code == 404
     assert "Database Dashboard" in add_response.json()["detail"]
@@ -1575,14 +1663,14 @@ def test_watchlist_add_returns_502_when_shared_registry_is_unreachable(
     )
     watchlist_id = created_watchlist.json()["watchlist_id"]
 
-    def _raise_registry_transport_error(asset_id: str):
+    def _raise_registry_transport_error(instrument_id: str):
         raise SharedInstrumentRegistryTransportError("Failed to reach shared instrument registry.")
 
     monkeypatch.setattr(watchlists_route, "get_shared_instrument", _raise_registry_transport_error)
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["fund-us-agg"]},
+        json={"instrument_ids": ["fund-us-agg"]},
     )
     assert add_response.status_code == 502
     assert "Failed to reach shared instrument registry" in add_response.json()["detail"]
@@ -1603,11 +1691,11 @@ def test_detail_resolution_uses_local_overlay_when_shared_registry_returns_500(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
-    def _raise_registry_error(asset_id: str):
+    def _raise_registry_error(instrument_id: str):
         raise SharedInstrumentRegistryHttpError(
             status_code=500,
             message="Shared instrument registry returned HTTP 500.",
@@ -1618,8 +1706,8 @@ def test_detail_resolution_uses_local_overlay_when_shared_registry_returns_500(
     response = client.get("/api/instruments/sxv264/resolve")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["requested_asset_id"] == "sxv264"
-    assert payload["canonical_asset_id"] == "sxv264"
+    assert payload["requested_instrument_id"] == "sxv264"
+    assert payload["canonical_instrument_id"] == "sxv264"
     assert payload["detail_subject_id"] == "sxv264"
     assert payload["detail_supported"] is True
     assert payload["detail_view_type"] == "fund"
@@ -1641,9 +1729,9 @@ def test_detail_resolution_uses_cached_watchlist_row_when_shared_registry_return
     watchlist_id = created_watchlist.json()["watchlist_id"]
 
     fund_record = {
-        "asset_id": "fund-msft-strategy",
-        "asset_name": "Microsoft Strategy Fund",
-        "asset_type": "fund",
+        "instrument_id": "fund-msft-strategy",
+        "instrument_name": "Microsoft Strategy Fund",
+        "instrument_type": "fund",
         "currency": "USD",
         "lifecycle_state": {"status": "active"},
         "identifiers": [
@@ -1658,21 +1746,21 @@ def test_detail_resolution_uses_cached_watchlist_row_when_shared_registry_return
     monkeypatch.setattr(
         watchlists_route,
         "get_shared_instrument",
-        lambda asset_id: fund_record if asset_id == "fund-msft-strategy" else None,
+        lambda instrument_id: fund_record if instrument_id == "fund-msft-strategy" else None,
     )
     monkeypatch.setattr(
         instrument_resolution,
         "get_shared_instrument",
-        lambda asset_id: fund_record if asset_id == "fund-msft-strategy" else None,
+        lambda instrument_id: fund_record if instrument_id == "fund-msft-strategy" else None,
     )
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["fund-msft-strategy"]},
+        json={"instrument_ids": ["fund-msft-strategy"]},
     )
     assert add_response.status_code == 200
 
-    def _raise_registry_error(asset_id: str):
+    def _raise_registry_error(instrument_id: str):
         raise SharedInstrumentRegistryHttpError(
             status_code=500,
             message="Shared instrument registry returned HTTP 500.",
@@ -1683,29 +1771,30 @@ def test_detail_resolution_uses_cached_watchlist_row_when_shared_registry_return
     response = client.get("/api/instruments/fund-msft-strategy/resolve")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["requested_asset_id"] == "fund-msft-strategy"
-    assert payload["canonical_asset_id"] == "fund-msft-strategy"
-    assert payload["asset_name"] == "Microsoft Strategy Fund"
-    assert payload["asset_type"] == "fund"
+    assert payload["requested_instrument_id"] == "fund-msft-strategy"
+    assert payload["canonical_instrument_id"] == "fund-msft-strategy"
+    assert payload["instrument_name"] == "Microsoft Strategy Fund"
+    assert payload["instrument_type"] == "fund"
     assert payload["primary_identifier"] == "MSFTX"
     assert payload["detail_subject_id"] == "fund-msft-strategy"
     assert payload["detail_supported"] is True
     assert payload["support_reason"] == "detail_ready_local_cache"
 
 
-def test_shared_registry_service_returns_none_for_missing_asset() -> None:
+def test_shared_registry_service_returns_none_for_missing_instrument(client: TestClient) -> None:
     from watchlist_app.services import shared_instrument_registry as registry
 
-    assert registry.get_shared_instrument("stale-asset") is None
+    del client
+    assert registry.get_shared_instrument("stale-instrument") is None
 
 
-def test_local_detail_support_is_explicit_by_asset_type(
+def test_local_detail_support_is_explicit_by_instrument_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from watchlist_app.api.routes import watchlists as watchlists_route
 
-    assert watchlists_route._supports_local_detail({"asset_type": "fund"}) is True
-    assert watchlists_route._supports_local_detail({"asset_type": "equity"}) is False
+    assert watchlists_route._supports_local_detail({"instrument_type": "fund"}) is True
+    assert watchlists_route._supports_local_detail({"instrument_type": "equity"}) is False
 
 
 def test_shared_registry_service_wraps_storage_errors_without_local_fallback(
@@ -1754,7 +1843,7 @@ def test_default_all_coverage_watchlist_syncs_active_shared_funds(
         json={
             "watchlist_id": "all-coverage",
             "view_id": "overview",
-            "selected_fields": ["asset_name"],
+            "selected_fields": ["instrument_name"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -1763,7 +1852,7 @@ def test_default_all_coverage_watchlist_syncs_active_shared_funds(
     assert screener.status_code == 200
     screener_payload = screener.json()
     assert screener_payload["total_rows"] == len(TEST_SHARED_INSTRUMENTS)
-    assert {row["asset_id"] for row in screener_payload["rows"]} == set(TEST_SHARED_INSTRUMENTS)
+    assert {row["instrument_id"] for row in screener_payload["rows"]} == set(TEST_SHARED_INSTRUMENTS)
 
 
 def test_default_all_coverage_watchlist_resyncs_when_registry_grows(
@@ -1776,8 +1865,8 @@ def test_default_all_coverage_watchlist_resyncs_when_registry_grows(
     seed_shared_instrument(
         {
             **TEST_SHARED_INSTRUMENTS["savf63"],
-            "asset_id": "fund-new-income",
-            "asset_name": "New Income Fund",
+            "instrument_id": "fund-new-income",
+            "instrument_name": "New Income Fund",
             "identifiers": [
                 {
                     "identifier_type": "ticker",
@@ -1797,14 +1886,14 @@ def test_default_all_coverage_watchlist_resyncs_when_registry_grows(
         json={
             "watchlist_id": "all-coverage",
             "view_id": "overview",
-            "selected_fields": ["asset_name"],
+            "selected_fields": ["instrument_name"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
         },
     )
     assert screener.status_code == 200
-    assert "fund-new-income" in {row["asset_id"] for row in screener.json()["rows"]}
+    assert "fund-new-income" in {row["instrument_id"] for row in screener.json()["rows"]}
 
 
 def test_default_all_coverage_watchlist_cannot_be_reduced_manually(
@@ -1815,7 +1904,7 @@ def test_default_all_coverage_watchlist_cannot_be_reduced_manually(
 
     delete_items = client.post(
         "/api/watchlists/all-coverage/items/delete",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert delete_items.status_code == 400
     assert "system-maintained" in delete_items.json()["detail"]
@@ -1827,14 +1916,14 @@ def test_default_all_coverage_watchlist_cannot_be_reduced_manually(
     target_watchlist_id = target.json()["watchlist_id"]
     move_items = client.post(
         "/api/watchlists/all-coverage/items/move",
-        json={"asset_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
+        json={"instrument_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
     )
     assert move_items.status_code == 400
     assert "system-maintained" in move_items.json()["detail"]
 
     copy_items = client.post(
         "/api/watchlists/all-coverage/items/copy",
-        json={"asset_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
+        json={"instrument_ids": ["sxv264"], "target_watchlist_id": target_watchlist_id},
     )
     assert copy_items.status_code == 200
     assert copy_items.json()["added_count"] == 1
@@ -1858,7 +1947,7 @@ def test_duplicate_custom_view_name_returns_409(client: TestClient) -> None:
         "default_filters": {},
         "default_advanced_filters": None,
         "columns": [
-            {"field_key": "asset_name", "display_order": 1, "width": 320, "is_visible": True}
+            {"field_key": "instrument_name", "display_order": 1, "width": 320, "is_visible": True}
         ],
     }
 
@@ -1884,7 +1973,7 @@ def test_custom_view_ids_are_slugged_to_path_safe_values(client: TestClient) -> 
         "default_filters": {},
         "default_advanced_filters": None,
         "columns": [
-            {"field_key": "asset_name", "display_order": 1, "width": 320, "is_visible": True}
+            {"field_key": "instrument_name", "display_order": 1, "width": 320, "is_visible": True}
         ],
     }
 
@@ -1934,7 +2023,7 @@ def test_copy_watchlist_sanitizes_legacy_custom_view_ids(client: TestClient) -> 
         session.add(
             WatchlistViewColumn(
                 watchlist_view_id=legacy_view_id,
-                field_key="asset_name",
+                field_key="instrument_name",
                 display_order=1,
                 width=320,
                 is_visible=True,
@@ -1965,7 +2054,7 @@ def test_copy_watchlist_sanitizes_legacy_custom_view_ids(client: TestClient) -> 
             "default_advanced_filters": None,
             "columns": [
                 {
-                    "field_key": "asset_name",
+                    "field_key": "instrument_name",
                     "display_order": 1,
                     "width": 320,
                     "is_visible": True,
@@ -1994,7 +2083,7 @@ def test_default_view_remains_overview_after_creating_custom_view(client: TestCl
             "default_filters": {},
             "default_advanced_filters": None,
             "columns": [
-                {"field_key": "asset_name", "display_order": 1, "width": 320, "is_visible": True}
+                {"field_key": "instrument_name", "display_order": 1, "width": 320, "is_visible": True}
             ],
         },
     )
@@ -2125,7 +2214,7 @@ def test_create_watchlist_view_retries_when_slug_conflicts_during_insert(
             "default_filters": {},
             "default_advanced_filters": None,
             "columns": [
-                {"field_key": "asset_name", "display_order": 1, "width": 320, "is_visible": True}
+                {"field_key": "instrument_name", "display_order": 1, "width": 320, "is_visible": True}
             ],
         },
     )
@@ -2143,7 +2232,7 @@ def test_screener_filters_match_multi_select_attribute_values(client: TestClient
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
@@ -2166,7 +2255,7 @@ def test_screener_filters_match_multi_select_attribute_values(client: TestClient
     assert definition_response.status_code == 200
 
     value_response = client.post(
-        "/api/instrument-attributes/assets/sxv264",
+        "/api/instrument-attributes/instruments/sxv264",
         json={
             "values": [
                 {
@@ -2183,7 +2272,7 @@ def test_screener_filters_match_multi_select_attribute_values(client: TestClient
         json={
             "watchlist_id": watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["asset_name", "attr.strategy_tags"],
+            "selected_fields": ["instrument_name", "attr.strategy_tags"],
             "filters": {"attr.strategy_tags": ["市场中性"]},
             "sort": [],
             "group_by": "none",
@@ -2205,13 +2294,13 @@ def test_explicit_empty_filters_override_view_defaults(client: TestClient) -> No
 
     first_add = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["fund-us-agg"]},
+        json={"instrument_ids": ["fund-us-agg"]},
     )
     assert first_add.status_code == 200
 
     second_add = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert second_add.status_code == 200
 
@@ -2222,10 +2311,10 @@ def test_explicit_empty_filters_override_view_defaults(client: TestClient) -> No
             "description": None,
             "default_group_by": "none",
             "default_sort": [],
-            "default_filters": {"asset_name": ["iShares Core U.S. Aggregate Bond ETF"]},
+            "default_filters": {"instrument_name": ["iShares Core U.S. Aggregate Bond ETF"]},
             "default_advanced_filters": None,
             "columns": [
-                {"field_key": "asset_name", "display_order": 1, "width": 320, "is_visible": True}
+                {"field_key": "instrument_name", "display_order": 1, "width": 320, "is_visible": True}
             ],
         },
     )
@@ -2237,7 +2326,7 @@ def test_explicit_empty_filters_override_view_defaults(client: TestClient) -> No
         json={
             "watchlist_id": watchlist_id,
             "view_id": view_id,
-            "selected_fields": ["asset_name"],
+            "selected_fields": ["instrument_name"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -2251,7 +2340,7 @@ def test_explicit_empty_filters_override_view_defaults(client: TestClient) -> No
         json={
             "watchlist_id": watchlist_id,
             "view_id": view_id,
-            "selected_fields": ["asset_name"],
+            "selected_fields": ["instrument_name"],
             "filters": {},
             "sort": [],
             "group_by": "none",
@@ -2292,7 +2381,7 @@ def test_watchlist_api_runs_without_legacy_catalog_module(
             "default_filters": {},
             "default_advanced_filters": None,
             "columns": [
-                {"field_key": "asset_name", "display_order": 1, "width": 320, "is_visible": True}
+                {"field_key": "instrument_name", "display_order": 1, "width": 320, "is_visible": True}
             ],
         },
     )
@@ -2300,7 +2389,7 @@ def test_watchlist_api_runs_without_legacy_catalog_module(
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["fund-us-agg"]},
+        json={"instrument_ids": ["fund-us-agg"]},
     )
     assert add_response.status_code == 200
     assert add_response.json()["accepted_count"] == 1
@@ -2310,7 +2399,7 @@ def test_watchlist_api_runs_without_legacy_catalog_module(
         json={
             "watchlist_id": watchlist_id,
             "view_id": "overview",
-            "selected_fields": ["asset_name", "ticker_or_isin"],
+            "selected_fields": ["instrument_name", "ticker_or_isin"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -2333,14 +2422,14 @@ def test_watchlist_child_routes_return_404_for_missing_watchlists(
 
     add_response = client.post(
         "/api/watchlists/missing/items",
-        json={"asset_ids": ["fund-us-agg"]},
+        json={"instrument_ids": ["fund-us-agg"]},
     )
     assert add_response.status_code == 404
     assert add_response.json()["detail"] == "Watchlist not found"
 
     delete_items_response = client.post(
         "/api/watchlists/missing/items/delete",
-        json={"asset_ids": ["fund-us-agg"]},
+        json={"instrument_ids": ["fund-us-agg"]},
     )
     assert delete_items_response.status_code == 404
     assert delete_items_response.json()["detail"] == "Watchlist not found"
@@ -2359,7 +2448,7 @@ def test_watchlist_child_routes_return_404_for_missing_watchlists(
             "default_filters": {},
             "default_advanced_filters": None,
             "columns": [
-                {"field_key": "asset_name", "display_order": 1, "width": 320, "is_visible": True}
+                {"field_key": "instrument_name", "display_order": 1, "width": 320, "is_visible": True}
             ],
         },
     )
@@ -2373,7 +2462,7 @@ def test_screener_returns_404_for_missing_watchlists_and_views(client: TestClien
         json={
             "watchlist_id": "missing",
             "view_id": "overview",
-            "selected_fields": ["asset_name"],
+            "selected_fields": ["instrument_name"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -2393,7 +2482,7 @@ def test_screener_returns_404_for_missing_watchlists_and_views(client: TestClien
         json={
             "watchlist_id": watchlist_id,
             "view_id": "not-a-view",
-            "selected_fields": ["asset_name"],
+            "selected_fields": ["instrument_name"],
             "sort": [],
             "group_by": "none",
             "pagination": {"page": 1, "page_size": 20},
@@ -2415,7 +2504,7 @@ def test_delete_watchlist_removes_watchlist_read_model_rows(client: TestClient) 
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["fund-us-agg"]},
+        json={"instrument_ids": ["fund-us-agg"]},
     )
     assert add_response.status_code == 200
 
@@ -2430,13 +2519,13 @@ def test_delete_watchlist_removes_watchlist_read_model_rows(client: TestClient) 
         session.close()
 
 
-def test_instrument_attribute_routes_return_404_for_missing_assets(client: TestClient) -> None:
-    get_response = client.get("/api/instrument-attributes/assets/missing-asset")
+def test_instrument_attribute_routes_return_404_for_missing_instruments(client: TestClient) -> None:
+    get_response = client.get("/api/instrument-attributes/instruments/missing-instrument")
     assert get_response.status_code == 404
-    assert get_response.json()["detail"] == "Asset not found"
+    assert get_response.json()["detail"] == "Instrument not found"
 
     post_response = client.post(
-        "/api/instrument-attributes/assets/missing-asset",
+        "/api/instrument-attributes/instruments/missing-instrument",
         json={
             "values": [
                 {
@@ -2447,7 +2536,7 @@ def test_instrument_attribute_routes_return_404_for_missing_assets(client: TestC
         },
     )
     assert post_response.status_code == 404
-    assert post_response.json()["detail"] == "Asset not found"
+    assert post_response.json()["detail"] == "Instrument not found"
 
 
 def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) -> None:
@@ -2524,8 +2613,8 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     assert fields_by_key["attr.coverage_status"]["product_scope_json"] == []
     assert fields_by_key["attr.coverage_status"]["label"] == "Status"
     assert fields_by_key["attr.investment_edge_quality"]["category_code"] == "research_framework"
-    assert fields_by_key["latest_quote"]["asset_scope_json"] == []
-    assert fields_by_key["latest_quote"]["source_metric_code"] == "asset_chart_read_model.series.latest_quote"
+    assert fields_by_key["latest_quote"]["instrument_scope_json"] == []
+    assert fields_by_key["latest_quote"]["source_metric_code"] == "instrument_chart_read_model.series.latest_quote"
     assert fields_by_key["latest_quote_date"]["data_type"] == "date"
     assert fields_by_key["price_chart_1m"]["label"] == "Chart 1M"
     assert fields_by_key["price_chart_1m"]["description"] == "1-month NAV chart from the current chart read model."
@@ -2551,11 +2640,11 @@ def test_adding_funds_does_not_inject_product_framework_values(client: TestClien
     watchlist_id = created_watchlist.json()["watchlist_id"]
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["fund-us-agg", "sxv264"]},
+        json={"instrument_ids": ["fund-us-agg", "sxv264"]},
     )
     assert add_response.status_code == 200
 
-    public_response = client.get("/api/instrument-attributes/assets/fund-us-agg")
+    public_response = client.get("/api/instrument-attributes/instruments/fund-us-agg")
     assert public_response.status_code == 200
     public_payload = public_response.json()
     public_values = public_payload["values"]
@@ -2563,7 +2652,7 @@ def test_adding_funds_does_not_inject_product_framework_values(client: TestClien
     assert "alpha_source" not in public_values
     assert public_payload["taxonomy"]["assigned_node_id"] is None
 
-    private_response = client.get("/api/instrument-attributes/assets/sxv264")
+    private_response = client.get("/api/instrument-attributes/instruments/sxv264")
     assert private_response.status_code == 200
     private_payload = private_response.json()
     private_values = private_payload["values"]
@@ -2580,7 +2669,7 @@ def test_fund_research_profile_normalizes_research_notes_and_manual_rating(clien
     watchlist_id = created_watchlist.json()["watchlist_id"]
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
@@ -2636,7 +2725,7 @@ def test_fund_document_upload_adds_profile_row_and_allows_download(client: TestC
     watchlist_id = created_watchlist.json()["watchlist_id"]
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
@@ -2680,7 +2769,7 @@ def test_instrument_attributes_can_be_cleared_with_null_and_empty_list(client: T
     watchlist_id = created_watchlist.json()["watchlist_id"]
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
@@ -2721,7 +2810,7 @@ def test_instrument_attributes_can_be_cleared_with_null_and_empty_list(client: T
     assert multi_definition.status_code == 200
 
     first_upsert = client.post(
-        "/api/instrument-attributes/assets/sxv264",
+        "/api/instrument-attributes/instruments/sxv264",
         json={
             "values": [
                 {"attribute_key": "tag_clear_single", "value": "低波"},
@@ -2732,7 +2821,7 @@ def test_instrument_attributes_can_be_cleared_with_null_and_empty_list(client: T
     assert first_upsert.status_code == 200
 
     cleared_upsert = client.post(
-        "/api/instrument-attributes/assets/sxv264",
+        "/api/instrument-attributes/instruments/sxv264",
         json={
             "values": [
                 {"attribute_key": "tag_clear_single", "value": None},
@@ -2757,7 +2846,7 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264"]},
+        json={"instrument_ids": ["sxv264"]},
     )
     assert add_response.status_code == 200
 
@@ -2768,7 +2857,7 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
     assert any(node["node_id"] == "fund-private-equity-quant-long-500" for node in tree_payload["nodes"])
 
     update_response = client.put(
-        "/api/taxonomies/fund-taxonomy/assets/sxv264",
+        "/api/taxonomies/fund-taxonomy/instruments/sxv264",
         json={"node_id": "fund-private-equity-quant-long-500", "updated_by": "test"},
     )
     assert update_response.status_code == 200
@@ -2779,7 +2868,7 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
     assert update_payload["derived_values"]["fund_taxonomy_level_2"] == "量化多头"
     assert update_payload["derived_values"]["fund_taxonomy_leaf"] == "500指增"
 
-    attributes_response = client.get("/api/instrument-attributes/assets/sxv264")
+    attributes_response = client.get("/api/instrument-attributes/instruments/sxv264")
     assert attributes_response.status_code == 200
     attributes_payload = attributes_response.json()
     assert attributes_payload["taxonomy"]["assigned_node_id"] == "fund-private-equity-quant-long-500"
@@ -2807,7 +2896,7 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
             "watchlist_id": watchlist_id,
             "view_id": "fund-screening",
             "selected_fields": [
-                "asset_name",
+                "instrument_name",
                 "attr.fund_regime",
                 "attr.fund_taxonomy_level_1",
                 "attr.fund_taxonomy_leaf",
@@ -2828,7 +2917,7 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
         json={
             "watchlist_id": watchlist_id,
             "view_id": "fund-screening",
-            "selected_fields": ["asset_name"],
+            "selected_fields": ["instrument_name"],
             "filters": {
                 "attr.fund_regime": ["私募"],
                 "attr.fund_taxonomy_level_1": ["股票策略"],
@@ -2860,9 +2949,9 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
 ) -> None:
     seed_shared_instrument(
         {
-        "asset_id": "fund-no-data",
-        "asset_name": "No Data Fund",
-        "asset_type": "fund",
+        "instrument_id": "fund-no-data",
+        "instrument_name": "No Data Fund",
+        "instrument_type": "fund",
         "currency": "USD",
         "identifiers": [
             {
@@ -2884,12 +2973,12 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
 
     add_response = client.post(
         f"/api/watchlists/{watchlist_id}/items",
-        json={"asset_ids": ["sxv264", "fund-no-data"]},
+        json={"instrument_ids": ["sxv264", "fund-no-data"]},
     )
     assert add_response.status_code == 200
     assert add_response.json()["accepted_count"] == 2
 
-    recalc_response = client.post("/api/recalc/assets/sxv264/performance")
+    recalc_response = client.post("/api/recalc/instruments/sxv264/performance")
     assert recalc_response.status_code == 200
 
     response = client.get("/api/monitoring/dashboard")
@@ -2898,7 +2987,7 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
 
     assert payload["overview"] == {
         "watchlist_count": 1,
-        "unique_asset_count": 2,
+        "unique_instrument_count": 2,
         "needs_refresh_count": 1,
         "missing_quote_count": 1,
         "missing_label_count": 2,
@@ -2916,8 +3005,8 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
 
     attention_asset = next(
         item
-        for item in payload["needs_attention_assets"]
-        if item["asset_id"] == "fund-no-data"
+        for item in payload["needs_attention_instruments"]
+        if item["instrument_id"] == "fund-no-data"
     )
     assert attention_asset["data_freshness_status"] == "pending_recalc"
     assert "needs_refresh" in attention_asset["issue_flags"]
@@ -2925,15 +3014,15 @@ def test_monitoring_dashboard_surfaces_missing_labels_quotes_and_open_recalc_job
 
     missing_label_asset = next(
         item
-        for item in payload["missing_label_assets"]
-        if item["asset_id"] == "fund-no-data"
+        for item in payload["missing_label_instruments"]
+        if item["instrument_id"] == "fund-no-data"
     )
     assert "fund_regime" in missing_label_asset["missing_attribute_keys"]
     assert "fund_taxonomy_leaf" in missing_label_asset["missing_attribute_keys"]
-    assert len(payload["missing_label_assets"]) == 2
+    assert len(payload["missing_label_instruments"]) == 2
 
     assert len(payload["open_recalc_jobs"]) == 1
-    assert payload["open_recalc_jobs"][0]["asset_id"] == "sxv264"
+    assert payload["open_recalc_jobs"][0]["instrument_id"] == "sxv264"
     assert payload["open_recalc_jobs"][0]["job_type"] == "performance"
     assert payload["open_recalc_jobs"][0]["job_status"] == "queued"
     assert payload["open_recalc_jobs"][0]["primary_watchlist_id"] == watchlist_id

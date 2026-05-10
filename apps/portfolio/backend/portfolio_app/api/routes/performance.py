@@ -64,7 +64,7 @@ from portfolio_app.api.contracts import (
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.daily_snapshots import (
     list_materialized_daily_snapshots,
-    refresh_portfolio_daily_snapshots_for_asset_change,
+    refresh_portfolio_daily_snapshots_for_instrument_change,
     refresh_selected_portfolio_daily_snapshots,
 )
 from portfolio_app.services.workspace_cache import (
@@ -108,8 +108,8 @@ def refresh_daily_snapshots(
 ) -> DailySnapshotRefreshResponse:
     try:
         if payload.refresh_all:
-            refreshed = refresh_portfolio_daily_snapshots_for_asset_change(
-                asset_ids=[],
+            refreshed = refresh_portfolio_daily_snapshots_for_instrument_change(
+                instrument_ids=[],
                 dirty_from=payload.dirty_from,
                 refresh_all=True,
             )
@@ -119,8 +119,8 @@ def refresh_daily_snapshots(
                 dirty_from=payload.dirty_from,
             )
         else:
-            refreshed = refresh_portfolio_daily_snapshots_for_asset_change(
-                asset_ids=payload.asset_ids,
+            refreshed = refresh_portfolio_daily_snapshots_for_instrument_change(
+                instrument_ids=payload.instrument_ids,
                 dirty_from=payload.dirty_from,
             )
     except InstrumentRegistryError as error:

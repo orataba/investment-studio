@@ -7,15 +7,15 @@ import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../co
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import { downloadCsv } from '../lib/csv'
 import {
-  getPortfolioAssetPriceChart,
+  getPortfolioInstrumentPriceChart,
   getPortfolioInstruments,
   getPortfolioPerformance,
   getPortfolioPerformanceCalculation,
   getPortfolioPerformanceCalculationGroups,
   getPortfolioPerformanceContribution,
   getPortfolioTaxonomyCatalog,
-  type PortfolioAssetPriceChartPoint,
-  type PortfolioAssetPriceChartResponse,
+  type PortfolioInstrumentPriceChartPoint,
+  type PortfolioInstrumentPriceChartResponse,
   type PortfolioContributionReportResponse,
   type PortfolioContributionAxis,
   type PortfolioDailyPerformancePoint,
@@ -87,7 +87,7 @@ type CalculationGroupByOption = {
   disabled?: boolean
 }
 
-type CalculationGroupByKey = 'none' | 'account' | 'asset_type' | 'currency' | 'taxonomy'
+type CalculationGroupByKey = 'none' | 'account' | 'instrument_type' | 'currency' | 'taxonomy'
 
 type CalculationTableMode = 'risk_attribution' | 'calculation'
 
@@ -388,8 +388,8 @@ function expenseImpact(value: number | null | undefined) {
   return finiteValue === 0 ? 0 : -Math.abs(finiteValue)
 }
 
-function fxPnlAmount(row: Pick<CalculationGroupRow, 'cash_currency_gains' | 'asset_currency_gains'>) {
-  return sumNullable(row.cash_currency_gains, row.asset_currency_gains)
+function fxPnlAmount(row: Pick<CalculationGroupRow, 'cash_currency_gains' | 'instrument_currency_gains'>) {
+  return sumNullable(row.cash_currency_gains, row.instrument_currency_gains)
 }
 
 function isCalculationChildRow(row: CalculationDisplayRow): row is CalculationGroupChildRow {
@@ -404,8 +404,8 @@ function calculationAxisLabel(axis: PortfolioContributionAxis) {
   if (axis === 'account') {
     return 'Account'
   }
-  if (axis === 'asset_type') {
-    return 'Asset Type'
+  if (axis === 'instrument_type') {
+    return 'Instrument Type'
   }
   if (axis === 'currency') {
     return 'Currency'
@@ -420,8 +420,8 @@ function calculationAxisCountLabel(axis: PortfolioContributionAxis) {
   if (axis === 'account') {
     return 'accounts'
   }
-  if (axis === 'asset_type') {
-    return 'asset types'
+  if (axis === 'instrument_type') {
+    return 'instrument types'
   }
   if (axis === 'currency') {
     return 'currencies'
@@ -672,7 +672,7 @@ function ratioToDrawdown(returnValue: number | null | undefined, maxDrawdown: nu
 }
 
 function buildBenchmarkPeriodMetrics(
-  points: PortfolioAssetPriceChartPoint[],
+  points: PortfolioInstrumentPriceChartPoint[],
   startDate: string,
   endDate: string,
 ): BenchmarkPeriodMetrics | null {
@@ -1246,8 +1246,8 @@ function PerformancePage() {
   const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
-  const [benchmarkAssetId, setBenchmarkAssetId] = useState('')
-  const [benchmarkChart, setBenchmarkChart] = useState<PortfolioAssetPriceChartResponse | null>(null)
+  const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
+  const [benchmarkChart, setBenchmarkChart] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
   const defaultPlanningTaxonomy = useMemo(
@@ -1269,12 +1269,12 @@ function PerformancePage() {
       {
         value: 'none',
         label: 'None',
-        description: 'Show instrument/asset lines directly without aggregating them into a higher-level group.',
+        description: 'Show instrument lines directly without aggregating them into a higher-level group.',
       },
       {
-        value: 'asset_type',
-        label: 'Asset Type',
-        description: 'Group period calculation rows by asset class, with cash kept in a cash line.',
+        value: 'instrument_type',
+        label: 'Instrument Type',
+        description: 'Group period calculation rows by instrument type, with cash kept in a cash line.',
       },
       {
         value: 'currency',
@@ -1632,7 +1632,7 @@ function PerformancePage() {
   ])
 
   useEffect(() => {
-    if (!portfolioId || !benchmarkAssetId) {
+    if (!portfolioId || !benchmarkInstrumentId) {
       setBenchmarkChart(null)
       setBenchmarkLoading(false)
       setBenchmarkError(null)
@@ -1643,7 +1643,7 @@ function PerformancePage() {
     setBenchmarkLoading(true)
     setBenchmarkError(null)
 
-    getPortfolioAssetPriceChart(portfolioId, benchmarkAssetId, {
+    getPortfolioInstrumentPriceChart(portfolioId, benchmarkInstrumentId, {
       as_of_date: effectiveEndDate,
       range: 'all',
     })
@@ -1667,7 +1667,7 @@ function PerformancePage() {
     return () => {
       cancelled = true
     }
-  }, [benchmarkAssetId, effectiveEndDate, portfolioId])
+  }, [benchmarkInstrumentId, effectiveEndDate, portfolioId])
 
   function updateWindowParams(nextStartDate: string | null, nextEndDate: string | null) {
     const nextParams = new URLSearchParams(searchParams)
@@ -1692,7 +1692,7 @@ function PerformancePage() {
       : `${effectiveStartDate} to ${effectiveEndDate}`
 
   const selectedBenchmarkInstrument =
-    benchmarkInstruments.find((instrument) => instrument.asset_id === benchmarkAssetId) ?? null
+    benchmarkInstruments.find((instrument) => instrument.instrument_id === benchmarkInstrumentId) ?? null
   const benchmarkMetrics = useMemo(
     () => buildBenchmarkPeriodMetrics(benchmarkChart?.points ?? [], effectiveStartDate, effectiveEndDate),
     [benchmarkChart, effectiveStartDate, effectiveEndDate],
@@ -1742,7 +1742,7 @@ function PerformancePage() {
   const portfolioRealizedGain = calculationSummary?.realized_capital_gains ?? summary?.realized_pnl ?? null
   const portfolioUnrealizedGain = calculationSummary?.unrealized_capital_gains ?? null
   const portfolioIncome = calculationSummary?.earnings ?? summary?.income_cash_amount ?? null
-  const portfolioFxPnl = sumNullable(calculationSummary?.cash_currency_gains, calculationSummary?.asset_currency_gains)
+  const portfolioFxPnl = sumNullable(calculationSummary?.cash_currency_gains, calculationSummary?.instrument_currency_gains)
   const portfolioFees = expenseImpact(calculationSummary?.fees)
   const portfolioTaxes = expenseImpact(calculationSummary?.taxes)
   const portfolioPeriodPnl = calculationSummary?.delta ?? summary?.delta ?? summary?.total_pnl ?? null
@@ -1753,7 +1753,7 @@ function PerformancePage() {
   const calculationChildRowCount = calculationRows.reduce((total, row) => total + (row.children?.length ?? 0), 0)
   const calculationMeta = `${periodLabel} · ${formatNumber(calculationRows.length, 0)} ${calculationAxisCountLabel(
     resolvedCalculationGroupBy,
-  )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} assets/cash` : ''}`
+  )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} instruments/cash` : ''}`
   const calculationStatusLabel =
     (calculationLoading && calculationWorkspace) ||
     (calculationGroupsLoading && calculationGroupsWorkspace) ||
@@ -2101,16 +2101,16 @@ function PerformancePage() {
           <BenchmarkSearchBox
             className="performance-benchmark-search"
             instruments={benchmarkInstruments}
-            selectedAssetId={benchmarkAssetId}
+            selectedInstrumentId={benchmarkInstrumentId}
             searchValue={benchmarkSearch}
             onSearchChange={setBenchmarkSearch}
             onSelectInstrument={(instrument) => {
-              setBenchmarkAssetId(instrument.asset_id)
+              setBenchmarkInstrumentId(instrument.instrument_id)
               setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
               setBenchmarkError(null)
             }}
             onClear={() => {
-              setBenchmarkAssetId('')
+              setBenchmarkInstrumentId('')
               setBenchmarkSearch('')
               setBenchmarkChart(null)
               setBenchmarkError(null)

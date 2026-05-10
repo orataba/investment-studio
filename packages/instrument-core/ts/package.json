@@ -1,5 +1,5 @@
 {
-  "name": "@yungu/asset-core",
+  "name": "@yungu/instrument-core",
   "private": true,
   "version": "0.1.0",
   "type": "module"

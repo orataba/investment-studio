@@ -5,7 +5,7 @@ from datetime import date
 from fastapi import APIRouter, HTTPException
 
 from portfolio_app.api.contracts import (
-    AssetPriceChartResponse,
+    InstrumentPriceChartResponse,
     PositionListResponse,
     PositionListSummary,
     PositionLotListResponse,
@@ -13,7 +13,7 @@ from portfolio_app.api.contracts import (
     PositionLotRecord,
     PositionRecord,
 )
-from portfolio_app.services.asset_charts import build_asset_price_chart, normalize_chart_range_key
+from portfolio_app.services.instrument_charts import build_instrument_price_chart, normalize_chart_range_key
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import (
     build_portfolio_positions,
@@ -57,7 +57,7 @@ def list_portfolio_positions(
 def list_portfolio_position_lots(
     portfolio_id: str,
     account_id: str | None = None,
-    asset_id: str | None = None,
+    instrument_id: str | None = None,
     status: str | None = None,
     as_of_date: date | None = None,
 ) -> PositionLotListResponse:
@@ -72,7 +72,7 @@ def list_portfolio_position_lots(
             accounts,
             transactions,
             account_id=account_id,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             status=status,
             as_of_date=as_of_date,
         )
@@ -85,13 +85,13 @@ def list_portfolio_position_lots(
     )
 
 
-@router.get("/{portfolio_id}/assets/{asset_id}/price-chart", response_model=AssetPriceChartResponse)
-def get_portfolio_asset_price_chart(
+@router.get("/{portfolio_id}/instruments/{instrument_id}/price-chart", response_model=InstrumentPriceChartResponse)
+def get_portfolio_instrument_price_chart(
     portfolio_id: str,
-    asset_id: str,
+    instrument_id: str,
     as_of_date: date | None = None,
     range: str | None = None,
-) -> AssetPriceChartResponse:
+) -> InstrumentPriceChartResponse:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -106,8 +106,8 @@ def get_portfolio_asset_price_chart(
         or date.today()
     )
     try:
-        chart = build_asset_price_chart(
-            asset_id,
+        chart = build_instrument_price_chart(
+            instrument_id,
             as_of_date=resolved_as_of_date,
             range_key=normalize_chart_range_key(range),
         )
@@ -116,7 +116,7 @@ def get_portfolio_asset_price_chart(
     if chart is None:
         raise HTTPException(status_code=404, detail="Instrument not found in shared registry.")
 
-    return AssetPriceChartResponse.model_validate(
+    return InstrumentPriceChartResponse.model_validate(
         {
             "portfolio_id": portfolio_id,
             **chart,

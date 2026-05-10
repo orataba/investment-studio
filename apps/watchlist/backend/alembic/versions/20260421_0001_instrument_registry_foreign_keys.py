@@ -1,4 +1,4 @@
-"""shared asset foreign keys
+"""instrument registry foreign keys
 
 Revision ID: 20260421_0001
 Revises: 1b7d2e8c4f90
@@ -30,26 +30,26 @@ def upgrade() -> None:
     if bind.dialect.name != "postgresql":
         return
 
-    if not _has_foreign_key(bind, "watchlist", "asset_detail", "fk_asset_detail_asset_id_instrument"):
+    if not _has_foreign_key(bind, "watchlist", "instrument_detail", "fk_instrument_detail_instrument_id_instrument"):
         op.create_foreign_key(
-            "fk_asset_detail_asset_id_instrument",
-            "asset_detail",
+            "fk_instrument_detail_instrument_id_instrument",
+            "instrument_detail",
             "instrument",
-            ["asset_id"],
-            ["asset_id"],
+            ["instrument_id"],
+            ["instrument_id"],
             source_schema="watchlist",
-            referent_schema="shared_asset",
+            referent_schema="instrument_registry",
             ondelete="RESTRICT",
         )
-    if not _has_foreign_key(bind, "watchlist", "watchlist_item", "fk_watchlist_item_asset_id_instrument"):
+    if not _has_foreign_key(bind, "watchlist", "watchlist_item", "fk_watchlist_item_instrument_id_instrument"):
         op.create_foreign_key(
-            "fk_watchlist_item_asset_id_instrument",
+            "fk_watchlist_item_instrument_id_instrument",
             "watchlist_item",
             "instrument",
-            ["asset_id"],
-            ["asset_id"],
+            ["instrument_id"],
+            ["instrument_id"],
             source_schema="watchlist",
-            referent_schema="shared_asset",
+            referent_schema="instrument_registry",
             ondelete="RESTRICT",
         )
 
@@ -59,17 +59,17 @@ def downgrade() -> None:
     if bind.dialect.name != "postgresql":
         return
 
-    if _has_foreign_key(bind, "watchlist", "watchlist_item", "fk_watchlist_item_asset_id_instrument"):
+    if _has_foreign_key(bind, "watchlist", "watchlist_item", "fk_watchlist_item_instrument_id_instrument"):
         op.drop_constraint(
-            "fk_watchlist_item_asset_id_instrument",
+            "fk_watchlist_item_instrument_id_instrument",
             "watchlist_item",
             schema="watchlist",
             type_="foreignkey",
         )
-    if _has_foreign_key(bind, "watchlist", "asset_detail", "fk_asset_detail_asset_id_instrument"):
+    if _has_foreign_key(bind, "watchlist", "instrument_detail", "fk_instrument_detail_instrument_id_instrument"):
         op.drop_constraint(
-            "fk_asset_detail_asset_id_instrument",
-            "asset_detail",
+            "fk_instrument_detail_instrument_id_instrument",
+            "instrument_detail",
             schema="watchlist",
             type_="foreignkey",
         )

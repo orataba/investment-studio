@@ -1,15 +1,15 @@
-# Yungu Asset Core
+# Yungu Instrument Core
 
-`asset-core` 是 `Yungu` 平台当前唯一计划抽出来的最小共享业务底座。
+`instrument-core` 是 `Yungu` 平台当前唯一计划抽出来的最小共享业务底座。
 
 ## 当前范围
 
 只承载下面这些跨 app 都会用到、且语义稳定的对象：
 
-- `asset_id`
-- `asset_name`
+- `instrument_id`
+- `instrument_name`
 - identifiers
-- `asset_type`
+- `instrument_type`
 - `currency`
 - typed `market_data`
   - `metric_family`: `price | nav | fx`
@@ -37,13 +37,13 @@
   Python 侧共享 contract 模型
 - `ts/`
   TypeScript 侧共享 contract 类型
-- `ASSET_CORE_CONTRACT.md`
+- `INSTRUMENT_CORE_CONTRACT.md`
   当前最小共享边界说明
 
 ## 原则
 
-- `asset-core` 只负责“资产身份 + typed market facts + 最小 quote selector policy”。
+- `instrument-core` 只负责“资产身份 + typed market facts + 最小 quote selector policy”。
 - 上层 app 必须自己 materialize 自己的 read models。
-- `Watchlist` 和 `Portfolio` 都可以消费 `asset-core`，但不能把自身业务对象塞回共享层。
+- `Watchlist` 和 `Portfolio` 都可以消费 `instrument-core`，但不能把自身业务对象塞回共享层。
 - selector role 放在共享层，是因为不同资产类别读取 `valuation / trading / total_return / chart` 时需要稳定约定。
 - corporate action、accrued interest、yield/spread 这类 supporting metrics 暂时不在当前 contract 里，后续只在确实需要时再扩。

@@ -22,17 +22,17 @@ def _write_store(store: dict[str, object]) -> None:
 
 def _test_instrument_detail(
     *,
-    asset_id: str,
-    asset_name: str,
+    instrument_id: str,
+    instrument_name: str,
     history: list[tuple[str, str]],
-    asset_type: str = "equity",
+    instrument_type: str = "equity",
 ) -> dict[str, object]:
     return {
-        "asset_id": asset_id,
-        "asset_name": asset_name,
-        "asset_type": asset_type,
+        "instrument_id": instrument_id,
+        "instrument_name": instrument_name,
+        "instrument_type": instrument_type,
         "currency": "USD",
-        "identifiers": [{"identifier_type": "ticker", "identifier_value": asset_id.upper(), "is_primary": True}],
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": instrument_id.upper(), "is_primary": True}],
         "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
         "market_data": [
             {
@@ -50,9 +50,9 @@ def _test_instrument_detail(
 
 def test_valuation_quote_selection_rejects_reference_and_total_return_fallbacks():
     detail = {
-        "asset_id": "equity-us-split",
-        "asset_name": "Split Adjusted Equity",
-        "asset_type": "equity",
+        "instrument_id": "equity-us-split",
+        "instrument_name": "Split Adjusted Equity",
+        "instrument_type": "equity",
         "currency": "USD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "SPLT", "is_primary": True}],
         "quote_selection_policy": {
@@ -104,9 +104,9 @@ def test_valuation_quote_selection_rejects_reference_and_total_return_fallbacks(
 
 def test_quote_selection_uses_only_complete_market_data():
     detail = {
-        "asset_id": "equity-us-status-test",
-        "asset_name": "Status Test Equity",
-        "asset_type": "equity",
+        "instrument_id": "equity-us-status-test",
+        "instrument_name": "Status Test Equity",
+        "instrument_type": "equity",
         "currency": "USD",
         "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
         "market_data": [
@@ -226,7 +226,7 @@ def _minimal_store(
                 "institution": "Test Bank",
                 "default_settlement_cash_account_id": None,
                 "cost_basis_method": None,
-                "allowed_asset_types": None,
+                "allowed_instrument_types": None,
                 "opened_at": "2026-01-01",
                 "status": "active",
             },
@@ -239,7 +239,7 @@ def _minimal_store(
                 "institution": "Test Broker",
                 "default_settlement_cash_account_id": "cash-usd-main",
                 "cost_basis_method": "fifo",
-                "allowed_asset_types": ["equity"],
+                "allowed_instrument_types": ["equity"],
                 "opened_at": "2026-01-01",
                 "status": "active",
             },
@@ -328,14 +328,14 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
     assert contribution_response.json()["daily_slices"]
 
 
-def test_daily_snapshot_refresh_endpoint_refreshes_impacted_asset_portfolios(client):
+def test_daily_snapshot_refresh_endpoint_refreshes_impacted_instrument_portfolios(client):
     initial_response = client.get("/api/portfolios/yungu/snapshots/daily")
     assert initial_response.status_code == 200
 
     refresh_response = client.post(
         "/api/portfolios/snapshots/daily/refresh",
         json={
-            "asset_ids": ["fund-us-agg"],
+            "instrument_ids": ["fund-us-agg"],
             "dirty_from": "2026-04-14",
         },
     )
@@ -346,7 +346,7 @@ def test_daily_snapshot_refresh_endpoint_refreshes_impacted_asset_portfolios(cli
 
     empty_refresh_response = client.post(
         "/api/portfolios/snapshots/daily/refresh",
-        json={"asset_ids": ["not-held"]},
+        json={"instrument_ids": ["not-held"]},
     )
     assert empty_refresh_response.status_code == 200
     assert empty_refresh_response.json()["portfolio_ids"] == []
@@ -354,8 +354,8 @@ def test_daily_snapshot_refresh_endpoint_refreshes_impacted_asset_portfolios(cli
 
 def test_daily_twr_neutralizes_external_deposit(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -364,7 +364,7 @@ def test_daily_twr_neutralizes_external_deposit(client, monkeypatch):
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -383,7 +383,7 @@ def test_daily_twr_neutralizes_external_deposit(client, monkeypatch):
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -406,11 +406,11 @@ def test_daily_twr_neutralizes_external_deposit(client, monkeypatch):
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -435,7 +435,7 @@ def test_daily_twr_neutralizes_external_deposit(client, monkeypatch):
                 "settlement_date": "2026-01-02",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -468,8 +468,8 @@ def test_daily_twr_neutralizes_external_deposit(client, monkeypatch):
 
 def test_explicit_performance_period_uses_beginning_nav_boundary(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-03-31", "100.00"),
             ("2026-04-01", "110.00"),
@@ -477,16 +477,16 @@ def test_explicit_performance_period_uses_beginning_nav_boundary(client, monkeyp
         ],
     )
     instrument_ref = {
-        "asset_id": "equity-us-test",
-        "asset_name": "Test Equity",
-        "asset_type": "equity",
+        "instrument_id": "equity-us-test",
+        "instrument_name": "Test Equity",
+        "instrument_type": "equity",
         "currency": "USD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
     }
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -505,7 +505,7 @@ def test_explicit_performance_period_uses_beginning_nav_boundary(client, monkeyp
                 "settlement_date": "2026-03-31",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -528,7 +528,7 @@ def test_explicit_performance_period_uses_beginning_nav_boundary(client, monkeyp
                 "settlement_date": "2026-03-31",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": instrument_ref,
                 "quantity": 1.0,
                 "price": 100.0,
@@ -576,8 +576,8 @@ def test_explicit_performance_period_uses_beginning_nav_boundary(client, monkeyp
 
 def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -587,7 +587,7 @@ def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypa
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -606,7 +606,7 @@ def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypa
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -629,11 +629,11 @@ def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypa
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -658,11 +658,11 @@ def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypa
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -687,7 +687,7 @@ def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypa
                 "settlement_date": "2026-01-03",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -720,8 +720,8 @@ def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypa
 
 def test_performance_summary_reports_one_year_twr_annualized_and_irr(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2027-01-01", "110.00"),
@@ -730,7 +730,7 @@ def test_performance_summary_reports_one_year_twr_annualized_and_irr(client, mon
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -749,7 +749,7 @@ def test_performance_summary_reports_one_year_twr_annualized_and_irr(client, mon
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -772,11 +772,11 @@ def test_performance_summary_reports_one_year_twr_annualized_and_irr(client, mon
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -820,8 +820,8 @@ def test_performance_summary_reports_one_year_twr_annualized_and_irr(client, mon
 
 def test_performance_summary_reports_pnl_decomposition_and_risk_metrics(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -831,7 +831,7 @@ def test_performance_summary_reports_pnl_decomposition_and_risk_metrics(client, 
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -850,7 +850,7 @@ def test_performance_summary_reports_pnl_decomposition_and_risk_metrics(client, 
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -873,11 +873,11 @@ def test_performance_summary_reports_pnl_decomposition_and_risk_metrics(client, 
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -902,11 +902,11 @@ def test_performance_summary_reports_pnl_decomposition_and_risk_metrics(client, 
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -931,7 +931,7 @@ def test_performance_summary_reports_pnl_decomposition_and_risk_metrics(client, 
                 "settlement_date": "2026-01-03",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -984,8 +984,8 @@ def test_performance_summary_reports_pnl_decomposition_and_risk_metrics(client, 
 
 def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-02", "100.00"),
             ("2026-01-05", "110.00"),
@@ -995,7 +995,7 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -1014,7 +1014,7 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
                 "settlement_date": "2026-01-02",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -1037,11 +1037,11 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -1109,8 +1109,8 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
 
 def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -1121,7 +1121,7 @@ def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatc
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -1140,7 +1140,7 @@ def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatc
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -1163,11 +1163,11 @@ def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatc
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -1210,8 +1210,8 @@ def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatc
 
 def test_window_drawdown_uses_period_start_anchor_when_first_return_is_loss(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "90.00"),
@@ -1221,7 +1221,7 @@ def test_window_drawdown_uses_period_start_anchor_when_first_return_is_loss(clie
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -1240,7 +1240,7 @@ def test_window_drawdown_uses_period_start_anchor_when_first_return_is_loss(clie
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -1263,11 +1263,11 @@ def test_window_drawdown_uses_period_start_anchor_when_first_return_is_loss(clie
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -1306,8 +1306,8 @@ def test_window_drawdown_uses_period_start_anchor_when_first_return_is_loss(clie
 
 def test_period_calculation_report_reconciles_initial_delta_transfers_and_final_value(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -1317,7 +1317,7 @@ def test_period_calculation_report_reconciles_initial_delta_transfers_and_final_
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -1336,7 +1336,7 @@ def test_period_calculation_report_reconciles_initial_delta_transfers_and_final_
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -1359,11 +1359,11 @@ def test_period_calculation_report_reconciles_initial_delta_transfers_and_final_
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -1388,11 +1388,11 @@ def test_period_calculation_report_reconciles_initial_delta_transfers_and_final_
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -1417,7 +1417,7 @@ def test_period_calculation_report_reconciles_initial_delta_transfers_and_final_
                 "settlement_date": "2026-01-03",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -1465,8 +1465,8 @@ def test_period_calculation_report_reconciles_initial_delta_transfers_and_final_
 
 def test_period_calculation_report_splits_earnings_fees_and_taxes(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "100.00"),
@@ -1475,7 +1475,7 @@ def test_period_calculation_report_splits_earnings_fees_and_taxes(client, monkey
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -1494,7 +1494,7 @@ def test_period_calculation_report_splits_earnings_fees_and_taxes(client, monkey
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -1517,11 +1517,11 @@ def test_period_calculation_report_splits_earnings_fees_and_taxes(client, monkey
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -1546,11 +1546,11 @@ def test_period_calculation_report_splits_earnings_fees_and_taxes(client, monkey
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -1575,7 +1575,7 @@ def test_period_calculation_report_splits_earnings_fees_and_taxes(client, monkey
                 "settlement_date": "2026-01-02",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -1598,7 +1598,7 @@ def test_period_calculation_report_splits_earnings_fees_and_taxes(client, monkey
                 "settlement_date": "2026-01-02",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -1638,8 +1638,8 @@ def test_period_calculation_report_splits_earnings_fees_and_taxes(client, monkey
 
 def test_period_boundary_holdings_report_returns_start_and_end_positions(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -1649,7 +1649,7 @@ def test_period_boundary_holdings_report_returns_start_and_end_positions(client,
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -1668,7 +1668,7 @@ def test_period_boundary_holdings_report_returns_start_and_end_positions(client,
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -1691,11 +1691,11 @@ def test_period_boundary_holdings_report_returns_start_and_end_positions(client,
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -1720,11 +1720,11 @@ def test_period_boundary_holdings_report_returns_start_and_end_positions(client,
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -1753,7 +1753,7 @@ def test_period_boundary_holdings_report_returns_start_and_end_positions(client,
     assert payload["summary"]["end_position_count"] == 0
     assert payload["summary"]["start_total_market_value_base"] == 100.0
     assert payload["summary"]["end_total_market_value_base"] == 0.0
-    assert payload["start_positions"][0]["asset_id"] == "equity-us-test"
+    assert payload["start_positions"][0]["instrument_id"] == "equity-us-test"
     assert payload["start_positions"][0]["account_ids"] == ["broker-us-core"]
     assert payload["start_positions"][0]["market_value_base"] == 100.0
     assert payload["start_positions"][0]["portfolio_weight"] == 1.0
@@ -1762,8 +1762,8 @@ def test_period_boundary_holdings_report_returns_start_and_end_positions(client,
 
 def test_period_boundary_holdings_can_filter_by_account_group(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -1772,7 +1772,7 @@ def test_period_boundary_holdings_can_filter_by_account_group(client, monkeypatc
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -1791,7 +1791,7 @@ def test_period_boundary_holdings_can_filter_by_account_group(client, monkeypatc
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -1814,11 +1814,11 @@ def test_period_boundary_holdings_can_filter_by_account_group(client, monkeypatc
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -1856,8 +1856,8 @@ def test_period_boundary_holdings_can_filter_by_account_group(client, monkeypatc
 
 def test_period_boundary_holdings_can_filter_by_taxonomy_group(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -1866,7 +1866,7 @@ def test_period_boundary_holdings_can_filter_by_taxonomy_group(client, monkeypat
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -1885,7 +1885,7 @@ def test_period_boundary_holdings_can_filter_by_taxonomy_group(client, monkeypat
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -1908,11 +1908,11 @@ def test_period_boundary_holdings_can_filter_by_taxonomy_group(client, monkeypat
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -1986,13 +1986,13 @@ def test_period_boundary_holdings_can_filter_by_taxonomy_group(client, monkeypat
     assert payload["summary"]["group_label"] == "Value"
     assert payload["summary"]["start_position_count"] == 1
     assert payload["summary"]["end_position_count"] == 1
-    assert payload["start_positions"][0]["asset_id"] == "equity-us-test"
+    assert payload["start_positions"][0]["instrument_id"] == "equity-us-test"
 
 
 def test_return_calendar_report_rolls_daily_returns_into_monthly_buckets(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-31", "100.00"),
             ("2026-02-01", "110.00"),
@@ -2002,7 +2002,7 @@ def test_return_calendar_report_rolls_daily_returns_into_monthly_buckets(client,
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -2021,7 +2021,7 @@ def test_return_calendar_report_rolls_daily_returns_into_monthly_buckets(client,
                 "settlement_date": "2026-01-31",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -2044,11 +2044,11 @@ def test_return_calendar_report_rolls_daily_returns_into_monthly_buckets(client,
                 "settlement_date": "2026-01-31",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -2088,8 +2088,8 @@ def test_return_calendar_report_rolls_daily_returns_into_monthly_buckets(client,
 
 def test_instrument_contribution_report_tracks_daily_pnl_and_residual(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -2098,7 +2098,7 @@ def test_instrument_contribution_report_tracks_daily_pnl_and_residual(client, mo
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -2117,7 +2117,7 @@ def test_instrument_contribution_report_tracks_daily_pnl_and_residual(client, mo
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -2140,11 +2140,11 @@ def test_instrument_contribution_report_tracks_daily_pnl_and_residual(client, mo
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -2188,17 +2188,17 @@ def test_instrument_contribution_report_tracks_daily_pnl_and_residual(client, mo
 
 
 def test_cost_basis_method_changes_book_split_not_economic_contribution(client, monkeypatch):
-    asset_id = "equity-us-cost-method"
+    instrument_id = "equity-us-cost-method"
     instrument_ref = {
-        "asset_id": asset_id,
-        "asset_name": "Asset A",
-        "asset_type": "equity",
+        "instrument_id": instrument_id,
+        "instrument_name": "Instrument A",
+        "instrument_type": "equity",
         "currency": "USD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "A", "is_primary": True}],
     }
     instrument_detail = _test_instrument_detail(
-        asset_id=asset_id,
-        asset_name="Asset A",
+        instrument_id=instrument_id,
+        instrument_name="Instrument A",
         history=[
             ("2026-01-01", "50.00"),
             ("2026-01-02", "100.00"),
@@ -2209,16 +2209,16 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda requested_asset_id: deepcopy(instrument_detail) if requested_asset_id == asset_id else None,
+        lambda requested_instrument_id: deepcopy(instrument_detail) if requested_instrument_id == instrument_id else None,
     )
     monkeypatch.setattr(
         ledger,
         "get_registry_instrument_detail",
-        lambda requested_asset_id: deepcopy(instrument_detail) if requested_asset_id == asset_id else None,
+        lambda requested_instrument_id: deepcopy(instrument_detail) if requested_instrument_id == instrument_id else None,
     )
     monkeypatch.setattr(
         workspace_routes,
-        "build_asset_holdings_market_profile",
+        "build_instrument_holdings_market_profile",
         lambda *_args, **_kwargs: {
             "price_chart_1m": [],
             "price_chart_3m": [],
@@ -2238,7 +2238,7 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
         trade_date: str,
         *,
         account_id: str,
-        asset_id_value: str | None,
+        instrument_id_value: str | None,
         quantity: float | None,
         price: float | None,
         gross_amount: float,
@@ -2254,8 +2254,8 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
             "settlement_cash_account_id": (
                 "cash-usd-main" if transaction_type in {"buy", "sell"} else None
             ),
-            "asset_id": asset_id_value,
-            "instrument_ref": deepcopy(instrument_ref) if asset_id_value else None,
+            "instrument_id": instrument_id_value,
+            "instrument_ref": deepcopy(instrument_ref) if instrument_id_value else None,
             "quantity": quantity,
             "price": price,
             "gross_amount": gross_amount,
@@ -2277,7 +2277,7 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
                 "opening_balance",
                 "2026-01-01",
                 account_id="cash-usd-main",
-                asset_id_value=None,
+                instrument_id_value=None,
                 quantity=None,
                 price=None,
                 gross_amount=750000.0,
@@ -2288,7 +2288,7 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
                 "buy",
                 "2026-01-01",
                 account_id="broker-us-core",
-                asset_id_value=asset_id,
+                instrument_id_value=instrument_id,
                 quantity=5000.0,
                 price=50.0,
                 gross_amount=250000.0,
@@ -2299,7 +2299,7 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
                 "buy",
                 "2026-01-02",
                 account_id="broker-us-core",
-                asset_id_value=asset_id,
+                instrument_id_value=instrument_id,
                 quantity=5000.0,
                 price=100.0,
                 gross_amount=500000.0,
@@ -2310,7 +2310,7 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
                 "sell",
                 "2026-01-03",
                 account_id="broker-us-core",
-                asset_id_value=asset_id,
+                instrument_id_value=instrument_id,
                 quantity=6000.0,
                 price=75.0,
                 gross_amount=450000.0,
@@ -2324,7 +2324,7 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
                     "sell",
                     "2026-01-04",
                     account_id="broker-us-core",
-                    asset_id_value=asset_id,
+                    instrument_id_value=instrument_id,
                     quantity=4000.0,
                     price=80.0,
                     gross_amount=320000.0,
@@ -2342,14 +2342,14 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
 
         holdings_response = client.get(f"/api/workspace/holdings?portfolio_id={portfolio_id}")
         assert holdings_response.status_code == 200
-        holding = next(row for row in holdings_response.json()["rows"] if row["asset_core"]["asset_id"] == asset_id)
+        holding = next(row for row in holdings_response.json()["rows"] if row["instrument_core"]["instrument_id"] == instrument_id)
 
         contribution_response = client.get(
             f"/api/portfolios/{portfolio_id}/performance/contribution?axis=instrument"
         )
         assert contribution_response.status_code == 200
         contribution_payload = contribution_response.json()
-        line = next(item for item in contribution_payload["lines"] if item["group_key"] == asset_id)
+        line = next(item for item in contribution_payload["lines"] if item["group_key"] == instrument_id)
         calculation_groups_response = client.get(
             f"/api/portfolios/{portfolio_id}/performance/calculation/groups?axis=instrument"
         )
@@ -2357,7 +2357,7 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
         calculation_group = next(
             item
             for item in calculation_groups_response.json()["groups"]
-            if item["group_key"] == asset_id
+            if item["group_key"] == instrument_id
         )
         performance_response = client.get(f"/api/portfolios/{portfolio_id}/performance")
         assert performance_response.status_code == 200
@@ -2417,7 +2417,7 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
     sold_out_group = next(
         item
         for item in sold_out_response.json()["groups"]
-        if item["group_key"] == asset_id
+        if item["group_key"] == instrument_id
     )
     assert sold_out_group["final_value"] == 0.0
     assert sold_out_group["capital_gains"] == 20000.0
@@ -2435,7 +2435,7 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
 
 
 def test_account_contribution_report_tracks_interest_income(client, monkeypatch):
-    monkeypatch.setattr(performance, "get_registry_instrument_detail", lambda asset_id: None)
+    monkeypatch.setattr(performance, "get_registry_instrument_detail", lambda instrument_id: None)
     monkeypatch.setattr(
         performance,
         "get_platform_fx_rates",
@@ -2453,7 +2453,7 @@ def test_account_contribution_report_tracks_interest_income(client, monkeypatch)
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -2476,7 +2476,7 @@ def test_account_contribution_report_tracks_interest_income(client, monkeypatch)
                 "settlement_date": "2026-01-02",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -2517,8 +2517,8 @@ def test_account_contribution_report_tracks_interest_income(client, monkeypatch)
 
 def test_instrument_contribution_and_calculation_capture_attached_buy_charges(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-fee-test",
-        asset_name="Fee Test Equity",
+        instrument_id="equity-us-fee-test",
+        instrument_name="Fee Test Equity",
         history=[
             ("2026-01-02", "93.00"),
             ("2026-01-03", "93.00"),
@@ -2527,7 +2527,7 @@ def test_instrument_contribution_and_calculation_capture_attached_buy_charges(cl
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-fee-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-fee-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -2546,7 +2546,7 @@ def test_instrument_contribution_and_calculation_capture_attached_buy_charges(cl
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -2569,11 +2569,11 @@ def test_instrument_contribution_and_calculation_capture_attached_buy_charges(cl
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-fee-test",
+                "instrument_id": "equity-us-fee-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-fee-test",
-                    "asset_name": "Fee Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-fee-test",
+                    "instrument_name": "Fee Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "FEE", "is_primary": True}],
                 },
@@ -2635,16 +2635,16 @@ def test_instrument_contribution_and_calculation_capture_attached_buy_charges(cl
 def test_instrument_contribution_report_can_filter_by_group_key(client, monkeypatch):
     instrument_details = {
         "equity-us-alpha": _test_instrument_detail(
-            asset_id="equity-us-alpha",
-            asset_name="Alpha Equity",
+            instrument_id="equity-us-alpha",
+            instrument_name="Alpha Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-02", "110.00"),
             ],
         ),
         "equity-us-beta": _test_instrument_detail(
-            asset_id="equity-us-beta",
-            asset_name="Beta Equity",
+            instrument_id="equity-us-beta",
+            instrument_name="Beta Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-02", "90.00"),
@@ -2654,7 +2654,7 @@ def test_instrument_contribution_report_can_filter_by_group_key(client, monkeypa
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_details.get(asset_id)),
+        lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
     )
     monkeypatch.setattr(
         performance,
@@ -2673,7 +2673,7 @@ def test_instrument_contribution_report_can_filter_by_group_key(client, monkeypa
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -2696,11 +2696,11 @@ def test_instrument_contribution_report_can_filter_by_group_key(client, monkeypa
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-alpha",
+                "instrument_id": "equity-us-alpha",
                 "instrument_ref": {
-                    "asset_id": "equity-us-alpha",
-                    "asset_name": "Alpha Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-alpha",
+                    "instrument_name": "Alpha Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "ALPHA", "is_primary": True}],
                 },
@@ -2725,11 +2725,11 @@ def test_instrument_contribution_report_can_filter_by_group_key(client, monkeypa
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-beta",
+                "instrument_id": "equity-us-beta",
                 "instrument_ref": {
-                    "asset_id": "equity-us-beta",
-                    "asset_name": "Beta Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-beta",
+                    "instrument_name": "Beta Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "BETA", "is_primary": True}],
                 },
@@ -2777,16 +2777,16 @@ def test_instrument_contribution_report_can_filter_by_group_key(client, monkeypa
 def test_instrument_contribution_bucket_drilldown_can_filter_by_group_key(client, monkeypatch):
     instrument_details = {
         "equity-us-alpha": _test_instrument_detail(
-            asset_id="equity-us-alpha",
-            asset_name="Alpha Equity",
+            instrument_id="equity-us-alpha",
+            instrument_name="Alpha Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-02", "110.00"),
             ],
         ),
         "equity-us-beta": _test_instrument_detail(
-            asset_id="equity-us-beta",
-            asset_name="Beta Equity",
+            instrument_id="equity-us-beta",
+            instrument_name="Beta Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-02", "90.00"),
@@ -2796,7 +2796,7 @@ def test_instrument_contribution_bucket_drilldown_can_filter_by_group_key(client
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_details.get(asset_id)),
+        lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
     )
     monkeypatch.setattr(
         performance,
@@ -2815,7 +2815,7 @@ def test_instrument_contribution_bucket_drilldown_can_filter_by_group_key(client
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -2838,11 +2838,11 @@ def test_instrument_contribution_bucket_drilldown_can_filter_by_group_key(client
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-alpha",
+                "instrument_id": "equity-us-alpha",
                 "instrument_ref": {
-                    "asset_id": "equity-us-alpha",
-                    "asset_name": "Alpha Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-alpha",
+                    "instrument_name": "Alpha Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "ALPHA", "is_primary": True}],
                 },
@@ -2867,11 +2867,11 @@ def test_instrument_contribution_bucket_drilldown_can_filter_by_group_key(client
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-beta",
+                "instrument_id": "equity-us-beta",
                 "instrument_ref": {
-                    "asset_id": "equity-us-beta",
-                    "asset_name": "Beta Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-beta",
+                    "instrument_name": "Beta Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "BETA", "is_primary": True}],
                 },
@@ -2917,16 +2917,16 @@ def test_instrument_contribution_bucket_drilldown_can_filter_by_group_key(client
 def test_instrument_contribution_entries_can_filter_income_by_group_key(client, monkeypatch):
     instrument_details = {
         "equity-us-alpha": _test_instrument_detail(
-            asset_id="equity-us-alpha",
-            asset_name="Alpha Equity",
+            instrument_id="equity-us-alpha",
+            instrument_name="Alpha Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-02", "100.00"),
             ],
         ),
         "equity-us-beta": _test_instrument_detail(
-            asset_id="equity-us-beta",
-            asset_name="Beta Equity",
+            instrument_id="equity-us-beta",
+            instrument_name="Beta Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-02", "100.00"),
@@ -2936,7 +2936,7 @@ def test_instrument_contribution_entries_can_filter_income_by_group_key(client, 
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_details.get(asset_id)),
+        lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
     )
     monkeypatch.setattr(
         performance,
@@ -2955,7 +2955,7 @@ def test_instrument_contribution_entries_can_filter_income_by_group_key(client, 
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -2978,11 +2978,11 @@ def test_instrument_contribution_entries_can_filter_income_by_group_key(client, 
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-alpha",
+                "instrument_id": "equity-us-alpha",
                 "instrument_ref": {
-                    "asset_id": "equity-us-alpha",
-                    "asset_name": "Alpha Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-alpha",
+                    "instrument_name": "Alpha Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "ALPHA", "is_primary": True}],
                 },
@@ -3007,11 +3007,11 @@ def test_instrument_contribution_entries_can_filter_income_by_group_key(client, 
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-beta",
+                "instrument_id": "equity-us-beta",
                 "instrument_ref": {
-                    "asset_id": "equity-us-beta",
-                    "asset_name": "Beta Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-beta",
+                    "instrument_name": "Beta Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "BETA", "is_primary": True}],
                 },
@@ -3036,11 +3036,11 @@ def test_instrument_contribution_entries_can_filter_income_by_group_key(client, 
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-alpha",
+                "instrument_id": "equity-us-alpha",
                 "instrument_ref": {
-                    "asset_id": "equity-us-alpha",
-                    "asset_name": "Alpha Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-alpha",
+                    "instrument_name": "Alpha Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "ALPHA", "is_primary": True}],
                 },
@@ -3065,11 +3065,11 @@ def test_instrument_contribution_entries_can_filter_income_by_group_key(client, 
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-beta",
+                "instrument_id": "equity-us-beta",
                 "instrument_ref": {
-                    "asset_id": "equity-us-beta",
-                    "asset_name": "Beta Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-beta",
+                    "instrument_name": "Beta Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "BETA", "is_primary": True}],
                 },
@@ -3111,11 +3111,11 @@ def test_instrument_contribution_entries_can_filter_income_by_group_key(client, 
     assert isclose(entry["base_amount"], 20.0, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_instrument_contribution_report_surfaces_asset_currency_gains(client, monkeypatch):
+def test_instrument_contribution_report_surfaces_instrument_currency_gains(client, monkeypatch):
     fx_detail = {
-        "asset_id": "fx-usd-hkd",
-        "asset_name": "USD/HKD",
-        "asset_type": "fx",
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD",
+        "instrument_type": "fx",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "USDHKD", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
@@ -3139,9 +3139,9 @@ def test_instrument_contribution_report_surfaces_asset_currency_gains(client, mo
         ],
     }
     fund_detail = {
-        "asset_id": "fund-hk-contribution-test",
-        "asset_name": "HK Contribution Fund",
-        "asset_type": "fund",
+        "instrument_id": "fund-hk-contribution-test",
+        "instrument_name": "HK Contribution Fund",
+        "instrument_type": "fund",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "HKCONFUND", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
@@ -3171,7 +3171,7 @@ def test_instrument_contribution_report_surfaces_asset_currency_gains(client, mo
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(details.get(asset_id)),
+        lambda instrument_id: deepcopy(details.get(instrument_id)),
     )
     monkeypatch.setattr(
         performance,
@@ -3186,8 +3186,8 @@ def test_instrument_contribution_report_surfaces_asset_currency_gains(client, mo
                     "rate": 7.50,
                     "as_of_date": "2026-01-02",
                     "source_kind": "direct",
-                    "asset_id": "fx-usd-hkd",
-                    "source_asset_ids": ["fx-usd-hkd"],
+                    "instrument_id": "fx-usd-hkd",
+                    "source_instrument_ids": ["fx-usd-hkd"],
                     "status": "complete",
                 }
             ],
@@ -3197,8 +3197,8 @@ def test_instrument_contribution_report_surfaces_asset_currency_gains(client, mo
     store = {
         "portfolios": [
             {
-                "portfolio_id": "instrument-asset-fx-contribution-test",
-                "portfolio_name": "instrument-asset-fx-contribution-test",
+                "portfolio_id": "instrument-fx-contribution-test",
+                "portfolio_name": "instrument-fx-contribution-test",
                 "base_currency": "USD",
                 "valuation_timezone": "Asia/Shanghai",
                 "valuation_cutoff_policy": "latest_complete_eod",
@@ -3213,14 +3213,14 @@ def test_instrument_contribution_report_surfaces_asset_currency_gains(client, mo
         "accounts": [
             {
                 "account_id": "broker-hk-core",
-                "portfolio_id": "instrument-asset-fx-contribution-test",
+                "portfolio_id": "instrument-fx-contribution-test",
                 "account_name": "HK Brokerage",
                 "account_type": "securities_account",
                 "currency": "HKD",
                 "institution": "Test Broker",
                 "default_settlement_cash_account_id": None,
                 "cost_basis_method": "fifo",
-                "allowed_asset_types": ["fund"],
+                "allowed_instrument_types": ["fund"],
                 "opened_at": "2026-01-01",
                 "status": "active",
             }
@@ -3228,17 +3228,17 @@ def test_instrument_contribution_report_surfaces_asset_currency_gains(client, mo
         "transactions": [
             {
                 "transaction_id": "txn-0001",
-                "portfolio_id": "instrument-asset-fx-contribution-test",
+                "portfolio_id": "instrument-fx-contribution-test",
                 "transaction_type": "opening_balance",
                 "trade_date": "2026-01-01",
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-hk-core",
                 "settlement_cash_account_id": None,
-                "asset_id": "fund-hk-contribution-test",
+                "instrument_id": "fund-hk-contribution-test",
                 "instrument_ref": {
-                    "asset_id": "fund-hk-contribution-test",
-                    "asset_name": "HK Contribution Fund",
-                    "asset_type": "fund",
+                    "instrument_id": "fund-hk-contribution-test",
+                    "instrument_name": "HK Contribution Fund",
+                    "instrument_type": "fund",
                     "currency": "HKD",
                     "identifiers": [],
                 },
@@ -3260,7 +3260,7 @@ def test_instrument_contribution_report_surfaces_asset_currency_gains(client, mo
     _write_store(store)
 
     response = client.get(
-        "/api/portfolios/instrument-asset-fx-contribution-test/performance/contribution?axis=instrument"
+        "/api/portfolios/instrument-fx-contribution-test/performance/contribution?axis=instrument"
     )
     assert response.status_code == 200
     payload = response.json()
@@ -3270,24 +3270,24 @@ def test_instrument_contribution_report_surfaces_asset_currency_gains(client, mo
     assert isclose(summary["contribution_residual"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
     line = next(item for item in payload["lines"] if item["group_key"] == "fund-hk-contribution-test")
-    assert isclose(line["asset_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(line["instrument_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(line["unrealized_pnl_change"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(line["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(line["period_contribution"], 0.04, rel_tol=0.0, abs_tol=1e-12)
 
     slices = [item for item in payload["daily_slices"] if item["group_key"] == "fund-hk-contribution-test"]
     slice_by_date = {item["as_of_date"]: item for item in slices}
-    assert isclose(slice_by_date["2026-01-02"]["asset_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(slice_by_date["2026-01-02"]["instrument_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(slice_by_date["2026-01-02"]["unrealized_pnl_change"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(slice_by_date["2026-01-02"]["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(slice_by_date["2026-01-02"]["daily_contribution"], 0.04, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_instrument_contribution_bucket_drilldown_surfaces_asset_currency_gains(client, monkeypatch):
+def test_instrument_contribution_bucket_drilldown_surfaces_instrument_currency_gains(client, monkeypatch):
     fx_detail = {
-        "asset_id": "fx-usd-hkd",
-        "asset_name": "USD/HKD",
-        "asset_type": "fx",
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD",
+        "instrument_type": "fx",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "USDHKD", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
@@ -3311,9 +3311,9 @@ def test_instrument_contribution_bucket_drilldown_surfaces_asset_currency_gains(
         ],
     }
     fund_detail = {
-        "asset_id": "fund-hk-contribution-drilldown-test",
-        "asset_name": "HK Drilldown Fund",
-        "asset_type": "fund",
+        "instrument_id": "fund-hk-contribution-drilldown-test",
+        "instrument_name": "HK Drilldown Fund",
+        "instrument_type": "fund",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "HKDRILL", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
@@ -3343,7 +3343,7 @@ def test_instrument_contribution_bucket_drilldown_surfaces_asset_currency_gains(
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(details.get(asset_id)),
+        lambda instrument_id: deepcopy(details.get(instrument_id)),
     )
     monkeypatch.setattr(
         performance,
@@ -3358,8 +3358,8 @@ def test_instrument_contribution_bucket_drilldown_surfaces_asset_currency_gains(
                     "rate": 7.50,
                     "as_of_date": "2026-01-02",
                     "source_kind": "direct",
-                    "asset_id": "fx-usd-hkd",
-                    "source_asset_ids": ["fx-usd-hkd"],
+                    "instrument_id": "fx-usd-hkd",
+                    "source_instrument_ids": ["fx-usd-hkd"],
                     "status": "complete",
                 }
             ],
@@ -3369,8 +3369,8 @@ def test_instrument_contribution_bucket_drilldown_surfaces_asset_currency_gains(
     store = {
         "portfolios": [
             {
-                "portfolio_id": "instrument-asset-fx-contribution-drilldown-test",
-                "portfolio_name": "instrument-asset-fx-contribution-drilldown-test",
+                "portfolio_id": "instrument-fx-contribution-drilldown-test",
+                "portfolio_name": "instrument-fx-contribution-drilldown-test",
                 "base_currency": "USD",
                 "valuation_timezone": "Asia/Shanghai",
                 "valuation_cutoff_policy": "latest_complete_eod",
@@ -3385,14 +3385,14 @@ def test_instrument_contribution_bucket_drilldown_surfaces_asset_currency_gains(
         "accounts": [
             {
                 "account_id": "broker-hk-core",
-                "portfolio_id": "instrument-asset-fx-contribution-drilldown-test",
+                "portfolio_id": "instrument-fx-contribution-drilldown-test",
                 "account_name": "HK Brokerage",
                 "account_type": "securities_account",
                 "currency": "HKD",
                 "institution": "Test Broker",
                 "default_settlement_cash_account_id": None,
                 "cost_basis_method": "fifo",
-                "allowed_asset_types": ["fund"],
+                "allowed_instrument_types": ["fund"],
                 "opened_at": "2026-01-01",
                 "status": "active",
             }
@@ -3400,17 +3400,17 @@ def test_instrument_contribution_bucket_drilldown_surfaces_asset_currency_gains(
         "transactions": [
             {
                 "transaction_id": "txn-0001",
-                "portfolio_id": "instrument-asset-fx-contribution-drilldown-test",
+                "portfolio_id": "instrument-fx-contribution-drilldown-test",
                 "transaction_type": "opening_balance",
                 "trade_date": "2026-01-01",
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-hk-core",
                 "settlement_cash_account_id": None,
-                "asset_id": "fund-hk-contribution-drilldown-test",
+                "instrument_id": "fund-hk-contribution-drilldown-test",
                 "instrument_ref": {
-                    "asset_id": "fund-hk-contribution-drilldown-test",
-                    "asset_name": "HK Drilldown Fund",
-                    "asset_type": "fund",
+                    "instrument_id": "fund-hk-contribution-drilldown-test",
+                    "instrument_name": "HK Drilldown Fund",
+                    "instrument_type": "fund",
                     "currency": "HKD",
                     "identifiers": [],
                 },
@@ -3432,8 +3432,8 @@ def test_instrument_contribution_bucket_drilldown_surfaces_asset_currency_gains(
     _write_store(store)
 
     response = client.get(
-        "/api/portfolios/instrument-asset-fx-contribution-drilldown-test/performance/contribution/drilldown"
-        "?axis=instrument&bucket=asset_currency_gains"
+        "/api/portfolios/instrument-fx-contribution-drilldown-test/performance/contribution/drilldown"
+        "?axis=instrument&bucket=instrument_currency_gains"
     )
     assert response.status_code == 200
     payload = response.json()
@@ -3448,8 +3448,8 @@ def test_instrument_contribution_bucket_drilldown_surfaces_asset_currency_gains(
 
 def test_instrument_contribution_entries_support_realized_pnl_realizations(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-realized-entry",
-        asset_name="Realized Entry Equity",
+        instrument_id="equity-us-realized-entry",
+        instrument_name="Realized Entry Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -3458,7 +3458,7 @@ def test_instrument_contribution_entries_support_realized_pnl_realizations(clien
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-realized-entry" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-realized-entry" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -3477,7 +3477,7 @@ def test_instrument_contribution_entries_support_realized_pnl_realizations(clien
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -3500,11 +3500,11 @@ def test_instrument_contribution_entries_support_realized_pnl_realizations(clien
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-realized-entry",
+                "instrument_id": "equity-us-realized-entry",
                 "instrument_ref": {
-                    "asset_id": "equity-us-realized-entry",
-                    "asset_name": "Realized Entry Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-realized-entry",
+                    "instrument_name": "Realized Entry Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "REAL", "is_primary": True}],
                 },
@@ -3529,11 +3529,11 @@ def test_instrument_contribution_entries_support_realized_pnl_realizations(clien
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-realized-entry",
+                "instrument_id": "equity-us-realized-entry",
                 "instrument_ref": {
-                    "asset_id": "equity-us-realized-entry",
-                    "asset_name": "Realized Entry Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-realized-entry",
+                    "instrument_name": "Realized Entry Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "REAL", "is_primary": True}],
                 },
@@ -3573,9 +3573,9 @@ def test_instrument_contribution_entries_support_realized_pnl_realizations(clien
 
 def test_account_contribution_report_tracks_cash_currency_gains(client, monkeypatch):
     fx_detail = {
-        "asset_id": "fx-usd-hkd",
-        "asset_name": "USD/HKD",
-        "asset_type": "fx",
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD",
+        "instrument_type": "fx",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "USDHKD", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
@@ -3601,7 +3601,7 @@ def test_account_contribution_report_tracks_cash_currency_gains(client, monkeypa
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(fx_detail) if asset_id == "fx-usd-hkd" else None,
+        lambda instrument_id: deepcopy(fx_detail) if instrument_id == "fx-usd-hkd" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -3616,8 +3616,8 @@ def test_account_contribution_report_tracks_cash_currency_gains(client, monkeypa
                     "rate": 7.50,
                     "as_of_date": "2026-01-02",
                     "source_kind": "direct",
-                    "asset_id": "fx-usd-hkd",
-                    "source_asset_ids": ["fx-usd-hkd"],
+                    "instrument_id": "fx-usd-hkd",
+                    "source_instrument_ids": ["fx-usd-hkd"],
                     "status": "complete",
                 }
             ],
@@ -3650,7 +3650,7 @@ def test_account_contribution_report_tracks_cash_currency_gains(client, monkeypa
                 "institution": "Test Bank",
                 "default_settlement_cash_account_id": None,
                 "cost_basis_method": None,
-                "allowed_asset_types": None,
+                "allowed_instrument_types": None,
                 "opened_at": "2026-01-01",
                 "status": "active",
             }
@@ -3664,7 +3664,7 @@ def test_account_contribution_report_tracks_cash_currency_gains(client, monkeypa
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-hkd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -3715,7 +3715,7 @@ def test_taxonomy_catalog_route_returns_taxonomy_tree_and_assignments(client):
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -3788,8 +3788,8 @@ def test_taxonomy_catalog_route_returns_taxonomy_tree_and_assignments(client):
 
 def test_taxonomy_contribution_report_regroups_instrument_slices_by_effective_assignment(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -3799,7 +3799,7 @@ def test_taxonomy_contribution_report_regroups_instrument_slices_by_effective_as
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -3818,7 +3818,7 @@ def test_taxonomy_contribution_report_regroups_instrument_slices_by_effective_as
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -3841,11 +3841,11 @@ def test_taxonomy_contribution_report_regroups_instrument_slices_by_effective_as
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -3960,8 +3960,8 @@ def test_taxonomy_contribution_report_regroups_instrument_slices_by_effective_as
 
 def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-cash-bucket",
-        asset_name="Cash Bucket Equity",
+        instrument_id="equity-us-cash-bucket",
+        instrument_name="Cash Bucket Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -3970,7 +3970,7 @@ def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, mon
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-cash-bucket" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-cash-bucket" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -3989,7 +3989,7 @@ def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, mon
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -4012,11 +4012,11 @@ def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, mon
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": None,
-                "asset_id": "equity-us-cash-bucket",
+                "instrument_id": "equity-us-cash-bucket",
                 "instrument_ref": {
-                    "asset_id": "equity-us-cash-bucket",
-                    "asset_name": "Cash Bucket Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-cash-bucket",
+                    "instrument_name": "Cash Bucket Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "CASH", "is_primary": True}],
                 },
@@ -4041,7 +4041,7 @@ def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, mon
                 "settlement_date": "2026-01-02",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -4138,16 +4138,16 @@ def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, mon
 def test_instrument_contribution_calendar_can_filter_by_group_key(client, monkeypatch):
     instrument_details = {
         "equity-us-alpha": _test_instrument_detail(
-            asset_id="equity-us-alpha",
-            asset_name="Alpha Equity",
+            instrument_id="equity-us-alpha",
+            instrument_name="Alpha Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-02", "110.00"),
             ],
         ),
         "equity-us-beta": _test_instrument_detail(
-            asset_id="equity-us-beta",
-            asset_name="Beta Equity",
+            instrument_id="equity-us-beta",
+            instrument_name="Beta Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-02", "90.00"),
@@ -4157,7 +4157,7 @@ def test_instrument_contribution_calendar_can_filter_by_group_key(client, monkey
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_details.get(asset_id)),
+        lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
     )
     monkeypatch.setattr(
         performance,
@@ -4176,7 +4176,7 @@ def test_instrument_contribution_calendar_can_filter_by_group_key(client, monkey
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -4199,11 +4199,11 @@ def test_instrument_contribution_calendar_can_filter_by_group_key(client, monkey
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-alpha",
+                "instrument_id": "equity-us-alpha",
                 "instrument_ref": {
-                    "asset_id": "equity-us-alpha",
-                    "asset_name": "Alpha Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-alpha",
+                    "instrument_name": "Alpha Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "ALPHA", "is_primary": True}],
                 },
@@ -4228,11 +4228,11 @@ def test_instrument_contribution_calendar_can_filter_by_group_key(client, monkey
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-beta",
+                "instrument_id": "equity-us-beta",
                 "instrument_ref": {
-                    "asset_id": "equity-us-beta",
-                    "asset_name": "Beta Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-beta",
+                    "instrument_name": "Beta Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "BETA", "is_primary": True}],
                 },
@@ -4279,16 +4279,16 @@ def test_instrument_contribution_calendar_can_filter_by_group_key(client, monkey
 def test_instrument_contribution_calendar_bucket_drilldown_can_filter_by_group_key(client, monkeypatch):
     instrument_details = {
         "equity-us-alpha": _test_instrument_detail(
-            asset_id="equity-us-alpha",
-            asset_name="Alpha Equity",
+            instrument_id="equity-us-alpha",
+            instrument_name="Alpha Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-02", "110.00"),
             ],
         ),
         "equity-us-beta": _test_instrument_detail(
-            asset_id="equity-us-beta",
-            asset_name="Beta Equity",
+            instrument_id="equity-us-beta",
+            instrument_name="Beta Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-02", "90.00"),
@@ -4298,7 +4298,7 @@ def test_instrument_contribution_calendar_bucket_drilldown_can_filter_by_group_k
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_details.get(asset_id)),
+        lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
     )
     monkeypatch.setattr(
         performance,
@@ -4317,7 +4317,7 @@ def test_instrument_contribution_calendar_bucket_drilldown_can_filter_by_group_k
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -4340,11 +4340,11 @@ def test_instrument_contribution_calendar_bucket_drilldown_can_filter_by_group_k
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-alpha",
+                "instrument_id": "equity-us-alpha",
                 "instrument_ref": {
-                    "asset_id": "equity-us-alpha",
-                    "asset_name": "Alpha Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-alpha",
+                    "instrument_name": "Alpha Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "ALPHA", "is_primary": True}],
                 },
@@ -4369,11 +4369,11 @@ def test_instrument_contribution_calendar_bucket_drilldown_can_filter_by_group_k
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-beta",
+                "instrument_id": "equity-us-beta",
                 "instrument_ref": {
-                    "asset_id": "equity-us-beta",
-                    "asset_name": "Beta Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-beta",
+                    "instrument_name": "Beta Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "BETA", "is_primary": True}],
                 },
@@ -4421,16 +4421,16 @@ def test_instrument_contribution_calendar_bucket_drilldown_can_filter_by_group_k
 def test_instrument_contribution_entries_calendar_can_filter_income_by_group_key(client, monkeypatch):
     instrument_details = {
         "equity-us-alpha": _test_instrument_detail(
-            asset_id="equity-us-alpha",
-            asset_name="Alpha Equity",
+            instrument_id="equity-us-alpha",
+            instrument_name="Alpha Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-15", "100.00"),
             ],
         ),
         "equity-us-beta": _test_instrument_detail(
-            asset_id="equity-us-beta",
-            asset_name="Beta Equity",
+            instrument_id="equity-us-beta",
+            instrument_name="Beta Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-15", "100.00"),
@@ -4440,7 +4440,7 @@ def test_instrument_contribution_entries_calendar_can_filter_income_by_group_key
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_details.get(asset_id)),
+        lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
     )
     monkeypatch.setattr(
         performance,
@@ -4459,7 +4459,7 @@ def test_instrument_contribution_entries_calendar_can_filter_income_by_group_key
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -4482,11 +4482,11 @@ def test_instrument_contribution_entries_calendar_can_filter_income_by_group_key
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-alpha",
+                "instrument_id": "equity-us-alpha",
                 "instrument_ref": {
-                    "asset_id": "equity-us-alpha",
-                    "asset_name": "Alpha Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-alpha",
+                    "instrument_name": "Alpha Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "ALPHA", "is_primary": True}],
                 },
@@ -4511,11 +4511,11 @@ def test_instrument_contribution_entries_calendar_can_filter_income_by_group_key
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-beta",
+                "instrument_id": "equity-us-beta",
                 "instrument_ref": {
-                    "asset_id": "equity-us-beta",
-                    "asset_name": "Beta Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-beta",
+                    "instrument_name": "Beta Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "BETA", "is_primary": True}],
                 },
@@ -4540,11 +4540,11 @@ def test_instrument_contribution_entries_calendar_can_filter_income_by_group_key
                 "settlement_date": "2026-01-15",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-alpha",
+                "instrument_id": "equity-us-alpha",
                 "instrument_ref": {
-                    "asset_id": "equity-us-alpha",
-                    "asset_name": "Alpha Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-alpha",
+                    "instrument_name": "Alpha Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "ALPHA", "is_primary": True}],
                 },
@@ -4569,11 +4569,11 @@ def test_instrument_contribution_entries_calendar_can_filter_income_by_group_key
                 "settlement_date": "2026-01-15",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-beta",
+                "instrument_id": "equity-us-beta",
                 "instrument_ref": {
-                    "asset_id": "equity-us-beta",
-                    "asset_name": "Beta Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-beta",
+                    "instrument_name": "Beta Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "BETA", "is_primary": True}],
                 },
@@ -4619,8 +4619,8 @@ def test_instrument_contribution_entries_calendar_can_filter_income_by_group_key
 
 def test_instrument_contribution_calendar_rolls_daily_slices_into_monthly_bucket(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -4629,7 +4629,7 @@ def test_instrument_contribution_calendar_rolls_daily_slices_into_monthly_bucket
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -4648,7 +4648,7 @@ def test_instrument_contribution_calendar_rolls_daily_slices_into_monthly_bucket
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -4671,11 +4671,11 @@ def test_instrument_contribution_calendar_rolls_daily_slices_into_monthly_bucket
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -4719,8 +4719,8 @@ def test_instrument_contribution_calendar_rolls_daily_slices_into_monthly_bucket
 
 def test_taxonomy_contribution_calendar_keeps_reassignment_from_creating_false_bucket_pnl(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -4730,7 +4730,7 @@ def test_taxonomy_contribution_calendar_keeps_reassignment_from_creating_false_b
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -4749,7 +4749,7 @@ def test_taxonomy_contribution_calendar_keeps_reassignment_from_creating_false_b
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -4772,11 +4772,11 @@ def test_taxonomy_contribution_calendar_keeps_reassignment_from_creating_false_b
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -4880,8 +4880,8 @@ def test_taxonomy_contribution_calendar_keeps_reassignment_from_creating_false_b
 
 def test_period_calculation_groups_calendar_rolls_monthly_instrument_bridge(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -4890,7 +4890,7 @@ def test_period_calculation_groups_calendar_rolls_monthly_instrument_bridge(clie
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -4909,7 +4909,7 @@ def test_period_calculation_groups_calendar_rolls_monthly_instrument_bridge(clie
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -4932,11 +4932,11 @@ def test_period_calculation_groups_calendar_rolls_monthly_instrument_bridge(clie
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -4981,24 +4981,24 @@ def test_period_calculation_groups_calendar_rolls_monthly_instrument_bridge(clie
     assert isclose(bucket["residual_delta"], 100.0, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_period_calculation_groups_support_asset_type_axis(client, monkeypatch):
+def test_period_calculation_groups_support_instrument_type_axis(client, monkeypatch):
     equity_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
         ],
-        asset_type="equity",
+        instrument_type="equity",
     )
     fund_detail = _test_instrument_detail(
-        asset_id="fund-us-test",
-        asset_name="Test Fund",
+        instrument_id="fund-us-test",
+        instrument_name="Test Fund",
         history=[
             ("2026-01-01", "200.00"),
             ("2026-01-02", "190.00"),
         ],
-        asset_type="fund",
+        instrument_type="fund",
     )
     instrument_details = {
         "equity-us-test": equity_detail,
@@ -5007,7 +5007,7 @@ def test_period_calculation_groups_support_asset_type_axis(client, monkeypatch):
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_details.get(asset_id)),
+        lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
     )
     monkeypatch.setattr(
         performance,
@@ -5015,7 +5015,7 @@ def test_period_calculation_groups_support_asset_type_axis(client, monkeypatch):
         lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
-    portfolio_id = "calculation-groups-asset-type-test"
+    portfolio_id = "calculation-groups-instrument-type-test"
     transactions = [
         {
             "transaction_id": "txn-0001",
@@ -5025,7 +5025,7 @@ def test_period_calculation_groups_support_asset_type_axis(client, monkeypatch):
             "settlement_date": "2026-01-01",
             "account_id": "cash-usd-main",
             "settlement_cash_account_id": None,
-            "asset_id": None,
+            "instrument_id": None,
             "instrument_ref": None,
             "quantity": None,
             "price": None,
@@ -5041,7 +5041,7 @@ def test_period_calculation_groups_support_asset_type_axis(client, monkeypatch):
             "created_at": "2026-01-01T09:00:00Z",
         },
     ]
-    for index, (asset_id, asset_name, asset_type, amount) in enumerate(
+    for index, (instrument_id, instrument_name, instrument_type, amount) in enumerate(
         [
             ("equity-us-test", "Test Equity", "equity", 100.0),
             ("fund-us-test", "Test Fund", "fund", 200.0),
@@ -5057,13 +5057,13 @@ def test_period_calculation_groups_support_asset_type_axis(client, monkeypatch):
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": asset_id,
+                "instrument_id": instrument_id,
                 "instrument_ref": {
-                    "asset_id": asset_id,
-                    "asset_name": asset_name,
-                    "asset_type": asset_type,
+                    "instrument_id": instrument_id,
+                    "instrument_name": instrument_name,
+                    "instrument_type": instrument_type,
                     "currency": "USD",
-                    "identifiers": [{"identifier_type": "ticker", "identifier_value": asset_id.upper(), "is_primary": True}],
+                    "identifiers": [{"identifier_type": "ticker", "identifier_value": instrument_id.upper(), "is_primary": True}],
                 },
                 "quantity": 1.0,
                 "price": amount,
@@ -5075,7 +5075,7 @@ def test_period_calculation_groups_support_asset_type_axis(client, monkeypatch):
                 "transfer_object_type": None,
                 "transfer_group_id": None,
                 "counterparty_account_id": None,
-                "note": f"Buy {asset_name}.",
+                "note": f"Buy {instrument_name}.",
                 "created_at": f"2026-01-01T09:{index}0:00Z",
             }
         )
@@ -5084,10 +5084,10 @@ def test_period_calculation_groups_support_asset_type_axis(client, monkeypatch):
     store["portfolios"][0]["as_of_date"] = "2026-01-02"
     _write_store(store)
 
-    response = client.get(f"/api/portfolios/{portfolio_id}/performance/calculation/groups?axis=asset_type")
+    response = client.get(f"/api/portfolios/{portfolio_id}/performance/calculation/groups?axis=instrument_type")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["axis"] == "asset_type"
+    assert payload["summary"]["axis"] == "instrument_type"
     groups = {item["group_key"]: item for item in payload["groups"]}
 
     assert groups["equity"]["group_label"] == "Equity"
@@ -5108,8 +5108,8 @@ def test_period_calculation_groups_support_asset_type_axis(client, monkeypatch):
 
 def test_period_calculation_groups_instrument_includes_cash_balance(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-cash-line-test",
-        asset_name="Cash Line Test Equity",
+        instrument_id="equity-us-cash-line-test",
+        instrument_name="Cash Line Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -5118,7 +5118,7 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-cash-line-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-cash-line-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -5138,7 +5138,7 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -5161,11 +5161,11 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-cash-line-test",
+                "instrument_id": "equity-us-cash-line-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-cash-line-test",
-                    "asset_name": "Cash Line Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-cash-line-test",
+                    "instrument_name": "Cash Line Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [
                         {"identifier_type": "ticker", "identifier_value": "CASHLINE", "is_primary": True}
@@ -5209,8 +5209,8 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
 
 def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -5220,7 +5220,7 @@ def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(cli
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -5239,7 +5239,7 @@ def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(cli
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -5262,11 +5262,11 @@ def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(cli
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -5353,16 +5353,16 @@ def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(cli
 def test_period_calculation_groups_calendar_can_filter_by_group_key(client, monkeypatch):
     instrument_details = {
         "equity-us-alpha": _test_instrument_detail(
-            asset_id="equity-us-alpha",
-            asset_name="Alpha Equity",
+            instrument_id="equity-us-alpha",
+            instrument_name="Alpha Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-02", "110.00"),
             ],
         ),
         "equity-us-beta": _test_instrument_detail(
-            asset_id="equity-us-beta",
-            asset_name="Beta Equity",
+            instrument_id="equity-us-beta",
+            instrument_name="Beta Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-02", "90.00"),
@@ -5372,7 +5372,7 @@ def test_period_calculation_groups_calendar_can_filter_by_group_key(client, monk
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_details.get(asset_id)),
+        lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
     )
     monkeypatch.setattr(
         performance,
@@ -5391,7 +5391,7 @@ def test_period_calculation_groups_calendar_can_filter_by_group_key(client, monk
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -5414,11 +5414,11 @@ def test_period_calculation_groups_calendar_can_filter_by_group_key(client, monk
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-alpha",
+                "instrument_id": "equity-us-alpha",
                 "instrument_ref": {
-                    "asset_id": "equity-us-alpha",
-                    "asset_name": "Alpha Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-alpha",
+                    "instrument_name": "Alpha Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "ALPHA", "is_primary": True}],
                 },
@@ -5443,11 +5443,11 @@ def test_period_calculation_groups_calendar_can_filter_by_group_key(client, monk
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-beta",
+                "instrument_id": "equity-us-beta",
                 "instrument_ref": {
-                    "asset_id": "equity-us-beta",
-                    "asset_name": "Beta Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-beta",
+                    "instrument_name": "Beta Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "BETA", "is_primary": True}],
                 },
@@ -5493,8 +5493,8 @@ def test_period_calculation_groups_calendar_can_filter_by_group_key(client, monk
 
 def test_taxonomy_boundary_groups_report_uses_effective_assignment_on_start_and_end_dates(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -5504,7 +5504,7 @@ def test_taxonomy_boundary_groups_report_uses_effective_assignment_on_start_and_
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -5523,7 +5523,7 @@ def test_taxonomy_boundary_groups_report_uses_effective_assignment_on_start_and_
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -5546,11 +5546,11 @@ def test_taxonomy_boundary_groups_report_uses_effective_assignment_on_start_and_
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -5648,8 +5648,8 @@ def test_taxonomy_boundary_groups_report_uses_effective_assignment_on_start_and_
 
 def test_taxonomy_calculation_groups_report_surfaces_residual_reclassification_delta(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -5659,7 +5659,7 @@ def test_taxonomy_calculation_groups_report_surfaces_residual_reclassification_d
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -5678,7 +5678,7 @@ def test_taxonomy_calculation_groups_report_surfaces_residual_reclassification_d
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -5701,11 +5701,11 @@ def test_taxonomy_calculation_groups_report_surfaces_residual_reclassification_d
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -5813,8 +5813,8 @@ def test_taxonomy_calculation_groups_report_surfaces_residual_reclassification_d
 
 def test_period_calculation_drilldown_returns_instrument_capital_gains(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -5824,7 +5824,7 @@ def test_period_calculation_drilldown_returns_instrument_capital_gains(client, m
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -5843,7 +5843,7 @@ def test_period_calculation_drilldown_returns_instrument_capital_gains(client, m
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -5866,11 +5866,11 @@ def test_period_calculation_drilldown_returns_instrument_capital_gains(client, m
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -5912,8 +5912,8 @@ def test_period_calculation_drilldown_returns_instrument_capital_gains(client, m
 
 def test_period_calculation_drilldown_taxonomy_exposes_reclassification_residual(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -5923,7 +5923,7 @@ def test_period_calculation_drilldown_taxonomy_exposes_reclassification_residual
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -5942,7 +5942,7 @@ def test_period_calculation_drilldown_taxonomy_exposes_reclassification_residual
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -5965,11 +5965,11 @@ def test_period_calculation_drilldown_taxonomy_exposes_reclassification_residual
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -6068,8 +6068,8 @@ def test_period_calculation_drilldown_taxonomy_exposes_reclassification_residual
 
 def test_period_calculation_entries_extract_attached_tax_bucket_by_instrument(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "100.00"),
@@ -6078,7 +6078,7 @@ def test_period_calculation_entries_extract_attached_tax_bucket_by_instrument(cl
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -6097,7 +6097,7 @@ def test_period_calculation_entries_extract_attached_tax_bucket_by_instrument(cl
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -6120,11 +6120,11 @@ def test_period_calculation_entries_extract_attached_tax_bucket_by_instrument(cl
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -6149,11 +6149,11 @@ def test_period_calculation_entries_extract_attached_tax_bucket_by_instrument(cl
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -6194,8 +6194,8 @@ def test_period_calculation_entries_extract_attached_tax_bucket_by_instrument(cl
 
 def test_period_calculation_entries_return_realized_gain_realizations(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "110.00"),
@@ -6204,7 +6204,7 @@ def test_period_calculation_entries_return_realized_gain_realizations(client, mo
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -6223,7 +6223,7 @@ def test_period_calculation_entries_return_realized_gain_realizations(client, mo
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -6246,11 +6246,11 @@ def test_period_calculation_entries_return_realized_gain_realizations(client, mo
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -6275,11 +6275,11 @@ def test_period_calculation_entries_return_realized_gain_realizations(client, mo
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -6320,8 +6320,8 @@ def test_period_calculation_entries_return_realized_gain_realizations(client, mo
 
 def test_period_calculation_entries_calendar_rolls_up_monthly_earnings(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "100.00"),
@@ -6331,7 +6331,7 @@ def test_period_calculation_entries_calendar_rolls_up_monthly_earnings(client, m
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -6350,7 +6350,7 @@ def test_period_calculation_entries_calendar_rolls_up_monthly_earnings(client, m
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -6373,11 +6373,11 @@ def test_period_calculation_entries_calendar_rolls_up_monthly_earnings(client, m
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -6402,11 +6402,11 @@ def test_period_calculation_entries_calendar_rolls_up_monthly_earnings(client, m
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -6431,11 +6431,11 @@ def test_period_calculation_entries_calendar_rolls_up_monthly_earnings(client, m
                 "settlement_date": "2026-02-03",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -6475,8 +6475,8 @@ def test_period_calculation_entries_calendar_rolls_up_monthly_earnings(client, m
 
 def test_period_calculation_entries_calendar_rolls_up_taxonomy_taxes(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-test",
-        asset_name="Test Equity",
+        instrument_id="equity-us-test",
+        instrument_name="Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-15", "100.00"),
@@ -6485,7 +6485,7 @@ def test_period_calculation_entries_calendar_rolls_up_taxonomy_taxes(client, mon
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -6504,7 +6504,7 @@ def test_period_calculation_entries_calendar_rolls_up_taxonomy_taxes(client, mon
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -6527,11 +6527,11 @@ def test_period_calculation_entries_calendar_rolls_up_taxonomy_taxes(client, mon
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -6556,11 +6556,11 @@ def test_period_calculation_entries_calendar_rolls_up_taxonomy_taxes(client, mon
                 "settlement_date": "2026-01-15",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-test",
+                "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -6641,16 +6641,16 @@ def test_period_calculation_entries_calendar_rolls_up_taxonomy_taxes(client, mon
 def test_period_calculation_entries_calendar_can_filter_by_group_key(client, monkeypatch):
     instrument_details = {
         "equity-us-alpha": _test_instrument_detail(
-            asset_id="equity-us-alpha",
-            asset_name="Alpha Equity",
+            instrument_id="equity-us-alpha",
+            instrument_name="Alpha Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-20", "100.00"),
             ],
         ),
         "equity-us-beta": _test_instrument_detail(
-            asset_id="equity-us-beta",
-            asset_name="Beta Equity",
+            instrument_id="equity-us-beta",
+            instrument_name="Beta Equity",
             history=[
                 ("2026-01-01", "100.00"),
                 ("2026-01-20", "100.00"),
@@ -6660,7 +6660,7 @@ def test_period_calculation_entries_calendar_can_filter_by_group_key(client, mon
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_details.get(asset_id)),
+        lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
     )
     monkeypatch.setattr(
         performance,
@@ -6679,7 +6679,7 @@ def test_period_calculation_entries_calendar_can_filter_by_group_key(client, mon
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -6702,11 +6702,11 @@ def test_period_calculation_entries_calendar_can_filter_by_group_key(client, mon
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-alpha",
+                "instrument_id": "equity-us-alpha",
                 "instrument_ref": {
-                    "asset_id": "equity-us-alpha",
-                    "asset_name": "Alpha Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-alpha",
+                    "instrument_name": "Alpha Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "ALPHA", "is_primary": True}],
                 },
@@ -6731,11 +6731,11 @@ def test_period_calculation_entries_calendar_can_filter_by_group_key(client, mon
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-beta",
+                "instrument_id": "equity-us-beta",
                 "instrument_ref": {
-                    "asset_id": "equity-us-beta",
-                    "asset_name": "Beta Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-beta",
+                    "instrument_name": "Beta Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "BETA", "is_primary": True}],
                 },
@@ -6760,11 +6760,11 @@ def test_period_calculation_entries_calendar_can_filter_by_group_key(client, mon
                 "settlement_date": "2026-01-15",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-alpha",
+                "instrument_id": "equity-us-alpha",
                 "instrument_ref": {
-                    "asset_id": "equity-us-alpha",
-                    "asset_name": "Alpha Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-alpha",
+                    "instrument_name": "Alpha Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "ALPHA", "is_primary": True}],
                 },
@@ -6789,11 +6789,11 @@ def test_period_calculation_entries_calendar_can_filter_by_group_key(client, mon
                 "settlement_date": "2026-01-20",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-beta",
+                "instrument_id": "equity-us-beta",
                 "instrument_ref": {
-                    "asset_id": "equity-us-beta",
-                    "asset_name": "Beta Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-beta",
+                    "instrument_name": "Beta Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "BETA", "is_primary": True}],
                 },
@@ -6836,9 +6836,9 @@ def test_period_calculation_entries_calendar_can_filter_by_group_key(client, mon
 
 def test_cash_currency_gains_flow_through_performance_and_calculation(client, monkeypatch):
     fx_detail = {
-        "asset_id": "fx-usd-hkd",
-        "asset_name": "USD/HKD",
-        "asset_type": "fx",
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD",
+        "instrument_type": "fx",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "USDHKD", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
@@ -6864,7 +6864,7 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(fx_detail) if asset_id == "fx-usd-hkd" else None,
+        lambda instrument_id: deepcopy(fx_detail) if instrument_id == "fx-usd-hkd" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -6879,8 +6879,8 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
                     "rate": 7.50,
                     "as_of_date": "2026-01-02",
                     "source_kind": "direct",
-                    "asset_id": "fx-usd-hkd",
-                    "source_asset_ids": ["fx-usd-hkd"],
+                    "instrument_id": "fx-usd-hkd",
+                    "source_instrument_ids": ["fx-usd-hkd"],
                     "status": "complete",
                 }
             ],
@@ -6913,7 +6913,7 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
                 "institution": "Test Bank",
                 "default_settlement_cash_account_id": None,
                 "cost_basis_method": None,
-                "allowed_asset_types": None,
+                "allowed_instrument_types": None,
                 "opened_at": "2026-01-01",
                 "status": "active",
             }
@@ -6927,7 +6927,7 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-hkd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -6981,12 +6981,12 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert instrument_cash_child["item_label"] == "Main HKD Cash (HKD)"
     assert isclose(instrument_cash_child["final_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
 
-    asset_type_groups_response = client.get("/api/portfolios/cash-fx-test/performance/calculation/groups?axis=asset_type")
-    assert asset_type_groups_response.status_code == 200
-    asset_type_cash_group = next(
-        item for item in asset_type_groups_response.json()["groups"] if item["group_key"] == "cash"
+    instrument_type_groups_response = client.get("/api/portfolios/cash-fx-test/performance/calculation/groups?axis=instrument_type")
+    assert instrument_type_groups_response.status_code == 200
+    instrument_type_cash_group = next(
+        item for item in instrument_type_groups_response.json()["groups"] if item["group_key"] == "cash"
     )
-    cash_child = next(item for item in asset_type_cash_group["children"] if item["item_kind"] == "cash")
+    cash_child = next(item for item in instrument_type_cash_group["children"] if item["item_kind"] == "cash")
     assert cash_child["item_key"] == "cash:cash-hkd-main:HKD"
     assert cash_child["item_label"] == "Main HKD Cash (HKD)"
     assert isclose(cash_child["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
@@ -6994,11 +6994,11 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(cash_child["cash_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_asset_currency_gains_flow_through_performance_and_calculation(client, monkeypatch):
+def test_instrument_currency_gains_flow_through_performance_and_calculation(client, monkeypatch):
     fx_detail = {
-        "asset_id": "fx-usd-hkd",
-        "asset_name": "USD/HKD",
-        "asset_type": "fx",
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD",
+        "instrument_type": "fx",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "USDHKD", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
@@ -7022,9 +7022,9 @@ def test_asset_currency_gains_flow_through_performance_and_calculation(client, m
         ],
     }
     hk_fund_detail = {
-        "asset_id": "fund-hk-test",
-        "asset_name": "HK Fund",
-        "asset_type": "fund",
+        "instrument_id": "fund-hk-test",
+        "instrument_name": "HK Fund",
+        "instrument_type": "fund",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "HKFUND", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
@@ -7054,7 +7054,7 @@ def test_asset_currency_gains_flow_through_performance_and_calculation(client, m
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(details.get(asset_id)),
+        lambda instrument_id: deepcopy(details.get(instrument_id)),
     )
     monkeypatch.setattr(
         performance,
@@ -7069,8 +7069,8 @@ def test_asset_currency_gains_flow_through_performance_and_calculation(client, m
                     "rate": 7.50,
                     "as_of_date": "2026-01-02",
                     "source_kind": "direct",
-                    "asset_id": "fx-usd-hkd",
-                    "source_asset_ids": ["fx-usd-hkd"],
+                    "instrument_id": "fx-usd-hkd",
+                    "source_instrument_ids": ["fx-usd-hkd"],
                     "status": "complete",
                 }
             ],
@@ -7080,8 +7080,8 @@ def test_asset_currency_gains_flow_through_performance_and_calculation(client, m
     store = {
         "portfolios": [
             {
-                "portfolio_id": "asset-fx-test",
-                "portfolio_name": "asset-fx-test",
+                "portfolio_id": "instrument-fx-test",
+                "portfolio_name": "instrument-fx-test",
                 "base_currency": "USD",
                 "valuation_timezone": "Asia/Shanghai",
                 "valuation_cutoff_policy": "latest_complete_eod",
@@ -7096,27 +7096,27 @@ def test_asset_currency_gains_flow_through_performance_and_calculation(client, m
         "accounts": [
             {
                 "account_id": "cash-hkd-main",
-                "portfolio_id": "asset-fx-test",
+                "portfolio_id": "instrument-fx-test",
                 "account_name": "Main HKD Cash",
                 "account_type": "deposit_account",
                 "currency": "HKD",
                 "institution": "Test Bank",
                 "default_settlement_cash_account_id": None,
                 "cost_basis_method": None,
-                "allowed_asset_types": None,
+                "allowed_instrument_types": None,
                 "opened_at": "2026-01-01",
                 "status": "active",
             },
             {
                 "account_id": "broker-hk-core",
-                "portfolio_id": "asset-fx-test",
+                "portfolio_id": "instrument-fx-test",
                 "account_name": "HK Brokerage",
                 "account_type": "securities_account",
                 "currency": "HKD",
                 "institution": "Test Broker",
                 "default_settlement_cash_account_id": "cash-hkd-main",
                 "cost_basis_method": "fifo",
-                "allowed_asset_types": ["fund"],
+                "allowed_instrument_types": ["fund"],
                 "opened_at": "2026-01-01",
                 "status": "active",
             },
@@ -7124,17 +7124,17 @@ def test_asset_currency_gains_flow_through_performance_and_calculation(client, m
         "transactions": [
             {
                 "transaction_id": "txn-0001",
-                "portfolio_id": "asset-fx-test",
+                "portfolio_id": "instrument-fx-test",
                 "transaction_type": "opening_balance",
                 "trade_date": "2026-01-01",
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-hk-core",
                 "settlement_cash_account_id": None,
-                "asset_id": "fund-hk-test",
+                "instrument_id": "fund-hk-test",
                 "instrument_ref": {
-                    "asset_id": "fund-hk-test",
-                    "asset_name": "HK Fund",
-                    "asset_type": "fund",
+                    "instrument_id": "fund-hk-test",
+                    "instrument_name": "HK Fund",
+                    "instrument_type": "fund",
                     "currency": "HKD",
                     "identifiers": [],
                 },
@@ -7155,16 +7155,16 @@ def test_asset_currency_gains_flow_through_performance_and_calculation(client, m
     }
     _write_store(store)
 
-    performance_response = client.get("/api/portfolios/asset-fx-test/performance")
+    performance_response = client.get("/api/portfolios/instrument-fx-test/performance")
     assert performance_response.status_code == 200
     performance_payload = performance_response.json()
     performance_summary = performance_payload["summary"]
-    assert isclose(performance_summary["asset_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(performance_summary["instrument_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(performance_summary["unrealized_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(performance_summary["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(performance_summary["cumulative_twr"], 0.04, rel_tol=0.0, abs_tol=1e-12)
 
-    calculation_response = client.get("/api/portfolios/asset-fx-test/performance/calculation")
+    calculation_response = client.get("/api/portfolios/instrument-fx-test/performance/calculation")
     assert calculation_response.status_code == 200
     calculation_payload = calculation_response.json()
     calculation_summary = calculation_payload["summary"]
@@ -7172,18 +7172,18 @@ def test_asset_currency_gains_flow_through_performance_and_calculation(client, m
     assert isclose(calculation_summary["final_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(calculation_summary["delta"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(calculation_summary["capital_gains"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(calculation_summary["asset_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(calculation_summary["instrument_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert "residual_gains" not in calculation_summary
 
     line_by_key = {item["key"]: item for item in calculation_payload["lines"]}
-    assert isclose(line_by_key["asset_currency_gains"]["amount"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(line_by_key["instrument_currency_gains"]["amount"], 4.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(client, monkeypatch):
     fx_detail = {
-        "asset_id": "fx-usd-hkd",
-        "asset_name": "USD/HKD",
-        "asset_type": "fx",
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD",
+        "instrument_type": "fx",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "USDHKD", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
@@ -7207,9 +7207,9 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
         ],
     }
     hk_equity_detail = {
-        "asset_id": "equity-hk-income-test",
-        "asset_name": "HK Income Equity",
-        "asset_type": "equity",
+        "instrument_id": "equity-hk-income-test",
+        "instrument_name": "HK Income Equity",
+        "instrument_type": "equity",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "HKINC", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
@@ -7239,7 +7239,7 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(details.get(asset_id)),
+        lambda instrument_id: deepcopy(details.get(instrument_id)),
     )
     monkeypatch.setattr(
         performance,
@@ -7254,8 +7254,8 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
                     "rate": 7.50,
                     "as_of_date": "2026-01-02",
                     "source_kind": "direct",
-                    "asset_id": "fx-usd-hkd",
-                    "source_asset_ids": ["fx-usd-hkd"],
+                    "instrument_id": "fx-usd-hkd",
+                    "source_instrument_ids": ["fx-usd-hkd"],
                     "status": "complete",
                 }
             ],
@@ -7288,7 +7288,7 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
                 "institution": "Test Bank",
                 "default_settlement_cash_account_id": None,
                 "cost_basis_method": None,
-                "allowed_asset_types": None,
+                "allowed_instrument_types": None,
                 "opened_at": "2026-01-01",
                 "status": "active",
             },
@@ -7301,7 +7301,7 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
                 "institution": "Test Broker",
                 "default_settlement_cash_account_id": "cash-hkd-main",
                 "cost_basis_method": "fifo",
-                "allowed_asset_types": ["equity"],
+                "allowed_instrument_types": ["equity"],
                 "opened_at": "2026-01-01",
                 "status": "active",
             },
@@ -7315,11 +7315,11 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-hk-core",
                 "settlement_cash_account_id": None,
-                "asset_id": "equity-hk-income-test",
+                "instrument_id": "equity-hk-income-test",
                 "instrument_ref": {
-                    "asset_id": "equity-hk-income-test",
-                    "asset_name": "HK Income Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-hk-income-test",
+                    "instrument_name": "HK Income Equity",
+                    "instrument_type": "equity",
                     "currency": "HKD",
                     "identifiers": [],
                 },
@@ -7344,11 +7344,11 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-hk-core",
                 "settlement_cash_account_id": "cash-hkd-main",
-                "asset_id": "equity-hk-income-test",
+                "instrument_id": "equity-hk-income-test",
                 "instrument_ref": {
-                    "asset_id": "equity-hk-income-test",
-                    "asset_name": "HK Income Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-hk-income-test",
+                    "instrument_name": "HK Income Equity",
+                    "instrument_type": "equity",
                     "currency": "HKD",
                     "identifiers": [],
                 },
@@ -7374,11 +7374,11 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
                 "settlement_date": "2026-01-02",
                 "account_id": "broker-hk-core",
                 "settlement_cash_account_id": "cash-hkd-main",
-                "asset_id": "equity-hk-income-test",
+                "instrument_id": "equity-hk-income-test",
                 "instrument_ref": {
-                    "asset_id": "equity-hk-income-test",
-                    "asset_name": "HK Income Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-hk-income-test",
+                    "instrument_name": "HK Income Equity",
+                    "instrument_type": "equity",
                     "currency": "HKD",
                     "identifiers": [],
                 },
@@ -7410,9 +7410,9 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
 
 def test_foreign_currency_external_flow_is_converted_before_daily_twr(client, monkeypatch):
     fx_detail = {
-        "asset_id": "fx-usd-hkd",
-        "asset_name": "USD/HKD",
-        "asset_type": "fx",
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD",
+        "instrument_type": "fx",
         "currency": "HKD",
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "USDHKD", "is_primary": True}],
         "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
@@ -7438,7 +7438,7 @@ def test_foreign_currency_external_flow_is_converted_before_daily_twr(client, mo
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(fx_detail) if asset_id == "fx-usd-hkd" else None,
+        lambda instrument_id: deepcopy(fx_detail) if instrument_id == "fx-usd-hkd" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -7453,8 +7453,8 @@ def test_foreign_currency_external_flow_is_converted_before_daily_twr(client, mo
                     "rate": 7.50,
                     "as_of_date": "2026-01-02",
                     "source_kind": "direct",
-                    "asset_id": "fx-usd-hkd",
-                    "source_asset_ids": ["fx-usd-hkd"],
+                    "instrument_id": "fx-usd-hkd",
+                    "source_instrument_ids": ["fx-usd-hkd"],
                     "status": "complete",
                 }
             ],
@@ -7487,7 +7487,7 @@ def test_foreign_currency_external_flow_is_converted_before_daily_twr(client, mo
                 "institution": "Test Bank",
                 "default_settlement_cash_account_id": None,
                 "cost_basis_method": None,
-                "allowed_asset_types": None,
+                "allowed_instrument_types": None,
                 "opened_at": "2026-01-01",
                 "status": "active",
             }
@@ -7501,7 +7501,7 @@ def test_foreign_currency_external_flow_is_converted_before_daily_twr(client, mo
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-hkd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -7524,7 +7524,7 @@ def test_foreign_currency_external_flow_is_converted_before_daily_twr(client, mo
                 "settlement_date": "2026-01-02",
                 "account_id": "cash-hkd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -7555,7 +7555,7 @@ def test_foreign_currency_external_flow_is_converted_before_daily_twr(client, mo
 
 
 def test_performance_summary_custom_period_uses_period_deltas(client, monkeypatch):
-    monkeypatch.setattr(performance, "get_registry_instrument_detail", lambda asset_id: None)
+    monkeypatch.setattr(performance, "get_registry_instrument_detail", lambda instrument_id: None)
     monkeypatch.setattr(
         performance,
         "get_platform_fx_rates",
@@ -7573,7 +7573,7 @@ def test_performance_summary_custom_period_uses_period_deltas(client, monkeypatc
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -7596,7 +7596,7 @@ def test_performance_summary_custom_period_uses_period_deltas(client, monkeypatc
                 "settlement_date": "2026-01-02",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -7619,7 +7619,7 @@ def test_performance_summary_custom_period_uses_period_deltas(client, monkeypatc
                 "settlement_date": "2026-01-03",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -7664,8 +7664,8 @@ def test_performance_summary_custom_period_uses_period_deltas(client, monkeypatc
 
 def test_performance_summary_ignores_flows_before_first_complete_snapshot(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-partial-anchor",
-        asset_name="Partial Anchor Equity",
+        instrument_id="equity-us-partial-anchor",
+        instrument_name="Partial Anchor Equity",
         history=[
             ("2026-01-02", "150.00"),
             ("2026-01-03", "165.00"),
@@ -7674,7 +7674,7 @@ def test_performance_summary_ignores_flows_before_first_complete_snapshot(client
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-partial-anchor" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-partial-anchor" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -7693,7 +7693,7 @@ def test_performance_summary_ignores_flows_before_first_complete_snapshot(client
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -7716,7 +7716,7 @@ def test_performance_summary_ignores_flows_before_first_complete_snapshot(client
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -7739,11 +7739,11 @@ def test_performance_summary_ignores_flows_before_first_complete_snapshot(client
                 "settlement_date": "2026-01-01",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-partial-anchor",
+                "instrument_id": "equity-us-partial-anchor",
                 "instrument_ref": {
-                    "asset_id": "equity-us-partial-anchor",
-                    "asset_name": "Partial Anchor Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-partial-anchor",
+                    "instrument_name": "Partial Anchor Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [
                         {
@@ -7794,8 +7794,8 @@ def test_performance_summary_ignores_flows_before_first_complete_snapshot(client
 
 def test_daily_snapshots_keep_nav_constant_until_security_cash_settles(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-settlement-test",
-        asset_name="Settlement Test Equity",
+        instrument_id="equity-us-settlement-test",
+        instrument_name="Settlement Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "100.00"),
@@ -7805,7 +7805,7 @@ def test_daily_snapshots_keep_nav_constant_until_security_cash_settles(client, m
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-settlement-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-settlement-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -7824,7 +7824,7 @@ def test_daily_snapshots_keep_nav_constant_until_security_cash_settles(client, m
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -7847,11 +7847,11 @@ def test_daily_snapshots_keep_nav_constant_until_security_cash_settles(client, m
                 "settlement_date": "2026-01-03",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-settlement-test",
+                "instrument_id": "equity-us-settlement-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-settlement-test",
-                    "asset_name": "Settlement Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-settlement-test",
+                    "instrument_name": "Settlement Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [
                         {
@@ -7895,8 +7895,8 @@ def test_daily_snapshots_keep_nav_constant_until_security_cash_settles(client, m
 
 def test_account_contribution_carries_pending_settlement_in_ending_values(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
-        asset_id="equity-us-account-settlement-test",
-        asset_name="Account Settlement Test Equity",
+        instrument_id="equity-us-account-settlement-test",
+        instrument_name="Account Settlement Test Equity",
         history=[
             ("2026-01-01", "100.00"),
             ("2026-01-02", "100.00"),
@@ -7906,7 +7906,7 @@ def test_account_contribution_carries_pending_settlement_in_ending_values(client
     monkeypatch.setattr(
         performance,
         "get_registry_instrument_detail",
-        lambda asset_id: deepcopy(instrument_detail) if asset_id == "equity-us-account-settlement-test" else None,
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-account-settlement-test" else None,
     )
     monkeypatch.setattr(
         performance,
@@ -7925,7 +7925,7 @@ def test_account_contribution_carries_pending_settlement_in_ending_values(client
                 "settlement_date": "2026-01-01",
                 "account_id": "cash-usd-main",
                 "settlement_cash_account_id": None,
-                "asset_id": None,
+                "instrument_id": None,
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
@@ -7948,11 +7948,11 @@ def test_account_contribution_carries_pending_settlement_in_ending_values(client
                 "settlement_date": "2026-01-03",
                 "account_id": "broker-us-core",
                 "settlement_cash_account_id": "cash-usd-main",
-                "asset_id": "equity-us-account-settlement-test",
+                "instrument_id": "equity-us-account-settlement-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-account-settlement-test",
-                    "asset_name": "Account Settlement Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-account-settlement-test",
+                    "instrument_name": "Account Settlement Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [
                         {

@@ -105,7 +105,7 @@ const TAXONOMY_FILTER_FIELD: FieldRegistryRecord = {
   sort_mode: 'none',
   filter_mode: 'multi_select',
   group_mode: 'none',
-  asset_scope_json: ['fund'],
+  instrument_scope_json: ['fund'],
   product_scope_json: [],
   availability_rule_json: {},
   source_domain: 'taxonomy',
@@ -367,7 +367,7 @@ function isReturnMetricField(fieldKey: string) {
 }
 
 function getWatchlistCompactMinWidth(fieldKey: string, field: FieldRegistryRecord | undefined) {
-  if (fieldKey === 'asset_name') {
+  if (fieldKey === 'instrument_name') {
     return 180
   }
   if (fieldKey === 'ticker_or_isin') {
@@ -475,14 +475,14 @@ function priceChartMaxPoints(fieldKey: string) {
 function renderCell(
   fieldKey: string,
   value: unknown,
-  assetId: string,
+  instrumentId: string,
   watchlistId: string,
   sparklinePoints: FundChartPoint[] | undefined,
 ) {
-  if (fieldKey === 'asset_name') {
+  if (fieldKey === 'instrument_name') {
     return (
-      <Link to={buildInstrumentDetailPath(assetId, watchlistId)} className="table-link watchlists-asset-link">
-        {typeof value === 'string' && value ? value : assetId.toUpperCase()}
+      <Link to={buildInstrumentDetailPath(instrumentId, watchlistId)} className="table-link watchlists-instrument-link">
+        {typeof value === 'string' && value ? value : instrumentId.toUpperCase()}
       </Link>
     )
   }
@@ -661,12 +661,12 @@ function primarySharedIdentifier(instrument: SharedInstrumentRecord) {
   return (
     instrument.identifiers.find((item) => item.is_primary)?.identifier_value ??
     instrument.identifiers[0]?.identifier_value ??
-    instrument.asset_id
+    instrument.instrument_id
   )
 }
 
 export default function WatchlistsPage() {
-  const primaryDisplayColumn = 'asset_name'
+  const primaryDisplayColumn = 'instrument_name'
   const requiredColumns = [primaryDisplayColumn]
   const navigate = useNavigate()
   const { watchlistId = '' } = useParams()
@@ -908,7 +908,7 @@ export default function WatchlistsPage() {
 
     getSharedInstruments({
       search: instrumentSearch,
-      asset_type: 'fund',
+      instrument_type: 'fund',
       limit: 12,
     })
       .then((results) => {
@@ -918,10 +918,10 @@ export default function WatchlistsPage() {
 
         setSharedInstrumentResults(results)
         setSelectedInstrumentId((current) => {
-          if (current && results.some((item) => item.asset_id === current)) {
+          if (current && results.some((item) => item.instrument_id === current)) {
             return current
           }
-          return results[0]?.asset_id || ''
+          return results[0]?.instrument_id || ''
         })
       })
       .catch((loadError) => {
@@ -958,7 +958,7 @@ export default function WatchlistsPage() {
         if (!cancelled) {
           setScreenerResult(result)
           setSelectedRows((current) =>
-            current.filter((assetId) => result.rows.some((row) => String(row.asset_id) === assetId)),
+            current.filter((instrumentId) => result.rows.some((row) => String(row.instrument_id) === instrumentId)),
           )
         }
       } catch (loadError) {
@@ -991,7 +991,7 @@ export default function WatchlistsPage() {
     const rowKey = screenerResult.rows
       .map(
         (row) =>
-          `${String(row.asset_id || '').trim()}:${String(row.detail_subject_id || '').trim()}`,
+          `${String(row.instrument_id || '').trim()}:${String(row.detail_subject_id || '').trim()}`,
       )
       .join('|')
     return [
@@ -1012,13 +1012,13 @@ export default function WatchlistsPage() {
     let cancelled = false
     const chartTargets = screenerResult.rows
       .map((row) => ({
-        assetId: String(row.asset_id || '').trim(),
-        assetType: String(row.asset_type || '').trim().toLowerCase(),
-        detailSubjectId: String(row.detail_subject_id || row.asset_id || '').trim(),
+        instrumentId: String(row.instrument_id || '').trim(),
+        instrumentType: String(row.instrument_type || '').trim().toLowerCase(),
+        detailSubjectId: String(row.detail_subject_id || row.instrument_id || '').trim(),
       }))
-      .filter((row) => row.assetId && row.assetType === 'fund' && row.detailSubjectId)
+      .filter((row) => row.instrumentId && row.instrumentType === 'fund' && row.detailSubjectId)
     const missingTargets = chartTargets.filter(
-      (row) => sparklineMap[row.assetId]?.requestKey !== sparklineRequestKey,
+      (row) => sparklineMap[row.instrumentId]?.requestKey !== sparklineRequestKey,
     )
     if (!missingTargets.length) {
       return
@@ -1027,13 +1027,13 @@ export default function WatchlistsPage() {
     const rangeSize = 260
     async function loadSparklines() {
       const entries = await Promise.all(
-        missingTargets.map(async ({ assetId, detailSubjectId }) => {
+        missingTargets.map(async ({ instrumentId, detailSubjectId }) => {
           try {
             const chart = await getInstrumentChart(detailSubjectId)
             const points: FundChartPoint[] = chart.series[0]?.points?.slice(-rangeSize) ?? []
-            return [assetId, { requestKey: sparklineRequestKey, points }] as const
+            return [instrumentId, { requestKey: sparklineRequestKey, points }] as const
           } catch (chartError) {
-            return [assetId, { requestKey: sparklineRequestKey, points: [] as FundChartPoint[] }] as const
+            return [instrumentId, { requestKey: sparklineRequestKey, points: [] as FundChartPoint[] }] as const
           }
         }),
       )
@@ -1044,8 +1044,8 @@ export default function WatchlistsPage() {
 
       setSparklineMap((current) => {
         const next = { ...current }
-        entries.forEach(([assetId, entry]) => {
-          next[assetId] = entry
+        entries.forEach(([instrumentId, entry]) => {
+          next[instrumentId] = entry
         })
         return next
       })
@@ -1075,15 +1075,15 @@ export default function WatchlistsPage() {
       }
 
       const missingIdentifiers: string[] = []
-      const resolvedAssetIds = new Set<string>()
+      const resolvedInstrumentIds = new Set<string>()
       await Promise.all(
         rows.map(async (row) => {
           try {
             const resolved = await resolveSharedInstrument(row.identifier)
-            if (resolved.asset_type !== 'fund') {
-              throw new Error(`${row.identifier} resolves to ${resolved.asset_type}, but watchlist currently supports funds only.`)
+            if (resolved.instrument_type !== 'fund') {
+              throw new Error(`${row.identifier} resolves to ${resolved.instrument_type}, but watchlist currently supports funds only.`)
             }
-            resolvedAssetIds.add(resolved.asset_id)
+            resolvedInstrumentIds.add(resolved.instrument_id)
           } catch (resolveError) {
             missingIdentifiers.push(row.identifier)
           }
@@ -1096,7 +1096,7 @@ export default function WatchlistsPage() {
         )
       }
 
-      const addResult = await addWatchlistItems(watchlistId, [...resolvedAssetIds])
+      const addResult = await addWatchlistItems(watchlistId, [...resolvedInstrumentIds])
       await refreshWatchlistDetail()
       setReloadToken(Date.now())
       setModalKind(null)
@@ -1125,7 +1125,7 @@ export default function WatchlistsPage() {
   const moveTargetWatchlist =
     moveTargetOptions.find((item) => item.watchlist_id === moveTargetWatchlistId) || moveTargetOptions[0] || null
   const selectedSharedInstrument =
-    sharedInstrumentResults.find((item) => item.asset_id === selectedInstrumentId) || null
+    sharedInstrumentResults.find((item) => item.instrument_id === selectedInstrumentId) || null
   const mergedFieldRegistry = useMemo(() => {
     const sparklineFields = ['price_chart_1d', 'price_chart_1w', 'price_chart_1m', 'price_chart_1y']
     const hasSparkline = fieldRegistry.some((field) => sparklineFields.includes(field.field_key))
@@ -1144,7 +1144,7 @@ export default function WatchlistsPage() {
         sort_mode: 'none',
         filter_mode: 'none',
         group_mode: 'none',
-        asset_scope_json: ['fund'],
+        instrument_scope_json: ['fund'],
         product_scope_json: [],
         availability_rule_json: {},
         source_domain: 'derived',
@@ -1162,7 +1162,7 @@ export default function WatchlistsPage() {
         sort_mode: 'none',
         filter_mode: 'none',
         group_mode: 'none',
-        asset_scope_json: ['fund'],
+        instrument_scope_json: ['fund'],
         product_scope_json: [],
         availability_rule_json: {},
         source_domain: 'derived',
@@ -1180,7 +1180,7 @@ export default function WatchlistsPage() {
         sort_mode: 'none',
         filter_mode: 'none',
         group_mode: 'none',
-        asset_scope_json: ['fund'],
+        instrument_scope_json: ['fund'],
         product_scope_json: [],
         availability_rule_json: {},
         source_domain: 'derived',
@@ -1198,7 +1198,7 @@ export default function WatchlistsPage() {
         sort_mode: 'none',
         filter_mode: 'none',
         group_mode: 'none',
-        asset_scope_json: ['fund'],
+        instrument_scope_json: ['fund'],
         product_scope_json: [],
         availability_rule_json: {},
         source_domain: 'derived',
@@ -1208,36 +1208,36 @@ export default function WatchlistsPage() {
       },
     ]
   }, [fieldRegistry])
-  const activeAssetTypes = useMemo(() => {
+  const activeInstrumentTypes = useMemo(() => {
     const types = new Set<string>()
     ;(screenerResult?.rows || []).forEach((row) => {
-      const assetType = String(row.asset_type || '').trim().toLowerCase()
-      if (assetType) {
-        types.add(assetType)
+      const instrumentType = String(row.instrument_type || '').trim().toLowerCase()
+      if (instrumentType) {
+        types.add(instrumentType)
       }
     })
     return types.size ? [...types] : ['fund']
   }, [screenerResult])
-  const supportsAnyAssetScope = (field: FieldRegistryRecord) => {
-    if (!field.asset_scope_json.length) {
+  const supportsAnyInstrumentScope = (field: FieldRegistryRecord) => {
+    if (!field.instrument_scope_json.length) {
       return true
     }
-    return field.asset_scope_json.some((assetType) =>
-      activeAssetTypes.includes(String(assetType).trim().toLowerCase()),
+    return field.instrument_scope_json.some((instrumentType) =>
+      activeInstrumentTypes.includes(String(instrumentType).trim().toLowerCase()),
     )
   }
-  const supportsAllAssetScope = (field: FieldRegistryRecord) => {
-    if (!field.asset_scope_json.length) {
+  const supportsAllInstrumentScope = (field: FieldRegistryRecord) => {
+    if (!field.instrument_scope_json.length) {
       return true
     }
-    const normalizedScope = field.asset_scope_json.map((assetType) =>
-      String(assetType).trim().toLowerCase(),
+    const normalizedScope = field.instrument_scope_json.map((instrumentType) =>
+      String(instrumentType).trim().toLowerCase(),
     )
-    return activeAssetTypes.every((assetType) => normalizedScope.includes(assetType))
+    return activeInstrumentTypes.every((instrumentType) => normalizedScope.includes(instrumentType))
   }
   const scopedFieldRegistry = useMemo(
-    () => mergedFieldRegistry.filter((field) => supportsAnyAssetScope(field)),
-    [mergedFieldRegistry, activeAssetTypes],
+    () => mergedFieldRegistry.filter((field) => supportsAnyInstrumentScope(field)),
+    [mergedFieldRegistry, activeInstrumentTypes],
   )
   const taxonomyNodesByParent = useMemo(() => {
     const map = new Map<string | null, FundTaxonomyTreeNode[]>()
@@ -1441,18 +1441,18 @@ export default function WatchlistsPage() {
       if (!field) {
         return true
       }
-      return supportsAllAssetScope(field)
+      return supportsAllInstrumentScope(field)
     })
-  }, [watchlistDetail?.available_group_bys, mergedFieldRegistry, activeAssetTypes])
+  }, [watchlistDetail?.available_group_bys, mergedFieldRegistry, activeInstrumentTypes])
 
   const filterableFields = useMemo(
     () => {
       const fields = mergedFieldRegistry
         .filter((field) => field.filter_mode === 'multi_select' && !isTaxonomyFieldKey(field.field_key))
         .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'))
-      return supportsAnyAssetScope(TAXONOMY_FILTER_FIELD) ? [TAXONOMY_FILTER_FIELD, ...fields] : fields
+      return supportsAnyInstrumentScope(TAXONOMY_FILTER_FIELD) ? [TAXONOMY_FILTER_FIELD, ...fields] : fields
     },
-    [mergedFieldRegistry, activeAssetTypes],
+    [mergedFieldRegistry, activeInstrumentTypes],
   )
   const optionFilterFields = useMemo(
     () => filterableFields.filter((field) => field.field_key !== TAXONOMY_FILTER_FIELD_KEY),
@@ -1767,9 +1767,9 @@ export default function WatchlistsPage() {
       })),
     }
   }
-  const allVisibleRowIds = screenerResult?.rows.map((row) => String(row.asset_id)) || []
+  const allVisibleInstrumentIds = screenerResult?.rows.map((row) => String(row.instrument_id)) || []
   const allRowsSelected =
-    allVisibleRowIds.length > 0 && allVisibleRowIds.every((assetId) => selectedRows.includes(assetId))
+    allVisibleInstrumentIds.length > 0 && allVisibleInstrumentIds.every((instrumentId) => selectedRows.includes(instrumentId))
 
   async function refreshWatchlistDetail(nextViewId?: string) {
     if (!watchlistId) {
@@ -1797,7 +1797,7 @@ export default function WatchlistsPage() {
     setNotice(null)
     try {
       const exportRows = await loadAllScreenerRows(baseScreenerPayload)
-      downloadCsv(['asset_id', ...visibleColumns], exportRows)
+      downloadCsv(['instrument_id', ...visibleColumns], exportRows)
       setNotice(`Exported ${exportRows.length} rows from the current watchlist view.`)
     } catch (exportError) {
       setError(exportError instanceof Error ? exportError.message : 'Failed to export watchlist view.')
@@ -2509,7 +2509,7 @@ export default function WatchlistsPage() {
                     type="checkbox"
                     checked={allRowsSelected}
                     onChange={(event) =>
-                      setSelectedRows(event.target.checked ? allVisibleRowIds : [])
+                      setSelectedRows(event.target.checked ? allVisibleInstrumentIds : [])
                     }
                   />
                 </th>
@@ -2664,10 +2664,10 @@ export default function WatchlistsPage() {
                         </tr>
                       ) : null}
                       {group.rows.map((row, index) => {
-                        const assetId = String(row.asset_id || `row-${index}`)
-                        const checked = selectedRows.includes(assetId)
+                        const instrumentId = String(row.instrument_id || `row-${index}`)
+                        const checked = selectedRows.includes(instrumentId)
                         return (
-                          <tr key={assetId}>
+                          <tr key={instrumentId}>
                             <td className="watchlists-select-col">
                               <input
                                 type="checkbox"
@@ -2675,21 +2675,21 @@ export default function WatchlistsPage() {
                                 onChange={(event) =>
                                   setSelectedRows((current) =>
                                     event.target.checked
-                                      ? [...current, assetId]
-                                      : current.filter((item) => item !== assetId),
+                                      ? [...current, instrumentId]
+                                      : current.filter((item) => item !== instrumentId),
                                   )
                                 }
                               />
                             </td>
                             {visibleColumns.map((column) => {
-                              const isGroupedAssetName =
+                              const isGroupedInstrumentName =
                                 activeGroupBy === TAXONOMY_GROUP_BY_CODE && column === primaryDisplayColumn
                               return (
                                 <td
                                   key={column}
                                   className={isChartFieldKey(column) ? 'chart-cell' : undefined}
                                   style={
-                                    isGroupedAssetName
+                                    isGroupedInstrumentName
                                       ? {
                                           paddingLeft: `${
                                             12 +
@@ -2703,9 +2703,9 @@ export default function WatchlistsPage() {
                                   {renderCell(
                                     column,
                                     row[column],
-                                    assetId,
+                                    instrumentId,
                                     watchlistId,
-                                    sparklineMap[assetId]?.points,
+                                    sparklineMap[instrumentId]?.points,
                                   )}
                                 </td>
                               )
@@ -2847,7 +2847,7 @@ export default function WatchlistsPage() {
             <div className="watchlists-modal-header">
               <div>
                 <div className="panel-title">Copy Instruments</div>
-                <div className="section-heading">Copy Selected Assets To Another Watchlist</div>
+                <div className="section-heading">Copy Selected Instruments To Another Watchlist</div>
               </div>
               <button
                 type="button"
@@ -2880,7 +2880,7 @@ export default function WatchlistsPage() {
                 </select>
               </div>
               <div className="watchlists-move-note">
-                Assets already present in the target will not be duplicated. They will remain in the current
+                Instruments already present in the target will not be duplicated. They will remain in the current
                 watchlist after the copy.
               </div>
             </div>
@@ -2946,7 +2946,7 @@ export default function WatchlistsPage() {
             <div className="watchlists-modal-header">
               <div>
                 <div className="panel-title">Move Instruments</div>
-                <div className="section-heading">Move Selected Assets To Another Watchlist</div>
+                <div className="section-heading">Move Selected Instruments To Another Watchlist</div>
               </div>
               <button
                 type="button"
@@ -2979,7 +2979,7 @@ export default function WatchlistsPage() {
                 </select>
               </div>
               <div className="watchlists-move-note">
-                Assets already present in the target will not be duplicated. They will still be removed from the
+                Instruments already present in the target will not be duplicated. They will still be removed from the
                 current watchlist.
               </div>
             </div>
@@ -3223,16 +3223,16 @@ export default function WatchlistsPage() {
                 />
               </div>
               <p className="watchlists-registry-note">
-                Watchlist only references existing assets from{' '}
+                Watchlist only references existing instruments from{' '}
                 <a href={`${PLATFORM_HOME_URL}/database-dashboard`}>Database Dashboard</a>. This release only accepts
-                `fund` assets. If the fund is not listed here, it does not exist in the shared registry yet.
+                `fund` instruments. If the fund is not listed here, it does not exist in the shared registry yet.
               </p>
               {selectedSharedInstrument ? (
                 <div className="watchlists-registry-selected">
                   <span className="ticker-pill">{primarySharedIdentifier(selectedSharedInstrument)}</span>
-                  <span className="watchlists-registry-name">{selectedSharedInstrument.asset_name}</span>
+                  <span className="watchlists-registry-name">{selectedSharedInstrument.instrument_name}</span>
                   <span className="watchlists-registry-secondary">
-                    {selectedSharedInstrument.currency} · {formatLabel(selectedSharedInstrument.asset_type)}
+                    {selectedSharedInstrument.currency} · {formatLabel(selectedSharedInstrument.instrument_type)}
                   </span>
                 </div>
               ) : null}
@@ -3244,18 +3244,18 @@ export default function WatchlistsPage() {
                   ? sharedInstrumentResults.map((instrument) => (
                       <button
                         type="button"
-                        key={instrument.asset_id}
+                        key={instrument.instrument_id}
                         className={`watchlists-registry-row ${
-                          selectedInstrumentId === instrument.asset_id ? 'watchlists-registry-row-active' : ''
+                          selectedInstrumentId === instrument.instrument_id ? 'watchlists-registry-row-active' : ''
                         }`}
-                        onClick={() => setSelectedInstrumentId(instrument.asset_id)}
+                        onClick={() => setSelectedInstrumentId(instrument.instrument_id)}
                       >
                         <div className="watchlists-registry-row-main">
                           <span>{primarySharedIdentifier(instrument)}</span>
-                          <span className="watchlists-registry-secondary">{instrument.asset_name}</span>
+                          <span className="watchlists-registry-secondary">{instrument.instrument_name}</span>
                         </div>
                         <div className="watchlists-registry-meta">
-                          <span>{formatLabel(instrument.asset_type)}</span>
+                          <span>{formatLabel(instrument.instrument_type)}</span>
                           <span>{instrument.coverage_state || 'registry'}</span>
                         </div>
                       </button>
@@ -3296,7 +3296,7 @@ export default function WatchlistsPage() {
                   }
                   setIsAdding(true)
                   try {
-                    const addResult = await addWatchlistItems(watchlistId, [selectedSharedInstrument.asset_id])
+                    const addResult = await addWatchlistItems(watchlistId, [selectedSharedInstrument.instrument_id])
                     await refreshWatchlistDetail()
                     setInstrumentSearch('')
                     setSharedInstrumentResults([])

@@ -2985,11 +2985,11 @@ input[type='checkbox'] {
   color: var(--portfolio-ink);
 }
 
-.asset-price-chart {
+.instrument-price-chart {
   padding: 12px 0 0;
 }
 
-.asset-price-chart-toolbar {
+.instrument-price-chart-toolbar {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
@@ -4549,10 +4549,6 @@ input[type='checkbox'] {
   background: transparent;
   color: var(--portfolio-muted);
   font-weight: 400;
-}
-
-.taxonomy-asset-row {
-  gap: 10px;
 }
 
 .taxonomy-levels-table .holding-name-cell {
@@ -6195,16 +6191,16 @@ input[type='date']::-webkit-calendar-picker-indicator {
   font-style: normal;
 }
 
-.asset-price-chart-instrument {
+.instrument-price-chart-instrument {
   padding-top: 0;
 }
 
-.asset-price-chart-instrument .asset-price-chart-toolbar {
+.instrument-price-chart-instrument .instrument-price-chart-toolbar {
   align-items: center;
   padding: 12px 0 8px;
 }
 
-.asset-price-chart-instrument .portfolio-instrument-series-label {
+.instrument-price-chart-instrument .portfolio-instrument-series-label {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -6213,55 +6209,55 @@ input[type='date']::-webkit-calendar-picker-indicator {
   font-size: 14px;
 }
 
-.asset-price-chart-instrument .portfolio-instrument-series-label strong {
+.instrument-price-chart-instrument .portfolio-instrument-series-label strong {
   color: var(--portfolio-ink);
   font-size: 14px;
   font-weight: 500;
 }
 
-.asset-price-chart-instrument .portfolio-instrument-series-label span {
+.instrument-price-chart-instrument .portfolio-instrument-series-label span {
   color: #1f6fbc;
 }
 
-.asset-price-chart-instrument .portfolio-instrument-series-label em {
+.instrument-price-chart-instrument .portfolio-instrument-series-label em {
   color: var(--portfolio-muted);
   font-style: normal;
 }
 
-.asset-price-chart-instrument .price-chart-readout {
+.instrument-price-chart-instrument .price-chart-readout {
   margin-left: auto;
 }
 
-.asset-price-chart-instrument .price-chart-readout strong {
+.instrument-price-chart-instrument .price-chart-readout strong {
   font-size: 14px;
   font-weight: 500;
 }
 
-.asset-price-chart-instrument .price-chart-shell {
+.instrument-price-chart-instrument .price-chart-shell {
   margin-top: 0;
   padding-top: 0;
   border-top: none;
 }
 
-.asset-price-chart-instrument .price-chart-grid-line {
+.instrument-price-chart-instrument .price-chart-grid-line {
   stroke: #111827;
   stroke-width: 0.5;
 }
 
-.asset-price-chart-instrument .price-chart-axis-label {
+.instrument-price-chart-instrument .price-chart-axis-label {
   fill: var(--portfolio-ink);
 }
 
-.asset-price-chart-instrument .price-chart-area {
+.instrument-price-chart-instrument .price-chart-area {
   fill: rgba(31, 111, 188, 0.16);
 }
 
-.asset-price-chart-instrument .price-chart-line {
+.instrument-price-chart-instrument .price-chart-line {
   stroke: #1f6fbc;
   stroke-width: 1.85;
 }
 
-.asset-price-chart-instrument .price-chart-footer {
+.instrument-price-chart-instrument .price-chart-footer {
   border-top: 1px solid var(--portfolio-line);
 }
 
@@ -6311,7 +6307,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
     font-size: 24px;
   }
 
-  .asset-price-chart-instrument .price-chart-readout {
+  .instrument-price-chart-instrument .price-chart-readout {
     margin-left: 0;
   }
 }

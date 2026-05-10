@@ -5,36 +5,36 @@ from sqlalchemy.orm import Session
 
 from watchlist_app.api.contracts import FundHoldingSnapshotIngestRequest
 from watchlist_app.db.session import get_db_session
-from watchlist_app.repositories.sqlalchemy.assets import SQLAlchemyAssetRepository
+from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.facts import SQLAlchemyFactsRepository
 from watchlist_app.services.canonical_recalc import CanonicalRecalcService
 
 
 router = APIRouter()
 facts_repository = SQLAlchemyFactsRepository()
-asset_repository = SQLAlchemyAssetRepository()
+instrument_repository = SQLAlchemyInstrumentRepository()
 canonical_recalc_service = CanonicalRecalcService()
 
 
-def _ensure_asset_exists(session: Session, asset_id: str) -> None:
-    if asset_repository.get(session, asset_id) is None:
-        raise HTTPException(status_code=404, detail="Asset not found")
+def _ensure_instrument_exists(session: Session, instrument_id: str) -> None:
+    if instrument_repository.get(session, instrument_id) is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
 
 
-@router.get("/assets/{asset_id}/nav")
+@router.get("/instruments/{instrument_id}/nav")
 def list_nav_facts(
-    asset_id: str,
+    instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_asset_exists(session, asset_id)
+    _ensure_instrument_exists(session, instrument_id)
     records = facts_repository.list_nav_facts(
         session,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         nav_type=None,
         primary_only=True,
     )
     return {
-        "asset_id": asset_id,
+        "instrument_id": instrument_id,
         "rows": [
             {
                 "nav_fact_id": item.nav_fact_id,
@@ -53,12 +53,12 @@ def list_nav_facts(
     }
 
 
-@router.post("/assets/{asset_id}/nav")
+@router.post("/instruments/{instrument_id}/nav")
 def ingest_nav_facts(
-    asset_id: str,
+    instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_asset_exists(session, asset_id)
+    _ensure_instrument_exists(session, instrument_id)
     raise HTTPException(
         status_code=409,
         detail=(
@@ -68,17 +68,17 @@ def ingest_nav_facts(
     )
 
 
-@router.get("/assets/{asset_id}/holdings/current")
-def get_current_asset_holding_snapshot(
-    asset_id: str,
+@router.get("/instruments/{instrument_id}/holdings/current")
+def get_current_instrument_holding_snapshot(
+    instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_asset_exists(session, asset_id)
-    record = facts_repository.get_current_holding_snapshot(session, asset_id=asset_id)
+    _ensure_instrument_exists(session, instrument_id)
+    record = facts_repository.get_current_holding_snapshot(session, instrument_id=instrument_id)
     if record is None:
-        return {"asset_id": asset_id, "holding_snapshot_id": None, "positions": [], "position_count": 0}
+        return {"instrument_id": instrument_id, "holding_snapshot_id": None, "positions": [], "position_count": 0}
     return {
-        "asset_id": asset_id,
+        "instrument_id": instrument_id,
         "holding_snapshot_id": record.holding_snapshot_id,
         "as_of_date": record.as_of_date.isoformat(),
         "source_cutoff_at": record.source_cutoff_at.isoformat().replace("+00:00", "Z"),
@@ -111,16 +111,16 @@ def get_current_asset_holding_snapshot(
     }
 
 
-@router.post("/assets/{asset_id}/holdings")
-def ingest_asset_holding_snapshot(
-    asset_id: str,
+@router.post("/instruments/{instrument_id}/holdings")
+def ingest_instrument_holding_snapshot(
+    instrument_id: str,
     payload: FundHoldingSnapshotIngestRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _ensure_asset_exists(session, asset_id)
-    result = canonical_recalc_service.ingest_asset_holding_snapshot(
+    _ensure_instrument_exists(session, instrument_id)
+    result = canonical_recalc_service.ingest_instrument_holding_snapshot(
         session,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         as_of_date=payload.as_of_date,
         source_cutoff_at=payload.source_cutoff_at,
         methodology_version=payload.methodology_version,

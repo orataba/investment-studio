@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-AssetType = Literal["fund", "bond", "equity", "cash", "fx", "other"]
+InstrumentType = Literal["fund", "bond", "equity", "cash", "fx", "other"]
 IdentifierType = Literal["ticker", "isin", "cusip", "sedol", "internal", "fund_name", "other"]
 MetricFamily = Literal["price", "nav", "fx"]
 QuoteBasis = Literal[
@@ -30,18 +30,18 @@ QuoteRole = Literal["trading", "valuation", "total_return", "chart", "reference"
 DataStatus = Literal["complete", "partial", "unavailable"]
 
 
-class AssetIdentifier(BaseModel):
+class InstrumentIdentifier(BaseModel):
     identifier_type: IdentifierType
     identifier_value: str = Field(min_length=1)
     is_primary: bool = False
 
 
-class AssetCore(BaseModel):
-    asset_id: str = Field(min_length=1)
-    asset_name: str = Field(min_length=1)
-    asset_type: AssetType
+class InstrumentCore(BaseModel):
+    instrument_id: str = Field(min_length=1)
+    instrument_name: str = Field(min_length=1)
+    instrument_type: InstrumentType
     currency: str = Field(min_length=1, max_length=8)
-    identifiers: list[AssetIdentifier] = Field(default_factory=list)
+    identifiers: list[InstrumentIdentifier] = Field(default_factory=list)
 
 
 class QuoteSelectionPolicy(BaseModel):
@@ -53,7 +53,7 @@ class QuoteSelectionPolicy(BaseModel):
 
 
 class MarketDataPoint(BaseModel):
-    asset_id: str = Field(min_length=1)
+    instrument_id: str = Field(min_length=1)
     metric_family: MetricFamily
     quote_basis: QuoteBasis
     as_of_date: date

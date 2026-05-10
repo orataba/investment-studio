@@ -20,7 +20,7 @@ depends_on = None
 
 
 OVERVIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("price_chart_1m", 2, 140),
     ("latest_quote", 3, 130),
     ("latest_quote_date", 4, 140),
@@ -33,7 +33,7 @@ OVERVIEW_COLUMNS = [
 ]
 
 PREVIOUS_OVERVIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("price_chart_1m", 2, 140),
     ("latest_quote", 3, 130),
     ("latest_quote_date", 4, 140),
@@ -55,7 +55,7 @@ RETURN_MTD_FIELD = {
     "sort_mode": "numeric",
     "filter_mode": "range",
     "group_mode": "none",
-    "asset_scope_json": ["fund"],
+    "instrument_scope_json": ["fund"],
     "product_scope_json": ["mutual_fund", "cef", "etf"],
     "availability_rule_json": {"requires": ["performance_snapshot"]},
     "source_domain": "snapshot",
@@ -98,7 +98,7 @@ def _tables() -> tuple[
         sa.column("sort_mode", sa.String()),
         sa.column("filter_mode", sa.String()),
         sa.column("group_mode", sa.String()),
-        sa.column("asset_scope_json", sa.JSON()),
+        sa.column("instrument_scope_json", sa.JSON()),
         sa.column("product_scope_json", sa.JSON()),
         sa.column("availability_rule_json", sa.JSON()),
         sa.column("source_domain", sa.String()),
@@ -109,7 +109,7 @@ def _tables() -> tuple[
     performance_table = sa.table(
         "performance_snapshot",
         sa.column("snapshot_id", sa.String()),
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("as_of_date", sa.Date()),
         sa.column("is_current", sa.Boolean()),
         sa.column("return_ytd", sa.Numeric(12, 6)),
@@ -119,13 +119,13 @@ def _tables() -> tuple[
     row_table = sa.table(
         "watchlist_row_read_model",
         sa.column("watchlist_id", sa.String()),
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("return_ytd", sa.Numeric(12, 6)),
         sa.column("return_mtd", sa.Numeric(12, 6)),
     )
     chart_table = sa.table(
-        "asset_chart_read_model",
-        sa.column("asset_id", sa.String()),
+        "instrument_chart_read_model",
+        sa.column("instrument_id", sa.String()),
         sa.column("payload_json", sa.JSON()),
     )
     return view_table, column_table, field_table, performance_table, row_table, chart_table
@@ -235,9 +235,9 @@ def _backfill_calendar_returns(
     chart_table: sa.TableClause,
 ) -> None:
     chart_points_by_asset = {
-        str(row["asset_id"]): _chart_points(row["payload_json"])
+        str(row["instrument_id"]): _chart_points(row["payload_json"])
         for row in bind.execute(
-            sa.select(chart_table.c.asset_id, chart_table.c.payload_json)
+            sa.select(chart_table.c.instrument_id, chart_table.c.payload_json)
         ).mappings()
     }
 
@@ -245,14 +245,14 @@ def _backfill_calendar_returns(
     for row in bind.execute(
         sa.select(
             performance_table.c.snapshot_id,
-            performance_table.c.asset_id,
+            performance_table.c.instrument_id,
             performance_table.c.as_of_date,
             performance_table.c.is_current,
         )
     ).mappings():
-        asset_id = str(row["asset_id"])
+        instrument_id = str(row["instrument_id"])
         as_of_date = _parse_date(row["as_of_date"])
-        points = chart_points_by_asset.get(asset_id, [])
+        points = chart_points_by_asset.get(instrument_id, [])
         if as_of_date is None or not points:
             continue
         values = {
@@ -269,22 +269,22 @@ def _backfill_calendar_returns(
             .values(**values)
         )
         if row["is_current"]:
-            current_returns_by_asset[asset_id] = values
+            current_returns_by_asset[instrument_id] = values
 
     if not current_returns_by_asset:
         return
     for row in bind.execute(
-        sa.select(row_table.c.watchlist_id, row_table.c.asset_id).where(
-            row_table.c.asset_id.in_(sorted(current_returns_by_asset))
+        sa.select(row_table.c.watchlist_id, row_table.c.instrument_id).where(
+            row_table.c.instrument_id.in_(sorted(current_returns_by_asset))
         )
     ).mappings():
         bind.execute(
             sa.update(row_table)
             .where(
                 row_table.c.watchlist_id == row["watchlist_id"],
-                row_table.c.asset_id == row["asset_id"],
+                row_table.c.instrument_id == row["instrument_id"],
             )
-            .values(**current_returns_by_asset[str(row["asset_id"])])
+            .values(**current_returns_by_asset[str(row["instrument_id"])])
         )
 
 

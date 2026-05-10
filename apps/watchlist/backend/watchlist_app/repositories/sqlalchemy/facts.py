@@ -15,11 +15,11 @@ class SQLAlchemyFactsRepository:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         nav_type: str | None = None,
         primary_only: bool = False,
     ) -> Sequence[NavFact]:
-        stmt = select(NavFact).where(NavFact.asset_id == asset_id)
+        stmt = select(NavFact).where(NavFact.instrument_id == instrument_id)
         if nav_type is not None:
             stmt = stmt.where(NavFact.nav_type == nav_type)
         if primary_only:
@@ -31,7 +31,7 @@ class SQLAlchemyFactsRepository:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         as_of_date,
         nav_type: str,
         value: Decimal,
@@ -42,7 +42,7 @@ class SQLAlchemyFactsRepository:
         observation_id: str | None,
     ) -> NavFact:
         stmt = select(NavFact).where(
-            NavFact.asset_id == asset_id,
+            NavFact.instrument_id == instrument_id,
             NavFact.as_of_date == as_of_date,
             NavFact.nav_type == nav_type,
             NavFact.currency == currency,
@@ -50,7 +50,7 @@ class SQLAlchemyFactsRepository:
         record = session.scalars(stmt).first()
         if record is None:
             record = NavFact(
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 as_of_date=as_of_date,
                 nav_type=nav_type,
                 value=value,
@@ -77,12 +77,12 @@ class SQLAlchemyFactsRepository:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         as_of_date,
         primary_only: bool = True,
     ) -> int:
         stmt = select(NavFact).where(
-            NavFact.asset_id == asset_id,
+            NavFact.instrument_id == instrument_id,
             NavFact.as_of_date == as_of_date,
         )
         if primary_only:
@@ -97,12 +97,12 @@ class SQLAlchemyFactsRepository:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
     ) -> HoldingSnapshot | None:
         stmt = (
             select(HoldingSnapshot)
             .options(selectinload(HoldingSnapshot.positions))
-            .where(HoldingSnapshot.asset_id == asset_id, HoldingSnapshot.is_current.is_(True))
+            .where(HoldingSnapshot.instrument_id == instrument_id, HoldingSnapshot.is_current.is_(True))
             .order_by(HoldingSnapshot.as_of_date.desc(), HoldingSnapshot.calculated_at.desc())
         )
         return session.scalars(stmt).first()
@@ -112,7 +112,7 @@ class SQLAlchemyFactsRepository:
         session: Session,
         *,
         holding_snapshot_id: str,
-        asset_id: str,
+        instrument_id: str,
         as_of_date,
         source_cutoff_at,
         methodology_version: str,
@@ -123,7 +123,7 @@ class SQLAlchemyFactsRepository:
         now = datetime.now(UTC).replace(microsecond=0)
         for current in session.scalars(
             select(HoldingSnapshot).where(
-                HoldingSnapshot.asset_id == asset_id,
+                HoldingSnapshot.instrument_id == instrument_id,
                 HoldingSnapshot.is_current.is_(True),
             )
         ):
@@ -134,7 +134,7 @@ class SQLAlchemyFactsRepository:
         if record is None:
             record = HoldingSnapshot(
                 holding_snapshot_id=holding_snapshot_id,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 as_of_date=as_of_date,
                 source_cutoff_at=source_cutoff_at,
                 methodology_version=methodology_version,
@@ -187,4 +187,4 @@ class SQLAlchemyFactsRepository:
             )
         session.flush()
         session.refresh(record)
-        return self.get_current_holding_snapshot(session, asset_id=asset_id) or record
+        return self.get_current_holding_snapshot(session, instrument_id=instrument_id) or record

@@ -36,7 +36,7 @@ Copilot 不是独立产品，也不是当前已发布工作面里的聊天框。
 
 后端接口：
 
-- `POST /api/copilot/assets/{asset_id}/chat`
+- `POST /api/copilot/instruments/{instrument_id}/chat`
 
 当前上下文来源：
 

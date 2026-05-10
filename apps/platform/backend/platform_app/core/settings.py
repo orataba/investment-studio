@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     watchlist_api_url: str = "http://127.0.0.1:8000"
     portfolio_api_url: str = "http://127.0.0.1:8001"
     database_url: str = "postgresql+psycopg://yungu:yungu@127.0.0.1:5432/yungu"
-    database_schema: str | None = "shared_asset"
+    database_schema: str | None = "instrument_registry"
     sql_echo: bool = False
     email_sync_enabled: bool = False
     email_imap_host: str | None = None

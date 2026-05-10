@@ -58,18 +58,18 @@ NAV_IMPORT_HEADER_MAP = {
     "frequency": "frequency",
     "freq": "frequency",
     "频率": "frequency",
-    "productcode": "asset_code",
-    "产品代码": "asset_code",
-    "assetcode": "asset_code",
-    "资产代码": "asset_code",
-    "fundcode": "asset_code",
-    "基金代码": "asset_code",
-    "productname": "asset_name",
-    "产品名称": "asset_name",
-    "assetname": "asset_name",
-    "资产名称": "asset_name",
-    "fundname": "asset_name",
-    "基金名称": "asset_name",
+    "productcode": "instrument_code",
+    "产品代码": "instrument_code",
+    "instrumentcode": "instrument_code",
+    "资产代码": "instrument_code",
+    "fundcode": "instrument_code",
+    "基金代码": "instrument_code",
+    "productname": "instrument_name",
+    "产品名称": "instrument_name",
+    "instrumentname": "instrument_name",
+    "资产名称": "instrument_name",
+    "fundname": "instrument_name",
+    "基金名称": "instrument_name",
 }
 
 LABEL_SNAPSHOT_FIELD_ALIASES = {
@@ -258,7 +258,7 @@ def _parse_nav_rows_from_matrix(matrix: list[list[object]]) -> list[dict[str, ob
                 row_data["currency"] = cell.upper()
             elif column == "frequency" and cell:
                 row_data["frequency"] = cell.lower()
-            elif column in {"asset_code", "asset_name"} and cell:
+            elif column in {"instrument_code", "instrument_name"} and cell:
                 row_data[column] = cell
         if row_data.get("as_of_date") and any(
             row_data.get(key) is not None for key in ("nav", "nav_with_dividend")
@@ -490,8 +490,8 @@ def _row_matches_rule(
     rule: dict[str, object],
     row: dict[str, object],
 ) -> bool:
-    row_code = str(row.get("asset_code") or "").strip().upper()
-    row_name = _normalize_text_token(str(row.get("asset_name") or ""))
+    row_code = str(row.get("instrument_code") or "").strip().upper()
+    row_name = _normalize_text_token(str(row.get("instrument_name") or ""))
 
     required_codes = list(rule.get("row_code_equals", []))
     if required_codes and row_code not in required_codes:
@@ -592,7 +592,7 @@ def _filter_rows_for_instrument(
         return []
 
     has_row_identity = any(
-        str(row.get("asset_code") or "").strip() or str(row.get("asset_name") or "").strip()
+        str(row.get("instrument_code") or "").strip() or str(row.get("instrument_name") or "").strip()
         for row in rows
     )
     if not has_row_identity:
@@ -603,13 +603,13 @@ def _filter_rows_for_instrument(
         for item in list(instrument.get("identifiers", []))
         if str(item.get("identifier_value") or "").strip()
     }
-    identifier_candidates.add(str(instrument.get("asset_id") or "").strip().upper())
+    identifier_candidates.add(str(instrument.get("instrument_id") or "").strip().upper())
 
-    instrument_name = _normalize_text_token(str(instrument.get("asset_name") or ""))
+    instrument_name = _normalize_text_token(str(instrument.get("instrument_name") or ""))
     filtered: list[dict[str, object]] = []
     for row in rows:
-        row_code = str(row.get("asset_code") or "").strip().upper()
-        row_name = _normalize_text_token(str(row.get("asset_name") or ""))
+        row_code = str(row.get("instrument_code") or "").strip().upper()
+        row_name = _normalize_text_token(str(row.get("instrument_name") or ""))
         code_match = bool(row_code) and row_code in identifier_candidates
         name_match = bool(row_name and instrument_name) and (
             row_name == instrument_name
@@ -623,18 +623,18 @@ def _filter_rows_for_instrument(
 
 def _prepare_nav_rows_for_instrument(
     *,
-    asset_id: str,
+    instrument_id: str,
     rows: list[dict[str, object]],
 ) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
-    instrument = get_instrument(asset_id)
+    instrument = get_instrument(instrument_id)
     if instrument is None:
         return None, []
 
     filtered_rows = _filter_rows_for_instrument(instrument=instrument, rows=rows)
     if not filtered_rows:
         has_row_identity = any(
-            str(row.get("asset_code") or "").strip()
-            or str(row.get("asset_name") or "").strip()
+            str(row.get("instrument_code") or "").strip()
+            or str(row.get("instrument_name") or "").strip()
             for row in rows
         )
         if has_row_identity:
@@ -670,7 +670,7 @@ def _search_uids_for_rule(
 
 def _import_rows_from_email_rules(
     *,
-    asset_id: str,
+    instrument_id: str,
     rules: list[dict[str, object]],
     mailbox,
     pending_uids: list[int],
@@ -731,7 +731,7 @@ def _import_rows_from_email_rules(
                     matched_providers.append(f"{uid}:{attachment_name}")
                     break
                 return replace_nav_history(
-                    asset_id=asset_id,
+                    instrument_id=instrument_id,
                     rows=rows,
                     provider=f"email:{attachment_name}",
                     point_status=_normalize_import_status(rows, "complete"),
@@ -748,7 +748,7 @@ def _import_rows_from_email_rules(
     if not merged_rows:
         return None
     return replace_nav_history(
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         rows=merged_rows,
         provider="email:history",
         point_status=_normalize_import_status(merged_rows, "complete"),
@@ -764,17 +764,17 @@ def _import_rows_from_email_rules(
 
 def import_nav_text(
     *,
-    asset_id: str,
+    instrument_id: str,
     raw_text: str,
     provider: str | None,
     status: str,
     updated_by: str | None,
 ) -> dict[str, object] | None:
     rows = _parse_nav_rows_from_text(raw_text)
-    _, prepared_rows = _prepare_nav_rows_for_instrument(asset_id=asset_id, rows=rows)
+    _, prepared_rows = _prepare_nav_rows_for_instrument(instrument_id=instrument_id, rows=rows)
     normalized_status = _normalize_import_status(prepared_rows, status)
     return replace_nav_history(
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         rows=prepared_rows,
         provider=provider or "platform_manual_import",
         point_status=normalized_status,
@@ -787,7 +787,7 @@ def import_nav_text(
 
 def preview_nav_import(
     *,
-    asset_id: str,
+    instrument_id: str,
     raw_text: str | None = None,
     file_name: str | None = None,
     file_bytes: bytes | None = None,
@@ -799,7 +799,7 @@ def preview_nav_import(
     else:
         raise ValueError("Provide NAV import text or a NAV file payload.")
 
-    instrument, prepared_rows = _prepare_nav_rows_for_instrument(asset_id=asset_id, rows=rows)
+    instrument, prepared_rows = _prepare_nav_rows_for_instrument(instrument_id=instrument_id, rows=rows)
     if instrument is None:
         return None
     return prepared_rows
@@ -807,7 +807,7 @@ def preview_nav_import(
 
 def import_nav_file(
     *,
-    asset_id: str,
+    instrument_id: str,
     file_name: str,
     file_bytes: bytes,
     provider: str | None,
@@ -815,10 +815,10 @@ def import_nav_file(
     updated_by: str | None,
 ) -> dict[str, object] | None:
     rows = _parse_nav_rows_from_uploaded_file(file_name=file_name, file_bytes=file_bytes)
-    _, prepared_rows = _prepare_nav_rows_for_instrument(asset_id=asset_id, rows=rows)
+    _, prepared_rows = _prepare_nav_rows_for_instrument(instrument_id=instrument_id, rows=rows)
     normalized_status = _normalize_import_status(prepared_rows, status)
     return replace_nav_history(
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         rows=prepared_rows,
         provider=provider or f"platform_file_import:{file_name}",
         point_status=normalized_status,
@@ -831,11 +831,11 @@ def import_nav_file(
 
 def refresh_market_data(
     *,
-    asset_id: str,
+    instrument_id: str,
     updated_by: str | None,
     full_history: bool = False,
 ) -> dict[str, object] | None:
-    instrument = get_instrument(asset_id)
+    instrument = get_instrument(instrument_id)
     if instrument is None:
         return None
 
@@ -843,7 +843,7 @@ def refresh_market_data(
     source_mode = str(source_settings.get("source_mode") or "manual")
     if source_mode == "email":
         return _refresh_from_email(
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             instrument=instrument,
             source_settings=source_settings,
             updated_by=updated_by,
@@ -852,7 +852,7 @@ def refresh_market_data(
     if source_mode == "api":
         profile = str(source_settings.get("source_api_profile") or "").strip()
         return update_refresh_status(
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             status="blocked",
             message=(
                 f"API refresh profile {profile or 'unconfigured profile'} is not wired in Database Dashboard yet."
@@ -863,7 +863,7 @@ def refresh_market_data(
 
     location = str(source_settings.get("source_location") or "Database Dashboard").strip()
     return update_refresh_status(
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         status="awaiting_manual_import",
         message=f"Manual source active in Database Dashboard. Import canonical NAV from {location}.",
         updated_by=updated_by,
@@ -873,7 +873,7 @@ def refresh_market_data(
 
 def _refresh_from_email(
     *,
-    asset_id: str,
+    instrument_id: str,
     instrument: dict[str, object],
     source_settings: dict[str, object],
     updated_by: str | None,
@@ -882,7 +882,7 @@ def _refresh_from_email(
     settings = get_settings()
     if not settings.email_sync_enabled:
         return update_refresh_status(
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             status="blocked",
             message="Email refresh is disabled. Set YUNGU_PLATFORM_EMAIL_SYNC_ENABLED=true first.",
             updated_by=updated_by,
@@ -890,7 +890,7 @@ def _refresh_from_email(
         )
     if not settings.email_sync_ready:
         return update_refresh_status(
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             status="blocked",
             message="Email refresh is not configured. Set IMAP host, username, and password.",
             updated_by=updated_by,
@@ -902,7 +902,7 @@ def _refresh_from_email(
     email_rules = _normalized_email_rules(source_settings)
     if not email_rules:
         return update_refresh_status(
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             status="blocked",
             message="Email refresh requires at least one explicit product email rule.",
             updated_by=updated_by,
@@ -914,7 +914,7 @@ def _refresh_from_email(
         login_status, _ = mailbox.login(settings.email_imap_username, settings.email_imap_password)
         if login_status != "OK":
             return update_refresh_status(
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 status="failed",
                 message="Email refresh failed: IMAP login failed.",
                 updated_by=updated_by,
@@ -931,7 +931,7 @@ def _refresh_from_email(
                 break
         if selected_folder is None:
             return update_refresh_status(
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 status="blocked",
                 message="Email refresh failed: unable to open the configured mailbox folder.",
                 updated_by=updated_by,
@@ -941,7 +941,7 @@ def _refresh_from_email(
         search_status, search_data = mailbox.uid("search", None, "ALL")
         if search_status != "OK":
             return update_refresh_status(
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 status="failed",
                 message="Email refresh failed: unable to list mailbox messages.",
                 updated_by=updated_by,
@@ -953,7 +953,7 @@ def _refresh_from_email(
 
         if email_rules:
             record = _import_rows_from_email_rules(
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 rules=email_rules,
                 mailbox=mailbox,
                 pending_uids=pending_uids,
@@ -964,7 +964,7 @@ def _refresh_from_email(
                 return record
 
         return update_refresh_status(
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             status="no_match",
             message="No email attachment matched the explicit product rules.",
             updated_by=updated_by,
@@ -972,7 +972,7 @@ def _refresh_from_email(
         )
     except Exception as exc:
         return update_refresh_status(
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             status="failed",
             message=f"Email refresh failed: {exc}",
             updated_by=updated_by,

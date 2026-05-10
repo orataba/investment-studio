@@ -2170,7 +2170,7 @@ th {
   color: #111827;
 }
 
-.instrument-library-asset-id {
+.instrument-library-instrument-id {
   font-family: var(--yungu-font-mono, "Aptos Mono", "Cascadia Mono", "Consolas", monospace);
   color: #4b5563;
 }
@@ -6605,7 +6605,7 @@ input[type='checkbox'] {
   color: var(--accent);
 }
 
-.watchlists-table .watchlists-asset-link {
+.watchlists-table .watchlists-instrument-link {
   display: block;
   max-width: 100%;
   overflow: hidden;
@@ -6615,7 +6615,7 @@ input[type='checkbox'] {
   font-weight: 400;
 }
 
-.watchlists-table .watchlists-asset-link:hover {
+.watchlists-table .watchlists-instrument-link:hover {
   color: #111827;
   text-decoration: underline;
   text-underline-offset: 3px;

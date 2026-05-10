@@ -145,7 +145,7 @@ class TaxonomyResearchState:
     target_lines_by_set_id: dict[str, dict[tuple[str, str], dict[str, object]]]
     account_name_by_id: dict[str, str]
     instrument_detail_cache: dict[str, dict[str, object] | None]
-    direct_fx_assets: dict[tuple[str, str], str]
+    direct_fx_instruments: dict[tuple[str, str], str]
     frozen_taxonomy_node_ids: frozenset[str]
 
 
@@ -187,11 +187,11 @@ def _period_active(*, effective_from: object, effective_to: object, as_of_date: 
     return True
 
 
-def _build_direct_fx_asset_map() -> dict[tuple[str, str], str]:
-    direct_assets: dict[tuple[str, str], str] = {}
+def _build_direct_fx_instrument_map() -> dict[tuple[str, str], str]:
+    direct_instruments: dict[tuple[str, str], str] = {}
     payload = performance_service.get_platform_fx_rates()
     if not isinstance(payload, dict):
-        return direct_assets
+        return direct_instruments
     for item in payload.get("rates", []):
         if not is_usable_market_data_point(item):
             continue
@@ -199,19 +199,19 @@ def _build_direct_fx_asset_map() -> dict[tuple[str, str], str]:
             continue
         base_currency = _normalized_currency(item.get("base_currency"), fallback="")
         quote_currency = _normalized_currency(item.get("quote_currency"), fallback="")
-        asset_id = str(item.get("asset_id") or "").strip()
-        if base_currency and quote_currency and asset_id:
-            direct_assets[(base_currency, quote_currency)] = asset_id
-    return direct_assets
+        instrument_id = str(item.get("instrument_id") or "").strip()
+        if base_currency and quote_currency and instrument_id:
+            direct_instruments[(base_currency, quote_currency)] = instrument_id
+    return direct_instruments
 
 
 def _instrument_detail(
     state: TaxonomyResearchState,
-    asset_id: str,
+    instrument_id: str,
 ) -> dict[str, object] | None:
-    if asset_id not in state.instrument_detail_cache:
-        state.instrument_detail_cache[asset_id] = performance_service.get_registry_instrument_detail(asset_id)
-    return state.instrument_detail_cache[asset_id]
+    if instrument_id not in state.instrument_detail_cache:
+        state.instrument_detail_cache[instrument_id] = performance_service.get_registry_instrument_detail(instrument_id)
+    return state.instrument_detail_cache[instrument_id]
 
 
 def _candidate_quote_bases(detail: dict[str, object]) -> list[str]:
@@ -279,7 +279,7 @@ def _convert_price_to_base(
         as_of_date=point_date,
         base_currency=normalized_currency,
         quote_currency=state.base_currency,
-        direct_assets=state.direct_fx_assets,
+        direct_instruments=state.direct_fx_instruments,
         instrument_detail_cache=state.instrument_detail_cache,
     )
     rate = _safe_float((fx or {}).get("rate"))
@@ -291,18 +291,18 @@ def _convert_price_to_base(
 def _build_instrument_nav_series(
     state: TaxonomyResearchState,
     *,
-    asset_id: str,
+    instrument_id: str,
     start_date: date,
     end_date: date,
 ) -> tuple[pd.Series, list[str]]:
-    detail = _instrument_detail(state, asset_id)
+    detail = _instrument_detail(state, instrument_id)
     if not isinstance(detail, dict):
-        raise ValueError(f"Instrument detail for {asset_id} is unavailable.")
+        raise ValueError(f"Instrument detail for {instrument_id} is unavailable.")
 
     selected_points = _selected_price_points(detail, end_date=end_date)
     warnings: list[str] = []
     if not selected_points:
-        raise ValueError(f"{asset_id} does not have usable market history for the requested period.")
+        raise ValueError(f"{instrument_id} does not have usable market history for the requested period.")
 
     rows: list[tuple[date, float]] = []
     for point_date, point_value, point_currency in selected_points:
@@ -316,17 +316,17 @@ def _build_instrument_nav_series(
             continue
         rows.append((point_date, base_value))
     if not rows:
-        raise ValueError(f"{asset_id} does not have FX-complete market history for the requested period.")
+        raise ValueError(f"{instrument_id} does not have FX-complete market history for the requested period.")
 
     series = pd.Series({point_date: base_value for point_date, base_value in rows}, dtype="float64").sort_index()
     visible = series.loc[(series.index >= start_date) & (series.index <= end_date)]
     if visible.empty:
         visible = series.loc[series.index <= end_date]
     if visible.empty:
-        raise ValueError(f"{asset_id} does not have any observations on or before the selected end date.")
+        raise ValueError(f"{instrument_id} does not have any observations on or before the selected end date.")
     if visible.index[0] > start_date:
         warnings.append(
-            f"{asset_id} history starts on {visible.index[0].isoformat()}, so the research window is clipped for this member."
+            f"{instrument_id} history starts on {visible.index[0].isoformat()}, so the research window is clipped for this member."
         )
     return visible, warnings
 
@@ -1421,7 +1421,7 @@ def _scope_members(
         target_entity_id = str(assignment.get("target_entity_id") or "")
         if target_scope == TARGET_MEMBER_INSTRUMENT:
             detail = _instrument_detail(state, target_entity_id)
-            label = str((detail or {}).get("asset_name") or target_entity_id)
+            label = str((detail or {}).get("instrument_name") or target_entity_id)
         elif target_scope == TARGET_MEMBER_CASH:
             label = state.account_name_by_id.get(target_entity_id, target_entity_id)
         else:
@@ -1454,16 +1454,16 @@ def _scope_source_frequencies(
     else:
         node_ids = state.node_subtree_by_id.get(scope_node_id, {scope_node_id})
     frequencies: list[CalculationFrequency] = []
-    seen_asset_ids: set[str] = set()
+    seen_instrument_ids: set[str] = set()
     for node_id in node_ids:
         for assignment in state.direct_assignments_by_node.get(node_id, []):
             if str(assignment.get("target_scope") or "") != TARGET_MEMBER_INSTRUMENT:
                 continue
-            asset_id = str(assignment.get("target_entity_id") or "").strip()
-            if not asset_id or asset_id in seen_asset_ids:
+            instrument_id = str(assignment.get("target_entity_id") or "").strip()
+            if not instrument_id or instrument_id in seen_instrument_ids:
                 continue
-            seen_asset_ids.add(asset_id)
-            detail = _instrument_detail(state, asset_id)
+            seen_instrument_ids.add(instrument_id)
+            detail = _instrument_detail(state, instrument_id)
             if not isinstance(detail, dict):
                 continue
             dates = [
@@ -1649,7 +1649,7 @@ def _solve_current_scope(
         else:
             instrument_nav, instrument_warnings = _build_instrument_nav_series(
                 state,
-                asset_id=member.member_id,
+                instrument_id=member.member_id,
                 start_date=start_day,
                 end_date=as_of_date,
             )
@@ -1834,7 +1834,7 @@ def _solve_current_scope(
 
     estimated_risk_sleeve_volatility = None
     effective_gross_exposure = None
-    risk_asset_scaling_factor = None
+    risky_allocation_scaling_factor = None
     if overlay_applies_to_risk_sleeves and non_cash_keys:
         risky_weights = implementation_weights.reindex(non_cash_keys, fill_value=0.0)
         if capital_mode == CAPITAL_MODE_FIXED_GROSS:
@@ -1864,8 +1864,8 @@ def _solve_current_scope(
             if max_gross_exposure is not None:
                 effective_gross_exposure = min(float(effective_gross_exposure), float(max_gross_exposure))
         if effective_gross_exposure is not None:
-            risk_asset_scaling_factor = float(effective_gross_exposure)
-            implementation_weights.loc[non_cash_keys] = risky_weights * risk_asset_scaling_factor
+            risky_allocation_scaling_factor = float(effective_gross_exposure)
+            implementation_weights.loc[non_cash_keys] = risky_weights * risky_allocation_scaling_factor
             if cash_like_keys:
                 implementation_weights.loc[cash_like_keys] = _allocate_cash_weights(
                     cash_index=cash_like_keys,
@@ -1923,7 +1923,7 @@ def _solve_current_scope(
         "estimated_risk_sleeve_volatility": estimated_risk_sleeve_volatility,
         "target_volatility": target_volatility if apply_capital_overlay else None,
         "gross_exposure": effective_gross_exposure,
-        "risk_asset_scaling_factor": risk_asset_scaling_factor,
+        "risky_allocation_scaling_factor": risky_allocation_scaling_factor,
         "member_count": len(members),
         "scope_solve_count": len(child_scope_solve_events) + 1,
     }
@@ -2098,9 +2098,9 @@ def _current_scope_actuals(
 
     position_value_by_asset: dict[str, float] = {}
     for position in list(statement.get("positions") or []):
-        asset_id = str(position.get("asset_id") or "")
-        if asset_id:
-            position_value_by_asset[asset_id] = float(_safe_float(position.get("market_value_base")) or 0.0)
+        instrument_id = str(position.get("instrument_id") or "")
+        if instrument_id:
+            position_value_by_asset[instrument_id] = float(_safe_float(position.get("market_value_base")) or 0.0)
 
     visible_cash_accounts = [
         account_row
@@ -2129,8 +2129,8 @@ def _current_scope_actuals(
     node_value_map: dict[str, float] = {node_id: 0.0 for node_id in state.node_by_id}
     unassigned_value = 0.0
 
-    for asset_id, market_value_base in position_value_by_asset.items():
-        node_id = direct_position_membership.get(asset_id)
+    for instrument_id, market_value_base in position_value_by_asset.items():
+        node_id = direct_position_membership.get(instrument_id)
         if not node_id:
             unassigned_value += market_value_base
             continue
@@ -2360,7 +2360,7 @@ def _build_taxonomy_state(
         target_lines_by_set_id=target_lines_by_set_id,
         account_name_by_id=account_name_by_id,
         instrument_detail_cache={},
-        direct_fx_assets=_build_direct_fx_asset_map(),
+        direct_fx_instruments=_build_direct_fx_instrument_map(),
         frozen_taxonomy_node_ids=frozenset(
             str(item).strip() for item in (frozen_taxonomy_node_ids or []) if str(item).strip()
         ),

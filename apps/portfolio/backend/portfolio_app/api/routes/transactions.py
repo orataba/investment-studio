@@ -13,7 +13,7 @@ from portfolio_app.api.assemblers import (
 )
 from portfolio_app.api.contracts import (
     AccountRecord,
-    AssetCoreContract,
+    InstrumentCoreContract,
     DerivationBoundaryStatus,
     InternalTransferCreateRequest,
     SharedInstrumentListResponse,
@@ -95,9 +95,9 @@ def _build_summary(records: list[dict[str, object]]) -> TransactionListSummary:
     return summarize_transactions(records)
 
 
-def _load_instrument_ref(asset_id: str) -> dict[str, object]:
+def _load_instrument_ref(instrument_id: str) -> dict[str, object]:
     try:
-        instrument = get_registry_instrument(asset_id)
+        instrument = get_registry_instrument(instrument_id)
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
@@ -105,9 +105,9 @@ def _load_instrument_ref(asset_id: str) -> dict[str, object]:
         raise HTTPException(status_code=400, detail="Instrument not found in shared registry.")
 
     return {
-        "asset_id": instrument["asset_id"],
-        "asset_name": instrument["asset_name"],
-        "asset_type": instrument["asset_type"],
+        "instrument_id": instrument["instrument_id"],
+        "instrument_name": instrument["instrument_name"],
+        "instrument_type": instrument["instrument_type"],
         "currency": instrument["currency"],
         "identifiers": instrument.get("identifiers", []),
     }
@@ -118,10 +118,10 @@ def _serialize_instrument_option(record: dict[str, object]) -> dict[str, object]
     if coverage_state is None:
         coverage_state = "complete" if record.get("latest_market_data") else "unavailable"
     return {
-        "asset_core": {
-            "asset_id": record["asset_id"],
-            "asset_name": record["asset_name"],
-            "asset_type": record["asset_type"],
+        "instrument_core": {
+            "instrument_id": record["instrument_id"],
+            "instrument_name": record["instrument_name"],
+            "instrument_type": record["instrument_type"],
             "currency": record["currency"],
             "identifiers": record.get("identifiers", []),
         },
@@ -299,12 +299,12 @@ def _transfer_group_transaction_ids(portfolio_id: str, transfer_group_id: str) -
     ]
 
 
-def _is_position_asset_type(asset_type: str) -> bool:
-    return asset_type in POSITION_ASSET_TYPES
+def _is_position_instrument_type(instrument_type: str) -> bool:
+    return instrument_type in POSITION_ASSET_TYPES
 
 
-def _normalized_allowed_asset_types(account: dict[str, object] | None) -> list[str]:
-    raw_values = (account or {}).get("allowed_asset_types")
+def _normalized_allowed_instrument_types(account: dict[str, object] | None) -> list[str]:
+    raw_values = (account or {}).get("allowed_instrument_types")
     if not isinstance(raw_values, list):
         return []
 
@@ -316,7 +316,7 @@ def _normalized_allowed_asset_types(account: dict[str, object] | None) -> list[s
     return normalized
 
 
-def _validate_account_asset_scope(
+def _validate_account_instrument_scope(
     *,
     account: dict[str, object],
     instrument_ref: dict[str, object] | None,
@@ -329,20 +329,20 @@ def _validate_account_asset_scope(
     ):
         return
 
-    allowed_asset_types = _normalized_allowed_asset_types(account)
-    if not allowed_asset_types:
+    allowed_instrument_types = _normalized_allowed_instrument_types(account)
+    if not allowed_instrument_types:
         return
 
-    asset_type = str(instrument_ref.get("asset_type") or "").strip().lower()
-    if asset_type in allowed_asset_types:
+    instrument_type = str(instrument_ref.get("instrument_type") or "").strip().lower()
+    if instrument_type in allowed_instrument_types:
         return
 
     account_name = str(account.get("account_name") or account.get("account_id") or "Selected account")
     raise HTTPException(
         status_code=400,
         detail=(
-            f"{account_name} only accepts {', '.join(allowed_asset_types)} assets. "
-            f"'{asset_type}' is out of scope for inbound positions."
+            f"{account_name} only accepts {', '.join(allowed_instrument_types)} instruments. "
+            f"'{instrument_type}' is out of scope for inbound positions."
         ),
     )
 
@@ -355,33 +355,33 @@ def _validate_instrument_transaction_compatibility(
     if instrument_ref is None:
         return
 
-    asset_type = str(instrument_ref.get("asset_type") or "").strip().lower()
-    if not asset_type:
+    instrument_type = str(instrument_ref.get("instrument_type") or "").strip().lower()
+    if not instrument_type:
         return
 
     if transaction_type in {"buy", "sell", "opening_balance"}:
-        if not _is_position_asset_type(asset_type):
+        if not _is_position_instrument_type(instrument_type):
             raise HTTPException(
                 status_code=400,
-                detail=f"{transaction_type.replace('_', ' ').title()} is not supported for asset type '{asset_type}'.",
+                detail=f"{transaction_type.replace('_', ' ').title()} is not supported for instrument type '{instrument_type}'.",
             )
         return
 
     if transaction_type in {"fee", "tax"}:
-        if not _is_position_asset_type(asset_type):
+        if not _is_position_instrument_type(instrument_type):
             raise HTTPException(
                 status_code=400,
-                detail=f"{transaction_type.title()} instrument selection is not supported for asset type '{asset_type}'.",
+                detail=f"{transaction_type.title()} instrument selection is not supported for instrument type '{instrument_type}'.",
             )
         return
 
-    allowed_asset_types = INCOME_ASSET_TYPES.get(transaction_type)
-    if allowed_asset_types is None:
+    allowed_instrument_types = INCOME_ASSET_TYPES.get(transaction_type)
+    if allowed_instrument_types is None:
         return
-    if asset_type not in allowed_asset_types:
+    if instrument_type not in allowed_instrument_types:
         raise HTTPException(
             status_code=400,
-            detail=f"{transaction_type.replace('_', ' ').title()} is not supported for asset type '{asset_type}'.",
+            detail=f"{transaction_type.replace('_', ' ').title()} is not supported for instrument type '{instrument_type}'.",
         )
 
 
@@ -498,7 +498,7 @@ def list_transaction_records(
     portfolio_id: str,
     account_id: str | None = None,
     transaction_type: str | None = None,
-    asset_id: str | None = None,
+    instrument_id: str | None = None,
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
 ) -> TransactionListResponse:
@@ -510,7 +510,7 @@ def list_transaction_records(
         portfolio_id,
         account_id=account_id,
         transaction_type=transaction_type,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         start_date=start_date,
         end_date=end_date,
     )
@@ -528,7 +528,7 @@ def get_transaction_workspace(
     portfolio_id: str,
     account_id: str | None = None,
     transaction_type: str | None = None,
-    asset_id: str | None = None,
+    instrument_id: str | None = None,
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
     transaction_id: str | None = None,
@@ -542,7 +542,7 @@ def get_transaction_workspace(
         portfolio_id,
         account_id=account_id,
         transaction_type=transaction_type,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         start_date=start_date,
         end_date=end_date,
     )
@@ -578,13 +578,13 @@ def get_transaction_workspace(
     )
 
     related_position_lots_raw: list[dict[str, object]] = []
-    if selected_transaction and selected_transaction.asset_id:
+    if selected_transaction and selected_transaction.instrument_id:
         candidate_position_lots = build_position_lots(
             portfolio_id,
             accounts,
             all_transactions,
             account_id=selected_transaction.account.account_id,
-            asset_id=selected_transaction.asset_id,
+            instrument_id=selected_transaction.instrument_id,
         )
         related_position_lots_raw = [
             item
@@ -624,7 +624,7 @@ def get_transaction_workspace(
 def get_transaction_position_preview(
     portfolio_id: str,
     account_id: str,
-    asset_id: str,
+    instrument_id: str,
     as_of_date: date = Query(...),
     trade_time: str | None = None,
     exclude_transaction_id: str | None = None,
@@ -635,7 +635,7 @@ def get_transaction_position_preview(
     if get_account(portfolio_id, account_id) is None:
         raise HTTPException(status_code=400, detail="Account not found")
 
-    _load_instrument_ref(asset_id)
+    _load_instrument_ref(instrument_id)
     resolved_trade_timing = resolve_trade_timing(
         trade_date=as_of_date,
         trade_time=trade_time,
@@ -654,13 +654,13 @@ def get_transaction_position_preview(
         portfolio_id,
         transactions_as_of_trade_date,
         account_id=account_id,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         account_cost_methods=_account_cost_methods(portfolio_id),
     )
     return TransactionPositionPreviewResponse(
         portfolio_id=portfolio_id,
         account_id=account_id,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         as_of_date=as_of_date,
         trade_at=str(resolved_trade_timing["trade_at"]),
         quantity=quantity,
@@ -773,9 +773,9 @@ def _persist_transaction_record(
         )
 
     instrument_ref = None
-    asset_id = payload.asset_id
-    if asset_id:
-        instrument_ref = _load_instrument_ref(asset_id)
+    instrument_id = payload.instrument_id
+    if instrument_id:
+        instrument_ref = _load_instrument_ref(instrument_id)
 
     if transaction_type in {
         "buy",
@@ -788,22 +788,22 @@ def _persist_transaction_record(
     } and instrument_ref is None:
         raise HTTPException(status_code=400, detail="This transaction type requires instrument.")
 
-    if transaction_type in {"deposit", "withdrawal"} and asset_id is not None:
+    if transaction_type in {"deposit", "withdrawal"} and instrument_id is not None:
         raise HTTPException(status_code=400, detail="Cash-flow transactions must not reference instrument.")
 
-    if transaction_type == "fx_conversion" and asset_id is not None:
+    if transaction_type == "fx_conversion" and instrument_id is not None:
         raise HTTPException(status_code=400, detail="FX conversion must not reference instrument.")
 
-    if transaction_type == "interest" and asset_id is not None:
+    if transaction_type == "interest" and instrument_id is not None:
         raise HTTPException(status_code=400, detail="Interest transaction must not reference instrument.")
 
-    if transaction_type == "opening_balance" and account_type == "deposit_account" and asset_id is not None:
+    if transaction_type == "opening_balance" and account_type == "deposit_account" and instrument_id is not None:
         raise HTTPException(status_code=400, detail="Cash opening balance must not reference instrument.")
 
     if transaction_type == "opening_balance" and account_type == "securities_account" and instrument_ref is None:
-        raise HTTPException(status_code=400, detail="Security opening balance requires instrument.")
+        raise HTTPException(status_code=400, detail="Instrument opening balance requires instrument.")
 
-    if transaction_type in {"fee", "tax"} and account_type == "deposit_account" and asset_id is not None:
+    if transaction_type in {"fee", "tax"} and account_type == "deposit_account" and instrument_id is not None:
         raise HTTPException(status_code=400, detail="Deposit-account fee and tax must not reference instrument.")
     if transaction_type in {"fee", "tax"} and account_type == "deposit_account" and settlement_cash_account_id is not None:
         raise HTTPException(status_code=400, detail="Deposit-account fee and tax must not carry settlement cash account.")
@@ -812,14 +812,14 @@ def _persist_transaction_record(
         transaction_type=transaction_type,
         instrument_ref=instrument_ref,
     )
-    _validate_account_asset_scope(
+    _validate_account_instrument_scope(
         account=account,
         instrument_ref=instrument_ref,
         transaction_type=transaction_type,
     )
 
     transactions_as_of_trade_date: list[dict[str, object]] | None = None
-    if transaction_type in {"sell", "maturity_redemption", "dividend_reinvestment"} and asset_id:
+    if transaction_type in {"sell", "maturity_redemption", "dividend_reinvestment"} and instrument_id:
         transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
             portfolio_id,
             trade_date=payload.trade_date,
@@ -830,8 +830,8 @@ def _persist_transaction_record(
         )
 
     transactions_as_of_entitlement_date: list[dict[str, object]] | None = None
-    if transaction_type in {"dividend", "coupon"} or (transaction_type in {"fee", "tax"} and asset_id):
-        if asset_id:
+    if transaction_type in {"dividend", "coupon"} or (transaction_type in {"fee", "tax"} and instrument_id):
+        if instrument_id:
             transactions_as_of_entitlement_date = _list_transactions_as_of_entitlement_moment(
                 portfolio_id,
                 entitlement_date=entitlement_date,
@@ -842,25 +842,25 @@ def _persist_transaction_record(
                 exclude_transaction_ids=excluded_transaction_ids,
             )
 
-    if transaction_type in {"sell", "maturity_redemption"} and asset_id:
+    if transaction_type in {"sell", "maturity_redemption"} and instrument_id:
         available_quantity = estimate_position_quantity(
             portfolio_id,
             transactions_as_of_trade_date or [],
             account_id=payload.account_id,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             account_cost_methods=account_cost_methods,
         )
         requested_quantity = float(payload.quantity or 0.0)
         if requested_quantity > available_quantity + 1e-9:
             raise HTTPException(status_code=400, detail="Transaction quantity exceeds account position as of trade_date.")
 
-    if transaction_type in {"dividend", "coupon"} or (transaction_type in {"fee", "tax"} and asset_id):
-        if asset_id:
+    if transaction_type in {"dividend", "coupon"} or (transaction_type in {"fee", "tax"} and instrument_id):
+        if instrument_id:
             available_quantity = estimate_position_quantity(
                 portfolio_id,
                 transactions_as_of_entitlement_date or [],
                 account_id=payload.account_id,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 account_cost_methods=account_cost_methods,
             )
             if available_quantity <= 1e-9:
@@ -869,12 +869,12 @@ def _persist_transaction_record(
                     detail="Instrument-linked income and expense requires account position as of entitlement_date.",
                 )
 
-    if transaction_type == "dividend_reinvestment" and asset_id:
+    if transaction_type == "dividend_reinvestment" and instrument_id:
         available_quantity = estimate_position_quantity(
             portfolio_id,
             transactions_as_of_trade_date or [],
             account_id=payload.account_id,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             account_cost_methods=account_cost_methods,
         )
         if available_quantity <= 1e-9:
@@ -883,7 +883,7 @@ def _persist_transaction_record(
                 detail="Dividend reinvestment requires account position as of trade_date.",
             )
 
-    if transaction_type == "return_of_capital" and asset_id:
+    if transaction_type == "return_of_capital" and instrument_id:
         transactions_as_of_trade_date = _list_transactions_as_of_trade_moment(
             portfolio_id,
             trade_date=payload.trade_date,
@@ -896,7 +896,7 @@ def _persist_transaction_record(
             portfolio_id,
             transactions_as_of_trade_date or [],
             account_id=payload.account_id,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             account_cost_methods=account_cost_methods,
         )
         if float(payload.gross_amount or 0.0) > available_cost_basis + 1e-9:
@@ -930,7 +930,7 @@ def _persist_transaction_record(
             acquisition_date=payload.acquisition_date,
             account_id=payload.account_id,
             settlement_cash_account_id=settlement_cash_account_id or None,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             instrument_ref=instrument_ref,
             quantity=payload.quantity,
             price=payload.price,
@@ -962,7 +962,7 @@ def _persist_transaction_record(
             acquisition_date=payload.acquisition_date,
             account_id=payload.account_id,
             settlement_cash_account_id=settlement_cash_account_id or None,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             instrument_ref=instrument_ref,
             quantity=payload.quantity,
             price=payload.price,
@@ -1101,20 +1101,20 @@ def create_internal_transfer_records(
         transfer_currency = str(from_account.get("currency") or "").upper()
         if transfer_currency != str(to_account.get("currency") or "").upper():
             raise HTTPException(status_code=400, detail="Cash transfer accounts must share the same currency.")
-        asset_id = None
+        instrument_id = None
         instrument_ref = None
     else:
         if from_account.get("account_type") != "securities_account" or to_account.get("account_type") != "securities_account":
             raise HTTPException(status_code=400, detail="Position transfer requires securities accounts on both legs.")
-        asset_id = payload.asset_id
-        if not asset_id:
+        instrument_id = payload.instrument_id
+        if not instrument_id:
             raise HTTPException(status_code=400, detail="Position transfer requires instrument.")
-        instrument_ref = _load_instrument_ref(asset_id)
+        instrument_ref = _load_instrument_ref(instrument_id)
         _validate_instrument_transaction_compatibility(
             transaction_type="opening_balance",
             instrument_ref=instrument_ref,
         )
-        _validate_account_asset_scope(
+        _validate_account_instrument_scope(
             account=to_account,
             instrument_ref=instrument_ref,
             transaction_type="opening_balance",
@@ -1141,7 +1141,7 @@ def create_internal_transfer_records(
             portfolio_id,
             transactions_as_of_trade_date,
             account_id=payload.from_account_id,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             account_cost_methods=account_cost_methods,
         )
         requested_quantity = float(payload.quantity or 0.0)
@@ -1154,7 +1154,7 @@ def create_internal_transfer_records(
             portfolio_id,
             transactions_as_of_trade_date,
             account_id=payload.from_account_id,
-            asset_id=asset_id or "",
+            instrument_id=instrument_id or "",
             quantity=float(payload.quantity or 0.0),
             account_cost_methods=account_cost_methods,
         )
@@ -1186,7 +1186,7 @@ def create_internal_transfer_records(
                 "acquisition_date": None,
                 "account_id": payload.from_account_id,
                 "settlement_cash_account_id": None,
-                "asset_id": asset_id,
+                "instrument_id": instrument_id,
                 "instrument_ref": instrument_ref,
                 "quantity": payload.quantity,
                 "price": None,
@@ -1212,7 +1212,7 @@ def create_internal_transfer_records(
                 "acquisition_date": None,
                 "account_id": payload.to_account_id,
                 "settlement_cash_account_id": None,
-                "asset_id": asset_id,
+                "instrument_id": instrument_id,
                 "instrument_ref": instrument_ref,
                 "quantity": payload.quantity,
                 "price": None,

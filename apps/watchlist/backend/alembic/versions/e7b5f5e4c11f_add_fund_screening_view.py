@@ -25,7 +25,7 @@ VIEW_ID = "fund-screening"
 VIEW_NAME = "基金筛选"
 VIEW_DESCRIPTION = "按分类、研究标签和监控判断快速筛选基金。"
 VIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("attr.strategy_family", 2, 140),
     ("attr.strategy_subtype", 3, 220),
     ("attr.implementation_style", 4, 140),
@@ -103,7 +103,7 @@ def upgrade() -> None:
                 "description": VIEW_DESCRIPTION,
                 "kind": "system",
                 "default_sort_json": [],
-                "default_filters_json": {"asset_type": ["fund"]},
+                "default_filters_json": {"instrument_type": ["fund"]},
                 "default_advanced_filter_json": {},
                 "default_group_by": "attr.strategy_family",
                 "density": "standard",

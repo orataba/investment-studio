@@ -24,7 +24,7 @@ depends_on = None
 REFERENCE_CREATED_AT = datetime(2026, 4, 16, 3, 40, tzinfo=UTC)
 PRIVATE_VIEW_ID = "private-fund-screening"
 PRIVATE_VIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("attr.fund_regime", 2, 120),
     ("attr.fund_vehicle", 3, 160),
     ("attr.strategy_family", 4, 140),
@@ -39,7 +39,7 @@ PRIVATE_VIEW_COLUMNS = [
     ("attr.transparency_quality", 13, 120),
     ("data_freshness_status", 14, 140),
 ]
-PRIVATE_VIEW_FILTERS = {"asset_type": ["fund"], "attr.fund_regime": ["私募"]}
+PRIVATE_VIEW_FILTERS = {"instrument_type": ["fund"], "attr.fund_regime": ["私募"]}
 
 
 FUND_ATTRIBUTE_DEFINITIONS = [
@@ -265,7 +265,7 @@ def _attribute_field_definition(definition: dict[str, object]) -> dict[str, obje
         "sort_mode": sort_mode,
         "filter_mode": filter_mode,
         "group_mode": group_mode if definition.get("is_groupable", True) else "none",
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "product_scope_json": [],
         "availability_rule_json": {"requires": ["instrument_attribute_value"]},
         "source_domain": "custom_attribute",
@@ -358,13 +358,13 @@ def _refresh_private_screening_views(bind, view_table, column_table) -> None:
             )
 
 
-def _current_attribute_values(bind, value_table, asset_id: str) -> dict[str, object]:
+def _current_attribute_values(bind, value_table, instrument_id: str) -> dict[str, object]:
     rows = bind.execute(
         sa.select(
             value_table.c.attribute_key,
             value_table.c.value_json,
         )
-        .where(value_table.c.asset_id == asset_id)
+        .where(value_table.c.instrument_id == instrument_id)
         .order_by(
             value_table.c.attribute_key,
             value_table.c.adopted_at.desc(),
@@ -404,7 +404,7 @@ def upgrade() -> None:
         sa.column("sort_mode", sa.String()),
         sa.column("filter_mode", sa.String()),
         sa.column("group_mode", sa.String()),
-        sa.column("asset_scope_json", sa.JSON()),
+        sa.column("instrument_scope_json", sa.JSON()),
         sa.column("product_scope_json", sa.JSON()),
         sa.column("availability_rule_json", sa.JSON()),
         sa.column("source_domain", sa.String()),
@@ -427,10 +427,10 @@ def upgrade() -> None:
         sa.column("is_visible", sa.Boolean()),
         sa.column("pin_side", sa.String()),
     )
-    asset_table = sa.table(
-        "asset_detail",
-        sa.column("asset_id", sa.String()),
-        sa.column("asset_type", sa.String()),
+    instrument_table = sa.table(
+        "instrument_detail",
+        sa.column("instrument_id", sa.String()),
+        sa.column("instrument_type", sa.String()),
     )
     _upsert_attribute_definitions(bind, definition_table, field_table)
     _refresh_private_screening_views(bind, view_table, column_table)
@@ -478,13 +478,13 @@ def downgrade() -> None:
         bind.execute(
             sa.update(view_table)
             .where(view_table.c.watchlist_view_id.in_(watchlist_view_ids))
-            .values(default_filters_json={"asset_type": ["fund"]})
+            .values(default_filters_json={"instrument_type": ["fund"]})
         )
         bind.execute(
             sa.delete(column_table).where(column_table.c.watchlist_view_id.in_(watchlist_view_ids))
         )
         legacy_columns = [
-            ("asset_name", 1, 320),
+            ("instrument_name", 1, 320),
             ("attr.strategy_family", 2, 140),
             ("attr.strategy_subtype", 3, 220),
             ("attr.implementation_style", 4, 140),

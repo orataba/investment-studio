@@ -252,8 +252,8 @@ Bridgewater 对这个项目最重要的贡献不是“某个指标”，而是�
 正式版 PMS 的长期配置对象应该优先定义为：
 
 - planning taxonomy
-- `TargetSet(type = saa)`（Strategic Asset Allocation，长期战略目标）上的 target weight / target risk share
-- `TargetSet(type = taa)`（Tactical Asset Allocation，时变战术目标）上的 target weight / target risk share
+- `TargetSet(type = saa)`（Strategic Instrument Allocation，长期战略目标）上的 target weight / target risk share
+- `TargetSet(type = taa)`（Tactical Instrument Allocation，时变战术目标）上的 target weight / target risk share
 
 而不是单纯的名义资金占比。
 

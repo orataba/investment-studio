@@ -8,13 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from watchlist_app.db.models.read_models import (
-    AssetChartReadModel,
-    AssetPerformanceReadModel,
-    AssetExposureHoldingsReadModel,
-    AssetExposureReadModel,
-    AssetRatingReadModel,
-    AssetRiskReadModel,
-    AssetSummaryReadModel,
+    InstrumentChartReadModel,
+    InstrumentPerformanceReadModel,
+    InstrumentExposureHoldingsReadModel,
+    InstrumentExposureReadModel,
+    InstrumentRatingReadModel,
+    InstrumentRiskReadModel,
+    InstrumentSummaryReadModel,
     WatchlistRowReadModel,
 )
 from watchlist_app.db.models.watchlists import WatchlistView
@@ -33,7 +33,7 @@ class SQLAlchemyReadModelRepository:
         stmt = (
             select(WatchlistRowReadModel)
             .where(WatchlistRowReadModel.watchlist_id == watchlist_id)
-            .order_by(WatchlistRowReadModel.asset_name, WatchlistRowReadModel.asset_id)
+            .order_by(WatchlistRowReadModel.instrument_name, WatchlistRowReadModel.instrument_id)
         )
         return session.scalars(stmt).all()
 
@@ -42,11 +42,11 @@ class SQLAlchemyReadModelRepository:
         session: Session,
         *,
         watchlist_id: str,
-        asset_id: str,
+        instrument_id: str,
     ) -> WatchlistRowReadModel | None:
         stmt = select(WatchlistRowReadModel).where(
             WatchlistRowReadModel.watchlist_id == watchlist_id,
-            WatchlistRowReadModel.asset_id == asset_id,
+            WatchlistRowReadModel.instrument_id == instrument_id,
         )
         return session.scalars(stmt).first()
 
@@ -55,13 +55,13 @@ class SQLAlchemyReadModelRepository:
         session: Session,
         *,
         watchlist_id: str,
-        asset_ids: list[str],
+        instrument_ids: list[str],
     ) -> int:
-        if not asset_ids:
+        if not instrument_ids:
             return 0
         stmt = select(WatchlistRowReadModel).where(
             WatchlistRowReadModel.watchlist_id == watchlist_id,
-            WatchlistRowReadModel.asset_id.in_(asset_ids),
+            WatchlistRowReadModel.instrument_id.in_(instrument_ids),
         )
         rows = session.scalars(stmt).all()
         for row in rows:
@@ -87,23 +87,23 @@ class SQLAlchemyReadModelRepository:
     def find_any_watchlist_row_for_asset(
         self,
         session: Session,
-        asset_id: str,
+        instrument_id: str,
     ) -> WatchlistRowReadModel | None:
         stmt = (
             select(WatchlistRowReadModel)
-            .where(WatchlistRowReadModel.asset_id == asset_id)
+            .where(WatchlistRowReadModel.instrument_id == instrument_id)
             .order_by(WatchlistRowReadModel.watchlist_id)
         )
         return session.scalars(stmt).first()
 
-    def list_watchlist_rows_for_asset(
+    def list_watchlist_rows_for_instrument(
         self,
         session: Session,
-        asset_id: str,
+        instrument_id: str,
     ) -> Sequence[WatchlistRowReadModel]:
         stmt = (
             select(WatchlistRowReadModel)
-            .where(WatchlistRowReadModel.asset_id == asset_id)
+            .where(WatchlistRowReadModel.instrument_id == instrument_id)
             .order_by(WatchlistRowReadModel.watchlist_id)
         )
         return session.scalars(stmt).all()
@@ -113,20 +113,20 @@ class SQLAlchemyReadModelRepository:
         session: Session,
         *,
         watchlist_id: str,
-        asset_id: str,
+        instrument_id: str,
         data: dict[str, Any],
     ) -> WatchlistRowReadModel:
         record = self.get_watchlist_row(
             session,
             watchlist_id=watchlist_id,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
         )
         if record is None:
             record = WatchlistRowReadModel(
                 watchlist_id=watchlist_id,
-                asset_id=asset_id,
-                asset_type=str(data.get("asset_type") or "fund"),
-                asset_name=str(data["asset_name"]),
+                instrument_id=instrument_id,
+                instrument_type=str(data.get("instrument_type") or "fund"),
+                instrument_name=str(data["instrument_name"]),
                 share_class=data.get("share_class"),
                 ticker_or_isin=data.get("ticker_or_isin"),
                 management_firm_name=data.get("management_firm_name"),
@@ -160,8 +160,8 @@ class SQLAlchemyReadModelRepository:
             session.flush()
             return record
 
-        record.asset_type = str(data.get("asset_type") or record.asset_type or "fund")
-        record.asset_name = str(data["asset_name"])
+        record.instrument_type = str(data.get("instrument_type") or record.instrument_type or "fund")
+        record.instrument_name = str(data["instrument_name"])
         record.share_class = data.get("share_class")
         record.ticker_or_isin = data.get("ticker_or_isin")
         record.management_firm_name = data.get("management_firm_name")
@@ -197,11 +197,11 @@ class SQLAlchemyReadModelRepository:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         attributes: dict[str, object],
         touched_at: datetime | None = None,
     ) -> None:
-        stmt = select(WatchlistRowReadModel).where(WatchlistRowReadModel.asset_id == asset_id)
+        stmt = select(WatchlistRowReadModel).where(WatchlistRowReadModel.instrument_id == instrument_id)
         for record in session.scalars(stmt):
             record.attributes_json = attributes
             if touched_at is not None:
@@ -222,64 +222,64 @@ class SQLAlchemyReadModelRepository:
         )
         return session.scalars(stmt).first()
 
-    def get_summary(self, session: Session, asset_id: str) -> AssetSummaryReadModel | None:
-        return session.get(AssetSummaryReadModel, asset_id)
+    def get_summary(self, session: Session, instrument_id: str) -> InstrumentSummaryReadModel | None:
+        return session.get(InstrumentSummaryReadModel, instrument_id)
 
-    def get_chart(self, session: Session, asset_id: str) -> AssetChartReadModel | None:
-        return session.get(AssetChartReadModel, asset_id)
+    def get_chart(self, session: Session, instrument_id: str) -> InstrumentChartReadModel | None:
+        return session.get(InstrumentChartReadModel, instrument_id)
 
     def list_charts(
         self,
         session: Session,
-        asset_ids: Sequence[str],
-    ) -> Sequence[AssetChartReadModel]:
-        if not asset_ids:
+        instrument_ids: Sequence[str],
+    ) -> Sequence[InstrumentChartReadModel]:
+        if not instrument_ids:
             return []
-        stmt = select(AssetChartReadModel).where(AssetChartReadModel.asset_id.in_(asset_ids))
+        stmt = select(InstrumentChartReadModel).where(InstrumentChartReadModel.instrument_id.in_(instrument_ids))
         return session.scalars(stmt).all()
 
     def get_performance(
         self,
         session: Session,
-        asset_id: str,
-    ) -> AssetPerformanceReadModel | None:
-        return session.get(AssetPerformanceReadModel, asset_id)
+        instrument_id: str,
+    ) -> InstrumentPerformanceReadModel | None:
+        return session.get(InstrumentPerformanceReadModel, instrument_id)
 
-    def get_risk(self, session: Session, asset_id: str) -> AssetRiskReadModel | None:
-        return session.get(AssetRiskReadModel, asset_id)
+    def get_risk(self, session: Session, instrument_id: str) -> InstrumentRiskReadModel | None:
+        return session.get(InstrumentRiskReadModel, instrument_id)
 
     def get_exposure_summary(
         self,
         session: Session,
-        asset_id: str,
-    ) -> AssetExposureReadModel | None:
-        return session.get(AssetExposureReadModel, asset_id)
+        instrument_id: str,
+    ) -> InstrumentExposureReadModel | None:
+        return session.get(InstrumentExposureReadModel, instrument_id)
 
     def get_exposure_holdings(
         self,
         session: Session,
-        asset_id: str,
-    ) -> AssetExposureHoldingsReadModel | None:
-        return session.get(AssetExposureHoldingsReadModel, asset_id)
+        instrument_id: str,
+    ) -> InstrumentExposureHoldingsReadModel | None:
+        return session.get(InstrumentExposureHoldingsReadModel, instrument_id)
 
-    def get_rating(self, session: Session, asset_id: str) -> AssetRatingReadModel | None:
-        return session.get(AssetRatingReadModel, asset_id)
+    def get_rating(self, session: Session, instrument_id: str) -> InstrumentRatingReadModel | None:
+        return session.get(InstrumentRatingReadModel, instrument_id)
 
     def upsert_payload_read_model(
         self,
         session: Session,
         *,
         model_class,
-        asset_id: str,
+        instrument_id: str,
         payload_json: dict[str, Any],
         data_freshness_status: str,
         last_recalculated_at,
         source_cutoff_at,
     ):
-        record = session.get(model_class, asset_id)
+        record = session.get(model_class, instrument_id)
         if record is None:
             record = model_class(
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 payload_json=payload_json,
                 data_freshness_status=data_freshness_status,
                 last_recalculated_at=last_recalculated_at,

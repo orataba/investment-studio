@@ -5,9 +5,9 @@ from copy import deepcopy
 from datetime import date, timedelta
 from math import isfinite, prod, sqrt
 
-from portfolio_app.services.asset_charts import (
-    build_asset_sparkline_from_detail,
-    build_asset_trend_metrics_from_detail,
+from portfolio_app.services.instrument_charts import (
+    build_instrument_sparkline_from_detail,
+    build_instrument_trend_metrics_from_detail,
 )
 from portfolio_app.core.settings import get_settings
 from portfolio_app.services.instrument_registry import (
@@ -24,9 +24,9 @@ from portfolio_app.services.market_data import is_usable_market_data_point, mark
 
 
 DEFAULT_VALUATION_CUTOFF_POLICY = "latest_complete_eod"
-CONTRIBUTION_AXES = {"instrument", "account", "asset_type", "currency", "taxonomy"}
-CONTRIBUTION_BASE_AXES = {"instrument", "account", "asset_type", "currency"}
-CONTRIBUTION_AXIS_ERROR = "axis must be instrument, account, asset_type, currency, or taxonomy"
+CONTRIBUTION_AXES = {"instrument", "account", "instrument_type", "currency", "taxonomy"}
+CONTRIBUTION_BASE_AXES = {"instrument", "account", "instrument_type", "currency"}
+CONTRIBUTION_AXIS_ERROR = "axis must be instrument, account, instrument_type, currency, or taxonomy"
 EXTERNAL_CASH_IN_TYPES = {"deposit"}
 EXTERNAL_CASH_OUT_TYPES = {"withdrawal"}
 EARNINGS_TRANSACTION_TYPES = {"dividend", "coupon", "interest", "dividend_reinvestment"}
@@ -71,7 +71,7 @@ def _normalized_currency(value: object, *, fallback: str = "USD") -> str:
 
 _CALCULATION_DETAIL_SUFFIX = "_detail"
 _CALCULATION_DETAIL_GROUP_SEPARATOR = "\x1f"
-_CALCULATION_DETAIL_PARENT_AXES = {"instrument", "account", "asset_type", "currency", "taxonomy"}
+_CALCULATION_DETAIL_PARENT_AXES = {"instrument", "account", "instrument_type", "currency", "taxonomy"}
 _CALCULATION_CASH_DETAIL_AXIS = "cash_detail"
 
 
@@ -104,7 +104,7 @@ def _decode_calculation_detail_group_key(value: object) -> tuple[str, str, str] 
     if len(parts) != 3:
         return None
     parent_group_key, item_kind, item_key = parts
-    if not parent_group_key or item_kind not in {"asset", "cash"} or not item_key:
+    if not parent_group_key or item_kind not in {"instrument", "cash"} or not item_key:
         return None
     return (parent_group_key, item_kind, item_key)
 
@@ -153,8 +153,8 @@ def _position_market_value(
 ) -> float | None:
     if last_price is None:
         return None
-    asset_type = str((instrument_ref or {}).get("asset_type") or "").strip().lower()
-    if asset_type == "bond":
+    instrument_type = str((instrument_ref or {}).get("instrument_type") or "").strip().lower()
+    if instrument_type == "bond":
         return quantity * last_price / 100.0
     return quantity * last_price
 
@@ -184,12 +184,12 @@ def _resolve_portfolio_valuation_cutoff_policy(portfolio: dict[str, object]) -> 
 
 
 def _instrument_detail_cache_get(
-    asset_id: str,
+    instrument_id: str,
     cache: dict[str, dict[str, object] | None],
 ) -> dict[str, object] | None:
-    if asset_id not in cache:
-        cache[asset_id] = get_registry_instrument_detail(asset_id)
-    return cache[asset_id]
+    if instrument_id not in cache:
+        cache[instrument_id] = get_registry_instrument_detail(instrument_id)
+    return cache[instrument_id]
 
 
 def _normalized_policy_bases(detail: dict[str, object], role: str) -> list[str]:
@@ -269,8 +269,8 @@ def _select_market_point_as_of(
     return None
 
 
-def _fx_direct_asset_map(fx_payload: dict[str, object]) -> dict[tuple[str, str], str]:
-    direct_assets: dict[tuple[str, str], str] = {}
+def _fx_direct_instrument_map(fx_payload: dict[str, object]) -> dict[tuple[str, str], str]:
+    direct_instruments: dict[tuple[str, str], str] = {}
     for item in fx_payload.get("rates", []):
         if not isinstance(item, dict):
             continue
@@ -278,19 +278,19 @@ def _fx_direct_asset_map(fx_payload: dict[str, object]) -> dict[tuple[str, str],
             continue
         base_currency = _normalized_currency(item.get("base_currency"), fallback="")
         quote_currency = _normalized_currency(item.get("quote_currency"), fallback="")
-        asset_id = str(item.get("asset_id") or "").strip()
-        if base_currency and quote_currency and asset_id:
-            direct_assets[(base_currency, quote_currency)] = asset_id
-    return direct_assets
+        instrument_id = str(item.get("instrument_id") or "").strip()
+        if base_currency and quote_currency and instrument_id:
+            direct_instruments[(base_currency, quote_currency)] = instrument_id
+    return direct_instruments
 
 
 def _direct_fx_point_as_of(
     *,
-    asset_id: str,
+    instrument_id: str,
     as_of_date: date,
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> dict[str, object] | None:
-    detail = _instrument_detail_cache_get(asset_id, instrument_detail_cache)
+    detail = _instrument_detail_cache_get(instrument_id, instrument_detail_cache)
     if not isinstance(detail, dict):
         return None
     market_data = detail.get("market_data", [])
@@ -324,7 +324,7 @@ def resolve_fx_rate_on(
     as_of_date: date,
     base_currency: str,
     quote_currency: str,
-    direct_assets: dict[tuple[str, str], str],
+    direct_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> dict[str, object] | None:
     normalized_base = _normalized_currency(base_currency, fallback="")
@@ -339,20 +339,20 @@ def resolve_fx_rate_on(
             "stale": False,
         }
 
-    direct_asset_id = direct_assets.get((normalized_base, normalized_quote))
-    if direct_asset_id:
+    direct_instrument_id = direct_instruments.get((normalized_base, normalized_quote))
+    if direct_instrument_id:
         direct_point = _direct_fx_point_as_of(
-            asset_id=direct_asset_id,
+            instrument_id=direct_instrument_id,
             as_of_date=as_of_date,
             instrument_detail_cache=instrument_detail_cache,
         )
         if direct_point is not None:
             return direct_point
 
-    inverse_asset_id = direct_assets.get((normalized_quote, normalized_base))
-    if inverse_asset_id:
+    inverse_instrument_id = direct_instruments.get((normalized_quote, normalized_base))
+    if inverse_instrument_id:
         inverse_point = _direct_fx_point_as_of(
-            asset_id=inverse_asset_id,
+            instrument_id=inverse_instrument_id,
             as_of_date=as_of_date,
             instrument_detail_cache=instrument_detail_cache,
         )
@@ -372,14 +372,14 @@ def resolve_fx_rate_on(
         as_of_date=as_of_date,
         base_currency=pivot_currency,
         quote_currency=normalized_base,
-        direct_assets=direct_assets,
+        direct_instruments=direct_instruments,
         instrument_detail_cache=instrument_detail_cache,
     )
     quote_leg = resolve_fx_rate_on(
         as_of_date=as_of_date,
         base_currency=pivot_currency,
         quote_currency=normalized_quote,
-        direct_assets=direct_assets,
+        direct_instruments=direct_instruments,
         instrument_detail_cache=instrument_detail_cache,
     )
     if base_leg is None or quote_leg is None:
@@ -405,7 +405,7 @@ def convert_amount_on(
     as_of_date: date,
     from_currency: str,
     to_currency: str,
-    direct_fx_assets: dict[tuple[str, str], str],
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> tuple[float | None, bool]:
     if amount is None:
@@ -414,7 +414,7 @@ def convert_amount_on(
         as_of_date=as_of_date,
         base_currency=from_currency,
         quote_currency=to_currency,
-        direct_assets=direct_fx_assets,
+        direct_instruments=direct_fx_instruments,
         instrument_detail_cache=instrument_detail_cache,
     )
     if resolved_fx is None:
@@ -428,13 +428,13 @@ def convert_amount_on(
 def _position_buckets_from_lots(position_lots: list[dict[str, object]]) -> list[dict[str, object]]:
     positions_by_asset: dict[str, dict[str, object]] = {}
     for position_lot in position_lots:
-        asset_id = str(position_lot.get("asset_id") or "")
-        if not asset_id:
+        instrument_id = str(position_lot.get("instrument_id") or "")
+        if not instrument_id:
             continue
         bucket = positions_by_asset.setdefault(
-            asset_id,
+            instrument_id,
             {
-                "asset_id": asset_id,
+                "instrument_id": instrument_id,
                 "instrument_ref": deepcopy(position_lot.get("instrument_ref")),
                 "currency": _normalized_currency(position_lot.get("currency")),
                 "quantity": 0.0,
@@ -476,18 +476,18 @@ def _position_buckets_from_lots(position_lots: list[dict[str, object]]) -> list[
     return rendered_buckets
 
 
-def _position_buckets_by_account_asset_from_lots(position_lots: list[dict[str, object]]) -> list[dict[str, object]]:
-    positions_by_account_asset: dict[tuple[str, str], dict[str, object]] = {}
+def _position_buckets_by_account_instrument_from_lots(position_lots: list[dict[str, object]]) -> list[dict[str, object]]:
+    positions_by_account_instrument: dict[tuple[str, str], dict[str, object]] = {}
     for position_lot in position_lots:
         account_id = str(position_lot.get("account_id") or "")
-        asset_id = str(position_lot.get("asset_id") or "")
-        if not account_id or not asset_id:
+        instrument_id = str(position_lot.get("instrument_id") or "")
+        if not account_id or not instrument_id:
             continue
-        bucket = positions_by_account_asset.setdefault(
-            (account_id, asset_id),
+        bucket = positions_by_account_instrument.setdefault(
+            (account_id, instrument_id),
             {
                 "account_id": account_id,
-                "asset_id": asset_id,
+                "instrument_id": instrument_id,
                 "instrument_ref": deepcopy(position_lot.get("instrument_ref")),
                 "currency": _normalized_currency(position_lot.get("currency")),
                 "quantity": 0.0,
@@ -502,7 +502,7 @@ def _position_buckets_by_account_asset_from_lots(position_lots: list[dict[str, o
         bucket["cost_basis_methods"].add(str(position_lot.get("cost_basis_method") or "fifo"))
 
     rendered_buckets: list[dict[str, object]] = []
-    for bucket in positions_by_account_asset.values():
+    for bucket in positions_by_account_instrument.values():
         if abs(_safe_float(bucket.get("quantity")) or 0.0) <= 1e-9:
             continue
         raw_methods = bucket.get("cost_basis_methods")
@@ -547,18 +547,18 @@ def _resolve_snapshot_window(
 
 def _build_materialized_holding_rows(
     *,
-    account_asset_buckets: list[dict[str, object]],
+    account_instrument_buckets: list[dict[str, object]],
     as_of_date: date,
     base_currency: str,
-    direct_fx_assets: dict[tuple[str, str], str],
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
     nav: float | None,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for bucket in account_asset_buckets:
+    for bucket in account_instrument_buckets:
         account_id = str(bucket.get("account_id") or "")
-        asset_id = str(bucket.get("asset_id") or "")
-        if not account_id or not asset_id:
+        instrument_id = str(bucket.get("instrument_id") or "")
+        if not account_id or not instrument_id:
             continue
 
         currency = _normalized_currency(bucket.get("currency"), fallback=base_currency)
@@ -569,10 +569,10 @@ def _build_materialized_holding_rows(
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
-        detail = _instrument_detail_cache_get(asset_id, instrument_detail_cache)
+        detail = _instrument_detail_cache_get(instrument_id, instrument_detail_cache)
         price_point = (
             _select_market_point_as_of(detail=detail, role="valuation", as_of_date=as_of_date)
             if isinstance(detail, dict)
@@ -589,11 +589,11 @@ def _build_materialized_holding_rows(
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
-        asset_trend_metrics = (
-            build_asset_trend_metrics_from_detail(
+        instrument_trend_metrics = (
+            build_instrument_trend_metrics_from_detail(
                 detail,
                 as_of_date=as_of_date,
             )
@@ -602,9 +602,9 @@ def _build_materialized_holding_rows(
         )
         rows.append(
             {
-                "line_id": f"{account_id}:{asset_id}",
+                "line_id": f"{account_id}:{instrument_id}",
                 "account_id": account_id,
-                "asset_id": asset_id,
+                "instrument_id": instrument_id,
                 "instrument_ref": deepcopy(bucket.get("instrument_ref") or {}),
                 "quantity": quantity,
                 "cost_basis_method": str(bucket.get("cost_basis_method") or "fifo"),
@@ -628,15 +628,15 @@ def _build_materialized_holding_rows(
                 "account_count": 1,
                 "open_position_lot_count": int(bucket.get("open_position_lot_count") or 0),
                 "price_chart": (
-                    build_asset_sparkline_from_detail(
+                    build_instrument_sparkline_from_detail(
                         detail,
-                        asset_id=asset_id,
+                        instrument_id=instrument_id,
                         as_of_date=as_of_date,
                     )
                     if isinstance(detail, dict)
                     else []
                 ),
-                **asset_trend_metrics,
+                **instrument_trend_metrics,
                 "coverage_status": "price-nav-fx" if converted_market_value is not None else "unpriced",
             }
         )
@@ -645,7 +645,7 @@ def _build_materialized_holding_rows(
         key=lambda item: (
             str(item.get("account_id") or ""),
             -((_safe_float(item.get("market_value_base")) or 0.0)),
-            str(item.get("asset_id") or ""),
+            str(item.get("instrument_id") or ""),
         )
     )
     return rows
@@ -750,7 +750,7 @@ def _sum_period_transaction_buckets(
     transactions: list[dict[str, object]],
     *,
     base_currency: str,
-    direct_fx_assets: dict[tuple[str, str], str],
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> dict[str, object]:
     deposits = 0.0
@@ -769,7 +769,7 @@ def _sum_period_transaction_buckets(
             as_of_date=trade_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
         if converted_amount is None:
@@ -845,7 +845,7 @@ def _sum_period_realized_capital_gains(
     start_date: date | None,
     end_date: date | None,
     base_currency: str,
-    direct_fx_assets: dict[tuple[str, str], str],
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> dict[str, object]:
     realized_capital_gains = 0.0
@@ -882,7 +882,7 @@ def _sum_period_realized_capital_gains(
                 as_of_date=trade_date,
                 from_currency=currency,
                 to_currency=base_currency,
-                direct_fx_assets=direct_fx_assets,
+                direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
             )
             if converted_amount is None:
@@ -903,22 +903,22 @@ def _capital_gains_from_components(line: dict[str, object]) -> float | None:
     earnings = _safe_float(line.get("income_cash_amount"))
     expense_cash_amount = _safe_float(line.get("expense_cash_amount"))
     cash_currency_gains = _safe_float(line.get("cash_currency_gains")) or 0.0
-    asset_currency_gains = _safe_float(line.get("asset_currency_gains")) or 0.0
+    instrument_currency_gains = _safe_float(line.get("instrument_currency_gains")) or 0.0
     if total_pnl is None or earnings is None or expense_cash_amount is None:
         return None
-    return total_pnl - earnings + expense_cash_amount - cash_currency_gains - asset_currency_gains
+    return total_pnl - earnings + expense_cash_amount - cash_currency_gains - instrument_currency_gains
 
 
 def _consume_period_lots(
     lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
     *,
     account_id: str,
-    asset_id: str,
+    instrument_id: str,
     quantity: float,
 ) -> list[dict[str, object]]:
     remaining_quantity = quantity
     consumed_slices: list[dict[str, object]] = []
-    for lot in lots_by_key.get((account_id, asset_id), []):
+    for lot in lots_by_key.get((account_id, instrument_id), []):
         if remaining_quantity <= 1e-9:
             break
         lot_quantity = _safe_float(lot.get("quantity")) or 0.0
@@ -943,7 +943,7 @@ def _append_period_lot(
     lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
     *,
     account_id: str,
-    asset_id: str,
+    instrument_id: str,
     instrument_ref: dict[str, object],
     currency: str,
     quantity: float,
@@ -951,10 +951,10 @@ def _append_period_lot(
 ) -> None:
     if quantity <= 1e-9:
         return
-    lots_by_key[(account_id, asset_id)].append(
+    lots_by_key[(account_id, instrument_id)].append(
         {
             "account_id": account_id,
-            "asset_id": asset_id,
+            "instrument_id": instrument_id,
             "instrument_ref": deepcopy(instrument_ref),
             "currency": currency,
             "quantity": quantity,
@@ -967,14 +967,14 @@ def _reduce_period_lot_cost(
     lots_by_key: dict[tuple[str, str], list[dict[str, object]]],
     *,
     account_id: str,
-    asset_id: str,
+    instrument_id: str,
     amount_local: float,
 ) -> None:
     if amount_local <= 1e-9:
         return
     active_lots = [
         lot
-        for lot in lots_by_key.get((account_id, asset_id), [])
+        for lot in lots_by_key.get((account_id, instrument_id), [])
         if (_safe_float(lot.get("quantity")) or 0.0) > 1e-9
     ]
     total_quantity = sum((_safe_float(lot.get("quantity")) or 0.0) for lot in active_lots)
@@ -992,8 +992,8 @@ def _period_lot_market_value_local(
     as_of_date: date,
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> float | None:
-    asset_id = str(lot.get("asset_id") or "")
-    detail = _instrument_detail_cache_get(asset_id, instrument_detail_cache)
+    instrument_id = str(lot.get("instrument_id") or "")
+    detail = _instrument_detail_cache_get(instrument_id, instrument_detail_cache)
     if not isinstance(detail, dict):
         return None
     price_point = _select_market_point_as_of(
@@ -1054,7 +1054,7 @@ def _period_taxonomy_group_resolver(
         if target_scope == "account":
             target_entity_id = str(lot.get("account_id") or "")
         else:
-            target_entity_id = str(lot.get("asset_id") or "")
+            target_entity_id = str(lot.get("instrument_id") or "")
         group_key, _group_label = _resolve_taxonomy_group_for_date(
             taxonomy=taxonomy,
             taxonomy_nodes_by_id=taxonomy_nodes_by_id,
@@ -1080,7 +1080,7 @@ def _period_unrealized_capital_gains_by_group(
     taxonomy_nodes: list[dict[str, object]] | None,
     taxonomy_assignments: list[dict[str, object]] | None,
     base_currency: str,
-    direct_fx_assets: dict[tuple[str, str], str],
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> dict[str, object]:
     lots_by_key: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
@@ -1099,7 +1099,7 @@ def _period_unrealized_capital_gains_by_group(
             continue
         lot = {
             "account_id": str(position_lot.get("account_id") or ""),
-            "asset_id": str(position_lot.get("asset_id") or ""),
+            "instrument_id": str(position_lot.get("instrument_id") or ""),
             "instrument_ref": (
                 deepcopy(position_lot.get("instrument_ref"))
                 if isinstance(position_lot.get("instrument_ref"), dict)
@@ -1118,7 +1118,7 @@ def _period_unrealized_capital_gains_by_group(
             coverage_complete = False
             continue
         lot["cost_local"] = market_value_local
-        lots_by_key[(str(lot["account_id"]), str(lot["asset_id"]))].append(lot)
+        lots_by_key[(str(lot["account_id"]), str(lot["instrument_id"]))].append(lot)
 
     transfer_slices_by_group: dict[str, list[dict[str, object]]] = {}
     for transaction in sorted_transactions:
@@ -1132,9 +1132,9 @@ def _period_unrealized_capital_gains_by_group(
             if isinstance(transaction.get("instrument_ref"), dict)
             else {}
         )
-        asset_id = str(transaction.get("asset_id") or instrument_ref.get("asset_id") or "")
+        instrument_id = str(transaction.get("instrument_id") or instrument_ref.get("instrument_id") or "")
         quantity = _safe_float(transaction.get("quantity")) or 0.0
-        if not account_id or not asset_id or quantity <= 1e-9:
+        if not account_id or not instrument_id or quantity <= 1e-9:
             continue
         currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
         gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
@@ -1143,7 +1143,7 @@ def _period_unrealized_capital_gains_by_group(
             _append_period_lot(
                 lots_by_key,
                 account_id=account_id,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 instrument_ref=instrument_ref,
                 currency=currency,
                 quantity=quantity,
@@ -1155,7 +1155,7 @@ def _period_unrealized_capital_gains_by_group(
             _consume_period_lots(
                 lots_by_key,
                 account_id=account_id,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 quantity=quantity,
             )
             continue
@@ -1164,7 +1164,7 @@ def _period_unrealized_capital_gains_by_group(
             _reduce_period_lot_cost(
                 lots_by_key,
                 account_id=account_id,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 amount_local=gross_amount,
             )
             continue
@@ -1173,7 +1173,7 @@ def _period_unrealized_capital_gains_by_group(
             consumed_slices = _consume_period_lots(
                 lots_by_key,
                 account_id=account_id,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 quantity=quantity,
             )
             transfer_group_id = str(transaction.get("transfer_group_id") or "")
@@ -1189,7 +1189,7 @@ def _period_unrealized_capital_gains_by_group(
                     _append_period_lot(
                         lots_by_key,
                         account_id=account_id,
-                        asset_id=asset_id,
+                        instrument_id=instrument_id,
                         instrument_ref=(
                             incoming_slice.get("instrument_ref")
                             if isinstance(incoming_slice.get("instrument_ref"), dict)
@@ -1203,7 +1203,7 @@ def _period_unrealized_capital_gains_by_group(
             _append_period_lot(
                 lots_by_key,
                 account_id=account_id,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 instrument_ref=instrument_ref,
                 currency=currency,
                 quantity=quantity,
@@ -1241,25 +1241,25 @@ def _period_unrealized_capital_gains_by_group(
                 as_of_date=end_date,
                 from_currency=currency,
                 to_currency=base_currency,
-                direct_fx_assets=direct_fx_assets,
+                direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
             )
             if unrealized_base is None:
                 coverage_complete = False
                 continue
             stale_fx_flag = stale_fx_flag or _is_stale
-            if detail_parent_axis in {"instrument", "account", "asset_type", "currency"}:
+            if detail_parent_axis in {"instrument", "account", "instrument_type", "currency"}:
                 parent_group_key, _parent_group_label = _position_group_for_axis(
                     axis=detail_parent_axis,
                     position_lot=lot,
                     account_name_map=account_name_map,
                     base_currency=base_currency,
                 )
-                item_key = str(lot.get("asset_id") or "")
+                item_key = str(lot.get("instrument_id") or "")
                 group_key = (
                     _encode_calculation_detail_group_key(
                         parent_group_key=parent_group_key,
-                        item_kind="asset",
+                        item_kind="instrument",
                         item_key=item_key,
                     )
                     if parent_group_key and item_key
@@ -1267,11 +1267,11 @@ def _period_unrealized_capital_gains_by_group(
                 )
             elif detail_parent_axis == "taxonomy" and taxonomy_resolver is not None:
                 parent_group_key = taxonomy_resolver(lot)
-                item_key = str(lot.get("asset_id") or "")
+                item_key = str(lot.get("instrument_id") or "")
                 group_key = (
                     _encode_calculation_detail_group_key(
                         parent_group_key=parent_group_key,
-                        item_kind="asset",
+                        item_kind="instrument",
                         item_key=item_key,
                     )
                     if parent_group_key and item_key
@@ -1279,15 +1279,15 @@ def _period_unrealized_capital_gains_by_group(
                 )
             elif axis == "account":
                 group_key = str(lot.get("account_id") or "")
-            elif axis == "asset_type":
+            elif axis == "instrument_type":
                 instrument_ref = _instrument_ref_from_mapping(lot)
-                group_key, _group_label = _asset_type_key_label(instrument_ref.get("asset_type"))
+                group_key, _group_label = _instrument_type_key_label(instrument_ref.get("instrument_type"))
             elif axis == "currency":
                 group_key = _normalized_currency(lot.get("currency"), fallback=base_currency)
             elif axis == "taxonomy" and taxonomy_resolver is not None:
                 group_key = taxonomy_resolver(lot)
             else:
-                group_key = str(lot.get("asset_id") or "")
+                group_key = str(lot.get("instrument_id") or "")
             if group_key:
                 values[group_key] += unrealized_base
 
@@ -1303,7 +1303,7 @@ def _daily_external_flow_breakdown(
     as_of_date: date,
     *,
     base_currency: str,
-    direct_fx_assets: dict[tuple[str, str], str],
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> dict[str, object]:
     as_of_iso = as_of_date.isoformat()
@@ -1315,7 +1315,7 @@ def _daily_external_flow_breakdown(
     buckets = _sum_period_transaction_buckets(
         same_day_transactions,
         base_currency=base_currency,
-        direct_fx_assets=direct_fx_assets,
+        direct_fx_instruments=direct_fx_instruments,
         instrument_detail_cache=instrument_detail_cache,
     )
     return {
@@ -1356,7 +1356,7 @@ def build_daily_portfolio_snapshots(
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
 
     fx_payload = get_platform_fx_rates()
-    direct_fx_assets = _fx_direct_asset_map(fx_payload)
+    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     transactions_by_date: dict[str, list[dict[str, object]]] = defaultdict(list)
     if include_materialized_rows:
@@ -1372,10 +1372,10 @@ def build_daily_portfolio_snapshots(
     previous_cash_balance_date: date | None = None
     cumulative_cash_currency_gains = 0.0
     cash_currency_gain_history_complete = True
-    previous_position_market_values_local_by_asset: dict[str, dict[str, object]] = {}
+    previous_position_market_values_local_by_instrument: dict[str, dict[str, object]] = {}
     previous_position_market_value_date: date | None = None
-    cumulative_asset_currency_gains = 0.0
-    asset_currency_gain_history_complete = True
+    cumulative_instrument_currency_gains = 0.0
+    instrument_currency_gain_history_complete = True
     previous_contribution_states_by_axis: dict[str, dict[str, dict[str, object]]] = {
         "instrument": {},
         "account": {},
@@ -1402,15 +1402,15 @@ def build_daily_portfolio_snapshots(
         all_position_lots = position_lots
         open_position_lots = [position_lot for position_lot in all_position_lots if position_lot.get("status") == "open"]
         position_buckets = _position_buckets_from_lots(open_position_lots)
-        account_asset_buckets = (
-            _position_buckets_by_account_asset_from_lots(open_position_lots)
+        account_instrument_buckets = (
+            _position_buckets_by_account_instrument_from_lots(open_position_lots)
             if include_materialized_rows
             else []
         )
         transaction_buckets = _sum_period_transaction_buckets(
             transactions_as_of,
             base_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
         realized_pnl_summary = _sum_period_realized_capital_gains(
@@ -1418,7 +1418,7 @@ def build_daily_portfolio_snapshots(
             start_date=None,
             end_date=as_of_date,
             base_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
         pnl_components = {
@@ -1445,7 +1445,7 @@ def build_daily_portfolio_snapshots(
                 as_of_date=as_of_date,
                 from_currency=posting_currency,
                 to_currency=base_currency,
-                direct_fx_assets=direct_fx_assets,
+                direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
             )
             if converted_cash_delta is None:
@@ -1472,7 +1472,7 @@ def build_daily_portfolio_snapshots(
                     as_of_date=previous_cash_balance_date,
                     from_currency=currency,
                     to_currency=base_currency,
-                    direct_fx_assets=direct_fx_assets,
+                    direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
                 )
                 previous_balance_at_current_fx, current_fx_stale = convert_amount_on(
@@ -1480,7 +1480,7 @@ def build_daily_portfolio_snapshots(
                     as_of_date=as_of_date,
                     from_currency=currency,
                     to_currency=base_currency,
-                    direct_fx_assets=direct_fx_assets,
+                    direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
                 )
                 if previous_balance_at_previous_fx is None or previous_balance_at_current_fx is None:
@@ -1504,7 +1504,7 @@ def build_daily_portfolio_snapshots(
         position_valuation_complete = True
         stale_price_flag = False
         fresh_price_count = 0
-        current_position_market_values_local_by_asset: dict[str, dict[str, object]] = {}
+        current_position_market_values_local_by_instrument: dict[str, dict[str, object]] = {}
         for bucket in position_buckets:
             currency = _normalized_currency(bucket.get("currency"), fallback=base_currency)
             quantity = _safe_float(bucket.get("quantity")) or 0.0
@@ -1514,7 +1514,7 @@ def build_daily_portfolio_snapshots(
                 as_of_date=as_of_date,
                 from_currency=currency,
                 to_currency=base_currency,
-                direct_fx_assets=direct_fx_assets,
+                direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
             )
             if converted_cost_basis is None:
@@ -1523,7 +1523,7 @@ def build_daily_portfolio_snapshots(
                 open_cost_basis_base += converted_cost_basis
                 stale_fx_flag = stale_fx_flag or cost_basis_fx_stale
 
-            detail = _instrument_detail_cache_get(str(bucket.get("asset_id") or ""), instrument_detail_cache)
+            detail = _instrument_detail_cache_get(str(bucket.get("instrument_id") or ""), instrument_detail_cache)
             if not isinstance(detail, dict):
                 position_valuation_complete = False
                 continue
@@ -1549,7 +1549,7 @@ def build_daily_portfolio_snapshots(
                 as_of_date=as_of_date,
                 from_currency=currency,
                 to_currency=base_currency,
-                direct_fx_assets=direct_fx_assets,
+                direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
             )
             if market_value_local is None or converted_market_value is None:
@@ -1558,7 +1558,7 @@ def build_daily_portfolio_snapshots(
             price_point_date = _parse_iso_date(price_point.get("as_of_date"))
             if price_point_date == as_of_date:
                 fresh_price_count += 1
-            current_position_market_values_local_by_asset[str(bucket.get("asset_id") or "")] = {
+            current_position_market_values_local_by_instrument[str(bucket.get("instrument_id") or "")] = {
                 "currency": currency,
                 "market_value_local": market_value_local,
             }
@@ -1567,11 +1567,11 @@ def build_daily_portfolio_snapshots(
             stale_price_flag = stale_price_flag or bool(price_point.get("stale"))
             stale_fx_flag = stale_fx_flag or valuation_fx_stale
 
-        daily_asset_currency_gain = 0.0
-        asset_currency_gain_complete = True
+        daily_instrument_currency_gain = 0.0
+        instrument_currency_gain_complete = True
         if previous_position_market_value_date is not None:
-            for asset_id, previous_position_value in previous_position_market_values_local_by_asset.items():
-                del asset_id
+            for instrument_id, previous_position_value in previous_position_market_values_local_by_instrument.items():
+                del instrument_id
                 currency = _normalized_currency(previous_position_value.get("currency"), fallback=base_currency)
                 if currency == base_currency:
                     continue
@@ -1583,7 +1583,7 @@ def build_daily_portfolio_snapshots(
                     as_of_date=previous_position_market_value_date,
                     from_currency=currency,
                     to_currency=base_currency,
-                    direct_fx_assets=direct_fx_assets,
+                    direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
                 )
                 previous_value_at_current_fx, current_fx_stale = convert_amount_on(
@@ -1591,21 +1591,21 @@ def build_daily_portfolio_snapshots(
                     as_of_date=as_of_date,
                     from_currency=currency,
                     to_currency=base_currency,
-                    direct_fx_assets=direct_fx_assets,
+                    direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
                 )
                 if previous_value_at_previous_fx is None or previous_value_at_current_fx is None:
-                    asset_currency_gain_complete = False
+                    instrument_currency_gain_complete = False
                     continue
-                daily_asset_currency_gain += previous_value_at_current_fx - previous_value_at_previous_fx
+                daily_instrument_currency_gain += previous_value_at_current_fx - previous_value_at_previous_fx
                 stale_fx_flag = stale_fx_flag or previous_fx_stale or current_fx_stale
 
-        asset_currency_gains = None
-        if asset_currency_gain_history_complete and asset_currency_gain_complete:
-            cumulative_asset_currency_gains += daily_asset_currency_gain
-            asset_currency_gains = cumulative_asset_currency_gains
+        instrument_currency_gains = None
+        if instrument_currency_gain_history_complete and instrument_currency_gain_complete:
+            cumulative_instrument_currency_gains += daily_instrument_currency_gain
+            instrument_currency_gains = cumulative_instrument_currency_gains
         else:
-            asset_currency_gain_history_complete = False
+            instrument_currency_gain_history_complete = False
 
         coverage_state = "complete"
         if (
@@ -1618,7 +1618,7 @@ def build_daily_portfolio_snapshots(
             coverage_state = "partial" if has_partial_content else "unavailable"
         if not cash_currency_gain_history_complete and coverage_state == "complete":
             coverage_state = "partial"
-        if not asset_currency_gain_history_complete and coverage_state == "complete":
+        if not instrument_currency_gain_history_complete and coverage_state == "complete":
             coverage_state = "partial"
         if (
             coverage_state == "complete"
@@ -1661,16 +1661,16 @@ def build_daily_portfolio_snapshots(
                 elif not cash_currency_gain_history_complete:
                     total_pnl = None
                 if total_pnl is not None:
-                    if asset_currency_gains is not None:
-                        total_pnl += asset_currency_gains
-                    elif not asset_currency_gain_history_complete:
+                    if instrument_currency_gains is not None:
+                        total_pnl += instrument_currency_gains
+                    elif not instrument_currency_gain_history_complete:
                         total_pnl = None
 
         flow_breakdown = _daily_external_flow_breakdown(
             sorted_transactions,
             as_of_date,
             base_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
         if coverage_state == "complete" and not flow_breakdown["coverage_complete"]:
@@ -1729,7 +1729,7 @@ def build_daily_portfolio_snapshots(
             "income_cash_amount": pnl_components["income_cash_amount"],
             "expense_cash_amount": pnl_components["expense_cash_amount"],
             "cash_currency_gains": cash_currency_gains,
-            "asset_currency_gains": asset_currency_gains,
+            "instrument_currency_gains": instrument_currency_gains,
             "return_of_capital_amount": pnl_components["return_of_capital_amount"],
             "total_pnl": total_pnl,
             "external_cash_in": flow_breakdown["external_cash_in"],
@@ -1746,10 +1746,10 @@ def build_daily_portfolio_snapshots(
 
         if include_materialized_rows:
             snapshot_payload["_holding_rows"] = _build_materialized_holding_rows(
-                account_asset_buckets=account_asset_buckets,
+                account_instrument_buckets=account_instrument_buckets,
                 as_of_date=as_of_date,
                 base_currency=base_currency,
-                direct_fx_assets=direct_fx_assets,
+                direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
                 nav=nav,
             )
@@ -1767,7 +1767,7 @@ def build_daily_portfolio_snapshots(
                     account_cost_methods=account_cost_methods,
                     account_currency_map=account_currency_map,
                     account_name_map=account_name_map,
-                    direct_fx_assets=direct_fx_assets,
+                    direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
                 )
                 current_events = _build_contribution_daily_events(
@@ -1777,7 +1777,7 @@ def build_daily_portfolio_snapshots(
                     transactions_on_date=transactions_by_date.get(as_of_iso, []),
                     base_currency=base_currency,
                     account_name_map=account_name_map,
-                    direct_fx_assets=direct_fx_assets,
+                    direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
                 )
                 contribution_slices.extend(
@@ -1790,7 +1790,7 @@ def build_daily_portfolio_snapshots(
                         snapshot=snapshot_payload,
                         previous_date=as_of_date - timedelta(days=1),
                         base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                     )
                 )
@@ -1801,7 +1801,7 @@ def build_daily_portfolio_snapshots(
 
         previous_cash_balances_by_currency = dict(cash_balances_by_currency)
         previous_cash_balance_date = as_of_date
-        previous_position_market_values_local_by_asset = deepcopy(current_position_market_values_local_by_asset)
+        previous_position_market_values_local_by_instrument = deepcopy(current_position_market_values_local_by_instrument)
         previous_position_market_value_date = as_of_date
 
     return snapshots
@@ -2152,7 +2152,7 @@ def build_portfolio_performance_report_from_snapshots(
     income_cash_amount = snapshot_period_delta("income_cash_amount")
     expense_cash_amount = snapshot_period_delta("expense_cash_amount")
     cash_currency_gains = snapshot_period_delta("cash_currency_gains")
-    asset_currency_gains = snapshot_period_delta("asset_currency_gains")
+    instrument_currency_gains = snapshot_period_delta("instrument_currency_gains")
     return_of_capital_amount = snapshot_period_delta("return_of_capital_amount")
     total_pnl = snapshot_period_delta("total_pnl")
 
@@ -2273,7 +2273,7 @@ def build_portfolio_performance_report_from_snapshots(
             "income_cash_amount": income_cash_amount,
             "expense_cash_amount": expense_cash_amount,
             "cash_currency_gains": cash_currency_gains,
-            "asset_currency_gains": asset_currency_gains,
+            "instrument_currency_gains": instrument_currency_gains,
             "return_of_capital_amount": return_of_capital_amount,
             "total_pnl": total_pnl,
             "mean_daily_return": mean_daily_return,
@@ -2302,7 +2302,7 @@ def build_portfolio_performance_report_from_snapshots(
                 "income_cash_amount": snapshot.get("income_cash_amount"),
                 "expense_cash_amount": snapshot.get("expense_cash_amount"),
                 "cash_currency_gains": snapshot.get("cash_currency_gains"),
-                "asset_currency_gains": snapshot.get("asset_currency_gains"),
+                "instrument_currency_gains": snapshot.get("instrument_currency_gains"),
                 "return_of_capital_amount": snapshot.get("return_of_capital_amount"),
                 "total_pnl": snapshot.get("total_pnl"),
                 "external_cash_in": snapshot["external_cash_in"],
@@ -2358,7 +2358,7 @@ def build_period_calculation_report(
                 "fees": None,
                 "taxes": None,
                 "cash_currency_gains": None,
-                "asset_currency_gains": None,
+                "instrument_currency_gains": None,
                 "deposits": 0.0,
                 "withdrawals": 0.0,
                 "net_external_inflow": 0.0,
@@ -2398,24 +2398,24 @@ def build_period_calculation_report(
 
     initial_value = _safe_float(start_snapshot.get("nav"))
     start_cash_currency_gains = _safe_float(start_snapshot.get("cash_currency_gains"))
-    start_asset_currency_gains = _safe_float(start_snapshot.get("asset_currency_gains"))
+    start_instrument_currency_gains = _safe_float(start_snapshot.get("instrument_currency_gains"))
     if not start_boundary_transactions:
         initial_value = 0.0
         start_cash_currency_gains = 0.0
-        start_asset_currency_gains = 0.0
+        start_instrument_currency_gains = 0.0
 
     final_value = _safe_float(end_snapshot.get("nav"))
     end_cash_currency_gains = _safe_float(end_snapshot.get("cash_currency_gains"))
-    end_asset_currency_gains = _safe_float(end_snapshot.get("asset_currency_gains"))
+    end_instrument_currency_gains = _safe_float(end_snapshot.get("instrument_currency_gains"))
 
     fx_payload = get_platform_fx_rates()
-    direct_fx_assets = _fx_direct_asset_map(fx_payload)
+    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
 
     transaction_buckets = _sum_period_transaction_buckets(
         period_transactions,
         base_currency=base_currency,
-        direct_fx_assets=direct_fx_assets,
+        direct_fx_instruments=direct_fx_instruments,
         instrument_detail_cache=instrument_detail_cache,
     )
     unrealized_capital_summary = _period_unrealized_capital_gains_by_group(
@@ -2430,7 +2430,7 @@ def build_period_calculation_report(
         taxonomy_nodes=None,
         taxonomy_assignments=None,
         base_currency=base_currency,
-        direct_fx_assets=direct_fx_assets,
+        direct_fx_instruments=direct_fx_instruments,
         instrument_detail_cache=instrument_detail_cache,
     )
 
@@ -2441,19 +2441,19 @@ def build_period_calculation_report(
     cash_currency_gains = None
     if start_cash_currency_gains is not None and end_cash_currency_gains is not None:
         cash_currency_gains = end_cash_currency_gains - start_cash_currency_gains
-    asset_currency_gains = None
-    if start_asset_currency_gains is not None and end_asset_currency_gains is not None:
-        asset_currency_gains = end_asset_currency_gains - start_asset_currency_gains
+    instrument_currency_gains = None
+    if start_instrument_currency_gains is not None and end_instrument_currency_gains is not None:
+        instrument_currency_gains = end_instrument_currency_gains - start_instrument_currency_gains
 
     capital_gains = None
-    if delta is not None and cash_currency_gains is not None and asset_currency_gains is not None:
+    if delta is not None and cash_currency_gains is not None and instrument_currency_gains is not None:
         capital_gains = (
             delta
             - transaction_buckets["earnings"]
             + transaction_buckets["fees"]
             + transaction_buckets["taxes"]
             - cash_currency_gains
-            - asset_currency_gains
+            - instrument_currency_gains
         )
 
     unrealized_capital_values = (
@@ -2519,9 +2519,9 @@ def build_period_calculation_report(
             "sort_order": 20,
         },
         {
-            "key": "asset_currency_gains",
-            "label": "Asset Currency Gains",
-            "amount": asset_currency_gains,
+            "key": "instrument_currency_gains",
+            "label": "Instrument Currency Gains",
+            "amount": instrument_currency_gains,
             "line_kind": "performance",
             "parent_key": None,
             "sort_order": 25,
@@ -2629,7 +2629,7 @@ def build_period_calculation_report(
             "fees": transaction_buckets["fees"],
             "taxes": transaction_buckets["taxes"],
             "cash_currency_gains": cash_currency_gains,
-            "asset_currency_gains": asset_currency_gains,
+            "instrument_currency_gains": instrument_currency_gains,
             "deposits": transaction_buckets["deposits"],
             "withdrawals": transaction_buckets["withdrawals"],
             "net_external_inflow": transaction_buckets["net_external_inflow"],
@@ -2645,7 +2645,7 @@ def _build_boundary_holding_records(
     transactions: list[dict[str, object]],
     as_of_date: date,
     base_currency: str,
-    direct_fx_assets: dict[tuple[str, str], str],
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
     boundary_nav: float | None,
 ) -> tuple[list[dict[str, object]], float | None]:
@@ -2669,10 +2669,10 @@ def _build_boundary_holding_records(
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
-        detail = _instrument_detail_cache_get(str(bucket.get("asset_id") or ""), instrument_detail_cache)
+        detail = _instrument_detail_cache_get(str(bucket.get("instrument_id") or ""), instrument_detail_cache)
         price_point = (
             _select_market_point_as_of(detail=detail, role="valuation", as_of_date=as_of_date)
             if isinstance(detail, dict)
@@ -2689,7 +2689,7 @@ def _build_boundary_holding_records(
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
         if market_value_local is None or converted_market_value is None:
@@ -2699,8 +2699,8 @@ def _build_boundary_holding_records(
 
         rendered_positions.append(
             {
-                "position_id": str(bucket.get("asset_id") or ""),
-                "asset_id": str(bucket.get("asset_id") or ""),
+                "position_id": str(bucket.get("instrument_id") or ""),
+                "instrument_id": str(bucket.get("instrument_id") or ""),
                 "instrument_ref": deepcopy(bucket.get("instrument_ref") or {}),
                 "quantity": quantity,
                 "cost_basis_method": str(bucket.get("cost_basis_method") or "fifo"),
@@ -2728,7 +2728,7 @@ def _build_boundary_holding_records(
     rendered_positions.sort(
         key=lambda item: (
             -((_safe_float(item.get("market_value_base")) or 0.0)),
-            str(item.get("asset_id") or ""),
+            str(item.get("instrument_id") or ""),
         )
     )
     return rendered_positions, resolved_total_market_value_base
@@ -2754,7 +2754,7 @@ def _statement_cash_nav_components(
     transactions: list[dict[str, object]],
     as_of_date: date,
     base_currency: str,
-    direct_fx_assets: dict[tuple[str, str], str],
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> dict[str, object]:
     postings = derive_ledger_postings(
@@ -2779,7 +2779,7 @@ def _statement_cash_nav_components(
             as_of_date=as_of_date,
             from_currency=posting_currency,
             to_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
         if converted_cash_delta is None:
@@ -2813,7 +2813,7 @@ def build_statement_of_assets_report(
     boundary_transactions = _transactions_as_of_end_date(sorted_transactions, end_date=as_of_date)
 
     fx_payload = get_platform_fx_rates()
-    direct_fx_assets = _fx_direct_asset_map(fx_payload)
+    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     positions, total_market_value_base = _build_boundary_holding_records(
         portfolio_id=str(portfolio.get("portfolio_id") or ""),
@@ -2821,7 +2821,7 @@ def build_statement_of_assets_report(
         transactions=boundary_transactions,
         as_of_date=as_of_date,
         base_currency=base_currency,
-        direct_fx_assets=direct_fx_assets,
+        direct_fx_instruments=direct_fx_instruments,
         instrument_detail_cache=instrument_detail_cache,
         boundary_nav=None,
     )
@@ -2831,7 +2831,7 @@ def build_statement_of_assets_report(
         transactions=boundary_transactions,
         as_of_date=as_of_date,
         base_currency=base_currency,
-        direct_fx_assets=direct_fx_assets,
+        direct_fx_instruments=direct_fx_instruments,
         instrument_detail_cache=instrument_detail_cache,
     )
     cash_balance_base = _safe_float(cash_components.get("cash_balance_base"))
@@ -2880,7 +2880,7 @@ def _filter_boundary_positions(
         filtered_positions = [
             position
             for position in positions
-            if str(position.get("asset_id") or "") == resolved_group_key
+            if str(position.get("instrument_id") or "") == resolved_group_key
         ]
         group_label = None
         if filtered_positions:
@@ -2889,7 +2889,7 @@ def _filter_boundary_positions(
                 if isinstance(filtered_positions[0].get("instrument_ref"), dict)
                 else {}
             )
-            group_label = str(instrument_ref.get("asset_name") or resolved_group_key)
+            group_label = str(instrument_ref.get("instrument_name") or resolved_group_key)
         return filtered_positions, group_label
 
     if resolved_axis == "account":
@@ -2901,14 +2901,14 @@ def _filter_boundary_positions(
         group_label = (account_name_map or {}).get(resolved_group_key)
         return filtered_positions, group_label
 
-    if resolved_axis == "asset_type":
+    if resolved_axis == "instrument_type":
         filtered_positions = [
             position
             for position in positions
-            if _asset_type_key_label(_instrument_ref_from_mapping(position).get("asset_type"))[0] == resolved_group_key
+            if _instrument_type_key_label(_instrument_ref_from_mapping(position).get("instrument_type"))[0] == resolved_group_key
         ]
-        group_label = _asset_type_key_label(
-            _instrument_ref_from_mapping(filtered_positions[0]).get("asset_type")
+        group_label = _instrument_type_key_label(
+            _instrument_ref_from_mapping(filtered_positions[0]).get("instrument_type")
             if filtered_positions
             else resolved_group_key
         )[1]
@@ -2936,14 +2936,14 @@ def _filter_boundary_positions(
     filtered_positions: list[dict[str, object]] = []
     group_label = None
     for position in positions:
-        asset_id = str(position.get("asset_id") or "")
-        if not asset_id:
+        instrument_id = str(position.get("instrument_id") or "")
+        if not instrument_id:
             continue
         position_group_key, position_group_label = _resolve_taxonomy_group_for_date(
             taxonomy=taxonomy,
             taxonomy_nodes_by_id=taxonomy_nodes_by_id,
             assignments_by_entity=assignments_by_entity,
-            target_entity_id=asset_id,
+            target_entity_id=instrument_id,
             as_of_date=as_of_date,
         )
         if position_group_key != resolved_group_key:
@@ -3022,7 +3022,7 @@ def build_period_boundary_holdings_report(
     )
 
     fx_payload = get_platform_fx_rates()
-    direct_fx_assets = _fx_direct_asset_map(fx_payload)
+    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     start_snapshot = _build_single_date_snapshot(
         portfolio,
@@ -3043,7 +3043,7 @@ def build_period_boundary_holdings_report(
         transactions=start_boundary_transactions,
         as_of_date=initial_boundary_date,
         base_currency=base_currency,
-        direct_fx_assets=direct_fx_assets,
+        direct_fx_instruments=direct_fx_instruments,
         instrument_detail_cache=instrument_detail_cache,
         boundary_nav=_safe_float(start_snapshot.get("nav")),
     )
@@ -3053,7 +3053,7 @@ def build_period_boundary_holdings_report(
         transactions=end_boundary_transactions,
         as_of_date=resolved_end_date,
         base_currency=base_currency,
-        direct_fx_assets=direct_fx_assets,
+        direct_fx_instruments=direct_fx_instruments,
         instrument_detail_cache=instrument_detail_cache,
         boundary_nav=_safe_float(end_snapshot.get("nav")),
     )
@@ -3141,16 +3141,16 @@ def _group_boundary_holdings_by_taxonomy(
         assignments_by_entity[str(assignment.get("target_entity_id") or "")].append(assignment)
 
     grouped: dict[str, dict[str, object]] = {}
-    asset_ids_by_group: dict[str, set[str]] = defaultdict(set)
+    instrument_ids_by_group: dict[str, set[str]] = defaultdict(set)
     for position in positions:
-        asset_id = str(position.get("asset_id") or "")
-        if not asset_id:
+        instrument_id = str(position.get("instrument_id") or "")
+        if not instrument_id:
             continue
         group_key, group_label = _resolve_taxonomy_group_for_date(
             taxonomy=taxonomy,
             taxonomy_nodes_by_id=taxonomy_nodes_by_id,
             assignments_by_entity=assignments_by_entity,
-            target_entity_id=asset_id,
+            target_entity_id=instrument_id,
             as_of_date=as_of_date,
         )
         group = grouped.setdefault(
@@ -3161,7 +3161,7 @@ def _group_boundary_holdings_by_taxonomy(
                 "group_key": group_key,
                 "group_label": group_label,
                 "position_count": 0,
-                "asset_count": 0,
+                "instrument_count": 0,
                 "cost_basis_base": 0.0,
                 "market_value_base": 0.0,
                 "unrealized_pnl": 0.0,
@@ -3170,7 +3170,7 @@ def _group_boundary_holdings_by_taxonomy(
             },
         )
         group["position_count"] = int(group.get("position_count") or 0) + 1
-        asset_ids_by_group[group_key].add(asset_id)
+        instrument_ids_by_group[group_key].add(instrument_id)
         group["open_position_lot_count"] = int(group.get("open_position_lot_count") or 0) + int(
             position.get("open_position_lot_count") or 0
         )
@@ -3193,7 +3193,7 @@ def _group_boundary_holdings_by_taxonomy(
     for group_key, group in grouped.items():
         market_value_base = _safe_float(group.get("market_value_base"))
         cost_basis_base = _safe_float(group.get("cost_basis_base"))
-        group["asset_count"] = len(asset_ids_by_group[group_key])
+        group["instrument_count"] = len(instrument_ids_by_group[group_key])
         group["unrealized_pnl"] = (
             market_value_base - cost_basis_base
             if market_value_base is not None and cost_basis_base is not None
@@ -3303,7 +3303,7 @@ def _compute_currency_translation_gain(
     previous_date: date,
     current_date: date,
     base_currency: str,
-    direct_fx_assets: dict[tuple[str, str], str],
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> tuple[float | None, bool]:
     if not isinstance(local_amounts_by_currency, dict) or not local_amounts_by_currency:
@@ -3324,7 +3324,7 @@ def _compute_currency_translation_gain(
             as_of_date=previous_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
         current_value, current_stale = convert_amount_on(
@@ -3332,7 +3332,7 @@ def _compute_currency_translation_gain(
             as_of_date=current_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
         if previous_value is None or current_value is None:
@@ -3486,14 +3486,14 @@ def _axis_includes_cash_balance(axis: str) -> bool:
         return True
     parent_axis = _calculation_detail_parent_axis(axis)
     if parent_axis is not None:
-        return parent_axis in {"instrument", "account", "asset_type", "currency"}
-    return axis in {"instrument", "account", "asset_type", "currency"}
+        return parent_axis in {"instrument", "account", "instrument_type", "currency"}
+    return axis in {"instrument", "account", "instrument_type", "currency"}
 
 
-def _asset_type_key_label(value: object) -> tuple[str, str]:
+def _instrument_type_key_label(value: object) -> tuple[str, str]:
     raw_value = str(value or "").strip()
     if not raw_value:
-        return ("unassigned:asset_type", "Unassigned")
+        return ("unassigned:instrument_type", "Unassigned")
     group_key = raw_value.replace(" ", "_").replace("-", "_").lower()
     group_label = " ".join(part.capitalize() for part in group_key.split("_") if part)
     return (group_key, group_label or raw_value)
@@ -3514,7 +3514,7 @@ def _position_group_for_axis(
     if axis == _CALCULATION_CASH_DETAIL_AXIS:
         return ("", "")
     detail_parent_axis = _calculation_detail_parent_axis(axis)
-    if detail_parent_axis in {"instrument", "account", "asset_type", "currency"}:
+    if detail_parent_axis in {"instrument", "account", "instrument_type", "currency"}:
         parent_group_key, _parent_group_label = _position_group_for_axis(
             axis=detail_parent_axis,
             position_lot=position_lot,
@@ -3530,20 +3530,20 @@ def _position_group_for_axis(
         return (
             _encode_calculation_detail_group_key(
                 parent_group_key=parent_group_key,
-                item_kind="asset",
+                item_kind="instrument",
                 item_key=item_key,
             ),
             item_label,
         )
     if axis == "instrument":
-        group_key = str(position_lot.get("asset_id") or "")
+        group_key = str(position_lot.get("instrument_id") or "")
         instrument_ref = _instrument_ref_from_mapping(position_lot)
-        return (group_key, str(instrument_ref.get("asset_name") or group_key))
+        return (group_key, str(instrument_ref.get("instrument_name") or group_key))
     if axis == "account":
         group_key = str(position_lot.get("account_id") or "")
         return (group_key, account_name_map.get(group_key, group_key))
-    if axis == "asset_type":
-        return _asset_type_key_label(_instrument_ref_from_mapping(position_lot).get("asset_type"))
+    if axis == "instrument_type":
+        return _instrument_type_key_label(_instrument_ref_from_mapping(position_lot).get("instrument_type"))
     if axis == "currency":
         group_key = _normalized_currency(position_lot.get("currency"), fallback=base_currency)
         return (group_key, group_key)
@@ -3572,7 +3572,7 @@ def _cash_group_for_axis(
             ),
         )
     detail_parent_axis = _calculation_detail_parent_axis(axis)
-    if detail_parent_axis in {"instrument", "account", "asset_type", "currency"}:
+    if detail_parent_axis in {"instrument", "account", "instrument_type", "currency"}:
         parent_group_key, _parent_group_label = _cash_group_for_axis(
             axis=detail_parent_axis,
             account_id=account_id,
@@ -3596,7 +3596,7 @@ def _cash_group_for_axis(
         return ("cash", "Cash")
     if axis == "account":
         return (account_id, account_name_map.get(account_id, account_id))
-    if axis == "asset_type":
+    if axis == "instrument_type":
         return ("cash", "Cash")
     if axis == "currency":
         return (currency, currency)
@@ -3612,10 +3612,10 @@ def _transaction_group_for_axis(
 ) -> tuple[str, str]:
     account_id = str(transaction.get("account_id") or "")
     instrument_ref = _instrument_ref_from_mapping(transaction)
-    asset_id = str(transaction.get("asset_id") or instrument_ref.get("asset_id") or "")
+    instrument_id = str(transaction.get("instrument_id") or instrument_ref.get("instrument_id") or "")
     currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
     if axis == _CALCULATION_CASH_DETAIL_AXIS:
-        if asset_id:
+        if instrument_id:
             return ("", "")
         return (
             _encode_calculation_detail_group_key(
@@ -3631,17 +3631,17 @@ def _transaction_group_for_axis(
             ),
         )
     detail_parent_axis = _calculation_detail_parent_axis(axis)
-    if detail_parent_axis in {"instrument", "account", "asset_type", "currency"}:
+    if detail_parent_axis in {"instrument", "account", "instrument_type", "currency"}:
         parent_group_key, _parent_group_label = _transaction_group_for_axis(
             axis=detail_parent_axis,
             transaction=transaction,
             account_name_map=account_name_map,
             base_currency=base_currency,
         )
-        if asset_id:
-            item_kind = "asset"
-            item_key = asset_id
-            item_label = str(instrument_ref.get("asset_name") or asset_id)
+        if instrument_id:
+            item_kind = "instrument"
+            item_key = instrument_id
+            item_label = str(instrument_ref.get("instrument_name") or instrument_id)
         else:
             item_kind = "cash"
             item_key = _cash_detail_item_key(account_id=account_id, currency=currency)
@@ -3660,14 +3660,14 @@ def _transaction_group_for_axis(
             item_label,
         )
     if axis == "instrument":
-        if not asset_id:
+        if not instrument_id:
             return ("cash", "Cash")
-        return (asset_id, str(instrument_ref.get("asset_name") or asset_id))
+        return (instrument_id, str(instrument_ref.get("instrument_name") or instrument_id))
     if axis == "account":
         return (account_id, account_name_map.get(account_id, account_id))
-    if axis == "asset_type":
-        if asset_id:
-            return _asset_type_key_label(instrument_ref.get("asset_type"))
+    if axis == "instrument_type":
+        if instrument_id:
+            return _instrument_type_key_label(instrument_ref.get("instrument_type"))
         return ("cash", "Cash")
     if axis == "currency":
         return (currency, currency)
@@ -3725,7 +3725,7 @@ def _build_contribution_group_end_states(
     account_cost_methods: dict[str, str],
     account_currency_map: dict[str, str],
     account_name_map: dict[str, str],
-    direct_fx_assets: dict[tuple[str, str], str],
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> dict[str, dict[str, object]]:
     states: dict[str, dict[str, object]] = {}
@@ -3760,7 +3760,7 @@ def _build_contribution_group_end_states(
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
         if converted_cost_basis is None:
@@ -3769,7 +3769,7 @@ def _build_contribution_group_end_states(
             state["open_cost_basis_base"] = (_safe_float(state.get("open_cost_basis_base")) or 0.0) + converted_cost_basis
             state["stale_fx_flag"] = bool(state.get("stale_fx_flag")) or cost_basis_fx_stale
 
-        detail = _instrument_detail_cache_get(str(position_lot.get("asset_id") or ""), instrument_detail_cache)
+        detail = _instrument_detail_cache_get(str(position_lot.get("instrument_id") or ""), instrument_detail_cache)
         price_point = (
             _select_market_point_as_of(detail=detail, role="valuation", as_of_date=as_of_date)
             if isinstance(detail, dict)
@@ -3790,7 +3790,7 @@ def _build_contribution_group_end_states(
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
         if market_value_local is None or converted_market_value is None:
@@ -3840,7 +3840,7 @@ def _build_contribution_group_end_states(
                 as_of_date=as_of_date,
                 from_currency=posting_currency,
                 to_currency=base_currency,
-                direct_fx_assets=direct_fx_assets,
+                direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
             )
             if converted_cash_delta is None:
@@ -3909,7 +3909,7 @@ def _build_contribution_daily_events(
     transactions_on_date: list[dict[str, object]],
     base_currency: str,
     account_name_map: dict[str, str],
-    direct_fx_assets: dict[tuple[str, str], str],
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> dict[str, dict[str, object]]:
     events: dict[str, dict[str, object]] = {}
@@ -3928,7 +3928,7 @@ def _build_contribution_daily_events(
                 "fee_amount": 0.0,
                 "tax_amount": 0.0,
                 "cash_currency_gains": 0.0,
-                "asset_currency_gains": 0.0,
+                "instrument_currency_gains": 0.0,
             },
         )
 
@@ -3946,7 +3946,7 @@ def _build_contribution_daily_events(
             as_of_date=trade_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
         if converted_amount is None:
@@ -3989,7 +3989,7 @@ def _build_contribution_daily_events(
 
     for transaction in transactions_on_date:
         transaction_type = str(transaction.get("transaction_type") or "")
-        asset_id = str(transaction.get("asset_id") or "")
+        instrument_id = str(transaction.get("instrument_id") or "")
         account_id = str(transaction.get("account_id") or "")
         currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
         instrument_name = str(
@@ -3997,8 +3997,8 @@ def _build_contribution_daily_events(
                 (transaction.get("instrument_ref") or {})
                 if isinstance(transaction.get("instrument_ref"), dict)
                 else {}
-            ).get("asset_name")
-            or asset_id
+            ).get("instrument_name")
+            or instrument_id
         )
         group_key, group_label = _transaction_group_for_axis(
             axis=axis,
@@ -4014,7 +4014,7 @@ def _build_contribution_daily_events(
         tax_amount = _safe_float(transaction.get("taxes")) or 0.0
 
         if transaction_type in {"dividend", "coupon", "dividend_reinvestment"}:
-            if axis == "instrument" and not asset_id:
+            if axis == "instrument" and not instrument_id:
                 continue
             add_amount(
                 group_key=group_key,
@@ -4097,7 +4097,7 @@ def _build_contribution_slices_for_date(
     snapshot: dict[str, object] | None,
     previous_date: date,
     base_currency: str,
-    direct_fx_assets: dict[tuple[str, str], str],
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
 ) -> list[dict[str, object]]:
     daily_slices: list[dict[str, object]] = []
@@ -4143,17 +4143,17 @@ def _build_contribution_slices_for_date(
         fee_amount = _safe_float((current_event or {}).get("fee_amount"))
         tax_amount = _safe_float((current_event or {}).get("tax_amount"))
         cash_currency_gains = None
-        asset_currency_gains = None
+        instrument_currency_gains = None
         if previous_state is None:
             cash_currency_gains = 0.0 if _axis_includes_cash_balance(axis) else None
-            asset_currency_gains = 0.0
+            instrument_currency_gains = 0.0
         else:
-            asset_currency_gains, _ = _compute_currency_translation_gain(
+            instrument_currency_gains, _ = _compute_currency_translation_gain(
                 previous_state.get("_position_market_value_local_by_currency"),
                 previous_date=previous_date,
                 current_date=as_of_date,
                 base_currency=base_currency,
-                direct_fx_assets=direct_fx_assets,
+                direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
             )
             if _axis_includes_cash_balance(axis):
@@ -4162,7 +4162,7 @@ def _build_contribution_slices_for_date(
                     previous_date=previous_date,
                     current_date=as_of_date,
                     base_currency=base_currency,
-                    direct_fx_assets=direct_fx_assets,
+                    direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
                 )
         if realized_pnl is None and current_event is None:
@@ -4175,8 +4175,8 @@ def _build_contribution_slices_for_date(
             fee_amount = 0.0
         if tax_amount is None and current_event is None:
             tax_amount = 0.0
-        if asset_currency_gains is None and current_event is None:
-            asset_currency_gains = 0.0
+        if instrument_currency_gains is None and current_event is None:
+            instrument_currency_gains = 0.0
         if _axis_includes_cash_balance(axis) and cash_currency_gains is None and current_event is None:
             cash_currency_gains = 0.0
 
@@ -4195,8 +4195,8 @@ def _build_contribution_slices_for_date(
             and unrealized_pnl_change is not None
         ):
             total_pnl = realized_pnl + income_cash_amount - expense_cash_amount + unrealized_pnl_change
-            if asset_currency_gains is not None:
-                total_pnl += asset_currency_gains
+            if instrument_currency_gains is not None:
+                total_pnl += instrument_currency_gains
             if _axis_includes_cash_balance(axis) and cash_currency_gains is not None:
                 total_pnl += cash_currency_gains
 
@@ -4207,7 +4207,7 @@ def _build_contribution_slices_for_date(
             or (current_state is not None and ending_position_market_value_base is None)
             or (current_state is not None and ending_open_cost_basis_base is None)
             or (_axis_includes_cash_balance(axis) and current_state is not None and ending_cash_balance_base is None)
-            or (asset_currency_gains is None)
+            or (instrument_currency_gains is None)
             or (_axis_includes_cash_balance(axis) and cash_currency_gains is None)
             or total_pnl is None
         ):
@@ -4246,7 +4246,7 @@ def _build_contribution_slices_for_date(
                 "fee_amount": fee_amount,
                 "tax_amount": tax_amount,
                 "cash_currency_gains": cash_currency_gains,
-                "asset_currency_gains": asset_currency_gains,
+                "instrument_currency_gains": instrument_currency_gains,
                 "total_pnl": total_pnl,
                 "daily_return": (
                     total_pnl / beginning_value_base
@@ -4405,7 +4405,7 @@ def _group_contribution_slices_by_taxonomy(
                 "fee_amount": 0.0,
                 "tax_amount": 0.0,
                 "cash_currency_gains": 0.0,
-                "asset_currency_gains": 0.0,
+                "instrument_currency_gains": 0.0,
                 "total_pnl": 0.0,
                 "daily_return": None,
                 "daily_contribution": 0.0,
@@ -4431,7 +4431,7 @@ def _group_contribution_slices_by_taxonomy(
             "fee_amount",
             "tax_amount",
             "cash_currency_gains",
-            "asset_currency_gains",
+            "instrument_currency_gains",
             "total_pnl",
             "daily_contribution",
         ):
@@ -4541,7 +4541,7 @@ def _build_taxonomy_contribution_report(
                 "fee_amount": 0.0,
                 "tax_amount": 0.0,
                 "cash_currency_gains": 0.0,
-                "asset_currency_gains": 0.0,
+                "instrument_currency_gains": 0.0,
                 "total_pnl": 0.0,
                 "period_contribution": 0.0,
             },
@@ -4557,7 +4557,7 @@ def _build_taxonomy_contribution_report(
             "fee_amount",
             "tax_amount",
             "cash_currency_gains",
-            "asset_currency_gains",
+            "instrument_currency_gains",
             "total_pnl",
             "daily_contribution",
         ):
@@ -4697,7 +4697,7 @@ def _apply_taxonomy_boundary_values_to_contribution_report(
         line.setdefault("fee_amount", 0.0)
         line.setdefault("tax_amount", 0.0)
         line.setdefault("cash_currency_gains", 0.0)
-        line.setdefault("asset_currency_gains", 0.0)
+        line.setdefault("instrument_currency_gains", 0.0)
         line.setdefault("total_pnl", 0.0)
         line.setdefault("period_contribution", 0.0)
         updated_lines.append(line)
@@ -4889,7 +4889,7 @@ def build_contribution_report_from_daily_slices(
                 "fee_amount": 0.0,
                 "tax_amount": 0.0,
                 "cash_currency_gains": 0.0,
-                "asset_currency_gains": 0.0,
+                "instrument_currency_gains": 0.0,
                 "total_pnl": 0.0,
                 "period_contribution": 0.0,
             },
@@ -4908,7 +4908,7 @@ def build_contribution_report_from_daily_slices(
             "fee_amount",
             "tax_amount",
             "cash_currency_gains",
-            "asset_currency_gains",
+            "instrument_currency_gains",
             "total_pnl",
             "daily_contribution",
         ):
@@ -5139,7 +5139,7 @@ def build_contribution_report(
     account_currency_map = _account_currency_map(accounts)
     account_name_map = _account_name_map(accounts)
     fx_payload = get_platform_fx_rates()
-    direct_fx_assets = _fx_direct_asset_map(fx_payload)
+    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
 
     group_states_by_date: dict[date, dict[str, dict[str, object]]] = {}
@@ -5163,7 +5163,7 @@ def build_contribution_report(
             account_cost_methods=account_cost_methods,
             account_currency_map=account_currency_map,
             account_name_map=account_name_map,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
         group_events_by_date[as_of_date] = _build_contribution_daily_events(
@@ -5173,7 +5173,7 @@ def build_contribution_report(
             transactions_on_date=transactions_by_date.get(as_of_date.isoformat(), []),
             base_currency=base_currency,
             account_name_map=account_name_map,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
 
@@ -5196,7 +5196,7 @@ def build_contribution_report(
                 snapshot=snapshot,
                 previous_date=previous_date,
                 base_currency=base_currency,
-                direct_fx_assets=direct_fx_assets,
+                direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
             )
         )
@@ -5346,7 +5346,7 @@ def build_contribution_calendar_report(
                 "fee_amount": 0.0,
                 "tax_amount": 0.0,
                 "cash_currency_gains": 0.0,
-                "asset_currency_gains": 0.0,
+                "instrument_currency_gains": 0.0,
                 "total_pnl": 0.0,
                 "bucket_contribution": 0.0,
             },
@@ -5363,7 +5363,7 @@ def build_contribution_calendar_report(
             "fee_amount",
             "tax_amount",
             "cash_currency_gains",
-            "asset_currency_gains",
+            "instrument_currency_gains",
             "total_pnl",
             "daily_contribution",
         ):
@@ -5454,7 +5454,7 @@ _CONTRIBUTION_BUCKET_FIELD_MAP: dict[str, str] = {
     "fee_amount": "fee_amount",
     "tax_amount": "tax_amount",
     "cash_currency_gains": "cash_currency_gains",
-    "asset_currency_gains": "asset_currency_gains",
+    "instrument_currency_gains": "instrument_currency_gains",
     "total_pnl": "total_pnl",
     "contribution": "period_contribution",
 }
@@ -5470,7 +5470,7 @@ _CONTRIBUTION_CALENDAR_BUCKET_FIELD_MAP: dict[str, str] = {
     "fee_amount": "fee_amount",
     "tax_amount": "tax_amount",
     "cash_currency_gains": "cash_currency_gains",
-    "asset_currency_gains": "asset_currency_gains",
+    "instrument_currency_gains": "instrument_currency_gains",
     "total_pnl": "total_pnl",
     "contribution": "bucket_contribution",
 }
@@ -5685,7 +5685,7 @@ _CALCULATION_DETAIL_ADDITIVE_SLICE_FIELDS = (
     "fee_amount",
     "tax_amount",
     "cash_currency_gains",
-    "asset_currency_gains",
+    "instrument_currency_gains",
     "total_pnl",
     "daily_contribution",
 )
@@ -5846,7 +5846,7 @@ def _build_taxonomy_calculation_detail_report(
             decoded = _decode_calculation_detail_group_key(base_group_key)
             if decoded is None:
                 target_entity_id = base_group_key
-                item_kind = "cash" if base_group_key == "cash" else "asset"
+                item_kind = "cash" if base_group_key == "cash" else "instrument"
                 detail_item_key = base_group_key
             else:
                 target_entity_id, item_kind, detail_item_key = decoded
@@ -5907,7 +5907,7 @@ def _build_period_calculation_child_records(
         return {}
 
     detail_axis = _CALCULATION_CASH_DETAIL_AXIS if axis == "instrument" else _calculation_detail_axis(axis)
-    if axis in {"instrument", "account", "asset_type", "currency"}:
+    if axis in {"instrument", "account", "instrument_type", "currency"}:
         detail_report = build_contribution_report(
             portfolio,
             accounts,
@@ -5958,7 +5958,7 @@ def _build_period_calculation_child_records(
         unrealized_capital_summary = {"values": {}, "coverage_complete": True}
     else:
         fx_payload = get_platform_fx_rates()
-        direct_fx_assets = _fx_direct_asset_map(fx_payload)
+        direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
         instrument_detail_cache: dict[str, dict[str, object] | None] = {}
         unrealized_capital_summary = (
             _period_unrealized_capital_gains_by_group(
@@ -5973,7 +5973,7 @@ def _build_period_calculation_child_records(
                 taxonomy_nodes=taxonomy_nodes,
                 taxonomy_assignments=taxonomy_assignments,
                 base_currency=str(detail_report["base_currency"]),
-                direct_fx_assets=direct_fx_assets,
+                direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
             )
             if resolved_start_date is not None and resolved_end_date is not None
@@ -6056,7 +6056,7 @@ def _build_period_calculation_child_records(
                 "fees": _safe_float(line.get("fee_amount")),
                 "taxes": _safe_float(line.get("tax_amount")),
                 "cash_currency_gains": _safe_float(line.get("cash_currency_gains")),
-                "asset_currency_gains": _safe_float(line.get("asset_currency_gains")),
+                "instrument_currency_gains": _safe_float(line.get("instrument_currency_gains")),
                 "total_pnl": child_total_pnl,
                 "period_contribution": _safe_float(line.get("period_contribution")),
             }
@@ -6065,7 +6065,7 @@ def _build_period_calculation_child_records(
     for children in children_by_parent.values():
         children.sort(
             key=lambda item: (
-                0 if item.get("item_kind") == "asset" else 1,
+                0 if item.get("item_kind") == "instrument" else 1,
                 -abs(_safe_float(item.get("period_contribution")) or _safe_float(item.get("total_pnl")) or 0.0),
                 str(item.get("item_label") or ""),
             )
@@ -6173,7 +6173,7 @@ def _build_period_calculation_cash_parent_group(
         "fees": _safe_float(line.get("fee_amount")),
         "taxes": _safe_float(line.get("tax_amount")),
         "cash_currency_gains": _safe_float(line.get("cash_currency_gains")),
-        "asset_currency_gains": _safe_float(line.get("asset_currency_gains")),
+        "instrument_currency_gains": _safe_float(line.get("instrument_currency_gains")),
         "total_pnl": group_total_pnl,
         "period_contribution": _safe_float(line.get("period_contribution")),
     }
@@ -6261,7 +6261,7 @@ def build_period_calculation_groups_report(
     }
     period_returns = _period_returns_by_group(list(contribution_report.get("daily_slices") or []))
     fx_payload = get_platform_fx_rates()
-    direct_fx_assets = _fx_direct_asset_map(fx_payload)
+    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     unrealized_capital_summary = (
         _period_unrealized_capital_gains_by_group(
@@ -6276,7 +6276,7 @@ def build_period_calculation_groups_report(
             taxonomy_nodes=taxonomy_nodes,
             taxonomy_assignments=taxonomy_assignments,
             base_currency=str(contribution_report["base_currency"]),
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
         if resolved_start_date is not None and resolved_end_date is not None
@@ -6354,7 +6354,7 @@ def build_period_calculation_groups_report(
                 "fees": _safe_float(line.get("fee_amount")),
                 "taxes": _safe_float(line.get("tax_amount")),
                 "cash_currency_gains": _safe_float(line.get("cash_currency_gains")),
-                "asset_currency_gains": _safe_float(line.get("asset_currency_gains")),
+                "instrument_currency_gains": _safe_float(line.get("instrument_currency_gains")),
                 "total_pnl": group_total_pnl,
                 "period_contribution": _safe_float(line.get("period_contribution")),
             }
@@ -6536,7 +6536,7 @@ def build_period_calculation_groups_calendar_report(
         else {}
     )
     fx_payload = get_platform_fx_rates()
-    direct_fx_assets = _fx_direct_asset_map(fx_payload)
+    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     unrealized_capital_cache: dict[tuple[date, date], dict[str, object]] = {}
 
@@ -6557,7 +6557,7 @@ def build_period_calculation_groups_calendar_report(
                 taxonomy_nodes=taxonomy_nodes,
                 taxonomy_assignments=taxonomy_assignments,
                 base_currency=str(contribution_calendar_report["base_currency"]),
-                direct_fx_assets=direct_fx_assets,
+                direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
             )
         return unrealized_capital_cache[cache_key]
@@ -6631,7 +6631,7 @@ def build_period_calculation_groups_calendar_report(
                 "fees": _safe_float(bucket.get("fee_amount")),
                 "taxes": _safe_float(bucket.get("tax_amount")),
                 "cash_currency_gains": _safe_float(bucket.get("cash_currency_gains")),
-                "asset_currency_gains": _safe_float(bucket.get("asset_currency_gains")),
+                "instrument_currency_gains": _safe_float(bucket.get("instrument_currency_gains")),
                 "total_pnl": bucket_total_pnl,
                 "bucket_contribution": _safe_float(bucket.get("bucket_contribution")),
             }
@@ -6737,7 +6737,7 @@ _CALCULATION_BUCKET_FIELD_MAP: dict[str, str] = {
     "fees": "fees",
     "taxes": "taxes",
     "cash_currency_gains": "cash_currency_gains",
-    "asset_currency_gains": "asset_currency_gains",
+    "instrument_currency_gains": "instrument_currency_gains",
     "total_pnl": "total_pnl",
     "period_contribution": "period_contribution",
     "residual_delta": "residual_delta",
@@ -6909,24 +6909,24 @@ def _resolve_calculation_entry_group(
     trade_date: date | None,
     account_id: str | None,
     account_name_map: dict[str, str],
-    asset_id: str | None,
-    asset_name: str | None,
-    asset_type: str | None,
+    instrument_id: str | None,
+    instrument_name: str | None,
+    instrument_type: str | None,
     currency: str | None,
     taxonomy_context: tuple[dict[str, object], dict[str, dict[str, object]], dict[str, list[dict[str, object]]], str]
     | None,
 ) -> tuple[str, str]:
     if axis == "instrument":
-        if asset_id:
-            return (asset_id, asset_name or asset_id)
+        if instrument_id:
+            return (instrument_id, instrument_name or instrument_id)
         return ("cash", "Cash")
     if axis == "account":
         if account_id:
             return (account_id, account_name_map.get(account_id, account_id))
         return ("unassigned:account", "Unassigned")
-    if axis == "asset_type":
-        if asset_id:
-            return _asset_type_key_label(asset_type)
+    if axis == "instrument_type":
+        if instrument_id:
+            return _instrument_type_key_label(instrument_type)
         return ("cash", "Cash")
     if axis == "currency":
         normalized_currency = _normalized_currency(currency, fallback="")
@@ -6941,7 +6941,7 @@ def _resolve_calculation_entry_group(
     taxonomy, taxonomy_nodes_by_id, assignments_by_entity, target_scope = taxonomy_context
     target_entity_id = ""
     if target_scope == "instrument":
-        target_entity_id = asset_id or ""
+        target_entity_id = instrument_id or ""
     elif target_scope == "account":
         target_entity_id = account_id or ""
     elif target_scope == "cash_bucket":
@@ -6966,7 +6966,7 @@ def _append_calculation_transaction_entry(
     component_kind: str,
     local_amount: float,
     base_currency: str,
-    direct_fx_assets: dict[tuple[str, str], str],
+    direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
     account_name_map: dict[str, str],
     taxonomy_context: tuple[dict[str, object], dict[str, dict[str, object]], dict[str, list[dict[str, object]]], str]
@@ -6976,21 +6976,21 @@ def _append_calculation_transaction_entry(
     settlement_date = _parse_iso_date(transaction.get("settlement_date"))
     currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
     account_id = str(transaction.get("account_id") or "") or None
-    asset_id = str(transaction.get("asset_id") or "") or None
+    instrument_id = str(transaction.get("instrument_id") or "") or None
     instrument_ref = (
         transaction.get("instrument_ref")
         if isinstance(transaction.get("instrument_ref"), dict)
         else None
     )
-    asset_name = str((instrument_ref or {}).get("asset_name") or asset_id or "")
+    instrument_name = str((instrument_ref or {}).get("instrument_name") or instrument_id or "")
     group_key, group_label = _resolve_calculation_entry_group(
         axis=axis,
         trade_date=trade_date,
         account_id=account_id,
         account_name_map=account_name_map,
-        asset_id=asset_id,
-        asset_name=asset_name or None,
-        asset_type=str((instrument_ref or {}).get("asset_type") or "") or None,
+        instrument_id=instrument_id,
+        instrument_name=instrument_name or None,
+        instrument_type=str((instrument_ref or {}).get("instrument_type") or "") or None,
         currency=currency,
         taxonomy_context=taxonomy_context,
     )
@@ -7002,7 +7002,7 @@ def _append_calculation_transaction_entry(
             as_of_date=trade_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_assets=direct_fx_assets,
+            direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
     entries.append(
@@ -7020,8 +7020,8 @@ def _append_calculation_transaction_entry(
             "group_label": group_label,
             "account_id": account_id,
             "account_name": account_name_map.get(account_id, account_id or "") if account_id else None,
-            "asset_id": asset_id,
-            "asset_name": asset_name or None,
+            "instrument_id": instrument_id,
+            "instrument_name": instrument_name or None,
             "currency": currency,
             "local_amount": local_amount,
             "base_amount": base_amount,
@@ -7106,7 +7106,7 @@ def build_contribution_entries_report(
 
     account_name_map = _account_name_map(accounts)
     fx_payload = get_platform_fx_rates()
-    direct_fx_assets = _fx_direct_asset_map(fx_payload)
+    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     taxonomy_context = None
     cash_bucket_account_ids: set[str] = set()
@@ -7130,7 +7130,7 @@ def build_contribution_entries_report(
             gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
             fee_amount = _safe_float(transaction.get("fees")) or 0.0
             tax_amount = _safe_float(transaction.get("taxes")) or 0.0
-            asset_id = str(transaction.get("asset_id") or "")
+            instrument_id = str(transaction.get("instrument_id") or "")
             account_id = str(transaction.get("account_id") or "")
             if (
                 taxonomy_context is not None
@@ -7145,7 +7145,7 @@ def build_contribution_entries_report(
 
             if bucket == "income_cash_amount":
                 if transaction_type in {"dividend", "coupon", "dividend_reinvestment"}:
-                    if axis == "instrument" and not asset_id:
+                    if axis == "instrument" and not instrument_id:
                         continue
                     _append_calculation_transaction_entry(
                         entries,
@@ -7155,7 +7155,7 @@ def build_contribution_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
@@ -7169,7 +7169,7 @@ def build_contribution_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
@@ -7184,7 +7184,7 @@ def build_contribution_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
@@ -7201,7 +7201,7 @@ def build_contribution_entries_report(
                         component_kind="attached_expense",
                         local_amount=attached_expense,
                         base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
@@ -7216,7 +7216,7 @@ def build_contribution_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
@@ -7232,7 +7232,7 @@ def build_contribution_entries_report(
                         component_kind="attached_fee",
                         local_amount=fee_amount,
                         base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
@@ -7247,7 +7247,7 @@ def build_contribution_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
@@ -7263,7 +7263,7 @@ def build_contribution_entries_report(
                         component_kind="attached_tax",
                         local_amount=tax_amount,
                         base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
@@ -7290,8 +7290,8 @@ def build_contribution_entries_report(
                 if isinstance(position_lot.get("instrument_ref"), dict)
                 else None
             )
-            asset_id = str(position_lot.get("asset_id") or "") or None
-            asset_name = str((instrument_ref or {}).get("asset_name") or asset_id or "")
+            instrument_id = str(position_lot.get("instrument_id") or "") or None
+            instrument_name = str((instrument_ref or {}).get("instrument_name") or instrument_id or "")
             currency = _normalized_currency(position_lot.get("currency"), fallback=base_currency)
             for realization in realizations:
                 if not isinstance(realization, dict):
@@ -7310,9 +7310,9 @@ def build_contribution_entries_report(
                     trade_date=trade_date,
                     account_id=account_id,
                     account_name_map=account_name_map,
-                    asset_id=asset_id,
-                    asset_name=asset_name or None,
-                    asset_type=str((instrument_ref or {}).get("asset_type") or "") or None,
+                    instrument_id=instrument_id,
+                    instrument_name=instrument_name or None,
+                    instrument_type=str((instrument_ref or {}).get("instrument_type") or "") or None,
                     currency=currency,
                     taxonomy_context=taxonomy_context,
                 )
@@ -7324,7 +7324,7 @@ def build_contribution_entries_report(
                         as_of_date=trade_date,
                         from_currency=currency,
                         to_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                     )
                 entries.append(
@@ -7342,8 +7342,8 @@ def build_contribution_entries_report(
                         "group_label": realization_group_label,
                         "account_id": account_id,
                         "account_name": account_name_map.get(account_id, account_id or "") if account_id else None,
-                        "asset_id": asset_id,
-                        "asset_name": asset_name or None,
+                        "instrument_id": instrument_id,
+                        "instrument_name": instrument_name or None,
                         "currency": currency,
                         "local_amount": local_amount,
                         "base_amount": base_amount,
@@ -7601,7 +7601,7 @@ def build_period_calculation_entries_report(
 
     account_name_map = _account_name_map(accounts)
     fx_payload = get_platform_fx_rates()
-    direct_fx_assets = _fx_direct_asset_map(fx_payload)
+    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     taxonomy_context = None
     if axis == "taxonomy":
@@ -7631,7 +7631,7 @@ def build_period_calculation_entries_report(
                     component_kind="gross_amount",
                     local_amount=gross_amount,
                     base_currency=base_currency,
-                    direct_fx_assets=direct_fx_assets,
+                    direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
                     account_name_map=account_name_map,
                     taxonomy_context=taxonomy_context,
@@ -7645,7 +7645,7 @@ def build_period_calculation_entries_report(
                     component_kind="gross_amount",
                     local_amount=gross_amount,
                     base_currency=base_currency,
-                    direct_fx_assets=direct_fx_assets,
+                    direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
                     account_name_map=account_name_map,
                     taxonomy_context=taxonomy_context,
@@ -7659,7 +7659,7 @@ def build_period_calculation_entries_report(
                     component_kind="gross_amount",
                     local_amount=gross_amount,
                     base_currency=base_currency,
-                    direct_fx_assets=direct_fx_assets,
+                    direct_fx_instruments=direct_fx_instruments,
                     instrument_detail_cache=instrument_detail_cache,
                     account_name_map=account_name_map,
                     taxonomy_context=taxonomy_context,
@@ -7674,7 +7674,7 @@ def build_period_calculation_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
@@ -7688,7 +7688,7 @@ def build_period_calculation_entries_report(
                         component_kind="attached_fee",
                         local_amount=fee_amount,
                         base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
@@ -7703,7 +7703,7 @@ def build_period_calculation_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
@@ -7717,7 +7717,7 @@ def build_period_calculation_entries_report(
                         component_kind="attached_tax",
                         local_amount=tax_amount,
                         base_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
@@ -7738,8 +7738,8 @@ def build_period_calculation_entries_report(
                 if isinstance(position_lot.get("instrument_ref"), dict)
                 else None
             )
-            asset_id = str(position_lot.get("asset_id") or "") or None
-            asset_name = str((instrument_ref or {}).get("asset_name") or asset_id or "")
+            instrument_id = str(position_lot.get("instrument_id") or "") or None
+            instrument_name = str((instrument_ref or {}).get("instrument_name") or instrument_id or "")
             currency = _normalized_currency(position_lot.get("currency"), fallback=base_currency)
             for realization in realizations:
                 if not isinstance(realization, dict):
@@ -7758,9 +7758,9 @@ def build_period_calculation_entries_report(
                     trade_date=trade_date,
                     account_id=account_id,
                     account_name_map=account_name_map,
-                    asset_id=asset_id,
-                    asset_name=asset_name or None,
-                    asset_type=str((instrument_ref or {}).get("asset_type") or "") or None,
+                    instrument_id=instrument_id,
+                    instrument_name=instrument_name or None,
+                    instrument_type=str((instrument_ref or {}).get("instrument_type") or "") or None,
                     currency=currency,
                     taxonomy_context=taxonomy_context,
                 )
@@ -7772,7 +7772,7 @@ def build_period_calculation_entries_report(
                         as_of_date=trade_date,
                         from_currency=currency,
                         to_currency=base_currency,
-                        direct_fx_assets=direct_fx_assets,
+                        direct_fx_instruments=direct_fx_instruments,
                         instrument_detail_cache=instrument_detail_cache,
                     )
                 entries.append(
@@ -7790,8 +7790,8 @@ def build_period_calculation_entries_report(
                         "group_label": realization_group_label,
                         "account_id": account_id,
                         "account_name": account_name_map.get(account_id, account_id or "") if account_id else None,
-                        "asset_id": asset_id,
-                        "asset_name": asset_name or None,
+                        "instrument_id": instrument_id,
+                        "instrument_name": instrument_name or None,
                         "currency": currency,
                         "local_amount": local_amount,
                         "base_amount": base_amount,

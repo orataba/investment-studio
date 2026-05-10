@@ -1,4 +1,4 @@
-from watchlist_app.db.models.assets import AssetDetail
+from watchlist_app.db.models.instruments import InstrumentDetail
 from watchlist_app.db.models.analytics import (
     PerformanceSnapshot,
     ExposureAnalyticsSnapshot,
@@ -6,19 +6,19 @@ from watchlist_app.db.models.analytics import (
 )
 from watchlist_app.db.models.common import PayloadReadModelMixin, TimestampMixin
 from watchlist_app.db.models.facts import HoldingPosition, HoldingSnapshot, NavFact
-from watchlist_app.db.models.manual_profiles import AssetManualProfile
+from watchlist_app.db.models.manual_profiles import InstrumentManualProfile
 from watchlist_app.db.models.read_models import (
-    AssetChartReadModel,
-    AssetPerformanceReadModel,
-    AssetExposureReadModel,
-    AssetExposureHoldingsReadModel,
-    AssetRatingReadModel,
-    AssetRiskReadModel,
-    AssetSummaryReadModel,
+    InstrumentChartReadModel,
+    InstrumentPerformanceReadModel,
+    InstrumentExposureReadModel,
+    InstrumentExposureHoldingsReadModel,
+    InstrumentRatingReadModel,
+    InstrumentRiskReadModel,
+    InstrumentSummaryReadModel,
     WatchlistRowReadModel,
 )
 from watchlist_app.db.models.recalc import RecalcJob
-from watchlist_app.db.models.scoring import AssetScoreSnapshot
+from watchlist_app.db.models.scoring import InstrumentScoreSnapshot
 from watchlist_app.db.models.watchlists import (
     FieldCategory,
     FieldRegistry,
@@ -33,16 +33,16 @@ from watchlist_app.db.models.watchlists import (
 )
 
 __all__ = [
-    "AssetChartReadModel",
-    "AssetDetail",
-    "AssetExposureHoldingsReadModel",
-    "AssetExposureReadModel",
-    "AssetManualProfile",
-    "AssetPerformanceReadModel",
-    "AssetRatingReadModel",
-    "AssetRiskReadModel",
-    "AssetScoreSnapshot",
-    "AssetSummaryReadModel",
+    "InstrumentChartReadModel",
+    "InstrumentDetail",
+    "InstrumentExposureHoldingsReadModel",
+    "InstrumentExposureReadModel",
+    "InstrumentManualProfile",
+    "InstrumentPerformanceReadModel",
+    "InstrumentRatingReadModel",
+    "InstrumentRiskReadModel",
+    "InstrumentScoreSnapshot",
+    "InstrumentSummaryReadModel",
     "FieldCategory",
     "FieldRegistry",
     "HoldingPosition",

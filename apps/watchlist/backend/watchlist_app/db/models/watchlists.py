@@ -45,7 +45,7 @@ class Watchlist(TimestampMixin, Base):
 class WatchlistItem(Base):
     __tablename__ = "watchlist_item"
     __table_args__ = (
-        UniqueConstraint("watchlist_id", "asset_id", name="uq_watchlist_item_watchlist_asset"),
+        UniqueConstraint("watchlist_id", "instrument_id", name="uq_watchlist_item_watchlist_asset"),
         Index("idx_watchlist_item_watchlist_id", "watchlist_id"),
     )
 
@@ -54,7 +54,7 @@ class WatchlistItem(Base):
         ForeignKey("watchlist.watchlist_id", ondelete="CASCADE"),
         nullable=False,
     )
-    asset_id: Mapped[str] = mapped_column(nullable=False)
+    instrument_id: Mapped[str] = mapped_column(nullable=False)
     added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -157,7 +157,7 @@ class FieldRegistry(Base):
     sort_mode: Mapped[str] = mapped_column(nullable=False)
     filter_mode: Mapped[str] = mapped_column(nullable=False)
     group_mode: Mapped[str] = mapped_column(nullable=False)
-    asset_scope_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    instrument_scope_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     product_scope_json: Mapped[list[str]] = mapped_column(
         JSON,
         nullable=False,
@@ -185,7 +185,7 @@ class InstrumentAttributeDefinition(Base):
     group_code: Mapped[str] = mapped_column(nullable=False)
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     options_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    asset_scope_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    instrument_scope_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     applicability_json: Mapped[dict[str, Any]] = mapped_column(
         JSON,
         nullable=False,
@@ -217,8 +217,8 @@ class InstrumentAttributeValue(Base):
     __tablename__ = "instrument_attribute_value"
     __table_args__ = (
         Index(
-            "idx_instrument_attribute_value_asset_attribute",
-            "asset_id",
+            "idx_instrument_attribute_value_instrument_attribute",
+            "instrument_id",
             "attribute_key",
             "adopted_at",
         ),
@@ -228,8 +228,8 @@ class InstrumentAttributeValue(Base):
         primary_key=True,
         autoincrement=True,
     )
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         nullable=False,
     )
     attribute_key: Mapped[str] = mapped_column(
@@ -262,7 +262,7 @@ class InstrumentTaxonomyNode(Base):
 
     node_id: Mapped[str] = mapped_column(primary_key=True)
     taxonomy_code: Mapped[str] = mapped_column(String, nullable=False)
-    asset_type: Mapped[str] = mapped_column(String, nullable=False)
+    instrument_type: Mapped[str] = mapped_column(String, nullable=False)
     label: Mapped[str] = mapped_column(String, nullable=False)
     parent_node_id: Mapped[str | None] = mapped_column(
         ForeignKey("instrument_taxonomy_node.node_id", ondelete="CASCADE")
@@ -284,8 +284,8 @@ class InstrumentTaxonomyAssignment(Base):
         ),
     )
 
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
     taxonomy_code: Mapped[str] = mapped_column(String, primary_key=True)

@@ -14,8 +14,8 @@ from platform_app.core.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
-def _normalized_asset_ids(asset_ids: list[str] | None) -> list[str]:
-    return list(dict.fromkeys(str(asset_id).strip() for asset_id in (asset_ids or []) if str(asset_id).strip()))
+def _normalized_instrument_ids(instrument_ids: list[str] | None) -> list[str]:
+    return list(dict.fromkeys(str(instrument_id).strip() for instrument_id in (instrument_ids or []) if str(instrument_id).strip()))
 
 
 def _post_json(url: str, payload: dict[str, object] | None = None, *, timeout: float = 2.0) -> None:
@@ -34,7 +34,7 @@ def _post_json(url: str, payload: dict[str, object] | None = None, *, timeout: f
 
 def _request_portfolio_daily_snapshot_refresh(
     *,
-    asset_ids: list[str],
+    instrument_ids: list[str],
     dirty_from: date | None,
     refresh_all: bool,
 ) -> None:
@@ -42,61 +42,61 @@ def _request_portfolio_daily_snapshot_refresh(
     portfolio_api_url = settings.portfolio_api_url.strip().rstrip("/")
     if not portfolio_api_url:
         return
-    if not refresh_all and not asset_ids:
+    if not refresh_all and not instrument_ids:
         return
 
     _post_json(
         f"{portfolio_api_url}/api/portfolios/snapshots/daily/refresh",
         {
-            "asset_ids": asset_ids,
+            "instrument_ids": instrument_ids,
             "dirty_from": dirty_from.isoformat() if dirty_from is not None else None,
             "refresh_all": refresh_all,
         },
     )
 
 
-def _request_watchlist_asset_recalc(*, asset_ids: list[str]) -> None:
+def _request_watchlist_instrument_recalc(*, instrument_ids: list[str]) -> None:
     settings = get_settings()
     watchlist_api_url = settings.watchlist_api_url.strip().rstrip("/")
-    if not watchlist_api_url or not asset_ids:
+    if not watchlist_api_url or not instrument_ids:
         return
 
-    for asset_id in asset_ids:
-        _post_json(f"{watchlist_api_url}/api/recalc/assets/{asset_id}/all")
+    for instrument_id in instrument_ids:
+        _post_json(f"{watchlist_api_url}/api/recalc/instruments/{instrument_id}/all")
 
 
 def notify_market_data_downstream_refresh(
     *,
-    asset_ids: list[str] | None = None,
+    instrument_ids: list[str] | None = None,
     dirty_from: date | None = None,
     refresh_all_portfolios: bool = False,
     refresh_watchlist: bool = True,
 ) -> None:
-    normalized_asset_ids = _normalized_asset_ids(asset_ids)
+    normalized_instrument_ids = _normalized_instrument_ids(instrument_ids)
     _request_portfolio_daily_snapshot_refresh(
-        asset_ids=normalized_asset_ids,
+        instrument_ids=normalized_instrument_ids,
         dirty_from=dirty_from,
         refresh_all=refresh_all_portfolios,
     )
 
-    watchlist_asset_ids = [
-        asset_id for asset_id in normalized_asset_ids if not asset_id.strip().lower().startswith("fx-")
+    watchlist_instrument_ids = [
+        instrument_id for instrument_id in normalized_instrument_ids if not instrument_id.strip().lower().startswith("fx-")
     ]
-    if refresh_watchlist and watchlist_asset_ids:
-        _request_watchlist_asset_recalc(asset_ids=watchlist_asset_ids)
+    if refresh_watchlist and watchlist_instrument_ids:
+        _request_watchlist_instrument_recalc(instrument_ids=watchlist_instrument_ids)
 
 
 def queue_market_data_downstream_refresh(
     background_tasks: BackgroundTasks,
     *,
-    asset_ids: list[str] | None = None,
+    instrument_ids: list[str] | None = None,
     dirty_from: date | None = None,
     refresh_all_portfolios: bool = False,
     refresh_watchlist: bool = True,
 ) -> None:
     background_tasks.add_task(
         notify_market_data_downstream_refresh,
-        asset_ids=asset_ids,
+        instrument_ids=instrument_ids,
         dirty_from=dirty_from,
         refresh_all_portfolios=refresh_all_portfolios,
         refresh_watchlist=refresh_watchlist,

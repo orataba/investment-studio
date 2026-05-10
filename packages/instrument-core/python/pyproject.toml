@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "yungu-asset-core"
+name = "yungu-instrument-core"
 version = "0.1.0"
-description = "Shared asset core contracts for Yungu"
+description = "Shared instrument core contracts for Yungu"
 requires-python = ">=3.12"
 dependencies = [
   "pydantic>=2.10,<3.0",
@@ -13,4 +13,4 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["yungu_asset_core*"]
+include = ["yungu_instrument_core*"]

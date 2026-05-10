@@ -33,7 +33,7 @@ export default function App() {
             <Route path="/portfolios/:portfolioId/snapshot" element={<Navigate replace to="../overview" />} />
             <Route path="/portfolios/:portfolioId/overview" element={<OverviewPage />} />
             <Route path="/portfolios/:portfolioId/holdings" element={<PortfolioHomePage />} />
-            <Route path="/portfolios/:portfolioId/holdings/:assetId" element={<PortfolioSecurityDetailPage />} />
+            <Route path="/portfolios/:portfolioId/holdings/:instrumentId" element={<PortfolioSecurityDetailPage />} />
             <Route path="/portfolios/:portfolioId/performance" element={<PerformancePage />} />
             <Route path="/portfolios/:portfolioId/risk" element={<RiskPage />} />
             <Route path="/portfolios/:portfolioId/transactions" element={<TransactionsPage />} />

@@ -8,7 +8,7 @@ from watchlist_app.repositories.sqlalchemy.watchlists import SQLAlchemyWatchlist
 from watchlist_app.services.read_models import execute_watchlist_query
 from watchlist_app.services.read_model_freshness import (
     latest_local_market_data_date,
-    schedule_asset_refresh_if_stale,
+    schedule_instrument_refresh_if_stale,
 )
 
 
@@ -37,7 +37,7 @@ def run_screener_query(
     rows = read_model_repository.list_watchlist_rows(session, payload.watchlist_id)
     charts = read_model_repository.list_charts(
         session,
-        [row.asset_id for row in rows],
+        [row.instrument_id for row in rows],
     )
     response = execute_watchlist_query(
         rows=rows,
@@ -45,16 +45,16 @@ def run_screener_query(
         payload=payload_data,
         view=view,
     )
-    chart_map = {item.asset_id: item for item in charts}
-    row_map = {item.asset_id: item for item in rows}
+    chart_map = {item.instrument_id: item for item in charts}
+    row_map = {item.instrument_id: item for item in rows}
     for item in response.get("rows", []):
-        asset_id = str(item.get("asset_id") or "").strip()
-        if not asset_id:
+        instrument_id = str(item.get("instrument_id") or "").strip()
+        if not instrument_id:
             continue
-        chart_record = chart_map.get(asset_id)
-        row_record = row_map.get(asset_id)
-        schedule_asset_refresh_if_stale(
-            asset_id=asset_id,
+        chart_record = chart_map.get(instrument_id)
+        row_record = row_map.get(instrument_id)
+        schedule_instrument_refresh_if_stale(
+            instrument_id=instrument_id,
             local_latest_date=latest_local_market_data_date(
                 chart_payload=getattr(chart_record, "payload_json", None),
                 fallback_values=(

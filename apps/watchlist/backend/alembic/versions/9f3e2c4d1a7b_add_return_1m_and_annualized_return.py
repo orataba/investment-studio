@@ -30,7 +30,7 @@ NEW_FIELDS = [
         "sort_mode": "numeric",
         "filter_mode": "range",
         "group_mode": "none",
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "product_scope_json": ["mutual_fund", "cef", "etf"],
         "availability_rule_json": {"requires": ["performance_snapshot"]},
         "source_domain": "snapshot",
@@ -48,7 +48,7 @@ NEW_FIELDS = [
         "sort_mode": "numeric",
         "filter_mode": "range",
         "group_mode": "none",
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "product_scope_json": ["mutual_fund", "cef", "etf"],
         "availability_rule_json": {"requires": ["performance_snapshot"]},
         "source_domain": "snapshot",
@@ -60,7 +60,7 @@ NEW_FIELDS = [
 
 
 OVERVIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("price_chart_1m", 2, 140),
     ("latest_quote", 3, 130),
     ("latest_quote_date", 4, 140),
@@ -73,7 +73,7 @@ OVERVIEW_COLUMNS = [
 
 
 PREVIOUS_OVERVIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("price_chart_1m", 2, 140),
     ("latest_quote", 3, 130),
     ("latest_quote_date", 4, 140),
@@ -153,7 +153,7 @@ def upgrade() -> None:
         sa.column("sort_mode", sa.String()),
         sa.column("filter_mode", sa.String()),
         sa.column("group_mode", sa.String()),
-        sa.column("asset_scope_json", sa.JSON()),
+        sa.column("instrument_scope_json", sa.JSON()),
         sa.column("product_scope_json", sa.JSON()),
         sa.column("availability_rule_json", sa.JSON()),
         sa.column("source_domain", sa.String()),
@@ -170,7 +170,7 @@ def upgrade() -> None:
 
     perf_table = sa.table(
         "performance_snapshot",
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("as_of_date", sa.Date()),
         sa.column("is_current", sa.Boolean()),
         sa.column("return_1m", sa.Numeric(precision=12, scale=6)),
@@ -178,14 +178,14 @@ def upgrade() -> None:
     )
     row_table = sa.table(
         "watchlist_row_read_model",
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("return_1m", sa.Numeric(precision=12, scale=6)),
         sa.column("annualized_return", sa.Numeric(precision=12, scale=6)),
     )
     current_return_1m = (
         sa.select(perf_table.c.return_1m)
         .where(
-            perf_table.c.asset_id == row_table.c.asset_id,
+            perf_table.c.instrument_id == row_table.c.instrument_id,
             perf_table.c.is_current.is_(True),
         )
         .order_by(perf_table.c.as_of_date.desc())
@@ -195,7 +195,7 @@ def upgrade() -> None:
     current_annualized_return = (
         sa.select(perf_table.c.annualized_return)
         .where(
-            perf_table.c.asset_id == row_table.c.asset_id,
+            perf_table.c.instrument_id == row_table.c.instrument_id,
             perf_table.c.is_current.is_(True),
         )
         .order_by(perf_table.c.as_of_date.desc())

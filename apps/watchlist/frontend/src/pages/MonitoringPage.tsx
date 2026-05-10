@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import {
-  executeAssetRecalc,
+  executeInstrumentRecalc,
   getMonitoringDashboard,
-  type MonitoringAssetRecord,
+  type MonitoringInstrumentRecord,
   type MonitoringDashboardResponse,
   type MonitoringMembership,
   type MonitoringRecalcJobRecord,
@@ -71,32 +71,32 @@ function matchesSelectedWatchlist(
 }
 
 function resolveDetailPath(
-  asset: Pick<MonitoringAssetRecord, 'asset_id' | 'primary_watchlist_id' | 'watchlists'>,
+  instrument: Pick<MonitoringInstrumentRecord, 'instrument_id' | 'primary_watchlist_id' | 'watchlists'>,
 ) {
-  const watchlistId = asset.primary_watchlist_id || asset.watchlists[0]?.watchlist_id
+  const watchlistId = instrument.primary_watchlist_id || instrument.watchlists[0]?.watchlist_id
   if (!watchlistId) {
     return null
   }
-  return buildInstrumentDetailPath(asset.asset_id, watchlistId)
+  return buildInstrumentDetailPath(instrument.instrument_id, watchlistId)
 }
 
-function resolveJobDetailPath(asset: MonitoringRecalcJobRecord) {
-  const watchlistId = asset.primary_watchlist_id || asset.watchlists[0]?.watchlist_id
+function resolveJobDetailPath(instrument: MonitoringRecalcJobRecord) {
+  const watchlistId = instrument.primary_watchlist_id || instrument.watchlists[0]?.watchlist_id
   if (!watchlistId) {
     return null
   }
-  return buildInstrumentDetailPath(asset.asset_id, watchlistId)
+  return buildInstrumentDetailPath(instrument.instrument_id, watchlistId)
 }
 
-function AssetLink({ asset }: { asset: MonitoringAssetRecord | MonitoringRecalcJobRecord }) {
+function InstrumentLink({ instrument }: { instrument: MonitoringInstrumentRecord | MonitoringRecalcJobRecord }) {
   const detailPath =
-    'recalc_job_id' in asset ? resolveJobDetailPath(asset) : resolveDetailPath(asset)
+    'recalc_job_id' in instrument ? resolveJobDetailPath(instrument) : resolveDetailPath(instrument)
   if (!detailPath) {
-    return <span>{asset.asset_name}</span>
+    return <span>{instrument.instrument_name}</span>
   }
   return (
     <Link className="table-link" to={detailPath}>
-      {asset.asset_name}
+      {instrument.instrument_name}
     </Link>
   )
 }
@@ -159,7 +159,7 @@ export default function MonitoringPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedWatchlistId, setSelectedWatchlistId] = useState('all')
-  const [recalculatingAssetIds, setRecalculatingAssetIds] = useState<string[]>([])
+  const [recalculatingInstrumentIds, setRecalculatingInstrumentIds] = useState<string[]>([])
   const [notice, setNotice] = useState<{ tone: 'success' | 'error'; message: string } | null>(
     null,
   )
@@ -209,20 +209,20 @@ export default function MonitoringPage() {
     return dashboard.watchlists.filter((item) => item.watchlist_id === selectedWatchlistId)
   }, [dashboard, selectedWatchlistId])
 
-  const visibleNeedsAttentionAssets = useMemo(() => {
+  const visibleNeedsAttentionInstruments = useMemo(() => {
     if (!dashboard) {
       return []
     }
-    return dashboard.needs_attention_assets.filter((item) =>
+    return dashboard.needs_attention_instruments.filter((item) =>
       matchesSelectedWatchlist(item.watchlists, selectedWatchlistId),
     )
   }, [dashboard, selectedWatchlistId])
 
-  const visibleMissingLabelAssets = useMemo(() => {
+  const visibleMissingLabelInstruments = useMemo(() => {
     if (!dashboard) {
       return []
     }
-    return dashboard.missing_label_assets.filter((item) =>
+    return dashboard.missing_label_instruments.filter((item) =>
       matchesSelectedWatchlist(item.watchlists, selectedWatchlistId),
     )
   }, [dashboard, selectedWatchlistId])
@@ -236,10 +236,10 @@ export default function MonitoringPage() {
     )
   }, [dashboard, selectedWatchlistId])
 
-  const assetRecalcState = useMemo(() => {
+  const instrumentRecalcState = useMemo(() => {
     const stateMap = new Map<string, { queued: boolean; running: boolean; failed: boolean }>()
     for (const item of visibleOpenRecalcJobs) {
-      const current = stateMap.get(item.asset_id) || {
+      const current = stateMap.get(item.instrument_id) || {
         queued: false,
         running: false,
         failed: false,
@@ -252,7 +252,7 @@ export default function MonitoringPage() {
       } else if (normalized === 'failed') {
         current.failed = true
       }
-      stateMap.set(item.asset_id, current)
+      stateMap.set(item.instrument_id, current)
     }
     return stateMap
   }, [visibleOpenRecalcJobs])
@@ -270,7 +270,7 @@ export default function MonitoringPage() {
     const summary = selectedWatchlist
       ? {
           watchlist_count: 1,
-          unique_asset_count: selectedWatchlist.item_count,
+          unique_instrument_count: selectedWatchlist.item_count,
           needs_refresh_count: selectedWatchlist.needs_refresh_count,
           missing_quote_count: selectedWatchlist.missing_quote_count,
           missing_label_count: selectedWatchlist.missing_label_count,
@@ -280,7 +280,7 @@ export default function MonitoringPage() {
 
     return [
       { label: 'Watchlists', value: summary.watchlist_count },
-      { label: 'Unique Products', value: summary.unique_asset_count },
+      { label: 'Unique Products', value: summary.unique_instrument_count },
       {
         label: 'Needs Refresh',
         value: summary.needs_refresh_count,
@@ -300,13 +300,13 @@ export default function MonitoringPage() {
     ]
   }, [dashboard, selectedWatchlist, selectedWatchlistId, visibleOpenRecalcJobs])
 
-  async function handleRecalcNow(assetId: string) {
+  async function handleRecalcNow(instrumentId: string) {
     setNotice(null)
-    setRecalculatingAssetIds((current) =>
-      current.includes(assetId) ? current : [...current, assetId],
+    setRecalculatingInstrumentIds((current) =>
+      current.includes(instrumentId) ? current : [...current, instrumentId],
     )
     try {
-      await executeAssetRecalc(assetId, {
+      await executeInstrumentRecalc(instrumentId, {
         job_type: 'performance',
         trigger_type: 'monitoring_dashboard',
         trigger_ref_type: 'watchlist',
@@ -326,7 +326,7 @@ export default function MonitoringPage() {
             : 'Failed to enqueue recalc job.',
       })
     } finally {
-      setRecalculatingAssetIds((current) => current.filter((item) => item !== assetId))
+      setRecalculatingInstrumentIds((current) => current.filter((item) => item !== instrumentId))
     }
   }
 
@@ -474,7 +474,7 @@ export default function MonitoringPage() {
                 <div className="watchlists-title">Needs Refresh / Missing Quote</div>
               </div>
             </div>
-            {visibleNeedsAttentionAssets.length ? (
+            {visibleNeedsAttentionInstruments.length ? (
               <div className="table-shell">
                 <table className="monitoring-table">
                   <thead>
@@ -489,16 +489,16 @@ export default function MonitoringPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleNeedsAttentionAssets.map((item: MonitoringAssetRecord) => {
+                    {visibleNeedsAttentionInstruments.map((item: MonitoringInstrumentRecord) => {
                       const detailPath = resolveDetailPath(item)
-                      const recalcState = assetRecalcState.get(item.asset_id)
+                      const recalcState = instrumentRecalcState.get(item.instrument_id)
                       const recalcPending = Boolean(recalcState?.queued || recalcState?.running)
-                      const recalculating = recalculatingAssetIds.includes(item.asset_id)
+                      const recalculating = recalculatingInstrumentIds.includes(item.instrument_id)
                       return (
-                        <tr key={item.asset_id}>
+                        <tr key={item.instrument_id}>
                           <td>
                             <div className="monitoring-primary-cell">
-                              <AssetLink asset={item} />
+                              <InstrumentLink instrument={item} />
                               {item.management_firm_name ? (
                                 <span className="monitoring-secondary-text">
                                   {item.management_firm_name}
@@ -506,7 +506,7 @@ export default function MonitoringPage() {
                               ) : null}
                             </div>
                           </td>
-                          <td>{item.ticker_or_isin || item.asset_id}</td>
+                          <td>{item.ticker_or_isin || item.instrument_id}</td>
                           <td>
                             <MembershipCell watchlists={item.watchlists} />
                           </td>
@@ -530,7 +530,7 @@ export default function MonitoringPage() {
                               <button
                                 type="button"
                                 className="table-action"
-                                onClick={() => void handleRecalcNow(item.asset_id)}
+                                onClick={() => void handleRecalcNow(item.instrument_id)}
                                 disabled={recalculating || recalcPending}
                               >
                                 {recalculating
@@ -559,7 +559,7 @@ export default function MonitoringPage() {
                 <div className="watchlists-title">Missing Taxonomy / Research Labels</div>
               </div>
             </div>
-            {visibleMissingLabelAssets.length ? (
+            {visibleMissingLabelInstruments.length ? (
               <div className="table-shell">
                 <table className="monitoring-table">
                   <thead>
@@ -573,13 +573,13 @@ export default function MonitoringPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleMissingLabelAssets.map((item: MonitoringAssetRecord) => (
-                      <tr key={`${item.asset_id}-missing-labels`}>
+                    {visibleMissingLabelInstruments.map((item: MonitoringInstrumentRecord) => (
+                      <tr key={`${item.instrument_id}-missing-labels`}>
                         <td>
                           <div className="monitoring-primary-cell">
-                            <AssetLink asset={item} />
+                            <InstrumentLink instrument={item} />
                             <span className="monitoring-secondary-text">
-                              {item.ticker_or_isin || item.asset_id}
+                              {item.ticker_or_isin || item.instrument_id}
                             </span>
                           </div>
                         </td>
@@ -625,7 +625,7 @@ export default function MonitoringPage() {
                 <table className="monitoring-table">
                   <thead>
                     <tr>
-                      <th>Asset</th>
+                      <th>Instrument</th>
                       <th>Job</th>
                       <th>Status</th>
                       <th>Enqueued</th>
@@ -638,14 +638,14 @@ export default function MonitoringPage() {
                     {visibleOpenRecalcJobs.map((item: MonitoringRecalcJobRecord) => {
                       const detailPath = resolveJobDetailPath(item)
                       const normalizedStatus = String(item.job_status || '').toLowerCase()
-                      const recalculating = recalculatingAssetIds.includes(item.asset_id)
+                      const recalculating = recalculatingInstrumentIds.includes(item.instrument_id)
                       const canRetry = normalizedStatus === 'failed'
                       return (
                         <tr key={item.recalc_job_id}>
                           <td>
                             <div className="monitoring-primary-cell">
-                              <AssetLink asset={item} />
-                              <span className="monitoring-secondary-text">{item.asset_id}</span>
+                              <InstrumentLink instrument={item} />
+                              <span className="monitoring-secondary-text">{item.instrument_id}</span>
                             </div>
                           </td>
                           <td>{formatLabel(item.job_type)}</td>
@@ -671,7 +671,7 @@ export default function MonitoringPage() {
                                 <button
                                   type="button"
                                   className="table-action"
-                                  onClick={() => void handleRecalcNow(item.asset_id)}
+                                  onClick={() => void handleRecalcNow(item.instrument_id)}
                                   disabled={recalculating}
                                 >
                                   {recalculating ? 'Recalculating...' : 'Recalc Now'}

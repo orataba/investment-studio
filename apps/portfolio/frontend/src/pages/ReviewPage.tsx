@@ -972,7 +972,7 @@ export default function ReviewPage() {
                         <th colSpan={4}>Start Boundary</th>
                       </tr>
                       <tr>
-                        <th>Asset</th>
+                        <th>Instrument</th>
                         <th>Quantity</th>
                         <th>Market Value</th>
                         <th>Weight</th>
@@ -997,7 +997,7 @@ export default function ReviewPage() {
                         <th colSpan={4}>End Boundary</th>
                       </tr>
                       <tr>
-                        <th>Asset</th>
+                        <th>Instrument</th>
                         <th>Quantity</th>
                         <th>Market Value</th>
                         <th>Weight</th>
@@ -1273,7 +1273,7 @@ function BoundaryRow({
 }) {
   return (
     <tr>
-      <td>{position.instrument_ref.asset_name}</td>
+      <td>{position.instrument_ref.instrument_name}</td>
       <td>{formatQuantity(position.quantity)}</td>
       <td>{formatCurrency(position.market_value_base, currency)}</td>
       <td>{formatPercent(position.portfolio_weight)}</td>

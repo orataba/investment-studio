@@ -13,18 +13,18 @@ class NavFact(Base):
     __tablename__ = "nav_fact"
     __table_args__ = (
         UniqueConstraint(
-            "asset_id",
+            "instrument_id",
             "as_of_date",
             "nav_type",
             "currency",
-            name="uq_nav_fact_asset_date_type_currency",
+            name="uq_nav_fact_instrument_date_type_currency",
         ),
-        Index("idx_nav_fact_asset_date", "asset_id", "as_of_date"),
+        Index("idx_nav_fact_instrument_date", "instrument_id", "as_of_date"),
     )
 
     nav_fact_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         nullable=False,
     )
     as_of_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -40,11 +40,11 @@ class NavFact(Base):
 
 class HoldingSnapshot(Base):
     __tablename__ = "holding_snapshot"
-    __table_args__ = (Index("idx_holding_snapshot_current", "asset_id", "is_current"),)
+    __table_args__ = (Index("idx_holding_snapshot_current", "instrument_id", "is_current"),)
 
     holding_snapshot_id: Mapped[str] = mapped_column(primary_key=True)
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         nullable=False,
     )
     as_of_date: Mapped[date] = mapped_column(Date, nullable=False)

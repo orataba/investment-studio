@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from yungu_asset_core import instrument_store as shared_store
+from yungu_instrument_core import instrument_store as shared_store
 
 from watchlist_app.db.session import get_session_factory
 
@@ -31,23 +31,23 @@ def _registry_error(message: str) -> SharedInstrumentRegistryTransportError:
 def list_shared_instruments(
     *,
     search: str | None = None,
-    asset_type: str | None = None,
+    instrument_type: str | None = None,
     limit: int | None = None,
 ) -> list[dict[str, object]]:
     try:
         return shared_store.list_instruments(
             get_session_factory(),
             search=search,
-            asset_type=asset_type,
+            instrument_type=instrument_type,
             limit=limit,
         )
     except Exception as error:  # pragma: no cover - defensive wrapper
         raise _registry_error("Failed to query shared instrument registry.") from error
 
 
-def get_shared_instrument(asset_id: str) -> dict[str, object] | None:
+def get_shared_instrument(instrument_id: str) -> dict[str, object] | None:
     try:
-        return shared_store.get_instrument(get_session_factory(), asset_id)
+        return shared_store.get_instrument(get_session_factory(), instrument_id)
     except Exception as error:  # pragma: no cover - defensive wrapper
         raise _registry_error("Failed to query shared instrument registry.") from error
 

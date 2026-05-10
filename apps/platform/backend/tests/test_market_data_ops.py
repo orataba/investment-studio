@@ -46,8 +46,8 @@ def test_parse_nav_rows_from_xlsx_supports_chinese_headers() -> None:
     assert parsed[0]["as_of_date"] == "2026-04-14"
     assert str(parsed[0]["nav"]) == "1.1002"
     assert str(parsed[0]["nav_with_dividend"]) == "1.1002"
-    assert parsed[0]["asset_code"] == "SBCJ69"
-    assert parsed[0]["asset_name"] == "国泰君安期货CTA因子组合2号集合资产管理计划"
+    assert parsed[0]["instrument_code"] == "SBCJ69"
+    assert parsed[0]["instrument_name"] == "国泰君安期货CTA因子组合2号集合资产管理计划"
     assert parsed[0]["currency"] == "CNY"
     assert parsed[0]["frequency"] == "daily"
 
@@ -78,8 +78,8 @@ def test_parse_nav_rows_from_xlsx_supports_total_nav_aliases_and_datetime_values
     assert parsed[0]["as_of_date"] == "2024-09-05"
     assert str(parsed[0]["nav"]) == "1"
     assert str(parsed[0]["nav_with_dividend"]) == "1"
-    assert parsed[0]["asset_code"] == "ANZ73A(A级)"
-    assert parsed[0]["asset_name"] == "盈怀香柏树1号私募证券投资基金A类"
+    assert parsed[0]["instrument_code"] == "ANZ73A(A级)"
+    assert parsed[0]["instrument_name"] == "盈怀香柏树1号私募证券投资基金A类"
 
 
 def test_parse_nav_rows_from_xlsx_supports_chinese_date_strings_after_title_rows() -> None:
@@ -94,8 +94,8 @@ def test_parse_nav_rows_from_xlsx_supports_chinese_date_strings_after_title_rows
 
     assert len(parsed) == 1
     assert parsed[0]["as_of_date"] == "2024-12-05"
-    assert parsed[0]["asset_code"] == "ARE77A"
-    assert parsed[0]["asset_name"] == "盈怀香柏树7号私募证券投资基金A"
+    assert parsed[0]["instrument_code"] == "ARE77A"
+    assert parsed[0]["instrument_name"] == "盈怀香柏树7号私募证券投资基金A"
     assert str(parsed[0]["nav"]) == "1.0"
     assert str(parsed[0]["nav_with_dividend"]) == "1.0"
 
@@ -126,8 +126,8 @@ def test_parse_nav_rows_from_xlsx_supports_yyyymmdd_business_dates() -> None:
 
     assert len(parsed) == 1
     assert parsed[0]["as_of_date"] == "2026-04-22"
-    assert parsed[0]["asset_code"] == "ZB945A"
-    assert parsed[0]["asset_name"] == "润洲正行11号私募证券投资基金A"
+    assert parsed[0]["instrument_code"] == "ZB945A"
+    assert parsed[0]["instrument_name"] == "润洲正行11号私募证券投资基金A"
     assert str(parsed[0]["nav"]) == "0.9705"
     assert str(parsed[0]["nav_with_dividend"]) == "1.5268"
 
@@ -136,15 +136,15 @@ def test_filter_rows_for_rule_supports_exact_code_match() -> None:
     rows = [
         {
             "as_of_date": "2026-04-14",
-            "asset_code": "SAZB60",
-            "asset_name": "九慕云谷均衡配置私募证券投资基金",
+            "instrument_code": "SAZB60",
+            "instrument_name": "九慕云谷均衡配置私募证券投资基金",
             "nav": "1.0657",
             "nav_with_dividend": "1.0657",
         },
         {
             "as_of_date": "2026-04-14",
-            "asset_code": "AZB60A",
-            "asset_name": "九慕云谷均衡配置私募证券投资基金A",
+            "instrument_code": "AZB60A",
+            "instrument_name": "九慕云谷均衡配置私募证券投资基金A",
             "nav": "1.0657",
             "nav_with_dividend": "1.0657",
         },
@@ -156,7 +156,7 @@ def test_filter_rows_for_rule_supports_exact_code_match() -> None:
     )
 
     assert len(filtered) == 1
-    assert filtered[0]["asset_code"] == "SAZB60"
+    assert filtered[0]["instrument_code"] == "SAZB60"
 
 
 def test_parse_nav_rows_from_label_snapshot_matrix_extracts_nav_values() -> None:

@@ -18,7 +18,7 @@ export default function App() {
           <Route path="/" element={<WatchlistEntryPage />} />
           <Route path="/watchlists" element={<WatchlistEntryPage />} />
           <Route path="/watchlists/:watchlistId" element={<WatchlistsPage />} />
-          <Route path="/instruments/:assetId" element={<InstrumentDetailPage />} />
+          <Route path="/instruments/:instrumentId" element={<InstrumentDetailPage />} />
           <Route
             path="/research"
             element={

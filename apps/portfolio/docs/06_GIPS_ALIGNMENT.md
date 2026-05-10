@@ -79,11 +79,11 @@ GIPS-informed 绩效口径以 fair value、外部现金流中性化和几何链�
 - 修改账户成本法时，系统从 transaction facts 重算成本相关 read models，而不是保留历史算法兼容层。
 
 Performance `Calculation` 使用 period bridge：`Initial Value + Net External Flow + Period P&L = Final Value`。其中 capital gain 使用 fair-value period basis：期初已有持仓按期初市值重置，区间内买入按成交 gross amount 建立期间成本，期末仍持有部分形成 unrealized gain。这个拆分服务绩效解释，不读取 FIFO / moving average 的 book cost 分支。
-Calculation 的 group axis 包括 asset、asset type、currency、account 与 planning taxonomy；TWR 和 contribution 必须在后端按目标轴从 daily slices 计算，不能在前端简单汇总资产行。
+Calculation 的 group axis 包括 instrument、instrument type、currency、account 与 planning taxonomy；TWR 和 contribution 必须在后端按目标轴从 daily slices 计算，不能在前端简单汇总instrument rows。
 
 Holdings 只作为当前持仓状态表。资产级 TWR、区间 contribution、realized gain、income 和 closed positions 必须从 `Performance` 或 security detail 读取，避免把 current holdings 和 period performance 混成一个口径。
 
-Holdings 中允许出现 `Chart 6M`、`1W Return / MTD / YTD / 1Y` 和 `Current DD`，但它们必须明确是 quote-derived asset market trend：只基于资产自身 selected quote series，不读取组合现金流、数量、成本法或 realized / income events。它们用于持仓扫盘，不作为 GIPS-informed portfolio return 或 contribution disclosure。
+Holdings 中允许出现 `Chart 6M`、`1W Return / MTD / YTD / 1Y` 和 `Current DD`，但它们必须明确是 quote-derived instrument market trend：只基于标的自身 selected quote series，不读取组合现金流、数量、成本法或 realized / income events。它们用于持仓扫盘，不作为 GIPS-informed portfolio return 或 contribution disclosure。
 
 Risk / Research 的风险统计也必须保持估值频率一致性：先按 daily / weekly / monthly calculation basis 对齐目标 period，再用 period-end 有效观测计算收益；共同节假日不生成样本，单资产缺价进入 missing / insufficient-history 诊断。不得用跨 period stale price 或不同长度持有期收益去补 covariance、correlation、Sharpe 或 target-volatility overlay。
 

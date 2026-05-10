@@ -19,7 +19,7 @@ from portfolio_app.db.models import (
 )
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import performance
-from portfolio_app.services.asset_charts import HOLDINGS_PRICE_CHART_RANGE_KEYS, build_asset_trend_metrics
+from portfolio_app.services.instrument_charts import HOLDINGS_PRICE_CHART_RANGE_KEYS, build_instrument_trend_metrics
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.portfolio_store import (
     _resolve_live_portfolio_as_of_date,
@@ -336,15 +336,15 @@ def _refresh_portfolio_daily_snapshots_once(
                 )
                 for holding in holding_rows:
                     account_id = str(holding.get("account_id") or "")
-                    asset_id = str(holding.get("asset_id") or "")
-                    if not account_id or not asset_id:
+                    instrument_id = str(holding.get("instrument_id") or "")
+                    if not account_id or not instrument_id:
                         continue
                     session.add(
                         PortfolioDailyHoldingSnapshotModel(
                             portfolio_id=portfolio_id,
                             as_of_date=snapshot_date,
                             account_id=account_id,
-                            asset_id=asset_id,
+                            instrument_id=instrument_id,
                             currency=str(holding.get("currency") or portfolio.get("base_currency") or "USD"),
                             quantity=_safe_float(holding.get("quantity")) or 0.0,
                             cost_basis=_safe_float(holding.get("cost_basis")),
@@ -493,38 +493,38 @@ def refresh_selected_portfolio_daily_snapshots(
     return refreshed
 
 
-def _portfolio_ids_for_asset_change(
+def _portfolio_ids_for_instrument_change(
     session,
     *,
-    asset_ids: list[str],
+    instrument_ids: list[str],
     refresh_all: bool,
 ) -> list[str]:
     if refresh_all:
         return list(session.scalars(select(PortfolioRecordModel.portfolio_id)).all())
-    normalized_asset_ids = list(dict.fromkeys(asset_id.strip() for asset_id in asset_ids if asset_id.strip()))
-    if not normalized_asset_ids:
+    normalized_instrument_ids = list(dict.fromkeys(instrument_id.strip() for instrument_id in instrument_ids if instrument_id.strip()))
+    if not normalized_instrument_ids:
         return []
     return list(
         session.scalars(
             select(TransactionRecordModel.portfolio_id)
-            .where(TransactionRecordModel.asset_id.in_(normalized_asset_ids))
+            .where(TransactionRecordModel.instrument_id.in_(normalized_instrument_ids))
             .distinct()
             .order_by(TransactionRecordModel.portfolio_id)
         ).all()
     )
 
 
-def refresh_portfolio_daily_snapshots_for_asset_change(
+def refresh_portfolio_daily_snapshots_for_instrument_change(
     *,
-    asset_ids: list[str],
+    instrument_ids: list[str],
     dirty_from: date | None = None,
     refresh_all: bool = False,
 ) -> list[dict[str, object]]:
     session_factory = get_session_factory()
     with session_factory() as session:
-        portfolio_ids = _portfolio_ids_for_asset_change(
+        portfolio_ids = _portfolio_ids_for_instrument_change(
             session,
-            asset_ids=asset_ids,
+            instrument_ids=instrument_ids,
             refresh_all=refresh_all,
         )
     return refresh_selected_portfolio_daily_snapshots(portfolio_ids, dirty_from=dirty_from)
@@ -630,11 +630,11 @@ def _first_present(rows: list[dict[str, object]], key: str) -> object | None:
     return None
 
 
-def _asset_trend_metrics(asset_id: str, as_of_date: date | None) -> dict[str, object]:
-    if not asset_id or as_of_date is None:
+def _instrument_trend_metrics(instrument_id: str, as_of_date: date | None) -> dict[str, object]:
+    if not instrument_id or as_of_date is None:
         return {}
     try:
-        return build_asset_trend_metrics(asset_id, as_of_date=as_of_date)
+        return build_instrument_trend_metrics(instrument_id, as_of_date=as_of_date)
     except InstrumentRegistryError:
         return {}
 
@@ -644,29 +644,29 @@ def _aggregate_holding_rows(
     *,
     total_nav_base: float | None,
 ) -> list[dict[str, object]]:
-    rows_by_asset: dict[str, list[dict[str, object]]] = {}
+    rows_by_instrument: dict[str, list[dict[str, object]]] = {}
     for row in rows:
         payload = dict(row.holding_json) if isinstance(row.holding_json, dict) else {}
         payload["_snapshot_as_of_date"] = row.as_of_date
-        rows_by_asset.setdefault(row.asset_id, []).append(payload)
+        rows_by_instrument.setdefault(row.instrument_id, []).append(payload)
 
     aggregated_rows: list[dict[str, object]] = []
-    for asset_id, asset_rows in rows_by_asset.items():
+    for instrument_id, instrument_rows in rows_by_instrument.items():
         account_ids = sorted(
             {
                 str(account_id)
-                for row in asset_rows
+                for row in instrument_rows
                 for account_id in list(row.get("account_ids") or [row.get("account_id")])
                 if str(account_id or "")
             }
         )
-        market_value_base = _sum_complete([row.get("market_value_base") for row in asset_rows])
-        cost_basis_base = _sum_complete([row.get("cost_basis_base") for row in asset_rows])
-        first_row = asset_rows[0] if asset_rows else {}
+        market_value_base = _sum_complete([row.get("market_value_base") for row in instrument_rows])
+        cost_basis_base = _sum_complete([row.get("cost_basis_base") for row in instrument_rows])
+        first_row = instrument_rows[0] if instrument_rows else {}
         cost_basis_methods = sorted(
             {
                 str(row.get("cost_basis_method") or "")
-                for row in asset_rows
+                for row in instrument_rows
                 if str(row.get("cost_basis_method") or "")
             }
         )
@@ -674,7 +674,7 @@ def _aggregate_holding_rows(
             f"price_chart_{range_key}": next(
                 (
                     row.get(f"price_chart_{range_key}")
-                    for row in asset_rows
+                    for row in instrument_rows
                     if isinstance(row.get(f"price_chart_{range_key}"), list)
                     and row.get(f"price_chart_{range_key}")
                 ),
@@ -683,36 +683,36 @@ def _aggregate_holding_rows(
             for range_key in HOLDINGS_PRICE_CHART_RANGE_KEYS
         }
         trend_metrics = {
-            "asset_return_1w": _first_present(asset_rows, "asset_return_1w"),
-            "asset_return_mtd": _first_present(asset_rows, "asset_return_mtd"),
-            "asset_return_ytd": _first_present(asset_rows, "asset_return_ytd"),
-            "asset_return_1y": _first_present(asset_rows, "asset_return_1y"),
-            "asset_volatility_1m": _first_present(asset_rows, "asset_volatility_1m"),
-            "asset_volatility_3m": _first_present(asset_rows, "asset_volatility_3m"),
-            "asset_volatility_6m": _first_present(asset_rows, "asset_volatility_6m"),
-            "asset_volatility_1y": _first_present(asset_rows, "asset_volatility_1y"),
-            "asset_current_drawdown": _first_present(asset_rows, "asset_current_drawdown"),
-            "asset_max_drawdown": _first_present(asset_rows, "asset_max_drawdown"),
-            "asset_holding_max_drawdown": _first_present(asset_rows, "asset_holding_max_drawdown"),
-            "asset_holding_start_date": _first_present(asset_rows, "asset_holding_start_date"),
-            "asset_trend_as_of_date": _first_present(asset_rows, "asset_trend_as_of_date"),
-            "asset_trend_basis": _first_present(asset_rows, "asset_trend_basis"),
+            "instrument_return_1w": _first_present(instrument_rows, "instrument_return_1w"),
+            "instrument_return_mtd": _first_present(instrument_rows, "instrument_return_mtd"),
+            "instrument_return_ytd": _first_present(instrument_rows, "instrument_return_ytd"),
+            "instrument_return_1y": _first_present(instrument_rows, "instrument_return_1y"),
+            "instrument_volatility_1m": _first_present(instrument_rows, "instrument_volatility_1m"),
+            "instrument_volatility_3m": _first_present(instrument_rows, "instrument_volatility_3m"),
+            "instrument_volatility_6m": _first_present(instrument_rows, "instrument_volatility_6m"),
+            "instrument_volatility_1y": _first_present(instrument_rows, "instrument_volatility_1y"),
+            "instrument_current_drawdown": _first_present(instrument_rows, "instrument_current_drawdown"),
+            "instrument_max_drawdown": _first_present(instrument_rows, "instrument_max_drawdown"),
+            "instrument_holding_max_drawdown": _first_present(instrument_rows, "instrument_holding_max_drawdown"),
+            "instrument_holding_start_date": _first_present(instrument_rows, "instrument_holding_start_date"),
+            "instrument_trend_as_of_date": _first_present(instrument_rows, "instrument_trend_as_of_date"),
+            "instrument_trend_basis": _first_present(instrument_rows, "instrument_trend_basis"),
         }
         if all(value is None for value in trend_metrics.values()):
-            snapshot_as_of_date = _parse_date(_first_present(asset_rows, "_snapshot_as_of_date"))
-            trend_metrics = _asset_trend_metrics(asset_id, snapshot_as_of_date)
+            snapshot_as_of_date = _parse_date(_first_present(instrument_rows, "_snapshot_as_of_date"))
+            trend_metrics = _instrument_trend_metrics(instrument_id, snapshot_as_of_date)
         aggregated_rows.append(
             {
-                "line_id": asset_id,
-                "asset_core": deepcopy(first_row.get("instrument_ref") or {}),
-                "quantity": _sum_complete([row.get("quantity") for row in asset_rows]),
-                "last_price": _first_present(asset_rows, "last_price"),
-                "quote_as_of_date": _first_present(asset_rows, "quote_as_of_date"),
-                "quote_metric_family": _first_present(asset_rows, "quote_metric_family"),
-                "quote_basis": _first_present(asset_rows, "quote_basis"),
-                "quote_provider": _first_present(asset_rows, "quote_provider"),
-                "quote_status": _first_present(asset_rows, "quote_status"),
-                "market_value": _sum_complete([row.get("market_value") for row in asset_rows]),
+                "line_id": instrument_id,
+                "instrument_core": deepcopy(first_row.get("instrument_ref") or {}),
+                "quantity": _sum_complete([row.get("quantity") for row in instrument_rows]),
+                "last_price": _first_present(instrument_rows, "last_price"),
+                "quote_as_of_date": _first_present(instrument_rows, "quote_as_of_date"),
+                "quote_metric_family": _first_present(instrument_rows, "quote_metric_family"),
+                "quote_basis": _first_present(instrument_rows, "quote_basis"),
+                "quote_provider": _first_present(instrument_rows, "quote_provider"),
+                "quote_status": _first_present(instrument_rows, "quote_status"),
+                "market_value": _sum_complete([row.get("market_value") for row in instrument_rows]),
                 "market_value_base": market_value_base,
                 "day_change_pct": None,
                 "day_change_value": None,
@@ -723,7 +723,7 @@ def _aggregate_holding_rows(
                     if cost_basis_methods
                     else "fifo"
                 ),
-                "cost_basis": _sum_complete([row.get("cost_basis") for row in asset_rows]),
+                "cost_basis": _sum_complete([row.get("cost_basis") for row in instrument_rows]),
                 "cost_basis_base": cost_basis_base,
                 "allocation": (
                     market_value_base / total_nav_base
@@ -734,7 +734,7 @@ def _aggregate_holding_rows(
                 **trend_metrics,
                 "coverage_status": "price-nav-fx" if market_value_base is not None else "unpriced",
                 "account_count": len(account_ids),
-                "open_position_lot_count": sum(int(row.get("open_position_lot_count") or 0) for row in asset_rows),
+                "open_position_lot_count": sum(int(row.get("open_position_lot_count") or 0) for row in instrument_rows),
             }
         )
 
@@ -779,7 +779,7 @@ def build_materialized_holdings_workspace(
                     PortfolioDailyHoldingSnapshotModel.as_of_date == snapshot.as_of_date,
                 )
                 .order_by(
-                    PortfolioDailyHoldingSnapshotModel.asset_id,
+                    PortfolioDailyHoldingSnapshotModel.instrument_id,
                     PortfolioDailyHoldingSnapshotModel.account_id,
                 )
             ).all()
@@ -802,7 +802,7 @@ def build_materialized_holdings_workspace(
         "as_of_date": snapshot_as_of_date.isoformat(),
         "view_label": "View: Holdings",
         "coverage_note": (
-            "Statement of assets is served from materialized daily holdings snapshots generated by the portfolio "
+            "Statement of Assets is served from materialized daily holdings snapshots generated by the portfolio "
             "calculation refresh pipeline."
         ),
         "summary_cards": [

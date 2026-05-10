@@ -11,23 +11,23 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from watchlist_app.db.models.assets import AssetDetail
+from watchlist_app.db.models.instruments import InstrumentDetail
 from watchlist_app.db.models.read_models import (
-    AssetChartReadModel,
-    AssetExposureHoldingsReadModel,
-    AssetExposureReadModel,
-    AssetPerformanceReadModel,
-    AssetRatingReadModel,
-    AssetRiskReadModel,
-    AssetSummaryReadModel,
+    InstrumentChartReadModel,
+    InstrumentExposureHoldingsReadModel,
+    InstrumentExposureReadModel,
+    InstrumentPerformanceReadModel,
+    InstrumentRatingReadModel,
+    InstrumentRiskReadModel,
+    InstrumentSummaryReadModel,
 )
-from watchlist_app.repositories.sqlalchemy.assets import SQLAlchemyAssetRepository
+from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.facts import SQLAlchemyFactsRepository
 from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
     SQLAlchemyInstrumentAttributeRepository,
 )
 from watchlist_app.repositories.sqlalchemy.manual_profiles import (
-    SQLAlchemyAssetManualProfileRepository,
+    SQLAlchemyInstrumentManualProfileRepository,
 )
 from watchlist_app.repositories.sqlalchemy.read_models import SQLAlchemyReadModelRepository
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
@@ -37,6 +37,10 @@ from watchlist_app.reference_data.fund_taxonomy import FUND_TAXONOMY_CODE
 from watchlist_app.services.fund_taxonomy import (
     build_taxonomy_context,
     merge_taxonomy_attributes,
+)
+from watchlist_app.services.calculation_frequency import (
+    build_calculation_frequency_context,
+    normalize_frequency,
 )
 from watchlist_app.services.read_models import (
     build_watchlist_row_materialization,
@@ -209,8 +213,8 @@ PEER_COMPARISON_METRICS = [
 def _default_nav_settings() -> dict[str, Any]:
     return {
         "nav_basis_preference": "auto",
-        "default_benchmark_asset_id": None,
-        "peer_baseline_asset_ids": [],
+        "default_benchmark_instrument_id": None,
+        "peer_baseline_instrument_ids": [],
     }
 
 
@@ -221,14 +225,14 @@ def _normalize_nav_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
     }
     if normalized.get("nav_basis_preference") not in {"auto", "nav_with_dividend"}:
         normalized["nav_basis_preference"] = "auto"
-    normalized["default_benchmark_asset_id"] = (
-        str(normalized.get("default_benchmark_asset_id")).strip() or None
-        if normalized.get("default_benchmark_asset_id") is not None
+    normalized["default_benchmark_instrument_id"] = (
+        str(normalized.get("default_benchmark_instrument_id")).strip() or None
+        if normalized.get("default_benchmark_instrument_id") is not None
         else None
     )
-    normalized["peer_baseline_asset_ids"] = [
+    normalized["peer_baseline_instrument_ids"] = [
         str(value).strip()
-        for value in (normalized.get("peer_baseline_asset_ids") or [])
+        for value in (normalized.get("peer_baseline_instrument_ids") or [])
         if str(value).strip()
     ]
     return normalized
@@ -284,22 +288,22 @@ def _node_path_labels(node: object | None) -> list[str]:
     return _string_list(getattr(node, "path_labels_json", None))
 
 
-def _active_fund_asset_ids(session: Session) -> set[str]:
-    local_active_asset_ids = {
-        str(asset_id)
-        for asset_id in session.scalars(
-            select(AssetDetail.asset_id).where(
-                AssetDetail.asset_type == "fund",
-                AssetDetail.is_active.is_(True),
+def _active_fund_instrument_ids(session: Session) -> set[str]:
+    local_active_instrument_ids = {
+        str(instrument_id)
+        for instrument_id in session.scalars(
+            select(InstrumentDetail.instrument_id).where(
+                InstrumentDetail.instrument_type == "fund",
+                InstrumentDetail.is_active.is_(True),
             )
         ).all()
     }
-    shared_active_asset_ids = {
-        str(item.get("asset_id"))
-        for item in list_shared_instruments(asset_type="fund", limit=None)
-        if str(item.get("asset_id") or "").strip()
+    shared_active_instrument_ids = {
+        str(item.get("instrument_id"))
+        for item in list_shared_instruments(instrument_type="fund", limit=None)
+        if str(item.get("instrument_id") or "").strip()
     }
-    return local_active_asset_ids & shared_active_asset_ids
+    return local_active_instrument_ids & shared_active_instrument_ids
 
 
 def _quantile(values: list[float], percentile: float) -> float | None:
@@ -1085,12 +1089,18 @@ def _group_shared_nav_rows(market_data: list[dict[str, object]]) -> list[dict[st
             {
                 "as_of_date": as_of_date,
                 "currency": str(item.get("currency") or "USD"),
-                "frequency": None,
+                "frequency": normalize_frequency(
+                    item.get("frequency") or item.get("observation_frequency")
+                ),
                 "adopted_at": None,
                 "nav": None,
                 "nav_with_dividend": None,
             },
         )
+        if row.get("frequency") is None:
+            row["frequency"] = normalize_frequency(
+                item.get("frequency") or item.get("observation_frequency")
+            )
         row[target_key] = value
     return [grouped[key] for key in sorted(grouped)]
 
@@ -1136,6 +1146,7 @@ def _select_nav_basis_rows(
                 "as_of_date": row["as_of_date"],
                 "value": float(row[basis]),
                 "currency": row["currency"],
+                "frequency": row.get("frequency"),
                 "adopted_at": row.get("adopted_at"),
             }
             for row in rows
@@ -1159,9 +1170,9 @@ def _select_nav_basis_rows(
     }
 
 
-def _build_chart_payload(asset_id: str, nav_points: list[dict[str, Any]], currency: str) -> dict[str, object]:
+def _build_chart_payload(instrument_id: str, nav_points: list[dict[str, Any]], currency: str) -> dict[str, object]:
     return {
-        "asset_id": asset_id,
+        "instrument_id": instrument_id,
         "base_series_type": "nav",
         "currency": currency,
         "date_range": (
@@ -1174,7 +1185,7 @@ def _build_chart_payload(asset_id: str, nav_points: list[dict[str, Any]], curren
         ),
         "series": [
             {
-                "name": f"{asset_id.upper()} NAV",
+                "name": f"{instrument_id.upper()} NAV",
                 "points": [
                     {"date": point["as_of_date"].isoformat(), "value": round(point["value"], 4)}
                     for point in nav_points
@@ -1187,10 +1198,10 @@ def _build_chart_payload(asset_id: str, nav_points: list[dict[str, Any]], curren
 
 class CanonicalRecalcService:
     def __init__(self) -> None:
-        self.asset_repository = SQLAlchemyAssetRepository()
+        self.instrument_repository = SQLAlchemyInstrumentRepository()
         self.facts_repository = SQLAlchemyFactsRepository()
         self.attribute_repository = SQLAlchemyInstrumentAttributeRepository()
-        self.manual_profile_repository = SQLAlchemyAssetManualProfileRepository()
+        self.manual_profile_repository = SQLAlchemyInstrumentManualProfileRepository()
         self.read_model_repository = SQLAlchemyReadModelRepository()
         self.recalc_repository = SQLAlchemyRecalcJobRepository()
         self.snapshot_repository = SQLAlchemySnapshotRepository()
@@ -1200,19 +1211,19 @@ class CanonicalRecalcService:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
     ) -> dict[str, object]:
-        manual_profile = self.manual_profile_repository.get(session, asset_id)
+        manual_profile = self.manual_profile_repository.get(session, instrument_id)
         nav_settings = _normalize_nav_settings(
             manual_profile.nav_settings_json if manual_profile is not None else None
         )
-        shared_instrument = get_shared_instrument(asset_id)
+        shared_instrument = get_shared_instrument(instrument_id)
         nav_rows = _group_shared_nav_rows(list(shared_instrument.get("market_data", []))) if isinstance(shared_instrument, dict) else []
         if not nav_rows:
             nav_rows = _group_local_nav_rows(
                 self.facts_repository.list_nav_facts(
                     session,
-                    asset_id=asset_id,
+                    instrument_id=instrument_id,
                     nav_type=None,
                     primary_only=True,
                 )
@@ -1221,16 +1232,18 @@ class CanonicalRecalcService:
             nav_rows,
             preference=str(nav_settings.get("nav_basis_preference", "auto")),
         )
+        frequency_context = build_calculation_frequency_context(selection["points"])
         return {
-            "asset_id": asset_id,
+            "instrument_id": instrument_id,
             "count": len(selection["rows"]),
             "nav_basis_preference": str(nav_settings.get("nav_basis_preference", "auto")),
             "nav_basis_type": selection["nav_basis_type"],
             "nav_basis_source": selection["nav_basis_source"],
             "nav_basis_status": selection["nav_basis_status"],
+            "calculation_frequency_profile": frequency_context["profile"],
             "compare_settings": {
-                "default_benchmark_asset_id": nav_settings.get("default_benchmark_asset_id"),
-                "peer_asset_ids": list(nav_settings.get("peer_baseline_asset_ids") or []),
+                "default_benchmark_instrument_id": nav_settings.get("default_benchmark_instrument_id"),
+                "peer_instrument_ids": list(nav_settings.get("peer_baseline_instrument_ids") or []),
             },
             "rows": [
                 {
@@ -1258,13 +1271,20 @@ class CanonicalRecalcService:
                 }
                 for point in selection["points"]
             ],
+            "calculation_series": [
+                {
+                    "date": point["as_of_date"].isoformat(),
+                    "nav": round(point["value"], 8),
+                }
+                for point in frequency_context["points"]
+            ],
         }
 
-    def ingest_asset_holding_snapshot(
+    def ingest_instrument_holding_snapshot(
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         as_of_date: date,
         source_cutoff_at: datetime,
         methodology_version: str,
@@ -1274,7 +1294,7 @@ class CanonicalRecalcService:
     ) -> dict[str, object]:
         payload_hash = _hash_payload(
             {
-                "asset_id": asset_id,
+                "instrument_id": instrument_id,
                 "as_of_date": as_of_date.isoformat(),
                 "source_cutoff_at": source_cutoff_at.isoformat(),
                 "positions": positions,
@@ -1282,8 +1302,8 @@ class CanonicalRecalcService:
         )
         record = self.facts_repository.replace_current_holding_snapshot(
             session,
-            holding_snapshot_id=f"holding:{asset_id}:{as_of_date.isoformat()}",
-            asset_id=asset_id,
+            holding_snapshot_id=f"holding:{instrument_id}:{as_of_date.isoformat()}",
+            instrument_id=instrument_id,
             as_of_date=as_of_date,
             source_cutoff_at=source_cutoff_at,
             methodology_version=methodology_version,
@@ -1296,14 +1316,14 @@ class CanonicalRecalcService:
         if auto_recalculate:
             execution = self.execute_recalc(
                 session,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 job_type="exposure",
                 trigger_type="fact_adopted",
                 trigger_ref_type="holding_snapshot",
                 trigger_ref_id=record.holding_snapshot_id,
             )
         return {
-            "asset_id": asset_id,
+            "instrument_id": instrument_id,
             "holding_snapshot_id": record.holding_snapshot_id,
             "position_count": len(record.positions),
             "as_of_date": record.as_of_date.isoformat(),
@@ -1315,7 +1335,7 @@ class CanonicalRecalcService:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         job_type: str,
         trigger_type: str,
         trigger_ref_type: str | None,
@@ -1326,7 +1346,7 @@ class CanonicalRecalcService:
             session,
             recalc_job_id=make_recalc_job_id(),
             job_type=job_type,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             trigger_type=trigger_type,
             trigger_ref_type=trigger_ref_type,
             trigger_ref_id=trigger_ref_id,
@@ -1334,7 +1354,7 @@ class CanonicalRecalcService:
             priority=100 if job_type == "all" else 90,
             dedupe_key=make_recalc_dedupe_key(
                 job_type=job_type,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 trigger_type=trigger_type,
                 trigger_ref_type=trigger_ref_type,
                 trigger_ref_id=trigger_ref_id,
@@ -1343,7 +1363,7 @@ class CanonicalRecalcService:
         )
         self.recalc_repository.mark_running(session, record)
         try:
-            result = self._execute_recalc_job(session, asset_id=asset_id, job_type=job_type)
+            result = self._execute_recalc_job(session, instrument_id=instrument_id, job_type=job_type)
             self.recalc_repository.mark_completed(session, record, payload_json=result)
             if commit:
                 session.commit()
@@ -1372,7 +1392,7 @@ class CanonicalRecalcService:
         try:
             result = self._execute_recalc_job(
                 session,
-                asset_id=record.asset_id,
+                instrument_id=record.instrument_id,
                 job_type=record.job_type,
             )
             self.recalc_repository.mark_completed(session, record, payload_json=result)
@@ -1397,32 +1417,32 @@ class CanonicalRecalcService:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         job_type: str,
     ) -> dict[str, object]:
-        asset = self.asset_repository.get(session, asset_id)
-        if asset is None:
-            raise ValueError(f"Asset not found: {asset_id}")
+        instrument = self.instrument_repository.get(session, instrument_id)
+        if instrument is None:
+            raise ValueError(f"Instrument not found: {instrument_id}")
 
-        shared_instrument = get_shared_instrument(asset_id)
+        shared_instrument = get_shared_instrument(instrument_id)
         if (
             shared_instrument is not None
-            and str(shared_instrument.get("asset_type") or "").strip().lower() == "fund"
+            and str(shared_instrument.get("instrument_type") or "").strip().lower() == "fund"
         ):
-            asset = self.asset_repository.upsert_from_shared_instrument(
+            instrument = self.instrument_repository.upsert_from_shared_instrument(
                 session,
                 shared_instrument=shared_instrument,
-                detail_view_type=asset.detail_view_type or "fund",
+                detail_view_type=instrument.detail_view_type or "fund",
             )
 
         now = _utcnow()
         nav_facts = self.facts_repository.list_nav_facts(
             session,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             nav_type=None,
             primary_only=True,
         )
-        manual_profile = self.manual_profile_repository.get(session, asset_id)
+        manual_profile = self.manual_profile_repository.get(session, instrument_id)
         nav_settings = _normalize_nav_settings(
             manual_profile.nav_settings_json if manual_profile is not None else None
         )
@@ -1434,6 +1454,9 @@ class CanonicalRecalcService:
             nav_rows,
             preference=str(nav_settings.get("nav_basis_preference", "auto")),
         )
+        frequency_context = build_calculation_frequency_context(nav_selection["points"])
+        calculation_nav_points = frequency_context["points"]
+        calculation_frequency_profile = frequency_context["profile"]
         quote_selection = _select_nav_basis_rows(
             nav_rows,
             preference=str(nav_settings.get("nav_basis_preference", "auto")),
@@ -1441,12 +1464,12 @@ class CanonicalRecalcService:
         )
         holding_snapshot = self.facts_repository.get_current_holding_snapshot(
             session,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
         )
         raw_attributes = collapse_latest_attribute_values(
-            self.attribute_repository.get_values_for_asset(session, asset_id)
+            self.attribute_repository.get_values_for_asset(session, instrument_id)
         )
-        assignment = self.taxonomy_repository.get_assignment(session, asset_id=asset_id)
+        assignment = self.taxonomy_repository.get_assignment(session, instrument_id=instrument_id)
         taxonomy_node = (
             self.taxonomy_repository.get_node(session, node_id=str(assignment.node_id))
             if assignment is not None and assignment.node_id
@@ -1457,39 +1480,41 @@ class CanonicalRecalcService:
             taxonomy_context=taxonomy_context,
             instrument_attributes=raw_attributes,
         )
-        current_drawdown = _current_drawdown(nav_selection["points"])
+        current_drawdown = _current_drawdown(calculation_nav_points)
         if current_drawdown is not None:
             watchlist_attributes["current_drawdown"] = current_drawdown
 
-        performance_snapshot = self.snapshot_repository.get_current_performance(session, asset_id)
-        risk_snapshot = self.snapshot_repository.get_current_risk(session, asset_id)
-        exposure_snapshot = self.snapshot_repository.get_current_exposure(session, asset_id)
-        score_snapshot = self.snapshot_repository.get_current_score(session, asset_id)
+        performance_snapshot = self.snapshot_repository.get_current_performance(session, instrument_id)
+        risk_snapshot = self.snapshot_repository.get_current_risk(session, instrument_id)
+        exposure_snapshot = self.snapshot_repository.get_current_exposure(session, instrument_id)
+        score_snapshot = self.snapshot_repository.get_current_score(session, instrument_id)
 
         if job_type in {"performance", "all"}:
-            if nav_selection["points"]:
+            if calculation_nav_points:
                 performance_snapshot = self._replace_performance_snapshot(
                     session,
-                    asset_id=asset_id,
-                    nav_points=nav_selection["points"],
+                    instrument_id=instrument_id,
+                    nav_points=calculation_nav_points,
+                    calculation_frequency_profile=calculation_frequency_profile,
                     now=now,
                 )
                 risk_snapshot = self._replace_risk_snapshot(
                     session,
-                    asset_id=asset_id,
-                    nav_points=nav_selection["points"],
+                    instrument_id=instrument_id,
+                    nav_points=calculation_nav_points,
+                    calculation_frequency_profile=calculation_frequency_profile,
                     now=now,
                 )
             else:
-                self.snapshot_repository.clear_performance(session, asset_id=asset_id)
-                self.snapshot_repository.clear_risk(session, asset_id=asset_id)
+                self.snapshot_repository.clear_performance(session, instrument_id=instrument_id)
+                self.snapshot_repository.clear_risk(session, instrument_id=instrument_id)
                 performance_snapshot = None
                 risk_snapshot = None
 
         if job_type in {"exposure", "all"} and holding_snapshot is not None:
             exposure_snapshot = self._replace_exposure_snapshot(
                 session,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 holding_snapshot=holding_snapshot,
                 now=now,
             )
@@ -1497,7 +1522,7 @@ class CanonicalRecalcService:
         if job_type in {"ratings", "performance", "exposure", "all"}:
             score_snapshot = self._replace_score_snapshot(
                 session,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 performance_snapshot=performance_snapshot,
                 risk_snapshot=risk_snapshot,
                 exposure_snapshot=exposure_snapshot,
@@ -1505,7 +1530,7 @@ class CanonicalRecalcService:
             )
 
         summary_payload = self._summary_payload(
-            asset=asset,
+            instrument=instrument,
             nav_selection=nav_selection,
             performance_snapshot=performance_snapshot,
             risk_snapshot=risk_snapshot,
@@ -1516,13 +1541,13 @@ class CanonicalRecalcService:
             now=now,
         )
         chart_payload = _build_chart_payload(
-            asset_id,
+            instrument_id,
             quote_selection["points"],
             quote_selection["points"][-1]["currency"] if quote_selection["points"] else "USD",
         )
         peer_comparison = self._peer_comparison_payload(
             session,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             taxonomy_node=taxonomy_node,
             performance_snapshot=performance_snapshot,
             risk_snapshot=risk_snapshot,
@@ -1530,26 +1555,28 @@ class CanonicalRecalcService:
         performance_payload = self._performance_payload(
             performance_snapshot=performance_snapshot,
             peer_comparison=peer_comparison,
-            nav_points=nav_selection["points"],
+            nav_points=calculation_nav_points,
+            calculation_frequency_profile=calculation_frequency_profile,
         )
         risk_payload = self._risk_payload(
             risk_snapshot=risk_snapshot,
             performance_snapshot=performance_snapshot,
             peer_comparison=peer_comparison,
-            nav_points=nav_selection["points"],
+            nav_points=calculation_nav_points,
+            calculation_frequency_profile=calculation_frequency_profile,
         )
         exposure_payload = self._exposure_payload(exposure_snapshot)
         holdings_payload = self._holdings_payload(holding_snapshot)
         rating_payload = self._rating_payload(score_snapshot)
 
         for model_class, payload in (
-            (AssetSummaryReadModel, summary_payload),
-            (AssetChartReadModel, chart_payload),
-            (AssetPerformanceReadModel, performance_payload),
-            (AssetRiskReadModel, risk_payload),
-            (AssetExposureReadModel, exposure_payload),
-            (AssetExposureHoldingsReadModel, holdings_payload),
-            (AssetRatingReadModel, rating_payload),
+            (InstrumentSummaryReadModel, summary_payload),
+            (InstrumentChartReadModel, chart_payload),
+            (InstrumentPerformanceReadModel, performance_payload),
+            (InstrumentRiskReadModel, risk_payload),
+            (InstrumentExposureReadModel, exposure_payload),
+            (InstrumentExposureHoldingsReadModel, holdings_payload),
+            (InstrumentRatingReadModel, rating_payload),
         ):
             source_cutoff_at = (
                 _coerce_utc(getattr(exposure_snapshot, "source_cutoff_at", None))
@@ -1559,7 +1586,7 @@ class CanonicalRecalcService:
             self.read_model_repository.upsert_payload_read_model(
                 session,
                 model_class=model_class,
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 payload_json=payload,
                 data_freshness_status=summary_payload["freshness"]["data_freshness_status"],
                 last_recalculated_at=now,
@@ -1568,7 +1595,7 @@ class CanonicalRecalcService:
 
         self._refresh_watchlist_rows(
             session,
-            asset=asset,
+            instrument=instrument,
             summary_payload=summary_payload,
             attributes=watchlist_attributes,
             peer_comparison=peer_comparison,
@@ -1580,7 +1607,7 @@ class CanonicalRecalcService:
         )
 
         return {
-            "asset_id": asset_id,
+            "instrument_id": instrument_id,
             "job_type": job_type,
             "performance_snapshot_id": getattr(performance_snapshot, "snapshot_id", None),
             "risk_snapshot_id": getattr(risk_snapshot, "snapshot_id", None),
@@ -1593,8 +1620,9 @@ class CanonicalRecalcService:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         nav_points: list[dict[str, Any]],
+        calculation_frequency_profile: dict[str, object],
         now: datetime,
     ):
         latest = nav_points[-1]
@@ -1650,13 +1678,18 @@ class CanonicalRecalcService:
         calmar = annualized_return / abs(max_drawdown) if annualized_return is not None and max_drawdown not in {None, 0} else None
         return self.snapshot_repository.replace_performance(
             session,
-            snapshot_id=f"perf:{asset_id}:{as_of_date.isoformat()}:{make_recalc_job_id()}",
-            asset_id=asset_id,
+            snapshot_id=f"perf:{instrument_id}:{as_of_date.isoformat()}:{make_recalc_job_id()}",
+            instrument_id=instrument_id,
             data={
                 "as_of_date": as_of_date,
                 "source_cutoff_at": _coerce_utc(latest.get("adopted_at")) or now,
-                "methodology_version": "canonical-performance/v2",
-                "input_hash": _hash_payload({"nav_points": nav_points}),
+                "methodology_version": "canonical-performance/v3",
+                "input_hash": _hash_payload(
+                    {
+                        "nav_points": nav_points,
+                        "calculation_frequency_profile": calculation_frequency_profile,
+                    }
+                ),
                 "calculated_at": now,
                 "superseded_at": None,
                 "is_current": True,
@@ -1680,8 +1713,9 @@ class CanonicalRecalcService:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         nav_points: list[dict[str, Any]],
+        calculation_frequency_profile: dict[str, object],
         now: datetime,
     ):
         latest = nav_points[-1]
@@ -1691,13 +1725,18 @@ class CanonicalRecalcService:
         sortino_ratio = _compute_sortino(nav_points)
         return self.snapshot_repository.replace_risk(
             session,
-            snapshot_id=f"risk:{asset_id}:{latest['as_of_date'].isoformat()}:{make_recalc_job_id()}",
-            asset_id=asset_id,
+            snapshot_id=f"risk:{instrument_id}:{latest['as_of_date'].isoformat()}:{make_recalc_job_id()}",
+            instrument_id=instrument_id,
             data={
                 "as_of_date": latest["as_of_date"],
                 "source_cutoff_at": _coerce_utc(latest.get("adopted_at")) or now,
-                "methodology_version": "canonical-risk/v2",
-                "input_hash": _hash_payload({"nav_points": nav_points}),
+                "methodology_version": "canonical-risk/v3",
+                "input_hash": _hash_payload(
+                    {
+                        "nav_points": nav_points,
+                        "calculation_frequency_profile": calculation_frequency_profile,
+                    }
+                ),
                 "calculated_at": now,
                 "superseded_at": None,
                 "is_current": True,
@@ -1719,7 +1758,7 @@ class CanonicalRecalcService:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         holding_snapshot,
         now: datetime,
     ):
@@ -1739,8 +1778,8 @@ class CanonicalRecalcService:
         ]
         return self.snapshot_repository.replace_exposure(
             session,
-            snapshot_id=f"exposure:{asset_id}:{holding_snapshot.as_of_date.isoformat()}:{make_recalc_job_id()}",
-            asset_id=asset_id,
+            snapshot_id=f"exposure:{instrument_id}:{holding_snapshot.as_of_date.isoformat()}:{make_recalc_job_id()}",
+            instrument_id=instrument_id,
             data={
                 "as_of_date": holding_snapshot.as_of_date,
                 "source_cutoff_at": holding_snapshot.source_cutoff_at,
@@ -1777,7 +1816,7 @@ class CanonicalRecalcService:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         performance_snapshot,
         risk_snapshot,
         exposure_snapshot,
@@ -1807,8 +1846,8 @@ class CanonicalRecalcService:
             analyst_stance = "Cautious"
         return self.snapshot_repository.replace_score(
             session,
-            snapshot_id=f"score:{asset_id}:{now.date().isoformat()}:{make_recalc_job_id()}",
-            asset_id=asset_id,
+            snapshot_id=f"score:{instrument_id}:{now.date().isoformat()}:{make_recalc_job_id()}",
+            instrument_id=instrument_id,
             data={
                 "as_of_date": now.date(),
                 "source_cutoff_at": now,
@@ -1834,7 +1873,7 @@ class CanonicalRecalcService:
     def _summary_payload(
         self,
         *,
-        asset,
+        instrument,
         nav_selection: dict[str, object],
         performance_snapshot,
         risk_snapshot,
@@ -1851,11 +1890,11 @@ class CanonicalRecalcService:
         )
         freshness_status = "fresh" if nav_selection["points"] else "pending_recalc"
         return {
-            "asset_id": asset.asset_id,
-            "fund_name": asset.asset_name,
-            "ticker_or_isin": asset.primary_identifier_value or asset.asset_id.upper(),
+            "instrument_id": instrument.instrument_id,
+            "fund_name": instrument.instrument_name,
+            "ticker_or_isin": instrument.primary_identifier_value or instrument.instrument_id.upper(),
             "rating_as_of": now.date().isoformat(),
-            "management_firm_name": str(asset.metadata_json.get("management_firm_name") or "") or None,
+            "management_firm_name": str(instrument.metadata_json.get("management_firm_name") or "") or None,
             "overall_rating": getattr(score_snapshot, "overall_rating", None),
             "analyst_stance": getattr(score_snapshot, "analyst_stance", "Unrated"),
             "instrument_attributes": attributes,
@@ -1910,7 +1949,7 @@ class CanonicalRecalcService:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         taxonomy_node,
         performance_snapshot,
         risk_snapshot,
@@ -1936,49 +1975,49 @@ class CanonicalRecalcService:
             session,
             taxonomy_code=FUND_TAXONOMY_CODE,
         )
-        active_peer_asset_ids = _active_fund_asset_ids(session)
+        active_peer_instrument_ids = _active_fund_instrument_ids(session)
         assigned_node_by_asset = {
-            str(assignment.asset_id): node_by_id.get(str(assignment.node_id))
+            str(assignment.instrument_id): node_by_id.get(str(assignment.node_id))
             for assignment in assignments
-            if assignment.node_id and str(assignment.asset_id) in active_peer_asset_ids
+            if assignment.node_id and str(assignment.instrument_id) in active_peer_instrument_ids
         }
         performance_by_asset = {}
         for snapshot in self.snapshot_repository.list_current_performance(
             session,
-            asset_ids=sorted(active_peer_asset_ids),
+            instrument_ids=sorted(active_peer_instrument_ids),
         ):
-            performance_by_asset.setdefault(str(snapshot.asset_id), snapshot)
-        if performance_snapshot is not None and asset_id in active_peer_asset_ids:
-            performance_by_asset[str(asset_id)] = performance_snapshot
+            performance_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
+        if performance_snapshot is not None and instrument_id in active_peer_instrument_ids:
+            performance_by_asset[str(instrument_id)] = performance_snapshot
         risk_by_asset = {}
         for snapshot in self.snapshot_repository.list_current_risk(
             session,
-            asset_ids=sorted(active_peer_asset_ids),
+            instrument_ids=sorted(active_peer_instrument_ids),
         ):
-            risk_by_asset.setdefault(str(snapshot.asset_id), snapshot)
-        if risk_snapshot is not None and asset_id in active_peer_asset_ids:
-            risk_by_asset[str(asset_id)] = risk_snapshot
+            risk_by_asset.setdefault(str(snapshot.instrument_id), snapshot)
+        if risk_snapshot is not None and instrument_id in active_peer_instrument_ids:
+            risk_by_asset[str(instrument_id)] = risk_snapshot
 
         selected_peer_node_id = assigned_path_node_ids[-1]
-        selected_asset_ids: list[str] = []
+        selected_instrument_ids: list[str] = []
         for candidate_node_id in reversed(assigned_path_node_ids):
-            candidate_asset_ids = [
-                candidate_asset_id
-                for candidate_asset_id, assigned_node in assigned_node_by_asset.items()
+            candidate_instrument_ids = [
+                candidate_instrument_id
+                for candidate_instrument_id, assigned_node in assigned_node_by_asset.items()
                 if candidate_node_id in _node_path_node_ids(assigned_node)
-                and candidate_asset_id in performance_by_asset
+                and candidate_instrument_id in performance_by_asset
             ]
             selected_peer_node_id = candidate_node_id
-            selected_asset_ids = sorted(candidate_asset_ids)
-            if len(selected_asset_ids) >= PEER_METRIC_MIN_SAMPLE:
+            selected_instrument_ids = sorted(candidate_instrument_ids)
+            if len(selected_instrument_ids) >= PEER_METRIC_MIN_SAMPLE:
                 break
 
         if (
-            asset_id not in selected_asset_ids
+            instrument_id not in selected_instrument_ids
             and performance_snapshot is not None
-            and asset_id in active_peer_asset_ids
+            and instrument_id in active_peer_instrument_ids
         ):
-            selected_asset_ids = sorted([*selected_asset_ids, asset_id])
+            selected_instrument_ids = sorted([*selected_instrument_ids, instrument_id])
 
         peer_node = node_by_id.get(selected_peer_node_id) or taxonomy_node
         fallback_levels = max(
@@ -1997,15 +2036,15 @@ class CanonicalRecalcService:
                 continue
 
             samples: list[tuple[str, float]] = []
-            for candidate_asset_id in selected_asset_ids:
+            for candidate_instrument_id in selected_instrument_ids:
                 candidate_snapshot = (
-                    performance_by_asset.get(candidate_asset_id)
+                    performance_by_asset.get(candidate_instrument_id)
                     if source == "performance"
-                    else risk_by_asset.get(candidate_asset_id)
+                    else risk_by_asset.get(candidate_instrument_id)
                 )
                 candidate_value = _safe_float(getattr(candidate_snapshot, attr, None))
                 if candidate_value is not None:
-                    samples.append((candidate_asset_id, candidate_value))
+                    samples.append((candidate_instrument_id, candidate_value))
             if len(samples) < PEER_METRIC_MIN_SAMPLE:
                 continue
 
@@ -2016,8 +2055,8 @@ class CanonicalRecalcService:
             )
             peer_values = [
                 value
-                for candidate_asset_id, value in samples
-                if candidate_asset_id != asset_id
+                for candidate_instrument_id, value in samples
+                if candidate_instrument_id != instrument_id
             ] or [value for _, value in samples]
             metric_rows.append(
                 {
@@ -2055,7 +2094,7 @@ class CanonicalRecalcService:
             "peer_node_id": selected_peer_node_id,
             "peer_path": _node_path_labels(peer_node),
             "fallback_levels": fallback_levels,
-            "sample_count": len(selected_asset_ids),
+            "sample_count": len(selected_instrument_ids),
             "metrics": metric_rows,
             "summary": {
                 "return_percentile": return_percentile,
@@ -2073,6 +2112,7 @@ class CanonicalRecalcService:
         performance_snapshot,
         peer_comparison: dict[str, object] | None,
         nav_points: list[dict[str, Any]],
+        calculation_frequency_profile: dict[str, object],
     ) -> dict[str, object]:
         trailing_returns: list[dict[str, Any]] = []
         annual_returns = _compute_calendar_year_returns(nav_points)
@@ -2117,6 +2157,7 @@ class CanonicalRecalcService:
             "trailing_returns": trailing_returns,
             "ranking": _primary_peer_ranking(peer_comparison),
             "peer_comparison": peer_comparison,
+            "calculation_frequency_profile": calculation_frequency_profile,
             "snapshot_metadata": _snapshot_metadata(performance_snapshot),
         }
 
@@ -2127,6 +2168,7 @@ class CanonicalRecalcService:
         performance_snapshot,
         peer_comparison: dict[str, object] | None,
         nav_points: list[dict[str, Any]],
+        calculation_frequency_profile: dict[str, object],
     ) -> dict[str, object]:
         volatility = _safe_float(getattr(risk_snapshot, "volatility", None))
         annualized_return = _safe_float(getattr(performance_snapshot, "annualized_return", None))
@@ -2179,6 +2221,7 @@ class CanonicalRecalcService:
             "risk_structure": risk_structure,
             "current_watch": current_watch,
             "change_monitor": change_monitor,
+            "calculation_frequency_profile": calculation_frequency_profile,
             "snapshot_metadata": _snapshot_metadata(risk_snapshot),
         }
 
@@ -2232,7 +2275,7 @@ class CanonicalRecalcService:
         self,
         session: Session,
         *,
-        asset,
+        instrument,
         summary_payload: dict[str, object],
         attributes: dict[str, object],
         peer_comparison: dict[str, object] | None,
@@ -2242,7 +2285,7 @@ class CanonicalRecalcService:
         score_snapshot,
         now: datetime,
     ) -> None:
-        existing_rows = self.read_model_repository.list_watchlist_rows_for_asset(session, asset.asset_id)
+        existing_rows = self.read_model_repository.list_watchlist_rows_for_instrument(session, instrument.instrument_id)
         if not existing_rows:
             return
         freshness = summary_payload.get("freshness", {})
@@ -2251,16 +2294,16 @@ class CanonicalRecalcService:
             self.read_model_repository.upsert_watchlist_row(
                 session,
                 watchlist_id=row.watchlist_id,
-                asset_id=asset.asset_id,
+                instrument_id=instrument.instrument_id,
                 data=build_watchlist_row_materialization(
                     watchlist_id=row.watchlist_id,
-                    asset_id=asset.asset_id,
-                    asset_type=asset.asset_type,
+                    instrument_id=instrument.instrument_id,
+                    instrument_type=instrument.instrument_type,
                     source_row=row,
-                    display_name=asset.asset_name,
+                    display_name=instrument.instrument_name,
                     share_class=None,
-                    ticker_or_isin=asset.primary_identifier_value,
-                    management_firm_name=str(asset.metadata_json.get("management_firm_name") or "") or None,
+                    ticker_or_isin=instrument.primary_identifier_value,
+                    management_firm_name=str(instrument.metadata_json.get("management_firm_name") or "") or None,
                     overall_rating=getattr(score_snapshot, "overall_rating", None),
                     analyst_stance=getattr(score_snapshot, "analyst_stance", None),
                     attributes=row_attributes,

@@ -1,4 +1,4 @@
-"""asset foundation
+"""instrument foundation
 
 Revision ID: b144f727c418
 Revises: 
@@ -81,14 +81,14 @@ INSTRUMENT_ATTRIBUTE_DEFINITIONS_SNAPSHOT = [
 
 FIELD_REGISTRY_SNAPSHOT = [
     {
-        "asset_scope_json": [],
+        "instrument_scope_json": [],
         "availability_rule_json": {"requires": ["watchlist_row_read_model"]},
         "category_code": "general",
         "data_type": "string",
         "default_visible": True,
         "default_width": 320,
         "description": "Canonical instrument display name from the watchlist row read model.",
-        "field_key": "asset_name",
+        "field_key": "instrument_name",
         "filter_mode": "text",
         "formatter_code": "text",
         "group_mode": "discrete",
@@ -96,28 +96,28 @@ FIELD_REGISTRY_SNAPSHOT = [
         "product_scope_json": [],
         "sort_mode": "alpha",
         "source_domain": "read_model",
-        "source_metric_code": "watchlist_row_read_model.asset_name",
+        "source_metric_code": "watchlist_row_read_model.instrument_name",
     },
     {
-        "asset_scope_json": [],
+        "instrument_scope_json": [],
         "availability_rule_json": {"requires": ["watchlist_row_read_model"]},
         "category_code": "general",
         "data_type": "string",
         "default_visible": False,
         "default_width": 140,
         "description": "Top-level instrument type resolved from shared identity.",
-        "field_key": "asset_type",
+        "field_key": "instrument_type",
         "filter_mode": "multi_select",
         "formatter_code": "text",
         "group_mode": "discrete",
-        "label": "Asset Type",
+        "label": "Instrument Type",
         "product_scope_json": [],
         "sort_mode": "alpha",
         "source_domain": "read_model",
-        "source_metric_code": "watchlist_row_read_model.asset_type",
+        "source_metric_code": "watchlist_row_read_model.instrument_type",
     },
     {
-        "asset_scope_json": [],
+        "instrument_scope_json": [],
         "availability_rule_json": {"requires": ["primary_identifier"]},
         "category_code": "general",
         "data_type": "string",
@@ -135,7 +135,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "watchlist_row_read_model.ticker_or_isin",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["watchlist_row_read_model"]},
         "category_code": "basics",
         "data_type": "string",
@@ -153,7 +153,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "watchlist_row_read_model.management_firm_name",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["watchlist_row_read_model"]},
         "category_code": "basics",
         "data_type": "string",
@@ -171,25 +171,25 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "watchlist_row_read_model.category_name",
     },
     {
-        "asset_scope_json": ["fund"],
-        "availability_rule_json": {"requires": ["asset_detail"]},
+        "instrument_scope_json": ["fund"],
+        "availability_rule_json": {"requires": ["instrument_detail"]},
         "category_code": "basics",
         "data_type": "string",
         "default_visible": False,
         "default_width": 160,
-        "description": "Top-level asset class for group by and filtering.",
-        "field_key": "asset_class",
+        "description": "Top-level instrument class for group by and filtering.",
+        "field_key": "instrument_class",
         "filter_mode": "multi_select",
         "formatter_code": "text",
         "group_mode": "discrete",
-        "label": "Asset Class",
+        "label": "Instrument Class",
         "product_scope_json": ["mutual_fund", "cef", "etf"],
         "sort_mode": "alpha",
-        "source_domain": "asset_detail",
-        "source_metric_code": "asset_detail.metadata_json.asset_class",
+        "source_domain": "instrument_detail",
+        "source_metric_code": "instrument_detail.metadata_json.instrument_class",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["watchlist_row_read_model"]},
         "category_code": "basics",
         "data_type": "number",
@@ -207,8 +207,8 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "watchlist_row_read_model.aum",
     },
     {
-        "asset_scope_json": ["fund"],
-        "availability_rule_json": {"requires": ["asset_chart_read_model"]},
+        "instrument_scope_json": ["fund"],
+        "availability_rule_json": {"requires": ["instrument_chart_read_model"]},
         "category_code": "performance_risk",
         "data_type": "sparkline",
         "default_visible": False,
@@ -222,11 +222,11 @@ FIELD_REGISTRY_SNAPSHOT = [
         "product_scope_json": [],
         "sort_mode": "none",
         "source_domain": "read_model",
-        "source_metric_code": "asset_chart_read_model.series",
+        "source_metric_code": "instrument_chart_read_model.series",
     },
     {
-        "asset_scope_json": ["fund"],
-        "availability_rule_json": {"requires": ["asset_score_snapshot"]},
+        "instrument_scope_json": ["fund"],
+        "availability_rule_json": {"requires": ["instrument_score_snapshot"]},
         "category_code": "ratings_analysis",
         "data_type": "integer",
         "default_visible": True,
@@ -240,11 +240,11 @@ FIELD_REGISTRY_SNAPSHOT = [
         "product_scope_json": ["mutual_fund", "cef", "etf"],
         "sort_mode": "numeric",
         "source_domain": "score",
-        "source_metric_code": "asset_score_snapshot.overall_rating",
+        "source_metric_code": "instrument_score_snapshot.overall_rating",
     },
     {
-        "asset_scope_json": ["fund"],
-        "availability_rule_json": {"requires": ["asset_score_snapshot"]},
+        "instrument_scope_json": ["fund"],
+        "availability_rule_json": {"requires": ["instrument_score_snapshot"]},
         "category_code": "ratings_analysis",
         "data_type": "string",
         "default_visible": True,
@@ -258,10 +258,10 @@ FIELD_REGISTRY_SNAPSHOT = [
         "product_scope_json": ["mutual_fund", "cef", "etf"],
         "sort_mode": "alpha",
         "source_domain": "score",
-        "source_metric_code": "asset_score_snapshot.analyst_stance",
+        "source_metric_code": "instrument_score_snapshot.analyst_stance",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["performance_snapshot"]},
         "category_code": "performance_risk",
         "data_type": "number",
@@ -279,7 +279,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "performance_snapshot.return_ytd",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["performance_snapshot"]},
         "category_code": "performance_risk",
         "data_type": "number",
@@ -297,7 +297,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "performance_snapshot.return_1w",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["performance_snapshot"]},
         "category_code": "performance_risk",
         "data_type": "number",
@@ -315,7 +315,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "performance_snapshot.return_1y",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["performance_snapshot"]},
         "category_code": "performance_risk",
         "data_type": "number",
@@ -333,7 +333,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "performance_snapshot.return_3y_annualized",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["performance_snapshot"]},
         "category_code": "performance_risk",
         "data_type": "number",
@@ -351,7 +351,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "performance_snapshot.return_5y_annualized",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["performance_snapshot"]},
         "category_code": "performance_risk",
         "data_type": "number",
@@ -369,7 +369,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "performance_snapshot.max_drawdown",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["risk_snapshot"]},
         "category_code": "performance_risk",
         "data_type": "number",
@@ -387,7 +387,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "risk_snapshot.volatility",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["risk_snapshot"]},
         "category_code": "performance_risk",
         "data_type": "number",
@@ -405,7 +405,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "risk_snapshot.sharpe_ratio",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["exposure_analytics_snapshot"]},
         "category_code": "exposure",
         "data_type": "number",
@@ -423,7 +423,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "exposure_analytics_snapshot.weighted_duration",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["exposure_analytics_snapshot"]},
         "category_code": "exposure",
         "data_type": "string",
@@ -441,7 +441,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "exposure_analytics_snapshot.avg_credit_rating",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["exposure_analytics_snapshot"]},
         "category_code": "exposure",
         "data_type": "number",
@@ -459,13 +459,13 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "exposure_analytics_snapshot.weighted_yield_to_worst",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["watchlist_row_read_model"]},
         "category_code": "monitoring",
         "data_type": "date",
         "default_visible": False,
         "default_width": 150,
-        "description": "Most recent canonical NAV fact adopted for the asset.",
+        "description": "Most recent canonical NAV fact adopted for the instrument.",
         "field_key": "last_nav_date",
         "filter_mode": "date_range",
         "formatter_code": "date",
@@ -477,7 +477,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "watchlist_row_read_model.last_nav_date",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["watchlist_row_read_model"]},
         "category_code": "monitoring",
         "data_type": "datetime",
@@ -495,7 +495,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "watchlist_row_read_model.exposure_updated_at",
     },
     {
-        "asset_scope_json": [],
+        "instrument_scope_json": [],
         "availability_rule_json": {"requires": ["watchlist_row_read_model"]},
         "category_code": "monitoring",
         "data_type": "string",
@@ -513,7 +513,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "watchlist_row_read_model.data_freshness_status",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["instrument_attribute_value"]},
         "category_code": "custom_attributes",
         "data_type": "single_select",
@@ -531,7 +531,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "instrument_attribute_value.coverage_status",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["instrument_attribute_value"]},
         "category_code": "custom_attributes",
         "data_type": "single_select",
@@ -549,7 +549,7 @@ FIELD_REGISTRY_SNAPSHOT = [
         "source_metric_code": "instrument_attribute_value.focus_bucket",
     },
     {
-        "asset_scope_json": ["fund"],
+        "instrument_scope_json": ["fund"],
         "availability_rule_json": {"requires": ["instrument_attribute_value"]},
         "category_code": "custom_attributes",
         "data_type": "boolean",
@@ -571,18 +571,18 @@ FIELD_REGISTRY_SNAPSHOT = [
 
 def upgrade() -> None:
     # ### commands auto generated by Alembic - please adjust! ###
-    op.create_table('asset_detail',
-    sa.Column('asset_id', sa.String(), nullable=False),
-    sa.Column('asset_type', sa.String(), nullable=False),
+    op.create_table('instrument_detail',
+    sa.Column('instrument_id', sa.String(), nullable=False),
+    sa.Column('instrument_type', sa.String(), nullable=False),
     sa.Column('detail_view_type', sa.String(), nullable=False),
-    sa.Column('asset_name', sa.String(), nullable=False),
+    sa.Column('instrument_name', sa.String(), nullable=False),
     sa.Column('primary_identifier_type', sa.String(), nullable=True),
     sa.Column('primary_identifier_value', sa.String(), nullable=True),
     sa.Column('is_active', sa.Boolean(), nullable=False),
     sa.Column('metadata_json', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
-    sa.PrimaryKeyConstraint('asset_id', name=op.f('pk_asset_detail'))
+    sa.PrimaryKeyConstraint('instrument_id', name=op.f('pk_instrument_detail'))
     )
     op.create_table('field_category',
     sa.Column('category_code', sa.String(), nullable=False),
@@ -618,35 +618,35 @@ def upgrade() -> None:
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
     sa.PrimaryKeyConstraint('watchlist_id', name=op.f('pk_watchlist'))
     )
-    op.create_table('asset_chart_read_model',
-    sa.Column('asset_id', sa.String(), nullable=False),
+    op.create_table('instrument_chart_read_model',
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('payload_json', sa.JSON(), nullable=False),
     sa.Column('data_freshness_status', sa.String(), nullable=False),
     sa.Column('last_recalculated_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('source_cutoff_at', sa.DateTime(timezone=True), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_asset_chart_read_model_asset_id_asset_detail'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('asset_id', name=op.f('pk_asset_chart_read_model'))
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_instrument_chart_read_model_instrument_id_instrument_detail'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('instrument_id', name=op.f('pk_instrument_chart_read_model'))
     )
-    op.create_table('asset_exposure_holdings_read_model',
-    sa.Column('asset_id', sa.String(), nullable=False),
+    op.create_table('instrument_exposure_holdings_read_model',
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('payload_json', sa.JSON(), nullable=False),
     sa.Column('data_freshness_status', sa.String(), nullable=False),
     sa.Column('last_recalculated_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('source_cutoff_at', sa.DateTime(timezone=True), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_asset_exposure_holdings_read_model_asset_id_asset_detail'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('asset_id', name=op.f('pk_asset_exposure_holdings_read_model'))
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_instrument_exposure_holdings_read_model_instrument_id_instrument_detail'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('instrument_id', name=op.f('pk_instrument_exposure_holdings_read_model'))
     )
-    op.create_table('asset_exposure_read_model',
-    sa.Column('asset_id', sa.String(), nullable=False),
+    op.create_table('instrument_exposure_read_model',
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('payload_json', sa.JSON(), nullable=False),
     sa.Column('data_freshness_status', sa.String(), nullable=False),
     sa.Column('last_recalculated_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('source_cutoff_at', sa.DateTime(timezone=True), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_asset_exposure_read_model_asset_id_asset_detail'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('asset_id', name=op.f('pk_asset_exposure_read_model'))
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_instrument_exposure_read_model_instrument_id_instrument_detail'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('instrument_id', name=op.f('pk_instrument_exposure_read_model'))
     )
-    op.create_table('asset_manual_profile',
-    sa.Column('asset_id', sa.String(), nullable=False),
+    op.create_table('instrument_manual_profile',
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('people_payload_json', sa.JSON(), nullable=False),
     sa.Column('strategy_payload_json', sa.JSON(), nullable=False),
     sa.Column('price_payload_json', sa.JSON(), nullable=False),
@@ -655,39 +655,39 @@ def upgrade() -> None:
     sa.Column('nav_settings_json', sa.JSON(), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_by', sa.String(), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_asset_manual_profile_asset_id_asset_detail'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('asset_id', name=op.f('pk_asset_manual_profile'))
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_instrument_manual_profile_instrument_id_instrument_detail'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('instrument_id', name=op.f('pk_instrument_manual_profile'))
     )
-    op.create_table('asset_performance_read_model',
-    sa.Column('asset_id', sa.String(), nullable=False),
+    op.create_table('instrument_performance_read_model',
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('payload_json', sa.JSON(), nullable=False),
     sa.Column('data_freshness_status', sa.String(), nullable=False),
     sa.Column('last_recalculated_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('source_cutoff_at', sa.DateTime(timezone=True), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_asset_performance_read_model_asset_id_asset_detail'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('asset_id', name=op.f('pk_asset_performance_read_model'))
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_instrument_performance_read_model_instrument_id_instrument_detail'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('instrument_id', name=op.f('pk_instrument_performance_read_model'))
     )
-    op.create_table('asset_rating_read_model',
-    sa.Column('asset_id', sa.String(), nullable=False),
+    op.create_table('instrument_rating_read_model',
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('payload_json', sa.JSON(), nullable=False),
     sa.Column('data_freshness_status', sa.String(), nullable=False),
     sa.Column('last_recalculated_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('source_cutoff_at', sa.DateTime(timezone=True), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_asset_rating_read_model_asset_id_asset_detail'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('asset_id', name=op.f('pk_asset_rating_read_model'))
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_instrument_rating_read_model_instrument_id_instrument_detail'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('instrument_id', name=op.f('pk_instrument_rating_read_model'))
     )
-    op.create_table('asset_risk_read_model',
-    sa.Column('asset_id', sa.String(), nullable=False),
+    op.create_table('instrument_risk_read_model',
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('payload_json', sa.JSON(), nullable=False),
     sa.Column('data_freshness_status', sa.String(), nullable=False),
     sa.Column('last_recalculated_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('source_cutoff_at', sa.DateTime(timezone=True), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_asset_risk_read_model_asset_id_asset_detail'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('asset_id', name=op.f('pk_asset_risk_read_model'))
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_instrument_risk_read_model_instrument_id_instrument_detail'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('instrument_id', name=op.f('pk_instrument_risk_read_model'))
     )
-    op.create_table('asset_score_snapshot',
+    op.create_table('instrument_score_snapshot',
     sa.Column('snapshot_id', sa.String(), nullable=False),
-    sa.Column('asset_id', sa.String(), nullable=False),
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('as_of_date', sa.Date(), nullable=False),
     sa.Column('source_cutoff_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('methodology_version', sa.String(), nullable=False),
@@ -706,22 +706,22 @@ def upgrade() -> None:
     sa.Column('operations_score', sa.Numeric(precision=12, scale=6), nullable=True),
     sa.Column('fit_score', sa.Numeric(precision=12, scale=6), nullable=True),
     sa.Column('confidence_score', sa.Numeric(precision=12, scale=6), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_asset_score_snapshot_asset_id_asset_detail'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('snapshot_id', name=op.f('pk_asset_score_snapshot'))
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_instrument_score_snapshot_instrument_id_instrument_detail'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('snapshot_id', name=op.f('pk_instrument_score_snapshot'))
     )
-    op.create_index('idx_score_snapshot_current', 'asset_score_snapshot', ['asset_id', 'is_current'], unique=False)
-    op.create_table('asset_summary_read_model',
-    sa.Column('asset_id', sa.String(), nullable=False),
+    op.create_index('idx_score_snapshot_current', 'instrument_score_snapshot', ['instrument_id', 'is_current'], unique=False)
+    op.create_table('instrument_summary_read_model',
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('payload_json', sa.JSON(), nullable=False),
     sa.Column('data_freshness_status', sa.String(), nullable=False),
     sa.Column('last_recalculated_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('source_cutoff_at', sa.DateTime(timezone=True), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_asset_summary_read_model_asset_id_asset_detail'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('asset_id', name=op.f('pk_asset_summary_read_model'))
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_instrument_summary_read_model_instrument_id_instrument_detail'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('instrument_id', name=op.f('pk_instrument_summary_read_model'))
     )
     op.create_table('exposure_analytics_snapshot',
     sa.Column('snapshot_id', sa.String(), nullable=False),
-    sa.Column('asset_id', sa.String(), nullable=False),
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('as_of_date', sa.Date(), nullable=False),
     sa.Column('source_cutoff_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('methodology_version', sa.String(), nullable=False),
@@ -750,10 +750,10 @@ def upgrade() -> None:
     sa.Column('avg_credit_rating', sa.String(), nullable=True),
     sa.Column('reported_turnover', sa.Numeric(precision=12, scale=6), nullable=True),
     sa.Column('style_box_code', sa.String(), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_exposure_analytics_snapshot_asset_id_asset_detail'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_exposure_analytics_snapshot_instrument_id_instrument_detail'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('snapshot_id', name=op.f('pk_exposure_analytics_snapshot'))
     )
-    op.create_index('idx_exposure_snapshot_current', 'exposure_analytics_snapshot', ['asset_id', 'is_current'], unique=False)
+    op.create_index('idx_exposure_snapshot_current', 'exposure_analytics_snapshot', ['instrument_id', 'is_current'], unique=False)
     op.create_table('field_registry',
     sa.Column('field_key', sa.String(), nullable=False),
     sa.Column('label', sa.String(), nullable=False),
@@ -764,7 +764,7 @@ def upgrade() -> None:
     sa.Column('sort_mode', sa.String(), nullable=False),
     sa.Column('filter_mode', sa.String(), nullable=False),
     sa.Column('group_mode', sa.String(), nullable=False),
-    sa.Column('asset_scope_json', sa.JSON(), nullable=False),
+    sa.Column('instrument_scope_json', sa.JSON(), nullable=False),
     sa.Column('product_scope_json', sa.JSON(), nullable=False),
     sa.Column('availability_rule_json', sa.JSON(), nullable=False),
     sa.Column('source_domain', sa.String(), nullable=False),
@@ -776,7 +776,7 @@ def upgrade() -> None:
     )
     op.create_table('holding_snapshot',
     sa.Column('holding_snapshot_id', sa.String(), nullable=False),
-    sa.Column('asset_id', sa.String(), nullable=False),
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('as_of_date', sa.Date(), nullable=False),
     sa.Column('source_cutoff_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('methodology_version', sa.String(), nullable=False),
@@ -785,26 +785,26 @@ def upgrade() -> None:
     sa.Column('superseded_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('is_current', sa.Boolean(), nullable=False),
     sa.Column('source_record_id', sa.String(), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_holding_snapshot_asset_id_asset_detail'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_holding_snapshot_instrument_id_instrument_detail'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('holding_snapshot_id', name=op.f('pk_holding_snapshot'))
     )
-    op.create_index('idx_holding_snapshot_current', 'holding_snapshot', ['asset_id', 'is_current'], unique=False)
+    op.create_index('idx_holding_snapshot_current', 'holding_snapshot', ['instrument_id', 'is_current'], unique=False)
     op.create_table('instrument_attribute_value',
     sa.Column('instrument_attribute_value_id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('asset_id', sa.String(), nullable=False),
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('attribute_key', sa.String(), nullable=False),
     sa.Column('value_json', sa.JSON(), nullable=False),
     sa.Column('effective_from', sa.Date(), nullable=True),
     sa.Column('adopted_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('source_record_id', sa.String(), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_instrument_attribute_value_asset_id_asset_detail'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_instrument_attribute_value_instrument_id_instrument_detail'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['attribute_key'], ['instrument_attribute_definition.attribute_key'], name=op.f('fk_instrument_attribute_value_attribute_key_instrument_attribute_definition'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('instrument_attribute_value_id', name=op.f('pk_instrument_attribute_value'))
     )
-    op.create_index('idx_instrument_attribute_value_asset_attribute', 'instrument_attribute_value', ['asset_id', 'attribute_key', 'adopted_at'], unique=False)
+    op.create_index('idx_instrument_attribute_value_instrument_attribute', 'instrument_attribute_value', ['instrument_id', 'attribute_key', 'adopted_at'], unique=False)
     op.create_table('nav_fact',
     sa.Column('nav_fact_id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('asset_id', sa.String(), nullable=False),
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('as_of_date', sa.Date(), nullable=False),
     sa.Column('nav_type', sa.String(), nullable=False),
     sa.Column('value', sa.Numeric(precision=20, scale=8), nullable=False),
@@ -814,14 +814,14 @@ def upgrade() -> None:
     sa.Column('source_record_id', sa.String(), nullable=True),
     sa.Column('observation_id', sa.String(), nullable=True),
     sa.Column('adopted_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_nav_fact_asset_id_asset_detail'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_nav_fact_instrument_id_instrument_detail'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('nav_fact_id', name=op.f('pk_nav_fact')),
-    sa.UniqueConstraint('asset_id', 'as_of_date', 'nav_type', 'currency', name='uq_nav_fact_asset_date_type_currency')
+    sa.UniqueConstraint('instrument_id', 'as_of_date', 'nav_type', 'currency', name='uq_nav_fact_instrument_date_type_currency')
     )
-    op.create_index('idx_nav_fact_asset_date', 'nav_fact', ['asset_id', 'as_of_date'], unique=False)
+    op.create_index('idx_nav_fact_instrument_date', 'nav_fact', ['instrument_id', 'as_of_date'], unique=False)
     op.create_table('performance_snapshot',
     sa.Column('snapshot_id', sa.String(), nullable=False),
-    sa.Column('asset_id', sa.String(), nullable=False),
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('as_of_date', sa.Date(), nullable=False),
     sa.Column('source_cutoff_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('methodology_version', sa.String(), nullable=False),
@@ -841,14 +841,14 @@ def upgrade() -> None:
     sa.Column('max_drawdown', sa.Numeric(precision=12, scale=6), nullable=True),
     sa.Column('calmar', sa.Numeric(precision=12, scale=6), nullable=True),
     sa.Column('annualized_return', sa.Numeric(precision=12, scale=6), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_performance_snapshot_asset_id_asset_detail'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_performance_snapshot_instrument_id_instrument_detail'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('snapshot_id', name=op.f('pk_performance_snapshot'))
     )
-    op.create_index('idx_performance_snapshot_current', 'performance_snapshot', ['asset_id', 'is_current'], unique=False)
+    op.create_index('idx_performance_snapshot_current', 'performance_snapshot', ['instrument_id', 'is_current'], unique=False)
     op.create_table('recalc_job',
     sa.Column('recalc_job_id', sa.String(), nullable=False),
     sa.Column('job_type', sa.String(), nullable=False),
-    sa.Column('asset_id', sa.String(), nullable=False),
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('trigger_type', sa.String(), nullable=False),
     sa.Column('trigger_ref_type', sa.String(), nullable=True),
     sa.Column('trigger_ref_id', sa.String(), nullable=True),
@@ -860,14 +860,14 @@ def upgrade() -> None:
     sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('error_message', sa.String(), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_recalc_job_asset_id_asset_detail'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_recalc_job_instrument_id_instrument_detail'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('recalc_job_id', name=op.f('pk_recalc_job')),
     sa.UniqueConstraint('dedupe_key', name='uq_recalc_job_dedupe_key')
     )
     op.create_index('idx_recalc_job_status_priority', 'recalc_job', ['job_status', 'priority', 'enqueued_at'], unique=False)
     op.create_table('risk_snapshot',
     sa.Column('snapshot_id', sa.String(), nullable=False),
-    sa.Column('asset_id', sa.String(), nullable=False),
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('as_of_date', sa.Date(), nullable=False),
     sa.Column('source_cutoff_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('methodology_version', sa.String(), nullable=False),
@@ -886,28 +886,28 @@ def upgrade() -> None:
     sa.Column('down_capture', sa.Numeric(precision=12, scale=6), nullable=True),
     sa.Column('tracking_error', sa.Numeric(precision=12, scale=6), nullable=True),
     sa.Column('information_ratio', sa.Numeric(precision=12, scale=6), nullable=True),
-    sa.ForeignKeyConstraint(['asset_id'], ['asset_detail.asset_id'], name=op.f('fk_risk_snapshot_asset_id_asset_detail'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['instrument_id'], ['instrument_detail.instrument_id'], name=op.f('fk_risk_snapshot_instrument_id_instrument_detail'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('snapshot_id', name=op.f('pk_risk_snapshot'))
     )
-    op.create_index('idx_risk_snapshot_current', 'risk_snapshot', ['asset_id', 'is_current'], unique=False)
+    op.create_index('idx_risk_snapshot_current', 'risk_snapshot', ['instrument_id', 'is_current'], unique=False)
     op.create_table('watchlist_item',
     sa.Column('watchlist_item_id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('watchlist_id', sa.String(), nullable=False),
-    sa.Column('asset_id', sa.String(), nullable=False),
+    sa.Column('instrument_id', sa.String(), nullable=False),
     sa.Column('added_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('added_by', sa.String(), nullable=True),
     sa.Column('note', sa.String(), nullable=True),
     sa.Column('rank_hint', sa.Integer(), nullable=True),
     sa.ForeignKeyConstraint(['watchlist_id'], ['watchlist.watchlist_id'], name=op.f('fk_watchlist_item_watchlist_id_watchlist'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('watchlist_item_id', name=op.f('pk_watchlist_item')),
-    sa.UniqueConstraint('watchlist_id', 'asset_id', name='uq_watchlist_item_watchlist_asset')
+    sa.UniqueConstraint('watchlist_id', 'instrument_id', name='uq_watchlist_item_watchlist_asset')
     )
     op.create_index('idx_watchlist_item_watchlist_id', 'watchlist_item', ['watchlist_id'], unique=False)
     op.create_table('watchlist_row_read_model',
     sa.Column('watchlist_id', sa.String(), nullable=False),
-    sa.Column('asset_id', sa.String(), nullable=False),
-    sa.Column('asset_type', sa.String(), nullable=False),
-    sa.Column('asset_name', sa.String(), nullable=False),
+    sa.Column('instrument_id', sa.String(), nullable=False),
+    sa.Column('instrument_type', sa.String(), nullable=False),
+    sa.Column('instrument_name', sa.String(), nullable=False),
     sa.Column('share_class', sa.String(), nullable=True),
     sa.Column('ticker_or_isin', sa.String(), nullable=True),
     sa.Column('management_firm_name', sa.String(), nullable=True),
@@ -935,7 +935,7 @@ def upgrade() -> None:
     sa.Column('last_successful_snapshot_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('staleness_reason', sa.String(), nullable=True),
     sa.ForeignKeyConstraint(['watchlist_id'], ['watchlist.watchlist_id'], name=op.f('fk_watchlist_row_read_model_watchlist_id_watchlist'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('watchlist_id', 'asset_id', name=op.f('pk_watchlist_row_read_model'))
+    sa.PrimaryKeyConstraint('watchlist_id', 'instrument_id', name=op.f('pk_watchlist_row_read_model'))
     )
     op.create_table('watchlist_view',
     sa.Column('watchlist_view_id', sa.String(), nullable=False),
@@ -1021,7 +1021,7 @@ def upgrade() -> None:
         sa.column("sort_mode", sa.String()),
         sa.column("filter_mode", sa.String()),
         sa.column("group_mode", sa.String()),
-        sa.column("asset_scope_json", sa.JSON()),
+        sa.column("instrument_scope_json", sa.JSON()),
         sa.column("product_scope_json", sa.JSON()),
         sa.column("availability_rule_json", sa.JSON()),
         sa.column("source_domain", sa.String()),
@@ -1069,7 +1069,7 @@ def upgrade() -> None:
                 "sort_mode": str(item["sort_mode"]),
                 "filter_mode": str(item["filter_mode"]),
                 "group_mode": str(item["group_mode"]),
-                "asset_scope_json": list(item.get("asset_scope_json", [])),
+                "instrument_scope_json": list(item.get("instrument_scope_json", [])),
                 "product_scope_json": list(item.get("product_scope_json", [])),
                 "availability_rule_json": dict(item.get("availability_rule_json", {})),
                 "source_domain": str(item["source_domain"]),
@@ -1097,27 +1097,27 @@ def downgrade() -> None:
     op.drop_table('recalc_job')
     op.drop_index('idx_performance_snapshot_current', table_name='performance_snapshot')
     op.drop_table('performance_snapshot')
-    op.drop_index('idx_nav_fact_asset_date', table_name='nav_fact')
+    op.drop_index('idx_nav_fact_instrument_date', table_name='nav_fact')
     op.drop_table('nav_fact')
-    op.drop_index('idx_instrument_attribute_value_asset_attribute', table_name='instrument_attribute_value')
+    op.drop_index('idx_instrument_attribute_value_instrument_attribute', table_name='instrument_attribute_value')
     op.drop_table('instrument_attribute_value')
     op.drop_index('idx_holding_snapshot_current', table_name='holding_snapshot')
     op.drop_table('holding_snapshot')
     op.drop_table('field_registry')
     op.drop_index('idx_exposure_snapshot_current', table_name='exposure_analytics_snapshot')
     op.drop_table('exposure_analytics_snapshot')
-    op.drop_table('asset_summary_read_model')
-    op.drop_index('idx_score_snapshot_current', table_name='asset_score_snapshot')
-    op.drop_table('asset_score_snapshot')
-    op.drop_table('asset_risk_read_model')
-    op.drop_table('asset_rating_read_model')
-    op.drop_table('asset_performance_read_model')
-    op.drop_table('asset_manual_profile')
-    op.drop_table('asset_exposure_read_model')
-    op.drop_table('asset_exposure_holdings_read_model')
-    op.drop_table('asset_chart_read_model')
+    op.drop_table('instrument_summary_read_model')
+    op.drop_index('idx_score_snapshot_current', table_name='instrument_score_snapshot')
+    op.drop_table('instrument_score_snapshot')
+    op.drop_table('instrument_risk_read_model')
+    op.drop_table('instrument_rating_read_model')
+    op.drop_table('instrument_performance_read_model')
+    op.drop_table('instrument_manual_profile')
+    op.drop_table('instrument_exposure_read_model')
+    op.drop_table('instrument_exposure_holdings_read_model')
+    op.drop_table('instrument_chart_read_model')
     op.drop_table('watchlist')
     op.drop_table('instrument_attribute_definition')
     op.drop_table('field_category')
-    op.drop_table('asset_detail')
+    op.drop_table('instrument_detail')
     # ### end Alembic commands ###

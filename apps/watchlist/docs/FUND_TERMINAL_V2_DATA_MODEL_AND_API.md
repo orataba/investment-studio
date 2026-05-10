@@ -90,7 +90,7 @@ shared instruments / manual ingest / facts ingest
 - `group_code`
 - `display_order`
 - `options_json`
-- `asset_scope_json`
+- `instrument_scope_json`
 - `applicability_json`
 - `rubric_json`
 - `required_for_monitoring`
@@ -104,12 +104,12 @@ shared instruments / manual ingest / facts ingest
 - NAV facts
 - holdings snapshots / positions
 
-facts 路由已经统一到 asset 主语：
+facts 路由已经统一到 instrument 主语：
 
-- `GET /api/facts/assets/{asset_id}/nav`
-- `POST /api/facts/assets/{asset_id}/nav`
-- `GET /api/facts/assets/{asset_id}/holdings/current`
-- `POST /api/facts/assets/{asset_id}/holdings`
+- `GET /api/facts/instruments/{instrument_id}/nav`
+- `POST /api/facts/instruments/{instrument_id}/nav`
+- `GET /api/facts/instruments/{instrument_id}/holdings/current`
+- `POST /api/facts/instruments/{instrument_id}/holdings`
 
 ### 4.4 Manual Profiles
 
@@ -131,7 +131,7 @@ facts 路由已经统一到 asset 主语：
 
 - `watchlist_row_read_model`
 - summary / chart / performance / risk / exposure / ratings read models
-- asset summary payload
+- instrument summary payload
 
 ### 4.6 Recalc Jobs
 
@@ -174,7 +174,7 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 
 1. 读取 `instrument_attribute_definition`
 2. 只看 `required_for_monitoring = true`
-3. 再按 `asset_scope_json` 与 `applicability_json` 判断当前资产是否适用
+3. 再按 `instrument_scope_json` 与 `applicability_json` 判断当前资产是否适用
 4. 同时检查 taxonomy 派生出来的必填分类上下文
 5. 只对适用字段做缺失检查
 
@@ -204,39 +204,39 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 
 - `GET /api/instruments`
 - `GET /api/instruments/resolve`
-- `GET /api/instruments/{asset_id}/resolve`
+- `GET /api/instruments/{instrument_id}/resolve`
 - `GET /api/instruments/library`
-- `GET /api/instruments/{asset_id}/summary`
-- `GET /api/instruments/{asset_id}/chart`
-- `GET /api/instruments/{asset_id}/performance`
-- `GET /api/instruments/{asset_id}/risk`
-- `GET /api/instruments/{asset_id}/exposure/summary`
-- `GET /api/instruments/{asset_id}/exposure/holdings`
-- `GET /api/instruments/{asset_id}/ratings`
-- `GET /api/instruments/{asset_id}/people`
-- `PUT /api/instruments/{asset_id}/people`
-- `GET /api/instruments/{asset_id}/strategy`
-- `PUT /api/instruments/{asset_id}/strategy`
-- `GET /api/instruments/{asset_id}/price`
-- `PUT /api/instruments/{asset_id}/price`
-- `GET /api/instruments/{asset_id}/documents`
-- `PUT /api/instruments/{asset_id}/documents`
-- `POST /api/instruments/{asset_id}/documents/upload`
-- `GET /api/instruments/{asset_id}/documents/files/{stored_file_name}`
-- `GET /api/instruments/{asset_id}/research`
-- `PUT /api/instruments/{asset_id}/research`
-- `GET /api/instruments/{asset_id}/nav-series`
-- `PUT /api/instruments/{asset_id}/nav-series`
-- `GET /api/instruments/{asset_id}/nav-settings`
-- `PUT /api/instruments/{asset_id}/nav-settings`
-- `POST /api/instruments/{asset_id}/nav-refresh`
+- `GET /api/instruments/{instrument_id}/summary`
+- `GET /api/instruments/{instrument_id}/chart`
+- `GET /api/instruments/{instrument_id}/performance`
+- `GET /api/instruments/{instrument_id}/risk`
+- `GET /api/instruments/{instrument_id}/exposure/summary`
+- `GET /api/instruments/{instrument_id}/exposure/holdings`
+- `GET /api/instruments/{instrument_id}/ratings`
+- `GET /api/instruments/{instrument_id}/people`
+- `PUT /api/instruments/{instrument_id}/people`
+- `GET /api/instruments/{instrument_id}/strategy`
+- `PUT /api/instruments/{instrument_id}/strategy`
+- `GET /api/instruments/{instrument_id}/price`
+- `PUT /api/instruments/{instrument_id}/price`
+- `GET /api/instruments/{instrument_id}/documents`
+- `PUT /api/instruments/{instrument_id}/documents`
+- `POST /api/instruments/{instrument_id}/documents/upload`
+- `GET /api/instruments/{instrument_id}/documents/files/{stored_file_name}`
+- `GET /api/instruments/{instrument_id}/research`
+- `PUT /api/instruments/{instrument_id}/research`
+- `GET /api/instruments/{instrument_id}/nav-series`
+- `PUT /api/instruments/{instrument_id}/nav-series`
+- `GET /api/instruments/{instrument_id}/nav-settings`
+- `PUT /api/instruments/{instrument_id}/nav-settings`
+- `POST /api/instruments/{instrument_id}/nav-refresh`
 - `POST /api/instruments/manual`
 
 注意：
 
 - `POST /api/instruments/manual` 已废弃，固定返回 `410`
-- `PUT /api/instruments/{asset_id}/nav-series` 固定返回 `409`
-- `POST /api/instruments/{asset_id}/nav-refresh` 固定返回 `409`
+- `PUT /api/instruments/{instrument_id}/nav-series` 固定返回 `409`
+- `POST /api/instruments/{instrument_id}/nav-refresh` 固定返回 `409`
 
 也就是说，watchlist detail 里 canonical NAV history 是只读视图。
 
@@ -244,8 +244,8 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 
 - `GET /api/instrument-attributes/definitions`
 - `POST /api/instrument-attributes/definitions`
-- `GET /api/instrument-attributes/assets/{asset_id}`
-- `POST /api/instrument-attributes/assets/{asset_id}`
+- `GET /api/instrument-attributes/instruments/{instrument_id}`
+- `POST /api/instrument-attributes/instruments/{instrument_id}`
 
 ### 6.5 Field Registry
 
@@ -254,8 +254,8 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 ### 6.6 Taxonomies
 
 - `GET /api/taxonomies/fund-taxonomy`
-- `GET /api/taxonomies/fund-taxonomy/assets/{asset_id}`
-- `PUT /api/taxonomies/fund-taxonomy/assets/{asset_id}`
+- `GET /api/taxonomies/fund-taxonomy/instruments/{instrument_id}`
+- `PUT /api/taxonomies/fund-taxonomy/instruments/{instrument_id}`
 
 说明：
 
@@ -270,10 +270,10 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 
 ### 6.8 Facts
 
-- `GET /api/facts/assets/{asset_id}/nav`
-- `POST /api/facts/assets/{asset_id}/nav`
-- `GET /api/facts/assets/{asset_id}/holdings/current`
-- `POST /api/facts/assets/{asset_id}/holdings`
+- `GET /api/facts/instruments/{instrument_id}/nav`
+- `POST /api/facts/instruments/{instrument_id}/nav`
+- `GET /api/facts/instruments/{instrument_id}/holdings/current`
+- `POST /api/facts/instruments/{instrument_id}/holdings`
 
 ### 6.9 Monitoring
 
@@ -283,24 +283,24 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 
 - `overview`
 - `watchlists`
-- `needs_attention_assets`
-- `missing_label_assets`
+- `needs_attention_instruments`
+- `missing_label_instruments`
 - `open_recalc_jobs`
 
 ### 6.10 Recalc
 
-- `POST /api/recalc/assets/{asset_id}/performance`
-- `POST /api/recalc/assets/{asset_id}/exposure`
-- `POST /api/recalc/assets/{asset_id}/ratings`
-- `POST /api/recalc/assets/{asset_id}/all`
-- `POST /api/recalc/assets/{asset_id}/execute`
+- `POST /api/recalc/instruments/{instrument_id}/performance`
+- `POST /api/recalc/instruments/{instrument_id}/exposure`
+- `POST /api/recalc/instruments/{instrument_id}/ratings`
+- `POST /api/recalc/instruments/{instrument_id}/all`
+- `POST /api/recalc/instruments/{instrument_id}/execute`
 - `GET /api/recalc/jobs`
 - `GET /api/recalc/jobs/{job_id}`
 
 ### 6.11 Copilot Backend Extension
 
 - `POST /api/copilot/watchlists/{watchlist_id}/chat`
-- `POST /api/copilot/assets/{asset_id}/chat`
+- `POST /api/copilot/instruments/{instrument_id}/chat`
 
 说明：
 
@@ -313,14 +313,14 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 
 - `/watchlists`
 - `/watchlists/:watchlistId`
-- `/instruments/:assetId`
+- `/instruments/:instrumentId`
 - `/research`
 - `/documents`
 - `/monitoring`
 
 说明：
 
-- 详情页 canonical 路由已经收口到 `/instruments/:assetId`
+- 详情页 canonical 路由已经收口到 `/instruments/:instrumentId`
 - `watchlist` 来源只作为 query context 透传，不再进入主路径
 - watchlist 不再提供独立的 shared registry 页面；共享资产浏览与维护统一放在 `Database Dashboard`
 - 旧 `/funds/*` 前端路由已删除

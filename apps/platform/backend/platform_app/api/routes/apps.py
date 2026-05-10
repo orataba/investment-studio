@@ -43,7 +43,7 @@ def list_apps() -> PlatformAppsResponse:
                 eyebrow="Portfolio management",
                 description=(
                     "Portfolio, account, transaction, risk, and review workflows "
-                    "built on top of the shared asset core."
+                    "built on top of the shared instrument core."
                 ),
             ),
         ],

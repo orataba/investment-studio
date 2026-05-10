@@ -26,7 +26,7 @@ FUND_SCREENING_VIEW_ID = "fund-screening"
 FUND_SCREENING_VIEW_NAME = "基金分类筛选"
 FUND_SCREENING_VIEW_DESCRIPTION = "先按分类树缩小基金池，再叠加研究标签和监控判断。"
 FUND_SCREENING_VIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("attr.fund_regime", 2, 120),
     ("attr.fund_category_l1", 3, 150),
     ("attr.fund_category_l2", 4, 170),
@@ -299,23 +299,23 @@ def _load_latest_values(bind, value_table) -> dict[str, dict[str, object]]:
     latest: dict[str, dict[str, object]] = {}
     rows = bind.execute(
         sa.select(
-            value_table.c.asset_id,
+            value_table.c.instrument_id,
             value_table.c.attribute_key,
             value_table.c.value_json,
         ).order_by(
-            value_table.c.asset_id,
+            value_table.c.instrument_id,
             value_table.c.attribute_key,
             value_table.c.adopted_at.desc(),
             value_table.c.instrument_attribute_value_id.desc(),
         )
     ).mappings()
     for row in rows:
-        asset_id = str(row["asset_id"])
+        instrument_id = str(row["instrument_id"])
         attribute_key = str(row["attribute_key"])
-        if asset_id not in latest:
-            latest[asset_id] = {}
-        if attribute_key not in latest[asset_id]:
-            latest[asset_id][attribute_key] = row["value_json"]
+        if instrument_id not in latest:
+            latest[instrument_id] = {}
+        if attribute_key not in latest[instrument_id]:
+            latest[instrument_id][attribute_key] = row["value_json"]
     return latest
 
 
@@ -348,7 +348,7 @@ def upgrade() -> None:
         batch.add_column(sa.Column("domain_code", sa.String(), nullable=True))
         batch.add_column(sa.Column("group_code", sa.String(), nullable=True))
         batch.add_column(sa.Column("display_order", sa.Integer(), nullable=True))
-        batch.add_column(sa.Column("asset_scope_json", sa.JSON(), nullable=True))
+        batch.add_column(sa.Column("instrument_scope_json", sa.JSON(), nullable=True))
         batch.add_column(sa.Column("applicability_json", sa.JSON(), nullable=True))
         batch.add_column(sa.Column("rubric_json", sa.JSON(), nullable=True))
         batch.add_column(sa.Column("required_for_monitoring", sa.Boolean(), nullable=True))
@@ -372,7 +372,7 @@ def upgrade() -> None:
         sa.column("group_code", sa.String()),
         sa.column("display_order", sa.Integer()),
         sa.column("options_json", sa.JSON()),
-        sa.column("asset_scope_json", sa.JSON()),
+        sa.column("instrument_scope_json", sa.JSON()),
         sa.column("applicability_json", sa.JSON()),
         sa.column("rubric_json", sa.JSON()),
         sa.column("is_groupable", sa.Boolean()),
@@ -385,7 +385,7 @@ def upgrade() -> None:
     value_table = sa.table(
         "instrument_attribute_value",
         sa.column("instrument_attribute_value_id", sa.Integer()),
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("attribute_key", sa.String()),
         sa.column("value_json", sa.JSON()),
         sa.column("effective_from", sa.Date()),
@@ -403,7 +403,7 @@ def upgrade() -> None:
         sa.column("sort_mode", sa.String()),
         sa.column("filter_mode", sa.String()),
         sa.column("group_mode", sa.String()),
-        sa.column("asset_scope_json", sa.JSON()),
+        sa.column("instrument_scope_json", sa.JSON()),
         sa.column("product_scope_json", sa.JSON()),
         sa.column("availability_rule_json", sa.JSON()),
         sa.column("source_domain", sa.String()),
@@ -430,16 +430,16 @@ def upgrade() -> None:
         sa.column("is_visible", sa.Boolean()),
         sa.column("pin_side", sa.String()),
     )
-    asset_table = sa.table("asset_detail", sa.column("asset_id", sa.String()))
+    instrument_table = sa.table("instrument_detail", sa.column("instrument_id", sa.String()))
     watchlist_row_table = sa.table(
         "watchlist_row_read_model",
         sa.column("watchlist_id", sa.String()),
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("attributes_json", sa.JSON()),
     )
     summary_table = sa.table(
-        "asset_summary_read_model",
-        sa.column("asset_id", sa.String()),
+        "instrument_summary_read_model",
+        sa.column("instrument_id", sa.String()),
         sa.column("payload_json", sa.JSON()),
     )
 
@@ -477,7 +477,7 @@ def upgrade() -> None:
             "group_code": definition["group_code"],
             "display_order": definition["display_order"],
             "options_json": definition.get("options", []),
-            "asset_scope_json": definition.get("asset_scope_json", ["fund"]),
+            "instrument_scope_json": definition.get("instrument_scope_json", ["fund"]),
             "applicability_json": definition.get("applicability_json", {}),
             "rubric_json": definition.get("rubric_json", {}),
             "is_groupable": definition.get("is_groupable", True),
@@ -516,7 +516,7 @@ def upgrade() -> None:
             "domain_code": "research",
             "group_code": "custom",
             "display_order": 9000 + custom_index,
-            "asset_scope_json": ["fund"],
+            "instrument_scope_json": ["fund"],
             "applicability_json": {},
             "rubric_json": {
                 "summary": "Legacy custom attribute migrated into the research domain."
@@ -534,7 +534,7 @@ def upgrade() -> None:
                 domain_code="research",
                 group_code="custom",
                 display_order=9000 + custom_index,
-                asset_scope_json=["fund"],
+                instrument_scope_json=["fund"],
                 applicability_json={},
                 rubric_json=custom_payload["rubric_json"],
                 required_for_monitoring=False,
@@ -556,12 +556,12 @@ def upgrade() -> None:
         op.bulk_insert(field_registry_table, field_rows)
 
     latest_values = _load_latest_values(bind, value_table)
-    asset_ids = {
-        str(row["asset_id"])
-        for row in bind.execute(sa.select(asset_table.c.asset_id)).mappings()
+    instrument_ids = {
+        str(row["instrument_id"])
+        for row in bind.execute(sa.select(instrument_table.c.instrument_id)).mappings()
     }.union(latest_values.keys())
-    for asset_id in sorted(asset_ids):
-        current_values = latest_values.get(asset_id, {})
+    for instrument_id in sorted(instrument_ids):
+        current_values = latest_values.get(instrument_id, {})
         derived_values = _derive_classification(current_values)
         pending_values: dict[str, object] = {}
 
@@ -573,7 +573,7 @@ def upgrade() -> None:
         for attribute_key, value_json in pending_values.items():
             bind.execute(
                 sa.insert(value_table).values(
-                    asset_id=asset_id,
+                    instrument_id=instrument_id,
                     attribute_key=attribute_key,
                     value_json=value_json,
                     effective_from=None,
@@ -619,7 +619,7 @@ def upgrade() -> None:
             next_name = FUND_SCREENING_VIEW_NAME
             next_description = FUND_SCREENING_VIEW_DESCRIPTION
             next_group_by = "attr.fund_category_l1"
-            next_filters = {"asset_type": ["fund"]}
+            next_filters = {"instrument_type": ["fund"]}
             next_sort = []
             next_advanced = {}
         bind.execute(
@@ -694,7 +694,7 @@ def upgrade() -> None:
     latest_values = _load_latest_values(bind, value_table)
     watchlist_rows = list(
         bind.execute(
-            sa.select(watchlist_row_table.c.watchlist_id, watchlist_row_table.c.asset_id)
+            sa.select(watchlist_row_table.c.watchlist_id, watchlist_row_table.c.instrument_id)
         ).mappings()
     )
     for row in watchlist_rows:
@@ -703,24 +703,24 @@ def upgrade() -> None:
             .where(
                 sa.and_(
                     watchlist_row_table.c.watchlist_id == row["watchlist_id"],
-                    watchlist_row_table.c.asset_id == row["asset_id"],
+                    watchlist_row_table.c.instrument_id == row["instrument_id"],
                 )
             )
-            .values(attributes_json=latest_values.get(str(row["asset_id"]), {}))
+            .values(attributes_json=latest_values.get(str(row["instrument_id"]), {}))
         )
 
     summary_rows = list(
         bind.execute(
-            sa.select(summary_table.c.asset_id, summary_table.c.payload_json)
+            sa.select(summary_table.c.instrument_id, summary_table.c.payload_json)
         ).mappings()
     )
     for row in summary_rows:
         payload_json = row["payload_json"] if isinstance(row["payload_json"], dict) else {}
         next_payload = dict(payload_json)
-        next_payload["instrument_attributes"] = latest_values.get(str(row["asset_id"]), {})
+        next_payload["instrument_attributes"] = latest_values.get(str(row["instrument_id"]), {})
         bind.execute(
             sa.update(summary_table)
-            .where(summary_table.c.asset_id == row["asset_id"])
+            .where(summary_table.c.instrument_id == row["instrument_id"])
             .values(payload_json=next_payload)
         )
 
@@ -734,7 +734,7 @@ def upgrade() -> None:
         batch.alter_column("domain_code", existing_type=sa.String(), nullable=False)
         batch.alter_column("group_code", existing_type=sa.String(), nullable=False)
         batch.alter_column("display_order", existing_type=sa.Integer(), nullable=False)
-        batch.alter_column("asset_scope_json", existing_type=sa.JSON(), nullable=False)
+        batch.alter_column("instrument_scope_json", existing_type=sa.JSON(), nullable=False)
         batch.alter_column("applicability_json", existing_type=sa.JSON(), nullable=False)
         batch.alter_column("rubric_json", existing_type=sa.JSON(), nullable=False)
         batch.alter_column(

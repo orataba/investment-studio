@@ -8,7 +8,7 @@ import {
   createPortfolioTransaction,
   deletePortfolioTransaction,
   getPortfolioAccounts,
-  getPortfolioAssetPriceChart,
+  getPortfolioInstrumentPriceChart,
   getPortfolioFxRates,
   getPortfolioInstruments,
   getPortfolioTransactionPositionPreview,
@@ -68,19 +68,19 @@ function primaryIdentifier(
   instrument:
     | SharedInstrumentRecord
     | {
-        asset_id: string
+        instrument_id: string
         identifiers: Array<{ identifier_value: string; is_primary: boolean }>
       },
 ) {
   return (
     instrument.identifiers.find((item) => item.is_primary)?.identifier_value ??
     instrument.identifiers[0]?.identifier_value ??
-    instrument.asset_id
+    instrument.instrument_id
   )
 }
 
 function instrumentSearchLabel(instrument: SharedInstrumentRecord) {
-  return `${primaryIdentifier(instrument)} · ${instrument.asset_name}`
+  return `${primaryIdentifier(instrument)} · ${instrument.instrument_name}`
 }
 
 function isTransferTransaction(transactionType: string) {
@@ -123,9 +123,9 @@ function formatCalculatedFormNumber(value: number, decimals: number) {
   return value.toFixed(decimals).replace(/\.?0+$/, '')
 }
 
-function accountAllowsAssetType(
+function accountAllowsInstrumentType(
   account: PortfolioAccountRecord | null | undefined,
-  assetType: string,
+  instrumentType: string,
   transactionType: string,
 ) {
   if (
@@ -136,32 +136,32 @@ function accountAllowsAssetType(
     return true
   }
 
-  if (!account.allowed_asset_types?.length) {
+  if (!account.allowed_instrument_types?.length) {
     return true
   }
 
-  return account.allowed_asset_types.includes(assetType.trim().toLowerCase())
+  return account.allowed_instrument_types.includes(instrumentType.trim().toLowerCase())
 }
 
-function supportsTransactionAssetType(transactionType: string, assetType: string) {
-  const normalizedAssetType = assetType.trim().toLowerCase()
-  if (!normalizedAssetType) {
+function supportsTransactionInstrumentType(transactionType: string, instrumentType: string) {
+  const normalizedInstrumentType = instrumentType.trim().toLowerCase()
+  if (!normalizedInstrumentType) {
     return false
   }
 
   if (transactionType === 'buy' || transactionType === 'sell' || transactionType === 'opening_balance') {
-    return POSITION_ASSET_TYPES.has(normalizedAssetType)
+    return POSITION_ASSET_TYPES.has(normalizedInstrumentType)
   }
 
   if (transactionType === 'fee' || transactionType === 'tax') {
-    return POSITION_ASSET_TYPES.has(normalizedAssetType)
+    return POSITION_ASSET_TYPES.has(normalizedInstrumentType)
   }
 
-  const allowedAssetTypes = INCOME_ASSET_TYPES[transactionType]
-  if (!allowedAssetTypes) {
+  const allowedInstrumentTypes = INCOME_ASSET_TYPES[transactionType]
+  if (!allowedInstrumentTypes) {
     return true
   }
-  return allowedAssetTypes.has(normalizedAssetType)
+  return allowedInstrumentTypes.has(normalizedInstrumentType)
 }
 
 function requiresSettlement(transactionType: string, accountType?: string | null) {
@@ -320,8 +320,8 @@ function isSelectableInstrument(
     (isTransferTransaction(transactionType) && transferObjectType === 'position')
   ) {
     return (
-      supportsTransactionAssetType(transactionType, instrument.asset_type) &&
-      accountAllowsAssetType(account, instrument.asset_type, transactionType)
+      supportsTransactionInstrumentType(transactionType, instrument.instrument_type) &&
+      accountAllowsInstrumentType(account, instrument.instrument_type, transactionType)
     )
   }
 
@@ -355,14 +355,14 @@ function usesPrice(transactionType: string) {
 
 function autoGrossAmountFromTrade(
   transactionType: string,
-  assetType: string | null | undefined,
+  instrumentType: string | null | undefined,
   quantity: number,
   price: number,
 ) {
   if (transactionType !== 'buy' && transactionType !== 'sell') {
     return quantity * price
   }
-  if (String(assetType || '').trim().toLowerCase() === 'bond') {
+  if (String(instrumentType || '').trim().toLowerCase() === 'bond') {
     return null
   }
   return quantity * price
@@ -524,7 +524,7 @@ type TransactionFormState = {
   counterparty_account_id: string
   settlement_cash_account_id: string
   transfer_object_type: string
-  asset_id: string
+  instrument_id: string
   quantity: string
   price: string
   gross_amount: string
@@ -556,7 +556,7 @@ function buildInitialFormState(accounts: PortfolioAccountRecord[]): TransactionF
     counterparty_account_id: '',
     settlement_cash_account_id: defaultCashAccount?.account_id ?? '',
     transfer_object_type: 'cash',
-    asset_id: '',
+    instrument_id: '',
     quantity: '',
     price: '',
     gross_amount: '',
@@ -581,7 +581,7 @@ function buildFormStateFromTransaction(transaction: PortfolioTransactionRecord):
     counterparty_account_id: transaction.counterparty_account_id || '',
     settlement_cash_account_id: transaction.settlement_cash_account?.account_id || '',
     transfer_object_type: transaction.transfer_object_type || 'cash',
-    asset_id: transaction.asset_id || '',
+    instrument_id: transaction.instrument_id || '',
     quantity: formatFormNumber(transaction.quantity, { zeroAsEmpty: true }),
     price: formatFormNumber(transaction.price, { zeroAsEmpty: true }),
     gross_amount: formatFormNumber(transaction.gross_amount, { zeroAsEmpty: true }),
@@ -684,7 +684,7 @@ export default function TransactionsPage() {
   const filters: PortfolioTransactionFilters = {
     account_id: searchParams.get('account_id') ?? '',
     transaction_type: searchParams.get('transaction_type') ?? '',
-    asset_id: searchParams.get('asset_id') ?? '',
+    instrument_id: searchParams.get('instrument_id') ?? '',
     start_date: searchParams.get('start_date') ?? '',
     end_date: searchParams.get('end_date') ?? '',
   }
@@ -794,7 +794,7 @@ export default function TransactionsPage() {
     portfolioId,
     filters.account_id,
     filters.transaction_type,
-    filters.asset_id,
+    filters.instrument_id,
     filters.start_date,
     filters.end_date,
     selectedTransactionId,
@@ -838,7 +838,7 @@ export default function TransactionsPage() {
   const shouldUsePrice = usesPrice(form.transaction_type)
   const shouldShowFees = showsFeeField(form.transaction_type)
   const shouldShowTaxes = showsTaxField(form.transaction_type)
-  const selectedInstrument = instruments.find((instrument) => instrument.asset_id === form.asset_id) ?? null
+  const selectedInstrument = instruments.find((instrument) => instrument.instrument_id === form.instrument_id) ?? null
   const positionPreviewAccountRole: 'selected' | 'source' =
     form.transaction_type === 'transfer_in' && form.transfer_object_type === 'position' ? 'source' : 'selected'
   const positionPreviewAccountId =
@@ -892,8 +892,8 @@ export default function TransactionsPage() {
         }
 
         const haystack = [
-          instrument.asset_name,
-          instrument.asset_type,
+          instrument.instrument_name,
+          instrument.instrument_type,
           instrument.currency,
           primaryIdentifier(instrument),
           instrumentSearchLabel(instrument),
@@ -943,7 +943,7 @@ export default function TransactionsPage() {
       }
       const resolved = autoGrossAmountFromTrade(
         form.transaction_type,
-        selectedInstrument?.asset_type,
+        selectedInstrument?.instrument_type,
         quantity,
         price,
       )
@@ -974,14 +974,14 @@ export default function TransactionsPage() {
     }
 
     let cancelled = false
-    const assetId = selectedInstrument.asset_id
-    const assetType = selectedInstrument.asset_type
+    const instrumentId = selectedInstrument.instrument_id
+    const instrumentType = selectedInstrument.instrument_type
     const tradeDate = form.trade_date
-    const quoteKey = `${assetId}:${tradeDate}`
+    const quoteKey = `${instrumentId}:${tradeDate}`
     setHistoricalQuoteLoading(true)
     setHistoricalQuoteError(null)
 
-    getPortfolioAssetPriceChart(portfolioId, assetId, {
+    getPortfolioInstrumentPriceChart(portfolioId, instrumentId, {
       as_of_date: tradeDate,
       range: 'all',
     })
@@ -995,7 +995,7 @@ export default function TransactionsPage() {
           const shouldClearAutoQuote = autoQuoteKeyRef.current !== null
           if (shouldClearAutoQuote) {
             setForm((current) =>
-              current.asset_id === assetId && current.trade_date === tradeDate
+              current.instrument_id === instrumentId && current.trade_date === tradeDate
                 ? {
                     ...current,
                     price: '',
@@ -1019,7 +1019,7 @@ export default function TransactionsPage() {
         setForm((current) => {
           const canApplyQuote = !current.price.trim() || autoQuoteKeyRef.current !== null
           if (
-            current.asset_id !== assetId ||
+            current.instrument_id !== instrumentId ||
             current.trade_date !== tradeDate ||
             !canApplyQuote ||
             !usesPrice(current.transaction_type)
@@ -1035,7 +1035,7 @@ export default function TransactionsPage() {
           if (quantity && !next.gross_amount.trim()) {
             const resolved = autoGrossAmountFromTrade(
               current.transaction_type,
-              assetType,
+              instrumentType,
               quantity,
               quotePoint.value,
             )
@@ -1052,7 +1052,7 @@ export default function TransactionsPage() {
           const shouldClearAutoQuote = autoQuoteKeyRef.current !== null
           if (shouldClearAutoQuote) {
             setForm((current) =>
-              current.asset_id === assetId && current.trade_date === tradeDate
+              current.instrument_id === instrumentId && current.trade_date === tradeDate
                 ? {
                     ...current,
                     price: '',
@@ -1079,8 +1079,8 @@ export default function TransactionsPage() {
     drawerOpen,
     form.trade_date,
     portfolioId,
-    selectedInstrument?.asset_id,
-    selectedInstrument?.asset_type,
+    selectedInstrument?.instrument_id,
+    selectedInstrument?.instrument_type,
     shouldUsePrice,
   ])
 
@@ -1101,8 +1101,8 @@ export default function TransactionsPage() {
     }
 
     let cancelled = false
-    const assetId = selectedInstrument.asset_id
-    const assetType = selectedInstrument.asset_type
+    const instrumentId = selectedInstrument.instrument_id
+    const instrumentType = selectedInstrument.instrument_type
     const accountId = positionPreviewAccountId
     const tradeDate = form.trade_date
     setPositionPreviewLoading(true)
@@ -1110,7 +1110,7 @@ export default function TransactionsPage() {
 
     getPortfolioTransactionPositionPreview(portfolioId, {
       account_id: accountId,
-      asset_id: assetId,
+      instrument_id: instrumentId,
       as_of_date: tradeDate,
       trade_time: form.trade_time || undefined,
       exclude_transaction_id: editingTransactionId || undefined,
@@ -1120,12 +1120,12 @@ export default function TransactionsPage() {
           setPositionPreview(response)
           if (form.transaction_type === 'sell') {
             const availableQuantity = Math.max(0, response.quantity)
-            const quantityKey = `sell:${response.account_id}:${response.asset_id}:${response.as_of_date}`
+            const quantityKey = `sell:${response.account_id}:${response.instrument_id}:${response.as_of_date}`
             setForm((current) => {
               const canApplyQuantity = !current.quantity.trim() || autoQuantityKeyRef.current !== null
               if (
                 current.transaction_type !== 'sell' ||
-                current.asset_id !== response.asset_id ||
+                current.instrument_id !== response.instrument_id ||
                 current.account_id !== response.account_id ||
                 current.trade_date !== response.as_of_date ||
                 !canApplyQuantity
@@ -1148,7 +1148,7 @@ export default function TransactionsPage() {
               if (nextQuantity && nextPrice) {
                 const resolved = autoGrossAmountFromTrade(
                   current.transaction_type,
-                  assetType,
+                  instrumentType,
                   nextQuantity,
                   nextPrice,
                 )
@@ -1187,21 +1187,21 @@ export default function TransactionsPage() {
     form.transaction_type,
     portfolioId,
     positionPreviewAccountId,
-    selectedInstrument?.asset_id,
-    selectedInstrument?.asset_type,
+    selectedInstrument?.instrument_id,
+    selectedInstrument?.instrument_type,
     shouldUseQuantity,
   ])
 
   function selectInstrument(instrument: SharedInstrumentRecord) {
     setForm((current) => {
-      const isChangingInstrument = Boolean(current.asset_id && current.asset_id !== instrument.asset_id)
+      const isChangingInstrument = Boolean(current.instrument_id && current.instrument_id !== instrument.instrument_id)
       if (isChangingInstrument) {
         autoQuoteKeyRef.current = null
         autoQuantityKeyRef.current = null
       }
       return {
         ...current,
-        asset_id: instrument.asset_id,
+        instrument_id: instrument.instrument_id,
         instrument_search: instrumentSearchLabel(instrument),
         price: isChangingInstrument ? '' : current.price,
         quantity: isChangingInstrument ? '' : current.quantity,
@@ -1232,7 +1232,7 @@ export default function TransactionsPage() {
         current.transaction_type === 'sell' &&
         positionPreview &&
         positionPreview.account_id === current.account_id &&
-        positionPreview.asset_id === current.asset_id &&
+        positionPreview.instrument_id === current.instrument_id &&
         positionPreview.as_of_date === current.trade_date
       ) {
         const requestedQuantity = parsePositiveFormNumber(value)
@@ -1270,7 +1270,7 @@ export default function TransactionsPage() {
       if (field === 'price' && nextQuantity && nextPrice) {
         const resolved = autoGrossAmountFromTrade(
           current.transaction_type,
-          selectedInstrument?.asset_type,
+          selectedInstrument?.instrument_type,
           nextQuantity,
           nextPrice,
         )
@@ -1288,7 +1288,7 @@ export default function TransactionsPage() {
         if (nextPrice) {
           const resolved = autoGrossAmountFromTrade(
             current.transaction_type,
-            selectedInstrument?.asset_type,
+            selectedInstrument?.instrument_type,
             nextQuantity,
             nextPrice,
           )
@@ -1376,14 +1376,14 @@ export default function TransactionsPage() {
   }, [form.counter_amount, form.fx_rate, isFxConversion, sharedFxRate?.rate])
 
   useEffect(() => {
-    if (!shouldAllowInstrument && form.asset_id) {
+    if (!shouldAllowInstrument && form.instrument_id) {
       setForm((current) => ({
         ...current,
-        asset_id: '',
+        instrument_id: '',
         instrument_search: '',
       }))
     }
-  }, [form.asset_id, shouldAllowInstrument])
+  }, [form.instrument_id, shouldAllowInstrument])
 
   useEffect(() => {
     if (!selectedInstrument || !selectedAccount) {
@@ -1404,7 +1404,7 @@ export default function TransactionsPage() {
     }
     setForm((current) => ({
       ...current,
-      asset_id: '',
+      instrument_id: '',
       instrument_search: '',
     }))
   }, [
@@ -1651,7 +1651,7 @@ export default function TransactionsPage() {
         acquisition_date: null,
         account_id: resolvedAccount.account_id,
         settlement_cash_account_id: null,
-        asset_id: null,
+        instrument_id: null,
         quantity: null,
         price: null,
         gross_amount: sourceAmount,
@@ -1718,7 +1718,7 @@ export default function TransactionsPage() {
         transfer_object_type: transferObjectType,
         from_account_id: isTransferOut ? resolvedAccount.account_id : selectedCounterparty!.account_id,
         to_account_id: isTransferOut ? selectedCounterparty!.account_id : resolvedAccount.account_id,
-        asset_id: transferObjectType === 'position' ? selectedInstrument?.asset_id ?? null : null,
+        instrument_id: transferObjectType === 'position' ? selectedInstrument?.instrument_id ?? null : null,
         quantity: shouldUseQuantity && form.quantity ? Number(form.quantity) : null,
         gross_amount:
           transferObjectType === 'position'
@@ -1773,7 +1773,7 @@ export default function TransactionsPage() {
         : null,
       account_id: resolvedAccount.account_id,
       settlement_cash_account_id: shouldRequireSettlement ? form.settlement_cash_account_id || null : null,
-      asset_id: shouldAllowInstrument ? selectedInstrument?.asset_id ?? null : null,
+      instrument_id: shouldAllowInstrument ? selectedInstrument?.instrument_id ?? null : null,
       quantity: shouldUseQuantity && form.quantity ? Number(form.quantity) : null,
       price: shouldUsePrice && computedUnitPrice ? Number(computedUnitPrice) : null,
       gross_amount: grossAmount,
@@ -1995,18 +1995,18 @@ export default function TransactionsPage() {
               <span>Instrument</span>
               <select
                 className="toolbar-select transaction-filter-input"
-                value={filters.asset_id ?? ''}
+                value={filters.instrument_id ?? ''}
                 onChange={(event) =>
                   patchSearchParams({
-                    asset_id: event.target.value,
+                    instrument_id: event.target.value,
                     transaction_id: null,
                   })
                 }
               >
                 <option value="">All instruments</option>
                 {instruments.map((instrument) => (
-                  <option key={instrument.asset_id} value={instrument.asset_id}>
-                    {primaryIdentifier(instrument)} · {instrument.asset_name}
+                  <option key={instrument.instrument_id} value={instrument.instrument_id}>
+                    {primaryIdentifier(instrument)} · {instrument.instrument_name}
                   </option>
                 ))}
               </select>
@@ -2049,7 +2049,7 @@ export default function TransactionsPage() {
                 patchSearchParams({
                   account_id: null,
                   transaction_type: null,
-                  asset_id: null,
+                  instrument_id: null,
                   start_date: null,
                   end_date: null,
                   transaction_id: null,
@@ -2142,7 +2142,7 @@ export default function TransactionsPage() {
                       {transaction.instrument_ref ? (
                         <div className="holding-name-stack">
                           <span>{primaryIdentifier(transaction.instrument_ref)}</span>
-                          <span className="holding-secondary">{transaction.instrument_ref.asset_name}</span>
+                          <span className="holding-secondary">{transaction.instrument_ref.instrument_name}</span>
                         </div>
                       ) : isFxConversionTransaction(transaction.transaction_type) ? (
                         <div className="holding-name-stack">
@@ -2273,7 +2273,7 @@ export default function TransactionsPage() {
                   <span>Instrument</span>
                   <strong>
                     {selectedTransaction.instrument_ref
-                      ? `${primaryIdentifier(selectedTransaction.instrument_ref)} · ${selectedTransaction.instrument_ref.asset_name}`
+                      ? `${primaryIdentifier(selectedTransaction.instrument_ref)} · ${selectedTransaction.instrument_ref.instrument_name}`
                       : 'Cash ledger'}
                   </strong>
                 </div>
@@ -2313,13 +2313,13 @@ export default function TransactionsPage() {
                 <div className="panel-header">
                   <div className="panel-title">Related PositionLots</div>
                   <div className="portfolio-detail-meta">
-                  {selectedTransaction.asset_id
+                  {selectedTransaction.instrument_id
                     ? transactionsWorkspace?.related_position_lot_summary.position_lot_count ?? 0
                     : 0}{' '}
                   lots
                   </div>
                 </div>
-              {!selectedTransaction.asset_id ? (
+              {!selectedTransaction.instrument_id ? (
                 <div className="empty-state">Cash-only facts do not create PositionLot context.</div>
               ) : relatedPositionLots.length ? (
                 <div className="table-shell">
@@ -2427,7 +2427,7 @@ export default function TransactionsPage() {
                             {posting.instrument_ref ? (
                               <div className="holding-name-stack">
                                 <span>{primaryIdentifier(posting.instrument_ref)}</span>
-                                <span className="holding-secondary">{posting.instrument_ref.asset_name}</span>
+                                <span className="holding-secondary">{posting.instrument_ref.instrument_name}</span>
                               </div>
                             ) : (
                               <span className="holding-secondary">Cash ledger</span>
@@ -2507,7 +2507,7 @@ export default function TransactionsPage() {
                       onChange={(event) =>
                         setForm((current) => ({
                           ...current,
-                          asset_id: '',
+                          instrument_id: '',
                           instrument_search: event.target.value,
                         }))
                       }
@@ -2529,13 +2529,13 @@ export default function TransactionsPage() {
                       {filteredInstrumentOptions.map((instrument) => (
                         <button
                           type="button"
-                          key={instrument.asset_id}
+                          key={instrument.instrument_id}
                           className="transaction-instrument-result"
                           onClick={() => selectInstrument(instrument)}
                         >
                           <div className="holding-name-stack">
                             <span>{primaryIdentifier(instrument)}</span>
-                            <span className="holding-secondary">{instrument.asset_name}</span>
+                            <span className="holding-secondary">{instrument.instrument_name}</span>
                           </div>
                           <span className="transaction-picker-meta">{instrument.currency}</span>
                         </button>

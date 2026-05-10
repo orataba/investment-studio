@@ -6,11 +6,11 @@ import {
   formatUnitPrice,
 } from '../lib/format'
 import type {
-  PortfolioAssetChartRangeKey,
-  PortfolioAssetPriceChartResponse,
+  PortfolioInstrumentChartRangeKey,
+  PortfolioInstrumentPriceChartResponse,
 } from '../lib/api'
 
-const RANGE_OPTIONS: { key: PortfolioAssetChartRangeKey; label: string }[] = [
+const RANGE_OPTIONS: { key: PortfolioInstrumentChartRangeKey; label: string }[] = [
   { key: '1m', label: '1M' },
   { key: '3m', label: '3M' },
   { key: '6m', label: '6M' },
@@ -29,28 +29,28 @@ function formatChartDate(value: string) {
   return Number.isNaN(parsed.getTime()) ? value : AXIS_DATE_FORMATTER.format(parsed)
 }
 
-type AssetPriceChartProps = {
-  chart: PortfolioAssetPriceChartResponse | null
+type InstrumentPriceChartProps = {
+  chart: PortfolioInstrumentPriceChartResponse | null
   loading: boolean
   error: string | null
-  rangeKey: PortfolioAssetChartRangeKey
-  onRangeChange: (rangeKey: PortfolioAssetChartRangeKey) => void
+  rangeKey: PortfolioInstrumentChartRangeKey
+  onRangeChange: (rangeKey: PortfolioInstrumentChartRangeKey) => void
   variant?: 'default' | 'instrument'
 }
 
-export default function AssetPriceChart({
+export default function InstrumentPriceChart({
   chart,
   loading,
   error,
   rangeKey,
   onRangeChange,
   variant = 'default',
-}: AssetPriceChartProps) {
+}: InstrumentPriceChartProps) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null)
   const points = chart?.points ?? []
   const firstPoint = points[0] ?? null
   const activePoint = points[hoverIndex ?? points.length - 1] ?? null
-  const currency = chart?.currency ?? chart?.asset_core.currency ?? 'USD'
+  const currency = chart?.currency ?? chart?.instrument_core.currency ?? 'USD'
   const width = variant === 'instrument' ? 900 : 760
   const height = variant === 'instrument' ? 340 : 240
   const paddingLeft = variant === 'instrument' ? 58 : 10
@@ -116,11 +116,11 @@ export default function AssetPriceChart({
       : null
 
   return (
-    <section className={`asset-price-chart ${variant === 'instrument' ? 'asset-price-chart-instrument' : ''}`}>
-      <div className="asset-price-chart-toolbar">
+    <section className={`instrument-price-chart ${variant === 'instrument' ? 'instrument-price-chart-instrument' : ''}`}>
+      <div className="instrument-price-chart-toolbar">
         {variant === 'instrument' && chart ? (
           <div className="instrument-series-label portfolio-instrument-series-label">
-            <strong>{chart.asset_core.identifiers.find((item) => item.is_primary)?.identifier_value ?? chart.asset_core.asset_id}</strong>
+            <strong>{chart.instrument_core.identifiers.find((item) => item.is_primary)?.identifier_value ?? chart.instrument_core.instrument_id}</strong>
             <span>{chart.chart_basis ?? 'Price'}</span>
             <em>
               {activeChangeValue != null
@@ -158,7 +158,7 @@ export default function AssetPriceChart({
       {error ? <div className="price-chart-empty price-chart-empty-error">{error}</div> : null}
       {!error && !chartGeometry ? (
         <div className="price-chart-empty">
-          {loading ? 'Loading price trend…' : 'No chart history is available for the selected security.'}
+          {loading ? 'Loading price trend…' : 'No chart history is available for the selected instrument.'}
         </div>
       ) : null}
 
@@ -169,7 +169,7 @@ export default function AssetPriceChart({
             className="price-chart-svg"
             viewBox={`0 0 ${width} ${height}`}
             role="img"
-            aria-label={`${chart?.asset_core.asset_name ?? 'Asset'} price trend`}
+            aria-label={`${chart?.instrument_core.instrument_name ?? 'Instrument'} price trend`}
             onMouseLeave={() => setHoverIndex(null)}
             onMouseMove={(event) => {
               const bounds = event.currentTarget.getBoundingClientRect()

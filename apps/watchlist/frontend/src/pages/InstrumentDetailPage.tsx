@@ -9,7 +9,7 @@ import {
 import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
 
 export default function InstrumentDetailPage() {
-  const { assetId = '' } = useParams()
+  const { instrumentId = '' } = useParams()
   const [searchParams] = useSearchParams()
   const watchlistId = (searchParams.get('watchlist') || '').trim()
   const [instrument, setInstrument] = useState<InstrumentResolveResponse | null>(null)
@@ -24,7 +24,7 @@ export default function InstrumentDetailPage() {
       setError(null)
 
       try {
-        const response = await resolveInstrumentDetail(assetId)
+        const response = await resolveInstrumentDetail(instrumentId)
         if (!cancelled) {
           setInstrument(response)
         }
@@ -47,7 +47,7 @@ export default function InstrumentDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [assetId])
+  }, [instrumentId])
 
   if (loading) {
     return (
@@ -92,21 +92,21 @@ export default function InstrumentDetailPage() {
           </>
         ) : null}
         <span className="watchlist-breadcrumb-separator">/</span>
-        <span className="watchlist-breadcrumb-current">{instrument.asset_name}</span>
+        <span className="watchlist-breadcrumb-current">{instrument.instrument_name}</span>
       </div>
       <div className="panel-header">
         <div>
           <div className="panel-title">Instrument Detail</div>
-          <h1 className="page-title">{instrument.asset_name}</h1>
+          <h1 className="page-title">{instrument.instrument_name}</h1>
         </div>
       </div>
       <div className="stub-body">
         <p>
-          This watchlist release is fund-only. <strong>{instrument.asset_type}</strong> instruments can exist in the
+          This watchlist release is fund-only. <strong>{instrument.instrument_type}</strong> instruments can exist in the
           shared registry, but they do not have a local watchlist detail workspace yet.
         </p>
         <p className="muted">
-          Asset ID: {instrument.requested_asset_id}
+          Instrument ID: {instrument.requested_instrument_id}
           {instrument.primary_identifier ? ` · ${instrument.primary_identifier}` : ''}
         </p>
       </div>

@@ -342,7 +342,7 @@ textarea {
   flex-wrap: wrap;
 }
 
-.registry-selected-asset {
+.registry-selected-instrument {
   display: grid;
   gap: 10px;
 }

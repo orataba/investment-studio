@@ -16,20 +16,20 @@ if BACKEND_ROOT_STR in sys.path:
     sys.path.remove(BACKEND_ROOT_STR)
 sys.path.insert(0, BACKEND_ROOT_STR)
 WORKSPACE_ROOT = BACKEND_ROOT.parents[2]
-ASSET_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "asset-core" / "python"
-ASSET_CORE_PYTHON_STR = str(ASSET_CORE_PYTHON)
-if ASSET_CORE_PYTHON_STR in sys.path:
-    sys.path.remove(ASSET_CORE_PYTHON_STR)
-sys.path.insert(0, ASSET_CORE_PYTHON_STR)
+INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "instrument-core" / "python"
+INSTRUMENT_CORE_PYTHON_STR = str(INSTRUMENT_CORE_PYTHON)
+if INSTRUMENT_CORE_PYTHON_STR in sys.path:
+    sys.path.remove(INSTRUMENT_CORE_PYTHON_STR)
+sys.path.insert(0, INSTRUMENT_CORE_PYTHON_STR)
 
-from yungu_asset_core.db_models import SharedAssetBase
-from yungu_asset_core import instrument_store as shared_store
+from yungu_instrument_core.db_models import InstrumentRegistryBase
+from yungu_instrument_core import instrument_store as shared_store
 
 TEST_SHARED_INSTRUMENTS = {
     "fund-us-agg": {
-        "asset_id": "fund-us-agg",
-        "asset_name": "iShares Core U.S. Aggregate Bond ETF",
-        "asset_type": "fund",
+        "instrument_id": "fund-us-agg",
+        "instrument_name": "iShares Core U.S. Aggregate Bond ETF",
+        "instrument_type": "fund",
         "currency": "USD",
         "identifiers": [
             {"identifier_type": "ticker", "identifier_value": "AGG", "is_primary": True},
@@ -47,9 +47,9 @@ TEST_SHARED_INSTRUMENTS = {
         "lifecycle_state": {"status": "active"},
     },
     "sxv264": {
-        "asset_id": "sxv264",
-        "asset_name": "SXV264 Total Return Fund",
-        "asset_type": "fund",
+        "instrument_id": "sxv264",
+        "instrument_name": "SXV264 Total Return Fund",
+        "instrument_type": "fund",
         "currency": "USD",
         "identifiers": [
             {"identifier_type": "ticker", "identifier_value": "SXV264", "is_primary": True},
@@ -91,9 +91,9 @@ TEST_SHARED_INSTRUMENTS = {
         "lifecycle_state": {"status": "active"},
     },
     "savf63": {
-        "asset_id": "savf63",
-        "asset_name": "SAVF63 Short Duration Income Fund",
-        "asset_type": "fund",
+        "instrument_id": "savf63",
+        "instrument_name": "SAVF63 Short Duration Income Fund",
+        "instrument_type": "fund",
         "currency": "USD",
         "identifiers": [
             {"identifier_type": "ticker", "identifier_value": "SAVF63", "is_primary": True},
@@ -116,9 +116,9 @@ TEST_SHARED_INSTRUMENTS = {
 def seed_shared_instrument(instrument: dict[str, object]) -> None:
     from watchlist_app.db import session as session_module
 
-    target_asset_id = str(instrument["asset_id"])
+    target_instrument_id = str(instrument["instrument_id"])
     existing_ids = [
-        item["asset_id"]
+        item["instrument_id"]
         for item in shared_store.list_instruments(
             session_module.get_session_factory(),
             include_inactive=True,
@@ -126,9 +126,9 @@ def seed_shared_instrument(instrument: dict[str, object]) -> None:
     ]
     existing_instruments = [
         detail
-        for asset_id in existing_ids
-        if str(asset_id) != target_asset_id
-        if (detail := shared_store.get_instrument(session_module.get_session_factory(), asset_id)) is not None
+        for instrument_id in existing_ids
+        if str(instrument_id) != target_instrument_id
+        if (detail := shared_store.get_instrument(session_module.get_session_factory(), instrument_id)) is not None
     ]
     shared_store.reset_store(
         session_module.get_session_factory(),
@@ -164,7 +164,7 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     session_module.get_session_factory.cache_clear()
 
     _run_alembic_upgrade(f"sqlite+pysqlite:///{database_path}")
-    SharedAssetBase.metadata.create_all(bind=session_module.get_engine())
+    InstrumentRegistryBase.metadata.create_all(bind=session_module.get_engine())
     shared_store.reset_store(
         session_module.get_session_factory(),
         {

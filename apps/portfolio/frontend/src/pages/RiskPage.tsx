@@ -15,14 +15,14 @@ import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
   getHoldingsWorkspace,
   getPortfolioAccountsWorkspace,
-  getPortfolioAssetPriceChart,
+  getPortfolioInstrumentPriceChart,
   getPortfolioInstruments,
   getPortfolioPerformance,
   getPortfolioPerformanceContribution,
   getPortfolioTaxonomyCatalog,
   type HoldingsWorkspaceResponse,
   type PortfolioAccountsWorkspaceResponse,
-  type PortfolioAssetPriceChartResponse,
+  type PortfolioInstrumentPriceChartResponse,
   type PortfolioContributionReportResponse,
   type PortfolioDailyPerformancePoint,
   type PortfolioPerformanceResponse,
@@ -418,7 +418,7 @@ function buildPortfolioReturnPoints(dailySeries: PortfolioDailyPerformancePoint[
     .sort((left, right) => left.date.localeCompare(right.date))
 }
 
-function buildBenchmarkReturnPoints(chart: PortfolioAssetPriceChartResponse | null) {
+function buildBenchmarkReturnPoints(chart: PortfolioInstrumentPriceChartResponse | null) {
   const points = (chart?.points ?? [])
     .filter((point) => point.date && Number.isFinite(point.value))
     .slice()
@@ -1184,7 +1184,7 @@ function buildCurrentPlanningGroups({
       const weightInput = totalValueBase > 1e-9 && valueBase != null ? valueBase / totalValueBase : row.allocation
       addEntity({
         targetScope: 'instrument',
-        entityId: row.asset_core.asset_id,
+        entityId: row.instrument_core.instrument_id,
         valueBase,
         weightInput,
         cashLike: false,
@@ -1582,8 +1582,8 @@ export default function RiskPage() {
   const [contributionError, setContributionError] = useState<string | null>(null)
   const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
-  const [benchmarkAssetId, setBenchmarkAssetId] = useState('')
-  const [benchmarkChart, setBenchmarkChart] = useState<PortfolioAssetPriceChartResponse | null>(null)
+  const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
+  const [benchmarkChart, setBenchmarkChart] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
   const [rollingSettings, setRollingSettings] = useState<RollingRiskSettingsState>(DEFAULT_ROLLING_SETTINGS)
@@ -1717,7 +1717,7 @@ export default function RiskPage() {
           setContributionError(
             contributionResult.reason instanceof Error
               ? contributionResult.reason.message
-              : 'Failed to load asset return slices.',
+              : 'Failed to load instrument return slices.',
           )
         }
       })
@@ -1733,7 +1733,7 @@ export default function RiskPage() {
   }, [portfolioId, riskWindowEndDate, riskWindowStartDate])
 
   useEffect(() => {
-    if (!portfolioId || !benchmarkAssetId || !riskWindowEndDate) {
+    if (!portfolioId || !benchmarkInstrumentId || !riskWindowEndDate) {
       setBenchmarkChart(null)
       setBenchmarkLoading(false)
       setBenchmarkError(null)
@@ -1744,7 +1744,7 @@ export default function RiskPage() {
     setBenchmarkLoading(true)
     setBenchmarkError(null)
 
-    getPortfolioAssetPriceChart(portfolioId, benchmarkAssetId, {
+    getPortfolioInstrumentPriceChart(portfolioId, benchmarkInstrumentId, {
       as_of_date: riskWindowEndDate,
       range: 'all',
     })
@@ -1768,7 +1768,7 @@ export default function RiskPage() {
     return () => {
       cancelled = true
     }
-  }, [benchmarkAssetId, portfolioId, riskWindowEndDate])
+  }, [benchmarkInstrumentId, portfolioId, riskWindowEndDate])
 
   const planningTaxonomies = taxonomyCatalog?.taxonomies.filter((taxonomy) => taxonomy.planning_enabled) ?? []
   const defaultPlanningTaxonomy =
@@ -1803,19 +1803,19 @@ export default function RiskPage() {
   }, [taxonomyCatalog?.target_set_lines])
 
   const selectedBenchmarkInstrument =
-    benchmarkInstruments.find((instrument) => instrument.asset_id === benchmarkAssetId) ?? null
+    benchmarkInstruments.find((instrument) => instrument.instrument_id === benchmarkInstrumentId) ?? null
   const benchmarkLabel = selectedBenchmarkInstrument ? instrumentPrimaryIdentifier(selectedBenchmarkInstrument) : null
   const instrumentSlices = instrumentContribution?.daily_slices ?? []
-  const rawAssetReturnSeries = useMemo(() => buildGroupReturnSeries(instrumentSlices), [instrumentSlices])
-  const portfolioRiskFrequency = useMemo(() => riskFrequencyProfile(rawAssetReturnSeries), [rawAssetReturnSeries])
+  const rawInstrumentReturnSeries = useMemo(() => buildGroupReturnSeries(instrumentSlices), [instrumentSlices])
+  const portfolioRiskFrequency = useMemo(() => riskFrequencyProfile(rawInstrumentReturnSeries), [rawInstrumentReturnSeries])
   const assetReturnSeries = useMemo(
     () =>
       alignReturnSeriesToFrequency(
-        rawAssetReturnSeries,
+        rawInstrumentReturnSeries,
         portfolioRiskFrequency.frequency,
         holdingsWorkspace?.as_of_date ?? riskWindowEndDate,
       ),
-    [holdingsWorkspace?.as_of_date, portfolioRiskFrequency.frequency, rawAssetReturnSeries, riskWindowEndDate],
+    [holdingsWorkspace?.as_of_date, portfolioRiskFrequency.frequency, rawInstrumentReturnSeries, riskWindowEndDate],
   )
   const portfolioReturnPointsRaw = useMemo(
     () => buildPortfolioReturnPoints(performanceWorkspace?.daily_series ?? []),
@@ -2086,7 +2086,7 @@ export default function RiskPage() {
         .map((value) => Math.abs(value)),
     )
     if (!rows.length) {
-      return <div className="price-chart-empty">No asset risk contribution rows are available for this as-of date and lookback.</div>
+      return <div className="price-chart-empty">No instrument risk contribution rows are available for this as-of date and lookback.</div>
     }
 
     return (
@@ -2094,8 +2094,8 @@ export default function RiskPage() {
         <table className="risk-heatmap-table risk-contribution-table">
           <thead>
             <tr>
-              <th>Asset</th>
-              <th title="Normalized within assets that participate in covariance risk. Cash is excluded unless modelled as a market factor.">
+              <th>Instrument</th>
+              <th title="Normalized within instruments that participate in covariance risk. Cash is excluded unless modelled as a market factor.">
                 Risk Weight
               </th>
               <th>Annualized Vol</th>
@@ -2153,16 +2153,16 @@ export default function RiskPage() {
               <div className="risk-chart-controls overview-chart-controls">
                 <BenchmarkSearchBox
                   instruments={benchmarkInstruments}
-                  selectedAssetId={benchmarkAssetId}
+                  selectedInstrumentId={benchmarkInstrumentId}
                   searchValue={benchmarkSearch}
                   onSearchChange={setBenchmarkSearch}
                   onSelectInstrument={(instrument) => {
-                    setBenchmarkAssetId(instrument.asset_id)
+                    setBenchmarkInstrumentId(instrument.instrument_id)
                     setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
                     setBenchmarkError(null)
                   }}
                   onClear={() => {
-                    setBenchmarkAssetId('')
+                    setBenchmarkInstrumentId('')
                     setBenchmarkSearch('')
                     setBenchmarkChart(null)
                     setBenchmarkError(null)
@@ -2240,8 +2240,8 @@ export default function RiskPage() {
               />
               <div className="risk-correlation-stack">
                 <div className="risk-matrix-panel">
-                  <div className="risk-matrix-panel-title">All Assets</div>
-                  {renderCorrelationMatrix(assetCorrelationMatrix, 'No all-asset correlation matrix is available.')}
+                  <div className="risk-matrix-panel-title">All Instruments</div>
+                  {renderCorrelationMatrix(assetCorrelationMatrix, 'No all-instrument correlation matrix is available.')}
                 </div>
                 <div className="risk-matrix-panel">
                   <div className="risk-matrix-panel-title">Taxonomy: {selectedMatrixScopeLabel}</div>

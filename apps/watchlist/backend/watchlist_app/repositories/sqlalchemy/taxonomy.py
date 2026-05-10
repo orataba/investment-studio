@@ -43,11 +43,11 @@ class SQLAlchemyTaxonomyRepository:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         taxonomy_code: str = FUND_TAXONOMY_CODE,
     ) -> InstrumentTaxonomyAssignment | None:
         stmt = select(InstrumentTaxonomyAssignment).where(
-            InstrumentTaxonomyAssignment.asset_id == asset_id,
+            InstrumentTaxonomyAssignment.instrument_id == instrument_id,
             InstrumentTaxonomyAssignment.taxonomy_code == taxonomy_code,
         )
         return session.scalars(stmt).first()
@@ -61,7 +61,7 @@ class SQLAlchemyTaxonomyRepository:
         stmt = (
             select(InstrumentTaxonomyAssignment)
             .where(InstrumentTaxonomyAssignment.taxonomy_code == taxonomy_code)
-            .order_by(InstrumentTaxonomyAssignment.asset_id)
+            .order_by(InstrumentTaxonomyAssignment.instrument_id)
         )
         return session.scalars(stmt).all()
 
@@ -69,20 +69,20 @@ class SQLAlchemyTaxonomyRepository:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         taxonomy_code: str = FUND_TAXONOMY_CODE,
         node_id: str | None,
         source_record_id: str | None,
     ) -> InstrumentTaxonomyAssignment:
         record = self.get_assignment(
             session,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             taxonomy_code=taxonomy_code,
         )
         now = datetime.now(UTC).replace(microsecond=0)
         if record is None:
             record = InstrumentTaxonomyAssignment(
-                asset_id=asset_id,
+                instrument_id=instrument_id,
                 taxonomy_code=taxonomy_code,
                 node_id=node_id,
                 assigned_at=now,

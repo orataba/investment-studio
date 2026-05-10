@@ -18,7 +18,7 @@ depends_on = None
 
 
 OVERVIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("price_chart_1m", 2, 140),
     ("latest_quote", 3, 130),
     ("latest_quote_date", 4, 140),
@@ -31,7 +31,7 @@ OVERVIEW_COLUMNS = [
 ]
 
 PREVIOUS_OVERVIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("price_chart_1m", 2, 140),
     ("latest_quote", 3, 130),
     ("latest_quote_date", 4, 140),
@@ -52,9 +52,9 @@ CURRENT_DRAWDOWN_FIELD = {
     "sort_mode": "numeric",
     "filter_mode": "range",
     "group_mode": "none",
-    "asset_scope_json": ["fund"],
+    "instrument_scope_json": ["fund"],
     "product_scope_json": ["mutual_fund", "cef", "etf"],
-    "availability_rule_json": {"requires": ["asset_risk_read_model"]},
+    "availability_rule_json": {"requires": ["instrument_risk_read_model"]},
     "source_domain": "read_model",
     "source_metric_code": "watchlist_row_read_model.attributes.current_drawdown",
     "default_width": 120,
@@ -95,7 +95,7 @@ def _tables() -> tuple[
         sa.column("sort_mode", sa.String()),
         sa.column("filter_mode", sa.String()),
         sa.column("group_mode", sa.String()),
-        sa.column("asset_scope_json", sa.JSON()),
+        sa.column("instrument_scope_json", sa.JSON()),
         sa.column("product_scope_json", sa.JSON()),
         sa.column("availability_rule_json", sa.JSON()),
         sa.column("source_domain", sa.String()),
@@ -105,17 +105,17 @@ def _tables() -> tuple[
     )
     row_table = sa.table(
         "watchlist_row_read_model",
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("attributes_json", sa.JSON()),
     )
     chart_table = sa.table(
-        "asset_chart_read_model",
-        sa.column("asset_id", sa.String()),
+        "instrument_chart_read_model",
+        sa.column("instrument_id", sa.String()),
         sa.column("payload_json", sa.JSON()),
     )
     risk_table = sa.table(
-        "asset_risk_read_model",
-        sa.column("asset_id", sa.String()),
+        "instrument_risk_read_model",
+        sa.column("instrument_id", sa.String()),
         sa.column("payload_json", sa.JSON()),
     )
     return view_table, column_table, field_table, row_table, chart_table, risk_table
@@ -198,42 +198,42 @@ def _backfill_current_drawdown(
     risk_table: sa.TableClause,
 ) -> None:
     values_by_asset = {
-        str(row["asset_id"]): _current_drawdown_from_chart_payload(row["payload_json"])
+        str(row["instrument_id"]): _current_drawdown_from_chart_payload(row["payload_json"])
         for row in bind.execute(
-            sa.select(chart_table.c.asset_id, chart_table.c.payload_json)
+            sa.select(chart_table.c.instrument_id, chart_table.c.payload_json)
         ).mappings()
     }
     values_by_asset = {
-        asset_id: value
-        for asset_id, value in values_by_asset.items()
+        instrument_id: value
+        for instrument_id, value in values_by_asset.items()
         if value is not None
     }
     if not values_by_asset:
         return
 
     for row in bind.execute(
-        sa.select(row_table.c.asset_id, row_table.c.attributes_json).where(
-            row_table.c.asset_id.in_(sorted(values_by_asset))
+        sa.select(row_table.c.instrument_id, row_table.c.attributes_json).where(
+            row_table.c.instrument_id.in_(sorted(values_by_asset))
         )
     ).mappings():
         attributes = row["attributes_json"] if isinstance(row["attributes_json"], dict) else {}
-        next_attributes = {**attributes, "current_drawdown": values_by_asset[str(row["asset_id"])]}
+        next_attributes = {**attributes, "current_drawdown": values_by_asset[str(row["instrument_id"])]}
         bind.execute(
             sa.update(row_table)
-            .where(row_table.c.asset_id == row["asset_id"])
+            .where(row_table.c.instrument_id == row["instrument_id"])
             .values(attributes_json=next_attributes)
         )
 
     for row in bind.execute(
-        sa.select(risk_table.c.asset_id, risk_table.c.payload_json).where(
-            risk_table.c.asset_id.in_(sorted(values_by_asset))
+        sa.select(risk_table.c.instrument_id, risk_table.c.payload_json).where(
+            risk_table.c.instrument_id.in_(sorted(values_by_asset))
         )
     ).mappings():
         payload = row["payload_json"] if isinstance(row["payload_json"], dict) else {}
-        next_payload = {**payload, "current_drawdown": values_by_asset[str(row["asset_id"])]}
+        next_payload = {**payload, "current_drawdown": values_by_asset[str(row["instrument_id"])]}
         bind.execute(
             sa.update(risk_table)
-            .where(risk_table.c.asset_id == row["asset_id"])
+            .where(risk_table.c.instrument_id == row["instrument_id"])
             .values(payload_json=next_payload)
         )
 

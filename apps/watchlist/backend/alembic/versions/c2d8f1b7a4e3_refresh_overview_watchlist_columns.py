@@ -20,7 +20,7 @@ depends_on = None
 
 
 OVERVIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("price_chart_1m", 2, 140),
     ("latest_quote", 3, 130),
     ("latest_quote_date", 4, 140),
@@ -115,8 +115,8 @@ def downgrade() -> None:
             }
             for view_id in overview_view_ids
             for field_key, display_order, width in (
-                ("asset_name", 1, 320),
-                ("asset_type", 2, 140),
+                ("instrument_name", 1, 320),
+                ("instrument_type", 2, 140),
                 ("data_freshness_status", 3, 140),
             )
         ],

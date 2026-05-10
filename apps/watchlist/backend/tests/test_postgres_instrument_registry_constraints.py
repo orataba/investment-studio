@@ -22,15 +22,15 @@ if BACKEND_ROOT_STR in sys.path:
 sys.path.insert(0, BACKEND_ROOT_STR)
 
 WORKSPACE_ROOT = BACKEND_ROOT.parents[2]
-ASSET_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "asset-core" / "python"
-ASSET_CORE_PYTHON_STR = str(ASSET_CORE_PYTHON)
-if ASSET_CORE_PYTHON_STR in sys.path:
-    sys.path.remove(ASSET_CORE_PYTHON_STR)
-sys.path.insert(0, ASSET_CORE_PYTHON_STR)
+INSTRUMENT_CORE_PYTHON = WORKSPACE_ROOT / "packages" / "instrument-core" / "python"
+INSTRUMENT_CORE_PYTHON_STR = str(INSTRUMENT_CORE_PYTHON)
+if INSTRUMENT_CORE_PYTHON_STR in sys.path:
+    sys.path.remove(INSTRUMENT_CORE_PYTHON_STR)
+sys.path.insert(0, INSTRUMENT_CORE_PYTHON_STR)
 
-from watchlist_app.db.models.assets import AssetDetail
+from watchlist_app.db.models.instruments import InstrumentDetail
 from watchlist_app.db.models.watchlists import Watchlist, WatchlistItem
-from yungu_asset_core import instrument_store as shared_store
+from yungu_instrument_core import instrument_store as shared_store
 
 
 pytestmark = pytest.mark.postgresql_integration
@@ -38,11 +38,11 @@ pytestmark = pytest.mark.postgresql_integration
 DEFAULT_POSTGRES_URL = "postgresql+psycopg://yungu:yungu@127.0.0.1:5432/yungu"
 
 
-def _run_shared_asset_upgrade() -> None:
-    config = Config(str(WORKSPACE_ROOT / "infra" / "shared_asset" / "alembic.ini"))
+def _run_instrument_registry_upgrade() -> None:
+    config = Config(str(WORKSPACE_ROOT / "infra" / "instrument_registry" / "alembic.ini"))
     config.set_main_option(
         "script_location",
-        str(WORKSPACE_ROOT / "infra" / "shared_asset" / "alembic"),
+        str(WORKSPACE_ROOT / "infra" / "instrument_registry" / "alembic"),
     )
     command.upgrade(config, "head")
 
@@ -61,27 +61,27 @@ def _run_watchlist_upgrade_until_fk(database_url: str) -> None:
     command.upgrade(config, "1b7d2e8c4f90")
 
 
-def _seed_required_shared_assets(database_url: str, asset_ids: list[str]) -> None:
+def _seed_required_instrument_registry_rows(database_url: str, instrument_ids: list[str]) -> None:
     empty_json = json.dumps({})
     engine = create_engine(database_url)
     try:
         with engine.begin() as connection:
-            for asset_id in asset_ids:
+            for instrument_id in instrument_ids:
                 exists = connection.execute(
                     text(
-                        "SELECT 1 FROM shared_asset.instrument WHERE asset_id = :asset_id"
+                        "SELECT 1 FROM instrument_registry.instrument WHERE instrument_id = :instrument_id"
                     ),
-                    {"asset_id": asset_id},
+                    {"instrument_id": instrument_id},
                 ).scalar()
                 if exists:
                     continue
                 connection.execute(
                     text(
                         """
-                        INSERT INTO shared_asset.instrument (
-                            asset_id,
-                            asset_name,
-                            asset_type,
+                        INSERT INTO instrument_registry.instrument (
+                            instrument_id,
+                            instrument_name,
+                            instrument_type,
                             currency,
                             quote_selection_policy_json,
                             source_settings_json,
@@ -89,9 +89,9 @@ def _seed_required_shared_assets(database_url: str, asset_ids: list[str]) -> Non
                             lifecycle_state_json
                         )
                         VALUES (
-                            :asset_id,
-                            :asset_name,
-                            :asset_type,
+                            :instrument_id,
+                            :instrument_name,
+                            :instrument_type,
                             :currency,
                             CAST(:quote_selection_policy_json AS jsonb),
                             CAST(:source_settings_json AS jsonb),
@@ -101,9 +101,9 @@ def _seed_required_shared_assets(database_url: str, asset_ids: list[str]) -> Non
                         """
                     ),
                     {
-                        "asset_id": asset_id,
-                        "asset_name": asset_id.replace("-", " ").title(),
-                        "asset_type": "fund",
+                        "instrument_id": instrument_id,
+                        "instrument_name": instrument_id.replace("-", " ").title(),
+                        "instrument_type": "fund",
                         "currency": "USD",
                         "quote_selection_policy_json": empty_json,
                         "source_settings_json": empty_json,
@@ -115,7 +115,7 @@ def _seed_required_shared_assets(database_url: str, asset_ids: list[str]) -> Non
         engine.dispose()
 
 
-def _seed_asset_ids_required_by_watchlist_baseline(database_url: str) -> None:
+def _seed_instrument_ids_required_by_watchlist_baseline(database_url: str) -> None:
     _run_watchlist_upgrade_until_fk(database_url)
     engine = create_engine(database_url)
     try:
@@ -123,21 +123,21 @@ def _seed_asset_ids_required_by_watchlist_baseline(database_url: str) -> None:
             rows = connection.execute(
                 text(
                     """
-                    SELECT DISTINCT asset_id
+                    SELECT DISTINCT instrument_id
                     FROM (
-                        SELECT asset_id FROM watchlist.asset_detail
+                        SELECT instrument_id FROM watchlist.instrument_detail
                         UNION
-                        SELECT asset_id FROM watchlist.watchlist_item
-                    ) AS seeded_assets
-                    WHERE asset_id IS NOT NULL
-                    ORDER BY asset_id
+                        SELECT instrument_id FROM watchlist.watchlist_item
+                    ) AS seeded_instruments
+                    WHERE instrument_id IS NOT NULL
+                    ORDER BY instrument_id
                     """
                 )
             )
-            asset_ids = [str(row.asset_id) for row in rows]
+            instrument_ids = [str(row.instrument_id) for row in rows]
     finally:
         engine.dispose()
-    _seed_required_shared_assets(database_url, asset_ids)
+    _seed_required_instrument_registry_rows(database_url, instrument_ids)
     _run_watchlist_upgrade(database_url)
 
 
@@ -161,8 +161,8 @@ def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     finally:
         admin_engine.dispose()
 
-    monkeypatch.setenv("YUNGU_SHARED_ASSET_DATABASE_URL", database_url)
-    monkeypatch.setenv("YUNGU_SHARED_ASSET_SCHEMA", "shared_asset")
+    monkeypatch.setenv("YUNGU_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
+    monkeypatch.setenv("YUNGU_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry")
     monkeypatch.setenv("FTV2_DATABASE_URL", database_url)
     monkeypatch.setenv("FTV2_ALEMBIC_DATABASE_URL", database_url)
     monkeypatch.setenv("FTV2_DATABASE_SCHEMA", "watchlist")
@@ -174,15 +174,15 @@ def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     session_module.get_engine.cache_clear()
     session_module.get_session_factory.cache_clear()
 
-    _run_shared_asset_upgrade()
-    _seed_asset_ids_required_by_watchlist_baseline(database_url)
+    _run_instrument_registry_upgrade()
+    _seed_instrument_ids_required_by_watchlist_baseline(database_url)
 
     session_factory = session_module.get_session_factory()
     identifier_value = f"WATCHFK{uuid4().hex[:8].upper()}"
     instrument = shared_store.create_instrument(
         session_factory,
-        asset_name="Watchlist FK Integration Asset",
-        asset_type="fund",
+        instrument_name="Watchlist FK Integration Asset",
+        instrument_type="fund",
         currency="USD",
         identifiers=[
             {
@@ -196,7 +196,7 @@ def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     yield {
         "database_url": database_url,
         "database_schema": "watchlist",
-        "asset_id": str(instrument["asset_id"]),
+        "instrument_id": str(instrument["instrument_id"]),
     }
 
     cleanup_engine = create_engine(_admin_database_url(base_database_url), isolation_level="AUTOCOMMIT")
@@ -222,7 +222,7 @@ def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     session_module.get_session_factory.cache_clear()
 
 
-def test_watchlist_shared_asset_foreign_keys_are_enforced(
+def test_watchlist_instrument_registry_foreign_keys_are_enforced(
     postgres_watchlist_env: dict[str, str],
 ) -> None:
     from watchlist_app.db import session as session_module
@@ -248,10 +248,10 @@ def test_watchlist_shared_asset_foreign_keys_are_enforced(
                     JOIN pg_namespace ref_ns
                         ON ref_ns.oid = ref_cls.relnamespace
                     WHERE cls_ns.nspname = :schema
-                      AND cls.relname IN ('asset_detail', 'watchlist_item')
+                      AND cls.relname IN ('instrument_detail', 'watchlist_item')
                       AND con.conname IN (
-                        'fk_asset_detail_asset_id_instrument',
-                        'fk_watchlist_item_asset_id_instrument'
+                        'fk_instrument_detail_instrument_id_instrument',
+                        'fk_watchlist_item_instrument_id_instrument'
                       )
                     """
                 ),
@@ -261,12 +261,12 @@ def test_watchlist_shared_asset_foreign_keys_are_enforced(
         engine.dispose()
 
     by_name = {item["constraint_name"]: item for item in constraints}
-    assert by_name["fk_watchlist_item_asset_id_instrument"]["table_name"] == "watchlist_item"
-    assert by_name["fk_watchlist_item_asset_id_instrument"]["referred_schema"] == "shared_asset"
-    assert by_name["fk_watchlist_item_asset_id_instrument"]["referred_table"] == "instrument"
-    assert by_name["fk_asset_detail_asset_id_instrument"]["table_name"] == "asset_detail"
-    assert by_name["fk_asset_detail_asset_id_instrument"]["referred_schema"] == "shared_asset"
-    assert by_name["fk_asset_detail_asset_id_instrument"]["referred_table"] == "instrument"
+    assert by_name["fk_watchlist_item_instrument_id_instrument"]["table_name"] == "watchlist_item"
+    assert by_name["fk_watchlist_item_instrument_id_instrument"]["referred_schema"] == "instrument_registry"
+    assert by_name["fk_watchlist_item_instrument_id_instrument"]["referred_table"] == "instrument"
+    assert by_name["fk_instrument_detail_instrument_id_instrument"]["table_name"] == "instrument_detail"
+    assert by_name["fk_instrument_detail_instrument_id_instrument"]["referred_schema"] == "instrument_registry"
+    assert by_name["fk_instrument_detail_instrument_id_instrument"]["referred_table"] == "instrument"
 
     session_factory = session_module.get_session_factory()
     watchlist_id = f"watchlist-fk-{uuid4().hex[:8]}"
@@ -285,11 +285,11 @@ def test_watchlist_shared_asset_foreign_keys_are_enforced(
             )
         )
         session.add(
-            AssetDetail(
-                asset_id=postgres_watchlist_env["asset_id"],
-                asset_type="fund",
+            InstrumentDetail(
+                instrument_id=postgres_watchlist_env["instrument_id"],
+                instrument_type="fund",
                 detail_view_type="fund",
-                asset_name="Watchlist FK Integration Asset",
+                instrument_name="Watchlist FK Integration Asset",
                 primary_identifier_type="ticker",
                 primary_identifier_value="WATCHFK",
                 is_active=True,
@@ -299,7 +299,7 @@ def test_watchlist_shared_asset_foreign_keys_are_enforced(
         session.add(
             WatchlistItem(
                 watchlist_id=watchlist_id,
-                asset_id=postgres_watchlist_env["asset_id"],
+                instrument_id=postgres_watchlist_env["instrument_id"],
                 added_at=datetime.now(UTC).replace(microsecond=0),
             )
         )
@@ -307,11 +307,11 @@ def test_watchlist_shared_asset_foreign_keys_are_enforced(
 
     with session_factory() as session:
         session.add(
-            AssetDetail(
-                asset_id=f"missing-{uuid4().hex[:8]}",
-                asset_type="fund",
+            InstrumentDetail(
+                instrument_id=f"missing-{uuid4().hex[:8]}",
+                instrument_type="fund",
                 detail_view_type="fund",
-                asset_name="Missing Shared Asset",
+                instrument_name="Missing Shared Instrument",
                 primary_identifier_type="ticker",
                 primary_identifier_value="MISSINGFK",
                 is_active=True,
@@ -326,7 +326,7 @@ def test_watchlist_shared_asset_foreign_keys_are_enforced(
         session.add(
             WatchlistItem(
                 watchlist_id=watchlist_id,
-                asset_id=f"missing-{uuid4().hex[:8]}",
+                instrument_id=f"missing-{uuid4().hex[:8]}",
                 added_at=datetime.now(UTC).replace(microsecond=0),
             )
         )

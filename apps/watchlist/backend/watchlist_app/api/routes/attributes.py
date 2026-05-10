@@ -13,7 +13,7 @@ from watchlist_app.api.contracts import (
 from watchlist_app.api.presenters import present_attribute_definition, present_attribute_values
 from watchlist_app.db.session import get_db_session
 from watchlist_app.reference_data.watchlist_fields import build_attribute_field_definition
-from watchlist_app.repositories.sqlalchemy.assets import SQLAlchemyAssetRepository
+from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.field_registry import SQLAlchemyFieldRegistryRepository
 from watchlist_app.repositories.sqlalchemy.instrument_attributes import (
     SQLAlchemyInstrumentAttributeRepository,
@@ -29,24 +29,24 @@ from watchlist_app.services.fund_taxonomy import (
 router = APIRouter()
 attribute_repository = SQLAlchemyInstrumentAttributeRepository()
 field_registry_repository = SQLAlchemyFieldRegistryRepository()
-asset_repository = SQLAlchemyAssetRepository()
+instrument_repository = SQLAlchemyInstrumentRepository()
 read_model_repository = SQLAlchemyReadModelRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
 
 
-def _require_asset(session: Session, asset_id: str):
-    record = asset_repository.get(session, asset_id)
+def _require_asset(session: Session, instrument_id: str):
+    record = instrument_repository.get(session, instrument_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="Asset not found")
+        raise HTTPException(status_code=404, detail="Instrument not found")
     return record
 
 
 def _taxonomy_context_for_asset(
     session: Session,
     *,
-    asset_id: str,
+    instrument_id: str,
 ) -> dict[str, object]:
-    assignment = taxonomy_repository.get_assignment(session, asset_id=asset_id)
+    assignment = taxonomy_repository.get_assignment(session, instrument_id=instrument_id)
     node = (
         taxonomy_repository.get_node(session, node_id=str(assignment.node_id))
         if assignment is not None and assignment.node_id
@@ -81,7 +81,7 @@ def create_attribute_definition(
         group_code=payload_data["group_code"],
         display_order=payload_data.get("display_order", 999),
         options_json=payload_data.get("options", []),
-        asset_scope_json=payload_data.get("asset_scope_json", ["fund"]),
+        instrument_scope_json=payload_data.get("instrument_scope_json", ["fund"]),
         applicability_json=payload_data.get("applicability_json", {}),
         rubric_json=payload_data.get("rubric_json", {}),
         is_groupable=payload_data.get("is_groupable", True),
@@ -103,7 +103,7 @@ def create_attribute_definition(
             sort_mode=field_payload["sort_mode"],
             filter_mode=field_payload["filter_mode"],
             group_mode=field_payload["group_mode"],
-            asset_scope_json=field_payload["asset_scope_json"],
+            instrument_scope_json=field_payload["instrument_scope_json"],
             product_scope_json=field_payload["product_scope_json"],
             availability_rule_json=field_payload["availability_rule_json"],
             source_domain=field_payload["source_domain"],
@@ -115,31 +115,31 @@ def create_attribute_definition(
     return present_attribute_definition(record)
 
 
-@router.get("/assets/{asset_id}")
-def get_asset_attribute_values(
-    asset_id: str,
+@router.get("/instruments/{instrument_id}")
+def get_instrument_attribute_values(
+    instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _require_asset(session, asset_id)
+    _require_asset(session, instrument_id)
     payload = present_attribute_values(
-        asset_id,
+        instrument_id,
         attribute_repository.list_definitions(session),
-        attribute_repository.get_values_for_asset(session, asset_id),
+        attribute_repository.get_values_for_asset(session, instrument_id),
     )
     payload["taxonomy"] = _taxonomy_context_for_asset(
         session,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
     )
     return payload
 
 
-@router.post("/assets/{asset_id}")
-def upsert_asset_attribute_values(
-    asset_id: str,
+@router.post("/instruments/{instrument_id}")
+def upsert_instrument_attribute_values(
+    instrument_id: str,
     payload: FundAttributesUpsertRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _require_asset(session, asset_id)
+    _require_asset(session, instrument_id)
     definitions = {
         item.attribute_key: item for item in attribute_repository.list_definitions(session)
     }
@@ -153,23 +153,23 @@ def upsert_asset_attribute_values(
     for key, value in values.items():
         attribute_repository.add_value(
             session,
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             attribute_key=key,
             value_json=value,
             source_record_id="api",
         )
     current_values = present_attribute_values(
-        asset_id,
+        instrument_id,
         list(definitions.values()),
-        attribute_repository.get_values_for_asset(session, asset_id),
+        attribute_repository.get_values_for_asset(session, instrument_id),
     )
     taxonomy_context = _taxonomy_context_for_asset(
         session,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
     )
     read_model_repository.set_attributes_for_asset(
         session,
-        asset_id=asset_id,
+        instrument_id=instrument_id,
         attributes=merge_taxonomy_attributes(
             taxonomy_context=taxonomy_context,
             instrument_attributes=current_values["values"],

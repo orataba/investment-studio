@@ -1,15 +1,15 @@
 import { ChangeEvent, FormEvent, Fragment, useEffect, useMemo, useState } from 'react'
 import { LanguageSelector } from '../../../../packages/ui/src/i18n'
 import type {
-  AssetIdentifier as PlatformAssetIdentifier,
-  AssetType,
+  InstrumentIdentifier as PlatformInstrumentIdentifier,
+  InstrumentType,
   DataStatus,
   IdentifierType,
   MetricFamily,
   QuoteBasis,
   QuoteRole,
   QuoteSelectionPolicy as PlatformQuoteSelectionPolicy,
-} from '../../../../packages/asset-core/ts/src'
+} from '../../../../packages/instrument-core/ts/src'
 
 type PlatformAppCard = {
   app_id: string
@@ -45,11 +45,11 @@ type PlatformLifecycleState = {
 }
 
 type PlatformInstrumentRecord = {
-  asset_id: string
-  asset_name: string
-  asset_type: AssetType
+  instrument_id: string
+  instrument_name: string
+  instrument_type: InstrumentType
   currency: string
-  identifiers: PlatformAssetIdentifier[]
+  identifiers: PlatformInstrumentIdentifier[]
   latest_market_data: PlatformMarketDataPoint[]
   quote_selection_policy: PlatformQuoteSelectionPolicy
   coverage_state: DataStatus
@@ -95,8 +95,8 @@ type PlatformFxRateRecord = {
   rate: string
   as_of_date: string
   source_kind: FxRateSourceKind
-  asset_id?: string | null
-  source_asset_ids: string[]
+  instrument_id?: string | null
+  source_instrument_ids: string[]
   provider?: string | null
   status: DataStatus
 }
@@ -113,8 +113,8 @@ type PlatformNavImportPreviewRow = {
   nav_with_dividend?: string | null
   currency: string
   frequency: string
-  asset_code?: string | null
-  asset_name?: string | null
+  instrument_code?: string | null
+  instrument_name?: string | null
 }
 
 type PlatformNavImportPreviewResponse = {
@@ -203,7 +203,7 @@ function buildFallbackApps(): PlatformAppCard[] {
       api_url: portfolioApiUrl,
       eyebrow: 'Portfolio management',
       description:
-        'Portfolio, account, transaction, risk, and review workflows built on top of the shared asset core.',
+        'Portfolio, account, transaction, risk, and review workflows built on top of the shared instrument core.',
       availability: 'ready',
     })
   }
@@ -222,34 +222,34 @@ function primaryIdentifier(record: PlatformInstrumentRecord) {
   return (
     record.identifiers.find((item) => item.is_primary)?.identifier_value ??
     record.identifiers[0]?.identifier_value ??
-    record.asset_id
+    record.instrument_id
   )
 }
 
-function allowedFamiliesForAsset(assetType: AssetType): MetricFamily[] {
-  if (assetType === 'fx') {
+function allowedFamiliesForInstrument(instrumentType: InstrumentType): MetricFamily[] {
+  if (instrumentType === 'fx') {
     return ['fx']
   }
-  if (assetType === 'cash' || assetType === 'bond' || assetType === 'equity') {
+  if (instrumentType === 'cash' || instrumentType === 'bond' || instrumentType === 'equity') {
     return ['price']
   }
-  if (assetType === 'fund') {
+  if (instrumentType === 'fund') {
     return ['nav', 'price']
   }
   return ['price', 'nav', 'fx']
 }
 
-function defaultQuoteInput(assetType: AssetType): { metric_family: MetricFamily; quote_basis: QuoteBasis } {
-  if (assetType === 'fx') {
+function defaultQuoteInput(instrumentType: InstrumentType): { metric_family: MetricFamily; quote_basis: QuoteBasis } {
+  if (instrumentType === 'fx') {
     return { metric_family: 'fx', quote_basis: 'spot' }
   }
-  if (assetType === 'cash') {
+  if (instrumentType === 'cash') {
     return { metric_family: 'price', quote_basis: 'par' }
   }
-  if (assetType === 'bond') {
+  if (instrumentType === 'bond') {
     return { metric_family: 'price', quote_basis: 'dirty_price' }
   }
-  if (assetType === 'fund') {
+  if (instrumentType === 'fund') {
     return { metric_family: 'nav', quote_basis: 'official_nav' }
   }
   return { metric_family: 'price', quote_basis: 'close' }
@@ -380,11 +380,11 @@ function upsertInstrumentRecord(
   updated: PlatformInstrumentRecord,
   includeInactive: boolean,
 ) {
-  const next = current.filter((item) => item.asset_id !== updated.asset_id)
+  const next = current.filter((item) => item.instrument_id !== updated.instrument_id)
   if (!includeInactive && updated.lifecycle_state.status === 'archived') {
-    return next.sort((left, right) => left.asset_name.localeCompare(right.asset_name))
+    return next.sort((left, right) => left.instrument_name.localeCompare(right.instrument_name))
   }
-  return [...next, updated].sort((left, right) => left.asset_name.localeCompare(right.asset_name))
+  return [...next, updated].sort((left, right) => left.instrument_name.localeCompare(right.instrument_name))
 }
 
 function formatFxPairLabel(baseCurrency: string, quoteCurrency: string) {
@@ -562,10 +562,10 @@ function InstrumentsPage({
   showInactive: boolean
   onToggleShowInactive: () => void
   onCreateInstrument: (payload: {
-    asset_name: string
-    asset_type: AssetType
+    instrument_name: string
+    instrument_type: InstrumentType
     currency: string
-    identifiers: PlatformAssetIdentifier[]
+    identifiers: PlatformInstrumentIdentifier[]
   }) => Promise<void>
   onUpsertFxRate: (payload: {
     base_currency: SupportedCurrency
@@ -576,7 +576,7 @@ function InstrumentsPage({
     status: DataStatus
   }) => Promise<void>
   onUpsertMarketData: (payload: {
-    asset_id: string
+    instrument_id: string
     metric_family: MetricFamily
     quote_basis: QuoteBasis
     as_of_date: string
@@ -586,37 +586,37 @@ function InstrumentsPage({
     status: DataStatus
   }) => Promise<void>
   onUpdateSourceSettings: (payload: {
-    asset_id: string
+    instrument_id: string
     source_mode: SourceMode
     source_email: string
     source_location: string
     source_api_profile: string
   }) => Promise<void>
-  onTriggerRefresh: (payload: { asset_id: string; updated_by?: string | null }) => Promise<void>
+  onTriggerRefresh: (payload: { instrument_id: string; updated_by?: string | null }) => Promise<void>
   onImportNavText: (payload: {
-    asset_id: string
+    instrument_id: string
     raw_text: string
     provider?: string | null
     status: DataStatus
     updated_by?: string | null
   }) => Promise<void>
   onImportNavFile: (payload: {
-    asset_id: string
+    instrument_id: string
     file_name: string
     file_content_base64: string
     provider?: string | null
     status: DataStatus
     updated_by?: string | null
   }) => Promise<void>
-  onArchiveInstrument: (payload: { asset_id: string; updated_by?: string | null }) => Promise<void>
-  onRestoreInstrument: (payload: { asset_id: string; updated_by?: string | null }) => Promise<void>
+  onArchiveInstrument: (payload: { instrument_id: string; updated_by?: string | null }) => Promise<void>
+  onRestoreInstrument: (payload: { instrument_id: string; updated_by?: string | null }) => Promise<void>
 }) {
-  const [assetName, setAssetName] = useState('')
-  const [assetType, setAssetType] = useState<AssetType>('equity')
+  const [instrumentName, setInstrumentName] = useState('')
+  const [instrumentType, setInstrumentType] = useState<InstrumentType>('equity')
   const [currency, setCurrency] = useState('USD')
   const [identifierType, setIdentifierType] = useState<IdentifierType>('ticker')
   const [identifierValue, setIdentifierValue] = useState('')
-  const [selectedAssetId, setSelectedAssetId] = useState('')
+  const [selectedInstrumentId, setSelectedInstrumentId] = useState('')
   const [metricFamily, setMetricFamily] = useState<MetricFamily>('price')
   const [quoteBasis, setQuoteBasis] = useState<QuoteBasis>('close')
   const [metricValue, setMetricValue] = useState('')
@@ -642,7 +642,7 @@ function InstrumentsPage({
   const [fxRateStatus, setFxRateStatus] = useState<DataStatus>('complete')
   const [activePanel, setActivePanel] = useState<'create' | 'quote' | 'source' | 'nav' | 'fx' | null>(null)
   const [searchText, setSearchText] = useState('')
-  const [assetTypeFilter, setAssetTypeFilter] = useState<'all' | AssetType>('all')
+  const [instrumentTypeFilter, setInstrumentTypeFilter] = useState<'all' | InstrumentType>('all')
   const [coverageFilter, setCoverageFilter] = useState<'all' | DataStatus>('all')
   const [sourceFilter, setSourceFilter] = useState<'all' | SourceMode>('all')
   const [navFilter, setNavFilter] = useState<'all' | 'has_nav' | 'missing_nav'>('all')
@@ -684,11 +684,11 @@ function InstrumentsPage({
     [instruments],
   )
 
-  const selectedInstrument = instruments.find((item) => item.asset_id === selectedAssetId) ?? null
+  const selectedInstrument = instruments.find((item) => item.instrument_id === selectedInstrumentId) ?? null
   const allowedMetricFamilies = useMemo(
     () =>
       selectedInstrument
-        ? allowedFamiliesForAsset(selectedInstrument.asset_type)
+        ? allowedFamiliesForInstrument(selectedInstrument.instrument_type)
         : (['price', 'nav', 'fx'] as MetricFamily[]),
     [selectedInstrument],
   )
@@ -758,7 +758,7 @@ function InstrumentsPage({
   const filteredInstruments = useMemo(() => {
     const searchNeedle = searchText.trim().toLowerCase()
     const filtered = instruments.filter((item) => {
-      if (assetTypeFilter !== 'all' && item.asset_type !== assetTypeFilter) {
+      if (instrumentTypeFilter !== 'all' && item.instrument_type !== instrumentTypeFilter) {
         return false
       }
       if (coverageFilter !== 'all' && item.coverage_state !== coverageFilter) {
@@ -778,8 +778,8 @@ function InstrumentsPage({
         return true
       }
       const searchableFields = [
-        item.asset_name,
-        item.asset_id,
+        item.instrument_name,
+        item.instrument_id,
         primaryIdentifier(item),
         ...item.identifiers.map((identifier) => identifier.identifier_value),
       ]
@@ -795,7 +795,7 @@ function InstrumentsPage({
         if (leftNav !== rightNav) {
           return rightNav.localeCompare(leftNav)
         }
-        return left.asset_name.localeCompare(right.asset_name)
+        return left.instrument_name.localeCompare(right.instrument_name)
       }
       if (sortMode === 'coverage') {
         const rank: Record<DataStatus, number> = {
@@ -806,44 +806,44 @@ function InstrumentsPage({
         if (rank[left.coverage_state] !== rank[right.coverage_state]) {
           return rank[left.coverage_state] - rank[right.coverage_state]
         }
-        return left.asset_name.localeCompare(right.asset_name)
+        return left.instrument_name.localeCompare(right.instrument_name)
       }
-      return left.asset_name.localeCompare(right.asset_name)
+      return left.instrument_name.localeCompare(right.instrument_name)
     })
-  }, [assetTypeFilter, coverageFilter, instruments, navFilter, searchText, sortMode, sourceFilter])
+  }, [instrumentTypeFilter, coverageFilter, instruments, navFilter, searchText, sortMode, sourceFilter])
   const filteredFundCount = useMemo(
-    () => filteredInstruments.filter((item) => item.asset_type === 'fund').length,
+    () => filteredInstruments.filter((item) => item.instrument_type === 'fund').length,
     [filteredInstruments],
   )
   const filteredMissingNavCount = useMemo(
     () =>
       filteredInstruments.filter(
-        (item) => item.asset_type === 'fund' && !latestNavSnapshot(item).latestNavDate,
+        (item) => item.instrument_type === 'fund' && !latestNavSnapshot(item).latestNavDate,
       ).length,
     [filteredInstruments],
   )
   const selectedInstrumentHiddenByFilters = useMemo(
     () =>
       !!selectedInstrument &&
-      !filteredInstruments.some((item) => item.asset_id === selectedInstrument.asset_id),
+      !filteredInstruments.some((item) => item.instrument_id === selectedInstrument.instrument_id),
     [filteredInstruments, selectedInstrument],
   )
 
-  function syncSelectedInstrument(assetId: string) {
-    setSelectedAssetId(assetId)
+  function syncSelectedInstrument(instrumentId: string) {
+    setSelectedInstrumentId(instrumentId)
     setSelectionPrimed(true)
-    const selected = instruments.find((item) => item.asset_id === assetId)
+    const selected = instruments.find((item) => item.instrument_id === instrumentId)
     if (!selected) {
       return
     }
-    const defaults = defaultQuoteInput(selected.asset_type)
+    const defaults = defaultQuoteInput(selected.instrument_type)
     setMetricFamily(defaults.metric_family)
     setQuoteBasis(defaults.quote_basis)
     setMetricCurrency(selected.currency)
   }
 
-  async function refreshSelectedInstrumentDetail(assetId: string) {
-    if (!assetId) {
+  async function refreshSelectedInstrumentDetail(instrumentId: string) {
+    if (!instrumentId) {
       setSelectedInstrumentDetailLoading(false)
       setSelectedInstrumentDetail(null)
       setSelectedInstrumentDetailError(null)
@@ -853,7 +853,7 @@ function InstrumentsPage({
     setSelectedInstrumentDetailError(null)
     try {
       const detail = await fetchJson<PlatformInstrumentDetail>(
-        `/api/instruments/${encodeURIComponent(assetId)}`,
+        `/api/instruments/${encodeURIComponent(instrumentId)}`,
       )
       setSelectedInstrumentDetail(detail)
     } catch (requestError) {
@@ -870,23 +870,23 @@ function InstrumentsPage({
 
   useEffect(() => {
     if (!instruments.length) {
-      if (selectedAssetId) {
-        setSelectedAssetId('')
+      if (selectedInstrumentId) {
+        setSelectedInstrumentId('')
       }
       setSelectionPrimed(false)
       return
     }
-    if (selectedAssetId && instruments.some((item) => item.asset_id === selectedAssetId)) {
+    if (selectedInstrumentId && instruments.some((item) => item.instrument_id === selectedInstrumentId)) {
       return
     }
-    if (selectedAssetId || !selectionPrimed) {
-      syncSelectedInstrument(instruments[0].asset_id)
+    if (selectedInstrumentId || !selectionPrimed) {
+      syncSelectedInstrument(instruments[0].instrument_id)
     }
-  }, [instruments, selectedAssetId, selectionPrimed])
+  }, [instruments, selectedInstrumentId, selectionPrimed])
 
   useEffect(() => {
-    void refreshSelectedInstrumentDetail(selectedAssetId)
-  }, [selectedAssetId])
+    void refreshSelectedInstrumentDetail(selectedInstrumentId)
+  }, [selectedInstrumentId])
 
   useEffect(() => {
     if (!selectedInstrument) {
@@ -922,8 +922,8 @@ function InstrumentsPage({
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     await onCreateInstrument({
-      asset_name: assetName.trim(),
-      asset_type: assetType,
+      instrument_name: instrumentName.trim(),
+      instrument_type: instrumentType,
       currency: currency.trim().toUpperCase(),
       identifiers: [
         {
@@ -933,7 +933,7 @@ function InstrumentsPage({
         },
       ],
     })
-    setAssetName('')
+    setInstrumentName('')
     setIdentifierValue('')
   }
 
@@ -952,7 +952,7 @@ function InstrumentsPage({
   async function handleMetricSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     await onUpsertMarketData({
-      asset_id: selectedAssetId,
+      instrument_id: selectedInstrumentId,
       metric_family: metricFamily,
       quote_basis: quoteBasis,
       as_of_date: metricDate,
@@ -962,33 +962,33 @@ function InstrumentsPage({
       provider: 'platform_manual',
     })
     setMetricValue('')
-    await refreshSelectedInstrumentDetail(selectedAssetId)
+    await refreshSelectedInstrumentDetail(selectedInstrumentId)
   }
 
   async function handleSourceSettingsSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selectedAssetId) {
+    if (!selectedInstrumentId) {
       return
     }
     await onUpdateSourceSettings({
-      asset_id: selectedAssetId,
+      instrument_id: selectedInstrumentId,
       source_mode: sourceMode,
       source_email: sourceEmail.trim(),
       source_location: sourceLocation.trim(),
       source_api_profile: sourceApiProfile.trim(),
     })
-    await refreshSelectedInstrumentDetail(selectedAssetId)
+    await refreshSelectedInstrumentDetail(selectedInstrumentId)
   }
 
   async function handleRefreshClick() {
-    if (!selectedAssetId) {
+    if (!selectedInstrumentId) {
       return
     }
     await onTriggerRefresh({
-      asset_id: selectedAssetId,
+      instrument_id: selectedInstrumentId,
       updated_by: 'platform_ui',
     })
-    await refreshSelectedInstrumentDetail(selectedAssetId)
+    await refreshSelectedInstrumentDetail(selectedInstrumentId)
   }
 
   async function handleNavFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -1009,7 +1009,7 @@ function InstrumentsPage({
   }
 
   async function handlePreviewNavImport() {
-    if (!selectedAssetId) {
+    if (!selectedInstrumentId) {
       return
     }
     const payload =
@@ -1026,7 +1026,7 @@ function InstrumentsPage({
     }
     try {
       const preview = await fetchJson<PlatformNavImportPreviewResponse>(
-        `/api/instruments/${encodeURIComponent(selectedAssetId)}/nav-import/preview`,
+        `/api/instruments/${encodeURIComponent(selectedInstrumentId)}/nav-import/preview`,
         {
           method: 'POST',
           body: JSON.stringify(payload),
@@ -1044,12 +1044,12 @@ function InstrumentsPage({
 
   async function handleNavImportSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selectedAssetId) {
+    if (!selectedInstrumentId) {
       return
     }
     if (navImportFileName && navImportFileContent) {
       await onImportNavFile({
-        asset_id: selectedAssetId,
+        instrument_id: selectedInstrumentId,
         file_name: navImportFileName,
         file_content_base64: navImportFileContent,
         provider: 'platform_file_import',
@@ -1058,7 +1058,7 @@ function InstrumentsPage({
       })
     } else if (navImportText.trim()) {
       await onImportNavText({
-        asset_id: selectedAssetId,
+        instrument_id: selectedInstrumentId,
         raw_text: navImportText.trim(),
         provider: 'platform_paste_import',
         status: 'complete',
@@ -1073,47 +1073,47 @@ function InstrumentsPage({
     setNavImportFileInputKey((current) => current + 1)
     setNavPreview(null)
     setNavPreviewError(null)
-    await refreshSelectedInstrumentDetail(selectedAssetId)
+    await refreshSelectedInstrumentDetail(selectedInstrumentId)
   }
 
-  async function handleArchiveClick(assetId: string) {
+  async function handleArchiveClick(instrumentId: string) {
     await onArchiveInstrument({
-      asset_id: assetId,
+      instrument_id: instrumentId,
       updated_by: 'platform_ui',
     })
-    if (assetId === selectedAssetId) {
-      await refreshSelectedInstrumentDetail(assetId)
+    if (instrumentId === selectedInstrumentId) {
+      await refreshSelectedInstrumentDetail(instrumentId)
     }
   }
 
-  async function handleRestoreClick(assetId: string) {
+  async function handleRestoreClick(instrumentId: string) {
     await onRestoreInstrument({
-      asset_id: assetId,
+      instrument_id: instrumentId,
       updated_by: 'platform_ui',
     })
-    if (assetId === selectedAssetId) {
-      await refreshSelectedInstrumentDetail(assetId)
+    if (instrumentId === selectedInstrumentId) {
+      await refreshSelectedInstrumentDetail(instrumentId)
     }
   }
 
   function clearSelectedInstrument() {
-    setSelectedAssetId('')
+    setSelectedInstrumentId('')
     setSelectedInstrumentDetail(null)
     setSelectedInstrumentDetailError(null)
     setSelectedInstrumentDetailLoading(false)
   }
 
-  function toggleSelectedInstrument(assetId: string) {
-    if (selectedAssetId === assetId) {
+  function toggleSelectedInstrument(instrumentId: string) {
+    if (selectedInstrumentId === instrumentId) {
       clearSelectedInstrument()
       return
     }
-    syncSelectedInstrument(assetId)
+    syncSelectedInstrument(instrumentId)
   }
 
-  function openActionPanel(panel: 'create' | 'quote' | 'source' | 'nav' | 'fx', assetId?: string) {
-    if (assetId) {
-      syncSelectedInstrument(assetId)
+  function openActionPanel(panel: 'create' | 'quote' | 'source' | 'nav' | 'fx', instrumentId?: string) {
+    if (instrumentId) {
+      syncSelectedInstrument(instrumentId)
     }
     setActivePanel(panel)
   }
@@ -1124,7 +1124,7 @@ function InstrumentsPage({
 
   function clearTableFilters() {
     setSearchText('')
-    setAssetTypeFilter('all')
+    setInstrumentTypeFilter('all')
     setCoverageFilter('all')
     setSourceFilter('all')
     setNavFilter('all')
@@ -1160,7 +1160,7 @@ function InstrumentsPage({
           <div className="registry-table-meta">
             {showInactive
               ? `${registrySummary.active_count} active · ${registrySummary.archived_count} archived in registry`
-              : `${activeInstrumentCount} active visible · ${registrySummary.total_count} total assets in registry`}
+              : `${activeInstrumentCount} active visible · ${registrySummary.total_count} total instruments in registry`}
           </div>
         </div>
       </section>
@@ -1182,9 +1182,9 @@ function InstrumentsPage({
       <section className="registry-control-shell">
         <div className="registry-control-grid">
           <div className="registry-control-block">
-            <div className="registry-form-title">Find Assets</div>
+            <div className="registry-form-title">Find Instruments</div>
             <div className="registry-table-meta">
-              Search by code, asset name, asset id, or identifier, then narrow the table before
+              Search by code, instrument name, instrument id, or identifier, then narrow the table before
               opening detail.
             </div>
             <div className="registry-filter-grid">
@@ -1194,12 +1194,12 @@ function InstrumentsPage({
                   type="search"
                   value={searchText}
                   onChange={(event) => setSearchText(event.target.value)}
-                  placeholder="Code / name / asset id / identifier"
+                  placeholder="Code / name / instrument id / identifier"
                 />
               </label>
               <label>
                 <span>Type</span>
-                <select value={assetTypeFilter} onChange={(event) => setAssetTypeFilter(event.target.value as 'all' | AssetType)}>
+                <select value={instrumentTypeFilter} onChange={(event) => setInstrumentTypeFilter(event.target.value as 'all' | InstrumentType)}>
                   <option value="all">All Types</option>
                   <option value="equity">Equity</option>
                   <option value="fund">Fund</option>
@@ -1230,7 +1230,7 @@ function InstrumentsPage({
               <label>
                 <span>NAV</span>
                 <select value={navFilter} onChange={(event) => setNavFilter(event.target.value as 'all' | 'has_nav' | 'missing_nav')}>
-                  <option value="all">All Assets</option>
+                  <option value="all">All Instruments</option>
                   <option value="has_nav">Has NAV</option>
                   <option value="missing_nav">Missing NAV</option>
                 </select>
@@ -1254,16 +1254,16 @@ function InstrumentsPage({
               <div className="registry-filter-actions">
                 <button
                   type="button"
-                  className={`registry-submit secondary${assetTypeFilter === 'fund' ? ' registry-submit-active' : ''}`}
-                  onClick={() => setAssetTypeFilter('fund')}
+                  className={`registry-submit secondary${instrumentTypeFilter === 'fund' ? ' registry-submit-active' : ''}`}
+                  onClick={() => setInstrumentTypeFilter('fund')}
                 >
                   Funds Only
                 </button>
                 <button
                   type="button"
-                  className={`registry-submit secondary${assetTypeFilter === 'fund' && navFilter === 'missing_nav' ? ' registry-submit-active' : ''}`}
+                  className={`registry-submit secondary${instrumentTypeFilter === 'fund' && navFilter === 'missing_nav' ? ' registry-submit-active' : ''}`}
                   onClick={() => {
-                    setAssetTypeFilter('fund')
+                    setInstrumentTypeFilter('fund')
                     setNavFilter('missing_nav')
                   }}
                 >
@@ -1276,25 +1276,25 @@ function InstrumentsPage({
             </div>
             {selectedInstrumentHiddenByFilters ? (
               <div className="registry-form-note">
-                The selected asset is hidden by current filters. Reset filters to bring its row
+                The selected instrument is hidden by current filters. Reset filters to bring its row
                 back into view.
               </div>
             ) : null}
           </div>
 
           <div className="registry-control-block registry-control-block-accent">
-            <div className="registry-form-title">Selected Asset</div>
+            <div className="registry-form-title">Selected Instrument</div>
             {selectedInstrument ? (
-              <div className="registry-selected-asset">
+              <div className="registry-selected-instrument">
                 <div className="registry-selected-heading">
                   <strong>{primaryIdentifier(selectedInstrument)}</strong>
-                  <span>{selectedInstrument.asset_name}</span>
+                  <span>{selectedInstrument.instrument_name}</span>
                 </div>
                 <div className="registry-selected-subtitle">
-                  {selectedInstrument.asset_type.toUpperCase()} · {selectedInstrument.currency} ·{' '}
+                  {selectedInstrument.instrument_type.toUpperCase()} · {selectedInstrument.currency} ·{' '}
                   {selectedInstrumentNavSnapshot?.latestNavDate
                     ? `Latest NAV ${selectedInstrumentNavSnapshot.latestNavDate}`
-                    : selectedInstrument.asset_type === 'fund'
+                    : selectedInstrument.instrument_type === 'fund'
                       ? 'No NAV loaded yet'
                       : 'Not NAV-based'}
                 </div>
@@ -1317,10 +1317,10 @@ function InstrumentsPage({
                   </span>
                 </div>
                 <div className="registry-form-actions">
-                  <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('quote', selectedInstrument.asset_id)}>
+                  <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('quote', selectedInstrument.instrument_id)}>
                     Add Quote
                   </button>
-                  <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('nav', selectedInstrument.asset_id)}>
+                  <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('nav', selectedInstrument.instrument_id)}>
                     Import NAV
                   </button>
                   <button type="button" className="registry-submit secondary" onClick={() => void handleRefreshClick()}>
@@ -1347,13 +1347,13 @@ function InstrumentsPage({
             <div className="registry-form-title">Operations</div>
             <div className="registry-table-meta">
               {selectedInstrument
-                ? `Selected asset: ${primaryIdentifier(selectedInstrument)} · ${selectedInstrument.asset_name}`
-                : 'Select an asset from the table to manage quote, NAV, and source settings.'}
+                ? `Selected instrument: ${primaryIdentifier(selectedInstrument)} · ${selectedInstrument.instrument_name}`
+                : 'Select an instrument from the table to manage quote, NAV, and source settings.'}
             </div>
           </div>
           <div className="registry-toolbar-actions">
             <button type="button" className={panelButtonClass('create')} onClick={() => openActionPanel('create')}>
-              Add Asset
+              Add Instrument
             </button>
             <button
               type="button"
@@ -1401,7 +1401,7 @@ function InstrumentsPage({
               <div>
                 <div className="registry-form-title">
                   {activePanel === 'create'
-                    ? 'Add Asset'
+                    ? 'Add Instrument'
                     : activePanel === 'quote'
                       ? 'Add Quote'
                       : activePanel === 'source'
@@ -1412,12 +1412,12 @@ function InstrumentsPage({
                 </div>
                 <div className="registry-table-meta">
                   {activePanel === 'create'
-                    ? 'Create shared registry assets here. Downstream Watchlist and Portfolio refresh from this layer.'
+                    ? 'Create shared registry instruments here. Downstream Watchlist and Portfolio refresh from this layer.'
                     : activePanel === 'fx'
                       ? 'Maintain direct FX spot pairs in one place.'
                       : selectedInstrument
-                        ? `${primaryIdentifier(selectedInstrument)} · ${selectedInstrument.asset_name}`
-                        : 'Select an asset from the table first.'}
+                        ? `${primaryIdentifier(selectedInstrument)} · ${selectedInstrument.instrument_name}`
+                        : 'Select an instrument from the table first.'}
                 </div>
               </div>
               <button type="button" className="app-link secondary" onClick={() => setActivePanel(null)}>
@@ -1430,11 +1430,11 @@ function InstrumentsPage({
                 <div className="registry-action-form-grid">
                   <label>
                     <span>Name</span>
-                    <input value={assetName} onChange={(event) => setAssetName(event.target.value)} required />
+                    <input value={instrumentName} onChange={(event) => setInstrumentName(event.target.value)} required />
                   </label>
                   <label>
                     <span>Type</span>
-                    <select value={assetType} onChange={(event) => setAssetType(event.target.value as AssetType)}>
+                    <select value={instrumentType} onChange={(event) => setInstrumentType(event.target.value as InstrumentType)}>
                       <option value="equity">Equity</option>
                       <option value="fund">Fund</option>
                       <option value="bond">Bond</option>
@@ -1472,7 +1472,7 @@ function InstrumentsPage({
                 </div>
                 <div className="registry-form-actions">
                   <button type="submit" className="registry-submit">
-                    Create Asset
+                    Create Instrument
                   </button>
                 </div>
               </form>
@@ -1483,8 +1483,8 @@ function InstrumentsPage({
                 <form className="registry-form registry-action-form" onSubmit={(event) => void handleMetricSubmit(event)}>
                   <div className="registry-action-form-grid">
                     <label className="registry-field-wide">
-                      <span>Selected Asset</span>
-                      <input value={selectedInstrument.asset_name} readOnly />
+                      <span>Selected Instrument</span>
+                      <input value={selectedInstrument.instrument_name} readOnly />
                     </label>
                     <label>
                       <span>Family</span>
@@ -1555,7 +1555,7 @@ function InstrumentsPage({
                   </div>
                 </form>
               ) : (
-                <div className="registry-form-note">Select an asset from the table first.</div>
+                <div className="registry-form-note">Select an instrument from the table first.</div>
               )
             ) : null}
 
@@ -1564,8 +1564,8 @@ function InstrumentsPage({
                 <form className="registry-form registry-action-form" onSubmit={(event) => void handleSourceSettingsSubmit(event)}>
                   <div className="registry-action-form-grid">
                     <label className="registry-field-wide">
-                      <span>Selected Asset</span>
-                      <input value={selectedInstrument.asset_name} readOnly />
+                      <span>Selected Instrument</span>
+                      <input value={selectedInstrument.instrument_name} readOnly />
                     </label>
                     <label>
                       <span>Source Mode</span>
@@ -1612,7 +1612,7 @@ function InstrumentsPage({
                   </div>
                 </form>
               ) : (
-                <div className="registry-form-note">Select an asset from the table first.</div>
+                <div className="registry-form-note">Select an instrument from the table first.</div>
               )
             ) : null}
 
@@ -1621,8 +1621,8 @@ function InstrumentsPage({
                 <form className="registry-form registry-action-form" onSubmit={(event) => void handleNavImportSubmit(event)}>
                   <div className="registry-action-form-grid">
                     <label className="registry-field-wide">
-                      <span>Selected Asset</span>
-                      <input value={selectedInstrument.asset_name} readOnly />
+                      <span>Selected Instrument</span>
+                      <input value={selectedInstrument.instrument_name} readOnly />
                     </label>
                     <label className="registry-field-wide">
                       <span>Upload Excel / CSV</span>
@@ -1658,7 +1658,7 @@ function InstrumentsPage({
                     <button
                       type="button"
                       className="registry-submit secondary"
-                      disabled={!selectedAssetId || (!navImportText.trim() && !navImportFileContent)}
+                      disabled={!selectedInstrumentId || (!navImportText.trim() && !navImportFileContent)}
                       onClick={() => void handlePreviewNavImport()}
                     >
                       Preview Parsed Rows
@@ -1666,7 +1666,7 @@ function InstrumentsPage({
                     <button
                       type="submit"
                       className="registry-submit"
-                      disabled={!selectedAssetId || (!navImportText.trim() && !navImportFileContent)}
+                      disabled={!selectedInstrumentId || (!navImportText.trim() && !navImportFileContent)}
                     >
                       Import NAV Rows
                     </button>
@@ -1700,8 +1700,8 @@ function InstrumentsPage({
                                 <td>{row.nav || '—'}</td>
                                 <td>{row.nav_with_dividend || '—'}</td>
                                 <td>{row.currency}</td>
-                                <td>{row.asset_code || '—'}</td>
-                                <td>{row.asset_name || '—'}</td>
+                                <td>{row.instrument_code || '—'}</td>
+                                <td>{row.instrument_name || '—'}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -1711,7 +1711,7 @@ function InstrumentsPage({
                   ) : null}
                 </form>
               ) : (
-                <div className="registry-form-note">Select an asset from the table first.</div>
+                <div className="registry-form-note">Select an instrument from the table first.</div>
               )
             ) : null}
 
@@ -1796,8 +1796,8 @@ function InstrumentsPage({
               {loading
                 ? 'Loading instruments...'
                 : showInactive
-                  ? `Showing ${filteredInstruments.length} filtered assets out of ${instruments.length} in registry view`
-                  : `Showing ${filteredInstruments.length} filtered active assets out of ${instruments.length} visible`}
+                  ? `Showing ${filteredInstruments.length} filtered instruments out of ${instruments.length} in registry view`
+                  : `Showing ${filteredInstruments.length} filtered active instruments out of ${instruments.length} visible`}
             </div>
           </div>
           <button type="button" className="app-link secondary" onClick={onToggleShowInactive}>
@@ -1826,16 +1826,16 @@ function InstrumentsPage({
               {!filteredInstruments.length ? (
                 <tr className="registry-empty-row">
                   <td colSpan={12}>
-                    No assets match the current filters. Reset filters or broaden the search.
+                    No instruments match the current filters. Reset filters or broaden the search.
                   </td>
                 </tr>
               ) : null}
               {filteredInstruments.map((item) => {
-                const isSelected = item.asset_id === selectedAssetId
+                const isSelected = item.instrument_id === selectedInstrumentId
                 const quoteSummary = summaryQuoteChips(item)
                 const { officialNav, totalReturnNav, latestNavDate } = latestNavSnapshot(item)
                 return (
-                  <Fragment key={item.asset_id}>
+                  <Fragment key={item.instrument_id}>
                     <tr
                       className={`registry-row-summary${isSelected ? ' registry-row-selected' : ''}${
                         item.lifecycle_state.status === 'archived' ? ' registry-row-archived' : ''
@@ -1845,7 +1845,7 @@ function InstrumentsPage({
                         <button
                           type="button"
                           className={`registry-row-toggle${isSelected ? ' registry-row-toggle-active' : ''}`}
-                          onClick={() => toggleSelectedInstrument(item.asset_id)}
+                          onClick={() => toggleSelectedInstrument(item.instrument_id)}
                         >
                           {isSelected ? 'Close' : 'Open'}
                         </button>
@@ -1853,11 +1853,11 @@ function InstrumentsPage({
                       <td>
                         <div className="instrument-id-stack">
                           <strong>{primaryIdentifier(item)}</strong>
-                          <span>{item.asset_id}</span>
+                          <span>{item.instrument_id}</span>
                         </div>
                       </td>
-                      <td>{item.asset_name}</td>
-                      <td>{item.asset_type}</td>
+                      <td>{item.instrument_name}</td>
+                      <td>{item.instrument_type}</td>
                       <td>{item.currency}</td>
                       <td>
                         <div className="instrument-id-stack">
@@ -1869,7 +1869,7 @@ function InstrumentsPage({
                                 ? 'Official NAV only'
                                 : totalReturnNav
                                   ? 'Total return NAV only'
-                                  : item.asset_type === 'fund'
+                                  : item.instrument_type === 'fund'
                                     ? 'No NAV in shared data'
                                     : 'Not NAV-based'}
                           </span>
@@ -1890,7 +1890,7 @@ function InstrumentsPage({
                           {quoteSummary.length ? (
                             quoteSummary.map(({ role, point }) => (
                               <span
-                                key={`${item.asset_id}-${role}-${point.quote_basis}`}
+                                key={`${item.instrument_id}-${role}-${point.quote_basis}`}
                                 className="metric-chip"
                               >
                                 {ROLE_LABELS[role]} {point.value} {point.currency}
@@ -1927,7 +1927,7 @@ function InstrumentsPage({
                           <button
                             type="button"
                             className="registry-submit secondary"
-                            onClick={() => openActionPanel('quote', item.asset_id)}
+                            onClick={() => openActionPanel('quote', item.instrument_id)}
                           >
                             Quote
                           </button>
@@ -1935,7 +1935,7 @@ function InstrumentsPage({
                             <button
                               type="button"
                               className="registry-submit secondary"
-                              onClick={() => void handleRestoreClick(item.asset_id)}
+                              onClick={() => void handleRestoreClick(item.instrument_id)}
                             >
                               Restore
                             </button>
@@ -1943,7 +1943,7 @@ function InstrumentsPage({
                             <button
                               type="button"
                               className="registry-submit danger"
-                              onClick={() => void handleArchiveClick(item.asset_id)}
+                              onClick={() => void handleArchiveClick(item.instrument_id)}
                             >
                               Archive
                             </button>
@@ -1957,7 +1957,7 @@ function InstrumentsPage({
                           <div className="registry-detail-panel">
                             <div className="registry-detail-toolbar">
                               <div>
-                                <div className="registry-form-title">Asset Detail</div>
+                                <div className="registry-form-title">Instrument Detail</div>
                                 <div className="registry-table-meta">
                                   {selectedInstrumentDetailLoading
                                     ? 'Loading NAV sequence and shared market data...'
@@ -1965,13 +1965,13 @@ function InstrumentsPage({
                                 </div>
                               </div>
                               <div className="registry-toolbar-actions">
-                                <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('quote', item.asset_id)}>
+                                <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('quote', item.instrument_id)}>
                                   Add Quote
                                 </button>
-                                <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('nav', item.asset_id)}>
+                                <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('nav', item.instrument_id)}>
                                   Import NAV
                                 </button>
-                                <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('source', item.asset_id)}>
+                                <button type="button" className="registry-submit secondary" onClick={() => openActionPanel('source', item.instrument_id)}>
                                   Source Settings
                                 </button>
                                 <button type="button" className="registry-submit secondary" onClick={() => void handleRefreshClick()}>
@@ -1995,8 +1995,8 @@ function InstrumentsPage({
                                     </thead>
                                     <tbody>
                                       <tr>
-                                        <td>Asset ID</td>
-                                        <td>{item.asset_id}</td>
+                                        <td>Instrument ID</td>
+                                        <td>{item.instrument_id}</td>
                                       </tr>
                                       <tr>
                                         <td>Primary Identifier</td>
@@ -2046,7 +2046,7 @@ function InstrumentsPage({
                                     <tbody>
                                       {selectedQuoteSummary.length ? (
                                         selectedQuoteSummary.map(({ role, point }) => (
-                                          <tr key={`${item.asset_id}-${role}-${point.quote_basis}`}>
+                                          <tr key={`${item.instrument_id}-${role}-${point.quote_basis}`}>
                                             <td>{ROLE_LABELS[role]}</td>
                                             <td>{formatBasisLabel(point.quote_basis)}</td>
                                             <td>{point.value} {point.currency}</td>
@@ -2055,7 +2055,7 @@ function InstrumentsPage({
                                         ))
                                       ) : (
                                         <tr>
-                                          <td colSpan={4}>No selected quotes for this asset.</td>
+                                          <td colSpan={4}>No selected quotes for this instrument.</td>
                                         </tr>
                                       )}
                                     </tbody>
@@ -2072,7 +2072,7 @@ function InstrumentsPage({
                                     <div className="registry-table-meta">
                                       {selectedInstrumentNavHistory.length
                                         ? `Showing ${Math.min(selectedInstrumentNavHistory.length, 16)} recent rows`
-                                        : 'No NAV history loaded for this asset'}
+                                        : 'No NAV history loaded for this instrument'}
                                     </div>
                                   </div>
                                 </div>
@@ -2102,7 +2102,7 @@ function InstrumentsPage({
                                         ))
                                       ) : (
                                         <tr>
-                                          <td colSpan={6}>No NAV history loaded for this asset.</td>
+                                          <td colSpan={6}>No NAV history loaded for this instrument.</td>
                                         </tr>
                                       )}
                                     </tbody>
@@ -2117,7 +2117,7 @@ function InstrumentsPage({
                                     <div className="registry-table-meta">
                                       {selectedInstrumentMarketHistory.length
                                         ? `Showing ${Math.min(selectedInstrumentMarketHistory.length, 24)} recent points`
-                                        : 'No shared market data loaded for this asset'}
+                                        : 'No shared market data loaded for this instrument'}
                                     </div>
                                   </div>
                                 </div>
@@ -2149,7 +2149,7 @@ function InstrumentsPage({
                                         ))
                                       ) : (
                                         <tr>
-                                          <td colSpan={7}>No shared market data loaded for this asset.</td>
+                                          <td colSpan={7}>No shared market data loaded for this instrument.</td>
                                         </tr>
                                       )}
                                     </tbody>
@@ -2255,7 +2255,7 @@ export default function App() {
   const registrySummary = useMemo<PlatformRegistrySummary>(() => {
     const base = allInstruments.length ? allInstruments : instruments
     const activeCount = base.filter((item) => item.lifecycle_state.status === 'active').length
-    const fundInstruments = base.filter((item) => item.asset_type === 'fund')
+    const fundInstruments = base.filter((item) => item.instrument_type === 'fund')
     const fundsWithNavCount = fundInstruments.filter((item) => latestNavSnapshot(item).latestNavDate).length
     return {
       total_count: base.length,
@@ -2275,10 +2275,10 @@ export default function App() {
   )
 
   async function handleCreateInstrument(payload: {
-    asset_name: string
-    asset_type: AssetType
+    instrument_name: string
+    instrument_type: InstrumentType
     currency: string
-    identifiers: PlatformAssetIdentifier[]
+    identifiers: PlatformInstrumentIdentifier[]
   }) {
     try {
       const created = await fetchJson<PlatformInstrumentRecord>('/api/instruments', {
@@ -2287,7 +2287,7 @@ export default function App() {
       })
       setInstruments((current) => upsertInstrumentRecord(current, created, showInactive))
       setAllInstruments((current) => upsertInstrumentRecord(current, created, true))
-      setRegistryNotice(`Created instrument "${created.asset_name}".`)
+      setRegistryNotice(`Created instrument "${created.instrument_name}".`)
       setRegistryError(null)
     } catch (requestError) {
       setRegistryError(
@@ -2328,7 +2328,7 @@ export default function App() {
   }
 
   async function handleUpsertMarketData(payload: {
-    asset_id: string
+    instrument_id: string
     metric_family: MetricFamily
     quote_basis: QuoteBasis
     as_of_date: string
@@ -2339,7 +2339,7 @@ export default function App() {
   }) {
     try {
       const updated = await fetchJson<PlatformInstrumentRecord>(
-        `/api/instruments/${encodeURIComponent(payload.asset_id)}/market-data`,
+        `/api/instruments/${encodeURIComponent(payload.instrument_id)}/market-data`,
         {
           method: 'POST',
           body: JSON.stringify(payload),
@@ -2347,7 +2347,7 @@ export default function App() {
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
       setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
-      setRegistryNotice(`Updated ${formatBasisLabel(payload.quote_basis)} for "${updated.asset_name}".`)
+      setRegistryNotice(`Updated ${formatBasisLabel(payload.quote_basis)} for "${updated.instrument_name}".`)
       setRegistryError(null)
     } catch (requestError) {
       setRegistryError(
@@ -2357,7 +2357,7 @@ export default function App() {
   }
 
   async function handleUpdateSourceSettings(payload: {
-    asset_id: string
+    instrument_id: string
     source_mode: SourceMode
     source_email: string
     source_location: string
@@ -2365,7 +2365,7 @@ export default function App() {
   }) {
     try {
       const updated = await fetchJson<PlatformInstrumentRecord>(
-        `/api/instruments/${encodeURIComponent(payload.asset_id)}/source-settings`,
+        `/api/instruments/${encodeURIComponent(payload.instrument_id)}/source-settings`,
         {
           method: 'PUT',
           body: JSON.stringify(payload),
@@ -2373,7 +2373,7 @@ export default function App() {
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
       setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
-      setRegistryNotice(`Saved shared source settings for "${updated.asset_name}".`)
+      setRegistryNotice(`Saved shared source settings for "${updated.instrument_name}".`)
       setRegistryError(null)
     } catch (requestError) {
       setRegistryError(
@@ -2382,10 +2382,10 @@ export default function App() {
     }
   }
 
-  async function handleTriggerRefresh(payload: { asset_id: string; updated_by?: string | null }) {
+  async function handleTriggerRefresh(payload: { instrument_id: string; updated_by?: string | null }) {
     try {
       const updated = await fetchJson<PlatformInstrumentRecord>(
-        `/api/instruments/${encodeURIComponent(payload.asset_id)}/refresh`,
+        `/api/instruments/${encodeURIComponent(payload.instrument_id)}/refresh`,
         {
           method: 'POST',
           body: JSON.stringify(payload),
@@ -2393,7 +2393,7 @@ export default function App() {
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
       setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
-      setRegistryNotice(updated.refresh_status.message || `Triggered refresh for "${updated.asset_name}".`)
+      setRegistryNotice(updated.refresh_status.message || `Triggered refresh for "${updated.instrument_name}".`)
       setRegistryError(null)
     } catch (requestError) {
       setRegistryError(
@@ -2403,7 +2403,7 @@ export default function App() {
   }
 
   async function handleImportNavText(payload: {
-    asset_id: string
+    instrument_id: string
     raw_text: string
     provider?: string | null
     status: DataStatus
@@ -2411,7 +2411,7 @@ export default function App() {
   }) {
     try {
       const updated = await fetchJson<PlatformInstrumentRecord>(
-        `/api/instruments/${encodeURIComponent(payload.asset_id)}/nav-import`,
+        `/api/instruments/${encodeURIComponent(payload.instrument_id)}/nav-import`,
         {
           method: 'POST',
           body: JSON.stringify(payload),
@@ -2419,7 +2419,7 @@ export default function App() {
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
       setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
-      setRegistryNotice(updated.refresh_status.message || `Imported NAV history for "${updated.asset_name}".`)
+      setRegistryNotice(updated.refresh_status.message || `Imported NAV history for "${updated.instrument_name}".`)
       setRegistryError(null)
     } catch (requestError) {
       setRegistryError(
@@ -2429,7 +2429,7 @@ export default function App() {
   }
 
   async function handleImportNavFile(payload: {
-    asset_id: string
+    instrument_id: string
     file_name: string
     file_content_base64: string
     provider?: string | null
@@ -2438,7 +2438,7 @@ export default function App() {
   }) {
     try {
       const updated = await fetchJson<PlatformInstrumentRecord>(
-        `/api/instruments/${encodeURIComponent(payload.asset_id)}/nav-import/file`,
+        `/api/instruments/${encodeURIComponent(payload.instrument_id)}/nav-import/file`,
         {
           method: 'POST',
           body: JSON.stringify(payload),
@@ -2446,7 +2446,7 @@ export default function App() {
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
       setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
-      setRegistryNotice(updated.refresh_status.message || `Imported NAV history for "${updated.asset_name}".`)
+      setRegistryNotice(updated.refresh_status.message || `Imported NAV history for "${updated.instrument_name}".`)
       setRegistryError(null)
     } catch (requestError) {
       setRegistryError(
@@ -2455,10 +2455,10 @@ export default function App() {
     }
   }
 
-  async function handleArchiveInstrument(payload: { asset_id: string; updated_by?: string | null }) {
+  async function handleArchiveInstrument(payload: { instrument_id: string; updated_by?: string | null }) {
     try {
       const updated = await fetchJson<PlatformInstrumentRecord>(
-        `/api/instruments/${encodeURIComponent(payload.asset_id)}/archive`,
+        `/api/instruments/${encodeURIComponent(payload.instrument_id)}/archive`,
         {
           method: 'POST',
           body: JSON.stringify(payload),
@@ -2466,7 +2466,7 @@ export default function App() {
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
       setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
-      setRegistryNotice(`Archived "${updated.asset_name}". Downstream search now hides it by default.`)
+      setRegistryNotice(`Archived "${updated.instrument_name}". Downstream search now hides it by default.`)
       setRegistryError(null)
     } catch (requestError) {
       setRegistryError(
@@ -2475,10 +2475,10 @@ export default function App() {
     }
   }
 
-  async function handleRestoreInstrument(payload: { asset_id: string; updated_by?: string | null }) {
+  async function handleRestoreInstrument(payload: { instrument_id: string; updated_by?: string | null }) {
     try {
       const updated = await fetchJson<PlatformInstrumentRecord>(
-        `/api/instruments/${encodeURIComponent(payload.asset_id)}/restore`,
+        `/api/instruments/${encodeURIComponent(payload.instrument_id)}/restore`,
         {
           method: 'POST',
           body: JSON.stringify(payload),
@@ -2486,7 +2486,7 @@ export default function App() {
       )
       setInstruments((current) => upsertInstrumentRecord(current, updated, showInactive))
       setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
-      setRegistryNotice(`Restored "${updated.asset_name}" to downstream search.`)
+      setRegistryNotice(`Restored "${updated.instrument_name}" to downstream search.`)
       setRegistryError(null)
     } catch (requestError) {
       setRegistryError(

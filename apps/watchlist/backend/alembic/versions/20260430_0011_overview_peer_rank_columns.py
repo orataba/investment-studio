@@ -18,7 +18,7 @@ depends_on = None
 
 
 OVERVIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("price_chart_1m", 2, 140),
     ("latest_quote", 3, 130),
     ("latest_quote_date", 4, 140),
@@ -30,7 +30,7 @@ OVERVIEW_COLUMNS = [
 ]
 
 PREVIOUS_OVERVIEW_COLUMNS = [
-    ("asset_name", 1, 320),
+    ("instrument_name", 1, 320),
     ("price_chart_1m", 2, 140),
     ("latest_quote", 3, 130),
     ("latest_quote_date", 4, 140),

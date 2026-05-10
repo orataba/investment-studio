@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 
-import AssetPriceChart from '../components/AssetPriceChart'
+import InstrumentPriceChart from '../components/InstrumentPriceChart'
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
@@ -16,12 +16,12 @@ import {
 } from '../lib/format'
 import {
   getHoldingsWorkspace,
-  getPortfolioAssetPriceChart,
+  getPortfolioInstrumentPriceChart,
   getPortfolioPositionLots,
   getPortfolioTransactions,
   type HoldingsWorkspaceResponse,
-  type PortfolioAssetChartRangeKey,
-  type PortfolioAssetPriceChartResponse,
+  type PortfolioInstrumentChartRangeKey,
+  type PortfolioInstrumentPriceChartResponse,
   type PortfolioHoldingRow,
   type PortfolioPositionLotListResponse,
   type PortfolioPositionLotRecord,
@@ -37,13 +37,13 @@ type SecurityDetailTab = 'overview' | 'transactions' | 'lots' | 'realizations'
 
 function primaryIdentifier(row: PortfolioHoldingRow) {
   return (
-    row.asset_core.identifiers.find((item) => item.is_primary)?.identifier_value ??
-    row.asset_core.identifiers[0]?.identifier_value ??
-    row.asset_core.asset_id
+    row.instrument_core.identifiers.find((item) => item.is_primary)?.identifier_value ??
+    row.instrument_core.identifiers[0]?.identifier_value ??
+    row.instrument_core.instrument_id
   )
 }
 
-function parseChartRange(value: string | null): PortfolioAssetChartRangeKey {
+function parseChartRange(value: string | null): PortfolioInstrumentChartRangeKey {
   if (value === '1m' || value === '3m' || value === '6m' || value === 'ytd' || value === '1y' || value === 'all') {
     return value
   }
@@ -92,7 +92,7 @@ function TableStatusRow({
 }
 
 export default function PortfolioSecurityDetailPage() {
-  const { portfolioId = '', assetId = '' } = useParams()
+  const { portfolioId = '', instrumentId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const [workspace, setWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
@@ -103,15 +103,15 @@ export default function PortfolioSecurityDetailPage() {
   const [transactionsWorkspace, setTransactionsWorkspace] = useState<PortfolioTransactionListResponse | null>(null)
   const [transactionsLoading, setTransactionsLoading] = useState(false)
   const [transactionsError, setTransactionsError] = useState<string | null>(null)
-  const [assetChartWorkspace, setAssetChartWorkspace] = useState<PortfolioAssetPriceChartResponse | null>(null)
-  const [assetChartLoading, setAssetChartLoading] = useState(false)
-  const [assetChartError, setAssetChartError] = useState<string | null>(null)
+  const [instrumentChartWorkspace, setInstrumentChartWorkspace] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
+  const [instrumentChartLoading, setInstrumentChartLoading] = useState(false)
+  const [instrumentChartError, setInstrumentChartError] = useState<string | null>(null)
 
   const requestedAsOfDate = searchParams.get('as_of_date') ?? ''
   const selectedPositionLotId = searchParams.get('position_lot_id')
   const detailTab = parseDetailTab(searchParams.get('detail_tab'))
   const chartRangeKey = parseChartRange(searchParams.get('chart_range'))
-  const selectedRow = workspace?.rows.find((row) => row.asset_core.asset_id === assetId) ?? null
+  const selectedRow = workspace?.rows.find((row) => row.instrument_core.instrument_id === instrumentId) ?? null
   const selectedPositionLots = positionLotsWorkspace?.position_lots ?? []
   const selectedTransactions = transactionsWorkspace?.transactions ?? []
   const selectedPositionLot =
@@ -119,8 +119,8 @@ export default function PortfolioSecurityDetailPage() {
     selectedPositionLots[0] ??
     null
   const resolvedAsOfDate = workspace?.as_of_date ?? requestedAsOfDate
-  const baseCurrency = workspace?.base_currency ?? selectedRow?.asset_core.currency ?? assetChartWorkspace?.currency ?? 'USD'
-  const selectedRowIdentifier = selectedRow ? primaryIdentifier(selectedRow) : assetId
+  const baseCurrency = workspace?.base_currency ?? selectedRow?.instrument_core.currency ?? instrumentChartWorkspace?.currency ?? 'USD'
+  const selectedRowIdentifier = selectedRow ? primaryIdentifier(selectedRow) : instrumentId
   const selectedRowUnrealizedBase =
     selectedRow?.market_value_base != null && selectedRow.cost_basis_base != null
       ? selectedRow.market_value_base - selectedRow.cost_basis_base
@@ -130,12 +130,12 @@ export default function PortfolioSecurityDetailPage() {
       ? selectedRow.market_value - selectedRow.cost_basis
       : null
   const heroMarketValue = selectedRow?.market_value_base ?? selectedRow?.market_value
-  const heroMarketCurrency = selectedRow?.market_value_base != null ? baseCurrency : selectedRow?.asset_core.currency ?? baseCurrency
+  const heroMarketCurrency = selectedRow?.market_value_base != null ? baseCurrency : selectedRow?.instrument_core.currency ?? baseCurrency
   const heroUnrealizedValue = selectedRowUnrealizedBase ?? selectedRowUnrealizedLocal
-  const heroUnrealizedCurrency = selectedRowUnrealizedBase != null ? baseCurrency : selectedRow?.asset_core.currency ?? baseCurrency
+  const heroUnrealizedCurrency = selectedRowUnrealizedBase != null ? baseCurrency : selectedRow?.instrument_core.currency ?? baseCurrency
 
   const detailTabs = [
-    { key: 'overview', label: 'Overview', meta: selectedRow ? selectedRow.asset_core.asset_type : 'Asset' },
+    { key: 'overview', label: 'Overview', meta: selectedRow ? selectedRow.instrument_core.instrument_type : 'Instrument' },
     {
       key: 'transactions',
       label: 'Transactions',
@@ -158,14 +158,14 @@ export default function PortfolioSecurityDetailPage() {
     next.delete('detail_tab')
     next.delete('chart_range')
     next.delete('position_lot_id')
-    if (assetId) {
-      next.set('asset_id', assetId)
+    if (instrumentId) {
+      next.set('instrument_id', instrumentId)
     }
     const query = next.toString()
     return `${buildPortfolioSectionPath(portfolioId, '/holdings')}${query ? `?${query}` : ''}`
-  }, [assetId, portfolioId, searchParams])
+  }, [instrumentId, portfolioId, searchParams])
 
-  const watchlistDetailUrl = buildWatchlistInstrumentDetailUrl(assetId, {
+  const watchlistDetailUrl = buildWatchlistInstrumentDetailUrl(instrumentId, {
     source: 'portfolio',
     portfolio_id: portfolioId,
     as_of_date: resolvedAsOfDate,
@@ -218,16 +218,16 @@ export default function PortfolioSecurityDetailPage() {
           value: formatQuantity(selectedRow.quantity),
         },
         {
-          label: `Market Value (${selectedRow.asset_core.currency})`,
-          value: formatCurrency(selectedRow.market_value, selectedRow.asset_core.currency),
+          label: `Market Value (${selectedRow.instrument_core.currency})`,
+          value: formatCurrency(selectedRow.market_value, selectedRow.instrument_core.currency),
         },
         {
           label: `Market Value (${baseCurrency})`,
           value: formatCurrency(selectedRow.market_value_base ?? null, baseCurrency),
         },
         {
-          label: `Unrealized P/L (${selectedRow.asset_core.currency})`,
-          value: formatSignedCurrency(selectedRowUnrealizedLocal, selectedRow.asset_core.currency),
+          label: `Unrealized P/L (${selectedRow.instrument_core.currency})`,
+          value: formatSignedCurrency(selectedRowUnrealizedLocal, selectedRow.instrument_core.currency),
           toneClassName: signedValueClass(selectedRowUnrealizedLocal),
         },
         {
@@ -292,7 +292,7 @@ export default function PortfolioSecurityDetailPage() {
   }, [portfolioId, requestedAsOfDate])
 
   useEffect(() => {
-    if (!portfolioId || !assetId || !resolvedAsOfDate) {
+    if (!portfolioId || !instrumentId || !resolvedAsOfDate) {
       setPositionLotsWorkspace(null)
       setPositionLotsError(null)
       setPositionLotsLoading(false)
@@ -305,7 +305,7 @@ export default function PortfolioSecurityDetailPage() {
     setPositionLotsLoading(true)
 
     getPortfolioPositionLots(portfolioId, {
-      asset_id: assetId,
+      instrument_id: instrumentId,
       as_of_date: resolvedAsOfDate,
     })
       .then((response) => {
@@ -329,10 +329,10 @@ export default function PortfolioSecurityDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [assetId, portfolioId, resolvedAsOfDate])
+  }, [instrumentId, portfolioId, resolvedAsOfDate])
 
   useEffect(() => {
-    if (!portfolioId || !assetId || !resolvedAsOfDate) {
+    if (!portfolioId || !instrumentId || !resolvedAsOfDate) {
       setTransactionsWorkspace(null)
       setTransactionsError(null)
       setTransactionsLoading(false)
@@ -345,7 +345,7 @@ export default function PortfolioSecurityDetailPage() {
     setTransactionsLoading(true)
 
     getPortfolioTransactions(portfolioId, {
-      asset_id: assetId,
+      instrument_id: instrumentId,
       end_date: resolvedAsOfDate,
     })
       .then((response) => {
@@ -369,47 +369,47 @@ export default function PortfolioSecurityDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [assetId, portfolioId, resolvedAsOfDate])
+  }, [instrumentId, portfolioId, resolvedAsOfDate])
 
   useEffect(() => {
-    if (!portfolioId || !assetId || !resolvedAsOfDate) {
-      setAssetChartWorkspace(null)
-      setAssetChartError(null)
-      setAssetChartLoading(false)
+    if (!portfolioId || !instrumentId || !resolvedAsOfDate) {
+      setInstrumentChartWorkspace(null)
+      setInstrumentChartError(null)
+      setInstrumentChartLoading(false)
       return
     }
 
     let cancelled = false
-    setAssetChartWorkspace((current) => (current?.asset_core.asset_id === assetId ? current : null))
-    setAssetChartError(null)
-    setAssetChartLoading(true)
+    setInstrumentChartWorkspace((current) => (current?.instrument_core.instrument_id === instrumentId ? current : null))
+    setInstrumentChartError(null)
+    setInstrumentChartLoading(true)
 
-    getPortfolioAssetPriceChart(portfolioId, assetId, {
+    getPortfolioInstrumentPriceChart(portfolioId, instrumentId, {
       as_of_date: resolvedAsOfDate,
       range: chartRangeKey,
     })
       .then((response) => {
         if (!cancelled) {
-          setAssetChartWorkspace(response)
-          setAssetChartError(null)
+          setInstrumentChartWorkspace(response)
+          setInstrumentChartError(null)
         }
       })
       .catch((requestError) => {
         if (!cancelled) {
-          setAssetChartError(requestError instanceof Error ? requestError.message : 'Failed to load price chart.')
-          setAssetChartWorkspace(null)
+          setInstrumentChartError(requestError instanceof Error ? requestError.message : 'Failed to load price chart.')
+          setInstrumentChartWorkspace(null)
         }
       })
       .finally(() => {
         if (!cancelled) {
-          setAssetChartLoading(false)
+          setInstrumentChartLoading(false)
         }
       })
 
     return () => {
       cancelled = true
     }
-  }, [assetId, chartRangeKey, portfolioId, resolvedAsOfDate])
+  }, [instrumentId, chartRangeKey, portfolioId, resolvedAsOfDate])
 
   return (
     <PortfolioWorkspaceLayout activeSection="Holdings" toolbarLabel={workspace?.view_label ?? 'View: Holdings'}>
@@ -419,18 +419,18 @@ export default function PortfolioSecurityDetailPage() {
             Back to Holdings
           </Link>
           <a className="table-inline-link" href={watchlistDetailUrl}>
-            Open Asset Detail
+            Open Instrument Detail
           </a>
         </div>
 
         <div className="portfolio-security-hero">
           <div className="portfolio-security-title-stack">
-            <span className="portfolio-detail-meta">Portfolio Security Detail</span>
-            <h1>{selectedRow?.asset_core.asset_name ?? assetChartWorkspace?.asset_core.asset_name ?? assetId}</h1>
+            <span className="portfolio-detail-meta">Portfolio Instrument Detail</span>
+            <h1>{selectedRow?.instrument_core.instrument_name ?? instrumentChartWorkspace?.instrument_core.instrument_name ?? instrumentId}</h1>
             <div className="portfolio-security-meta-row">
               <span className="ticker-pill">{selectedRowIdentifier}</span>
-              <span>{selectedRow ? formatLabel(selectedRow.asset_core.asset_type) : 'Asset'}</span>
-              <span>{selectedRow?.asset_core.currency ?? assetChartWorkspace?.currency ?? '—'}</span>
+              <span>{selectedRow ? formatLabel(selectedRow.instrument_core.instrument_type) : 'Instrument'}</span>
+              <span>{selectedRow?.instrument_core.currency ?? instrumentChartWorkspace?.currency ?? '—'}</span>
               <span>As of {resolvedAsOfDate || '—'}</span>
             </div>
           </div>
@@ -452,20 +452,20 @@ export default function PortfolioSecurityDetailPage() {
           </div>
         </div>
 
-        {workspaceLoading ? <CalculationStatus label="Loading security detail..." /> : null}
+        {workspaceLoading ? <CalculationStatus label="Loading instrument detail..." /> : null}
         {workspaceError ? <div className="error-state">{workspaceError}</div> : null}
         {!workspaceLoading && !workspaceError && workspace && !selectedRow ? (
           <div className="inline-notice inline-notice-warning">
-            This asset is not present in current holdings for the selected as-of date. Asset price history may still be available.
+            This instrument is not present in current holdings for the selected as-of date. Instrument price history may still be available.
           </div>
         ) : null}
 
         <div className="portfolio-security-chart-layout">
           <div className="portfolio-security-chart-main">
-            <AssetPriceChart
-              chart={assetChartWorkspace}
-              loading={assetChartLoading}
-              error={assetChartError}
+            <InstrumentPriceChart
+              chart={instrumentChartWorkspace}
+              loading={instrumentChartLoading}
+              error={instrumentChartError}
               rangeKey={chartRangeKey}
               onRangeChange={(rangeKey) => updateSearchParam('chart_range', rangeKey)}
               variant="instrument"
@@ -474,13 +474,13 @@ export default function PortfolioSecurityDetailPage() {
           <aside className="portfolio-security-chart-facts">
             <div className="portfolio-security-fact">
               <span>Latest Price</span>
-              <strong>{formatUnitPrice(selectedRow?.last_price ?? assetChartWorkspace?.points[assetChartWorkspace.points.length - 1]?.value, selectedRow?.asset_core.currency ?? assetChartWorkspace?.currency)}</strong>
-              <em>{assetChartWorkspace?.chart_basis ?? 'Asset market data'}</em>
+              <strong>{formatUnitPrice(selectedRow?.last_price ?? instrumentChartWorkspace?.points[instrumentChartWorkspace.points.length - 1]?.value, selectedRow?.instrument_core.currency ?? instrumentChartWorkspace?.currency)}</strong>
+              <em>{instrumentChartWorkspace?.chart_basis ?? 'Instrument market data'}</em>
             </div>
             <div className="portfolio-security-fact">
               <span>Chart Coverage</span>
-              <strong>{assetChartWorkspace ? `${assetChartWorkspace.summary.point_count} points` : '—'}</strong>
-              <em>{assetChartWorkspace?.metric_family ? formatLabel(assetChartWorkspace.metric_family) : 'Shared asset facts'}</em>
+              <strong>{instrumentChartWorkspace ? `${instrumentChartWorkspace.summary.point_count} points` : '—'}</strong>
+              <em>{instrumentChartWorkspace?.metric_family ? formatLabel(instrumentChartWorkspace.metric_family) : 'Shared instrument facts'}</em>
             </div>
             <div className="portfolio-security-fact">
               <span>Holding Coverage</span>
@@ -513,7 +513,7 @@ export default function PortfolioSecurityDetailPage() {
               <div className="portfolio-detail-toolbar holdings-side-toolbar">
                 <div className="panel-title">Statement Summary</div>
                 <div className="portfolio-detail-meta">
-                  {selectedRow?.asset_core.currency ?? 'Asset'} / {baseCurrency}
+                  {selectedRow?.instrument_core.currency ?? 'Instrument'} / {baseCurrency}
                 </div>
               </div>
               <div className="table-shell">
@@ -572,13 +572,13 @@ export default function PortfolioSecurityDetailPage() {
                         <tr key={slice.accountId}>
                           <td>{slice.accountId}</td>
                           <td>{formatQuantity(slice.quantity)}</td>
-                          <td>{formatCurrency(slice.marketValue, selectedRow?.asset_core.currency ?? baseCurrency)}</td>
-                          <td>{formatCurrency(slice.remainingCost, selectedRow?.asset_core.currency ?? baseCurrency)}</td>
+                          <td>{formatCurrency(slice.marketValue, selectedRow?.instrument_core.currency ?? baseCurrency)}</td>
+                          <td>{formatCurrency(slice.remainingCost, selectedRow?.instrument_core.currency ?? baseCurrency)}</td>
                           <td>{formatNumber(slice.openPositionLotCount, 0)}</td>
                         </tr>
                       ))
                     ) : (
-                      <TableStatusRow colSpan={5} label="No account slices for the selected security." />
+                      <TableStatusRow colSpan={5} label="No account slices for the selected instrument." />
                     )}
                   </tbody>
                 </table>
@@ -648,7 +648,7 @@ export default function PortfolioSecurityDetailPage() {
             <div className="portfolio-detail-toolbar holdings-detail-toolbar">
               <div>
                 <div className="panel-title">PositionLots</div>
-                <div className="portfolio-detail-meta">{selectedRow?.asset_core.asset_name ?? assetId}</div>
+                <div className="portfolio-detail-meta">{selectedRow?.instrument_core.instrument_name ?? instrumentId}</div>
               </div>
               {positionLotsLoading ? (
                 <div className="portfolio-detail-meta">Refreshing...</div>

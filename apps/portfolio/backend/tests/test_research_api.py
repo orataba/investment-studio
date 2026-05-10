@@ -6,7 +6,7 @@ from math import sqrt
 import pandas as pd
 import pytest
 
-from portfolio_app.services.asset_charts import _annualized_volatility, _candidate_chart_bases
+from portfolio_app.services.instrument_charts import _annualized_volatility, _candidate_chart_bases
 
 from portfolio_app.services.research_solver import (
     TARGET_MEMBER_INSTRUMENT,
@@ -228,8 +228,8 @@ def test_research_workbench_returns_target_solve_defaults(client):
 
 def test_research_series_prefers_total_return_nav_for_funds() -> None:
     detail = {
-        "asset_id": "fund-test",
-        "asset_type": "fund",
+        "instrument_id": "fund-test",
+        "instrument_type": "fund",
         "currency": "USD",
         "quote_selection_policy": {
             "valuation": ["official_nav"],
@@ -283,8 +283,8 @@ def test_research_series_prefers_total_return_nav_for_funds() -> None:
 
 def test_research_series_uses_only_complete_market_data() -> None:
     detail = {
-        "asset_id": "fund-status-test",
-        "asset_type": "fund",
+        "instrument_id": "fund-status-test",
+        "instrument_type": "fund",
         "currency": "USD",
         "quote_selection_policy": {
             "valuation": ["official_nav"],
@@ -317,7 +317,7 @@ def test_research_series_uses_only_complete_market_data() -> None:
     assert [(item[0].isoformat(), item[1]) for item in points] == [("2026-04-14", 1.12)]
 
 
-def test_asset_chart_bases_prefer_total_return_role() -> None:
+def test_instrument_chart_bases_prefer_total_return_role() -> None:
     detail = {
         "quote_selection_policy": {
             "valuation": ["official_nav"],
@@ -329,7 +329,7 @@ def test_asset_chart_bases_prefer_total_return_role() -> None:
     assert _candidate_chart_bases(detail) == ["total_return_nav", "official_nav"]
 
 
-def test_asset_trend_volatility_uses_quote_observation_density() -> None:
+def test_instrument_trend_volatility_uses_quote_observation_density() -> None:
     points = [
         {"date": date(2026, 1, 1), "value": 100.0},
         {"date": date(2026, 1, 8), "value": 102.0},
@@ -345,8 +345,8 @@ def test_asset_trend_volatility_uses_quote_observation_density() -> None:
 
 def test_research_series_prefers_adjusted_close_for_equities() -> None:
     detail = {
-        "asset_id": "equity-test",
-        "asset_type": "equity",
+        "instrument_id": "equity-test",
+        "instrument_type": "equity",
         "currency": "USD",
         "quote_selection_policy": {
             "valuation": ["close"],
@@ -402,24 +402,24 @@ def test_research_daily_alignment_does_not_span_missing_dates() -> None:
     members = [
         ScopeMemberRecord(
             member_type=TARGET_MEMBER_INSTRUMENT,
-            member_id="asset-a",
-            label="Asset A",
+            member_id="instrument-a",
+            label="Instrument A",
         ),
         ScopeMemberRecord(
             member_type=TARGET_MEMBER_INSTRUMENT,
-            member_id="asset-b",
-            label="Asset B",
+            member_id="instrument-b",
+            label="Instrument B",
         ),
     ]
     nav_series_by_member = {
-        (TARGET_MEMBER_INSTRUMENT, "asset-a"): pd.Series(
+        (TARGET_MEMBER_INSTRUMENT, "instrument-a"): pd.Series(
             {
                 date(2026, 1, 1): 100.0,
                 date(2026, 1, 5): 110.0,
             },
             dtype="float64",
         ),
-        (TARGET_MEMBER_INSTRUMENT, "asset-b"): pd.Series(
+        (TARGET_MEMBER_INSTRUMENT, "instrument-b"): pd.Series(
             {
                 date(2026, 1, 1): 100.0,
                 date(2026, 1, 2): 102.0,
@@ -439,9 +439,9 @@ def test_research_daily_alignment_does_not_span_missing_dates() -> None:
 
     returns_by_member = {item.member.member_id: item.returns for item in aligned_members}
     assert calendar == [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 5)]
-    assert pd.isna(returns_by_member["asset-a"].loc[date(2026, 1, 2)])
-    assert pd.isna(returns_by_member["asset-a"].loc[date(2026, 1, 5)])
-    assert returns_by_member["asset-b"].loc[date(2026, 1, 2)] == pytest.approx(0.02)
+    assert pd.isna(returns_by_member["instrument-a"].loc[date(2026, 1, 2)])
+    assert pd.isna(returns_by_member["instrument-a"].loc[date(2026, 1, 5)])
+    assert returns_by_member["instrument-b"].loc[date(2026, 1, 2)] == pytest.approx(0.02)
     assert _infer_periods_per_year([date(2026, 1, 2), date(2026, 1, 5)]) == pytest.approx(2 / 6 * 365.25)
 
 
@@ -449,24 +449,24 @@ def test_research_weekly_alignment_uses_period_end_observations() -> None:
     members = [
         ScopeMemberRecord(
             member_type=TARGET_MEMBER_INSTRUMENT,
-            member_id="asset-a",
-            label="Asset A",
+            member_id="instrument-a",
+            label="Instrument A",
         ),
         ScopeMemberRecord(
             member_type=TARGET_MEMBER_INSTRUMENT,
-            member_id="asset-b",
-            label="Asset B",
+            member_id="instrument-b",
+            label="Instrument B",
         ),
     ]
     nav_series_by_member = {
-        (TARGET_MEMBER_INSTRUMENT, "asset-a"): pd.Series(
+        (TARGET_MEMBER_INSTRUMENT, "instrument-a"): pd.Series(
             {
                 date(2026, 1, 1): 100.0,
                 date(2026, 1, 5): 110.0,
             },
             dtype="float64",
         ),
-        (TARGET_MEMBER_INSTRUMENT, "asset-b"): pd.Series(
+        (TARGET_MEMBER_INSTRUMENT, "instrument-b"): pd.Series(
             {
                 date(2026, 1, 1): 100.0,
                 date(2026, 1, 2): 102.0,
@@ -486,8 +486,8 @@ def test_research_weekly_alignment_uses_period_end_observations() -> None:
 
     returns_by_member = {item.member.member_id: item.returns for item in aligned_members}
     assert calendar == [date(2026, 1, 2), date(2026, 1, 5)]
-    assert returns_by_member["asset-a"].loc[date(2026, 1, 5)] == pytest.approx(0.1)
-    assert returns_by_member["asset-b"].loc[date(2026, 1, 5)] == pytest.approx(101.0 / 102.0 - 1.0)
+    assert returns_by_member["instrument-a"].loc[date(2026, 1, 5)] == pytest.approx(0.1)
+    assert returns_by_member["instrument-b"].loc[date(2026, 1, 5)] == pytest.approx(101.0 / 102.0 - 1.0)
 
 
 def test_research_covariance_annualizes_each_pair_from_valid_dates() -> None:
@@ -524,8 +524,8 @@ def test_research_covariance_annualizes_each_pair_from_valid_dates() -> None:
 def test_research_covariance_rejects_missing_pair_overlap() -> None:
     returns = pd.DataFrame(
         {
-            "asset_a": [0.01, 0.02, None, None],
-            "asset_b": [None, None, -0.01, 0.03],
+            "instrument_a": [0.01, 0.02, None, None],
+            "instrument_b": [None, None, -0.01, 0.03],
         },
         index=[date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3), date(2026, 1, 4)],
         dtype="float64",
@@ -670,7 +670,7 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
             "settlement_date": "2026-04-16",
             "account_id": "broker-us-core",
             "settlement_cash_account_id": "cash-usd-main",
-            "asset_id": "equity-us-abbv",
+            "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
             "price": 206.47,
             "gross_amount": 206.47,

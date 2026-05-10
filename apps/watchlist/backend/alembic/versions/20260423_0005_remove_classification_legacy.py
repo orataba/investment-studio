@@ -219,7 +219,7 @@ def upgrade() -> None:
         sa.column("sort_mode", sa.String()),
         sa.column("filter_mode", sa.String()),
         sa.column("group_mode", sa.String()),
-        sa.column("asset_scope_json", sa.JSON()),
+        sa.column("instrument_scope_json", sa.JSON()),
         sa.column("product_scope_json", sa.JSON()),
         sa.column("availability_rule_json", sa.JSON()),
         sa.column("source_domain", sa.String()),
@@ -257,12 +257,12 @@ def upgrade() -> None:
     watchlist_row_table = sa.table(
         "watchlist_row_read_model",
         sa.column("watchlist_id", sa.String()),
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("attributes_json", sa.JSON()),
     )
     summary_table = sa.table(
-        "asset_summary_read_model",
-        sa.column("asset_id", sa.String()),
+        "instrument_summary_read_model",
+        sa.column("instrument_id", sa.String()),
         sa.column("payload_json", sa.JSON()),
     )
 
@@ -350,7 +350,7 @@ def upgrade() -> None:
             sa.update(watchlist_row_table)
             .where(
                 watchlist_row_table.c.watchlist_id == row["watchlist_id"],
-                watchlist_row_table.c.asset_id == row["asset_id"],
+                watchlist_row_table.c.instrument_id == row["instrument_id"],
             )
             .values(
                 attributes_json=_serialize_json(
@@ -362,7 +362,7 @@ def upgrade() -> None:
     for row in bind.execute(sa.select(summary_table)).mappings():
         bind.execute(
             sa.update(summary_table)
-            .where(summary_table.c.asset_id == row["asset_id"])
+            .where(summary_table.c.instrument_id == row["instrument_id"])
             .values(
                 payload_json=_serialize_json(
                     _rewrite_summary_payload(
@@ -432,12 +432,12 @@ def downgrade() -> None:
     watchlist_row_table = sa.table(
         "watchlist_row_read_model",
         sa.column("watchlist_id", sa.String()),
-        sa.column("asset_id", sa.String()),
+        sa.column("instrument_id", sa.String()),
         sa.column("attributes_json", sa.JSON()),
     )
     summary_table = sa.table(
-        "asset_summary_read_model",
-        sa.column("asset_id", sa.String()),
+        "instrument_summary_read_model",
+        sa.column("instrument_id", sa.String()),
         sa.column("payload_json", sa.JSON()),
     )
 
@@ -513,7 +513,7 @@ def downgrade() -> None:
             sa.update(watchlist_row_table)
             .where(
                 watchlist_row_table.c.watchlist_id == row["watchlist_id"],
-                watchlist_row_table.c.asset_id == row["asset_id"],
+                watchlist_row_table.c.instrument_id == row["instrument_id"],
             )
             .values(
                 attributes_json=_serialize_json(
@@ -534,7 +534,7 @@ def downgrade() -> None:
             payload.pop("taxonomy", None)
         bind.execute(
             sa.update(summary_table)
-            .where(summary_table.c.asset_id == row["asset_id"])
+            .where(summary_table.c.instrument_id == row["instrument_id"])
             .values(payload_json=_serialize_json(payload))
         )
 

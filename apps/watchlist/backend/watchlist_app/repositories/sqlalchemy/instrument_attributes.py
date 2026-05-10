@@ -31,7 +31,7 @@ class SQLAlchemyInstrumentAttributeRepository:
         group_code: str,
         display_order: int,
         options_json: list[str],
-        asset_scope_json: list[str],
+        instrument_scope_json: list[str],
         applicability_json: dict[str, object],
         rubric_json: dict[str, object],
         is_groupable: bool,
@@ -49,7 +49,7 @@ class SQLAlchemyInstrumentAttributeRepository:
             group_code=group_code,
             display_order=display_order,
             options_json=options_json,
-            asset_scope_json=asset_scope_json,
+            instrument_scope_json=instrument_scope_json,
             applicability_json=applicability_json,
             rubric_json=rubric_json,
             is_groupable=is_groupable,
@@ -66,11 +66,11 @@ class SQLAlchemyInstrumentAttributeRepository:
     def get_values_for_asset(
         self,
         session: Session,
-        asset_id: str,
+        instrument_id: str,
     ) -> Sequence[InstrumentAttributeValue]:
         stmt = (
             select(InstrumentAttributeValue)
-            .where(InstrumentAttributeValue.asset_id == asset_id)
+            .where(InstrumentAttributeValue.instrument_id == instrument_id)
             .order_by(
                 InstrumentAttributeValue.attribute_key,
                 InstrumentAttributeValue.adopted_at.desc(),
@@ -83,13 +83,13 @@ class SQLAlchemyInstrumentAttributeRepository:
         self,
         session: Session,
         *,
-        asset_id: str,
+        instrument_id: str,
         attribute_key: str,
         value_json: object,
         source_record_id: str | None,
     ) -> InstrumentAttributeValue:
         record = InstrumentAttributeValue(
-            asset_id=asset_id,
+            instrument_id=instrument_id,
             attribute_key=attribute_key,
             value_json=value_json,
             effective_from=None,

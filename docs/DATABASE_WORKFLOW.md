@@ -4,7 +4,7 @@
 
 - PostgreSQL database: `yungu`
 - Schemas:
-  - `shared_asset`
+  - `instrument_registry`
   - `portfolio`
   - `watchlist`
 
@@ -24,7 +24,7 @@ Local connection values should come from ignored `.env` files or shell environme
 ## Apply Migrations
 
 ```bash
-(cd infra/shared_asset && alembic upgrade head)
+(cd infra/instrument_registry && alembic upgrade head)
 (cd apps/portfolio/backend && PYTHONPATH=. alembic upgrade head)
 (cd apps/watchlist/backend && PYTHONPATH=. alembic upgrade head)
 ```
@@ -41,7 +41,7 @@ Local connection values should come from ignored `.env` files or shell environme
 
 说明：
 
-- 这是破坏性命令，会删除 `shared_asset / portfolio / watchlist` 三个 schema 的全部数据。
+- 这是破坏性命令，会删除 `instrument_registry / portfolio / watchlist` 三个 schema 的全部数据。
 - 默认读取 `YUNGU_LOCAL_POSTGRES_URL`。
 - 如果数据库地址不同，先在未提交的 `.env` 或 shell 环境里设置 `YUNGU_LOCAL_POSTGRES_URL`。
 - migration 只重建结构和仓库内定义的 reference rows；业务导入数据、手工录入数据、历史 runtime 数据不会自动恢复。
@@ -50,7 +50,7 @@ Local connection values should come from ignored `.env` files or shell environme
 
 ## Runtime Defaults
 
-- Platform backend connects to `shared_asset`
+- Platform backend connects to `instrument_registry`
 - Portfolio backend connects to `portfolio`
 - Watchlist backend connects to `watchlist`
 
@@ -78,8 +78,8 @@ SQLite fast tests 不会覆盖 PostgreSQL 专属的 cross-schema FK / search_pat
 共享资产存储边界的回归验证需要额外跑这两条 PostgreSQL integration tests：
 
 ```bash
-(cd apps/portfolio/backend && pytest tests/test_postgres_shared_asset_constraints.py -q)
-(cd apps/watchlist/backend && pytest tests/test_postgres_shared_asset_constraints.py -q)
+(cd apps/portfolio/backend && pytest tests/test_postgres_instrument_registry_constraints.py -q)
+(cd apps/watchlist/backend && pytest tests/test_postgres_instrument_registry_constraints.py -q)
 ```
 
 这些测试默认读取 `YUNGU_TEST_POSTGRES_URL`。

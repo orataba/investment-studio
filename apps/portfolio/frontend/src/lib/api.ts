@@ -1,13 +1,13 @@
 import type {
-  AssetCore,
-  AssetIdentifier,
+  InstrumentCore,
+  InstrumentIdentifier,
   DataStatus,
   MetricFamily,
   QuoteBasis,
   QuoteSelectionPolicy,
-} from '../../../../../packages/asset-core/ts/src'
+} from '../../../../../packages/instrument-core/ts/src'
 
-export type { AssetCore, AssetIdentifier } from '../../../../../packages/asset-core/ts/src'
+export type { InstrumentCore, InstrumentIdentifier } from '../../../../../packages/instrument-core/ts/src'
 
 export type WorkspaceSection = {
   label: string
@@ -59,14 +59,14 @@ export type SparklinePoint = {
   value: number
 }
 
-export type PortfolioAssetChartRangeKey = '1m' | '3m' | '6m' | 'ytd' | '1y' | 'all'
+export type PortfolioInstrumentChartRangeKey = '1m' | '3m' | '6m' | 'ytd' | '1y' | 'all'
 
-export type PortfolioAssetPriceChartPoint = {
+export type PortfolioInstrumentPriceChartPoint = {
   date: string
   value: number
 }
 
-export type PortfolioAssetPriceChartSummary = {
+export type PortfolioInstrumentPriceChartSummary = {
   point_count: number
   change_value: number | null
   change_pct: number | null
@@ -74,16 +74,16 @@ export type PortfolioAssetPriceChartSummary = {
   low: number | null
 }
 
-export type PortfolioAssetPriceChartResponse = {
+export type PortfolioInstrumentPriceChartResponse = {
   portfolio_id: string
-  asset_core: AssetCore
+  instrument_core: InstrumentCore
   as_of_date: string
-  range_key: PortfolioAssetChartRangeKey
+  range_key: PortfolioInstrumentChartRangeKey
   chart_basis: string | null
   metric_family: string | null
   currency: string
-  points: PortfolioAssetPriceChartPoint[]
-  summary: PortfolioAssetPriceChartSummary
+  points: PortfolioInstrumentPriceChartPoint[]
+  summary: PortfolioInstrumentPriceChartSummary
 }
 
 export type PortfolioPerformanceCoverageState = 'complete' | 'partial' | 'unavailable'
@@ -102,7 +102,7 @@ export type PortfolioDailyPerformancePoint = {
   income_cash_amount: number | null
   expense_cash_amount: number | null
   cash_currency_gains: number | null
-  asset_currency_gains: number | null
+  instrument_currency_gains: number | null
   return_of_capital_amount: number | null
   total_pnl: number | null
   external_cash_in: number
@@ -140,7 +140,7 @@ export type PortfolioPerformanceSummary = {
   income_cash_amount: number | null
   expense_cash_amount: number | null
   cash_currency_gains: number | null
-  asset_currency_gains: number | null
+  instrument_currency_gains: number | null
   return_of_capital_amount: number | null
   total_pnl: number | null
   mean_daily_return: number | null
@@ -189,7 +189,7 @@ export type PortfolioPeriodCalculationSummary = {
   fees: number | null
   taxes: number | null
   cash_currency_gains: number | null
-  asset_currency_gains: number | null
+  instrument_currency_gains: number | null
   deposits: number
   withdrawals: number
   net_external_inflow: number
@@ -204,7 +204,7 @@ export type PortfolioPerformanceCalculationResponse = {
   lines: PortfolioPeriodCalculationLine[]
 }
 
-export type PortfolioContributionAxis = 'instrument' | 'account' | 'asset_type' | 'currency' | 'taxonomy'
+export type PortfolioContributionAxis = 'instrument' | 'account' | 'instrument_type' | 'currency' | 'taxonomy'
 
 export type PortfolioPeriodCalculationGroupMetrics = {
   average_weight: number | null
@@ -222,7 +222,7 @@ export type PortfolioPeriodCalculationGroupMetrics = {
   fees: number | null
   taxes: number | null
   cash_currency_gains: number | null
-  asset_currency_gains: number | null
+  instrument_currency_gains: number | null
   total_pnl: number | null
   period_contribution: number | null
 }
@@ -234,7 +234,7 @@ export type PortfolioPeriodCalculationGroupChildRecord = PortfolioPeriodCalculat
   parent_group_label: string
   item_key: string
   item_label: string
-  item_kind: 'asset' | 'cash'
+  item_kind: 'instrument' | 'cash'
 }
 
 export type PortfolioPeriodCalculationGroupRecord = PortfolioPeriodCalculationGroupMetrics & {
@@ -273,8 +273,8 @@ export type PortfolioPerformanceCalculationGroupsResponse = {
 
 export type PortfolioPeriodBoundaryHoldingRecord = {
   position_id: string
-  asset_id: string
-  instrument_ref: AssetCore
+  instrument_id: string
+  instrument_ref: InstrumentCore
   quantity: number
   cost_basis: number | null
   cost_basis_base: number | null
@@ -327,7 +327,7 @@ export type PortfolioContributionLineRecord = {
   fee_amount: number | null
   tax_amount: number | null
   cash_currency_gains: number | null
-  asset_currency_gains: number | null
+  instrument_currency_gains: number | null
   total_pnl: number | null
   period_contribution: number | null
 }
@@ -381,7 +381,7 @@ export type PortfolioContributionReportResponse = {
     fee_amount: number | null
     tax_amount: number | null
     cash_currency_gains: number | null
-    asset_currency_gains: number | null
+    instrument_currency_gains: number | null
     total_pnl: number | null
     daily_return: number | null
     daily_contribution: number | null
@@ -390,7 +390,7 @@ export type PortfolioContributionReportResponse = {
 
 export type PortfolioHoldingRow = {
   line_id: string
-  asset_core: AssetCore
+  instrument_core: InstrumentCore
   quantity: number
   last_price: number | null
   quote_as_of_date?: string | null
@@ -410,20 +410,20 @@ export type PortfolioHoldingRow = {
   price_chart_3m: SparklinePoint[]
   price_chart_6m: SparklinePoint[]
   price_chart_1y: SparklinePoint[]
-  asset_trend_as_of_date?: string | null
-  asset_trend_basis?: string | null
-  asset_return_1w?: number | null
-  asset_return_mtd?: number | null
-  asset_return_ytd?: number | null
-  asset_return_1y?: number | null
-  asset_volatility_1m?: number | null
-  asset_volatility_3m?: number | null
-  asset_volatility_6m?: number | null
-  asset_volatility_1y?: number | null
-  asset_current_drawdown?: number | null
-  asset_max_drawdown?: number | null
-  asset_holding_max_drawdown?: number | null
-  asset_holding_start_date?: string | null
+  instrument_trend_as_of_date?: string | null
+  instrument_trend_basis?: string | null
+  instrument_return_1w?: number | null
+  instrument_return_mtd?: number | null
+  instrument_return_ytd?: number | null
+  instrument_return_1y?: number | null
+  instrument_volatility_1m?: number | null
+  instrument_volatility_3m?: number | null
+  instrument_volatility_6m?: number | null
+  instrument_volatility_1y?: number | null
+  instrument_current_drawdown?: number | null
+  instrument_max_drawdown?: number | null
+  instrument_holding_max_drawdown?: number | null
+  instrument_holding_start_date?: string | null
   coverage_status: string
   account_count?: number
   open_position_lot_count?: number
@@ -462,11 +462,11 @@ export type SharedMarketDataPoint = {
 }
 
 export type SharedInstrumentRecord = {
-  asset_id: string
-  asset_name: string
-  asset_type: AssetCore['asset_type']
+  instrument_id: string
+  instrument_name: string
+  instrument_type: InstrumentCore['instrument_type']
   currency: string
-  identifiers: AssetIdentifier[]
+  identifiers: InstrumentIdentifier[]
   latest_market_data: SharedMarketDataPoint[]
   quote_selection_policy?: QuoteSelectionPolicy
   coverage_state: DataStatus
@@ -478,7 +478,7 @@ export type PortfolioSharedInstrumentsResponse = {
 }
 
 type RawSharedInstrumentRecord = {
-  asset_core: AssetCore
+  instrument_core: InstrumentCore
   coverage_state: DataStatus
   latest_market_data: SharedMarketDataPoint[]
   quote_selection_policy?: QuoteSelectionPolicy
@@ -498,8 +498,8 @@ export type PortfolioSharedFxRateRecord = {
   rate: number
   as_of_date: string
   source_kind: string
-  asset_id?: string | null
-  source_asset_ids: string[]
+  instrument_id?: string | null
+  source_instrument_ids: string[]
   provider?: string | null
   status: string
 }
@@ -673,9 +673,9 @@ export type PortfolioResearchCalculationFrequencyProfile = {
 }
 
 export type PortfolioResearchHoldingSnapshotRecord = {
-  asset_id: string
-  asset_name: string
-  asset_type?: string | null
+  instrument_id: string
+  instrument_name: string
+  instrument_type?: string | null
   allocation?: number | null
   market_value_base?: number | null
   cost_basis_base?: number | null
@@ -794,7 +794,7 @@ export type PortfolioResearchSolveEventRecord = {
   estimated_risk_sleeve_volatility?: number | null
   target_volatility?: number | null
   gross_exposure?: number | null
-  risk_asset_scaling_factor?: number | null
+  risky_allocation_scaling_factor?: number | null
   member_count: number
   scope_solve_count?: number | null
 }
@@ -1008,7 +1008,7 @@ export type PortfolioAccountRecord = {
   institution?: string | null
   default_settlement_cash_account_id?: string | null
   cost_basis_method?: 'moving_average' | 'fifo' | null
-  allowed_asset_types?: string[] | null
+  allowed_instrument_types?: string[] | null
   opened_at?: string | null
   closed_at?: string | null
   status: string
@@ -1026,7 +1026,7 @@ export type PortfolioAccountCreatePayload = {
   institution?: string | null
   default_settlement_cash_account_id?: string | null
   cost_basis_method?: 'moving_average' | 'fifo' | null
-  allowed_asset_types?: string[] | null
+  allowed_instrument_types?: string[] | null
   opened_at?: string | null
   closed_at?: string | null
   status?: string
@@ -1037,7 +1037,7 @@ export type PortfolioAccountUpdatePayload = {
   institution?: string | null
   default_settlement_cash_account_id?: string | null
   cost_basis_method?: 'moving_average' | 'fifo' | null
-  allowed_asset_types?: string[] | null
+  allowed_instrument_types?: string[] | null
   opened_at?: string | null
   closed_at?: string | null
   status?: string | null
@@ -1052,8 +1052,8 @@ export type PortfolioLedgerPostingRecord = {
   source_transaction_type: string
   trade_date: string
   settlement_date: string
-  asset_id?: string | null
-  instrument_ref?: AssetCore | null
+  instrument_id?: string | null
+  instrument_ref?: InstrumentCore | null
   cash_amount_delta?: number | null
   quantity_delta?: number | null
   cost_basis_delta?: number | null
@@ -1065,8 +1065,8 @@ export type PortfolioLedgerPostingRecord = {
 export type PortfolioAccountPositionRecord = {
   position_id?: string | null
   account_id: string
-  asset_id: string
-  instrument_ref: AssetCore
+  instrument_id: string
+  instrument_ref: InstrumentCore
   quantity: number
   cost_basis?: number | null
   last_price?: number | null
@@ -1141,8 +1141,8 @@ export type PortfolioTransactionRecord = {
   acquisition_date?: string | null
   account: PortfolioAccountRecord
   settlement_cash_account?: PortfolioAccountRecord | null
-  asset_id?: string | null
-  instrument_ref?: AssetCore | null
+  instrument_id?: string | null
+  instrument_ref?: InstrumentCore | null
   quantity?: number | null
   price?: number | null
   gross_amount: number
@@ -1194,7 +1194,7 @@ export type PortfolioTransactionWorkspaceResponse = {
 export type PortfolioTransactionPositionPreviewResponse = {
   portfolio_id: string
   account_id: string
-  asset_id: string
+  instrument_id: string
   as_of_date: string
   trade_at: string
   quantity: number
@@ -1203,8 +1203,8 @@ export type PortfolioTransactionPositionPreviewResponse = {
 export type PortfolioPositionRecord = {
   position_id: string
   portfolio_id: string
-  asset_id: string
-  instrument_ref: AssetCore
+  instrument_id: string
+  instrument_ref: InstrumentCore
   quantity: number
   cost_basis?: number | null
   last_price?: number | null
@@ -1245,8 +1245,8 @@ export type PortfolioPositionLotRecord = {
   position_lot_id: string
   portfolio_id: string
   account_id: string
-  asset_id: string
-  instrument_ref: AssetCore
+  instrument_id: string
+  instrument_ref: InstrumentCore
   currency: string
   cost_basis_method: 'moving_average' | 'fifo'
   opened_by_transaction_id: string
@@ -1285,7 +1285,7 @@ export type PortfolioPositionLotRecord = {
 
 export type PortfolioPositionLotFilters = {
   account_id?: string
-  asset_id?: string
+  instrument_id?: string
   status?: 'open' | 'closed'
   as_of_date?: string
 }
@@ -1304,7 +1304,7 @@ export type PortfolioPositionLotListResponse = {
 export type PortfolioTransactionFilters = {
   account_id?: string
   transaction_type?: string
-  asset_id?: string
+  instrument_id?: string
   start_date?: string
   end_date?: string
 }
@@ -1318,7 +1318,7 @@ export type PortfolioTransactionCreatePayload = {
   acquisition_date?: string | null
   account_id: string
   settlement_cash_account_id?: string | null
-  asset_id?: string | null
+  instrument_id?: string | null
   quantity?: number | null
   price?: number | null
   gross_amount: number
@@ -1346,7 +1346,7 @@ export type PortfolioInternalTransferCreatePayload = {
   transfer_object_type: 'cash' | 'position'
   from_account_id: string
   to_account_id: string
-  asset_id?: string | null
+  instrument_id?: string | null
   quantity?: number | null
   gross_amount?: number | null
   note?: string | null
@@ -1601,7 +1601,7 @@ export function getPortfolioTransactionPositionPreview(
   portfolioId: string,
   filters: {
     account_id: string
-    asset_id: string
+    instrument_id: string
     as_of_date: string
     trade_time?: string
     exclude_transaction_id?: string
@@ -1654,18 +1654,18 @@ export function getPortfolioTransactions(portfolioId: string, filters: Portfolio
   )
 }
 
-export function getPortfolioAssetPriceChart(
+export function getPortfolioInstrumentPriceChart(
   portfolioId: string,
-  assetId: string,
+  instrumentId: string,
   filters: {
     as_of_date?: string
-    range?: PortfolioAssetChartRangeKey
+    range?: PortfolioInstrumentChartRangeKey
   } = {},
 ) {
   const query = buildQuery(filters)
-  return fetchJson<PortfolioAssetPriceChartResponse>(
+  return fetchJson<PortfolioInstrumentPriceChartResponse>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/assets/${assetId}/price-chart${query}`,
+    `/api/portfolios/${portfolioId}/instruments/${instrumentId}/price-chart${query}`,
   )
 }
 
@@ -1996,7 +1996,7 @@ export function getPortfolioInstruments(portfolioId: string) {
     (response) => ({
       portfolio_id: response.portfolio_id,
       instruments: response.instruments.map((instrument) => ({
-        ...instrument.asset_core,
+        ...instrument.instrument_core,
         coverage_state: instrument.coverage_state,
         latest_market_data: instrument.latest_market_data,
         quote_selection_policy: instrument.quote_selection_policy,

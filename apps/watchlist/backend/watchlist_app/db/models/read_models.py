@@ -18,9 +18,9 @@ class WatchlistRowReadModel(Base):
         ForeignKey("watchlist.watchlist_id", ondelete="CASCADE"),
         primary_key=True,
     )
-    asset_id: Mapped[str] = mapped_column(primary_key=True)
-    asset_type: Mapped[str] = mapped_column(nullable=False, default="fund")
-    asset_name: Mapped[str] = mapped_column(nullable=False)
+    instrument_id: Mapped[str] = mapped_column(primary_key=True)
+    instrument_type: Mapped[str] = mapped_column(nullable=False, default="fund")
+    instrument_name: Mapped[str] = mapped_column(nullable=False)
     share_class: Mapped[str | None]
     ticker_or_isin: Mapped[str | None]
     management_firm_name: Mapped[str | None]
@@ -53,64 +53,64 @@ class WatchlistRowReadModel(Base):
     staleness_reason: Mapped[str | None]
 
 
-class AssetSummaryReadModel(PayloadReadModelMixin, Base):
-    __tablename__ = "asset_summary_read_model"
+class InstrumentSummaryReadModel(PayloadReadModelMixin, Base):
+    __tablename__ = "instrument_summary_read_model"
 
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
 
 
-class AssetChartReadModel(PayloadReadModelMixin, Base):
-    __tablename__ = "asset_chart_read_model"
+class InstrumentChartReadModel(PayloadReadModelMixin, Base):
+    __tablename__ = "instrument_chart_read_model"
 
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
 
 
-class AssetPerformanceReadModel(PayloadReadModelMixin, Base):
-    __tablename__ = "asset_performance_read_model"
+class InstrumentPerformanceReadModel(PayloadReadModelMixin, Base):
+    __tablename__ = "instrument_performance_read_model"
 
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
 
 
-class AssetRiskReadModel(PayloadReadModelMixin, Base):
-    __tablename__ = "asset_risk_read_model"
+class InstrumentRiskReadModel(PayloadReadModelMixin, Base):
+    __tablename__ = "instrument_risk_read_model"
 
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
 
 
-class AssetExposureReadModel(PayloadReadModelMixin, Base):
-    __tablename__ = "asset_exposure_read_model"
+class InstrumentExposureReadModel(PayloadReadModelMixin, Base):
+    __tablename__ = "instrument_exposure_read_model"
 
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
 
 
-class AssetExposureHoldingsReadModel(PayloadReadModelMixin, Base):
-    __tablename__ = "asset_exposure_holdings_read_model"
+class InstrumentExposureHoldingsReadModel(PayloadReadModelMixin, Base):
+    __tablename__ = "instrument_exposure_holdings_read_model"
 
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )
 
 
-class AssetRatingReadModel(PayloadReadModelMixin, Base):
-    __tablename__ = "asset_rating_read_model"
+class InstrumentRatingReadModel(PayloadReadModelMixin, Base):
+    __tablename__ = "instrument_rating_read_model"
 
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("asset_detail.asset_id", ondelete="CASCADE"),
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
         primary_key=True,
     )

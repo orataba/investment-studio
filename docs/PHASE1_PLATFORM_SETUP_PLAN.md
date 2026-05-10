@@ -23,7 +23,7 @@
 - 从原 `fof` 复制当前基线工程进入 `apps/watchlist`
 - 创建 `apps/portfolio`
 - 迁入 `pmw` 设计文档至 `apps/portfolio/docs`
-- 创建 `packages/asset-core`
+- 创建 `packages/instrument-core`
 - 创建 `packages/ui`
 - 创建 `packages/copilot` 预留目录
 - 补充平台 README 与边界文档
@@ -31,6 +31,6 @@
 ## 下一步
 
 1. 稳定 `apps/watchlist` 在新目录下的启动与构建
-2. 在 `packages/asset-core` 定义最小共享 contract
+2. 在 `packages/instrument-core` 定义最小共享 contract
 3. 在 `apps/portfolio` 开始建立后端域模型与前端路由骨架
 4. 统一平台视觉系统与公共 UI primitives

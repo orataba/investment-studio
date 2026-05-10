@@ -79,16 +79,16 @@ def _normalized_value_set(value: object) -> set[str]:
 def _definition_applies_to_asset(
     definition: InstrumentAttributeDefinition,
     *,
-    asset_type: str,
+    instrument_type: str,
     attributes: dict[str, object],
 ) -> bool:
-    normalized_asset_type = str(asset_type or "").strip().lower()
-    asset_scope = {
+    normalized_instrument_type = str(instrument_type or "").strip().lower()
+    instrument_scope = {
         str(item).strip().lower()
-        for item in (definition.asset_scope_json or [])
+        for item in (definition.instrument_scope_json or [])
         if str(item).strip()
     }
-    if asset_scope and normalized_asset_type not in asset_scope:
+    if instrument_scope and normalized_instrument_type not in instrument_scope:
         return False
 
     applicability = definition.applicability_json or {}
@@ -128,12 +128,12 @@ def get_monitoring_dashboard(
     row_records = session.execute(
         select(WatchlistRowReadModel, Watchlist.name)
         .join(Watchlist, Watchlist.watchlist_id == WatchlistRowReadModel.watchlist_id)
-        .order_by(Watchlist.sort_order, Watchlist.name, WatchlistRowReadModel.asset_name)
+        .order_by(Watchlist.sort_order, Watchlist.name, WatchlistRowReadModel.instrument_name)
     ).all()
 
-    asset_ids = list({record.asset_id for record, _ in row_records})
+    instrument_ids = list({record.instrument_id for record, _ in row_records})
     chart_overrides = build_latest_quote_overrides(
-        read_model_repository.list_charts(session, asset_ids)
+        read_model_repository.list_charts(session, instrument_ids)
     )
     attribute_definitions = list(attribute_repository.list_definitions(session))
     attribute_labels = {
@@ -153,10 +153,10 @@ def get_monitoring_dashboard(
         }
         for record in watchlists
     }
-    asset_summaries: dict[str, dict[str, object]] = {}
+    instrument_summaries: dict[str, dict[str, object]] = {}
 
     for row_record, watchlist_name in row_records:
-        latest_quote_date = chart_overrides.get(row_record.asset_id, {}).get(
+        latest_quote_date = chart_overrides.get(row_record.instrument_id, {}).get(
             "latest_quote_date"
         )
         if not isinstance(latest_quote_date, str) or not latest_quote_date:
@@ -174,12 +174,12 @@ def get_monitoring_dashboard(
         ):
             watchlist_summary["last_activity_at"] = row_activity
 
-        asset_summary = asset_summaries.get(row_record.asset_id)
-        if asset_summary is None:
-            asset_summary = {
-                "asset_id": row_record.asset_id,
-                "asset_name": row_record.asset_name,
-                "asset_type": row_record.asset_type,
+        instrument_summary = instrument_summaries.get(row_record.instrument_id)
+        if instrument_summary is None:
+            instrument_summary = {
+                "instrument_id": row_record.instrument_id,
+                "instrument_name": row_record.instrument_name,
+                "instrument_type": row_record.instrument_type,
                 "ticker_or_isin": row_record.ticker_or_isin,
                 "management_firm_name": row_record.management_firm_name,
                 "data_freshness_status": row_record.data_freshness_status,
@@ -192,33 +192,33 @@ def get_monitoring_dashboard(
                 "primary_watchlist_name": watchlist_name,
                 "watchlists": [],
             }
-            asset_summaries[row_record.asset_id] = asset_summary
+            instrument_summaries[row_record.instrument_id] = instrument_summary
         elif _freshness_priority(row_record.data_freshness_status) < _freshness_priority(
-            str(asset_summary["data_freshness_status"])
+            str(instrument_summary["data_freshness_status"])
         ):
-            asset_summary["data_freshness_status"] = row_record.data_freshness_status
-            asset_summary["staleness_reason"] = row_record.staleness_reason
+            instrument_summary["data_freshness_status"] = row_record.data_freshness_status
+            instrument_summary["staleness_reason"] = row_record.staleness_reason
 
-        if asset_summary["latest_quote_date"] is None and latest_quote_date is not None:
-            asset_summary["latest_quote_date"] = latest_quote_date
+        if instrument_summary["latest_quote_date"] is None and latest_quote_date is not None:
+            instrument_summary["latest_quote_date"] = latest_quote_date
         if (
             row_record.last_recalculated_at is not None
             and (
-                asset_summary["last_recalculated_at"] is None
-                or row_record.last_recalculated_at > asset_summary["last_recalculated_at"]
+                instrument_summary["last_recalculated_at"] is None
+                or row_record.last_recalculated_at > instrument_summary["last_recalculated_at"]
             )
         ):
-            asset_summary["last_recalculated_at"] = row_record.last_recalculated_at
+            instrument_summary["last_recalculated_at"] = row_record.last_recalculated_at
         if (
             row_activity is not None
             and (
-                asset_summary["last_activity_at"] is None
-                or row_activity > asset_summary["last_activity_at"]
+                instrument_summary["last_activity_at"] is None
+                or row_activity > instrument_summary["last_activity_at"]
             )
         ):
-            asset_summary["last_activity_at"] = row_activity
+            instrument_summary["last_activity_at"] = row_activity
 
-        memberships: list[dict[str, object]] = asset_summary["watchlists"]
+        memberships: list[dict[str, object]] = instrument_summary["watchlists"]
         if not any(
             item["watchlist_id"] == row_record.watchlist_id for item in memberships
         ):
@@ -226,24 +226,24 @@ def get_monitoring_dashboard(
                 {"watchlist_id": row_record.watchlist_id, "name": watchlist_name}
             )
 
-    needs_attention_assets: list[dict[str, object]] = []
-    missing_label_assets: list[dict[str, object]] = []
+    needs_attention_instruments: list[dict[str, object]] = []
+    missing_label_instruments: list[dict[str, object]] = []
 
-    for asset_summary in asset_summaries.values():
+    for instrument_summary in instrument_summaries.values():
         memberships = sorted(
-            asset_summary["watchlists"], key=lambda item: str(item["name"]).lower()
+            instrument_summary["watchlists"], key=lambda item: str(item["name"]).lower()
         )
-        asset_summary["watchlists"] = memberships
-        asset_summary["watchlist_count"] = len(memberships)
+        instrument_summary["watchlists"] = memberships
+        instrument_summary["watchlist_count"] = len(memberships)
 
-        needs_refresh = str(asset_summary["data_freshness_status"]) != "fresh"
-        missing_quote = asset_summary["latest_quote_date"] is None
+        needs_refresh = str(instrument_summary["data_freshness_status"]) != "fresh"
+        missing_quote = instrument_summary["latest_quote_date"] is None
 
         missing_attribute_keys: list[str] = []
-        if str(asset_summary["asset_type"]) == "fund":
+        if str(instrument_summary["instrument_type"]) == "fund":
             attributes = (
-                asset_summary["attributes"]
-                if isinstance(asset_summary["attributes"], dict)
+                instrument_summary["attributes"]
+                if isinstance(instrument_summary["attributes"], dict)
                 else {}
             )
             missing_attribute_keys = [
@@ -252,7 +252,7 @@ def get_monitoring_dashboard(
                 if definition.required_for_monitoring
                 and _definition_applies_to_asset(
                     definition,
-                    asset_type=str(asset_summary["asset_type"]),
+                    instrument_type=str(instrument_summary["instrument_type"]),
                     attributes=attributes,
                 )
                 and _value_missing(attributes.get(definition.attribute_key))
@@ -269,14 +269,14 @@ def get_monitoring_dashboard(
         for key, label in REQUIRED_FUND_TAXONOMY_KEYS:
             if key in missing_attribute_keys and label not in missing_attribute_labels:
                 missing_attribute_labels.append(label)
-        asset_summary["missing_attribute_keys"] = missing_attribute_keys
-        asset_summary["missing_attribute_labels"] = missing_attribute_labels
-        asset_summary["missing_attribute_count"] = len(missing_attribute_keys)
-        asset_summary["last_recalculated_at"] = _serialize_datetime(
-            asset_summary["last_recalculated_at"]
+        instrument_summary["missing_attribute_keys"] = missing_attribute_keys
+        instrument_summary["missing_attribute_labels"] = missing_attribute_labels
+        instrument_summary["missing_attribute_count"] = len(missing_attribute_keys)
+        instrument_summary["last_recalculated_at"] = _serialize_datetime(
+            instrument_summary["last_recalculated_at"]
         )
-        asset_summary["last_activity_at"] = _serialize_datetime(
-            asset_summary["last_activity_at"]
+        instrument_summary["last_activity_at"] = _serialize_datetime(
+            instrument_summary["last_activity_at"]
         )
 
         issue_flags: list[str] = []
@@ -284,8 +284,8 @@ def get_monitoring_dashboard(
             issue_flags.append("needs_refresh")
         if missing_quote:
             issue_flags.append("missing_quote")
-        asset_summary["issue_flags"] = issue_flags
-        asset_summary.pop("attributes", None)
+        instrument_summary["issue_flags"] = issue_flags
+        instrument_summary.pop("attributes", None)
 
         for membership in memberships:
             watchlist_summary = watchlist_summaries[str(membership["watchlist_id"])]
@@ -303,19 +303,19 @@ def get_monitoring_dashboard(
                 )
 
         if issue_flags:
-            needs_attention_assets.append(asset_summary)
+            needs_attention_instruments.append(instrument_summary)
         if missing_attribute_keys:
-            missing_label_assets.append(asset_summary)
+            missing_label_instruments.append(instrument_summary)
 
     recent_jobs = recalc_repository.list_recent(session, limit=200)
     open_recalc_jobs: list[dict[str, object]] = []
     for job in recent_jobs:
         if job.job_status not in OPEN_RECALC_JOB_STATUSES:
             continue
-        asset_summary = asset_summaries.get(job.asset_id)
-        if asset_summary is None:
+        instrument_summary = instrument_summaries.get(job.instrument_id)
+        if instrument_summary is None:
             continue
-        memberships = list(asset_summary["watchlists"])
+        memberships = list(instrument_summary["watchlists"])
         for membership in memberships:
             watchlist_summary = watchlist_summaries[str(membership["watchlist_id"])]
             watchlist_summary["open_recalc_job_count"] = (
@@ -324,8 +324,8 @@ def get_monitoring_dashboard(
         open_recalc_jobs.append(
             {
                 "recalc_job_id": job.recalc_job_id,
-                "asset_id": job.asset_id,
-                "asset_name": str(asset_summary["asset_name"]),
+                "instrument_id": job.instrument_id,
+                "instrument_name": str(instrument_summary["instrument_name"]),
                 "job_type": job.job_type,
                 "job_status": job.job_status,
                 "trigger_type": job.trigger_type,
@@ -333,24 +333,24 @@ def get_monitoring_dashboard(
                 "started_at": _serialize_datetime(job.started_at),
                 "finished_at": _serialize_datetime(job.finished_at),
                 "error_message": job.error_message,
-                "primary_watchlist_id": asset_summary["primary_watchlist_id"],
-                "primary_watchlist_name": asset_summary["primary_watchlist_name"],
+                "primary_watchlist_id": instrument_summary["primary_watchlist_id"],
+                "primary_watchlist_name": instrument_summary["primary_watchlist_name"],
                 "watchlists": memberships,
             }
         )
 
-    needs_attention_assets.sort(
+    needs_attention_instruments.sort(
         key=lambda item: (
             "missing_quote" not in item["issue_flags"],
             _freshness_priority(str(item["data_freshness_status"])),
             item["latest_quote_date"] or "",
-            str(item["asset_name"]).lower(),
+            str(item["instrument_name"]).lower(),
         )
     )
-    missing_label_assets.sort(
+    missing_label_instruments.sort(
         key=lambda item: (
             -int(item["missing_attribute_count"]),
-            str(item["asset_name"]).lower(),
+            str(item["instrument_name"]).lower(),
         )
     )
     open_recalc_jobs.sort(
@@ -382,29 +382,29 @@ def get_monitoring_dashboard(
         "generated_at": _serialize_datetime(datetime.now(UTC).replace(microsecond=0)),
         "overview": {
             "watchlist_count": len(watchlists),
-            "unique_asset_count": len(asset_summaries),
+            "unique_instrument_count": len(instrument_summaries),
             "needs_refresh_count": len(
                 [
                     item
-                    for item in asset_summaries.values()
+                    for item in instrument_summaries.values()
                     if "needs_refresh" in item["issue_flags"]
                 ]
             ),
             "missing_quote_count": len(
                 [
                     item
-                    for item in asset_summaries.values()
+                    for item in instrument_summaries.values()
                     if "missing_quote" in item["issue_flags"]
                 ]
             ),
-            "missing_label_count": len(missing_label_assets),
+            "missing_label_count": len(missing_label_instruments),
             "open_recalc_job_count": len(open_recalc_jobs),
             "failed_recalc_job_count": len(
                 [item for item in open_recalc_jobs if item["job_status"] == "failed"]
             ),
         },
         "watchlists": ordered_watchlists,
-        "needs_attention_assets": needs_attention_assets,
-        "missing_label_assets": missing_label_assets,
+        "needs_attention_instruments": needs_attention_instruments,
+        "missing_label_instruments": missing_label_instruments,
         "open_recalc_jobs": open_recalc_jobs,
     }

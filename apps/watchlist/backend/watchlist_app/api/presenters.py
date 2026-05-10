@@ -97,7 +97,7 @@ def present_field_registry(record: FieldRegistry) -> dict[str, object]:
         "sort_mode": record.sort_mode,
         "filter_mode": record.filter_mode,
         "group_mode": record.group_mode,
-        "asset_scope_json": record.asset_scope_json,
+        "instrument_scope_json": record.instrument_scope_json,
         "product_scope_json": record.product_scope_json,
         "availability_rule_json": record.availability_rule_json,
         "source_domain": record.source_domain,
@@ -117,7 +117,7 @@ def present_attribute_definition(record: InstrumentAttributeDefinition) -> dict[
         "group_code": record.group_code,
         "display_order": record.display_order,
         "options": record.options_json,
-        "asset_scope_json": record.asset_scope_json,
+        "instrument_scope_json": record.instrument_scope_json,
         "applicability_json": record.applicability_json,
         "rubric_json": record.rubric_json,
         "is_groupable": record.is_groupable,
@@ -129,7 +129,7 @@ def present_attribute_definition(record: InstrumentAttributeDefinition) -> dict[
 
 
 def present_attribute_values(
-    asset_id: str,
+    instrument_id: str,
     definitions: Sequence[InstrumentAttributeDefinition],
     values: Sequence[InstrumentAttributeValue],
 ) -> dict[str, object]:
@@ -138,7 +138,7 @@ def present_attribute_values(
         if value.attribute_key not in latest:
             latest[value.attribute_key] = value
     return {
-        "asset_id": asset_id,
+        "instrument_id": instrument_id,
         "definitions": [present_attribute_definition(item) for item in definitions],
         "values": {key: item.value_json for key, item in latest.items()},
     }
@@ -148,7 +148,7 @@ def present_recalc_job(record: RecalcJob) -> dict[str, object]:
     return {
         "recalc_job_id": record.recalc_job_id,
         "job_type": record.job_type,
-        "asset_id": record.asset_id,
+        "instrument_id": record.instrument_id,
         "trigger_type": record.trigger_type,
         "trigger_ref_type": record.trigger_ref_type,
         "trigger_ref_id": record.trigger_ref_id,
