@@ -164,7 +164,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
     coreBlocks: [
       { title: 'Rolling risk path', owner: 'RiskSnapshot + realized window', role: 'Show rolling volatility and Sharpe with optional benchmark compare' },
       { title: 'Correlation matrix', owner: 'RiskSnapshot', role: 'Show all-instrument and selected planning-taxonomy scope correlation' },
-      { title: 'Current drift', owner: 'Explicit SAA/TAA TargetSet comparators', role: 'Compare actual weights and risk shares against SAA/TAA target dimensions without cross-source fallback' },
+      { title: 'Current drift', owner: 'Explicit SAA/TAA TargetSet comparators', role: 'Compare actual weights and risk shares against SAA/TAA target dimensions without cross-source substitution' },
       { title: 'Risk contribution', owner: 'RiskSnapshot', role: 'Show point-in-time instrument risk contribution from the selected covariance model and contribution mode' },
     ],
     comparator: ['Target comparators: SAA Weight / SAA Risk / TAA Weight / TAA Risk', 'Benchmark-relative risk only appears when benchmark composition is available'],

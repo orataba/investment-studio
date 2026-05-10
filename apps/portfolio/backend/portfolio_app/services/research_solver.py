@@ -50,9 +50,7 @@ RESEARCH_COVARIANCE_PARAMETERS: dict[str, object] = {
     "corr_shrinkage": 0.15,
 }
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
-RESEARCH_FALLBACK_RISK_CONTRIBUTION_MODE = "abs"
-RESEARCH_FALLBACK_SHARE_GAP_THRESHOLD = 0.05
-RESEARCH_FALLBACK_NEGATIVE_SHARE_TOLERANCE = 0.0
+RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 0.05
 
 
 @dataclass(frozen=True)
@@ -576,7 +574,7 @@ def _estimate_ewma_covariance(returns: pd.DataFrame, *, decay: float, min_observ
     return pd.DataFrame(covariance, index=returns.columns, columns=returns.columns)
 
 
-def _estimate_pairwise_population_covariance(returns: pd.DataFrame, *, min_observations: int) -> pd.DataFrame:
+def _estimate_pairwise_sample_covariance(returns: pd.DataFrame, *, min_observations: int) -> pd.DataFrame:
     _validate_pairwise_return_coverage(
         returns,
         min_observations=min_observations,
@@ -589,7 +587,7 @@ def _estimate_pairwise_population_covariance(returns: pd.DataFrame, *, min_obser
             pair_values = values[:, [row_index, column_index]]
             valid_values = pair_values[np.isfinite(pair_values).all(axis=1)]
             centered = valid_values - valid_values.mean(axis=0, keepdims=True)
-            pair_covariance = float(np.mean(centered[:, 0] * centered[:, 1]))
+            pair_covariance = float(np.sum(centered[:, 0] * centered[:, 1]) / float(len(valid_values) - 1))
             covariance[row_index, column_index] = pair_covariance
             covariance[column_index, row_index] = pair_covariance
     return pd.DataFrame(covariance, index=returns.columns, columns=returns.columns)
@@ -682,7 +680,7 @@ def _estimate_covariance(
             min_observations=min_observations,
         )
     if model_id in {"sample_covariance", "simple_covariance"}:
-        covariance = _estimate_pairwise_population_covariance(window, min_observations=min_observations)
+        covariance = _estimate_pairwise_sample_covariance(window, min_observations=min_observations)
         covariance = _annualize_pairwise_covariance(covariance, window)
     elif model_id in {"lw_covariance", "lw"}:
         covariance = _estimate_ledoit_wolf_covariance(window)
@@ -723,7 +721,7 @@ def _normalize_positive_vector(values: np.ndarray) -> np.ndarray:
     vector = np.clip(np.asarray(values, dtype="float64"), 0.0, None)
     total = float(vector.sum())
     if total <= 1e-12:
-        return np.full(len(vector), 1.0 / max(len(vector), 1), dtype="float64")
+        raise ValueError("Target vector must contain at least one positive value.")
     return vector / total
 
 
@@ -990,7 +988,7 @@ def _solve_minimax_risk_budget_slsqp(
         objective_value=objective_value,
         max_abs_share_gap=max_abs_share_gap,
         iterations=iterations,
-        message=f"{message} (minimax fallback)",
+        message=f"{message} (minimax refinement)",
         solver_kind="slsqp_minimax",
         contribution_mode=problem.contribution_mode,
     )
@@ -1014,26 +1012,29 @@ def _solve_risk_budget_problem(
         initial_guesses=initial_guesses,
         max_iterations=max_iterations,
     )
-    if primary.max_abs_share_gap <= 0.05:
-        return primary
-    fallback = _solve_minimax_risk_budget_slsqp(
-        problem,
-        reference_weights=reference_weights,
-        initial_guesses=[*initial_guesses, primary.weights],
-        max_iterations=max(max_iterations * 4, 1500),
-    )
-    if fallback is not None and fallback.max_abs_share_gap < primary.max_abs_share_gap - 1e-9:
-        return fallback
-    return primary
-
-
-def _risk_budget_solution_requires_fallback(solution: RiskBudgetSolution) -> bool:
-    if solution.contribution_mode != "signed":
-        return False
-    achieved = np.asarray(solution.achieved_risk_shares, dtype="float64")
-    if float(achieved.min()) < -RESEARCH_FALLBACK_NEGATIVE_SHARE_TOLERANCE:
-        return True
-    return solution.max_abs_share_gap > RESEARCH_FALLBACK_SHARE_GAP_THRESHOLD + 1e-12
+    if primary.max_abs_share_gap <= RESEARCH_MAX_RISK_BUDGET_SHARE_GAP:
+        best = primary
+    else:
+        minimax = _solve_minimax_risk_budget_slsqp(
+            problem,
+            reference_weights=reference_weights,
+            initial_guesses=[*initial_guesses, primary.weights],
+            max_iterations=max(max_iterations * 4, 1500),
+        )
+        best = (
+            minimax
+            if minimax is not None and minimax.max_abs_share_gap < primary.max_abs_share_gap - 1e-9
+            else primary
+        )
+    if best.max_abs_share_gap > RESEARCH_MAX_RISK_BUDGET_SHARE_GAP + 1e-12:
+        raise ValueError(
+            "Risk budget solver could not satisfy target risk shares within "
+            f"{RESEARCH_MAX_RISK_BUDGET_SHARE_GAP:.2%}; achieved max gap {best.max_abs_share_gap:.2%}."
+        )
+    achieved = np.asarray(best.achieved_risk_shares, dtype="float64")
+    if best.contribution_mode == "signed" and float(achieved.min()) < -1e-12:
+        raise ValueError("Risk budget solver produced a negative signed risk share.")
+    return best
 
 
 def _solve_risk_budget_weights(
@@ -1057,16 +1058,9 @@ def _solve_risk_budget_weights(
         )
 
     if cleaned_observation_count < 2:
-        fallback = _normalize_positive_vector(np.asarray(target_shares, dtype="float64"))
-        return LocalRiskBudgetSolve(
-            weights=fallback,
-            max_abs_share_gap=None,
-            solver_kind="fallback-insufficient-history",
-            solver_detail=None,
-            covariance_model=RESEARCH_COVARIANCE_MODEL_ID,
-            covariance_observations=cleaned_observation_count,
-            risk_contribution_mode=RESEARCH_RISK_CONTRIBUTION_MODE,
-            message="Risk budget solve needs at least two return observations.",
+        raise ValueError(
+            "Risk budget solve requires at least two aligned return observations; "
+            f"got {cleaned_observation_count}."
         )
 
     reference = (
@@ -1076,53 +1070,24 @@ def _solve_risk_budget_weights(
     )
     reference = _normalize_positive_vector(reference)
     target = _normalize_positive_vector(np.asarray(target_shares, dtype="float64"))
-    try:
-        covariance = _estimate_covariance(
-            return_window,
-            model_id=RESEARCH_COVARIANCE_MODEL_ID,
-            lookback_days=lookback_days,
-            parameters=RESEARCH_COVARIANCE_PARAMETERS,
-        )
-        if covariance.shape != (count, count):
-            raise ValueError("Risk covariance dimension does not match selected scope members.")
-        primary_problem = RiskBudgetProblem(
-            bucket_ids=list(return_window.columns),
-            covariance=covariance.to_numpy(dtype="float64"),
-            target_risk_shares=target,
-            lower_bounds=np.zeros(count, dtype="float64"),
-            upper_bounds=np.ones(count, dtype="float64"),
-            reference_weights=reference,
-            contribution_mode=RESEARCH_RISK_CONTRIBUTION_MODE,
-        )
-        solution = _solve_risk_budget_problem(primary_problem)
-        if _risk_budget_solution_requires_fallback(solution):
-            fallback_problem = RiskBudgetProblem(
-                bucket_ids=primary_problem.bucket_ids,
-                covariance=primary_problem.covariance,
-                target_risk_shares=primary_problem.target_risk_shares,
-                lower_bounds=primary_problem.lower_bounds,
-                upper_bounds=primary_problem.upper_bounds,
-                reference_weights=primary_problem.reference_weights,
-                contribution_mode=RESEARCH_FALLBACK_RISK_CONTRIBUTION_MODE,
-            )
-            try:
-                fallback_solution = _solve_risk_budget_problem(fallback_problem)
-            except ValueError:
-                fallback_solution = None
-            if fallback_solution is not None and fallback_solution.max_abs_share_gap <= solution.max_abs_share_gap + 1e-12:
-                solution = fallback_solution
-    except ValueError as exc:
-        fallback = target
-        return LocalRiskBudgetSolve(
-            weights=fallback,
-            max_abs_share_gap=None,
-            solver_kind="fallback-solver",
-            solver_detail=None,
-            covariance_model=RESEARCH_COVARIANCE_MODEL_ID,
-            covariance_observations=cleaned_observation_count,
-            risk_contribution_mode=RESEARCH_RISK_CONTRIBUTION_MODE,
-            message=str(exc),
-        )
+    covariance = _estimate_covariance(
+        return_window,
+        model_id=RESEARCH_COVARIANCE_MODEL_ID,
+        lookback_days=lookback_days,
+        parameters=RESEARCH_COVARIANCE_PARAMETERS,
+    )
+    if covariance.shape != (count, count):
+        raise ValueError("Risk covariance dimension does not match selected scope members.")
+    primary_problem = RiskBudgetProblem(
+        bucket_ids=list(return_window.columns),
+        covariance=covariance.to_numpy(dtype="float64"),
+        target_risk_shares=target,
+        lower_bounds=np.zeros(count, dtype="float64"),
+        upper_bounds=np.ones(count, dtype="float64"),
+        reference_weights=reference,
+        contribution_mode=RESEARCH_RISK_CONTRIBUTION_MODE,
+    )
+    solution = _solve_risk_budget_problem(primary_problem)
 
     return LocalRiskBudgetSolve(
         weights=_normalize_positive_vector(solution.weights),
@@ -1345,19 +1310,28 @@ def _resolve_dimension_target_rows(
                 }
             )
         if complete and len(rendered_rows) == len(line_keys):
+            selected_total = sum(float(row["selected_value"]) for row in rendered_rows)
+            expected_total = (
+                0.0
+                if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET
+                and all(_member_is_cash_like(state, member) for member in scope_members)
+                else 1.0
+            )
+            if any(float(row["selected_value"]) < -1e-12 for row in rendered_rows):
+                raise ValueError(f"{target_set.get('name') or target_set_type} has negative {resolved_dimension} targets.")
+            if abs(selected_total - expected_total) > 1e-6:
+                raise ValueError(
+                    f"{target_set.get('name') or target_set_type} {resolved_dimension} targets must sum to "
+                    f"{expected_total:.6f}; got {selected_total:.6f}."
+                )
             return rendered_rows, warnings
 
-    if scope_members:
-        non_cash_members = [
-            member
-            for member in scope_members
-            if not _member_is_cash_like(state, member)
-        ]
-        equal_weight = 1.0 / float(len(scope_members))
-        equal_risk_share = 1.0 / float(len(non_cash_members)) if non_cash_members else 0.0
-        scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
-        warnings.append(
-            f"{scope_label} does not have a configured {resolved_dimension} target set, so Research is using an equal-{resolved_dimension.replace('_', '-')} local default."
+    if len(scope_members) == 1:
+        member = scope_members[0]
+        selected_value = (
+            0.0
+            if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET and _member_is_cash_like(state, member)
+            else 1.0
         )
         return [
             {
@@ -1367,24 +1341,19 @@ def _resolve_dimension_target_rows(
                 "taxonomy_node_id": member.taxonomy_node_id,
                 "default_target_dimension": member.default_target_dimension,
                 "selected_dimension": resolved_dimension,
-                "selected_value": (
-                    equal_weight
-                    if resolved_dimension == TARGET_DIMENSION_WEIGHT
-                    else (0.0 if _member_is_cash_like(state, member) else equal_risk_share)
-                ),
-                "target_weight": equal_weight if resolved_dimension == TARGET_DIMENSION_WEIGHT else None,
-                "target_risk_share": (
-                    (0.0 if _member_is_cash_like(state, member) else equal_risk_share)
-                    if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET
-                    else None
-                ),
+                "selected_value": selected_value,
+                "target_weight": 1.0 if resolved_dimension == TARGET_DIMENSION_WEIGHT else None,
+                "target_risk_share": selected_value if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET else None,
                 "source_target_set_id": None,
                 "source_target_set_type": None,
+                "source_label_override": "Single Member",
             }
-            for member in scope_members
         ], warnings
 
-    raise ValueError("No active target set can resolve the requested scope and target dimension.")
+    scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
+    raise ValueError(
+        f"{scope_label} has no active complete {resolved_dimension} target set for the requested scope members."
+    )
 
 
 def _scope_members(
@@ -1776,10 +1745,6 @@ def _solve_current_scope(
             )
             risk_gap = 0.0
             solver_kind = "fixed-members" if frozen_keys else "single-member"
-        if str(solver_kind).startswith("fallback"):
-            warnings.append(
-                f"{scope_label} used {solver_kind} on {as_of_date.isoformat()} because local covariance was weak."
-            )
     else:
         risk_solve = LocalRiskBudgetSolve(
             weights=np.asarray([], dtype="float64"),

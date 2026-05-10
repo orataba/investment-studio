@@ -1,11 +1,11 @@
 # GIPS-Informed Performance Methodology
 
-更新时间：`2026-05-07`
+更新时间：`2026-05-10`
 
 关联文档：
 
-- [`01_PMS_REFERENCE_BASELINE.md`](./01_PMS_REFERENCE_BASELINE.md)
 - [`04_CALCULATION_SPEC.md`](./04_CALCULATION_SPEC.md)
+- [`07_CALCULATION_AUDIT_2026_05_10.md`](./07_CALCULATION_AUDIT_2026_05_10.md)
 
 ## 1. 定位
 
@@ -13,7 +13,7 @@ GIPS 是 CFA Institute 维护的投资绩效呈现标准，核心目标是让投
 
 因此本文只定义 **GIPS-informed** 的计算治理原则，不构成、也不暗示本项目或用户组合满足 GIPS compliance。
 
-官方参考：
+官方参考（2026-05-10 已核对入口）：
 
 - GIPS Standards for Firms: <https://www.gipsstandards.org/standards/gips-standards-for-firms/>
 - GIPS Standards Handbook for Firms: <https://www.gipsstandards.org/standards/gips-standards-for-firms/gips-standards-handbook-for-firms/>
@@ -87,6 +87,8 @@ Holdings 中允许出现 `Chart 6M`、`1W Return / MTD / YTD / 1Y` 和 `Current 
 
 Risk / Research 的风险统计也必须保持估值频率一致性：先按 daily / weekly / monthly calculation basis 对齐目标 period，再用 period-end 有效观测计算收益；共同节假日不生成样本，单资产缺价进入 missing / insufficient-history 诊断。不得用跨 period stale price 或不同长度持有期收益去补 covariance、correlation、Sharpe 或 target-volatility overlay。
 
+Research target solve 不允许把不可解问题包装成正常 target：多成员 scope 必须有完整有效的 `SAA` 或 `TAA` target set；`sample_covariance` 使用样本估计量 `n - 1`；risk-budget 求解在共同有效收益不足、目标加总错误、求解误差超过阈值或 signed risk share 为负时必须失败或显式 unavailable，不回退到目标权重、等权或 alternate contribution mode。
+
 ### 2.6 风险统计必须来自收益序列
 
 GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收益率序列，而不是资产规模路径。
@@ -108,6 +110,8 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 | 区间边界 | daily `beginning_nav` / `ending_nav` 支撑 initial / final value |
 | 回撤 | `_drawdown_stats()` 基于 TWR growth index，不基于 NAV |
 | 风险样本 | `return_observation_eligible` 控制 realized risk 的有效收益观察 |
+| 样本协方差 | Risk 页与 Research `sample_covariance` 使用 `n - 1` 样本估计 |
+| Research target solve | `_resolve_dimension_target_rows()` 校验完整 target set，`_solve_risk_budget_weights()` 在历史不足或求解失败时抛错 |
 | 物化读模型 | `PortfolioDailySnapshotModel` / holding snapshot / contribution slice |
 | 刷新治理 | `PortfolioCalculationStateModel.refresh_request_id` 对 stale 请求去重，刷新串行 claim；计算期间若收到新请求会再跑一轮 |
 | MWR | `_solve_xirr()` 输出 `irr` / `mwror`，作为补充指标 |
@@ -136,5 +140,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 - drawdown 是否基于 TWR growth index；
 - risk 是否只使用符合 `return_observation_eligible` 的 `daily_twr`；
 - `IRR / MWROR` 缺失是否被解释为补充指标不可用，而不是 TWR 失败；
-- materialized read path 和 dynamic fallback path 是否结果一致；
+- materialized read path 和动态重建 audit path 是否结果一致；
+- Research 是否拒绝缺失 target set、目标加总错误、历史不足或风险预算求解误差过大的 scope；
+- `sample_covariance` 是否仍使用 `n - 1` 样本估计；
 - 文档中的 canonical 口径是否同步更新。

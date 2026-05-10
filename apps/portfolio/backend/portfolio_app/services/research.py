@@ -92,10 +92,6 @@ def _format_solver_kind(value: object) -> str:
         return "Risk Budget"
     if normalized == "single-member":
         return "Single Member"
-    if normalized == "fallback-insufficient-history":
-        return "Fallback: Insufficient History"
-    if normalized == "fallback-solver":
-        return "Fallback: Solver"
     return normalized.replace("-", " ").title()
 
 
@@ -765,15 +761,15 @@ def _build_current_target_signals(
 def _target_source_label(target_row: dict[str, object] | None) -> str:
     if not target_row:
         return "—"
+    override = str(target_row.get("source_label_override") or "").strip()
+    if override:
+        return override
     target_set_type = str(target_row.get("source_target_set_type") or "").strip()
     if target_set_type == "taa":
         return "TAA"
     if target_set_type == "saa":
         return "SAA"
-    selected_dimension = str(target_row.get("selected_dimension") or "").strip()
-    if selected_dimension:
-        return f"Fallback {_format_dimension(selected_dimension)}"
-    return "Fallback"
+    return "Unconfigured"
 
 
 def _build_target_rows(solution: dict[str, object]) -> list[dict[str, object]]:
@@ -871,10 +867,8 @@ def _build_target_assumptions(
         assumptions.append("After recursive sleeve targets are resolved, Research estimates risky-sleeve volatility, scales gross exposure toward target volatility, and sends the residual into cash.")
     elif str(settings_payload.get("capital_mode") or "unit_notional") == "fixed_gross":
         assumptions.append("After recursive sleeve targets are resolved, Research applies a fixed gross-exposure overlay and leaves the residual in cash.")
-    if str((solve_event or {}).get("solver_kind") or "").startswith("fallback"):
-        assumptions.append("If local covariance is weak or history is too short, the solver falls back to target shares instead of forcing an unstable optimization.")
-    if any(not item.get("source_target_set_id") for item in target_rows):
-        assumptions.append("Missing scoped target sets resolve to equal local defaults inside the affected sleeve until an explicit SAA/TAA set is configured.")
+    if any(str(item.get("source_label_override") or "") == "Single Member" for item in target_rows):
+        assumptions.append("Single-member sleeves resolve to 100% of that member; multi-member scopes require an active complete SAA/TAA target set.")
     return assumptions[:5]
 
 
@@ -1301,7 +1295,7 @@ def run_portfolio_research(
             run_row.artifacts_json = []
             session.commit()
             raise
-        except Exception as error:  # pragma: no cover - defensive fallback
+        except Exception as error:  # pragma: no cover - defensive error handling
             run_row.status = "failed"
             run_row.finished_at = _utc_now_iso()
             run_row.error_message = str(error)

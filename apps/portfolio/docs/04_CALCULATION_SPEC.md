@@ -1,12 +1,10 @@
 # PMS 正式版计算口径规格
 
-更新时间：`2026-05-08`
+更新时间：`2026-05-10`
 关联文档：
 
-- [`01_PMS_REFERENCE_BASELINE.md`](./01_PMS_REFERENCE_BASELINE.md)
-- [`02_PRODUCT_PRD.md`](./02_PRODUCT_PRD.md)
-- [`03_DOMAIN_MODEL.md`](./03_DOMAIN_MODEL.md)
 - [`06_GIPS_ALIGNMENT.md`](./06_GIPS_ALIGNMENT.md)
+- [`07_CALCULATION_AUDIT_2026_05_10.md`](./07_CALCULATION_AUDIT_2026_05_10.md)
 
 ## 1. 文档目标
 
@@ -82,6 +80,18 @@
 - `Snapshots` 是由 Analytics 从事实层生成的派生产物；
 - 页面展示不得绕过这些输入直接手填结果字段。
 
+### 1.3 正确性与失败策略
+
+计算层不保留为了“让结果看起来可用”的兼容分支。任何 canonical 指标必须满足其输入、配置、覆盖率和数学条件；条件不满足时，结果应显式进入 `partial`、`unavailable`、`comparator missing`、`insufficient-history` 或失败状态。
+
+严格规则：
+
+- 不用目标权重、等权、历史旧算法或另一维度 target 替代 risk-budget 求解结果；
+- 不用 stale price、跨 period forward fill 或不同长度持有期收益补齐 covariance、correlation、Sharpe、target-volatility overlay 或 risk contribution；
+- 不在 `SAA` / `TAA`、`weight` / `risk_budget`、benchmark / target / alert rule 之间静默互相替代；
+- 单成员 scope 允许输出唯一确定的 100% 权重；现金成员在 covariance-based risk budget 中允许 `target_risk_share = 0`。除此之外，未配置目标不是默认等权目标；
+- UI、API、export 必须展示结果状态与 coverage / solver 诊断，不能把失败条件包装成正常结果。
+
 ## 2. 总体约定
 
 ### 2.1 估值时点
@@ -131,9 +141,9 @@
 规范如下：
 
 - 组合账面估值不得静默切到 total-return basis；若分红或派息已作为交易/现金流入账，再用复权价会造成双算；
-- fund 的 research/risk 序列应优先使用 `total_return_nav`，只有缺失时才回退到 `official_nav`；
-- equity 的 research/risk 序列应优先使用 `adjusted_close`，只有缺失时才回退到 `close`；
-- chart / sparkline 默认也应遵循 total-return-first 的顺序，避免把除权除息导致的机械跳空误当成真实损失。
+- fund 的 research/risk 序列使用 `total_return_nav`；若改用 `official_nav`，必须在结果中标记 quote basis，且不得把分红/派息收益伪装成已复权 total return；
+- equity 的 research/risk 序列使用 `adjusted_close`；若改用 `close`，必须在结果中标记 quote basis，且不得把除权除息导致的机械跳空当成真实损失；
+- chart / sparkline 必须展示实际采用的 quote basis。basis 缺失时，图表可以降级为 `partial / unavailable`，不能静默换基准。
 
 ### 2.2 组合基准货币
 
@@ -233,7 +243,7 @@
 
 若观察频率是稳定交易日频，`periods_per_year` 通常接近 `252`；若存在节假日、缺价或非交易日 carry-forward，系统必须记录并使用实际有效收益观察密度，避免把无市场观察的 0 return 当作风险样本。
 
-协方差 / 相关性计算必须先对每一对序列取共有有效收益日期。协方差矩阵的每个 entry 使用该 entry 自身有效配对日期推断 `periods_per_year` 后年化；相关性矩阵的协方差和两侧方差必须来自同一组配对样本，不能用全量单边方差拼接。Research 的 `ewma_vol_shrinkage_corr_covariance` 使用各标的自身有效日期估计年化 EWMA volatility，再用共有有效日期估计 correlation。
+协方差 / 相关性计算必须先对每一对序列取共有有效收益日期。协方差矩阵的每个 entry 使用该 entry 自身有效配对日期推断 `periods_per_year` 后年化；相关性矩阵的协方差和两侧方差必须来自同一组配对样本，不能用全量单边方差拼接。`sample_covariance` 使用样本协方差估计量，分母为 `n - 1`，且每对样本至少需要两个共同有效 return observation；不得用总体协方差 `n` 分母作为普通样本风险估计。Research 的 `ewma_vol_shrinkage_corr_covariance` 使用各标的自身有效日期估计年化 EWMA volatility，再用共有有效日期估计 correlation。
 
 ### 2.6.1 计算频率与节假日
 
@@ -250,7 +260,7 @@ Risk 与 Research 的 covariance / correlation / risk contribution 必须先确�
 
 如果某一估值日存在缺失数据：
 
-- 价格缺失时，可使用最近可用价格前向填充，但必须记录 `stale_price_flag`；
+- 价格缺失时，状态型 NAV / holdings 可以使用最近可用价格维持账面连续性，但必须记录 `stale_price_flag`，且该日不得作为正常市场收益观察进入 return/risk 样本；
 - benchmark 缺失时，benchmark-relative 指标只在重叠日期上计算，但不影响绝对口径 snapshot 的 `complete` 状态；
 - 若重叠覆盖率低于配置阈值，结果标记为 `partial` 或 `unavailable`；
 - 风控和 review 页面必须显示 coverage ratio，前端不得把缺失数据伪装成正常结果。
@@ -363,7 +373,7 @@ Holdings 可以展示 quote-derived instrument market trend 指标，作为扫�
 - `1W Return / MTD / YTD / 1Y` 只使用标的自身 selected quote series，计算为 `latest_quote / anchor_quote - 1`；
 - selected quote series 按 `quote_selection_policy.total_return -> chart -> valuation -> reference` 选择；若策略为空，则选用截至 as-of 最新的一条 quote basis，不能混用多个 basis；
 - `1W Return` / `1Y` 的 anchor quote 是目标日期或之前最近 quote；
-- `MTD` / `YTD` 的 anchor quote 是月初 / 年初之前最近 quote；若历史不足，则使用期间内第一条 quote 作为 partial-data fallback；
+- `MTD` / `YTD` 的 anchor quote 是月初 / 年初之前最近 quote；若历史不足，则只能使用期间内第一条 quote 作为明确标记的 partial-data anchor，不能展示为完整区间收益；
 - `Current DD` 计算为 `latest_quote / max_available_selected_quote_to_date - 1`；
 - 这些指标不读取 quantity、cash flow、cost basis、FIFO / moving average、realized gain 或 income，因此不属于组合 TWR、holding contribution 或 book P&L。
 
@@ -757,11 +767,11 @@ canonical 规则如下：
 - period analytics 必须把上述结果 materialize 为正式 `ResolvedTargetTimeline` / `ResolvedTargetSegment`，而不是匿名 timeline blob；
 - `TargetSet(type = taa)` 在存储层必须已物化为对已启用维度完整的目标集，运行时不做稀疏 overlay 解析；
 - review period 内若 target 发生切换，系统必须按生效区间分段汇总，而不是拿单一期初或期末 target 解释整个区间；
-- 若用户切到纯分析 taxonomy，系统应明确退回 `absolute only` 或标记 comparator missing。
+- 若用户切到纯分析 taxonomy，系统只能展示 `absolute only`，并标记 comparator missing。
 
 若某项分析缺少其 canonical comparator：
 
-- 结果状态记为 `unavailable` 或退回 `absolute only`
+- 结果状态记为 `unavailable`；若该页面本身支持绝对口径，则只展示 `absolute only`
 - UI 必须明确标识 comparator missing
 - 结果对象必须显式携带 `taxonomy_id` 与按维度解析后的 target source 信息
 - 不允许无提示地改用另一类比较对象
@@ -908,7 +918,7 @@ $$
 - `TargetWeight_i` 来自按维度解析后的 resolved `TargetSetLine.target_weight`
 - canonical target 只能在 selected taxonomy 的 `budgeting_level` 上直接录入；父层节点目标必须派生汇总
 - 首版 canonical target weight 固定为 `portfolio_nav` basis
-- drift 计算前必须先校验 selected `TargetSet` 启用了 `weight` 维度，且在 budgeting level 上形成完整节点集；若存在 gross leverage / overlay，`target_weight` 总和可以大于 `100%`
+- drift 计算前必须先校验 selected `TargetSet` 启用了 `weight` 维度，且在 budgeting level 上形成完整节点集；同一 scope 的 direct members 必须加总为 `100% ± epsilon`
 - `Risk` 的 `SAA Weight` 与 `TAA Weight` comparator 独立计算；若某个 target source 未启用 `weight` 维度，只有该 comparator 记为 `unavailable` / `comparator missing`
 
 ### 9.2 Total drift
@@ -938,7 +948,7 @@ $$
 - `CurrentWeight_i` 在 canonical drift 中也必须使用 `portfolio_nav`；
 - 若某层 target 来自 sleeve-local capital split 或 optimizer recipe，则它不是 canonical drift 的直接输入；只有解析成 `portfolio_nav` basis 的 resolved implementation weight 后，才能进入 drift compare；
 - 因而不能默认用 `ParentWeight × ChildLocalWeight` 机械展开所有层级权重；只有当 child weight 明确也是 capital share 且不会被内部求解器 / 杠杆 / 对冲改写时，该乘法才成立；
-- resolved `target_weight` 必须在 budgeting level 上形成完整节点集，但总和不要求固定为 `100%`；若组合存在 gross leverage / overlay，target gross exposure 可以大于 `100%`；
+- resolved `target_weight` 必须在 budgeting level 上形成完整节点集，并在同一比较分母下加总为 `100% ± epsilon`；若组合存在 gross leverage / overlay，必须由独立 overlay / leverage config 先解析成 implementation target，不能把 gross exposure 直接混入 canonical target drift；
 - 排除现金后的分析口径可用于暴露、集中度或纯分析展示，但不能替代 canonical target drift 口径。
 
 ### 9.4 MVP weight drift source decomposition
@@ -1004,7 +1014,7 @@ Risk 页和 Research solver 使用同一套 covariance model id 与 contribution
 - `sample_covariance`
 - contribution mode: `signed` / `abs`
 
-这里的 `\Sigma` 是年化 covariance matrix。混合日频 / 周频 / 稀疏 NAV 时，先按 2.6.1 的 target calculation frequency 取 period-end 观测，再计算收益；不做 stale 价格生成的 0 return。每个 covariance entry 只使用两侧共同存在的有效 return date，并按这些日期的实际观察密度年化。若共同有效收益不足两期，solver 必须进入 insufficient-history 诊断，而不是用不同长度的持有期收益硬拼协方差。
+这里的 `\Sigma` 是年化 covariance matrix。`sample_covariance` 的日/周/月 period return 样本使用 `n - 1` 分母；EWMA 和 Ledoit-Wolf 这类模型可在模型内部使用其自身估计口径，但必须通过 model id 明确区分。混合日频 / 周频 / 稀疏 NAV 时，先按 2.6.1 的 target calculation frequency 取 period-end 观测，再计算收益；不做 stale 价格生成的 0 return。每个 covariance entry 只使用两侧共同存在的有效 return date，并按这些日期的实际观察密度年化。若共同有效收益不足两期，solver 必须进入 insufficient-history 诊断，而不是用不同长度的持有期收益硬拼协方差。
 
 ### Marginal contribution to variance
 
@@ -1026,7 +1036,7 @@ $$
 
 ### 10.4 Realized risk share
 
-正式版同时保留 `signed` 与 `abs` 两种风险份额口径，并在 UI 和 Research 中使用同一组选项。Research solver 的 primary mode 是 `signed`；当 signed shares 因对冲或负相关导致目标预算不可稳定匹配时，可以显式切换到 `abs` 作为 alternate diagnostic view。
+正式版同时保留 `signed` 与 `abs` 两种风险份额口径，并在 UI 和 Research 中使用同一组选项。Research solver 的 primary mode 是 `signed`；当 signed shares 因对冲或负相关导致目标预算不可稳定匹配时，只能由配置显式切换到 `abs` 作为 alternate diagnostic view，不能在求解失败后自动切换。
 
 Signed share:
 
@@ -1099,9 +1109,13 @@ Research current target solve 使用 planning taxonomy 的层级 scope 做递归
 - 从最末端 sleeve 开始求解，再把每个子 sleeve 的目标权重和收益序列上卷到父 scope；
 - `scope_default` 只解析当前 scope 自己的 `default_target_dimension`，不得因为目标集缺失而静默切到另一个维度；
 - 若当前选中 scope 显式指定 `weight` 或 `risk_budget`，该 override 只作用于选中 scope；子 sleeve 仍按自己的 scope default 求解；
-- `weight` scope 使用该 scope direct members 的 `target_weight` 拟合本地权重；
+- 多成员 scope 必须有 active complete `SAA` 或 `TAA` target set。`TAA` 优先于 `SAA`；两者都缺失、启用维度不完整或目标值加总不正确时，该 scope 求解失败，不生成等权或目标权重替代结果；
+- `weight` scope 使用该 scope direct members 的 `target_weight` 拟合本地权重；已启用的 `weight` 维度必须逐成员显式给出且合计为 `100%`；
 - `risk_budget` scope 使用非现金 direct members 的 `target_risk_share` 求本地目标权重，现金的 `target_risk_share` 必须为 `0`，非现金风险份额加总为 `100%`；
 - 若某个成员被标记为 frozen，优先使用该成员 as-of actual weight；若 actual weight 不存在，只能使用已配置的 `target_weight`，不能把 `target_risk_share` 当作资金权重；
+- risk-budget solve 至少需要两个共同有效 return observations；不足时必须报 `insufficient-history`，不能把 target risk share 当作 target weight；
+- risk-budget solve 的 achieved risk share 最大绝对误差必须在显式阈值内；当前阈值为 `5 percentage points`。超过阈值或产生负 signed risk share 时，该 scope 求解失败，不切换到 `abs` mode，也不返回旧求解器状态；
+- 单成员 scope 只允许输出数学上唯一确定的本地目标：非现金/普通成员权重 `100%`，现金 risk budget `0%`；
 - 根 scope 完成风险 sleeve 权重后，`target_volatility` / `fixed_gross` capital overlay 才对非现金目标权重整体放缩，并把残差写入 cash-like member；没有 cash-like member 时残差只作为显式诊断披露。
 
 每次 run 必须输出 root `solve_event` 和完整 `scope_solve_events`，用于复核每层 scope 的默认维度、实际维度、solver、RC mode、risk gap 与成员数。
@@ -1217,20 +1231,10 @@ daily snapshot、holding snapshot、contribution slice 是可重建的读模型�
 4. `P2`
    factor risk、liquidity / capacity、pre-trade what-if
 
-## 15. 下一步
+## 15. 提交前维护规则
 
-在这份计算规格之后，下一份文档应为：
+任何计算相关改动必须同步检查：
 
-- `05_INFORMATION_ARCHITECTURE.md`
-
-目标是把这里的对象和指标映射到：
-
-- Snapshot
-- Holdings
-- Performance
-- Risk
-- Transactions / Accounts
-- Review
-- Research
-
-并明确每个页面展示哪套分母、哪套权重和哪套 drill-down。
+- [06_GIPS_ALIGNMENT.md](./06_GIPS_ALIGNMENT.md) 是否仍准确描述 GIPS-informed 方法边界；
+- [07_CALCULATION_AUDIT_2026_05_10.md](./07_CALCULATION_AUDIT_2026_05_10.md) 的提交检查项是否仍适用；
+- Portfolio README 的计算层阶段性状态是否需要更新。

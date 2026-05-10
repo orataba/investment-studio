@@ -141,7 +141,7 @@ const RISK_MODEL_OPTIONS: Array<{ value: RiskModelId; label: string; detail: str
     detail: 'EWMA vol + shrunk correlation',
   },
   { value: 'ewma_covariance', label: 'EWMA', detail: 'Exponentially weighted covariance' },
-  { value: 'sample_covariance', label: 'Sample', detail: 'Plain sample covariance' },
+  { value: 'sample_covariance', label: 'Sample', detail: 'Sample covariance, n - 1' },
 ]
 
 const CONTRIBUTION_MODE_OPTIONS: Array<{ value: RiskContributionMode; label: string; detail: string }> = [
@@ -470,7 +470,7 @@ function weightedMean(values: number[], weights: number[]) {
   return values.reduce((total, value, index) => total + value * weights[index], 0) / totalWeight
 }
 
-function populationCovariance(leftValues: number[], rightValues: number[]) {
+function sampleCovariance(leftValues: number[], rightValues: number[]) {
   if (leftValues.length < 2 || rightValues.length !== leftValues.length) {
     return null
   }
@@ -478,7 +478,7 @@ function populationCovariance(leftValues: number[], rightValues: number[]) {
   const rightMean = rightValues.reduce((total, value) => total + value, 0) / rightValues.length
   return (
     leftValues.reduce((total, leftValue, index) => total + (leftValue - leftMean) * (rightValues[index] - rightMean), 0) /
-    leftValues.length
+    (leftValues.length - 1)
   )
 }
 
@@ -500,9 +500,9 @@ function ewmaCovariance(leftValues: number[], rightValues: number[], decay: numb
 }
 
 function sampleCorrelation(leftValues: number[], rightValues: number[]) {
-  const covariance = populationCovariance(leftValues, rightValues)
-  const leftVariance = populationCovariance(leftValues, leftValues)
-  const rightVariance = populationCovariance(rightValues, rightValues)
+  const covariance = sampleCovariance(leftValues, rightValues)
+  const leftVariance = sampleCovariance(leftValues, leftValues)
+  const rightVariance = sampleCovariance(rightValues, rightValues)
   if (covariance == null || leftVariance == null || rightVariance == null || leftVariance <= 0 || rightVariance <= 0) {
     return null
   }
@@ -514,7 +514,7 @@ function estimateCovarianceFromValues(leftValues: number[], rightValues: number[
     return null
   }
   if (modelId === 'sample_covariance') {
-    return populationCovariance(leftValues, rightValues)
+    return sampleCovariance(leftValues, rightValues)
   }
   if (modelId === 'ewma_covariance') {
     return ewmaCovariance(leftValues, rightValues, 0.94)
@@ -574,7 +574,7 @@ function annualizedVarianceFromValues(values: number[], dates: string[], modelId
   }
   const variance =
     modelId === 'sample_covariance'
-      ? populationCovariance(values, values)
+      ? sampleCovariance(values, values)
       : ewmaCovariance(values, values, modelId === 'ewma_covariance' ? 0.94 : 0.97)
   const periodsPerYear = annualizationPeriodsPerYear(dates, values.length)
   return variance == null || periodsPerYear == null ? null : variance * periodsPerYear

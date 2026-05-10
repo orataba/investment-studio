@@ -119,12 +119,6 @@ function formatSolverKind(value: string | null | undefined) {
   if (value === 'single-member') {
     return 'Single Member'
   }
-  if (value === 'fallback-insufficient-history') {
-    return 'Fallback: Insufficient History'
-  }
-  if (value === 'fallback-solver') {
-    return 'Fallback: Solver'
-  }
   return formatLabel(value.replace(/-/g, '_'))
 }
 

@@ -529,11 +529,11 @@ def test_research_covariance_annualizes_each_pair_from_valid_dates() -> None:
     )
 
     expected_daily_variance = (
-        returns[["daily"]].dropna(how="any").cov(ddof=0).loc["daily", "daily"]
+        returns[["daily"]].dropna(how="any").cov(ddof=1).loc["daily", "daily"]
         * _infer_periods_per_year([date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 8), date(2026, 1, 9)])
     )
     expected_pair_covariance = (
-        returns[["daily", "weekly"]].dropna(how="any").cov(ddof=0).loc["daily", "weekly"]
+        returns[["daily", "weekly"]].dropna(how="any").cov(ddof=1).loc["daily", "weekly"]
         * _infer_periods_per_year([date(2026, 1, 1), date(2026, 1, 8)])
     )
 
@@ -619,7 +619,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert len(run_payload["detail"]["target_rows"]) == 2
     assert any(item["label"] == "Defensive Equity" for item in run_payload["detail"]["member_targets"])
     assert any(item["label"] == "Hong Kong Beta" for item in run_payload["detail"]["member_targets"])
-    assert any(item["source_label"] in {"TAA", "SAA", "Fallback Weight", "Fallback Risk Budget"} for item in run_payload["detail"]["target_rows"])
+    assert all(item["source_label"] in {"TAA", "SAA", "Single Member"} for item in run_payload["detail"]["target_rows"])
     assert run_payload["detail"]["solve_event"]["as_of_date"] == "2026-04-15"
     assert len(run_payload["detail"]["target_weight_gaps"]) >= 1
     signal_labels = {item["label"] for item in run_payload["detail"]["signals"]}
@@ -740,7 +740,7 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
     assert top_level_scope["default_target_dimension"] == "risk_budget"
 
 
-def test_research_scope_default_does_not_fallback_to_alternate_dimension(client):
+def test_research_scope_default_requires_configured_dimension_target_set(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
     target_set_response = client.post(
         f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/target-sets",
@@ -787,17 +787,9 @@ def test_research_scope_default_does_not_fallback_to_alternate_dimension(client)
         "/api/portfolios/yungu/research/runs",
         json={"requested_by": "pytest"},
     )
-    assert run_response.status_code == 200, run_response.json()
-    run_payload = run_response.json()
-    solve_event = run_payload["detail"]["solve_event"]
-    target_rows_by_label = {item["label"]: item for item in run_payload["detail"]["target_rows"]}
-
-    assert solve_event["taxonomy_default_target_dimension"] == "risk_budget"
-    assert solve_event["target_dimension"] == "risk_budget"
-    assert target_rows_by_label["Risk Assets"]["source_target_set_type"] is None
-    assert target_rows_by_label["Risk Assets"]["target_risk_share"] == pytest.approx(0.5)
-    assert target_rows_by_label["Rates"]["target_risk_share"] == pytest.approx(0.5)
-    assert target_rows_by_label["Cash Reserve"]["target_risk_share"] == pytest.approx(0.0)
+    assert run_response.status_code == 400, run_response.json()
+    assert "has no active complete" in run_response.json()["detail"]
+    assert "target set" in run_response.json()["detail"]
 
 
 def test_deleting_selected_research_taxonomy_clears_settings(client):
@@ -947,7 +939,7 @@ def test_research_target_volatility_starts_from_full_risk_sleeve_weights(client)
     assert len(run_payload["detail"]["scope_solve_events"]) >= 3
 
 
-def test_research_run_uses_insufficient_history_fallback_for_unaligned_sparse_window(client):
+def test_research_run_rejects_insufficient_history_for_unaligned_sparse_window(client):
     taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
     _create_target_sets(client, taxonomy_id, _node_ids)
 
@@ -968,20 +960,5 @@ def test_research_run_uses_insufficient_history_fallback_for_unaligned_sparse_wi
         "/api/portfolios/yungu/research/runs",
         json={"requested_by": "pytest"},
     )
-    assert run_response.status_code == 200, run_response.json()
-    run_payload = run_response.json()
-    assert run_payload["status"] == "completed"
-    assert "backtest_curve" not in run_payload["detail"]
-    solve_event = run_payload["detail"]["solve_event"]
-    assert solve_event["requested_target_dimension"] == "scope_default"
-    assert solve_event["taxonomy_default_target_dimension"] == "risk_budget"
-    assert solve_event["target_dimension"] == "risk_budget"
-    assert solve_event["solver_kind"] == "fallback-insufficient-history"
-    assert solve_event["covariance_model"] == "ewma_vol_shrinkage_corr_covariance"
-    assert solve_event["risk_contribution_mode"] in {"signed", "abs"}
-    assert solve_event["covariance_observations"] < 2
-    assert len(run_payload["detail"]["target_rows"]) >= 1
-    leaf_targets_by_member = {item["member_id"]: item for item in run_payload["detail"]["leaf_targets"]}
-    assert leaf_targets_by_member["equity-us-abbv"]["configured_risk_share"] is None
-    assert leaf_targets_by_member["fund-hk-2800"]["configured_risk_share"] == pytest.approx(1.0)
-    assert leaf_targets_by_member["fund-us-agg"]["configured_risk_share"] is None
+    assert run_response.status_code == 400, run_response.json()
+    assert "Risk budget solve requires at least two aligned return observations" in run_response.json()["detail"]

@@ -9,7 +9,7 @@
 - 持仓、lots、ledger、performance 由内核服务按需推导
 - `Holdings / Accounts / Transactions / Performance` 已有真实 API 与页面支撑
   `Transactions` 当前支持 create / update / delete 原始事实；内部转仓仍按成对事实管理
-- `Risk` 已有真实工作台，包含 rolling annualized volatility / Sharpe、相关性矩阵、Current Drift 和 point-in-time Risk Contribution；风险窗口、协方差方法和风险贡献模式与 Research 使用同一组口径选项
+- `Risk` 已有真实工作台，包含 rolling annualized volatility / Sharpe、相关性矩阵、Current Drift 和 point-in-time Risk Contribution；风险窗口、协方差方法和风险贡献模式与 Research 使用同一组严格口径
 - `Taxonomies` 已有真实配置工作台，支持层级 sleeve tree、assignment、`TargetSet`、`default planning taxonomy` 与 `cash_bucket` 维护
 - `Research` 已有真实工作台，支持基于 planning taxonomy / TargetSet / 当前持仓的递归 target-weight solve、run history、target weights、member targets、scope solver path、风险预算求解诊断和调仓缺口
 - `Review` 已有真实 period review pack 页面
@@ -21,12 +21,12 @@
   仓库级文档入口，包含数据库工作流和平台边界说明。
 - [../../docs/FRONTEND_DESIGN_BASELINE.md](../../docs/FRONTEND_DESIGN_BASELINE.md)
   当前前端视觉基线，约束白底数据终端、tabs 以下内容节奏和 Portfolio / Fund Detail 的一致性。
-- [docs/01_PMS_REFERENCE_BASELINE.md](./docs/01_PMS_REFERENCE_BASELINE.md)
-- [docs/02_PRODUCT_PRD.md](./docs/02_PRODUCT_PRD.md)
-- [docs/03_DOMAIN_MODEL.md](./docs/03_DOMAIN_MODEL.md)
 - [docs/04_CALCULATION_SPEC.md](./docs/04_CALCULATION_SPEC.md)
-- [docs/05_INFORMATION_ARCHITECTURE.md](./docs/05_INFORMATION_ARCHITECTURE.md)
+  Portfolio 当前 canonical 计算口径。
 - [docs/06_GIPS_ALIGNMENT.md](./docs/06_GIPS_ALIGNMENT.md)
+  GIPS-informed 绩效方法治理边界。
+- [docs/07_CALCULATION_AUDIT_2026_05_10.md](./docs/07_CALCULATION_AUDIT_2026_05_10.md)
+  2026-05-10 计算清查与提交检查记录。
 
 ## 开发原则
 
@@ -94,15 +94,15 @@ npm --prefix apps/portfolio/frontend run build
 
 ## 计算层阶段性状态
 
-截至 `2026-05-08`：
+截至 `2026-05-10`：
 
 - 组合级 TWR 使用日频 true time-weighted 口径：外部流入进分母，外部流出加回分子，区间结果几何复合。
 - FIFO / moving average 只影响 book cost、book realized gain、book unrealized P&L 和 lot 展示；不影响 fair-value based TWR。
 - Performance `Calculation` 使用 `Initial Value + Net External Flow + Period P&L = Final Value` 的期间桥接。资本利得拆分使用期初市值重置后的期间成本，而不是账户 book cost。Calculation 默认视图命名为 `Default`，展示 realized risk attribution；用户可像 Holdings 一样保存自定义表格视图。Group By 默认是 `None`，内部映射到底层 instrument lines；也支持 instrument type / currency / account / taxonomy，TWR 与 contribution 在后端按对应轴计算，表格可导出 CSV。
 - `moving_average` 在底层按 `account + instrument` 维护一个 rolling average cost bucket；API 为 UI 和转仓审计输出一个 synthetic position lot。
 - `Overview`、`Performance`、`Review` 的 TWR index、daily series 和 drawdown 均按查询窗口重新复合；不得复用 inception-to-date 的累计 TWR 作为区间曲线。
-- `Risk` 的 rolling volatility / Sharpe 输入来自 `daily_twr` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。相关性矩阵和风险贡献使用 as-of date + lookback covariance 的单点风险口径；混合频率和稀疏序列先解析 daily / weekly / monthly calculation basis，再按目标 period 的最后有效观测对齐，不跨期前向填充，用共同有效日期和实际观察密度年化 covariance。区间风险贡献归入 Performance `Calculation` 的 realized risk attribution columns。
-- `Research` 的当前 target solve 从最末端 sleeve 递归向上求解；scope default 只使用该 scope 自身的默认目标维度，不静默切到另一个维度。顶层 capital overlay 在风险 sleeve 权重求出后再按目标波动率或总敞口缩放，并把剩余权重放到现金；若共同有效收益不足两期，进入 insufficient-history 诊断，不用稀疏异步价格硬算风险。
+- `Risk` 的 rolling volatility / Sharpe 输入来自 `daily_twr` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。相关性矩阵和风险贡献使用 as-of date + lookback covariance 的单点风险口径；`sample_covariance` 使用样本协方差 `n - 1`，不使用总体协方差。混合频率和稀疏序列先解析 daily / weekly / monthly calculation basis，再按目标 period 的最后有效观测对齐，不跨期前向填充，用共同有效日期和实际观察密度年化 covariance。区间风险贡献归入 Performance `Calculation` 的 realized risk attribution columns。
+- `Research` 的当前 target solve 从最末端 sleeve 递归向上求解；scope default 只使用该 scope 自身的默认目标维度，不静默切到另一个维度。多成员 scope 必须存在 active complete `SAA` 或 `TAA` target set；缺失目标、目标加总错误、共同有效收益不足两期、risk-budget 求解不能满足目标误差阈值时，run 明确失败或标记 unavailable，不回退到目标权重、等权或旧算法。单成员 scope 只保留数学上唯一确定的 100% 权重，现金 risk budget 为 0。顶层 capital overlay 在风险 sleeve 权重求出后再按目标波动率或总敞口缩放，并把剩余权重放到现金。
 - `IRR / MWROR` 是资金效率补充指标；若数学上不可解，不应降低 TWR 口径的 coverage。
 - 绩效方法参考 Portfolio Performance 的账本模型，并吸收 GIPS 的 TWR 优先、外部现金流政策、估值频率和方法一致性原则；本项目不声称 GIPS compliance，详见 [docs/06_GIPS_ALIGNMENT.md](./docs/06_GIPS_ALIGNMENT.md)。
 
