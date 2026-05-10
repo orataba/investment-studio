@@ -21,11 +21,11 @@
   仓库级文档入口，包含数据库工作流和平台边界说明。
 - [../../docs/FRONTEND_DESIGN_BASELINE.md](../../docs/FRONTEND_DESIGN_BASELINE.md)
   当前前端视觉基线，约束白底数据终端、tabs 以下内容节奏和 Portfolio / Fund Detail 的一致性。
-- [docs/04_CALCULATION_SPEC.md](./docs/04_CALCULATION_SPEC.md)
+- [docs/01_CALCULATION_SPEC.md](./docs/01_CALCULATION_SPEC.md)
   Portfolio 当前 canonical 计算口径。
-- [docs/06_GIPS_ALIGNMENT.md](./docs/06_GIPS_ALIGNMENT.md)
+- [docs/02_GIPS_ALIGNMENT.md](./docs/02_GIPS_ALIGNMENT.md)
   GIPS-informed 绩效方法治理边界。
-- [docs/07_CALCULATION_AUDIT_2026_05_10.md](./docs/07_CALCULATION_AUDIT_2026_05_10.md)
+- [docs/03_CALCULATION_AUDIT_2026_05_10.md](./docs/03_CALCULATION_AUDIT_2026_05_10.md)
   2026-05-10 计算清查与提交检查记录。
 
 ## 开发原则
@@ -104,7 +104,7 @@ npm --prefix apps/portfolio/frontend run build
 - `Risk` 的 rolling volatility / Sharpe 输入来自 `daily_twr` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。相关性矩阵和风险贡献使用 as-of date + lookback covariance 的单点风险口径；`sample_covariance` 使用样本协方差 `n - 1`，不使用总体协方差。混合频率和稀疏序列先解析 daily / weekly / monthly calculation basis，再按目标 period 的最后有效观测对齐，不跨期前向填充，用共同有效日期和实际观察密度年化 covariance。区间风险贡献归入 Performance `Calculation` 的 realized risk attribution columns。
 - `Research` 的当前 target solve 从最末端 sleeve 递归向上求解；scope default 只使用该 scope 自身的默认目标维度，不静默切到另一个维度。多成员 scope 必须存在 active complete `SAA` 或 `TAA` target set；缺失目标、目标加总错误、共同有效收益不足两期、risk-budget 求解不能满足目标误差阈值时，run 明确失败或标记 unavailable，不回退到目标权重、等权或旧算法。单成员 scope 只保留数学上唯一确定的 100% 权重，现金 risk budget 为 0。顶层 capital overlay 在风险 sleeve 权重求出后再按目标波动率或总敞口缩放，并把剩余权重放到现金。
 - `IRR / MWROR` 是资金效率补充指标；若数学上不可解，不应降低 TWR 口径的 coverage。
-- 绩效方法参考 Portfolio Performance 的账本模型，并吸收 GIPS 的 TWR 优先、外部现金流政策、估值频率和方法一致性原则；本项目不声称 GIPS compliance，详见 [docs/06_GIPS_ALIGNMENT.md](./docs/06_GIPS_ALIGNMENT.md)。
+- 绩效方法参考 Portfolio Performance 的账本模型，并吸收 GIPS 的 TWR 优先、外部现金流政策、估值频率和方法一致性原则；本项目不声称 GIPS compliance，详见 [docs/02_GIPS_ALIGNMENT.md](./docs/02_GIPS_ALIGNMENT.md)。
 
 ## 加载速度排查记录
 

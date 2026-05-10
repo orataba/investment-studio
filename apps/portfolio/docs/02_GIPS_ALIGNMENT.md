@@ -4,8 +4,8 @@
 
 关联文档：
 
-- [`04_CALCULATION_SPEC.md`](./04_CALCULATION_SPEC.md)
-- [`07_CALCULATION_AUDIT_2026_05_10.md`](./07_CALCULATION_AUDIT_2026_05_10.md)
+- [`01_CALCULATION_SPEC.md`](./01_CALCULATION_SPEC.md)
+- [`03_CALCULATION_AUDIT_2026_05_10.md`](./03_CALCULATION_AUDIT_2026_05_10.md)
 
 ## 1. 定位
 
@@ -62,7 +62,7 @@ GIPS 强调一致应用计算方法、建立政策，并披露方法边界。
 
 本项目采用：
 
-- `04_CALCULATION_SPEC.md` 作为 canonical 计算政策；
+- `01_CALCULATION_SPEC.md` 作为 canonical 计算政策；
 - materialized snapshot 可重建，不能成为不可解释的手填事实；
 - materialized snapshot 刷新必须可重复、可追踪，并在更新并发到达时保留最新 stale 请求；
 - `coverage_state`、`stale_price_flag`、`stale_fx_flag` 必须随关键结果返回；

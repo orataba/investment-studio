@@ -3,8 +3,8 @@
 更新时间：`2026-05-10`
 关联文档：
 
-- [`06_GIPS_ALIGNMENT.md`](./06_GIPS_ALIGNMENT.md)
-- [`07_CALCULATION_AUDIT_2026_05_10.md`](./07_CALCULATION_AUDIT_2026_05_10.md)
+- [`02_GIPS_ALIGNMENT.md`](./02_GIPS_ALIGNMENT.md)
+- [`03_CALCULATION_AUDIT_2026_05_10.md`](./03_CALCULATION_AUDIT_2026_05_10.md)
 
 ## 1. 文档目标
 
@@ -1235,6 +1235,6 @@ daily snapshot、holding snapshot、contribution slice 是可重建的读模型�
 
 任何计算相关改动必须同步检查：
 
-- [06_GIPS_ALIGNMENT.md](./06_GIPS_ALIGNMENT.md) 是否仍准确描述 GIPS-informed 方法边界；
-- [07_CALCULATION_AUDIT_2026_05_10.md](./07_CALCULATION_AUDIT_2026_05_10.md) 的提交检查项是否仍适用；
+- [02_GIPS_ALIGNMENT.md](./02_GIPS_ALIGNMENT.md) 是否仍准确描述 GIPS-informed 方法边界；
+- [03_CALCULATION_AUDIT_2026_05_10.md](./03_CALCULATION_AUDIT_2026_05_10.md) 的提交检查项是否仍适用；
 - Portfolio README 的计算层阶段性状态是否需要更新。
