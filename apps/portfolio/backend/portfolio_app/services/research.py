@@ -308,6 +308,12 @@ def _serialize_run_row(
 ) -> dict[str, object]:
     planning_taxonomy_id = str(row.planning_taxonomy_id or "").strip() or None
     detail = deepcopy(row.detail_json or {})
+    if isinstance(detail.get("top_holdings"), list):
+        detail["top_holdings"] = [
+            _normalize_top_holding_snapshot(item)
+            for item in detail["top_holdings"]
+            if isinstance(item, dict)
+        ]
     artifacts = deepcopy(row.artifacts_json or [])
     return {
         "research_run_id": row.research_run_id,
@@ -330,6 +336,21 @@ def _serialize_run_row(
     }
 
 
+def _normalize_top_holding_snapshot(item: dict[str, object]) -> dict[str, object]:
+    instrument_id = str(item.get("instrument_id") or item.get("asset_id") or "").strip()
+    instrument_type = str(item.get("instrument_type") or item.get("asset_type") or "").strip() or None
+    return {
+        "instrument_id": instrument_id,
+        "instrument_name": str(item.get("instrument_name") or item.get("asset_name") or instrument_id),
+        "instrument_type": instrument_type,
+        "allocation": _safe_float(item.get("allocation")),
+        "market_value_base": _safe_float(item.get("market_value_base")),
+        "cost_basis_base": _safe_float(item.get("cost_basis_base")),
+        "base_currency": str(item.get("base_currency") or "USD"),
+        "price": _safe_float(item.get("price")),
+    }
+
+
 def _build_top_holdings_snapshot(
     statement_positions: list[dict[str, object]],
     *,
@@ -344,16 +365,21 @@ def _build_top_holdings_snapshot(
     for position in sorted_positions[:8]:
         instrument_ref = position.get("instrument_ref") or {}
         rendered.append(
-            {
-                "instrument_id": str(position.get("instrument_id") or ""),
-                "instrument_name": str(instrument_ref.get("instrument_name") or position.get("instrument_id") or ""),
-                "instrument_type": str(instrument_ref.get("instrument_type") or ""),
-                "allocation": _safe_float(position.get("portfolio_weight")),
-                "market_value_base": _safe_float(position.get("market_value_base")),
-                "cost_basis_base": _safe_float(position.get("cost_basis_base")),
-                "base_currency": base_currency,
-                "price": _safe_float(position.get("last_price")),
-            }
+            _normalize_top_holding_snapshot(
+                {
+                    "instrument_id": str(position.get("instrument_id") or ""),
+                    "asset_id": str(position.get("asset_id") or ""),
+                    "instrument_name": str(instrument_ref.get("instrument_name") or ""),
+                    "asset_name": str(instrument_ref.get("asset_name") or ""),
+                    "instrument_type": str(instrument_ref.get("instrument_type") or ""),
+                    "asset_type": str(instrument_ref.get("asset_type") or ""),
+                    "allocation": _safe_float(position.get("portfolio_weight")),
+                    "market_value_base": _safe_float(position.get("market_value_base")),
+                    "cost_basis_base": _safe_float(position.get("cost_basis_base")),
+                    "base_currency": base_currency,
+                    "price": _safe_float(position.get("last_price")),
+                }
+            )
         )
     return rendered
 

@@ -81,7 +81,6 @@ type RelativePerformanceMetrics = {
 type CalculationGroupByOption = {
   value: CalculationGroupByKey
   label: string
-  description: string
   disabled?: boolean
 }
 
@@ -252,16 +251,6 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
   observations: 'Obs',
 }
 
-const CALCULATION_COLUMN_DESCRIPTIONS: Partial<Record<CalculationColumnKey, string>> = {
-  own_vol: 'Annualized volatility of this group’s canonical risk-basis return during the selected period.',
-  own_sharpe: 'Annualized mean return divided by annualized volatility on the canonical risk basis.',
-  own_corr: 'Sample correlation between this group’s risk-basis return and the portfolio risk-basis return.',
-  beta: 'Covariance of this group’s risk-basis return with portfolio risk-basis return divided by portfolio variance.',
-  risk_contribution:
-    'Realized variance contribution share: Cov(group contribution, portfolio return) divided by portfolio variance on the canonical risk basis.',
-  observations: 'Number of eligible risk-basis observations used for the realized risk attribution metrics.',
-}
-
 const DEFAULT_CALCULATION_TABLE_VIEW_STATE: CalculationTableViewState = {
   columns: RISK_ATTRIBUTION_COLUMNS,
   mode: 'risk_attribution',
@@ -271,14 +260,12 @@ const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
   {
     id: 'risk-attribution',
     name: 'Default',
-    description: 'Realized group risk contribution and own-risk metrics.',
     readonly: true,
     state: DEFAULT_CALCULATION_TABLE_VIEW_STATE,
   },
   {
     id: 'full-calculation',
     name: 'Full Calculation',
-    description: 'Period P&L, gain split, flows, TWR, and return contribution.',
     readonly: true,
     state: {
       columns: FULL_CALCULATION_COLUMNS,
@@ -288,7 +275,6 @@ const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
   {
     id: 'pnl-breakdown',
     name: 'P&L Breakdown',
-    description: 'Compact realized, unrealized, income, expense, and FX attribution.',
     readonly: true,
     state: {
       columns: [
@@ -1145,29 +1131,22 @@ function PerformancePage() {
       {
         value: 'none',
         label: 'None',
-        description: 'Show instrument lines directly without aggregating them into a higher-level group.',
       },
       {
         value: 'instrument_type',
         label: 'Instrument Type',
-        description: 'Group period calculation rows by instrument type, with cash kept in a cash line.',
       },
       {
         value: 'currency',
         label: 'Currency',
-        description: 'Group position and cash effects by local currency.',
       },
       {
         value: 'account',
         label: 'Account',
-        description: 'Group period calculation rows by portfolio account or custody sleeve.',
       },
       {
         value: 'taxonomy',
         label: 'Taxonomy',
-        description: defaultPlanningTaxonomy
-          ? `Group rows by the default planning taxonomy: ${defaultPlanningTaxonomy.name}.`
-          : 'No default planning taxonomy is configured for this portfolio.',
         disabled: !defaultPlanningTaxonomy,
       },
     ],
@@ -1576,13 +1555,6 @@ function PerformancePage() {
   )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} instruments/cash` : ''}${
     calculationRiskStatusLabel ? ` · ${calculationRiskStatusLabel}` : ''
   }`
-  const calculationStatusLabel =
-    (calculationLoading && calculationWorkspace) ||
-    (calculationGroupsLoading && calculationGroupsWorkspace)
-      ? `Updating ${calculationGroupLabel.toLowerCase()} calculation…`
-      : calculationTableMode === 'risk_attribution'
-        ? 'Building canonical risk attribution…'
-        : 'Building performance calculation…'
   const riskContributionTotal = riskAttributionRows.reduce(
     (total, row) => total + (finiteNumber(row.realized_risk_contribution) ?? 0),
     0,
@@ -1940,10 +1912,10 @@ function PerformancePage() {
 
         {error ? <div className="inline-notice inline-notice-error">{error}</div> : null}
         {benchmarkError ? <div className="inline-notice inline-notice-error">{benchmarkError}</div> : null}
-        {loading && !workspace ? <CalculationStatus label="Loading performance workspace…" /> : null}
-        {loading && workspace ? <CalculationStatus label="Refreshing performance workspace…" /> : null}
+        {loading && !workspace ? <CalculationStatus /> : null}
+        {loading && workspace ? <CalculationStatus /> : null}
         {!loading && !workspace && !error ? (
-          <div className="empty-state">Select a portfolio to review performance.</div>
+          <div className="empty-state">No data.</div>
         ) : null}
 
         {workspace && summary ? (
@@ -2014,21 +1986,16 @@ function PerformancePage() {
               {calculationGroupsError ? (
                 <div className="inline-notice inline-notice-error">{calculationGroupsError}</div>
               ) : null}
-              {calculationLoading || calculationGroupsLoading ? (
-                <CalculationStatus label={calculationStatusLabel} />
-              ) : null}
+              {calculationLoading || calculationGroupsLoading ? <CalculationStatus /> : null}
               <div className="table-shell">
                 <table className="transactions-table performance-calculation-table">
                   <thead>
                     <tr>
-                      {visibleCalculationColumns.map((column) => {
-                        const description = CALCULATION_COLUMN_DESCRIPTIONS[column]
-                        return (
-                          <th key={column} title={description}>
-                            {CALCULATION_COLUMN_LABELS[column]}
-                          </th>
-                        )
-                      })}
+                      {visibleCalculationColumns.map((column) => (
+                        <th key={column}>
+                          {CALCULATION_COLUMN_LABELS[column]}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
@@ -2037,14 +2004,14 @@ function PerformancePage() {
                     ) : calculationGroupsLoading ? (
                       <TableStatusRow
                         colSpan={visibleCalculationColumns.length}
-                        label={`Loading ${calculationGroupLabel.toLowerCase()} calculation…`}
+                        label="Loading"
                       />
                     ) : calculationGroupsError ? (
                       <TableStatusRow colSpan={visibleCalculationColumns.length} label={calculationGroupsError} tone="error" />
                     ) : (
                       <TableStatusRow
                         colSpan={visibleCalculationColumns.length}
-                        label={`No ${calculationGroupLabel.toLowerCase()} calculation rows available.`}
+                        label="No rows."
                       />
                     )}
                   </tbody>
@@ -2076,7 +2043,6 @@ function PerformancePage() {
                 onClick={() => setCalculationModeDraft('risk_attribution')}
               >
                 <span>Group Attribution Rows</span>
-                <small>Show top-level group lines with portfolio-relative risk attribution metrics.</small>
               </button>
               <button
                 type="button"
@@ -2086,14 +2052,13 @@ function PerformancePage() {
                 onClick={() => setCalculationModeDraft('calculation')}
               >
                 <span>Calculation Ledger Rows</span>
-                <small>Show initial/final value, flows, group rows, and available child rows.</small>
               </button>
             </div>
 
             <div className="holdings-modal-search">
               <input
                 className="holdings-modal-search-input"
-                placeholder="Search by field name or code"
+                placeholder="Search fields"
                 value={calculationColumnSearch}
                 onChange={(event) => setCalculationColumnSearch(event.target.value)}
               />
@@ -2121,9 +2086,8 @@ function PerformancePage() {
                 {filteredCalculationColumns.length ? (
                   filteredCalculationColumns.map(({ column, groupLabel }) => {
                     const locked = column === LOCKED_CALCULATION_COLUMN
-                    const description = CALCULATION_COLUMN_DESCRIPTIONS[column]
                     return (
-                      <label className="holdings-field-item" key={`${groupLabel}:${column}`} title={description}>
+                      <label className="holdings-field-item" key={`${groupLabel}:${column}`}>
                         <input
                           type="checkbox"
                           checked={calculationColumnDraft.includes(column)}
@@ -2142,7 +2106,7 @@ function PerformancePage() {
                     )
                   })
                 ) : (
-                  <div className="holdings-field-empty">No fields matched the current search.</div>
+                  <div className="holdings-field-empty">No fields.</div>
                 )}
               </div>
             </div>
@@ -2179,7 +2143,7 @@ function PerformancePage() {
             <div className="holdings-modal-header">
               <div>
                 <div className="panel-title">Group By</div>
-                <div className="section-heading">Choose Grouping Dimension</div>
+                <div className="section-heading">Grouping</div>
               </div>
               <button type="button" onClick={() => setCalculationGroupByOpen(false)}>
                 Close
@@ -2197,7 +2161,6 @@ function PerformancePage() {
                   disabled={option.disabled}
                 >
                   <span>{option.label}</span>
-                  <small>{option.description}</small>
                 </button>
               ))}
             </div>

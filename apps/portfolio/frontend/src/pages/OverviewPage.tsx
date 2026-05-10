@@ -426,7 +426,7 @@ function StrategySleeveDonut({
   const visibleSegments = segments.filter((segment) => segment.value > 0)
   const total = visibleSegments.reduce((sum, segment) => sum + segment.value, 0)
   if (!visibleSegments.length || total <= 0) {
-    return <div className="price-chart-empty">No sleeve allocations are available.</div>
+    return <div className="price-chart-empty">No sleeves.</div>
   }
 
   const radius = 44
@@ -467,7 +467,6 @@ function StrategySleeveDonut({
             <span style={{ background: DONUT_COLORS[index % DONUT_COLORS.length] }} />
             <div>
               <strong>{segment.label}</strong>
-              <small>{segment.detail}</small>
             </div>
             <em>{segment.valueLabel}</em>
           </div>
@@ -1079,10 +1078,10 @@ export default function OverviewPage() {
         {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
         {performanceError ? <div className="inline-notice inline-notice-error">{performanceError}</div> : null}
 
-        {workspaceLoading ? <CalculationStatus label="Loading portfolio summary, holdings, and strategy sleeves…" /> : null}
+        {workspaceLoading ? <CalculationStatus /> : null}
 
         {!workspaceLoading && !holdingsWorkspace && !workspaceError ? (
-          <div className="empty-state">No overview workspace is available for this portfolio.</div>
+          <div className="empty-state">No data.</div>
         ) : null}
 
         {!workspaceLoading && holdingsWorkspace ? (
@@ -1112,7 +1111,7 @@ export default function OverviewPage() {
                     </div>
                     {benchmarkError ? <div className="overview-benchmark-error">{benchmarkError}</div> : null}
                     {performanceLoading && !performanceWorkspace ? (
-                      <CalculationStatus label="Building NAV path and drawdown summary…" />
+                      <CalculationStatus />
                     ) : null}
                     {!performanceLoading && performanceWorkspace ? (
                       <PerformanceNavChart
@@ -1215,7 +1214,7 @@ export default function OverviewPage() {
                           </tr>
                         ))
                       ) : (
-                        <TableStatusRow colSpan={15} label="No monthly return buckets available." />
+                        <TableStatusRow colSpan={15} label="No monthly returns." />
                       )}
                     </tbody>
                   </table>
@@ -1237,7 +1236,7 @@ export default function OverviewPage() {
                   <RiskRankedBars
                     items={topHoldingBarItems}
                     ariaLabel="Top holdings ranked by current weight"
-                    emptyLabel="No holdings are available."
+                    emptyLabel="No holdings."
                   />
                 </section>
               </div>
@@ -1281,7 +1280,7 @@ export default function OverviewPage() {
                       ) : (
                         <TableStatusRow
                           colSpan={Math.max(1, visibleTopHoldingColumns.length)}
-                          label="No holdings are available for this portfolio."
+                          label="No holdings."
                         />
                       )}
                     </tbody>
@@ -1298,7 +1297,7 @@ export default function OverviewPage() {
               <div className="overview-columns-modal-header">
                 <div>
                   <div className="panel-title">Data Columns</div>
-                  <div className="portfolio-detail-meta">Configure Top Holdings Detail</div>
+                  <div className="portfolio-detail-meta">Top Holdings Detail</div>
                 </div>
                 <button type="button" onClick={() => setTopHoldingColumnsOpen(false)}>
                   Close

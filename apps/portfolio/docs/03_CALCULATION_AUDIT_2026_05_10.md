@@ -33,9 +33,27 @@ The review standard is correctness first: fair-value performance, external cash-
 - Enforced target non-negativity and target total validation for Research scope resolution.
 - Changed Research and frontend Risk `sample_covariance` to `n - 1`.
 - Removed stale frontend labels for old Research solver states.
-- Updated Portfolio README, calculation spec, domain model, PRD and GIPS-informed methodology docs to match the strict calculation policy.
+- Updated Portfolio README, calculation spec and GIPS-informed methodology docs to match the strict calculation policy.
 
-## 4. Submission Checklist
+## 4. Cache And Read-Path Follow-Up
+
+The same release pass rechecked the Portfolio background calculation and cache path:
+
+- materialized holdings rows now include instrument market profile, quote-derived trend/risk fields and resolved risk frequency;
+- holdings workspace reads return the materialized profile when it matches the current risk basis instead of rebuilding every row;
+- legacy `asset_*` instrument references are normalized before boundary holdings and Research workbench responses are serialized;
+- daily snapshot calculation version was bumped so stale materialized rows are rebuilt instead of silently reused.
+
+## 5. UI Copy Standard
+
+Portfolio pages use concise terminal copy:
+
+- loading states display `Loading`;
+- empty states use short labels such as `No data.` or `No rows.`;
+- option descriptions, nonessential notes and long hover prompts are not shown in the page chrome;
+- diagnostic copy remains only for errors, validation failures and unavailable states that affect user decisions.
+
+## 6. Submission Checklist
 
 Before merging a calculation change:
 

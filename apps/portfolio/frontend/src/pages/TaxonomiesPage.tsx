@@ -165,13 +165,11 @@ function TableStatusRow({
 function TaxonomyModal({
   open,
   title,
-  description,
   onClose,
   children,
 }: {
   open: boolean
   title: string
-  description?: string
   onClose: () => void
   children: ReactNode
 }) {
@@ -191,7 +189,6 @@ function TaxonomyModal({
         <div className="taxonomy-modal-header">
           <div>
             <div className="panel-title">{title}</div>
-            {description ? <div className="portfolio-detail-meta">{description}</div> : null}
           </div>
           <button type="button" className="table-inline-button" onClick={onClose}>
             Close
@@ -1155,7 +1152,6 @@ export default function TaxonomiesPage() {
     selectedTaxonomyBudgetingLevel,
     selectedTaxonomyRootDefaultTargetDimension,
   )
-  const nodeCreateParentNode = nodeCreateParentId ? nodeById.get(nodeCreateParentId) ?? null : null
   const nodeCreateAnchorNode = nodeCreateAnchorNodeId ? nodeById.get(nodeCreateAnchorNodeId) ?? null : null
   const contextMenuNode = contextMenuState?.kind === 'node' ? nodeById.get(contextMenuState.nodeId) ?? null : null
   const contextMenuEntity =
@@ -1168,7 +1164,6 @@ export default function TaxonomiesPage() {
       : nodeCreateMode === 'sibling'
         ? `Add Same-Level Node${nodeCreateAnchorNode ? ` · ${nodeCreateAnchorNode.node_name}` : ''}`
         : `Add Child Node${nodeCreateAnchorNode ? ` · ${nodeCreateAnchorNode.node_name}` : ''}`
-  const nodeCreateParentLabel = nodeCreateParentNode ? nodeCreateParentNode.node_name : 'Root'
   const editingNode = nodeEditId ? nodeById.get(nodeEditId) ?? null : null
   const allowedTargetDimensions = allowedDimensionsForBudgetingLevel(selectedTaxonomy?.budgeting_level)
   const scopeMembersByScopeKey = useMemo(() => {
@@ -2201,9 +2196,9 @@ export default function TaxonomiesPage() {
       {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
       {actionError ? <div className="inline-notice inline-notice-error">{actionError}</div> : null}
       {supplementalNotice ? <div className="inline-notice">{supplementalNotice}</div> : null}
-      {loading ? <CalculationStatus label="Loading taxonomy catalog, current holdings, and account coverage…" /> : null}
+      {loading ? <CalculationStatus /> : null}
 
-      {!loading && !catalog && !workspaceError ? <div className="empty-state">No taxonomy catalog is available.</div> : null}
+      {!loading && !catalog && !workspaceError ? <div className="empty-state">No data.</div> : null}
 
       {!workspaceError ? (
         <>
@@ -2381,7 +2376,7 @@ export default function TaxonomiesPage() {
                         ) : (
                           <tr className="table-status-row">
                             <td colSpan={8} className="empty-state-cell">
-                              <span>No nodes yet.</span>{' '}
+                              <span>No nodes.</span>{' '}
                               <button type="button" className="table-inline-button" onClick={() => startNodeCreate('root')}>
                                 Add Root
                               </button>
@@ -2465,7 +2460,6 @@ export default function TaxonomiesPage() {
           <TaxonomyModal
             open={showTaxonomyCreate}
             title="New Taxonomy"
-            description="Create a new taxonomy, then build sleeves and assign instruments from the tree."
             onClose={() => setShowTaxonomyCreate(false)}
           >
             <form className="transaction-form taxonomy-form-compact" onSubmit={(event) => void handleCreateTaxonomy(event)}>
@@ -2572,7 +2566,6 @@ export default function TaxonomiesPage() {
           <TaxonomyModal
             open={showTaxonomyDetails && Boolean(selectedTaxonomy)}
             title="Taxonomy Details"
-            description={selectedTaxonomy ? `${selectedTaxonomy.name} · ${formatLabel(selectedTaxonomy.primary_assignment_scope)}` : undefined}
             onClose={() => setShowTaxonomyDetails(false)}
           >
             {selectedTaxonomy ? (
@@ -2701,7 +2694,6 @@ export default function TaxonomiesPage() {
           <TaxonomyModal
             open={showNodeCreate}
             title={nodeCreateContextLabel}
-            description={`Parent: ${nodeCreateParentLabel}`}
             onClose={() => setShowNodeCreate(false)}
           >
             <form className="transaction-form taxonomy-form-compact" onSubmit={(event) => void handleCreateNode(event)}>
@@ -2749,7 +2741,6 @@ export default function TaxonomiesPage() {
           <TaxonomyModal
             open={showNodeEdit && Boolean(editingNode)}
             title="Rename Node"
-            description={editingNode ? editingNode.node_name : undefined}
             onClose={() => setShowNodeEdit(false)}
           >
             {editingNode ? (

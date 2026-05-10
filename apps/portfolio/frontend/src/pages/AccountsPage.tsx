@@ -327,7 +327,7 @@ export default function AccountsPage() {
         </div>
 
         {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}
-        {loading ? <CalculationStatus label={workspace ? 'Recalculating…' : 'Loading…'} /> : null}
+        {loading ? <CalculationStatus /> : null}
         {error ? <div className="error-state">{error}</div> : null}
 
         {!loading && !error && workspace ? (
@@ -504,7 +504,7 @@ export default function AccountsPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="empty-state">No account selected.</div>
+                    <div className="empty-state">No account.</div>
                   )}
                 </article>
 
@@ -532,7 +532,7 @@ export default function AccountsPage() {
                       </table>
                     </div>
                   ) : (
-                    <div className="empty-state">No derived positions for the selected account yet.</div>
+                    <div className="empty-state">No positions.</div>
                   )}
                 </article>
 
@@ -569,7 +569,7 @@ export default function AccountsPage() {
                         </table>
                       </div>
                   ) : (
-                    <div className="empty-state">No transaction facts are linked to this account yet.</div>
+                    <div className="empty-state">No transactions.</div>
                   )}
                 </article>
               </div>
@@ -793,9 +793,6 @@ export default function AccountsPage() {
                           </label>
                         )
                       })}
-                    </div>
-                    <div className="portfolio-detail-meta">
-                      Leave empty to allow every currently supported inbound instrument type.
                     </div>
                   </fieldset>
                 ) : (

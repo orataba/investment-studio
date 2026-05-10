@@ -32,7 +32,7 @@ _LOCAL_REFRESH_LOCKS: dict[str, Lock] = {}
 _LOCAL_REFRESH_LOCKS_GUARD = Lock()
 _RUNNING_REFRESH_WAIT_SECONDS = 30.0
 _RUNNING_REFRESH_POLL_SECONDS = 0.1
-DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260510-materialized-calculation-group-axes"
+DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260510-materialized-holdings-risk-frequency"
 
 
 def _current_utc_timestamp() -> str:
@@ -705,7 +705,11 @@ def _aggregate_holding_rows(
         aggregated_rows.append(
             {
                 "line_id": instrument_id,
-                "instrument_core": deepcopy(first_row.get("instrument_ref") or {}),
+                "instrument_core": performance.normalize_instrument_core(
+                    instrument_id,
+                    first_row.get("instrument_ref") if isinstance(first_row.get("instrument_ref"), dict) else None,
+                    fallback_currency=str(first_row.get("currency") or "USD"),
+                ),
                 "quantity": _sum_complete([row.get("quantity") for row in instrument_rows]),
                 "last_price": _first_present(instrument_rows, "last_price"),
                 "quote_as_of_date": _first_present(instrument_rows, "quote_as_of_date"),

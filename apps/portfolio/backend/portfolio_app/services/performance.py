@@ -8,8 +8,8 @@ from typing import cast
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency, period_end_date
 from portfolio_app.services.instrument_charts import (
+    build_instrument_holdings_market_profile_from_detail,
     build_instrument_sparkline_from_detail,
-    build_instrument_trend_metrics_from_detail,
 )
 from portfolio_app.core.settings import get_settings
 from portfolio_app.services.instrument_registry import (
@@ -53,6 +53,7 @@ NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES = {
     "return_of_capital",
 }
 DAYS_PER_YEAR = 365.25
+_SUPPORTED_INSTRUMENT_TYPES = {"fund", "bond", "equity", "cash", "fx", "other"}
 
 
 def _safe_float(value: object) -> float | None:
@@ -62,6 +63,32 @@ def _safe_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def normalize_instrument_core(
+    instrument_id: str,
+    instrument_ref: dict[str, object] | None,
+    *,
+    fallback_currency: str = "USD",
+) -> dict[str, object]:
+    ref = instrument_ref if isinstance(instrument_ref, dict) else {}
+    resolved_id = str(ref.get("instrument_id") or ref.get("asset_id") or instrument_id or "").strip()
+    resolved_type = str(ref.get("instrument_type") or ref.get("asset_type") or "other").strip().lower()
+    if resolved_type not in _SUPPORTED_INSTRUMENT_TYPES:
+        resolved_type = "other"
+    return {
+        "instrument_id": resolved_id or str(instrument_id or "").strip(),
+        "instrument_name": str(
+            ref.get("instrument_name")
+            or ref.get("asset_name")
+            or resolved_id
+            or instrument_id
+            or ""
+        ),
+        "instrument_type": resolved_type,
+        "currency": str(ref.get("currency") or fallback_currency or "USD").upper(),
+        "identifiers": list(ref.get("identifiers") or []) if isinstance(ref.get("identifiers"), list) else [],
+    }
 
 
 def _parse_iso_date(value: object) -> date | None:
@@ -507,12 +534,22 @@ def _position_buckets_by_account_instrument_from_lots(position_lots: list[dict[s
                 "quantity": 0.0,
                 "cost_basis": 0.0,
                 "open_position_lot_count": 0,
+                "holding_start_date": None,
                 "cost_basis_methods": set(),
             },
         )
         bucket["quantity"] += _safe_float(position_lot.get("remaining_quantity")) or 0.0
         bucket["cost_basis"] += _safe_float(position_lot.get("remaining_cost_basis")) or 0.0
         bucket["open_position_lot_count"] += 1
+        holding_start_date = _parse_iso_date(position_lot.get("acquisition_date")) or _parse_iso_date(
+            position_lot.get("opened_at")
+        )
+        current_holding_start_date = bucket.get("holding_start_date")
+        if holding_start_date is not None and (
+            not isinstance(current_holding_start_date, date)
+            or holding_start_date < current_holding_start_date
+        ):
+            bucket["holding_start_date"] = holding_start_date
         bucket["cost_basis_methods"].add(str(position_lot.get("cost_basis_method") or "fifo"))
 
     rendered_buckets: list[dict[str, object]] = []
@@ -567,6 +604,7 @@ def _build_materialized_holding_rows(
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
     nav: float | None,
+    calculation_frequency: CalculationFrequency,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for bucket in account_instrument_buckets:
@@ -592,6 +630,7 @@ def _build_materialized_holding_rows(
             if isinstance(detail, dict)
             else None
         )
+        holding_start_date = _parse_iso_date(bucket.get("holding_start_date"))
         last_price = _safe_float((price_point or {}).get("value"))
         market_value = _position_market_value(
             quantity=quantity,
@@ -606,10 +645,18 @@ def _build_materialized_holding_rows(
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
         )
-        instrument_trend_metrics = (
-            build_instrument_trend_metrics_from_detail(
+        instrument_core = normalize_instrument_core(
+            instrument_id,
+            bucket.get("instrument_ref") if isinstance(bucket.get("instrument_ref"), dict) else None,
+            fallback_currency=currency,
+        )
+        instrument_market_profile = (
+            build_instrument_holdings_market_profile_from_detail(
                 detail,
+                instrument_id=instrument_id,
                 as_of_date=as_of_date,
+                holding_start_date=holding_start_date,
+                calculation_frequency=calculation_frequency,
             )
             if isinstance(detail, dict)
             else {}
@@ -619,7 +666,7 @@ def _build_materialized_holding_rows(
                 "line_id": f"{account_id}:{instrument_id}",
                 "account_id": account_id,
                 "instrument_id": instrument_id,
-                "instrument_ref": deepcopy(bucket.get("instrument_ref") or {}),
+                "instrument_ref": instrument_core,
                 "quantity": quantity,
                 "cost_basis_method": str(bucket.get("cost_basis_method") or "fifo"),
                 "cost_basis": cost_basis,
@@ -650,7 +697,7 @@ def _build_materialized_holding_rows(
                     if isinstance(detail, dict)
                     else []
                 ),
-                **instrument_trend_metrics,
+                **instrument_market_profile,
                 "coverage_status": "price-nav-fx" if converted_market_value is not None else "unpriced",
             }
         )
@@ -1376,6 +1423,24 @@ def build_daily_portfolio_snapshots(
     if include_materialized_rows:
         for transaction in sorted_transactions:
             transactions_by_date[str(transaction.get("trade_date") or "")].append(transaction)
+    materialized_calculation_frequency: CalculationFrequency = "daily"
+    if include_materialized_rows:
+        materialized_risk_instrument_ids = _instrument_ids_for_calculation_risk_basis(
+            portfolio,
+            accounts,
+            sorted_transactions,
+            start_date=resolved_start_date,
+            end_date=resolved_end_date,
+        )
+        materialized_risk_frequency_profile = calculation_frequency_profile_for_instruments(
+            materialized_risk_instrument_ids,
+            end_date=resolved_end_date,
+            detail_loader=get_registry_instrument_detail,
+        )
+        materialized_calculation_frequency = cast(
+            CalculationFrequency,
+            str(materialized_risk_frequency_profile.get("resolved_frequency") or "daily"),
+        )
 
     snapshots: list[dict[str, object]] = []
     last_complete_nav: float | None = None
@@ -1766,6 +1831,7 @@ def build_daily_portfolio_snapshots(
                 direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
                 nav=nav,
+                calculation_frequency=materialized_calculation_frequency,
             )
             contribution_slices: list[dict[str, object]] = []
             for contribution_axis in MATERIALIZED_CONTRIBUTION_AXES:
@@ -2715,7 +2781,11 @@ def _build_boundary_holding_records(
             {
                 "position_id": str(bucket.get("instrument_id") or ""),
                 "instrument_id": str(bucket.get("instrument_id") or ""),
-                "instrument_ref": deepcopy(bucket.get("instrument_ref") or {}),
+                "instrument_ref": normalize_instrument_core(
+                    str(bucket.get("instrument_id") or ""),
+                    bucket.get("instrument_ref") if isinstance(bucket.get("instrument_ref"), dict) else None,
+                    fallback_currency=currency,
+                ),
                 "quantity": quantity,
                 "cost_basis_method": str(bucket.get("cost_basis_method") or "fifo"),
                 "cost_basis": cost_basis,

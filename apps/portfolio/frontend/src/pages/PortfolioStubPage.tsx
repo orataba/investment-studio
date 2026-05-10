@@ -12,7 +12,7 @@ export default function PortfolioStubPage({ title }: PortfolioStubPageProps) {
         <div className="panel-header">
           <div className="panel-title">{title}</div>
         </div>
-        <div className="empty-state">No data available.</div>
+        <div className="empty-state">No data.</div>
       </section>
     </PortfolioWorkspaceLayout>
   )

@@ -644,20 +644,15 @@ def _chart_points_payload(chart: dict[str, object] | None) -> list[dict[str, obj
     ]
 
 
-def build_instrument_holdings_market_profile(
-    instrument_id: str,
+def build_instrument_holdings_market_profile_from_detail(
+    detail: dict[str, object],
     *,
+    instrument_id: str,
     as_of_date: date,
     holding_start_date: date | None = None,
     max_points: int = 48,
     calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
-    detail = get_registry_instrument_detail(instrument_id)
-    if not isinstance(detail, dict):
-        return empty_instrument_holdings_market_profile(
-            holding_start_date=holding_start_date,
-            calculation_frequency=calculation_frequency,
-        )
     charts = {
         f"price_chart_{range_key}": _chart_points_payload(
             build_instrument_price_chart_from_detail(
@@ -679,3 +674,27 @@ def build_instrument_holdings_market_profile(
             calculation_frequency=calculation_frequency,
         ),
     }
+
+
+def build_instrument_holdings_market_profile(
+    instrument_id: str,
+    *,
+    as_of_date: date,
+    holding_start_date: date | None = None,
+    max_points: int = 48,
+    calculation_frequency: CalculationFrequency = "daily",
+) -> dict[str, object]:
+    detail = get_registry_instrument_detail(instrument_id)
+    if not isinstance(detail, dict):
+        return empty_instrument_holdings_market_profile(
+            holding_start_date=holding_start_date,
+            calculation_frequency=calculation_frequency,
+        )
+    return build_instrument_holdings_market_profile_from_detail(
+        detail,
+        instrument_id=instrument_id,
+        as_of_date=as_of_date,
+        holding_start_date=holding_start_date,
+        max_points=max_points,
+        calculation_frequency=calculation_frequency,
+    )

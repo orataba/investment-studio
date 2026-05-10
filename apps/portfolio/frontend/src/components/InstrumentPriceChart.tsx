@@ -158,13 +158,13 @@ export default function InstrumentPriceChart({
       {error ? <div className="price-chart-empty price-chart-empty-error">{error}</div> : null}
       {!error && !chartGeometry ? (
         <div className="price-chart-empty">
-          {loading ? 'Loading price trend…' : 'No chart history is available for the selected instrument.'}
+          {loading ? 'Loading' : 'No chart data.'}
         </div>
       ) : null}
 
       {!error && chartGeometry ? (
         <div className="price-chart-shell">
-          {loading ? <div className="price-chart-overlay-note">Refreshing…</div> : null}
+          {loading ? <div className="price-chart-overlay-note">Loading</div> : null}
           <svg
             className="price-chart-svg"
             viewBox={`0 0 ${width} ${height}`}

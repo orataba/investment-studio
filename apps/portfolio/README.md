@@ -59,6 +59,7 @@ uvicorn portfolio_app.main:app --reload --host 127.0.0.1 --port 8001
 - research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理；当前产物以 target weights、member targets、leaf targets、solve event、scope solve events 和 target weight gaps 为主
 - backend 顶层包名现在是 `portfolio_app`
 - daily snapshots 已物化到数据库，并显式保存每日 `beginning_nav` / `ending_nav`；`Performance`、`Holdings`、instrument/account contribution 读路径默认复用物化结果。交易、账户或行情变更会用 `refresh_request_id` 把相关组合标记为 stale 并触发刷新。若刷新中又收到新数据，当前计算不会清掉新的 stale 标记，而是串行再跑一轮后才置为 current。
+- `Holdings` 的物化行包含 instrument market profile 与 resolved risk frequency；读路径命中物化 profile 时不再逐行重建行情趋势和风险字段。
 
 ### 2. 前端
 
@@ -111,6 +112,10 @@ npm --prefix apps/portfolio/frontend run build
 2026-05-02 对 Portfolio 页面加载链路做了一次只读排查。当前本地 portfolio 数据量不大：`portfolio` 2 条、`transaction` 39 条、`taxonomy_node` 28 条、`target_set_line` 168 条；但 shared instrument registry 已有 `instrument_market_data` 约 27,439 条。因此加载慢主要不是 portfolio 私有表过大，而是页面首屏并行触发多条重计算链路，每条链路又独立重放交易、重建 position lots、读取 shared instrument 行情。
 
 2026-05-03 已完成 daily snapshot / holding snapshot / contribution slice 的物化读模型，核心 performance 和 holdings 读路径不再每次从零生成全窗口 daily snapshots。下面记录保留为历史排查背景；后续性能工作重点转为增量刷新、shared instrument detail 缓存和 Review/Risk 多接口结果复用。
+
+2026-05-10 对后台计算、缓存和读路径做了复查：`Holdings` 物化行已补齐 price chart、trend/risk metric、holding start date 与 resolved risk frequency；`/api/workspace/holdings` 可直接返回物化 profile。实测本地组合 `1-2` 从约 `0.67s` 降到 `0.15s - 0.19s`，组合 `3` 从约 `1.08s - 1.22s` 降到 `0.29s - 0.33s`。同时修复旧 `asset_*` instrument ref 在 boundary holdings 与 research workbench 中触发 response validation 失败的问题。
+
+前端页面文案也按专业终端口径收敛：loading 统一为 `Loading`，空态压缩为短句，字段/分组选项和 table view 不展示解释性备注。需要保留的诊断只限错误、校验失败和会影响用户判断的不可用状态。
 
 主要慢点：
 

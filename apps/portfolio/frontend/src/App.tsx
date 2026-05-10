@@ -15,7 +15,7 @@ const TaxonomiesPage = lazy(() => import('./pages/TaxonomiesPage'))
 const TransactionsPage = lazy(() => import('./pages/TransactionsPage'))
 
 function PageFallback() {
-  return <div className="empty-state">Loading page...</div>
+  return <div className="empty-state">Loading</div>
 }
 
 export default function App() {

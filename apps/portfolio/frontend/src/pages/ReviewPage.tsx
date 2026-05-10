@@ -680,11 +680,11 @@ export default function ReviewPage() {
         ))}
 
         {loading && !performanceWorkspace ? (
-          <CalculationStatus label="Building review pack from performance, boundary composition, targets, and research handoff…" />
+          <CalculationStatus />
         ) : null}
 
         {!loading && !performanceWorkspace && !workspaceIssues.length ? (
-          <div className="empty-state">No review workspace is available for this portfolio.</div>
+          <div className="empty-state">No data.</div>
         ) : null}
 
         {performanceWorkspace ? (
@@ -762,7 +762,7 @@ export default function ReviewPage() {
                           </tr>
                         ))
                       ) : (
-                        <TableStatusRow colSpan={3} label="No period calculation lines available." />
+                        <TableStatusRow colSpan={3} label="No rows." />
                       )}
                     </tbody>
                   </table>
@@ -810,7 +810,7 @@ export default function ReviewPage() {
                           </tr>
                         ))
                       ) : (
-                        <TableStatusRow colSpan={7} label="No monthly buckets available for this review window." />
+                        <TableStatusRow colSpan={7} label="No monthly returns." />
                       )}
                     </tbody>
                   </table>
@@ -953,7 +953,7 @@ export default function ReviewPage() {
                         </tr>
                       ))
                     ) : (
-                      <TableStatusRow colSpan={7} label="No worst-day rows available for this window." />
+                      <TableStatusRow colSpan={7} label="No rows." />
                     )}
                   </tbody>
                 </table>
@@ -984,7 +984,7 @@ export default function ReviewPage() {
                           <BoundaryRow key={`start:${position.position_id}`} position={position} currency={baseCurrency} />
                         ))
                       ) : (
-                        <TableStatusRow colSpan={4} label="No start-boundary positions available." />
+                        <TableStatusRow colSpan={4} label="No positions." />
                       )}
                     </tbody>
                   </table>
@@ -1009,7 +1009,7 @@ export default function ReviewPage() {
                           <BoundaryRow key={`end:${position.position_id}`} position={position} currency={baseCurrency} />
                         ))
                       ) : (
-                        <TableStatusRow colSpan={4} label="No end-boundary positions available." />
+                        <TableStatusRow colSpan={4} label="No positions." />
                       )}
                     </tbody>
                   </table>
@@ -1138,7 +1138,7 @@ export default function ReviewPage() {
                               </tr>
                             ))
                           ) : (
-                            <TableStatusRow colSpan={4} label="No target weight gaps on the selected research run." />
+                            <TableStatusRow colSpan={4} label="No target gaps." />
                           )}
                         </tbody>
                       </table>
@@ -1146,7 +1146,7 @@ export default function ReviewPage() {
                   </div>
                 </>
               ) : (
-                <div className="empty-state">No research run is available for review handoff.</div>
+                <div className="empty-state">No research run.</div>
               )}
             </section>
 
@@ -1223,7 +1223,7 @@ export default function ReviewPage() {
                         </tr>
                       ))
                     ) : (
-                      <TableStatusRow colSpan={8} label="No recent monitoring rows available." />
+                      <TableStatusRow colSpan={8} label="No rows." />
                     )}
                   </tbody>
                 </table>

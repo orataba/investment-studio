@@ -1440,7 +1440,6 @@ function RiskSettingsMenu<TSettings extends RiskSettingsState>({
                         ? 'portfolio-nav-option portfolio-nav-option-active'
                         : 'portfolio-nav-option'
                     }
-                    title={option.detail}
                     onClick={() => onChange({ ...settings, lookbackDays: option.value })}
                   >
                     {option.label}
@@ -1464,7 +1463,6 @@ function RiskSettingsMenu<TSettings extends RiskSettingsState>({
                         ? 'portfolio-nav-option portfolio-nav-option-active'
                         : 'portfolio-nav-option'
                     }
-                    title={option.detail}
                     onClick={() => onChange({ ...settings, modelId: option.value })}
                   >
                     {option.label}
@@ -1489,7 +1487,6 @@ function RiskSettingsMenu<TSettings extends RiskSettingsState>({
                           ? 'portfolio-nav-option portfolio-nav-option-active'
                           : 'portfolio-nav-option'
                       }
-                      title={option.detail}
                       onClick={() => onChange({ ...settings, contributionMode: option.value })}
                     >
                       {option.label}
@@ -2086,7 +2083,7 @@ export default function RiskPage() {
         .map((value) => Math.abs(value)),
     )
     if (!rows.length) {
-      return <div className="price-chart-empty">No instrument risk contribution rows are available for this as-of date and lookback.</div>
+      return <div className="price-chart-empty">No rows.</div>
     }
 
     return (
@@ -2095,12 +2092,10 @@ export default function RiskPage() {
           <thead>
             <tr>
               <th>Instrument</th>
-              <th title="Normalized within instruments that participate in covariance risk. Cash is excluded unless modelled as a market factor.">
-                Risk Weight
-              </th>
+              <th>Risk Weight</th>
               <th>Annualized Vol</th>
               <th>Risk Share</th>
-              <th title="Signed annualized component contribution to variance before risk-share normalization.">Ann Var Ctr</th>
+              <th>Ann Var Ctr</th>
               <th>Obs</th>
             </tr>
           </thead>
@@ -2136,15 +2131,15 @@ export default function RiskPage() {
         {contributionError ? <div className="inline-notice inline-notice-error">{contributionError}</div> : null}
 
         {workspaceLoading ? (
-          <CalculationStatus label="Loading holdings, accounts, taxonomy, and target context…" />
+          <CalculationStatus />
         ) : null}
 
         {riskDataLoading && !performanceWorkspace && !instrumentContribution ? (
-          <CalculationStatus label="Building return series, correlations, and risk contribution slices…" />
+          <CalculationStatus />
         ) : null}
 
         {!workspaceLoading && !holdingsWorkspace && !workspaceError ? (
-          <div className="empty-state">No risk workspace is available for this portfolio.</div>
+          <div className="empty-state">No data.</div>
         ) : null}
 
         {holdingsWorkspace ? (
@@ -2176,7 +2171,7 @@ export default function RiskPage() {
                   includeChartStyle
                 />
               </div>
-              {benchmarkLoading ? <div className="portfolio-detail-meta">Loading benchmark risk path…</div> : null}
+              {benchmarkLoading ? <div className="portfolio-detail-meta">Loading</div> : null}
               {benchmarkError ? <div className="overview-benchmark-error">{benchmarkError}</div> : null}
               <div className="risk-rolling-grid">
                 <RollingRiskMetricChart
@@ -2188,7 +2183,7 @@ export default function RiskPage() {
                   benchmarkLabel={benchmarkLabel}
                   displayStyle={rollingSettings.chartStyle}
                   formatValue={(value) => formatPercent(value)}
-                  emptyLabel="Not enough return observations for a rolling volatility curve."
+                  emptyLabel="Insufficient data."
                 />
                 <RollingRiskMetricChart
                   title="Rolling Sharpe Ratio"
@@ -2199,7 +2194,7 @@ export default function RiskPage() {
                   benchmarkLabel={benchmarkLabel}
                   displayStyle={rollingSettings.chartStyle}
                   formatValue={(value) => formatNumber(value, 2)}
-                  emptyLabel="Not enough return observations for a rolling Sharpe curve."
+                  emptyLabel="Insufficient data."
                 />
               </div>
             </section>
@@ -2241,15 +2236,15 @@ export default function RiskPage() {
               <div className="risk-correlation-stack">
                 <div className="risk-matrix-panel">
                   <div className="risk-matrix-panel-title">All Instruments</div>
-                  {renderCorrelationMatrix(instrumentCorrelationMatrix, 'No all-instrument correlation matrix is available.')}
+                  {renderCorrelationMatrix(instrumentCorrelationMatrix, 'No matrix.')}
                 </div>
                 <div className="risk-matrix-panel">
                   <div className="risk-matrix-panel-title">Taxonomy: {selectedMatrixScopeLabel}</div>
                   {renderCorrelationMatrix(
                     taxonomyCorrelationMatrix,
                     defaultPlanningTaxonomy
-                      ? 'No taxonomy correlation matrix is available for this scope.'
-                      : 'Configure a default planning taxonomy to build the taxonomy correlation matrix.',
+                      ? 'No matrix.'
+                      : 'No taxonomy.',
                   )}
                 </div>
               </div>
@@ -2262,7 +2257,7 @@ export default function RiskPage() {
                   <div className="portfolio-detail-meta">
                     {defaultPlanningTaxonomy
                       ? `${defaultPlanningTaxonomy.name}; ${holdingsWorkspace.as_of_date}; ${portfolioRiskFrequency.statusLabel}; ${windowLabel(driftSettings.lookbackDays)} ${riskModelLabel(driftSettings.modelId)}`
-                      : 'Default planning taxonomy is not configured'}
+                      : 'No taxonomy'}
                   </div>
                 </div>
                 <RiskSettingsMenu
@@ -2278,7 +2273,7 @@ export default function RiskPage() {
                   <RiskTargetGapChart
                     rows={saaWeightGapRows}
                     ariaLabel="SAA weight target drift"
-                    emptyLabel="No active SAA weight target is configured."
+                    emptyLabel="No SAA weight target."
                   />
                 </div>
                 <div className="risk-target-panel">
@@ -2286,7 +2281,7 @@ export default function RiskPage() {
                   <RiskTargetGapChart
                     rows={taaWeightGapRows}
                     ariaLabel="TAA weight target drift"
-                    emptyLabel="No active TAA weight target is configured."
+                    emptyLabel="No TAA weight target."
                   />
                 </div>
                 <div className="risk-target-panel">
@@ -2294,7 +2289,7 @@ export default function RiskPage() {
                   <RiskTargetGapChart
                     rows={saaRiskGapRows}
                     ariaLabel="SAA risk budget target gap"
-                    emptyLabel="No active SAA risk target is configured or risk shares are unavailable."
+                    emptyLabel="No SAA risk target."
                     currentLabel="Risk Share"
                     targetLabel="Risk Target"
                   />
@@ -2304,7 +2299,7 @@ export default function RiskPage() {
                   <RiskTargetGapChart
                     rows={taaRiskGapRows}
                     ariaLabel="TAA risk budget target gap"
-                    emptyLabel="No active TAA risk target is configured or risk shares are unavailable."
+                    emptyLabel="No TAA risk target."
                     currentLabel="Risk Share"
                     targetLabel="Risk Target"
                   />

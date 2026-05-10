@@ -553,7 +553,7 @@ export default function PerformanceNavChart({
   }, [drawdownSourcePoints, visibleBenchmarkPoints, visiblePoints])
 
   if (!chartState) {
-    return <div className="price-chart-empty">Not enough NAV observations for a trend line.</div>
+    return <div className="price-chart-empty">Insufficient data.</div>
   }
 
   const activeIndex = Math.min(hoveredIndex ?? visiblePoints.length - 1, visiblePoints.length - 1)

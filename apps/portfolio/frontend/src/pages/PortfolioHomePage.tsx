@@ -319,14 +319,12 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
   {
     id: 'default',
     name: 'Default',
-    description: 'Book cost, valuation, and unrealized P&L.',
     readonly: true,
     state: DEFAULT_HOLDINGS_VIEW_STATE,
   },
   {
     id: 'taxonomy',
     name: 'Taxonomy',
-    description: 'Grouped by the default planning taxonomy.',
     readonly: true,
     state: {
       columns: ['instrument', 'taxonomy_top', 'taxonomy_leaf', 'market_value_base', 'weight', 'day_change_pct', 'unrealized_pct', 'open_lots', 'coverage'],
@@ -339,7 +337,6 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
   {
     id: 'instrument-trend',
     name: 'Instrument Trend',
-    description: 'Per-range price charts and quote-series returns.',
     readonly: true,
     state: {
       columns: [
@@ -368,7 +365,6 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
   {
     id: 'return-risk',
     name: 'Return & Risk',
-    description: 'Return, full-series realized volatility, and drawdown metrics.',
     readonly: true,
     state: {
       columns: [
@@ -401,7 +397,6 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
   {
     id: 'open-lots',
     name: 'Open Lots',
-    description: 'Position dates, cost, lots, and accounts.',
     readonly: true,
     state: {
       columns: [
@@ -427,7 +422,6 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
   {
     id: 'accounting',
     name: 'Accounting',
-    description: 'Cost basis, currency, and base-currency values.',
     readonly: true,
     state: {
       columns: [
@@ -471,14 +465,13 @@ const TEXT_HOLDINGS_SORT_FIELDS = new Set<HoldingsColumnKey>([
 const HOLDINGS_GROUP_BY_OPTIONS: Array<{
   value: HoldingsGroupByKey
   label: string
-  description: string
 }> = [
-  { value: 'none', label: 'None', description: 'Flat position table.' },
-  { value: 'taxonomy_top', label: 'Taxonomy', description: 'Top-level default planning taxonomy.' },
-  { value: 'taxonomy_leaf', label: 'Taxonomy Leaf', description: 'Assigned terminal taxonomy node.' },
-  { value: 'instrument_type', label: 'Instrument Type', description: 'Fund, equity, bond, cash, FX, or other.' },
-  { value: 'currency', label: 'Currency', description: 'Holding currency.' },
-  { value: 'coverage', label: 'Coverage', description: 'Market data coverage state.' },
+  { value: 'none', label: 'None' },
+  { value: 'taxonomy_top', label: 'Taxonomy' },
+  { value: 'taxonomy_leaf', label: 'Taxonomy Leaf' },
+  { value: 'instrument_type', label: 'Instrument Type' },
+  { value: 'currency', label: 'Currency' },
+  { value: 'coverage', label: 'Coverage' },
 ]
 
 function primaryIdentifier(row: PortfolioHoldingRow) {
@@ -2205,10 +2198,7 @@ export default function PortfolioHomePage() {
             </button>
           </div>
         </div>
-        {workspace?.risk_basis?.status_label ? (
-          <div className="portfolio-detail-meta">{workspace.risk_basis.status_label}</div>
-        ) : null}
-        {loading ? <CalculationStatus label={workspace ? 'Recalculating…' : 'Loading…'} /> : null}
+        {loading ? <CalculationStatus /> : null}
         {error ? <div className="error-state">{error}</div> : null}
         {taxonomyError && holdingsGroupBy.startsWith('taxonomy') ? (
           <div className="inline-notice inline-notice-warning">{taxonomyError}</div>
@@ -2307,7 +2297,7 @@ export default function PortfolioHomePage() {
                     </Fragment>
                   ))
                 ) : (
-                  <TableStatusRow colSpan={visibleColumns.length} label="No holdings are available for this portfolio." />
+                  <TableStatusRow colSpan={visibleColumns.length} label="No holdings." />
                 )}
                 {sortedHoldingRows.length
                   ? renderHoldingsTotalRow(
@@ -2328,7 +2318,7 @@ export default function PortfolioHomePage() {
             <div className="holdings-modal-header">
               <div>
                 <div className="panel-title">Data &amp; Columns</div>
-                <div className="section-heading">Manage Data And Columns</div>
+                <div className="section-heading">Columns</div>
               </div>
               <button type="button" onClick={() => setHoldingsColumnsOpen(false)}>
                 Close
@@ -2338,7 +2328,7 @@ export default function PortfolioHomePage() {
             <div className="holdings-modal-search">
               <input
                 className="holdings-modal-search-input"
-                placeholder="Search by field name or code"
+                placeholder="Search fields"
                 value={holdingsColumnSearch}
                 onChange={(event) => setHoldingsColumnSearch(event.target.value)}
               />
@@ -2386,7 +2376,7 @@ export default function PortfolioHomePage() {
                     )
                   })
                 ) : (
-                  <div className="holdings-field-empty">No fields matched the current search.</div>
+                  <div className="holdings-field-empty">No fields.</div>
                 )}
               </div>
 
@@ -2423,7 +2413,7 @@ export default function PortfolioHomePage() {
             <div className="holdings-modal-header">
               <div>
                 <div className="panel-title">Group By</div>
-                <div className="section-heading">Choose Grouping Dimension</div>
+                <div className="section-heading">Grouping</div>
               </div>
               <button type="button" onClick={() => setHoldingsGroupByOpen(false)}>
                 Close
@@ -2438,7 +2428,6 @@ export default function PortfolioHomePage() {
                   onClick={() => handleGroupByChange(option.value)}
                 >
                   <span>{option.label}</span>
-                  <small>{option.description}</small>
                 </button>
               ))}
             </div>

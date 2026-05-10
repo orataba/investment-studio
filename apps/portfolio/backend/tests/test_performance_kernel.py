@@ -323,7 +323,11 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
     def fail_dynamic_contribution(*_args, **_kwargs):
         raise AssertionError("materialized contribution slices should satisfy this read")
 
+    def fail_live_market_profile(*_args, **_kwargs):
+        raise AssertionError("materialized holdings should include market profile fields")
+
     monkeypatch.setattr(workspace_routes, "build_holdings_report", fail_live_holdings)
+    monkeypatch.setattr(workspace_routes, "build_instrument_holdings_market_profile", fail_live_market_profile)
     monkeypatch.setattr(performance_routes, "build_contribution_report", fail_dynamic_contribution)
 
     holdings_response = client.get("/api/workspace/holdings?portfolio_id=yungu")
@@ -1700,9 +1704,9 @@ def test_period_boundary_holdings_report_returns_start_and_end_positions(client,
                 "settlement_cash_account_id": "cash-usd-main",
                 "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "instrument_id": "equity-us-test",
-                    "instrument_name": "Test Equity",
-                    "instrument_type": "equity",
+                    "asset_id": "equity-us-test",
+                    "asset_name": "Test Equity",
+                    "asset_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -1761,6 +1765,9 @@ def test_period_boundary_holdings_report_returns_start_and_end_positions(client,
     assert payload["summary"]["start_total_market_value_base"] == 100.0
     assert payload["summary"]["end_total_market_value_base"] == 0.0
     assert payload["start_positions"][0]["instrument_id"] == "equity-us-test"
+    assert payload["start_positions"][0]["instrument_ref"]["instrument_id"] == "equity-us-test"
+    assert payload["start_positions"][0]["instrument_ref"]["instrument_name"] == "Test Equity"
+    assert payload["start_positions"][0]["instrument_ref"]["instrument_type"] == "equity"
     assert payload["start_positions"][0]["account_ids"] == ["broker-us-core"]
     assert payload["start_positions"][0]["market_value_base"] == 100.0
     assert payload["start_positions"][0]["portfolio_weight"] == 1.0

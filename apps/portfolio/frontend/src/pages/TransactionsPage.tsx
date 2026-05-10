@@ -2072,7 +2072,7 @@ export default function TransactionsPage() {
         {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}
         {pageError ? <div className="error-state">{pageError}</div> : null}
         {metaLoading || loadingTransactions ? (
-          <CalculationStatus label={transactionsWorkspace ? 'Recalculating…' : 'Loading…'} />
+          <CalculationStatus />
         ) : null}
 
         {!metaLoading && !loadingTransactions && !pageError && transactionsWorkspace ? (
@@ -2792,7 +2792,7 @@ export default function TransactionsPage() {
                       onChange={(event) => updatePricingField('quantity', event.target.value)}
                     />
                     {positionPreviewLoading ? (
-                      <span className="transaction-ticket-hint">Loading holding...</span>
+                      <span className="transaction-ticket-hint">Loading</span>
                     ) : positionPreview ? (
                       <span
                         className={
@@ -2843,7 +2843,7 @@ export default function TransactionsPage() {
                       onChange={(event) => updatePricingField('price', event.target.value)}
                     />
                     {historicalQuoteLoading ? (
-                      <span className="transaction-ticket-hint">Loading quote...</span>
+                      <span className="transaction-ticket-hint">Loading</span>
                     ) : historicalQuote ? (
                       <span className="transaction-ticket-hint">
                         {historicalQuote.exactDate ? 'Close' : 'Prior close'}:{' '}

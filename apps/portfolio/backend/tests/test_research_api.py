@@ -6,6 +6,8 @@ from math import sqrt
 import pandas as pd
 import pytest
 
+from portfolio_app.db.models import ResearchRunRecordModel
+from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.instrument_charts import _annualized_volatility, _candidate_chart_bases
 
 from portfolio_app.services.research_solver import (
@@ -224,6 +226,54 @@ def test_research_workbench_returns_target_solve_defaults(client):
     assert payload["current_context"]["holdings_count"] == 3
     assert payload["current_context"]["planning_group_count"] == 0
     assert payload["current_context"]["nav"] == payload["current_context"]["summary"]["end_nav"]
+
+
+def test_research_workbench_normalizes_legacy_run_top_holdings(client):
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        session.add(
+            ResearchRunRecordModel(
+                research_run_id="legacy-run",
+                portfolio_id="yungu",
+                job_type="target_weight_solve",
+                status="completed",
+                requested_at="2026-04-15T10:00:00Z",
+                started_at="2026-04-15T10:00:00Z",
+                finished_at="2026-04-15T10:01:00Z",
+                as_of_date=date(2026, 4, 15),
+                planning_taxonomy_id=None,
+                lookback_days=90,
+                requested_by=None,
+                headline="Legacy run",
+                detail_json={
+                    "top_holdings": [
+                        {
+                            "asset_id": "equity-us-abbv",
+                            "asset_name": "AbbVie Inc",
+                            "asset_type": "equity",
+                            "allocation": 0.25,
+                            "market_value_base": 100.0,
+                            "cost_basis_base": 90.0,
+                            "base_currency": "USD",
+                            "price": 206.47,
+                        }
+                    ]
+                },
+                artifacts_json=[],
+                request_payload_json={},
+                error_message=None,
+            )
+        )
+        session.commit()
+
+    response = client.get("/api/portfolios/yungu/research/workbench")
+    assert response.status_code == 200
+    payload = response.json()
+    top_holding = payload["runs"][0]["detail"]["top_holdings"][0]
+    assert top_holding["instrument_id"] == "equity-us-abbv"
+    assert top_holding["instrument_name"] == "AbbVie Inc"
+    assert top_holding["instrument_type"] == "equity"
+    assert payload["selected_run"]["detail"]["top_holdings"][0]["instrument_id"] == "equity-us-abbv"
 
 
 def test_research_series_prefers_total_return_nav_for_funds() -> None:

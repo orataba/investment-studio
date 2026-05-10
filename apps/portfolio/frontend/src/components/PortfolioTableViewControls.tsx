@@ -224,14 +224,12 @@ export default function PortfolioTableViewControls({
                   onClick={() => selectView(view.id)}
                   onContextMenu={(event) => handleViewContextMenu(event, view)}
                   onKeyDown={(event) => handleViewKeyDown(event, view)}
-                  title={deletable ? 'Right-click to delete this custom view.' : undefined}
                 >
                   <span className="portfolio-table-view-option-copy">
                     <span className="portfolio-table-view-option-name">
                       {view.name}
                       {viewEdited ? <span className="portfolio-table-view-option-edited">Edited</span> : null}
                     </span>
-                    {view.description ? <span className="portfolio-table-view-option-description">{view.description}</span> : null}
                   </span>
                   {deletable ? (
                     <button
@@ -283,8 +281,7 @@ export default function PortfolioTableViewControls({
             </div>
             <div className="portfolio-table-view-modal-body">
               <p className="portfolio-table-view-warning">
-                Delete "{pendingDeleteView.name}"? This removes the custom view and switches back to the default system
-                view if it is currently active.
+                Delete "{pendingDeleteView.name}"?
               </p>
             </div>
             <div className="portfolio-table-view-modal-actions">
@@ -322,12 +319,11 @@ export default function PortfolioTableViewControls({
                 />
               </label>
               <label className="portfolio-table-view-field">
-                <span>Description</span>
+                <span>Notes</span>
                 <textarea
                   className="portfolio-table-view-description"
                   value={draftDescription}
                   onChange={(event) => setDraftDescription(event.target.value)}
-                  placeholder="Optional notes about this view."
                 />
               </label>
             </div>

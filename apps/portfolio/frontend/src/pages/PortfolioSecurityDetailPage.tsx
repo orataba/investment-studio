@@ -452,12 +452,10 @@ export default function PortfolioSecurityDetailPage() {
           </div>
         </div>
 
-        {workspaceLoading ? <CalculationStatus label="Loading instrument detail..." /> : null}
+        {workspaceLoading ? <CalculationStatus /> : null}
         {workspaceError ? <div className="error-state">{workspaceError}</div> : null}
         {!workspaceLoading && !workspaceError && workspace && !selectedRow ? (
-          <div className="inline-notice inline-notice-warning">
-            This instrument is not present in current holdings for the selected as-of date. Instrument price history may still be available.
-          </div>
+          <div className="inline-notice inline-notice-warning">Not held as of selected date.</div>
         ) : null}
 
         <div className="portfolio-security-chart-layout">
@@ -537,7 +535,7 @@ export default function PortfolioSecurityDetailPage() {
                         </tr>
                       ))
                     ) : (
-                      <TableStatusRow colSpan={4} label="No holding row exists for this as-of date." />
+                    <TableStatusRow colSpan={4} label="No holding." />
                     )}
                   </tbody>
                 </table>
@@ -548,7 +546,7 @@ export default function PortfolioSecurityDetailPage() {
               <div className="portfolio-detail-toolbar holdings-side-toolbar">
                 <div className="panel-title">Account Slices</div>
                 <div className="portfolio-detail-meta">
-                  {positionLotsLoading ? 'Refreshing...' : `${accountSlices.length} accounts`}
+                  {positionLotsLoading ? 'Loading' : `${accountSlices.length} accounts`}
                 </div>
               </div>
               <div className="table-shell">
@@ -564,7 +562,7 @@ export default function PortfolioSecurityDetailPage() {
                   </thead>
                   <tbody>
                     {positionLotsLoading ? (
-                      <TableStatusRow colSpan={5} label="Loading account slices..." />
+                      <TableStatusRow colSpan={5} label="Loading" />
                     ) : positionLotsError ? (
                       <TableStatusRow colSpan={5} label={positionLotsError} tone="error" />
                     ) : accountSlices.length ? (
@@ -578,7 +576,7 @@ export default function PortfolioSecurityDetailPage() {
                         </tr>
                       ))
                     ) : (
-                      <TableStatusRow colSpan={5} label="No account slices for the selected instrument." />
+                      <TableStatusRow colSpan={5} label="No account slices." />
                     )}
                   </tbody>
                 </table>
@@ -592,12 +590,10 @@ export default function PortfolioSecurityDetailPage() {
             <div className="portfolio-detail-toolbar holdings-detail-toolbar">
               <div>
                 <div className="panel-title">Linked Transactions</div>
-                <div className="portfolio-detail-meta">
-                  All recorded transactions for {selectedRowIdentifier} up to {resolvedAsOfDate || '—'}
-                </div>
+                <div className="portfolio-detail-meta">{resolvedAsOfDate || '—'}</div>
               </div>
               {transactionsLoading ? (
-                <div className="portfolio-detail-meta">Refreshing...</div>
+                <div className="portfolio-detail-meta">Loading</div>
               ) : transactionsWorkspace ? (
                 <div className="portfolio-detail-meta">{transactionsWorkspace.summary.total_transactions} facts</div>
               ) : null}
@@ -618,7 +614,7 @@ export default function PortfolioSecurityDetailPage() {
                 </thead>
                 <tbody>
                   {transactionsLoading ? (
-                    <TableStatusRow colSpan={8} label="Loading linked transactions..." />
+                    <TableStatusRow colSpan={8} label="Loading" />
                   ) : transactionsError ? (
                     <TableStatusRow colSpan={8} label={transactionsError} tone="error" />
                   ) : selectedTransactions.length ? (
@@ -635,7 +631,7 @@ export default function PortfolioSecurityDetailPage() {
                       </tr>
                     ))
                   ) : (
-                    <TableStatusRow colSpan={8} label="No linked transactions exist for this security as of the selected date." />
+                    <TableStatusRow colSpan={8} label="No transactions." />
                   )}
                 </tbody>
               </table>
@@ -651,7 +647,7 @@ export default function PortfolioSecurityDetailPage() {
                 <div className="portfolio-detail-meta">{selectedRow?.instrument_core.instrument_name ?? instrumentId}</div>
               </div>
               {positionLotsLoading ? (
-                <div className="portfolio-detail-meta">Refreshing...</div>
+                <div className="portfolio-detail-meta">Loading</div>
               ) : positionLotsWorkspace ? (
                 <div className="portfolio-detail-meta">
                   {positionLotsWorkspace.summary.open_position_lot_count} open / {positionLotsWorkspace.summary.closed_position_lot_count} closed
@@ -681,7 +677,7 @@ export default function PortfolioSecurityDetailPage() {
                 </thead>
                 <tbody>
                   {positionLotsLoading ? (
-                    <TableStatusRow colSpan={15} label="Loading position lots..." />
+                    <TableStatusRow colSpan={15} label="Loading" />
                   ) : positionLotsError ? (
                     <TableStatusRow colSpan={15} label={positionLotsError} tone="error" />
                   ) : selectedPositionLots.length ? (
@@ -717,7 +713,7 @@ export default function PortfolioSecurityDetailPage() {
                       </tr>
                     ))
                   ) : (
-                    <TableStatusRow colSpan={15} label="No position lots derived for this security yet." />
+                    <TableStatusRow colSpan={15} label="No lots." />
                   )}
                 </tbody>
               </table>
@@ -738,7 +734,7 @@ export default function PortfolioSecurityDetailPage() {
               </div>
               <div className="portfolio-detail-meta">
                 {positionLotsLoading
-                  ? 'Refreshing...'
+                  ? 'Loading'
                   : selectedPositionLot
                     ? `${selectedPositionLot.realization_count} matched exits`
                     : '0 matched exits'}
@@ -762,7 +758,7 @@ export default function PortfolioSecurityDetailPage() {
                 </thead>
                 <tbody>
                   {positionLotsLoading ? (
-                    <TableStatusRow colSpan={10} label="Loading realizations..." />
+                    <TableStatusRow colSpan={10} label="Loading" />
                   ) : positionLotsError ? (
                     <TableStatusRow colSpan={10} label={positionLotsError} tone="error" />
                   ) : selectedPositionLot?.realizations.length ? (
@@ -787,9 +783,9 @@ export default function PortfolioSecurityDetailPage() {
                       </tr>
                     ))
                   ) : selectedPositionLot ? (
-                    <TableStatusRow colSpan={10} label="No realized exits on this PositionLot yet." />
+                    <TableStatusRow colSpan={10} label="No realizations." />
                   ) : (
-                    <TableStatusRow colSpan={10} label="No PositionLot is available for this security." />
+                    <TableStatusRow colSpan={10} label="No lot." />
                   )}
                 </tbody>
               </table>

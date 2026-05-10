@@ -481,11 +481,11 @@ export default function ResearchPage() {
       {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
       {actionError ? <div className="inline-notice inline-notice-error">{actionError}</div> : null}
       {loading && !workbench ? (
-        <CalculationStatus label="Building research workbench from current holdings, planning context, and run history…" />
+        <CalculationStatus />
       ) : null}
 
       {!loading && !workbench && !workspaceError ? (
-        <div className="empty-state">No research workbench is available for this portfolio.</div>
+        <div className="empty-state">No data.</div>
       ) : null}
 
       {workbench ? (
@@ -615,7 +615,6 @@ export default function ResearchPage() {
                         key={option.value}
                         value={option.value}
                         disabled={!option.available}
-                        title={option.reason ?? undefined}
                       >
                         {option.label}
                         {option.available ? '' : ' unavailable'}
@@ -720,9 +719,7 @@ export default function ResearchPage() {
               {scopeOptionsError ? <div className="inline-notice inline-notice-error">{scopeOptionsError}</div> : null}
               <div className="transaction-form-footer">
                 <span className="portfolio-detail-meta">
-                  {scopeOptionsLoading
-                    ? 'Loading scope tree.'
-                    : frequencyProfile?.status_label ?? 'Settings ready.'}
+                  {scopeOptionsLoading ? 'Loading' : ''}
                 </span>
                 <div className="toolbar">
                   <button type="submit" className="toolbar-link" disabled={actionPending === 'save' || scopeActionBlocked}>
@@ -761,7 +758,7 @@ export default function ResearchPage() {
                 </thead>
                 <tbody>
                   {!workbench.runs.length ? (
-                    <TableStatusRow colSpan={6} label="No research runs have been recorded for this portfolio yet." />
+                    <TableStatusRow colSpan={6} label="No runs." />
                   ) : (
                     workbench.runs.map((run) => (
                       <tr

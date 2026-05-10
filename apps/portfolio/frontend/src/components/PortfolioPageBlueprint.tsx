@@ -16,7 +16,7 @@ export default function PortfolioPageBlueprint({
           <div className="panel-title">{definition.label}</div>
         </div>
       ) : null}
-      <div className="empty-state">No data available.</div>
+      <div className="empty-state">No data.</div>
     </section>
   )
 }

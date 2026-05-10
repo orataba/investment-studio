@@ -3,7 +3,7 @@ type CalculationStatusProps = {
 }
 
 export default function CalculationStatus({
-  label = 'Recalculating…',
+  label = 'Loading',
 }: CalculationStatusProps) {
   return (
     <div className="calculation-status" role="status" aria-live="polite">

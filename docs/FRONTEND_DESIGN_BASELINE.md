@@ -26,6 +26,14 @@
 - 标题和关键数字最多使用 medium weight；表格内数值避免默认加粗。
 - 页面级标题、section title、table header 的层级通过字号、线条和位置区分。
 
+## UI Copy
+
+- Loading 状态统一显示 `Loading`，不解释正在加载哪些资源或计算链路。
+- 空态使用短句，例如 `No data.`、`No rows.`、`No holdings.`；只有会阻塞用户决策的状态才展示更具体原因。
+- 选项、modal、表格视图和字段选择器默认只显示名称；不展示解释性小字、备注提示或长 tooltip，除非缺少它会导致错误操作。
+- 错误、校验失败、不可用原因可以保留，但必须是可执行或可诊断的信息。
+- 不用页面内说明文字解释功能、键盘操作、内部计算流程或实现细节；这些内容放在文档或测试里。
+
 ## Tabs And Content Rhythm
 
 - Portfolio workspace tabs 和 Watchlist fund detail tabs 可以有不同 header，但 tabs 以下的间距、section title、图表和 facts 结构应保持同一语言。
