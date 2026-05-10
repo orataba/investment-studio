@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from math import sqrt
 
+from portfolio_app.services.calculation_frequency import CalculationFrequency, period_end_date
 from portfolio_app.services.instrument_registry import get_registry_instrument_detail
 from portfolio_app.services.market_data import is_usable_market_data_point
 
@@ -22,10 +23,12 @@ def empty_instrument_trend_metrics(
     *,
     selected_basis: str | None = None,
     holding_start_date: date | None = None,
+    calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
     return {
         "instrument_trend_as_of_date": None,
         "instrument_trend_basis": selected_basis,
+        "instrument_risk_frequency": calculation_frequency,
         "instrument_return_1w": None,
         "instrument_return_mtd": None,
         "instrument_return_ytd": None,
@@ -44,13 +47,17 @@ def empty_instrument_trend_metrics(
 def empty_instrument_holdings_market_profile(
     *,
     holding_start_date: date | None = None,
+    calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
     return {
         "price_chart_1m": [],
         "price_chart_3m": [],
         "price_chart_6m": [],
         "price_chart_1y": [],
-        **empty_instrument_trend_metrics(holding_start_date=holding_start_date),
+        **empty_instrument_trend_metrics(
+            holding_start_date=holding_start_date,
+            calculation_frequency=calculation_frequency,
+        ),
     }
 
 
@@ -294,8 +301,40 @@ def _period_return_observations(points: list[dict[str, object]]) -> tuple[list[f
     return returns, first_return_start_date, last_return_end_date
 
 
-def _annualized_volatility(points: list[dict[str, object]]) -> float | None:
-    returns, first_return_start_date, last_return_end_date = _period_return_observations(points)
+def _points_for_calculation_frequency(
+    points: list[dict[str, object]],
+    *,
+    calculation_frequency: CalculationFrequency,
+    final_date: date | None,
+) -> list[dict[str, object]]:
+    if calculation_frequency == "daily":
+        return points
+
+    sampled_by_period: dict[date, dict[str, object]] = {}
+    for point in points:
+        point_date = point.get("date")
+        if not isinstance(point_date, date):
+            continue
+        target_date = period_end_date(point_date, calculation_frequency, final_date=final_date)
+        current_point = sampled_by_period.get(target_date)
+        current_date = current_point.get("date") if isinstance(current_point, dict) else None
+        if not isinstance(current_date, date) or point_date >= current_date:
+            sampled_by_period[target_date] = point
+    return [sampled_by_period[target_date] for target_date in sorted(sampled_by_period)]
+
+
+def _annualized_volatility(
+    points: list[dict[str, object]],
+    *,
+    calculation_frequency: CalculationFrequency = "daily",
+    final_date: date | None = None,
+) -> float | None:
+    sampled_points = _points_for_calculation_frequency(
+        points,
+        calculation_frequency=calculation_frequency,
+        final_date=final_date,
+    )
+    returns, first_return_start_date, last_return_end_date = _period_return_observations(sampled_points)
     stddev = _sample_stddev(returns)
     if stddev is None or first_return_start_date is None or last_return_end_date is None:
         return None
@@ -351,10 +390,15 @@ def build_instrument_trend_metrics_from_detail(
     *,
     as_of_date: date,
     holding_start_date: date | None = None,
+    calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
     selected_points, selected_basis = _selected_chart_points(detail, as_of_date=as_of_date)
     if not selected_points:
-        return empty_instrument_trend_metrics(selected_basis=selected_basis, holding_start_date=holding_start_date)
+        return empty_instrument_trend_metrics(
+            selected_basis=selected_basis,
+            holding_start_date=holding_start_date,
+            calculation_frequency=calculation_frequency,
+        )
 
     end_point = selected_points[-1]
     end_date = end_point.get("date") if isinstance(end_point.get("date"), date) else as_of_date
@@ -365,6 +409,7 @@ def build_instrument_trend_metrics_from_detail(
     return {
         "instrument_trend_as_of_date": end_date.isoformat(),
         "instrument_trend_basis": selected_basis,
+        "instrument_risk_frequency": calculation_frequency,
         "instrument_return_1w": _period_return(
             selected_points,
             end_point=end_point,
@@ -388,16 +433,24 @@ def build_instrument_trend_metrics_from_detail(
             anchor_date=end_date - timedelta(days=365),
         ),
         "instrument_volatility_1m": _annualized_volatility(
-            _window_points(selected_points, as_of_date=end_date, days=ASSET_RISK_WINDOW_DAYS["1m"])
+            _window_points(selected_points, as_of_date=end_date, days=ASSET_RISK_WINDOW_DAYS["1m"]),
+            calculation_frequency=calculation_frequency,
+            final_date=end_date,
         ),
         "instrument_volatility_3m": _annualized_volatility(
-            _window_points(selected_points, as_of_date=end_date, days=ASSET_RISK_WINDOW_DAYS["3m"])
+            _window_points(selected_points, as_of_date=end_date, days=ASSET_RISK_WINDOW_DAYS["3m"]),
+            calculation_frequency=calculation_frequency,
+            final_date=end_date,
         ),
         "instrument_volatility_6m": _annualized_volatility(
-            _window_points(selected_points, as_of_date=end_date, days=ASSET_RISK_WINDOW_DAYS["6m"])
+            _window_points(selected_points, as_of_date=end_date, days=ASSET_RISK_WINDOW_DAYS["6m"]),
+            calculation_frequency=calculation_frequency,
+            final_date=end_date,
         ),
         "instrument_volatility_1y": _annualized_volatility(
-            _window_points(selected_points, as_of_date=end_date, days=ASSET_RISK_WINDOW_DAYS["1y"])
+            _window_points(selected_points, as_of_date=end_date, days=ASSET_RISK_WINDOW_DAYS["1y"]),
+            calculation_frequency=calculation_frequency,
+            final_date=end_date,
         ),
         "instrument_current_drawdown": _current_drawdown(selected_points),
         "instrument_max_drawdown": _max_drawdown(selected_points),
@@ -411,14 +464,19 @@ def build_instrument_trend_metrics(
     *,
     as_of_date: date,
     holding_start_date: date | None = None,
+    calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
     detail = get_registry_instrument_detail(instrument_id)
     if not isinstance(detail, dict):
-        return empty_instrument_trend_metrics(holding_start_date=holding_start_date)
+        return empty_instrument_trend_metrics(
+            holding_start_date=holding_start_date,
+            calculation_frequency=calculation_frequency,
+        )
     return build_instrument_trend_metrics_from_detail(
         detail,
         as_of_date=as_of_date,
         holding_start_date=holding_start_date,
+        calculation_frequency=calculation_frequency,
     )
 
 
@@ -592,10 +650,14 @@ def build_instrument_holdings_market_profile(
     as_of_date: date,
     holding_start_date: date | None = None,
     max_points: int = 48,
+    calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
     detail = get_registry_instrument_detail(instrument_id)
     if not isinstance(detail, dict):
-        return empty_instrument_holdings_market_profile(holding_start_date=holding_start_date)
+        return empty_instrument_holdings_market_profile(
+            holding_start_date=holding_start_date,
+            calculation_frequency=calculation_frequency,
+        )
     charts = {
         f"price_chart_{range_key}": _chart_points_payload(
             build_instrument_price_chart_from_detail(
@@ -614,5 +676,6 @@ def build_instrument_holdings_market_profile(
             detail,
             as_of_date=as_of_date,
             holding_start_date=holding_start_date,
+            calculation_frequency=calculation_frequency,
         ),
     }

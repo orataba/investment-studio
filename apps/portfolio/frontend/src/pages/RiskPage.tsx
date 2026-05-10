@@ -1808,7 +1808,7 @@ export default function RiskPage() {
   const instrumentSlices = instrumentContribution?.daily_slices ?? []
   const rawInstrumentReturnSeries = useMemo(() => buildGroupReturnSeries(instrumentSlices), [instrumentSlices])
   const portfolioRiskFrequency = useMemo(() => riskFrequencyProfile(rawInstrumentReturnSeries), [rawInstrumentReturnSeries])
-  const assetReturnSeries = useMemo(
+  const instrumentReturnSeries = useMemo(
     () =>
       alignReturnSeriesToFrequency(
         rawInstrumentReturnSeries,
@@ -1870,7 +1870,7 @@ export default function RiskPage() {
     [benchmarkReturnPoints, rollingSettings.lookbackDays, rollingSettings.modelId],
   )
 
-  const riskDates = useMemo(() => uniqueSortedSeriesDates(assetReturnSeries), [assetReturnSeries])
+  const riskDates = useMemo(() => uniqueSortedSeriesDates(instrumentReturnSeries), [instrumentReturnSeries])
 
   useEffect(() => {
     if (riskDates.length && !riskDates.includes(matrixAsOfDate)) {
@@ -1919,9 +1919,9 @@ export default function RiskPage() {
       ),
     [holdingsWorkspace?.as_of_date, portfolioRiskFrequency.frequency, riskWindowEndDate, topLevelTaxonomySeries],
   )
-  const assetCorrelationMatrix = useMemo(
-    () => buildCorrelationMatrix(assetReturnSeries, matrixAsOfDate, matrixSettings),
-    [assetReturnSeries, matrixAsOfDate, matrixSettings],
+  const instrumentCorrelationMatrix = useMemo(
+    () => buildCorrelationMatrix(instrumentReturnSeries, matrixAsOfDate, matrixSettings),
+    [instrumentReturnSeries, matrixAsOfDate, matrixSettings],
   )
   const taxonomyCorrelationMatrix = useMemo(
     () => buildCorrelationMatrix(alignedMatrixTaxonomySeries, matrixAsOfDate, matrixSettings),
@@ -2027,9 +2027,9 @@ export default function RiskPage() {
       targetLinesByTargetSetId,
     ],
   )
-  const assetRiskContributionRows = useMemo(
-    () => buildRiskContributionRows(assetReturnSeries, contributionAsOfDate, contributionSettings),
-    [assetReturnSeries, contributionAsOfDate, contributionSettings],
+  const instrumentRiskContributionRows = useMemo(
+    () => buildRiskContributionRows(instrumentReturnSeries, contributionAsOfDate, contributionSettings),
+    [instrumentReturnSeries, contributionAsOfDate, contributionSettings],
   )
   const selectedMatrixScopeLabel =
     matrixTaxonomyScopeOptions.find((option) => option.value === matrixScopeNodeId)?.label ?? 'Top Level'
@@ -2241,7 +2241,7 @@ export default function RiskPage() {
               <div className="risk-correlation-stack">
                 <div className="risk-matrix-panel">
                   <div className="risk-matrix-panel-title">All Instruments</div>
-                  {renderCorrelationMatrix(assetCorrelationMatrix, 'No all-instrument correlation matrix is available.')}
+                  {renderCorrelationMatrix(instrumentCorrelationMatrix, 'No all-instrument correlation matrix is available.')}
                 </div>
                 <div className="risk-matrix-panel">
                   <div className="risk-matrix-panel-title">Taxonomy: {selectedMatrixScopeLabel}</div>
@@ -2335,7 +2335,7 @@ export default function RiskPage() {
                 onChange={setContributionAsOfDate}
                 label="Contribution as of"
               />
-              {renderRiskContributionTable(assetRiskContributionRows)}
+              {renderRiskContributionTable(instrumentRiskContributionRows)}
             </section>
           </>
         ) : null}

@@ -205,6 +205,7 @@ export type PortfolioPerformanceCalculationResponse = {
 }
 
 export type PortfolioContributionAxis = 'instrument' | 'account' | 'instrument_type' | 'currency' | 'taxonomy'
+export type PortfolioCalculationFrequency = 'daily' | 'weekly' | 'monthly'
 
 export type PortfolioPeriodCalculationGroupMetrics = {
   average_weight: number | null
@@ -225,6 +226,14 @@ export type PortfolioPeriodCalculationGroupMetrics = {
   instrument_currency_gains: number | null
   total_pnl: number | null
   period_contribution: number | null
+  risk_calculation_frequency: PortfolioCalculationFrequency
+  risk_return_observation_count: number
+  risk_annualization_periods_per_year: number | null
+  annualized_volatility: number | null
+  sharpe_ratio: number | null
+  correlation_to_portfolio: number | null
+  beta_to_portfolio: number | null
+  realized_risk_contribution: number | null
 }
 
 export type PortfolioPeriodCalculationGroupChildRecord = PortfolioPeriodCalculationGroupMetrics & {
@@ -260,6 +269,12 @@ export type PortfolioPeriodCalculationGroupsSummary = {
   total_pnl: number | null
   total_period_contribution: number | null
   contribution_residual: number | null
+  risk_calculation_frequency: PortfolioCalculationFrequency
+  risk_frequency_status_label: string | null
+  risk_return_observation_count: number
+  risk_annualization_periods_per_year: number | null
+  annualized_volatility: number | null
+  sharpe_ratio: number | null
 }
 
 export type PortfolioPerformanceCalculationGroupsResponse = {
@@ -412,6 +427,7 @@ export type PortfolioHoldingRow = {
   price_chart_1y: SparklinePoint[]
   instrument_trend_as_of_date?: string | null
   instrument_trend_basis?: string | null
+  instrument_risk_frequency?: PortfolioCalculationFrequency | null
   instrument_return_1w?: number | null
   instrument_return_mtd?: number | null
   instrument_return_ytd?: number | null
@@ -436,6 +452,13 @@ export type HoldingsWorkspaceResponse = {
   as_of_date: string
   view_label: string
   coverage_note: string
+  risk_basis?: {
+    requested_frequency: 'auto' | PortfolioCalculationFrequency
+    resolved_frequency: PortfolioCalculationFrequency
+    default_frequency: PortfolioCalculationFrequency
+    source_frequency_counts: Record<string, number>
+    status_label: string
+  }
   summary_cards: HoldingsSummaryCard[]
   rows: PortfolioHoldingRow[]
   totals: {

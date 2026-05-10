@@ -343,6 +343,27 @@ def test_instrument_trend_volatility_uses_quote_observation_density() -> None:
     assert _annualized_volatility(points) == pytest.approx(sample_stddev * sqrt(periods_per_year))
 
 
+def test_instrument_trend_volatility_can_use_weekly_risk_basis() -> None:
+    points = [
+        {"date": date(2026, 1, 1), "value": 100.0},
+        {"date": date(2026, 1, 2), "value": 101.0},
+        {"date": date(2026, 1, 5), "value": 104.0},
+        {"date": date(2026, 1, 9), "value": 106.0},
+        {"date": date(2026, 1, 12), "value": 102.0},
+        {"date": date(2026, 1, 16), "value": 103.0},
+    ]
+    returns = [106.0 / 101.0 - 1.0, 103.0 / 106.0 - 1.0]
+    mean_return = sum(returns) / len(returns)
+    sample_stddev = sqrt(sum((item - mean_return) ** 2 for item in returns) / (len(returns) - 1))
+    periods_per_year = 2 / 14 * 365.25
+
+    assert _annualized_volatility(
+        points,
+        calculation_frequency="weekly",
+        final_date=date(2026, 1, 16),
+    ) == pytest.approx(sample_stddev * sqrt(periods_per_year))
+
+
 def test_research_series_prefers_adjusted_close_for_equities() -> None:
     detail = {
         "instrument_id": "equity-test",

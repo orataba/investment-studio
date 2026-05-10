@@ -304,6 +304,13 @@ def test_refresh_materializes_holdings_and_contribution_slices(client):
     assert _daily_holding_row_count("yungu") > 0
     assert _daily_contribution_slice_count("yungu", "instrument") > 0
     assert _daily_contribution_slice_count("yungu", "account") > 0
+    assert _daily_contribution_slice_count("yungu", "instrument_type") > 0
+    assert _daily_contribution_slice_count("yungu", "currency") > 0
+    assert _daily_contribution_slice_count("yungu", "cash_detail") > 0
+    assert _daily_contribution_slice_count("yungu", "instrument_detail") > 0
+    assert _daily_contribution_slice_count("yungu", "account_detail") > 0
+    assert _daily_contribution_slice_count("yungu", "instrument_type_detail") > 0
+    assert _daily_contribution_slice_count("yungu", "currency_detail") > 0
 
 
 def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(client, monkeypatch):
@@ -316,7 +323,7 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
     def fail_dynamic_contribution(*_args, **_kwargs):
         raise AssertionError("materialized contribution slices should satisfy this read")
 
-    monkeypatch.setattr(workspace_routes, "build_statement_of_assets_report", fail_live_holdings)
+    monkeypatch.setattr(workspace_routes, "build_holdings_report", fail_live_holdings)
     monkeypatch.setattr(performance_routes, "build_contribution_report", fail_dynamic_contribution)
 
     holdings_response = client.get("/api/workspace/holdings?portfolio_id=yungu")
@@ -5104,6 +5111,206 @@ def test_period_calculation_groups_support_instrument_type_axis(client, monkeypa
     fund_children = {item["item_key"]: item for item in groups["fund"]["children"]}
     assert fund_children["fund-us-test"]["item_label"] == "Test Fund"
     assert isclose(fund_children["fund-us-test"]["final_value"], 190.0, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_period_calculation_groups_use_unified_weekly_risk_basis_for_mixed_frequency(client, monkeypatch):
+    daily_detail = _test_instrument_detail(
+        instrument_id="equity-us-daily-risk-test",
+        instrument_name="Daily Risk Test Equity",
+        history=[
+            ("2026-01-01", "100.00"),
+            ("2026-01-02", "101.00"),
+            ("2026-01-05", "103.00"),
+            ("2026-01-06", "102.00"),
+            ("2026-01-07", "104.00"),
+            ("2026-01-08", "105.00"),
+            ("2026-01-09", "106.00"),
+            ("2026-01-12", "107.00"),
+            ("2026-01-13", "106.00"),
+            ("2026-01-14", "108.00"),
+            ("2026-01-15", "109.00"),
+            ("2026-01-16", "111.00"),
+        ],
+    )
+    weekly_detail = _test_instrument_detail(
+        instrument_id="fund-us-weekly-risk-test",
+        instrument_name="Weekly Risk Test Fund",
+        history=[
+            ("2026-01-01", "100.00"),
+            ("2026-01-08", "104.00"),
+            ("2026-01-16", "102.00"),
+        ],
+        instrument_type="fund",
+    )
+    instrument_details = {
+        "equity-us-daily-risk-test": daily_detail,
+        "fund-us-weekly-risk-test": weekly_detail,
+    }
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+
+    portfolio_id = "calculation-groups-mixed-risk-basis-test"
+    transactions = [
+        {
+            "transaction_id": "txn-0001",
+            "portfolio_id": portfolio_id,
+            "transaction_type": "opening_balance",
+            "trade_date": "2026-01-01",
+            "settlement_date": "2026-01-01",
+            "account_id": "cash-usd-main",
+            "settlement_cash_account_id": None,
+            "instrument_id": None,
+            "instrument_ref": None,
+            "quantity": None,
+            "price": None,
+            "gross_amount": 200.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "transfer_scope": None,
+            "transfer_object_type": None,
+            "transfer_group_id": None,
+            "counterparty_account_id": None,
+            "note": "Opening cash.",
+            "created_at": "2026-01-01T09:00:00Z",
+        },
+    ]
+    for index, (instrument_id, instrument_name, instrument_type) in enumerate(
+        [
+            ("equity-us-daily-risk-test", "Daily Risk Test Equity", "equity"),
+            ("fund-us-weekly-risk-test", "Weekly Risk Test Fund", "fund"),
+        ],
+        start=2,
+    ):
+        transactions.append(
+            {
+                "transaction_id": f"txn-{index:04d}",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "buy",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "instrument_id": instrument_id,
+                "instrument_ref": {
+                    "instrument_id": instrument_id,
+                    "instrument_name": instrument_name,
+                    "instrument_type": instrument_type,
+                    "currency": "USD",
+                    "identifiers": [
+                        {
+                            "identifier_type": "ticker",
+                            "identifier_value": instrument_id.upper(),
+                            "is_primary": True,
+                        }
+                    ],
+                },
+                "quantity": 1.0,
+                "price": 100.0,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": f"Buy {instrument_name}.",
+                "created_at": f"2026-01-01T09:{index}0:00Z",
+            }
+        )
+
+    store = _minimal_store(portfolio_id=portfolio_id, transactions=transactions)
+    store["portfolios"][0]["as_of_date"] = "2026-01-16"
+    store["taxonomies"] = [
+        {
+            "taxonomy_id": "tax-risk-basis",
+            "portfolio_id": portfolio_id,
+            "name": "Risk Basis",
+            "taxonomy_type": "custom",
+            "purpose": "performance_grouping",
+            "primary_assignment_scope": "instrument",
+            "planning_enabled": False,
+            "budgeting_level": None,
+            "effective_from": "2026-01-01",
+            "effective_to": None,
+            "status": "active",
+            "source_template_ref": None,
+        }
+    ]
+    store["taxonomy_nodes"] = [
+        {
+            "taxonomy_node_id": "tax-risk-basis-core",
+            "taxonomy_id": "tax-risk-basis",
+            "parent_taxonomy_node_id": None,
+            "node_name": "Core",
+            "node_code": "CORE",
+            "sort_order": 0,
+            "is_terminal": True,
+            "status": "active",
+        }
+    ]
+    store["taxonomy_assignments"] = [
+        {
+            "assignment_id": f"assign-risk-basis-{instrument_id}",
+            "taxonomy_id": "tax-risk-basis",
+            "target_scope": "instrument",
+            "target_entity_id": instrument_id,
+            "taxonomy_node_id": "tax-risk-basis-core",
+            "effective_from": "2026-01-01",
+            "effective_to": None,
+            "status": "active",
+        }
+        for instrument_id in ("equity-us-daily-risk-test", "fund-us-weekly-risk-test")
+    ]
+    _write_store(store)
+
+    response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/calculation/groups"
+        "?axis=instrument&start_date=2026-01-01&end_date=2026-01-16"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["risk_calculation_frequency"] == "weekly"
+    assert payload["summary"]["risk_frequency_status_label"] == "Weekly risk basis - mixed daily/weekly data"
+    assert payload["summary"]["risk_return_observation_count"] == 3
+    groups = {item["group_key"]: item for item in payload["groups"]}
+
+    assert groups["equity-us-daily-risk-test"]["risk_calculation_frequency"] == "weekly"
+    assert groups["fund-us-weekly-risk-test"]["risk_calculation_frequency"] == "weekly"
+    assert groups["equity-us-daily-risk-test"]["risk_return_observation_count"] == 3
+    assert groups["fund-us-weekly-risk-test"]["risk_return_observation_count"] == 2
+    assert groups["equity-us-daily-risk-test"]["annualized_volatility"] is not None
+    assert groups["fund-us-weekly-risk-test"]["annualized_volatility"] is not None
+
+    taxonomy_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/calculation/groups"
+        "?axis=taxonomy&taxonomy_id=tax-risk-basis&start_date=2026-01-01&end_date=2026-01-16"
+    )
+    assert taxonomy_response.status_code == 200
+    taxonomy_payload = taxonomy_response.json()
+    taxonomy_groups = {item["group_key"]: item for item in taxonomy_payload["groups"]}
+    core_group = taxonomy_groups["tax-risk-basis-core"]
+    child_total_pnl = sum(item["total_pnl"] for item in core_group["children"])
+    child_volatility = sum(
+        item["annualized_volatility"]
+        for item in core_group["children"]
+        if item["annualized_volatility"] is not None
+    )
+
+    assert core_group["risk_calculation_frequency"] == "weekly"
+    assert core_group["risk_return_observation_count"] == 3
+    assert core_group["annualized_volatility"] is not None
+    assert not isclose(core_group["annualized_volatility"], child_volatility, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(core_group["total_pnl"], child_total_pnl, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_period_calculation_groups_instrument_includes_cash_balance(client, monkeypatch):

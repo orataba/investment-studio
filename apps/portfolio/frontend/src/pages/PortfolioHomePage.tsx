@@ -1788,7 +1788,7 @@ export default function PortfolioHomePage() {
     }
   }
 
-  function handleSelectAsset(instrumentId: string | null) {
+  function handleSelectInstrument(instrumentId: string | null) {
     const normalizedInstrumentId = instrumentId?.trim() || null
     if (!normalizedInstrumentId || !portfolioId) {
       updateSearchParam('instrument_id', null)
@@ -2205,6 +2205,9 @@ export default function PortfolioHomePage() {
             </button>
           </div>
         </div>
+        {workspace?.risk_basis?.status_label ? (
+          <div className="portfolio-detail-meta">{workspace.risk_basis.status_label}</div>
+        ) : null}
         {loading ? <CalculationStatus label={workspace ? 'Recalculating…' : 'Loading…'} /> : null}
         {error ? <div className="error-state">{error}</div> : null}
         {taxonomyError && holdingsGroupBy.startsWith('taxonomy') ? (
@@ -2276,10 +2279,10 @@ export default function PortfolioHomePage() {
                             key={row.line_id}
                             className={isActive ? 'holdings-row-active' : undefined}
                             tabIndex={0}
-                            onClick={() => handleSelectAsset(row.instrument_core.instrument_id)}
+                            onClick={() => handleSelectInstrument(row.instrument_core.instrument_id)}
                             onKeyDown={(event) => {
                               if (event.key === 'Enter') {
-                                handleSelectAsset(row.instrument_core.instrument_id)
+                                handleSelectInstrument(row.instrument_core.instrument_id)
                               }
                             }}
                           >

@@ -88,6 +88,8 @@ from portfolio_app.services.performance import (
     build_period_calculation_bucket_report,
     build_period_calculation_groups_calendar_report,
     build_period_calculation_groups_report,
+    build_taxonomy_calculation_detail_report_from_base_report,
+    build_taxonomy_contribution_report_from_base_report,
     build_return_calendar_report,
     summarize_daily_snapshots,
 )
@@ -100,6 +102,33 @@ from portfolio_app.services.portfolio_store import (
 
 
 router = APIRouter()
+
+_MATERIALIZED_CALCULATION_GROUP_AXES = {"instrument", "account", "instrument_type", "currency"}
+
+
+def _calculation_group_detail_axis(axis: str) -> str:
+    return "cash_detail" if axis == "instrument" else f"{axis}_detail"
+
+
+def _taxonomy_base_axes(
+    taxonomy_id: str | None,
+    taxonomies: list[dict[str, object]],
+) -> tuple[str, str] | None:
+    resolved_taxonomy_id = str(taxonomy_id or "").strip()
+    taxonomy = next(
+        (
+            item
+            for item in taxonomies
+            if str(item.get("taxonomy_id") or "") == resolved_taxonomy_id
+        ),
+        None,
+    )
+    if taxonomy is None:
+        return None
+    primary_assignment_scope = str(taxonomy.get("primary_assignment_scope") or "")
+    if primary_assignment_scope in {"account", "cash_bucket"}:
+        return ("account", "account_detail")
+    return ("instrument", "instrument_detail")
 
 
 @router.post("/snapshots/daily/refresh", response_model=DailySnapshotRefreshResponse)
@@ -238,6 +267,12 @@ def get_portfolio_period_calculation_groups(
     if axis not in CONTRIBUTION_AXES:
         raise HTTPException(status_code=422, detail=CONTRIBUTION_AXIS_ERROR)
 
+    accounts = list_accounts(portfolio_id)
+    transactions = list_transactions(portfolio_id)
+    taxonomies = list_taxonomies(portfolio_id)
+    taxonomy_nodes = list_taxonomy_nodes(portfolio_id)
+    taxonomy_assignments = list_taxonomy_assignments(portfolio_id)
+
     try:
         contribution_report = (
             get_cached_materialized_contribution_report(
@@ -247,22 +282,76 @@ def get_portfolio_period_calculation_groups(
                 axis=axis,
                 group_key=group_key,
             )
-            if axis in {"instrument", "account"}
+            if axis in _MATERIALIZED_CALCULATION_GROUP_AXES
             else None
         )
+        detail_contribution_report = (
+            get_cached_materialized_contribution_report(
+                portfolio_id,
+                start_date=start_date,
+                end_date=end_date,
+                axis=_calculation_group_detail_axis(axis),
+            )
+            if axis in _MATERIALIZED_CALCULATION_GROUP_AXES
+            else None
+        )
+        if axis == "taxonomy":
+            taxonomy_axes = _taxonomy_base_axes(taxonomy_id, taxonomies)
+            if taxonomy_axes is not None:
+                base_axis, base_detail_axis = taxonomy_axes
+                base_contribution_report = get_cached_materialized_contribution_report(
+                    portfolio_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    axis=base_axis,
+                )
+                base_detail_report = get_cached_materialized_contribution_report(
+                    portfolio_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    axis=base_detail_axis,
+                )
+                if base_contribution_report is not None:
+                    contribution_report = build_taxonomy_contribution_report_from_base_report(
+                        portfolio,
+                        accounts,
+                        transactions,
+                        taxonomies=taxonomies,
+                        taxonomy_nodes=taxonomy_nodes,
+                        taxonomy_assignments=taxonomy_assignments,
+                        start_date=start_date,
+                        end_date=end_date,
+                        taxonomy_id=taxonomy_id,
+                        group_key=group_key,
+                        base_report=base_contribution_report,
+                    )
+                if base_detail_report is not None:
+                    detail_contribution_report = build_taxonomy_calculation_detail_report_from_base_report(
+                        portfolio,
+                        accounts,
+                        transactions,
+                        taxonomies=taxonomies,
+                        taxonomy_nodes=taxonomy_nodes,
+                        taxonomy_assignments=taxonomy_assignments,
+                        start_date=start_date,
+                        end_date=end_date,
+                        taxonomy_id=taxonomy_id,
+                        base_report=base_detail_report,
+                    )
         report = build_period_calculation_groups_report(
             portfolio,
-            list_accounts(portfolio_id),
-            list_transactions(portfolio_id),
-            taxonomies=list_taxonomies(portfolio_id),
-            taxonomy_nodes=list_taxonomy_nodes(portfolio_id),
-            taxonomy_assignments=list_taxonomy_assignments(portfolio_id),
+            accounts,
+            transactions,
+            taxonomies=taxonomies,
+            taxonomy_nodes=taxonomy_nodes,
+            taxonomy_assignments=taxonomy_assignments,
             start_date=start_date,
             end_date=end_date,
             axis=axis,
             taxonomy_id=taxonomy_id,
             group_key=group_key,
             contribution_report=contribution_report,
+            detail_contribution_report=detail_contribution_report,
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error

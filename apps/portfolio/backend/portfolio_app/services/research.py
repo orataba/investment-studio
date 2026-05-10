@@ -21,7 +21,7 @@ from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.instrument_charts import build_instrument_sparkline
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
-from portfolio_app.services.performance import build_statement_of_assets_report
+from portfolio_app.services.performance import build_holdings_report
 from portfolio_app.services.research_solver import (
     build_research_calculation_frequency_profile,
     build_research_scope_options,
@@ -545,7 +545,7 @@ def _build_research_context(
     accounts = list_accounts(portfolio_id)
     transactions = list_transactions(portfolio_id)
 
-    statement = build_statement_of_assets_report(
+    statement = build_holdings_report(
         portfolio,
         accounts,
         transactions,
@@ -578,12 +578,16 @@ def _build_research_context(
     chart_currency = None
     daily_points: list[dict[str, object]] = []
     if top_holdings:
-        reference_asset = top_holdings[0]
-        daily_points = build_instrument_sparkline(str(reference_asset.get("instrument_id") or ""), as_of_date=as_of_date, max_points=20)
+        reference_instrument = top_holdings[0]
+        daily_points = build_instrument_sparkline(
+            str(reference_instrument.get("instrument_id") or ""),
+            as_of_date=as_of_date,
+            max_points=20,
+        )
         chart_label = "Reference Tape"
-        chart_currency = str(reference_asset.get("base_currency") or statement.get("base_currency") or "USD")
+        chart_currency = str(reference_instrument.get("base_currency") or statement.get("base_currency") or "USD")
         chart_note = (
-            f"Using the six-month sparkline for {reference_asset.get('instrument_name') or reference_asset.get('instrument_id')} "
+            f"Using the six-month sparkline for {reference_instrument.get('instrument_name') or reference_instrument.get('instrument_id')} "
             "until a cheaper portfolio daily tape is wired into the research workbench."
         )
 

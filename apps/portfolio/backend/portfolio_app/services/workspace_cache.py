@@ -176,6 +176,19 @@ def preload_portfolio_workspace_cache(portfolio_id: str) -> dict[str, object]:
         "contribution:account",
         lambda: get_cached_materialized_contribution_report(portfolio_id, axis="account"),
     )
+    for axis in (
+        "instrument_type",
+        "currency",
+        "cash_detail",
+        "instrument_detail",
+        "account_detail",
+        "instrument_type_detail",
+        "currency_detail",
+    ):
+        warm(
+            f"contribution:{axis}",
+            lambda axis=axis: get_cached_materialized_contribution_report(portfolio_id, axis=axis),
+        )
     return {
         "portfolio_id": portfolio_id,
         "warmed_surfaces": warmed,

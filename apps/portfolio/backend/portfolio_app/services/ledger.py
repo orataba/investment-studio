@@ -2035,11 +2035,11 @@ def build_portfolio_positions(
         },
         as_of_date=as_of_date,
     )
-    positions_by_asset: dict[str, dict[str, object]] = {}
+    positions_by_instrument: dict[str, dict[str, object]] = {}
 
     for position_lot in position_lots:
         instrument_key = str(position_lot.get("instrument_id") or "")
-        bucket = positions_by_asset.setdefault(
+        bucket = positions_by_instrument.setdefault(
             instrument_key,
             {
                 "position_id": instrument_key,
@@ -2059,7 +2059,7 @@ def build_portfolio_positions(
         bucket["account_ids"].add(str(position_lot.get("account_id") or ""))
 
     rendered_positions: list[dict[str, object]] = []
-    for bucket in positions_by_asset.values():
+    for bucket in positions_by_instrument.values():
         quantity = _safe_float(bucket.get("quantity")) or 0.0
         if abs(quantity) <= 1e-9:
             continue

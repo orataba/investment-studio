@@ -17,7 +17,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from portfolio_app.db.models import AccountRecordModel, PortfolioRecordModel, TransactionRecordModel
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.performance import build_statement_of_assets_report
+from portfolio_app.services.performance import build_holdings_report
 from portfolio_app.services.portfolio_store import resolve_trade_timing
 
 DEFAULT_VALUATION_DATE = date.today()
@@ -458,13 +458,13 @@ def main() -> None:
             "valuation_timezone": "Asia/Shanghai",
             "valuation_cutoff_policy": "latest_complete_eod",
         }
-        current_report = build_statement_of_assets_report(
+        current_report = build_holdings_report(
             portfolio_payload,
             account_payloads,
             transaction_payloads,
             as_of_date=args.valuation_date,
         )
-        previous_report = build_statement_of_assets_report(
+        previous_report = build_holdings_report(
             portfolio_payload,
             account_payloads,
             transaction_payloads,

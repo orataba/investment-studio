@@ -1,19 +1,17 @@
 from copy import deepcopy
-from datetime import date, timedelta
+from datetime import date
+from typing import cast
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from portfolio_app.services.calculation_frequency import (
-    calculation_frequency_profile,
-    infer_observation_frequency,
-    selected_observation_dates_from_detail,
-)
+from portfolio_app.services.calculation_frequency import CalculationFrequency
 from portfolio_app.db.models import PortfolioCalculationStateModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.instrument_charts import (
     build_instrument_holdings_market_profile,
     empty_instrument_holdings_market_profile,
 )
+from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
 from portfolio_app.services.workspace_cache import (
     get_cached_materialized_holdings_workspace,
     preload_portfolio_workspace_cache,
@@ -23,8 +21,7 @@ from portfolio_app.services.ledger import (
     summarize_position_lots,
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
-from portfolio_app.services.instrument_registry import get_registry_instrument_detail
-from portfolio_app.services.performance import build_statement_of_assets_report
+from portfolio_app.services.performance import build_holdings_report
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
     get_portfolio_live_summary,
@@ -49,7 +46,7 @@ def _parse_iso_date(value: object) -> date | None:
     return None
 
 
-def _holding_start_dates_by_asset(position_lots: list[dict[str, object]]) -> dict[str, date]:
+def _holding_start_dates_by_instrument(position_lots: list[dict[str, object]]) -> dict[str, date]:
     start_dates: dict[str, date] = {}
     for position_lot in position_lots:
         if str(position_lot.get("status") or "") != "open":
@@ -73,10 +70,13 @@ def _enrich_holdings_workspace_market_data(
     *,
     as_of_date: date,
     position_lots: list[dict[str, object]],
+    risk_basis_profile: dict[str, object],
 ) -> dict[str, object]:
     enriched_workspace = deepcopy(workspace)
     enriched_workspace.pop("price_chart_range", None)
-    holding_start_dates = _holding_start_dates_by_asset(position_lots)
+    enriched_workspace["risk_basis"] = risk_basis_profile
+    calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
+    holding_start_dates = _holding_start_dates_by_instrument(position_lots)
     rows = enriched_workspace.get("rows")
     if not isinstance(rows, list):
         return enriched_workspace
@@ -88,7 +88,11 @@ def _enrich_holdings_workspace_market_data(
         instrument_id = str(instrument_core.get("instrument_id") or row.get("line_id") or "")
         if not instrument_id:
             row.pop("price_chart", None)
-            row.update(empty_instrument_holdings_market_profile())
+            row.update(
+                empty_instrument_holdings_market_profile(
+                    calculation_frequency=calculation_frequency,
+                )
+            )
             continue
         holding_start_date = holding_start_dates.get(instrument_id)
         row.pop("price_chart", None)
@@ -97,6 +101,7 @@ def _enrich_holdings_workspace_market_data(
                 instrument_id,
                 as_of_date=as_of_date,
                 holding_start_date=holding_start_date,
+                calculation_frequency=calculation_frequency,
             )
         )
     return enriched_workspace
@@ -122,43 +127,45 @@ def _require_portfolio(portfolio_id: str | None, *, live_if_materialized_stale: 
 
 
 def _portfolio_calculation_frequency_status(portfolio: dict[str, object], *, as_of_date: date) -> str:
+    try:
+        return str(_portfolio_calculation_frequency_profile(portfolio, as_of_date=as_of_date)["status_label"])
+    except InstrumentRegistryError:
+        return "Risk basis unavailable"
+
+
+def _portfolio_calculation_frequency_profile(portfolio: dict[str, object], *, as_of_date: date) -> dict[str, object]:
     portfolio_id = str(portfolio.get("portfolio_id") or "")
     if not portfolio_id:
-        return "Risk basis unavailable"
+        return calculation_frequency_profile_for_instruments([], end_date=as_of_date)
+
     materialized_workspace = get_cached_materialized_holdings_workspace(
         portfolio_id,
         as_of_date=as_of_date,
     )
-    if not isinstance(materialized_workspace, dict):
-        return "Risk basis unavailable"
-
-    start_date = as_of_date - timedelta(days=366)
-    source_frequencies = []
     instrument_ids: list[str] = []
-    for row in list(materialized_workspace.get("rows") or []):
-        if not isinstance(row, dict):
-            continue
-        instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
-        instrument_id = str(instrument_core.get("instrument_id") or row.get("line_id") or "").strip()
-        if instrument_id and instrument_id not in instrument_ids:
-            instrument_ids.append(instrument_id)
-    for instrument_id in instrument_ids:
-        if not instrument_id:
-            continue
-        try:
-            detail = get_registry_instrument_detail(instrument_id)
-        except InstrumentRegistryError:
-            return "Risk basis unavailable"
-        if not isinstance(detail, dict):
-            continue
-        dates = [
-            point_date
-            for point_date in selected_observation_dates_from_detail(detail, end_date=as_of_date)
-            if start_date <= point_date <= as_of_date
-        ]
-        source_frequencies.append(infer_observation_frequency(dates))
-    profile = calculation_frequency_profile(requested_frequency="auto", source_frequencies=source_frequencies)
-    return str(profile["status_label"])
+    if isinstance(materialized_workspace, dict):
+        for row in list(materialized_workspace.get("rows") or []):
+            if not isinstance(row, dict):
+                continue
+            instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
+            instrument_id = str(instrument_core.get("instrument_id") or row.get("line_id") or "").strip()
+            if instrument_id and instrument_id not in instrument_ids:
+                instrument_ids.append(instrument_id)
+    else:
+        accounts = list_accounts(portfolio_id)
+        position_lots = build_position_lots(
+            portfolio_id,
+            accounts,
+            list_transactions(portfolio_id, end_date=as_of_date),
+            as_of_date=as_of_date,
+        )
+        for position_lot in position_lots:
+            if str(position_lot.get("status") or "") != "open":
+                continue
+            instrument_id = str(position_lot.get("instrument_id") or "").strip()
+            if instrument_id and instrument_id not in instrument_ids:
+                instrument_ids.append(instrument_id)
+    return calculation_frequency_profile_for_instruments(instrument_ids, end_date=as_of_date)
 
 
 @router.get("/summary")
@@ -248,10 +255,15 @@ def holdings_workspace(
             as_of_date=resolved_as_of_date,
         )
         try:
+            risk_basis_profile = _portfolio_calculation_frequency_profile(
+                resolved_portfolio,
+                as_of_date=resolved_as_of_date,
+            )
             return _enrich_holdings_workspace_market_data(
                 materialized_workspace,
                 as_of_date=resolved_as_of_date,
                 position_lots=position_lots,
+                risk_basis_profile=risk_basis_profile,
             )
         except InstrumentRegistryError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
@@ -259,7 +271,7 @@ def holdings_workspace(
     accounts = list_accounts(resolved_portfolio_id)
     transactions = list_transactions(resolved_portfolio_id)
     try:
-        statement = build_statement_of_assets_report(
+        statement = build_holdings_report(
             resolved_portfolio,
             accounts,
             transactions,
@@ -271,12 +283,23 @@ def holdings_workspace(
             list_transactions(resolved_portfolio_id, end_date=resolved_as_of_date),
             as_of_date=resolved_as_of_date,
         )
-        holding_start_dates = _holding_start_dates_by_asset(position_lots)
-        market_profile_by_asset = {
+        holding_start_dates = _holding_start_dates_by_instrument(position_lots)
+        instrument_ids = [
+            str(position.get("instrument_id") or "")
+            for position in statement.get("positions", [])
+            if str(position.get("instrument_id") or "")
+        ]
+        risk_basis_profile = calculation_frequency_profile_for_instruments(
+            instrument_ids,
+            end_date=resolved_as_of_date,
+        )
+        calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
+        market_profile_by_instrument = {
             str(position.get("instrument_id") or ""): build_instrument_holdings_market_profile(
                 str(position.get("instrument_id") or ""),
                 as_of_date=resolved_as_of_date,
                 holding_start_date=holding_start_dates.get(str(position.get("instrument_id") or "")),
+                calculation_frequency=calculation_frequency,
             )
             for position in statement.get("positions", [])
             if str(position.get("instrument_id") or "")
@@ -291,9 +314,9 @@ def holdings_workspace(
     def market_profile_for_position(position: dict[str, object]) -> dict[str, object]:
         instrument_id = str(position.get("instrument_id") or "")
         return (
-            market_profile_by_asset[instrument_id]
+            market_profile_by_instrument[instrument_id]
             if instrument_id
-            else empty_instrument_holdings_market_profile()
+            else empty_instrument_holdings_market_profile(calculation_frequency=calculation_frequency)
         )
 
     rows = [
@@ -337,10 +360,11 @@ def holdings_workspace(
         "as_of_date": resolved_as_of_date.isoformat(),
         "view_label": "View: Holdings",
         "coverage_note": (
-            "Statement of Assets now replays portfolio facts to the selected as-of date and values holdings "
+            "Holdings now replay portfolio facts to the selected as-of date and value positions "
             "with shared registry market data and shared FX at that boundary. PositionLots stay portfolio-private, "
             "account-aware, and are derived from the same fact ledger."
         ),
+        "risk_basis": risk_basis_profile,
         "summary_cards": [
             {"label": "Positions", "value": str(position_count), "tone": "neutral"},
             {
@@ -353,7 +377,7 @@ def holdings_workspace(
                 "value": f"{priced_position_count} / {position_count}",
                 "tone": "neutral",
             },
-            {"label": "Coverage", "value": "Statement of Assets", "tone": "neutral"},
+            {"label": "Coverage", "value": "Holdings", "tone": "neutral"},
         ],
         "rows": rows,
         "totals": {

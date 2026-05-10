@@ -79,7 +79,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
     label: 'Holdings',
     href: '/holdings',
     family: 'Current-State',
-    toolbarLabel: 'Page: Statement of Assets',
+    toolbarLabel: 'Page: Holdings',
     summary:
       'Holdings is the canonical current-state table. It owns positions, lots, grouped exposures, and security-detail entry, but does not absorb transactions or target analysis.',
     primaryQuestion: '当前持有什么？',

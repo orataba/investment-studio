@@ -19,7 +19,7 @@ from portfolio_app.services.calculation_frequency import (
 from portfolio_app.services.market_data import is_usable_market_data_point
 import portfolio_app.services.performance as performance_service
 from portfolio_app.services.ledger import build_account_workspace
-from portfolio_app.services.performance import build_statement_of_assets_report
+from portfolio_app.services.performance import build_holdings_report
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
     list_accounts,
@@ -2082,7 +2082,7 @@ def _current_scope_actuals(
         raise ValueError("Portfolio not found.")
     accounts = list_accounts(state.portfolio_id)
     transactions = list_transactions(state.portfolio_id)
-    statement = build_statement_of_assets_report(
+    statement = build_holdings_report(
         portfolio,
         accounts,
         transactions,
@@ -2096,11 +2096,11 @@ def _current_scope_actuals(
         as_of_date=as_of_date,
     )
 
-    position_value_by_asset: dict[str, float] = {}
+    position_value_by_instrument: dict[str, float] = {}
     for position in list(statement.get("positions") or []):
         instrument_id = str(position.get("instrument_id") or "")
         if instrument_id:
-            position_value_by_asset[instrument_id] = float(_safe_float(position.get("market_value_base")) or 0.0)
+            position_value_by_instrument[instrument_id] = float(_safe_float(position.get("market_value_base")) or 0.0)
 
     visible_cash_accounts = [
         account_row
@@ -2129,7 +2129,7 @@ def _current_scope_actuals(
     node_value_map: dict[str, float] = {node_id: 0.0 for node_id in state.node_by_id}
     unassigned_value = 0.0
 
-    for instrument_id, market_value_base in position_value_by_asset.items():
+    for instrument_id, market_value_base in position_value_by_instrument.items():
         node_id = direct_position_membership.get(instrument_id)
         if not node_id:
             unassigned_value += market_value_base
@@ -2164,7 +2164,7 @@ def _current_scope_actuals(
         if member.member_type == TARGET_MEMBER_NODE:
             actual_value = node_value_map.get(member.member_id, 0.0)
         elif member.member_type == TARGET_MEMBER_INSTRUMENT:
-            actual_value = position_value_by_asset.get(member.member_id, 0.0)
+            actual_value = position_value_by_instrument.get(member.member_id, 0.0)
         else:
             actual_value = cash_value_by_account.get(member.member_id, 0.0)
         actual_weight = actual_value / scope_total_value if abs(scope_total_value) > 1e-9 else None

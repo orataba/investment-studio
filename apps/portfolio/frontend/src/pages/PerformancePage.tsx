@@ -12,11 +12,9 @@ import {
   getPortfolioPerformance,
   getPortfolioPerformanceCalculation,
   getPortfolioPerformanceCalculationGroups,
-  getPortfolioPerformanceContribution,
   getPortfolioTaxonomyCatalog,
   type PortfolioInstrumentPriceChartPoint,
   type PortfolioInstrumentPriceChartResponse,
-  type PortfolioContributionReportResponse,
   type PortfolioContributionAxis,
   type PortfolioDailyPerformancePoint,
   type PortfolioPerformanceCalculationGroupsResponse,
@@ -160,17 +158,6 @@ type CalculationTableRow =
       syntheticKind: CalculationSyntheticRowKind
     }
 
-type RiskAttributionStats = {
-  groupKey: string
-  observationCount: number
-  ownObservationCount: number
-  annualizedVolatility: number | null
-  sharpe: number | null
-  correlationToPortfolio: number | null
-  betaToPortfolio: number | null
-  realizedRiskContribution: number | null
-}
-
 const LOCKED_CALCULATION_COLUMN: CalculationColumnKey = 'line'
 const CALCULATION_TABLE_VIEWS_STORAGE_KEY = 'yungu.portfolio.performance.calculation.views.v1'
 
@@ -227,14 +214,6 @@ const CALCULATION_COLUMN_GROUPS: Array<{ label: string; columns: CalculationColu
 ]
 
 const ALL_CALCULATION_COLUMN_KEYS = CALCULATION_COLUMN_GROUPS.flatMap((group) => group.columns)
-const RISK_CALCULATION_COLUMN_KEYS = new Set<CalculationColumnKey>([
-  'own_vol',
-  'own_sharpe',
-  'own_corr',
-  'beta',
-  'risk_contribution',
-  'observations',
-])
 const SIGNED_CALCULATION_COLUMN_KEYS = new Set<CalculationColumnKey>([
   'pnl_flow',
   'realized_gain',
@@ -274,13 +253,13 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
 }
 
 const CALCULATION_COLUMN_DESCRIPTIONS: Partial<Record<CalculationColumnKey, string>> = {
-  own_vol: 'Annualized volatility of this group’s own daily return during the selected period.',
-  own_sharpe: 'Annualized mean return divided by annualized volatility for this group’s own daily return.',
-  own_corr: 'Sample correlation between this group’s daily return and the portfolio daily TWR in the selected period.',
-  beta: 'Covariance of this group’s daily return with portfolio daily TWR divided by portfolio daily TWR variance.',
+  own_vol: 'Annualized volatility of this group’s canonical risk-basis return during the selected period.',
+  own_sharpe: 'Annualized mean return divided by annualized volatility on the canonical risk basis.',
+  own_corr: 'Sample correlation between this group’s risk-basis return and the portfolio risk-basis return.',
+  beta: 'Covariance of this group’s risk-basis return with portfolio risk-basis return divided by portfolio variance.',
   risk_contribution:
-    'Realized variance contribution share: Cov(group daily contribution, portfolio daily TWR) divided by portfolio daily TWR variance.',
-  observations: 'Number of eligible daily observations used for the realized risk attribution metrics.',
+    'Realized variance contribution share: Cov(group contribution, portfolio return) divided by portfolio variance on the canonical risk basis.',
+  observations: 'Number of eligible risk-basis observations used for the realized risk attribution metrics.',
 }
 
 const DEFAULT_CALCULATION_TABLE_VIEW_STATE: CalculationTableViewState = {
@@ -542,10 +521,6 @@ function resolveCalculationTableViewState(store: CalculationTableViewStore, view
 
 function createCalculationTableViewId() {
   return `custom:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`
-}
-
-function calculationColumnsNeedRiskAttribution(columns: CalculationColumnKey[]) {
-  return normalizeCalculationColumns(columns).some((column) => RISK_CALCULATION_COLUMN_KEYS.has(column))
 }
 
 function formatRatio(value: number | null | undefined, digits = 2) {
@@ -1028,101 +1003,6 @@ function buildPerformanceMetricRows(
   ] satisfies PerformanceMetricRow[]
 }
 
-function buildPortfolioReturnByDate(dailySeries: PortfolioDailyPerformancePoint[]) {
-  const lookup = new Map<string, number>()
-  dailySeries.forEach((point) => {
-    const dailyReturn = finiteNumber(point.daily_twr)
-    if (dailyReturn != null && point.return_observation_eligible) {
-      lookup.set(point.as_of_date, dailyReturn)
-    }
-  })
-  return lookup
-}
-
-function buildRealizedRiskAttributionStats(
-  contributionWorkspace: PortfolioContributionReportResponse | null,
-  portfolioDailySeries: PortfolioDailyPerformancePoint[],
-) {
-  const portfolioReturnByDate = buildPortfolioReturnByDate(portfolioDailySeries)
-  const grouped = new Map<
-    string,
-    {
-      groupKey: string
-      ownReturns: DatedReturn[]
-      contributionPairs: Array<{ date: string; contribution: number; portfolioReturn: number }>
-      ownReturnPairs: Array<{ date: string; groupReturn: number; portfolioReturn: number }>
-    }
-  >()
-
-  ;(contributionWorkspace?.daily_slices ?? [])
-    .slice()
-    .sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
-    .forEach((slice) => {
-      const groupKey = slice.group_key
-      const current = grouped.get(groupKey) ?? {
-        groupKey,
-        ownReturns: [],
-        contributionPairs: [],
-        ownReturnPairs: [],
-      }
-      const portfolioReturn = portfolioReturnByDate.get(slice.as_of_date)
-      const ownReturn = finiteNumber(slice.daily_return)
-      const dailyContribution = finiteNumber(slice.daily_contribution)
-      if (ownReturn != null && slice.return_observation_eligible) {
-        current.ownReturns.push({ date: slice.as_of_date, value: ownReturn })
-        if (portfolioReturn != null) {
-          current.ownReturnPairs.push({ date: slice.as_of_date, groupReturn: ownReturn, portfolioReturn })
-        }
-      }
-      if (dailyContribution != null && portfolioReturn != null && slice.return_observation_eligible) {
-        current.contributionPairs.push({
-          date: slice.as_of_date,
-          contribution: dailyContribution,
-          portfolioReturn,
-        })
-      }
-      grouped.set(groupKey, current)
-    })
-
-  const stats = new Map<string, RiskAttributionStats>()
-  grouped.forEach((item, groupKey) => {
-    const ownReturnValues = item.ownReturns.map((point) => point.value)
-    const ownReturnDates = item.ownReturns.map((point) => point.date)
-    const annualizedVol = annualizedVolatility(ownReturnValues, ownReturnDates)
-    const annualizedMean = annualizedMeanReturn(ownReturnValues, ownReturnDates)
-    const contributionValues = item.contributionPairs.map((point) => point.contribution)
-    const portfolioReturnsForContribution = item.contributionPairs.map((point) => point.portfolioReturn)
-    const contributionCovariance = sampleCovariance(contributionValues, portfolioReturnsForContribution)
-    const portfolioVariance = sampleCovariance(portfolioReturnsForContribution, portfolioReturnsForContribution)
-    const ownReturnPairValues = item.ownReturnPairs.map((point) => point.groupReturn)
-    const portfolioReturnsForOwn = item.ownReturnPairs.map((point) => point.portfolioReturn)
-    const ownPairPortfolioVariance = sampleCovariance(portfolioReturnsForOwn, portfolioReturnsForOwn)
-    const ownPairCovariance = sampleCovariance(ownReturnPairValues, portfolioReturnsForOwn)
-
-    stats.set(groupKey, {
-      groupKey,
-      observationCount: item.contributionPairs.length,
-      ownObservationCount: item.ownReturns.length,
-      annualizedVolatility: annualizedVol,
-      sharpe:
-        annualizedMean != null && annualizedVol != null && annualizedVol > 1e-12
-          ? annualizedMean / annualizedVol
-          : null,
-      correlationToPortfolio: sampleCorrelation(ownReturnPairValues, portfolioReturnsForOwn),
-      betaToPortfolio:
-        ownPairCovariance != null && ownPairPortfolioVariance != null && ownPairPortfolioVariance > 1e-12
-          ? ownPairCovariance / ownPairPortfolioVariance
-          : null,
-      realizedRiskContribution:
-        contributionCovariance != null && portfolioVariance != null && portfolioVariance > 1e-12
-          ? contributionCovariance / portfolioVariance
-          : null,
-    })
-  })
-
-  return stats
-}
-
 function TableStatusRow({ colSpan, label, tone = 'muted' }: { colSpan: number; label: string; tone?: 'muted' | 'error' }) {
   return (
     <tr>
@@ -1211,10 +1091,6 @@ function PerformancePage() {
     useState<PortfolioPerformanceCalculationGroupsResponse | null>(null)
   const [calculationGroupsLoading, setCalculationGroupsLoading] = useState(false)
   const [calculationGroupsError, setCalculationGroupsError] = useState<string | null>(null)
-  const [calculationContributionWorkspace, setCalculationContributionWorkspace] =
-    useState<PortfolioContributionReportResponse | null>(null)
-  const [calculationContributionLoading, setCalculationContributionLoading] = useState(false)
-  const [calculationContributionError, setCalculationContributionError] = useState<string | null>(null)
   const initialCalculationTableViewStore = useMemo(() => loadCalculationTableViewStore(), [])
   const initialCalculationTableViewState = useMemo(
     () => resolveCalculationTableViewState(initialCalculationTableViewStore, initialCalculationTableViewStore.activeViewId),
@@ -1322,10 +1198,6 @@ function PerformancePage() {
   const visibleCalculationColumns = useMemo(
     () => normalizeCalculationColumns(calculationColumns),
     [calculationColumns],
-  )
-  const calculationNeedsRiskAttribution = useMemo(
-    () => calculationColumnsNeedRiskAttribution(visibleCalculationColumns),
-    [visibleCalculationColumns],
   )
   const filteredCalculationColumns = useMemo(() => {
     const search = calculationColumnSearch.trim().toLowerCase()
@@ -1583,55 +1455,6 @@ function PerformancePage() {
   ])
 
   useEffect(() => {
-    if (!portfolioId || !calculationNeedsRiskAttribution) {
-      setCalculationContributionWorkspace(null)
-      setCalculationContributionLoading(false)
-      setCalculationContributionError(null)
-      return
-    }
-
-    let cancelled = false
-    setCalculationContributionLoading(true)
-    setCalculationContributionError(null)
-    getPortfolioPerformanceContribution(portfolioId, {
-      start_date: effectiveStartDate,
-      end_date: effectiveEndDate,
-      axis: resolvedCalculationGroupBy,
-      taxonomy_id:
-        resolvedCalculationGroupBy === 'taxonomy' ? defaultPlanningTaxonomy?.taxonomy_id ?? undefined : undefined,
-    })
-      .then((response) => {
-        if (!cancelled) {
-          setCalculationContributionWorkspace(response)
-        }
-      })
-      .catch((requestError: unknown) => {
-        if (!cancelled) {
-          setCalculationContributionWorkspace(null)
-          setCalculationContributionError(
-            requestError instanceof Error ? requestError.message : 'Failed to load realized risk attribution.',
-          )
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setCalculationContributionLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [
-    portfolioId,
-    effectiveStartDate,
-    effectiveEndDate,
-    resolvedCalculationGroupBy,
-    defaultPlanningTaxonomy?.taxonomy_id,
-    calculationNeedsRiskAttribution,
-  ])
-
-  useEffect(() => {
     if (!portfolioId || !benchmarkInstrumentId) {
       setBenchmarkChart(null)
       setBenchmarkLoading(false)
@@ -1721,19 +1544,15 @@ function PerformancePage() {
       return rightMagnitude - leftMagnitude || left.group_label.localeCompare(right.group_label)
     })
   }, [calculationGroupsWorkspace])
-  const riskAttributionByGroupKey = useMemo(
-    () => buildRealizedRiskAttributionStats(calculationContributionWorkspace, workspace?.daily_series ?? []),
-    [calculationContributionWorkspace, workspace?.daily_series],
-  )
   const riskAttributionRows = useMemo(() => {
     return calculationRows.slice().sort((left, right) => {
-      const leftRisk = Math.abs(finiteNumber(riskAttributionByGroupKey.get(left.group_key)?.realizedRiskContribution) ?? 0)
-      const rightRisk = Math.abs(finiteNumber(riskAttributionByGroupKey.get(right.group_key)?.realizedRiskContribution) ?? 0)
+      const leftRisk = Math.abs(finiteNumber(left.realized_risk_contribution) ?? 0)
+      const rightRisk = Math.abs(finiteNumber(right.realized_risk_contribution) ?? 0)
       const leftContribution = Math.abs(finiteNumber(left.period_contribution) ?? 0)
       const rightContribution = Math.abs(finiteNumber(right.period_contribution) ?? 0)
       return rightRisk - leftRisk || rightContribution - leftContribution || left.group_label.localeCompare(right.group_label)
     })
-  }, [calculationRows, riskAttributionByGroupKey])
+  }, [calculationRows])
 
   const calculationSummary = calculationWorkspace?.summary ?? null
   const calculationGroupsSummary = calculationGroupsWorkspace?.summary ?? null
@@ -1751,25 +1570,24 @@ function PerformancePage() {
   const showContributionResidual = contributionResidual != null && Math.abs(contributionResidual) > 0.0000005
   const calculationGroupLabel = calculationAxisLabel(resolvedCalculationGroupBy)
   const calculationChildRowCount = calculationRows.reduce((total, row) => total + (row.children?.length ?? 0), 0)
+  const calculationRiskStatusLabel = calculationGroupsSummary?.risk_frequency_status_label ?? null
   const calculationMeta = `${periodLabel} · ${formatNumber(calculationRows.length, 0)} ${calculationAxisCountLabel(
     resolvedCalculationGroupBy,
-  )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} instruments/cash` : ''}`
+  )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} instruments/cash` : ''}${
+    calculationRiskStatusLabel ? ` · ${calculationRiskStatusLabel}` : ''
+  }`
   const calculationStatusLabel =
     (calculationLoading && calculationWorkspace) ||
-    (calculationGroupsLoading && calculationGroupsWorkspace) ||
-    (calculationNeedsRiskAttribution && calculationContributionLoading && calculationContributionWorkspace)
+    (calculationGroupsLoading && calculationGroupsWorkspace)
       ? `Updating ${calculationGroupLabel.toLowerCase()} calculation…`
       : calculationTableMode === 'risk_attribution'
-        ? 'Building realized risk attribution…'
+        ? 'Building canonical risk attribution…'
         : 'Building performance calculation…'
   const riskContributionTotal = riskAttributionRows.reduce(
-    (total, row) => total + (finiteNumber(riskAttributionByGroupKey.get(row.group_key)?.realizedRiskContribution) ?? 0),
+    (total, row) => total + (finiteNumber(row.realized_risk_contribution) ?? 0),
     0,
   )
-  const riskContributionResidual =
-    riskAttributionRows.length && !calculationContributionLoading && !calculationContributionError
-      ? 1 - riskContributionTotal
-      : null
+  const riskContributionResidual = riskAttributionRows.length ? 1 - riskContributionTotal : null
   const showRiskContributionResidual =
     calculationTableMode === 'risk_attribution' &&
     visibleCalculationColumns.includes('risk_contribution') &&
@@ -1923,15 +1741,17 @@ function PerformancePage() {
             case 'return_contribution':
               return finiteNumber(portfolioContribution)
             case 'own_vol':
-              return finiteNumber(summary?.annualized_volatility)
+              return finiteNumber(calculationGroupsSummary?.annualized_volatility ?? summary?.annualized_volatility)
             case 'own_sharpe':
-              return finiteNumber(summary?.sharpe_ratio)
+              return finiteNumber(calculationGroupsSummary?.sharpe_ratio ?? summary?.sharpe_ratio)
             case 'own_corr':
             case 'beta':
             case 'risk_contribution':
               return 1
             case 'observations':
-              return finiteNumber(summary?.risk_return_observation_count)
+              return finiteNumber(
+                calculationGroupsSummary?.risk_return_observation_count ?? summary?.risk_return_observation_count,
+              )
             default:
               return null
           }
@@ -1941,7 +1761,6 @@ function PerformancePage() {
     }
 
     const source = row.row
-    const stats = row.kind === 'group' ? riskAttributionByGroupKey.get(row.row.group_key) ?? null : null
     switch (column) {
       case 'pnl_flow':
         return finiteNumber(source.total_pnl)
@@ -1970,17 +1789,17 @@ function PerformancePage() {
       case 'return_contribution':
         return finiteNumber(source.period_contribution)
       case 'own_vol':
-        return finiteNumber(stats?.annualizedVolatility)
+        return finiteNumber(source.annualized_volatility)
       case 'own_sharpe':
-        return finiteNumber(stats?.sharpe)
+        return finiteNumber(source.sharpe_ratio)
       case 'own_corr':
-        return finiteNumber(stats?.correlationToPortfolio)
+        return finiteNumber(source.correlation_to_portfolio)
       case 'beta':
-        return finiteNumber(stats?.betaToPortfolio)
+        return finiteNumber(source.beta_to_portfolio)
       case 'risk_contribution':
-        return finiteNumber(stats?.realizedRiskContribution)
+        return finiteNumber(source.realized_risk_contribution)
       case 'observations':
-        return finiteNumber(stats?.observationCount)
+        return finiteNumber(source.risk_return_observation_count)
       default:
         return null
     }
@@ -2183,8 +2002,7 @@ function PerformancePage() {
                       onClick={handleDownloadCalculationCsv}
                       disabled={
                         !calculationGroupsWorkspace ||
-                        calculationGroupsLoading ||
-                        (calculationNeedsRiskAttribution && calculationContributionLoading)
+                        calculationGroupsLoading
                       }
                     >
                       Download
@@ -2196,12 +2014,7 @@ function PerformancePage() {
               {calculationGroupsError ? (
                 <div className="inline-notice inline-notice-error">{calculationGroupsError}</div>
               ) : null}
-              {calculationContributionError && calculationNeedsRiskAttribution ? (
-                <div className="inline-notice inline-notice-error">{calculationContributionError}</div>
-              ) : null}
-              {calculationLoading ||
-              calculationGroupsLoading ||
-              (calculationContributionLoading && calculationNeedsRiskAttribution) ? (
+              {calculationLoading || calculationGroupsLoading ? (
                 <CalculationStatus label={calculationStatusLabel} />
               ) : null}
               <div className="table-shell">

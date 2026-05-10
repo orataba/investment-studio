@@ -62,6 +62,7 @@ ResearchArtifactPreviewKind = Literal["text", "html", "binary"]
 ResearchTargetDimension = Literal["scope_default", "weight", "risk_budget"]
 ResearchCapitalMode = Literal["unit_notional", "fixed_gross", "target_volatility"]
 ResearchCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
+PortfolioCalculationFrequency = Literal["daily", "weekly", "monthly"]
 TargetSetType = Literal["saa", "taa"]
 
 SUPPORTED_PORTFOLIO_CURRENCIES: tuple[SupportedCurrency, ...] = ("USD", "HKD", "CNY")
@@ -1880,6 +1881,14 @@ class PeriodCalculationGroupChildRecord(BaseModel):
     instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     period_contribution: float | None = None
+    risk_calculation_frequency: PortfolioCalculationFrequency
+    risk_return_observation_count: int
+    risk_annualization_periods_per_year: float | None
+    annualized_volatility: float | None
+    sharpe_ratio: float | None
+    correlation_to_portfolio: float | None
+    beta_to_portfolio: float | None
+    realized_risk_contribution: float | None
 
 
 class PeriodCalculationGroupRecord(BaseModel):
@@ -1905,6 +1914,14 @@ class PeriodCalculationGroupRecord(BaseModel):
     instrument_currency_gains: float | None = None
     total_pnl: float | None = None
     period_contribution: float | None = None
+    risk_calculation_frequency: PortfolioCalculationFrequency
+    risk_return_observation_count: int
+    risk_annualization_periods_per_year: float | None
+    annualized_volatility: float | None
+    sharpe_ratio: float | None
+    correlation_to_portfolio: float | None
+    beta_to_portfolio: float | None
+    realized_risk_contribution: float | None
     children: list[PeriodCalculationGroupChildRecord] = Field(default_factory=list)
 
 
@@ -1923,6 +1940,12 @@ class PeriodCalculationGroupsSummary(BaseModel):
     total_pnl: float | None = None
     total_period_contribution: float | None = None
     contribution_residual: float | None = None
+    risk_calculation_frequency: PortfolioCalculationFrequency
+    risk_frequency_status_label: str | None
+    risk_return_observation_count: int
+    risk_annualization_periods_per_year: float | None
+    annualized_volatility: float | None
+    sharpe_ratio: float | None
 
 
 class PeriodCalculationGroupsResponse(BaseModel):

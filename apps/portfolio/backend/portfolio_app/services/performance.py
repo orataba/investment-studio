@@ -4,7 +4,9 @@ from collections import defaultdict
 from copy import deepcopy
 from datetime import date, timedelta
 from math import isfinite, prod, sqrt
+from typing import cast
 
+from portfolio_app.services.calculation_frequency import CalculationFrequency, period_end_date
 from portfolio_app.services.instrument_charts import (
     build_instrument_sparkline_from_detail,
     build_instrument_trend_metrics_from_detail,
@@ -21,12 +23,24 @@ from portfolio_app.services.ledger import (
     ledger_posting_effective_date_iso,
 )
 from portfolio_app.services.market_data import is_usable_market_data_point, market_data_status
+from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
 
 
 DEFAULT_VALUATION_CUTOFF_POLICY = "latest_complete_eod"
 CONTRIBUTION_AXES = {"instrument", "account", "instrument_type", "currency", "taxonomy"}
 CONTRIBUTION_BASE_AXES = {"instrument", "account", "instrument_type", "currency"}
 CONTRIBUTION_AXIS_ERROR = "axis must be instrument, account, instrument_type, currency, or taxonomy"
+MATERIALIZED_CONTRIBUTION_AXES: tuple[str, ...] = (
+    "instrument",
+    "account",
+    "instrument_type",
+    "currency",
+    "cash_detail",
+    "instrument_detail",
+    "account_detail",
+    "instrument_type_detail",
+    "currency_detail",
+)
 EXTERNAL_CASH_IN_TYPES = {"deposit"}
 EXTERNAL_CASH_OUT_TYPES = {"withdrawal"}
 EARNINGS_TRANSACTION_TYPES = {"dividend", "coupon", "interest", "dividend_reinvestment"}
@@ -426,12 +440,12 @@ def convert_amount_on(
 
 
 def _position_buckets_from_lots(position_lots: list[dict[str, object]]) -> list[dict[str, object]]:
-    positions_by_asset: dict[str, dict[str, object]] = {}
+    positions_by_instrument: dict[str, dict[str, object]] = {}
     for position_lot in position_lots:
         instrument_id = str(position_lot.get("instrument_id") or "")
         if not instrument_id:
             continue
-        bucket = positions_by_asset.setdefault(
+        bucket = positions_by_instrument.setdefault(
             instrument_id,
             {
                 "instrument_id": instrument_id,
@@ -450,7 +464,7 @@ def _position_buckets_from_lots(position_lots: list[dict[str, object]]) -> list[
         bucket["account_ids"].add(str(position_lot.get("account_id") or ""))
         bucket["cost_basis_methods"].add(str(position_lot.get("cost_basis_method") or "fifo"))
     rendered_buckets: list[dict[str, object]] = []
-    for bucket in positions_by_asset.values():
+    for bucket in positions_by_instrument.values():
         if abs(_safe_float(bucket.get("quantity")) or 0.0) <= 1e-9:
             continue
         raw_account_ids = bucket.get("account_ids")
@@ -1754,7 +1768,7 @@ def build_daily_portfolio_snapshots(
                 nav=nav,
             )
             contribution_slices: list[dict[str, object]] = []
-            for contribution_axis in ("instrument", "account"):
+            for contribution_axis in MATERIALIZED_CONTRIBUTION_AXES:
                 current_states = _build_contribution_group_end_states(
                     axis=contribution_axis,
                     portfolio_id=portfolio_id,
@@ -2799,7 +2813,7 @@ def _statement_cash_nav_components(
     }
 
 
-def build_statement_of_assets_report(
+def build_holdings_report(
     portfolio: dict[str, object],
     accounts: list[dict[str, object]],
     transactions: list[dict[str, object]],
@@ -3708,6 +3722,7 @@ def _ensure_contribution_group_state(
             "_pending_settlement_complete": True,
             "_position_complete": True,
             "_cost_complete": True,
+            "_market_observation_instrument_ids": set(),
         },
     )
 
@@ -3775,6 +3790,11 @@ def _build_contribution_group_end_states(
             if isinstance(detail, dict)
             else None
         )
+        price_point_date = _parse_iso_date((price_point or {}).get("as_of_date"))
+        if price_point_date == as_of_date:
+            observed_instrument_ids = state.get("_market_observation_instrument_ids")
+            if isinstance(observed_instrument_ids, set):
+                observed_instrument_ids.add(str(position_lot.get("instrument_id") or ""))
         last_price = _safe_float((price_point or {}).get("value"))
         market_value_local = _position_market_value(
             quantity=_safe_float(position_lot.get("remaining_quantity")) or 0.0,
@@ -3869,6 +3889,13 @@ def _build_contribution_group_end_states(
             state["cash_balance_base"] = None
         if _axis_includes_cash_balance(axis) and not state.get("_pending_settlement_complete"):
             state["pending_settlement_base"] = None
+
+        observed_instrument_ids = state.pop("_market_observation_instrument_ids", set())
+        state["market_observation_count"] = (
+            len([instrument_id for instrument_id in observed_instrument_ids if instrument_id])
+            if isinstance(observed_instrument_ids, set)
+            else 0
+        )
 
         position_market_value_base = _safe_float(state.get("position_market_value_base"))
         open_cost_basis_base = _safe_float(state.get("open_cost_basis_base"))
@@ -4214,6 +4241,24 @@ def _build_contribution_slices_for_date(
             if slice_coverage_state == "complete":
                 slice_coverage_state = "partial"
 
+        daily_return = (
+            total_pnl / beginning_value_base
+            if total_pnl is not None and beginning_value_base is not None and beginning_value_base > 1e-9
+            else None
+        )
+        daily_contribution = (
+            total_pnl / beginning_nav
+            if total_pnl is not None and beginning_nav is not None and beginning_nav > 1e-9
+            else None
+        )
+        market_observation_count = int((current_state or {}).get("market_observation_count") or 0)
+        return_observation_eligible = (
+            daily_return is not None
+            and isfinite(daily_return)
+            and slice_coverage_state == "complete"
+            and (market_observation_count > 0 or abs(daily_return) > 1e-12)
+        )
+
         daily_slices.append(
             {
                 "as_of_date": as_of_date,
@@ -4221,8 +4266,8 @@ def _build_contribution_slices_for_date(
                 "group_key": candidate_group_key,
                 "group_label": group_label,
                 "coverage_state": slice_coverage_state,
-                "market_observation_count": int((snapshot or {}).get("market_observation_count") or 0),
-                "return_observation_eligible": bool((snapshot or {}).get("return_observation_eligible")),
+                "market_observation_count": market_observation_count,
+                "return_observation_eligible": return_observation_eligible,
                 "beginning_value_base": beginning_value_base,
                 "ending_value_base": ending_value_base,
                 "beginning_weight": (
@@ -4248,16 +4293,8 @@ def _build_contribution_slices_for_date(
                 "cash_currency_gains": cash_currency_gains,
                 "instrument_currency_gains": instrument_currency_gains,
                 "total_pnl": total_pnl,
-                "daily_return": (
-                    total_pnl / beginning_value_base
-                    if total_pnl is not None and beginning_value_base is not None and beginning_value_base > 1e-9
-                    else None
-                ),
-                "daily_contribution": (
-                    total_pnl / beginning_nav
-                    if total_pnl is not None and beginning_nav is not None and beginning_nav > 1e-9
-                    else None
-                ),
+                "daily_return": daily_return,
+                "daily_contribution": daily_contribution,
             }
         )
 
@@ -4366,8 +4403,6 @@ def _group_contribution_slices_by_taxonomy(
 
     grouped: dict[tuple[date, str], dict[str, object]] = {}
     coverage_states_by_group: dict[tuple[date, str], list[str]] = defaultdict(list)
-    eligibility_by_group: dict[tuple[date, str], list[bool]] = defaultdict(list)
-    eligibility_by_group: dict[tuple[date, str], list[bool]] = defaultdict(list)
 
     for base_slice in base_daily_slices:
         as_of_date = base_slice.get("as_of_date")
@@ -4390,6 +4425,7 @@ def _group_contribution_slices_by_taxonomy(
                 "group_key": taxonomy_group_key,
                 "group_label": taxonomy_group_label,
                 "coverage_state": "complete",
+                "market_observation_count": 0,
                 "beginning_value_base": 0.0,
                 "ending_value_base": 0.0,
                 "beginning_weight": 0.0,
@@ -4413,7 +4449,10 @@ def _group_contribution_slices_by_taxonomy(
             },
         )
         coverage_states_by_group[slice_key].append(str(base_slice.get("coverage_state") or "unavailable"))
-        eligibility_by_group[slice_key].append(bool(base_slice.get("return_observation_eligible")))
+        grouped_slice["market_observation_count"] = (
+            int(grouped_slice.get("market_observation_count") or 0)
+            + int(base_slice.get("market_observation_count") or 0)
+        )
 
         for field_name in (
             "beginning_value_base",
@@ -4458,8 +4497,10 @@ def _group_contribution_slices_by_taxonomy(
         grouped_slice["return_observation_eligible"] = (
             grouped_slice["daily_return"] is not None
             and grouped_slice["coverage_state"] == "complete"
-            and bool(eligibility_by_group[slice_key])
-            and all(eligibility_by_group[slice_key])
+            and (
+                int(grouped_slice.get("market_observation_count") or 0) > 0
+                or abs(float(grouped_slice["daily_return"])) > 1e-12
+            )
         )
     return grouped_slices
 
@@ -4496,6 +4537,7 @@ def _build_taxonomy_contribution_report(
             },
             "lines": [],
             "daily_slices": [],
+            "_portfolio_daily_series": [],
         }
 
     grouped_slices = sorted(grouped_daily_slices, key=lambda item: (item["as_of_date"], item["group_key"]))
@@ -4633,7 +4675,78 @@ def _build_taxonomy_contribution_report(
         },
         "lines": lines,
         "daily_slices": grouped_slices,
+        "_portfolio_daily_series": list(base_report.get("_portfolio_daily_series") or []),
     }
+
+
+def build_taxonomy_contribution_report_from_base_report(
+    portfolio: dict[str, object],
+    accounts: list[dict[str, object]],
+    transactions: list[dict[str, object]],
+    *,
+    taxonomies: list[dict[str, object]] | None,
+    taxonomy_nodes: list[dict[str, object]] | None,
+    taxonomy_assignments: list[dict[str, object]] | None,
+    start_date: date | None,
+    end_date: date | None,
+    taxonomy_id: str | None,
+    group_key: str | None = None,
+    base_report: dict[str, object],
+) -> dict[str, object]:
+    resolved_taxonomy_id = str(taxonomy_id or "").strip()
+    taxonomy = next(
+        (
+            item
+            for item in (taxonomies or [])
+            if str(item.get("taxonomy_id") or "") == resolved_taxonomy_id
+        ),
+        None,
+    )
+    if taxonomy is None:
+        raise ValueError("Selected taxonomy was not found.")
+    primary_assignment_scope = str(taxonomy.get("primary_assignment_scope") or "")
+    if primary_assignment_scope not in {"instrument", "account", "cash_bucket"}:
+        raise ValueError(
+            "taxonomy contribution currently supports instrument-, account-, or cash-bucket-scoped taxonomies only."
+        )
+
+    base_daily_slices = list(base_report.get("daily_slices") or [])
+    if primary_assignment_scope == "cash_bucket":
+        cash_bucket_ids = _cash_bucket_account_ids(accounts)
+        base_daily_slices = [
+            item for item in base_daily_slices if str(item.get("group_key") or "") in cash_bucket_ids
+        ]
+    grouped_daily_slices = _group_contribution_slices_by_taxonomy(
+        taxonomy=taxonomy,
+        taxonomy_nodes=taxonomy_nodes or [],
+        taxonomy_assignments=taxonomy_assignments or [],
+        base_daily_slices=base_daily_slices,
+    )
+    report = _build_taxonomy_contribution_report(
+        taxonomy=taxonomy,
+        base_report=base_report,
+        grouped_daily_slices=grouped_daily_slices,
+    )
+    if primary_assignment_scope == "instrument":
+        boundary_report = build_period_boundary_groups_report(
+            portfolio,
+            accounts,
+            transactions,
+            taxonomies=taxonomies,
+            taxonomy_nodes=taxonomy_nodes,
+            taxonomy_assignments=taxonomy_assignments,
+            start_date=start_date,
+            end_date=end_date,
+            taxonomy_id=resolved_taxonomy_id,
+        )
+        report = _apply_taxonomy_boundary_values_to_contribution_report(
+            report,
+            boundary_report=boundary_report,
+        )
+    return _filter_contribution_report_by_group_key(
+        report,
+        group_key=group_key,
+    )
 
 
 def _apply_taxonomy_boundary_values_to_contribution_report(
@@ -4841,6 +4954,7 @@ def build_contribution_report_from_daily_slices(
             },
             "lines": [],
             "daily_slices": [],
+            "_portfolio_daily_series": [],
         }
 
     snapshots_by_date = {
@@ -4936,6 +5050,17 @@ def build_contribution_report_from_daily_slices(
         for as_of_date in _iter_dates(resolved_start_date, resolved_end_date)
         if as_of_date in snapshots_by_date
     ]
+    portfolio_daily_series = [
+        {
+            "as_of_date": snapshot["as_of_date"],
+            "daily_twr": _safe_float(snapshot.get("daily_twr")),
+            "return_observation_eligible": bool(snapshot.get("return_observation_eligible")),
+            "market_observation_count": int(snapshot.get("market_observation_count") or 0),
+            "coverage_state": str(snapshot.get("coverage_state") or "unavailable"),
+        }
+        for snapshot in in_period_snapshots
+        if isinstance(snapshot.get("as_of_date"), date)
+    ]
     coverage_state = "unavailable"
     if in_period_snapshots:
         coverage_state = "complete"
@@ -4981,6 +5106,7 @@ def build_contribution_report_from_daily_slices(
         },
         "lines": lines,
         "daily_slices": in_period_slices,
+        "_portfolio_daily_series": portfolio_daily_series,
     }
     return _filter_contribution_report_by_group_key(report, group_key=group_key)
 
@@ -5033,42 +5159,18 @@ def build_contribution_report(
             end_date=end_date,
             axis=base_axis,
         )
-        base_daily_slices = list(base_report.get("daily_slices") or [])
-        if primary_assignment_scope == "cash_bucket":
-            cash_bucket_ids = _cash_bucket_account_ids(accounts)
-            base_daily_slices = [
-                item for item in base_daily_slices if str(item.get("group_key") or "") in cash_bucket_ids
-            ]
-        grouped_daily_slices = _group_contribution_slices_by_taxonomy(
-            taxonomy=taxonomy,
-            taxonomy_nodes=taxonomy_nodes or [],
-            taxonomy_assignments=taxonomy_assignments or [],
-            base_daily_slices=base_daily_slices,
-        )
-        report = _build_taxonomy_contribution_report(
-            taxonomy=taxonomy,
-            base_report=base_report,
-            grouped_daily_slices=grouped_daily_slices,
-        )
-        if primary_assignment_scope == "instrument":
-            boundary_report = build_period_boundary_groups_report(
-                portfolio,
-                accounts,
-                transactions,
-                taxonomies=taxonomies,
-                taxonomy_nodes=taxonomy_nodes,
-                taxonomy_assignments=taxonomy_assignments,
-                start_date=start_date,
-                end_date=end_date,
-                taxonomy_id=resolved_taxonomy_id,
-            )
-            report = _apply_taxonomy_boundary_values_to_contribution_report(
-                report,
-                boundary_report=boundary_report,
-            )
-        return _filter_contribution_report_by_group_key(
-            report,
+        return build_taxonomy_contribution_report_from_base_report(
+            portfolio,
+            accounts,
+            transactions,
+            taxonomies=taxonomies,
+            taxonomy_nodes=taxonomy_nodes,
+            taxonomy_assignments=taxonomy_assignments,
+            start_date=start_date,
+            end_date=end_date,
+            taxonomy_id=resolved_taxonomy_id,
             group_key=group_key,
+            base_report=base_report,
         )
 
     if axis not in CONTRIBUTION_BASE_AXES and not (
@@ -5696,7 +5798,6 @@ def _merge_calculation_detail_daily_slices(
 ) -> list[dict[str, object]]:
     grouped: dict[tuple[date, str], dict[str, object]] = {}
     coverage_states_by_group: dict[tuple[date, str], list[str]] = defaultdict(list)
-    eligibility_by_group: dict[tuple[date, str], list[bool]] = defaultdict(list)
 
     for daily_slice in daily_slices:
         as_of_date = daily_slice.get("as_of_date")
@@ -5719,7 +5820,6 @@ def _merge_calculation_detail_daily_slices(
             },
         )
         coverage_states_by_group[slice_key].append(str(daily_slice.get("coverage_state") or "unavailable"))
-        eligibility_by_group[slice_key].append(bool(daily_slice.get("return_observation_eligible")))
         grouped_slice["market_observation_count"] = max(
             int(grouped_slice.get("market_observation_count") or 0),
             int(daily_slice.get("market_observation_count") or 0),
@@ -5748,8 +5848,10 @@ def _merge_calculation_detail_daily_slices(
         grouped_slice["return_observation_eligible"] = (
             grouped_slice["daily_return"] is not None
             and grouped_slice["coverage_state"] == "complete"
-            and bool(eligibility_by_group[slice_key])
-            and all(eligibility_by_group[slice_key])
+            and (
+                int(grouped_slice.get("market_observation_count") or 0) > 0
+                or abs(float(grouped_slice["daily_return"])) > 1e-12
+            )
         )
     return grouped_slices
 
@@ -5765,6 +5867,7 @@ def _build_taxonomy_calculation_detail_report(
     start_date: date | None,
     end_date: date | None,
     taxonomy_id: str | None,
+    base_report: dict[str, object] | None = None,
 ) -> dict[str, object]:
     resolved_taxonomy_id = str(taxonomy_id or "").strip()
     taxonomy = next(
@@ -5790,7 +5893,7 @@ def _build_taxonomy_calculation_detail_report(
         base_axis = _calculation_detail_axis("account")
     else:
         base_axis = _calculation_detail_axis("instrument")
-    base_report = build_contribution_report(
+    resolved_base_report = base_report or build_contribution_report(
         portfolio,
         accounts,
         transactions,
@@ -5826,7 +5929,7 @@ def _build_taxonomy_calculation_detail_report(
     cash_bucket_ids = _cash_bucket_account_ids(accounts) if target_scope == "cash_bucket" else set()
     detail_axis = _calculation_detail_axis("taxonomy")
     detail_daily_slices: list[dict[str, object]] = []
-    for base_slice in list(base_report.get("daily_slices") or []):
+    for base_slice in list(resolved_base_report.get("daily_slices") or []):
         as_of_date = base_slice.get("as_of_date")
         if not isinstance(as_of_date, date):
             continue
@@ -5882,6 +5985,376 @@ def _build_taxonomy_calculation_detail_report(
     return detail_report
 
 
+def build_taxonomy_calculation_detail_report_from_base_report(
+    portfolio: dict[str, object],
+    accounts: list[dict[str, object]],
+    transactions: list[dict[str, object]],
+    *,
+    taxonomies: list[dict[str, object]] | None,
+    taxonomy_nodes: list[dict[str, object]] | None,
+    taxonomy_assignments: list[dict[str, object]] | None,
+    start_date: date | None,
+    end_date: date | None,
+    taxonomy_id: str | None,
+    base_report: dict[str, object],
+) -> dict[str, object]:
+    return _build_taxonomy_calculation_detail_report(
+        portfolio,
+        accounts,
+        transactions,
+        taxonomies=taxonomies,
+        taxonomy_nodes=taxonomy_nodes,
+        taxonomy_assignments=taxonomy_assignments,
+        start_date=start_date,
+        end_date=end_date,
+        taxonomy_id=taxonomy_id,
+        base_report=base_report,
+    )
+
+
+def _risk_metric_defaults(calculation_frequency: CalculationFrequency) -> dict[str, object]:
+    return {
+        "risk_calculation_frequency": calculation_frequency,
+        "risk_return_observation_count": 0,
+        "risk_annualization_periods_per_year": None,
+        "annualized_volatility": None,
+        "sharpe_ratio": None,
+        "correlation_to_portfolio": None,
+        "beta_to_portfolio": None,
+        "realized_risk_contribution": None,
+    }
+
+
+def _sample_covariance(left_values: list[float], right_values: list[float]) -> float | None:
+    if len(left_values) < 2 or len(left_values) != len(right_values):
+        return None
+    left_mean = sum(left_values) / len(left_values)
+    right_mean = sum(right_values) / len(right_values)
+    return sum(
+        (left_value - left_mean) * (right_values[index] - right_mean)
+        for index, left_value in enumerate(left_values)
+    ) / (len(left_values) - 1)
+
+
+def _sample_correlation(left_values: list[float], right_values: list[float]) -> float | None:
+    covariance = _sample_covariance(left_values, right_values)
+    left_stddev = _sample_stddev(left_values)
+    right_stddev = _sample_stddev(right_values)
+    if (
+        covariance is None
+        or left_stddev is None
+        or right_stddev is None
+        or left_stddev <= 1e-12
+        or right_stddev <= 1e-12
+    ):
+        return None
+    return covariance / (left_stddev * right_stddev)
+
+
+def _annualization_periods_per_year_from_dates(
+    date_keys: list[date],
+    *,
+    observation_count: int | None = None,
+    start_date: date | None = None,
+) -> float | None:
+    sorted_dates = sorted(set(item for item in date_keys if isinstance(item, date)))
+    resolved_observation_count = observation_count if observation_count is not None else len(sorted_dates)
+    if resolved_observation_count < 1 or len(sorted_dates) < 2:
+        return None
+    if start_date is not None:
+        elapsed_days = (sorted_dates[-1] - start_date).days
+        return (
+            float(resolved_observation_count) / float(elapsed_days) * DAYS_PER_YEAR
+            if elapsed_days > 0
+            else None
+        )
+    elapsed_days = (sorted_dates[-1] - sorted_dates[0]).days
+    if elapsed_days < 0:
+        return None
+    gaps = sorted(
+        (sorted_dates[index] - sorted_dates[index - 1]).days
+        for index in range(1, len(sorted_dates))
+        if (sorted_dates[index] - sorted_dates[index - 1]).days > 0
+    )
+    median_gap = gaps[len(gaps) // 2] if gaps else 1
+    observation_span_days = elapsed_days + median_gap
+    return (
+        float(resolved_observation_count) / float(observation_span_days) * DAYS_PER_YEAR
+        if observation_span_days > 0
+        else None
+    )
+
+
+def _compound_returns(values: list[float]) -> float | None:
+    return prod(1.0 + value for value in values) - 1.0 if values else None
+
+
+def _bucketed_portfolio_returns(
+    portfolio_daily_series: list[dict[str, object]],
+    *,
+    calculation_frequency: CalculationFrequency,
+    final_date: date | None,
+) -> dict[date, float]:
+    bucket_returns: dict[date, list[float]] = defaultdict(list)
+    for point in sorted(portfolio_daily_series, key=lambda item: str(item.get("as_of_date") or "")):
+        as_of_date = _parse_iso_date(point.get("as_of_date"))
+        daily_return = _safe_float(point.get("daily_twr"))
+        if as_of_date is None or daily_return is None or not isfinite(daily_return):
+            continue
+        if not bool(point.get("return_observation_eligible")):
+            continue
+        bucket_date = period_end_date(as_of_date, calculation_frequency, final_date=final_date)
+        bucket_returns[bucket_date].append(daily_return)
+    return {
+        bucket_date: bucket_return
+        for bucket_date, values in bucket_returns.items()
+        if (bucket_return := _compound_returns(values)) is not None
+    }
+
+
+def _bucketed_group_risk_inputs(
+    daily_slices: list[dict[str, object]],
+    *,
+    calculation_frequency: CalculationFrequency,
+    final_date: date | None,
+) -> dict[str, dict[date, dict[str, object]]]:
+    grouped: dict[str, dict[date, dict[str, object]]] = defaultdict(dict)
+    for daily_slice in sorted(daily_slices, key=lambda item: str(item.get("as_of_date") or "")):
+        group_key = str(daily_slice.get("group_key") or "")
+        as_of_date = _parse_iso_date(daily_slice.get("as_of_date"))
+        if not group_key or as_of_date is None:
+            continue
+        if not bool(daily_slice.get("return_observation_eligible")):
+            continue
+        bucket_date = period_end_date(as_of_date, calculation_frequency, final_date=final_date)
+        bucket = grouped[group_key].setdefault(
+            bucket_date,
+            {
+                "returns": [],
+                "contribution": 0.0,
+                "has_contribution": False,
+            },
+        )
+        daily_return = _safe_float(daily_slice.get("daily_return"))
+        if daily_return is not None and isfinite(daily_return):
+            bucket_returns = bucket.get("returns")
+            if isinstance(bucket_returns, list):
+                bucket_returns.append(daily_return)
+        daily_contribution = _safe_float(daily_slice.get("daily_contribution"))
+        if daily_contribution is not None and isfinite(daily_contribution):
+            bucket["contribution"] = (_safe_float(bucket.get("contribution")) or 0.0) + daily_contribution
+            bucket["has_contribution"] = True
+    return grouped
+
+
+def _realized_risk_attribution_by_group(
+    daily_slices: list[dict[str, object]],
+    portfolio_daily_series: list[dict[str, object]],
+    *,
+    calculation_frequency: CalculationFrequency,
+    final_date: date | None,
+) -> dict[str, dict[str, object]]:
+    portfolio_returns = _bucketed_portfolio_returns(
+        portfolio_daily_series,
+        calculation_frequency=calculation_frequency,
+        final_date=final_date,
+    )
+    grouped_inputs = _bucketed_group_risk_inputs(
+        daily_slices,
+        calculation_frequency=calculation_frequency,
+        final_date=final_date,
+    )
+    risk_by_group: dict[str, dict[str, object]] = {}
+    for group_key, buckets in grouped_inputs.items():
+        own_returns_by_date: dict[date, float] = {}
+        contributions_by_date: dict[date, float] = {}
+        for bucket_date in sorted(buckets):
+            bucket = buckets[bucket_date]
+            bucket_returns = [
+                value
+                for value in list(bucket.get("returns") or [])
+                if isinstance(value, (int, float)) and isfinite(float(value))
+            ]
+            own_return = _compound_returns([float(value) for value in bucket_returns])
+            if own_return is not None:
+                own_returns_by_date[bucket_date] = own_return
+            if bool(bucket.get("has_contribution")):
+                contributions_by_date[bucket_date] = _safe_float(bucket.get("contribution")) or 0.0
+
+        own_dates = sorted(own_returns_by_date)
+        own_values = [own_returns_by_date[item] for item in own_dates]
+        periods_per_year = _annualization_periods_per_year_from_dates(
+            own_dates,
+            observation_count=len(own_values),
+        )
+        volatility = _sample_stddev(own_values)
+        annualized_volatility = (
+            volatility * sqrt(periods_per_year)
+            if volatility is not None and periods_per_year is not None
+            else None
+        )
+        mean_return = sum(own_values) / len(own_values) if own_values else None
+        annualized_mean_return = (
+            mean_return * periods_per_year
+            if mean_return is not None and periods_per_year is not None
+            else None
+        )
+        sharpe_ratio = (
+            annualized_mean_return / annualized_volatility
+            if annualized_mean_return is not None
+            and annualized_volatility is not None
+            and annualized_volatility > 1e-12
+            else None
+        )
+
+        contribution_pair_dates = sorted(
+            bucket_date
+            for bucket_date in contributions_by_date
+            if bucket_date in portfolio_returns
+        )
+        contribution_values = [contributions_by_date[item] for item in contribution_pair_dates]
+        portfolio_returns_for_contribution = [portfolio_returns[item] for item in contribution_pair_dates]
+        contribution_covariance = _sample_covariance(contribution_values, portfolio_returns_for_contribution)
+        portfolio_variance = _sample_covariance(
+            portfolio_returns_for_contribution,
+            portfolio_returns_for_contribution,
+        )
+
+        own_pair_dates = sorted(bucket_date for bucket_date in own_returns_by_date if bucket_date in portfolio_returns)
+        own_pair_values = [own_returns_by_date[item] for item in own_pair_dates]
+        portfolio_returns_for_own = [portfolio_returns[item] for item in own_pair_dates]
+        own_pair_covariance = _sample_covariance(own_pair_values, portfolio_returns_for_own)
+        own_pair_portfolio_variance = _sample_covariance(portfolio_returns_for_own, portfolio_returns_for_own)
+
+        risk_by_group[group_key] = {
+            "risk_calculation_frequency": calculation_frequency,
+            "risk_return_observation_count": len(contribution_pair_dates),
+            "risk_annualization_periods_per_year": periods_per_year,
+            "annualized_volatility": annualized_volatility,
+            "sharpe_ratio": sharpe_ratio,
+            "correlation_to_portfolio": _sample_correlation(own_pair_values, portfolio_returns_for_own),
+            "beta_to_portfolio": (
+                own_pair_covariance / own_pair_portfolio_variance
+                if own_pair_covariance is not None
+                and own_pair_portfolio_variance is not None
+                and own_pair_portfolio_variance > 1e-12
+                else None
+            ),
+            "realized_risk_contribution": (
+                contribution_covariance / portfolio_variance
+                if contribution_covariance is not None
+                and portfolio_variance is not None
+                and portfolio_variance > 1e-12
+                else None
+            ),
+        }
+    return risk_by_group
+
+
+def _portfolio_realized_risk_summary(
+    portfolio_daily_series: list[dict[str, object]],
+    *,
+    calculation_frequency: CalculationFrequency,
+    final_date: date | None,
+) -> dict[str, object]:
+    portfolio_returns_by_date = _bucketed_portfolio_returns(
+        portfolio_daily_series,
+        calculation_frequency=calculation_frequency,
+        final_date=final_date,
+    )
+    return_dates = sorted(portfolio_returns_by_date)
+    returns = [portfolio_returns_by_date[item] for item in return_dates]
+    periods_per_year = _annualization_periods_per_year_from_dates(
+        return_dates,
+        observation_count=len(returns),
+    )
+    volatility = _sample_stddev(returns)
+    annualized_volatility = (
+        volatility * sqrt(periods_per_year)
+        if volatility is not None and periods_per_year is not None
+        else None
+    )
+    mean_return = sum(returns) / len(returns) if returns else None
+    annualized_mean_return = (
+        mean_return * periods_per_year
+        if mean_return is not None and periods_per_year is not None
+        else None
+    )
+    sharpe_ratio = (
+        annualized_mean_return / annualized_volatility
+        if annualized_mean_return is not None
+        and annualized_volatility is not None
+        and annualized_volatility > 1e-12
+        else None
+    )
+    return {
+        "risk_calculation_frequency": calculation_frequency,
+        "risk_return_observation_count": len(returns),
+        "risk_annualization_periods_per_year": periods_per_year,
+        "annualized_volatility": annualized_volatility,
+        "sharpe_ratio": sharpe_ratio,
+    }
+
+
+def _instrument_ids_for_calculation_risk_basis(
+    portfolio: dict[str, object],
+    accounts: list[dict[str, object]],
+    transactions: list[dict[str, object]],
+    *,
+    start_date: date | None,
+    end_date: date | None,
+) -> list[str]:
+    portfolio_id = str(portfolio.get("portfolio_id") or "")
+    instrument_ids: set[str] = set()
+
+    def add_instrument_id(value: object) -> None:
+        instrument_id = str(value or "").strip()
+        if instrument_id:
+            instrument_ids.add(instrument_id)
+
+    if portfolio_id and end_date is not None:
+        end_transactions = [
+            transaction
+            for transaction in transactions
+            if (trade_date := _parse_iso_date(transaction.get("trade_date"))) is not None and trade_date <= end_date
+        ]
+        for position_lot in build_position_lots(
+            portfolio_id,
+            accounts,
+            end_transactions,
+            as_of_date=end_date,
+        ):
+            if str(position_lot.get("status") or "") == "open":
+                add_instrument_id(position_lot.get("instrument_id"))
+
+        if start_date is not None:
+            start_transactions = [
+                transaction
+                for transaction in transactions
+                if (trade_date := _parse_iso_date(transaction.get("trade_date"))) is not None and trade_date <= start_date
+            ]
+            for position_lot in build_position_lots(
+                portfolio_id,
+                accounts,
+                start_transactions,
+                as_of_date=start_date,
+            ):
+                if str(position_lot.get("status") or "") == "open":
+                    add_instrument_id(position_lot.get("instrument_id"))
+
+    for transaction in transactions:
+        trade_date = _parse_iso_date(transaction.get("trade_date"))
+        if trade_date is None:
+            continue
+        if end_date is not None and trade_date > end_date:
+            continue
+        if start_date is not None and trade_date < start_date:
+            continue
+        add_instrument_id(transaction.get("instrument_id"))
+
+    return sorted(instrument_ids)
+
+
 def _build_period_calculation_child_records(
     portfolio: dict[str, object],
     accounts: list[dict[str, object]],
@@ -5897,6 +6370,10 @@ def _build_period_calculation_child_records(
     axis: str,
     taxonomy_id: str | None,
     parent_groups: list[dict[str, object]],
+    risk_calculation_frequency: CalculationFrequency,
+    portfolio_daily_series: list[dict[str, object]],
+    risk_final_date: date | None,
+    detail_contribution_report: dict[str, object] | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     parent_labels = {
         str(item.get("group_key") or ""): str(item.get("group_label") or item.get("group_key") or "")
@@ -5907,7 +6384,9 @@ def _build_period_calculation_child_records(
         return {}
 
     detail_axis = _CALCULATION_CASH_DETAIL_AXIS if axis == "instrument" else _calculation_detail_axis(axis)
-    if axis in {"instrument", "account", "instrument_type", "currency"}:
+    if detail_contribution_report is not None:
+        detail_report = detail_contribution_report
+    elif axis in {"instrument", "account", "instrument_type", "currency"}:
         detail_report = build_contribution_report(
             portfolio,
             accounts,
@@ -5954,6 +6433,12 @@ def _build_period_calculation_child_records(
         if str(item.get("group_key") or "")
     }
     period_returns = _period_returns_by_group(list(detail_report.get("daily_slices") or []))
+    child_risk_metrics = _realized_risk_attribution_by_group(
+        list(detail_report.get("daily_slices") or []),
+        portfolio_daily_series,
+        calculation_frequency=risk_calculation_frequency,
+        final_date=risk_final_date,
+    )
     if axis == "instrument":
         unrealized_capital_summary = {"values": {}, "coverage_complete": True}
     else:
@@ -6059,6 +6544,10 @@ def _build_period_calculation_child_records(
                 "instrument_currency_gains": _safe_float(line.get("instrument_currency_gains")),
                 "total_pnl": child_total_pnl,
                 "period_contribution": _safe_float(line.get("period_contribution")),
+                **child_risk_metrics.get(
+                    candidate_child_key,
+                    _risk_metric_defaults(risk_calculation_frequency),
+                ),
             }
         )
 
@@ -6082,6 +6571,7 @@ def _build_period_calculation_cash_parent_group(
     end_date: date | None,
     resolved_start_date: date | None,
     resolved_end_date: date | None,
+    risk_calculation_frequency: CalculationFrequency,
 ) -> dict[str, object] | None:
     if resolved_start_date is None or resolved_end_date is None:
         return None
@@ -6176,6 +6666,7 @@ def _build_period_calculation_cash_parent_group(
         "instrument_currency_gains": _safe_float(line.get("instrument_currency_gains")),
         "total_pnl": group_total_pnl,
         "period_contribution": _safe_float(line.get("period_contribution")),
+        **_risk_metric_defaults(risk_calculation_frequency),
     }
 
 
@@ -6193,6 +6684,7 @@ def build_period_calculation_groups_report(
     taxonomy_id: str | None = None,
     group_key: str | None = None,
     contribution_report: dict[str, object] | None = None,
+    detail_contribution_report: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if contribution_report is None:
         contribution_report = build_contribution_report(
@@ -6259,7 +6751,41 @@ def build_period_calculation_groups_report(
         for item in list(contribution_report.get("lines") or [])
         if str(item.get("group_key") or "")
     }
-    period_returns = _period_returns_by_group(list(contribution_report.get("daily_slices") or []))
+    contribution_daily_slices = list(contribution_report.get("daily_slices") or [])
+    portfolio_daily_series = (
+        list(contribution_report.get("_portfolio_daily_series") or [])
+        if isinstance(contribution_report.get("_portfolio_daily_series"), list)
+        else []
+    )
+    period_returns = _period_returns_by_group(contribution_daily_slices)
+    risk_basis_end_date = resolved_end_date or date.today()
+    risk_instrument_ids = _instrument_ids_for_calculation_risk_basis(
+        portfolio,
+        accounts,
+        transactions,
+        start_date=resolved_start_date,
+        end_date=risk_basis_end_date,
+    )
+    risk_frequency_profile = calculation_frequency_profile_for_instruments(
+        risk_instrument_ids,
+        end_date=risk_basis_end_date,
+        detail_loader=get_registry_instrument_detail,
+    )
+    risk_calculation_frequency = cast(
+        CalculationFrequency,
+        str(risk_frequency_profile.get("resolved_frequency") or "daily"),
+    )
+    risk_metrics_by_group = _realized_risk_attribution_by_group(
+        contribution_daily_slices,
+        portfolio_daily_series,
+        calculation_frequency=risk_calculation_frequency,
+        final_date=resolved_end_date,
+    )
+    portfolio_risk_summary = _portfolio_realized_risk_summary(
+        portfolio_daily_series,
+        calculation_frequency=risk_calculation_frequency,
+        final_date=resolved_end_date,
+    )
     fx_payload = get_platform_fx_rates()
     direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
@@ -6357,6 +6883,10 @@ def build_period_calculation_groups_report(
                 "instrument_currency_gains": _safe_float(line.get("instrument_currency_gains")),
                 "total_pnl": group_total_pnl,
                 "period_contribution": _safe_float(line.get("period_contribution")),
+                **risk_metrics_by_group.get(
+                    candidate_group_key,
+                    _risk_metric_defaults(risk_calculation_frequency),
+                ),
             }
         )
         if initial_value is None:
@@ -6381,8 +6911,15 @@ def build_period_calculation_groups_report(
             end_date=end_date,
             resolved_start_date=resolved_start_date,
             resolved_end_date=resolved_end_date,
+            risk_calculation_frequency=risk_calculation_frequency,
         )
         if cash_parent_group is not None:
+            cash_parent_group.update(
+                risk_metrics_by_group.get(
+                    "cash",
+                    _risk_metric_defaults(risk_calculation_frequency),
+                )
+            )
             groups.append(cash_parent_group)
 
     groups.sort(
@@ -6466,6 +7003,10 @@ def build_period_calculation_groups_report(
         axis=axis,
         taxonomy_id=str(summary.get("taxonomy_id") or taxonomy_id or "") or None,
         parent_groups=groups,
+        risk_calculation_frequency=risk_calculation_frequency,
+        portfolio_daily_series=portfolio_daily_series,
+        risk_final_date=resolved_end_date,
+        detail_contribution_report=detail_contribution_report,
     )
     for item in groups:
         item["children"] = children_by_parent.get(str(item.get("group_key") or ""), [])
@@ -6497,6 +7038,14 @@ def build_period_calculation_groups_report(
                 total_period_contribution if total_period_contribution_complete else None
             ),
             "contribution_residual": contribution_residual,
+            "risk_calculation_frequency": portfolio_risk_summary.get("risk_calculation_frequency"),
+            "risk_frequency_status_label": risk_frequency_profile.get("status_label"),
+            "risk_return_observation_count": portfolio_risk_summary.get("risk_return_observation_count"),
+            "risk_annualization_periods_per_year": portfolio_risk_summary.get(
+                "risk_annualization_periods_per_year"
+            ),
+            "annualized_volatility": portfolio_risk_summary.get("annualized_volatility"),
+            "sharpe_ratio": portfolio_risk_summary.get("sharpe_ratio"),
         },
         "groups": groups,
     }
