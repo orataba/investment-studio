@@ -5,6 +5,7 @@ import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/Benc
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import { downloadCsv } from '../lib/csv'
 import {
   getPortfolioInstrumentPriceChart,
@@ -124,7 +125,7 @@ type CalculationTableView = PortfolioTableViewOption & {
 
 type CalculationTableViewStore = {
   activeViewId: string
-  customViews: CalculationTableView[]
+  views: CalculationTableView[]
 }
 
 type CalculationSyntheticRowKind =
@@ -294,6 +295,7 @@ const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
     },
   },
 ]
+const SYSTEM_CALCULATION_TABLE_VIEW_IDS = new Set(SYSTEM_CALCULATION_TABLE_VIEWS.map((view) => view.id))
 
 function localDateIso(input = new Date()) {
   const year = input.getFullYear()
@@ -443,28 +445,56 @@ function calculationTableViewStatesEqual(left: CalculationTableViewState, right:
   return serializeCalculationTableViewState(left) === serializeCalculationTableViewState(right)
 }
 
+function normalizeCalculationTableView(value: unknown, readonly: boolean): CalculationTableView | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+  const view = value as Partial<CalculationTableView>
+  if (typeof view.id !== 'string' || !view.id.trim()) {
+    return null
+  }
+  return {
+    id: view.id,
+    name: typeof view.name === 'string' && view.name.trim() ? view.name.trim() : 'Custom View',
+    description: typeof view.description === 'string' ? view.description : null,
+    readonly,
+    createdAt: typeof view.createdAt === 'string' ? view.createdAt : undefined,
+    updatedAt: typeof view.updatedAt === 'string' ? view.updatedAt : undefined,
+    state: normalizeCalculationTableViewState(view.state),
+  }
+}
+
 function normalizeCalculationTableViewStore(value: unknown): CalculationTableViewStore {
   const record = value && typeof value === 'object' ? (value as Partial<CalculationTableViewStore>) : {}
-  const customViews = Array.isArray(record.customViews)
-    ? record.customViews
-        .filter((view): view is CalculationTableView => Boolean(view && typeof view === 'object' && typeof view.id === 'string'))
-        .map((view) => ({
-          id: view.id,
-          name: typeof view.name === 'string' && view.name.trim() ? view.name.trim() : 'Custom View',
-          description: typeof view.description === 'string' ? view.description : null,
-          readonly: false,
-          createdAt: typeof view.createdAt === 'string' ? view.createdAt : undefined,
-          updatedAt: typeof view.updatedAt === 'string' ? view.updatedAt : undefined,
-          state: normalizeCalculationTableViewState(view.state),
-        }))
-    : []
-  const customViewIds = new Set(customViews.map((view) => view.id))
-  const knownViewIds = new Set([...SYSTEM_CALCULATION_TABLE_VIEWS.map((view) => view.id), ...customViewIds])
+  const storedViews = Array.isArray(record.views)
+    ? record.views
+        .map((view) =>
+          normalizeCalculationTableView(
+            view,
+            SYSTEM_CALCULATION_TABLE_VIEW_IDS.has((view as Partial<CalculationTableView>)?.id || ''),
+          ),
+        )
+        .filter((view): view is CalculationTableView => Boolean(view))
+    : null
+  const storedViewById = new Map((storedViews || []).map((view) => [view.id, view]))
+  const systemViews = SYSTEM_CALCULATION_TABLE_VIEWS.map((defaultView) => {
+    const storedView = storedViewById.get(defaultView.id)
+    return storedView ? { ...storedView, readonly: true } : defaultView
+  })
+  const customViews = storedViews
+    ? storedViews.filter((view) => !SYSTEM_CALCULATION_TABLE_VIEW_IDS.has(view.id)).map((view) => ({ ...view, readonly: false }))
+    : Array.isArray((record as { customViews?: unknown }).customViews)
+      ? ((record as { customViews: unknown[] }).customViews)
+          .map((view) => normalizeCalculationTableView(view, false))
+          .filter((view): view is CalculationTableView => Boolean(view))
+      : []
+  const views = [...systemViews, ...customViews]
+  const knownViewIds = new Set(views.map((view) => view.id))
   const activeViewId =
     typeof record.activeViewId === 'string' && knownViewIds.has(record.activeViewId)
       ? record.activeViewId
       : SYSTEM_CALCULATION_TABLE_VIEWS[0].id
-  return { activeViewId, customViews }
+  return { activeViewId, views }
 }
 
 function loadCalculationTableViewStore(): CalculationTableViewStore {
@@ -494,7 +524,7 @@ function saveCalculationTableViewStore(store: CalculationTableViewStore) {
 }
 
 function getCalculationTableViews(store: CalculationTableViewStore) {
-  return [...SYSTEM_CALCULATION_TABLE_VIEWS, ...store.customViews]
+  return store.views.length ? store.views : SYSTEM_CALCULATION_TABLE_VIEWS
 }
 
 function getCalculationTableViewById(store: CalculationTableViewStore, viewId: string) {
@@ -1105,6 +1135,7 @@ function PerformancePage() {
     CALCULATION_COLUMN_GROUPS[0]?.label ?? 'Core',
   )
   const [calculationColumnSearch, setCalculationColumnSearch] = useState('')
+  const [viewToast, setViewToast] = useState<NoticeToastMessage | null>(null)
   const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
@@ -1220,14 +1251,11 @@ function PerformancePage() {
   }
 
   function handleSaveCalculationTableView() {
-    if (activeCalculationTableView.readonly) {
-      return
-    }
     const timestamp = new Date().toISOString()
     setCalculationTableViewStore((current) => ({
       ...current,
       activeViewId: activeCalculationTableViewId,
-      customViews: current.customViews.map((view) =>
+      views: current.views.map((view) =>
         view.id === activeCalculationTableViewId
           ? {
               ...view,
@@ -1237,6 +1265,7 @@ function PerformancePage() {
           : view,
       ),
     }))
+    setViewToast({ id: Date.now(), message: 'View updated.', tone: 'success' })
   }
 
   function handleSaveCalculationTableViewAs(name: string, description: string | null) {
@@ -1254,9 +1283,10 @@ function PerformancePage() {
     setCalculationTableViewStore((current) => ({
       ...current,
       activeViewId: viewId,
-      customViews: [...current.customViews, nextView],
+      views: [...current.views, nextView],
     }))
     setActiveCalculationTableViewId(viewId)
+    setViewToast({ id: Date.now(), message: `View saved as "${name}".`, tone: 'success' })
   }
 
   function handleDeleteCalculationTableView(viewId: string) {
@@ -1269,7 +1299,7 @@ function PerformancePage() {
     setCalculationTableViewStore((current) => ({
       ...current,
       activeViewId: deletingActiveView ? fallbackView.id : current.activeViewId,
-      customViews: current.customViews.filter((view) => view.id !== targetView.id),
+      views: current.views.filter((view) => view.id !== targetView.id),
     }))
     if (deletingActiveView) {
       setActiveCalculationTableViewId(fallbackView.id)
@@ -1866,7 +1896,9 @@ function PerformancePage() {
   }
 
   return (
-    <PortfolioWorkspaceLayout activeSection="Performance" toolbarLabel="View: Performance">
+    <>
+      <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
+      <PortfolioWorkspaceLayout activeSection="Performance" toolbarLabel="View: Performance">
       <section className="portfolio-detail-surface performance-surface">
         <div className="transaction-filter-bar performance-window-bar">
           <div className="performance-filter-group performance-window-group">
@@ -1942,7 +1974,7 @@ function PerformancePage() {
                       views={calculationTableViews}
                       activeViewId={activeCalculationTableViewId}
                       edited={calculationTableViewEdited}
-                      canSave={!activeCalculationTableView.readonly}
+                      canSave
                       canDelete
                       onSelect={handleSelectCalculationTableView}
                       onSave={handleSaveCalculationTableView}
@@ -2167,7 +2199,8 @@ function PerformancePage() {
           </div>
         </div>
       ) : null}
-    </PortfolioWorkspaceLayout>
+      </PortfolioWorkspaceLayout>
+    </>
   )
 }
 

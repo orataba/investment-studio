@@ -13,6 +13,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import { downloadCsv } from '../lib/csv'
 import {
@@ -131,7 +132,7 @@ type HoldingsTableView = PortfolioTableViewOption & {
 
 type HoldingsViewStore = {
   activeViewId: string
-  customViews: HoldingsTableView[]
+  views: HoldingsTableView[]
 }
 
 const LOCKED_HOLDINGS_COLUMN: HoldingsColumnKey = 'instrument'
@@ -445,6 +446,7 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
     },
   },
 ]
+const SYSTEM_HOLDINGS_VIEW_IDS = new Set(SYSTEM_HOLDINGS_VIEWS.map((view) => view.id))
 
 const TEXT_HOLDINGS_SORT_FIELDS = new Set<HoldingsColumnKey>([
   'instrument',
@@ -874,28 +876,51 @@ function holdingsViewStatesEqual(left: HoldingsViewState, right: HoldingsViewSta
   return serializeHoldingsViewState(left) === serializeHoldingsViewState(right)
 }
 
+function normalizeHoldingsTableView(value: unknown, readonly: boolean): HoldingsTableView | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+  const view = value as Partial<HoldingsTableView>
+  if (typeof view.id !== 'string' || !view.id.trim()) {
+    return null
+  }
+  return {
+    id: view.id,
+    name: typeof view.name === 'string' && view.name.trim() ? view.name.trim() : 'Custom View',
+    description: typeof view.description === 'string' ? view.description : null,
+    readonly,
+    createdAt: typeof view.createdAt === 'string' ? view.createdAt : undefined,
+    updatedAt: typeof view.updatedAt === 'string' ? view.updatedAt : undefined,
+    state: normalizeHoldingsViewState(view.state),
+  }
+}
+
 function normalizeHoldingsViewStore(value: unknown): HoldingsViewStore {
   const record = value && typeof value === 'object' ? (value as Partial<HoldingsViewStore>) : {}
-  const customViews = Array.isArray(record.customViews)
-    ? record.customViews
-        .filter((view): view is HoldingsTableView => Boolean(view && typeof view === 'object' && typeof view.id === 'string'))
-        .map((view) => ({
-          id: view.id,
-          name: typeof view.name === 'string' && view.name.trim() ? view.name.trim() : 'Custom View',
-          description: typeof view.description === 'string' ? view.description : null,
-          readonly: false,
-          createdAt: typeof view.createdAt === 'string' ? view.createdAt : undefined,
-          updatedAt: typeof view.updatedAt === 'string' ? view.updatedAt : undefined,
-          state: normalizeHoldingsViewState(view.state),
-        }))
-    : []
-  const customViewIds = new Set(customViews.map((view) => view.id))
-  const knownViewIds = new Set([...SYSTEM_HOLDINGS_VIEWS.map((view) => view.id), ...customViewIds])
+  const storedViews = Array.isArray(record.views)
+    ? record.views
+        .map((view) => normalizeHoldingsTableView(view, SYSTEM_HOLDINGS_VIEW_IDS.has((view as Partial<HoldingsTableView>)?.id || '')))
+        .filter((view): view is HoldingsTableView => Boolean(view))
+    : null
+  const storedViewById = new Map((storedViews || []).map((view) => [view.id, view]))
+  const systemViews = SYSTEM_HOLDINGS_VIEWS.map((defaultView) => {
+    const storedView = storedViewById.get(defaultView.id)
+    return storedView ? { ...storedView, readonly: true } : defaultView
+  })
+  const customViews = storedViews
+    ? storedViews.filter((view) => !SYSTEM_HOLDINGS_VIEW_IDS.has(view.id)).map((view) => ({ ...view, readonly: false }))
+    : Array.isArray((record as { customViews?: unknown }).customViews)
+      ? ((record as { customViews: unknown[] }).customViews)
+          .map((view) => normalizeHoldingsTableView(view, false))
+          .filter((view): view is HoldingsTableView => Boolean(view))
+      : []
+  const views = [...systemViews, ...customViews]
+  const knownViewIds = new Set(views.map((view) => view.id))
   const activeViewId =
     typeof record.activeViewId === 'string' && knownViewIds.has(record.activeViewId)
       ? record.activeViewId
       : SYSTEM_HOLDINGS_VIEWS[0].id
-  return { activeViewId, customViews }
+  return { activeViewId, views }
 }
 
 function loadHoldingsViewStore(): HoldingsViewStore {
@@ -925,7 +950,7 @@ function saveHoldingsViewStore(store: HoldingsViewStore) {
 }
 
 function getHoldingsViews(store: HoldingsViewStore) {
-  return [...SYSTEM_HOLDINGS_VIEWS, ...store.customViews]
+  return store.views.length ? store.views : SYSTEM_HOLDINGS_VIEWS
 }
 
 function getHoldingsViewById(store: HoldingsViewStore, viewId: string) {
@@ -1534,6 +1559,7 @@ export default function PortfolioHomePage() {
   const [holdingsColumnCategory, setHoldingsColumnCategory] = useState(HOLDINGS_COLUMN_GROUPS[0]?.label ?? 'Core')
   const [holdingsColumnSearch, setHoldingsColumnSearch] = useState('')
   const [holdingsColumnDropTarget, setHoldingsColumnDropTarget] = useState<HoldingsColumnKey | null>(null)
+  const [viewToast, setViewToast] = useState<NoticeToastMessage | null>(null)
   const [holdingsSortField, setHoldingsSortField] = useState<HoldingsColumnKey | null>(
     () => initialHoldingsUrlSortField ?? initialHoldingsViewState.sortField,
   )
@@ -1720,15 +1746,12 @@ export default function PortfolioHomePage() {
   }
 
   function handleSaveHoldingsView() {
-    if (activeHoldingsView.readonly) {
-      return
-    }
     const timestamp = new Date().toISOString()
     setHoldingsViewStore((current) => {
       return {
         ...current,
         activeViewId: activeHoldingsViewId,
-        customViews: current.customViews.map((view) =>
+        views: current.views.map((view) =>
           view.id === activeHoldingsViewId
             ? {
                 ...view,
@@ -1739,6 +1762,7 @@ export default function PortfolioHomePage() {
         ),
       }
     })
+    setViewToast({ id: Date.now(), message: 'View updated.', tone: 'success' })
   }
 
   function handleSaveHoldingsViewAs(name: string, description: string | null) {
@@ -1757,10 +1781,11 @@ export default function PortfolioHomePage() {
       return {
         ...current,
         activeViewId: viewId,
-        customViews: [...current.customViews, nextView],
+        views: [...current.views, nextView],
       }
     })
     setActiveHoldingsViewId(viewId)
+    setViewToast({ id: Date.now(), message: `View saved as "${name}".`, tone: 'success' })
   }
 
   function handleDeleteHoldingsView(viewId: string) {
@@ -1773,7 +1798,7 @@ export default function PortfolioHomePage() {
     setHoldingsViewStore((current) => ({
       ...current,
       activeViewId: deletingActiveView ? fallbackView.id : current.activeViewId,
-      customViews: current.customViews.filter((view) => view.id !== targetView.id),
+      views: current.views.filter((view) => view.id !== targetView.id),
     }))
     if (deletingActiveView) {
       setActiveHoldingsViewId(fallbackView.id)
@@ -2144,7 +2169,9 @@ export default function PortfolioHomePage() {
   }, [workspace, selectedInstrumentId, setSearchParams])
 
   return (
-    <PortfolioWorkspaceLayout activeSection="Holdings" toolbarLabel={workspace?.view_label ?? 'View: Holdings'}>
+    <>
+      <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
+      <PortfolioWorkspaceLayout activeSection="Holdings" toolbarLabel={workspace?.view_label ?? 'View: Holdings'}>
       <section className="portfolio-detail-surface holdings-surface">
         <div className="transaction-filter-bar holdings-filter-bar">
           <div className="transaction-filter-group holdings-filter-group">
@@ -2163,7 +2190,7 @@ export default function PortfolioHomePage() {
               views={holdingsViews}
               activeViewId={activeHoldingsViewId}
               edited={holdingsViewEdited}
-              canSave={!activeHoldingsView.readonly}
+              canSave
               canDelete
               onSelect={handleSelectHoldingsView}
               onSave={handleSaveHoldingsView}
@@ -2435,6 +2462,7 @@ export default function PortfolioHomePage() {
         </div>
       ) : null}
 
-    </PortfolioWorkspaceLayout>
+      </PortfolioWorkspaceLayout>
+    </>
   )
 }

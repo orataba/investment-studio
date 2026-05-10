@@ -5,6 +5,7 @@ import { LanguageProvider } from '../../../../packages/ui/src/i18n'
 import App from './App'
 import './index.css'
 import '../../../../packages/ui/src/language.css'
+import '../../../../packages/ui/src/notice-toast.css'
 import '../../../../packages/ui/src/sparkline.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

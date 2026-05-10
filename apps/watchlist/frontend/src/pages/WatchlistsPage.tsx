@@ -35,6 +35,7 @@ import {
   buildWatchlistPath,
   PLATFORM_HOME_URL,
 } from '../lib/navigation'
+import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import {
   formatBoolean,
@@ -711,6 +712,7 @@ export default function WatchlistsPage() {
   const [isBatchAdding, setIsBatchAdding] = useState(false)
   const [sortRules, setSortRules] = useState<Array<{ field: string; direction: string }>>([])
   const [notice, setNotice] = useState<string | null>(null)
+  const [viewToast, setViewToast] = useState<NoticeToastMessage | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [sparklineMap, setSparklineMap] = useState<Record<string, SparklineCacheEntry>>({})
@@ -849,20 +851,7 @@ export default function WatchlistsPage() {
           setActiveViewId(nextViewId)
           const nextView =
             detail.views.find((item) => item.view_id === nextViewId) || detail.views[0] || null
-          const baseColumns = nextView?.columns?.length ? nextView.columns : [primaryDisplayColumn]
-          const enforced = ensureRequiredColumns(baseColumns)
-          setWorkingColumns(enforced)
-          setColumnDraft(enforced)
-          setWorkingGroupBy(nextView?.default_group_by || 'none')
-          setWorkingFilters(normalizeFilterState(nextView?.default_filters))
-          setSortRules(nextView?.default_sort?.length ? nextView.default_sort : [])
-          const nextWidths: Record<string, number> = {}
-          nextView?.column_meta?.forEach((item) => {
-            if (item.width) {
-              nextWidths[item.field_key] = item.width
-            }
-          })
-          setColumnWidths(nextWidths)
+          applyWatchlistView(nextView)
           setSelectedRows([])
           setNotice(null)
         })
@@ -1274,6 +1263,27 @@ export default function WatchlistsPage() {
     const rest = columns.filter((field) => !requiredColumns.includes(field))
     return [...requiredColumns, ...rest]
   }
+  function viewColumnWidths(view: WatchlistView | null) {
+    const nextWidths: Record<string, number> = {}
+    view?.column_meta?.forEach((item) => {
+      if (typeof item.width === 'number') {
+        nextWidths[item.field_key] = item.width
+      }
+    })
+    return nextWidths
+  }
+
+  function applyWatchlistView(view: WatchlistView | null) {
+    const baseColumns = view?.columns?.length ? view.columns : [primaryDisplayColumn]
+    const enforced = ensureRequiredColumns(baseColumns)
+    setWorkingColumns(enforced)
+    setColumnDraft(enforced)
+    setWorkingGroupBy(view?.default_group_by || 'none')
+    setWorkingFilters(normalizeFilterState(view?.default_filters))
+    setSortRules(view?.default_sort?.length ? view.default_sort : [])
+    setColumnWidths(viewColumnWidths(view))
+  }
+
   const fieldLabelByKey = useMemo(
     () => new Map([...mergedFieldRegistry.map((field) => [field.field_key, field.label] as const), [TAXONOMY_GROUP_BY_CODE, 'Taxonomy']]),
     [mergedFieldRegistry],
@@ -1786,6 +1796,37 @@ export default function WatchlistsPage() {
     }
   }
 
+  function openSaveViewModal() {
+    const defaultName = activeView?.name ? `${activeView.name} Copy` : 'Custom View'
+    setSaveViewName(defaultName)
+    setSaveViewDescription('')
+    setModalKind('save-view')
+    setFilterMenuOpen(false)
+    setGroupMenuOpen(false)
+    setNotice(null)
+  }
+
+  async function handleSaveActiveWatchlistView() {
+    if (!watchlistId || !activeView) {
+      return
+    }
+    setIsSavingView(true)
+    setError(null)
+    try {
+      const updated = await updateWatchlistView(
+        watchlistId,
+        activeView.view_id,
+        buildViewPayload(activeView.name, activeView.description),
+      )
+      await refreshWatchlistDetail(updated.view_id)
+      setViewToast({ id: Date.now(), message: 'View updated.', tone: 'success' })
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Failed to update view.')
+    } finally {
+      setIsSavingView(false)
+    }
+  }
+
   async function handleDownloadCurrentView() {
     if (!baseScreenerPayload || !screenerResult?.total_rows) {
       setNotice('No visible rows to export.')
@@ -1968,7 +2009,9 @@ export default function WatchlistsPage() {
   }
 
   return (
-    <div className="watchlists-page">
+    <>
+      <NoticeToast notice={viewToast} onDismiss={() => setViewToast(null)} />
+      <div className="watchlists-page">
       <div className="watchlists-pagehead">
         <div className="watchlist-breadcrumbs">
           <a href={PLATFORM_HOME_URL} className="watchlist-breadcrumb-link">
@@ -2121,13 +2164,7 @@ export default function WatchlistsPage() {
                   const nextView =
                     watchlistDetail?.views.find((item) => item.view_id === nextViewId) || null
                   setActiveViewId(nextViewId)
-                  const baseColumns = nextView?.columns?.length ? nextView.columns : [primaryDisplayColumn]
-                  const enforced = ensureRequiredColumns(baseColumns)
-                  setWorkingColumns(enforced)
-                  setColumnDraft(enforced)
-                  setWorkingGroupBy(nextView?.default_group_by || 'none')
-                  setWorkingFilters(normalizeFilterState(nextView?.default_filters))
-                  setSortRules(nextView?.default_sort?.length ? nextView.default_sort : [])
+                  applyWatchlistView(nextView)
                   setNotice(null)
                 }}
               >
@@ -2146,26 +2183,9 @@ export default function WatchlistsPage() {
                 title={viewEdited ? 'Save view' : 'Create view'}
                 onClick={() => {
                   if (viewEdited && watchlistId && activeView) {
-                    setIsSavingView(true)
-                    updateWatchlistView(
-                      watchlistId,
-                      activeView.view_id,
-                      buildViewPayload(activeView.name, activeView.description),
-                    )
-                      .then((updated) => refreshWatchlistDetail(updated.view_id))
-                      .then(() => setNotice('View updated.'))
-                      .catch((saveError) =>
-                        setError(saveError instanceof Error ? saveError.message : 'Failed to update view.'),
-                      )
-                      .finally(() => setIsSavingView(false))
+                    void handleSaveActiveWatchlistView()
                   } else {
-                    const defaultName = activeView?.name ? `${activeView.name} Copy` : 'Custom View'
-                    setSaveViewName(defaultName)
-                    setSaveViewDescription('')
-                    setModalKind('save-view')
-                    setFilterMenuOpen(false)
-                    setGroupMenuOpen(false)
-                    setNotice(null)
+                    openSaveViewModal()
                   }
                 }}
               >
@@ -2828,7 +2848,7 @@ export default function WatchlistsPage() {
                 onClick={() => {
                   setWorkingColumns(columnDraft.length ? columnDraft : [primaryDisplayColumn])
                   setModalKind(null)
-                  setNotice('Columns updated. Use + to save as a new view.')
+                  setViewToast({ id: Date.now(), message: 'Columns updated. Save the view to keep changes.', tone: 'info' })
                 }}
               >
                 Update
@@ -3176,6 +3196,7 @@ export default function WatchlistsPage() {
                     return
                   }
                   setIsSavingView(true)
+                  setError(null)
                   try {
                     const payload = buildViewPayload(
                       saveViewName.trim(),
@@ -3184,7 +3205,7 @@ export default function WatchlistsPage() {
                     const created = await createWatchlistView(watchlistId, payload)
                     await refreshWatchlistDetail(created.view_id)
                     setModalKind(null)
-                    setNotice(`View saved as "${created.name}".`)
+                    setViewToast({ id: Date.now(), message: `View saved as "${created.name}".`, tone: 'success' })
                   } catch (saveError) {
                     setError(saveError instanceof Error ? saveError.message : 'Failed to save view.')
                   } finally {
@@ -3322,6 +3343,7 @@ export default function WatchlistsPage() {
         </div>
       ) : null}
 
-    </div>
+      </div>
+    </>
   )
 }
