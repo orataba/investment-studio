@@ -1,7 +1,5 @@
 # Fund 产品框架
 
-状态：Current baseline  
-日期：2026-04-23  
 适用范围：当前 watchlist app 里 `fund` 资产的分类、研究标签和监控评估框架
 
 ## 1. 目标

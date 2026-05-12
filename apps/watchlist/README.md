@@ -2,7 +2,7 @@
 
 这是当前 `Yungu / Watchlist` app 的工作区。
 
-它由原 `fof` 基线工程迁入，当前后端主语已经统一到 `instrument`，但产品可用范围明确收敛为 `fund-only watchlist`。
+当前后端主语已经统一到 `instrument`，产品可用范围明确收敛为 `fund-only watchlist`。
 
 当前 app 已经包含：
 
@@ -11,7 +11,7 @@
 - `frontend/`
   React + Vite + TypeScript 的终端前端
 - `docs/`
-  经过清理后的工程基线文档，而不是历史规划稿
+  当前工程基线、数据模型和产品框架文档
 
 ## 当前范围
 
@@ -122,6 +122,6 @@ npm --prefix apps/watchlist/frontend run build
 
 ## 继续推进时的原则
 
-- 以当前仓库实现为准，不再维护“是否重建”的历史讨论稿
+- 以当前仓库实现为准，不保留旧方案讨论稿
 - 文档优先描述已经存在的结构、接口和下一步真实缺口
 - 新需求先落到当前系统基线，再决定是否扩展数据模型或页面骨架

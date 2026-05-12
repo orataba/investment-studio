@@ -1,6 +1,6 @@
 # Yungu Docs
 
-这组文档只保留当前工程边界、数据库工作流和少量阶段记录。
+这组文档只保留当前工程边界、数据库工作流和设计基线。
 
 建议阅读顺序：
 
@@ -11,9 +11,7 @@
 3. [PLATFORM_BOUNDARIES.md](./PLATFORM_BOUNDARIES.md)
    `Platform / Watchlist / Portfolio / instrument-core / instrument_registry` 之间的当前职责和数据边界。
 4. [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md)
-   当前阶段的前端设计基线：白底数据终端、tab-to-content 节奏、字体层级和跨 app UI 边界。
-5. [PHASE1_PLATFORM_SETUP_PLAN.md](./PHASE1_PLATFORM_SETUP_PLAN.md)
-   早期阶段记录，只用于回看项目是如何迁入 monorepo 的；不要把它当成当前实施说明。
+   当前前端设计基线：白底数据终端、tab-to-content 节奏、字体层级和跨 app UI 边界。
 
 按 app 深入时：
 
@@ -23,9 +21,8 @@
 
 当前约束：
 
-- 以仓库实现为准，不再维护“旧架构兼容说明”。
-- 描述当前真实运行方式，不用文档掩盖历史改造痕迹。
-- 历史阶段文档必须显式标记为历史记录，而不是当前操作手册。
+- 以仓库实现为准，不维护不存在的兼容路径。
+- 描述当前真实运行方式，不保留过程复盘、临时排查记录或旧架构兼容说明。
 - `packages/ui` 已经进入当前路径，先承载语言选择与跨 app 前端共享上下文；不是纯占位目录。
 - 前端视觉调整以 [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md) 为准；不要再引入米黄、沙色或暖灰页面背景。
 - `nav/`、runtime DB、构建产物和缓存都按本地工作产物处理，不作为文档或源码资产提交。

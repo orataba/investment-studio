@@ -11,7 +11,7 @@
 - `apps/portfolio`
   已有可运行的前后端、数据库迁移、交易与绩效内核，以及成体系的领域文档；部分 workspace 页面仍为占位实现。
 
-当前阶段仍然坚持：
+当前架构约束：
 
 - 提供统一的平台目录
 - 保持两个 app 可独立开发与独立运行
@@ -35,7 +35,7 @@ yungu/
 ## 文档入口
 
 - [docs/README.md](./docs/README.md)
-  顶层文档索引，串起数据库工作流、平台边界和历史阶段记录。
+  顶层文档索引，串起数据库工作流、平台边界和设计基线。
 - [docs/FRONTEND_DESIGN_BASELINE.md](./docs/FRONTEND_DESIGN_BASELINE.md)
   当前前端设计基线，约束白底数据终端、字体层级、tabs 与内容区节奏。
 - [apps/platform/README.md](./apps/platform/README.md)

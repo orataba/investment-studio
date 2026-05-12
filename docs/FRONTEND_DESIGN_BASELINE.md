@@ -1,6 +1,6 @@
 # Frontend Design Baseline
 
-本文档记录当前阶段的前端设计约束，作为 `Platform / Watchlist / Portfolio` 后续 UI 修改的基线。
+本文档记录当前前端设计约束，作为 `Platform / Watchlist / Portfolio` 后续 UI 修改的基线。
 
 ## Product Hierarchy
 

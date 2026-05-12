@@ -1,7 +1,5 @@
 # Fund Terminal V2 数据模型与 API 基线
 
-状态：Current baseline  
-日期：2026-04-23  
 适用范围：当前 `apps/watchlist` 已经实现的数据分层、关键表语义和后端 API 边界
 
 ## 1. 这份文档解决什么问题

@@ -1,7 +1,5 @@
 # Fund 定性研究框架
 
-- 状态：Current baseline
-- 日期：2026-05-01
 - 适用范围：watchlist fund detail 的 `Research` 页、watchlist research label columns、后续研究复盘
 
 ## 1. 设计原则

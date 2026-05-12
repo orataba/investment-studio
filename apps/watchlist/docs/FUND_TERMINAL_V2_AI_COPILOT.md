@@ -1,7 +1,5 @@
 # Fund Terminal V2 AI Copilot
 
-状态：Backend-only extension baseline  
-日期：2026-04-22  
 适用范围：当前 watchlist app 里保留的 Copilot 后端接口、上下文来源、返回协议和 provider 边界；前端 UI 当前默认关闭，不属于已发布工作面
 
 ## 1. 定位
@@ -12,7 +10,7 @@ Copilot 不是独立产品，也不是当前已发布工作面里的聊天框。
 
 - 它保留为 `Watchlists` 和 `Instrument Detail` 的后端上下文助手接口
 - 它优先基于系统内 read models / manual profiles / 当前页面状态回答
-- 第一阶段保持只读
+- 当前保持只读
 - API 契约优先稳定，provider 可以替换
 - 在真实 provider 和正式 UX 准备好之前，前端入口默认保持关闭
 
@@ -89,7 +87,7 @@ Copilot 不是独立产品，也不是当前已发布工作面里的聊天框。
 
 ## 5. 当前边界
 
-现阶段 Copilot 不直接写：
+当前 Copilot 不直接写：
 
 - canonical facts
 - NAV rows

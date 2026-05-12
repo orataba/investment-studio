@@ -1,11 +1,8 @@
 # GIPS-Informed Performance Methodology
 
-更新时间：`2026-05-10`
-
 关联文档：
 
 - [`01_CALCULATION_SPEC.md`](./01_CALCULATION_SPEC.md)
-- [`03_CALCULATION_AUDIT_2026_05_10.md`](./03_CALCULATION_AUDIT_2026_05_10.md)
 
 ## 1. 定位
 
@@ -13,7 +10,7 @@ GIPS 是 CFA Institute 维护的投资绩效呈现标准，核心目标是让投
 
 因此本文只定义 **GIPS-informed** 的计算治理原则，不构成、也不暗示本项目或用户组合满足 GIPS compliance。
 
-官方参考（2026-05-10 已核对入口）：
+官方参考：
 
 - GIPS Standards for Firms: <https://www.gipsstandards.org/standards/gips-standards-for-firms/>
 - GIPS Standards Handbook for Firms: <https://www.gipsstandards.org/standards/gips-standards-for-firms/gips-standards-handbook-for-firms/>
@@ -53,7 +50,7 @@ GIPS 要求至少月度计算 TWR；如果不计算日收益，则大额外部�
 - 每个 `as_of_date` 都生成 end-of-day snapshot；
 - 每个 daily snapshot 显式保留 `beginning_nav` 与 `ending_nav`，用户选择区间时用首日 `beginning_nav` 作为 initial value、末日 `ending_nav` 作为 final value；
 - 外部现金流发生日天然拥有当日估值；
-- 现阶段不需要另设 large cash flow threshold；
+- 当前系统不另设 large cash flow threshold；
 - 若未来支持非日频估值，必须先引入大额现金流政策和子期间 return linking，不能直接用 Modified Dietz 静默替代 true TWR。
 
 ### 2.4 方法必须一致且可解释
@@ -118,7 +115,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 
 ## 4. 暂不覆盖的 GIPS 能力
 
-以下能力不属于当前阶段：
+以下能力不属于当前系统边界：
 
 - firm definition；
 - composites、pooled funds 和 composite inclusion / exclusion policy；
@@ -130,7 +127,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 
 如果未来要声称 GIPS compliance，必须把这些能力作为独立合规工程处理，而不是只调整收益率公式。
 
-## 5. 提交前计算检查清单
+## 5. 计算维护检查清单
 
 任何改动 portfolio 计算层的 PR 都应检查：
 
@@ -140,7 +137,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 - drawdown 是否基于 TWR growth index；
 - risk 是否只使用符合 `return_observation_eligible` 的 `daily_twr`；
 - `IRR / MWROR` 缺失是否被解释为补充指标不可用，而不是 TWR 失败；
-- materialized read path 和动态重建 audit path 是否结果一致；
+- materialized read path 和动态重建校验路径是否结果一致；
 - Research 是否拒绝缺失 target set、目标加总错误、历史不足或风险预算求解误差过大的 scope；
 - `sample_covariance` 是否仍使用 `n - 1` 样本估计；
 - 文档中的 canonical 口径是否同步更新。

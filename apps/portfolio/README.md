@@ -25,10 +25,6 @@
   Portfolio 当前 canonical 计算口径。
 - [docs/02_GIPS_ALIGNMENT.md](./docs/02_GIPS_ALIGNMENT.md)
   GIPS-informed 绩效方法治理边界。
-- [docs/03_CALCULATION_AUDIT_2026_05_10.md](./docs/03_CALCULATION_AUDIT_2026_05_10.md)
-  2026-05-10 计算清查与提交检查记录。
-- [docs/04_INPUT_VALIDATION_AUDIT_2026_05_12.md](./docs/04_INPUT_VALIDATION_AUDIT_2026_05_12.md)
-  2026-05-12 风险/研究输入校验、canonical instrument ref 和 missing-return policy 复查记录。
 
 ## 开发原则
 
@@ -96,9 +92,7 @@ npm run dev
 npm --prefix apps/portfolio/frontend run build
 ```
 
-## 计算层阶段性状态
-
-截至 `2026-05-12`：
+## 计算层当前口径
 
 - 组合级 TWR 使用日频 true time-weighted 口径：外部流入进分母，外部流出加回分子，区间结果几何复合。
 - FIFO / moving average 只影响 book cost、book realized gain、book unrealized P&L 和 lot 展示；不影响 fair-value based TWR。
@@ -110,28 +104,10 @@ npm --prefix apps/portfolio/frontend run build
 - `IRR / MWROR` 是资金效率补充指标；若数学上不可解，不应降低 TWR 口径的 coverage。
 - 绩效方法参考 Portfolio Performance 的账本模型，并吸收 GIPS 的 TWR 优先、外部现金流政策、估值频率和方法一致性原则；本项目不声称 GIPS compliance，详见 [docs/02_GIPS_ALIGNMENT.md](./docs/02_GIPS_ALIGNMENT.md)。
 
-## 加载速度排查记录
+## 读路径与性能约束
 
-2026-05-02 对 Portfolio 页面加载链路做了一次只读排查。当前本地 portfolio 数据量不大：`portfolio` 2 条、`transaction` 39 条、`taxonomy_node` 28 条、`target_set_line` 168 条；但 shared instrument registry 已有 `instrument_market_data` 约 27,439 条。因此加载慢主要不是 portfolio 私有表过大，而是页面首屏并行触发多条重计算链路，每条链路又独立重放交易、重建 position lots、读取 shared instrument 行情。
-
-2026-05-03 已完成 daily snapshot / holding snapshot / contribution slice 的物化读模型，核心 performance 和 holdings 读路径不再每次从零生成全窗口 daily snapshots。下面记录保留为历史排查背景；后续性能工作重点转为增量刷新、shared instrument detail 缓存和 Review/Risk 多接口结果复用。
-
-2026-05-10 对后台计算、缓存和读路径做了复查：`Holdings` 物化行已补齐 price chart、trend/risk metric、holding start date 与 resolved risk frequency；`/api/workspace/holdings` 可直接返回物化 profile。实测本地组合 `1-2` 从约 `0.67s` 降到 `0.15s - 0.19s`，组合 `3` 从约 `1.08s - 1.22s` 降到 `0.29s - 0.33s`。当时还在 boundary holdings 与 research workbench 响应边界修复旧 `asset_*` instrument ref 的 validation failure；2026-05-12 后这条已升级为 migration 规范历史 JSON、运行时拒绝 legacy instrument 字段。
-
-前端页面文案也按专业终端口径收敛：loading 统一为 `Loading`，空态压缩为短句，字段/分组选项和 table view 不展示解释性备注。需要保留的诊断只限错误、校验失败和会影响用户判断的不可用状态。
-
-主要慢点：
-
-- `get_portfolio()` 不是轻量存在性查询。它会实时汇总 NAV 和证券数，内部调用 account workspace / pricing map；很多接口只是校验 portfolio 是否存在，也会触发这段重算。实测单次约 `0.5s - 1.8s`。
-- `build_daily_portfolio_snapshots()` 按日期窗口逐日重放交易，并在每天重新派生 ledger postings、position lots、估值和 FX。`/performance` 依赖它，portfolio `3` 实测 7 天约 `3.8s`，30 天约 `15s`。
-- `build_period_calculation_report()` 和 `build_period_boundary_holdings_report()` 会为起止边界再次构造 snapshot，其中 `_build_single_date_snapshot()` 为了一个日期也会从历史开始生成 daily snapshots。portfolio `3` 实测 7 天分别约 `25s` 和 `26s`。
-- `build_contribution_report()` 先生成 daily snapshots，又在日期循环中反复重建 group end states / position lots。portfolio `3` 实测 7 天约 `11s`。
-- shared instrument 行情读取被重复放大。profile 显示慢链路的大头在 `list_registry_instruments()` / instrument detail 序列化和 market data 扫描上，而不是 portfolio 表查询本身。
-
-页面层的放大点：
-
-- `Overview` 首屏会并行请求 workspace summary、holdings、taxonomy catalog，并另起 performance 请求。
-- `Risk` 会并行请求 holdings、accounts、taxonomy，再请求 performance 和 contribution。
-- `Review` 一次加载 performance、calculation、contribution、boundary holdings、taxonomy、research workbench，其中多个接口都会触发上述重计算。
-
-后续优化优先级应先放在：把 portfolio 存在性查询与实时 rollup 分离；缓存或物化 daily snapshots / position lots；避免同一页面内重复拉 shared instrument detail；让 Review / Risk 这类页面复用同一批 performance 中间结果。
+- daily snapshots、holding snapshots 和 contribution slices 是可重建读模型；核心 performance、holdings 和 contribution 读路径应优先复用物化结果。
+- 交易、账户、共享行情或 FX 变化必须先写源事实，再通过 `refresh_request_id` 标记受影响组合 stale，并由后台刷新串行重建。
+- portfolio 存在性校验应保持轻量，不应触发 workspace rollup、行情 profile 或全窗口 performance 重算。
+- `Overview / Risk / Review` 这类组合页面应避免同一窗口内重复拉取 shared instrument detail 或重复重建 performance 中间结果。
+- 前端文案保持专业终端口径：loading 统一为 `Loading`，空态压缩为短句，字段/分组选项和 table view 不展示解释性备注。需要保留的诊断只限错误、校验失败和会影响用户判断的不可用状态。

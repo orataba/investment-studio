@@ -1,10 +1,8 @@
 # PMS 正式版计算口径规格
 
-更新时间：`2026-05-10`
 关联文档：
 
 - [`02_GIPS_ALIGNMENT.md`](./02_GIPS_ALIGNMENT.md)
-- [`03_CALCULATION_AUDIT_2026_05_10.md`](./03_CALCULATION_AUDIT_2026_05_10.md)
 
 ## 1. 文档目标
 
@@ -1219,23 +1217,11 @@ daily snapshot、holding snapshot、contribution slice 是可重建的读模型�
 - fixed income full accrual engine
 - liquidity-adjusted scenario engine
 
-## 14. 实现优先级
-
-按当前 PRD，计算实现建议优先级如下：
-
-1. `P0`
-   NAV、weights、FX、TWR、IRR、drawdown、benchmark-relative、drift、basic exposures、scenario P&L
-2. `P0`
-   covariance-based realized risk、risk share、target risk budget gap、tracking error、information ratio
-3. `P1`
-   attribution refinement、coverage diagnostics 深化、signed vs abs risk decomposition
-4. `P2`
-   factor risk、liquidity / capacity、pre-trade what-if
-
-## 15. 提交前维护规则
+## 14. 维护规则
 
 任何计算相关改动必须同步检查：
 
 - [02_GIPS_ALIGNMENT.md](./02_GIPS_ALIGNMENT.md) 是否仍准确描述 GIPS-informed 方法边界；
-- [03_CALCULATION_AUDIT_2026_05_10.md](./03_CALCULATION_AUDIT_2026_05_10.md) 的提交检查项是否仍适用；
-- Portfolio README 的计算层阶段性状态是否需要更新。
+- Portfolio README 的计算层当前口径是否需要更新；
+- 后端 Research / Performance / Risk 测试是否覆盖了新增或修改的失败状态；
+- 前端是否显式展示 `partial`、`unavailable`、`comparator missing`、`insufficient-history` 等关键状态。
