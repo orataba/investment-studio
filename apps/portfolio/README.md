@@ -27,6 +27,8 @@
   GIPS-informed 绩效方法治理边界。
 - [docs/03_CALCULATION_AUDIT_2026_05_10.md](./docs/03_CALCULATION_AUDIT_2026_05_10.md)
   2026-05-10 计算清查与提交检查记录。
+- [docs/04_INPUT_VALIDATION_AUDIT_2026_05_12.md](./docs/04_INPUT_VALIDATION_AUDIT_2026_05_12.md)
+  2026-05-12 风险/研究输入校验、canonical instrument ref 和 missing-return policy 复查记录。
 
 ## 开发原则
 
@@ -58,6 +60,7 @@ uvicorn portfolio_app.main:app --reload --host 127.0.0.1 --port 8001
 - 测试使用临时 SQLite，不会污染默认运行库
 - research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理；当前产物以 target weights、member targets、leaf targets、solve event、scope solve events 和 target weight gaps 为主
 - backend 顶层包名现在是 `portfolio_app`
+- 交易、账户和研究快照使用 canonical `instrument_id` / `instrument_name` / `instrument_type`；迁移会规范历史 JSON，运行时不再接受 `asset_id` / `asset_name` / `asset_type` 或 `allowed_asset_types`
 - daily snapshots 已物化到数据库，并显式保存每日 `beginning_nav` / `ending_nav`；`Performance`、`Holdings`、instrument/account contribution 读路径默认复用物化结果。交易、账户或行情变更会用 `refresh_request_id` 把相关组合标记为 stale 并触发刷新。若刷新中又收到新数据，当前计算不会清掉新的 stale 标记，而是串行再跑一轮后才置为 current。
 - `Holdings` 的物化行包含 instrument market profile 与 resolved risk frequency；读路径命中物化 profile 时不再逐行重建行情趋势和风险字段。
 
@@ -95,15 +98,15 @@ npm --prefix apps/portfolio/frontend run build
 
 ## 计算层阶段性状态
 
-截至 `2026-05-10`：
+截至 `2026-05-12`：
 
 - 组合级 TWR 使用日频 true time-weighted 口径：外部流入进分母，外部流出加回分子，区间结果几何复合。
 - FIFO / moving average 只影响 book cost、book realized gain、book unrealized P&L 和 lot 展示；不影响 fair-value based TWR。
 - Performance `Calculation` 使用 `Initial Value + Net External Flow + Period P&L = Final Value` 的期间桥接。资本利得拆分使用期初市值重置后的期间成本，而不是账户 book cost。Calculation 默认视图命名为 `Default`，展示 realized risk attribution；用户可像 Holdings 一样保存自定义表格视图。Group By 默认是 `None`，内部映射到底层 instrument lines；也支持 instrument type / currency / account / taxonomy，TWR 与 contribution 在后端按对应轴计算，表格可导出 CSV。
 - `moving_average` 在底层按 `account + instrument` 维护一个 rolling average cost bucket；API 为 UI 和转仓审计输出一个 synthetic position lot。
 - `Overview`、`Performance`、`Review` 的 TWR index、daily series 和 drawdown 均按查询窗口重新复合；不得复用 inception-to-date 的累计 TWR 作为区间曲线。
-- `Risk` 的 rolling volatility / Sharpe 输入来自 `daily_twr` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。相关性矩阵和风险贡献使用 as-of date + lookback covariance 的单点风险口径；`sample_covariance` 使用样本协方差 `n - 1`，不使用总体协方差。混合频率和稀疏序列先解析 daily / weekly / monthly calculation basis，再按目标 period 的最后有效观测对齐，不跨期前向填充，用共同有效日期和实际观察密度年化 covariance。区间风险贡献归入 Performance `Calculation` 的 realized risk attribution columns。
-- `Research` 的当前 target solve 从最末端 sleeve 递归向上求解；scope default 只使用该 scope 自身的默认目标维度，不静默切到另一个维度。多成员 scope 必须存在 active complete `SAA` 或 `TAA` target set；缺失目标、目标加总错误、共同有效收益不足两期、risk-budget 求解不能满足目标误差阈值时，run 明确失败或标记 unavailable，不回退到目标权重、等权或旧算法。单成员 scope 只保留数学上唯一确定的 100% 权重，现金 risk budget 为 0。顶层 capital overlay 在风险 sleeve 权重求出后再按目标波动率或总敞口缩放，并把剩余权重放到现金。
+- `Risk` 的 rolling volatility / Sharpe 输入来自 `daily_twr` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。相关性矩阵和风险贡献使用 as-of date + lookback covariance 的单点风险口径；`sample_covariance` 使用样本协方差 `n - 1`，不使用总体协方差。混合频率和稀疏序列先解析 daily / weekly / monthly calculation basis，再按目标 period 的最后有效观测对齐，不跨期前向填充；协方差默认要求 active return matrix 是完整对齐样本，按完整样本的实际观察密度年化，不做 pairwise 拼矩阵或缺失收益补 0。区间风险贡献归入 Performance `Calculation` 的 realized risk attribution columns。
+- `Research` 的当前 target solve 从最末端 sleeve 递归向上求解；scope default 只使用该 scope 自身的默认目标维度，不静默切到另一个维度。多成员 scope 必须存在 active complete `SAA` 或 `TAA` target set；缺失目标、目标加总错误、strict missing-return policy 下出现单成员缺失、`complete_case_drop` 超过覆盖率/尾部新鲜度上限、risk-budget 求解不能满足 `1e-4` risk-share gap 阈值时，run 明确失败或标记 unavailable，不回退到目标权重、等权或旧算法。单成员 scope 只保留数学上唯一确定的 100% 权重，现金 risk budget 为 0。顶层 capital overlay 在风险 sleeve 权重求出后再按目标波动率或总敞口缩放，并把剩余权重放到现金；若没有 cash-like member 或无法估计正的组合波动率，则只输出显式不可用诊断。
 - `IRR / MWROR` 是资金效率补充指标；若数学上不可解，不应降低 TWR 口径的 coverage。
 - 绩效方法参考 Portfolio Performance 的账本模型，并吸收 GIPS 的 TWR 优先、外部现金流政策、估值频率和方法一致性原则；本项目不声称 GIPS compliance，详见 [docs/02_GIPS_ALIGNMENT.md](./docs/02_GIPS_ALIGNMENT.md)。
 
@@ -113,7 +116,7 @@ npm --prefix apps/portfolio/frontend run build
 
 2026-05-03 已完成 daily snapshot / holding snapshot / contribution slice 的物化读模型，核心 performance 和 holdings 读路径不再每次从零生成全窗口 daily snapshots。下面记录保留为历史排查背景；后续性能工作重点转为增量刷新、shared instrument detail 缓存和 Review/Risk 多接口结果复用。
 
-2026-05-10 对后台计算、缓存和读路径做了复查：`Holdings` 物化行已补齐 price chart、trend/risk metric、holding start date 与 resolved risk frequency；`/api/workspace/holdings` 可直接返回物化 profile。实测本地组合 `1-2` 从约 `0.67s` 降到 `0.15s - 0.19s`，组合 `3` 从约 `1.08s - 1.22s` 降到 `0.29s - 0.33s`。同时修复旧 `asset_*` instrument ref 在 boundary holdings 与 research workbench 中触发 response validation 失败的问题。
+2026-05-10 对后台计算、缓存和读路径做了复查：`Holdings` 物化行已补齐 price chart、trend/risk metric、holding start date 与 resolved risk frequency；`/api/workspace/holdings` 可直接返回物化 profile。实测本地组合 `1-2` 从约 `0.67s` 降到 `0.15s - 0.19s`，组合 `3` 从约 `1.08s - 1.22s` 降到 `0.29s - 0.33s`。当时还在 boundary holdings 与 research workbench 响应边界修复旧 `asset_*` instrument ref 的 validation failure；2026-05-12 后这条已升级为 migration 规范历史 JSON、运行时拒绝 legacy instrument 字段。
 
 前端页面文案也按专业终端口径收敛：loading 统一为 `Loading`，空态压缩为短句，字段/分组选项和 table view 不展示解释性备注。需要保留的诊断只限错误、校验失败和会影响用户判断的不可用状态。
 

@@ -243,7 +243,7 @@
 
 若观察频率是稳定交易日频，`periods_per_year` 通常接近 `252`；若存在节假日、缺价或非交易日 carry-forward，系统必须记录并使用实际有效收益观察密度，避免把无市场观察的 0 return 当作风险样本。
 
-协方差 / 相关性计算必须先对每一对序列取共有有效收益日期。协方差矩阵的每个 entry 使用该 entry 自身有效配对日期推断 `periods_per_year` 后年化；相关性矩阵的协方差和两侧方差必须来自同一组配对样本，不能用全量单边方差拼接。`sample_covariance` 使用样本协方差估计量，分母为 `n - 1`，且每对样本至少需要两个共同有效 return observation；不得用总体协方差 `n` 分母作为普通样本风险估计。Research 的 `ewma_vol_shrinkage_corr_covariance` 使用各标的自身有效日期估计年化 EWMA volatility，再用共有有效日期估计 correlation。
+协方差 / 相关性计算必须先构造 active return matrix。默认 `strict` missing-return policy 要求矩阵中的每个收益日期对所有 active series 都完整；任何单成员缺失都进入 coverage / missing 诊断，不得被补成 0 return，也不得用 pairwise dates 拼出一个每个 entry 样本不同的 covariance matrix。`sample_covariance` 使用完整对齐样本的样本协方差估计量，分母为 `n - 1`，且至少需要两个完整 return observations；不得用总体协方差 `n` 分母作为普通样本风险估计。年化必须使用完整样本 index 的实际有效收益观察密度。Research 的 `ewma_vol_shrinkage_corr_covariance` 也必须在 missing-return policy 处理后的完整窗口上估计 EWMA volatility 与 shrinkage correlation。
 
 ### 2.6.1 计算频率与节假日
 
@@ -253,6 +253,7 @@ Risk 与 Research 的 covariance / correlation / risk contribution 必须先确�
 - Research 允许用户显式选择 `daily` / `weekly` / `monthly`，但不能选择高于数据支持的频率。例如日频+周频混合不能强制按日频计算。
 - 对齐规则：每个资产在目标 period 内只取最后一个有效观测点；不得跨目标 period 前向填充生成假 NAV。若某资产缺少某个目标 period，该资产该 period 的 return 为 missing。
 - 节假日规则：若标准资产在某个交易所共同节假日都没有更新，则该日期不会进入共同收益样本；若只有单个资产缺失，而其他资产在该目标 period 有观测，则这是该资产的缺失数据，不应被当作 0 return 或 stale return。
+- Missing-return policy：默认 `strict`，任何 active member 在目标 period 缺失都使该风险/研究样本不可解。Research 可以由用户显式选择 `complete_case_drop`，但只能删除含缺失成员的整行，并受缺失行比例 `10%`、latest complete row 尾部新鲜度上限（日频 `5` 天、周频 `14` 天、月频 `62` 天）和最小完整观测数约束；结果必须暴露 rows before / after、dropped rows、latest complete date 与 trailing staleness。
 - 周频 period end 使用自然周五；若 as-of date 落在周中，则最后一个未完整周以 as-of date 作为 capped period end。月频使用自然月末，同样以 as-of date cap 最后一个 period。
 - 若未来传入显式交易日日历，日频对齐应以日历校验 holiday vs missing：共同非交易日不生成样本；日历交易日缺价必须进入 coverage / missing 诊断，而不是隐式填值。
 
@@ -1014,7 +1015,7 @@ Risk 页和 Research solver 使用同一套 covariance model id 与 contribution
 - `sample_covariance`
 - contribution mode: `signed` / `abs`
 
-这里的 `\Sigma` 是年化 covariance matrix。`sample_covariance` 的日/周/月 period return 样本使用 `n - 1` 分母；EWMA 和 Ledoit-Wolf 这类模型可在模型内部使用其自身估计口径，但必须通过 model id 明确区分。混合日频 / 周频 / 稀疏 NAV 时，先按 2.6.1 的 target calculation frequency 取 period-end 观测，再计算收益；不做 stale 价格生成的 0 return。每个 covariance entry 只使用两侧共同存在的有效 return date，并按这些日期的实际观察密度年化。若共同有效收益不足两期，solver 必须进入 insufficient-history 诊断，而不是用不同长度的持有期收益硬拼协方差。
+这里的 `\Sigma` 是年化 covariance matrix。`sample_covariance` 的日/周/月 period return 样本使用 `n - 1` 分母；EWMA 和 Ledoit-Wolf 这类模型可在模型内部使用其自身估计口径，但必须通过 model id 明确区分。混合日频 / 周频 / 稀疏 NAV 时，先按 2.6.1 的 target calculation frequency 取 period-end 观测，再计算收益；不做 stale 价格生成的 0 return。默认 `strict` policy 下，active return matrix 必须在所有参与成员上完整，协方差和相关性按同一组完整收益日期估计并按这些日期的实际观察密度年化。Research 只有在用户显式选择 `complete_case_drop` 且通过覆盖率与尾部新鲜度约束时，才可以整行删除缺失 period 后继续求解。若完整有效收益不足两期，solver 必须进入 insufficient-history 诊断，而不是用不同长度的持有期收益硬拼协方差。
 
 ### Marginal contribution to variance
 
@@ -1113,14 +1114,14 @@ Research current target solve 使用 planning taxonomy 的层级 scope 做递归
 - `weight` scope 使用该 scope direct members 的 `target_weight` 拟合本地权重；已启用的 `weight` 维度必须逐成员显式给出且合计为 `100%`；
 - `risk_budget` scope 使用非现金 direct members 的 `target_risk_share` 求本地目标权重，现金的 `target_risk_share` 必须为 `0`，非现金风险份额加总为 `100%`；
 - 若某个成员被标记为 frozen，优先使用该成员 as-of actual weight；若 actual weight 不存在，只能使用已配置的 `target_weight`，不能把 `target_risk_share` 当作资金权重；
-- risk-budget solve 至少需要两个共同有效 return observations；不足时必须报 `insufficient-history`，不能把 target risk share 当作 target weight；
-- risk-budget solve 的 achieved risk share 最大绝对误差必须在显式阈值内；当前阈值为 `5 percentage points`。超过阈值或产生负 signed risk share 时，该 scope 求解失败，不切换到 `abs` mode，也不返回旧求解器状态；
+- risk-budget solve 至少需要两个完整对齐 return observations；`strict` policy 下任何 active member 缺失都会失败，`complete_case_drop` 只能在显式选择且通过缺失行比例、latest complete row 新鲜度和最小完整观测数约束后使用，不能把 target risk share 当作 target weight；
+- risk-budget solve 的 achieved risk share 最大绝对误差必须在显式阈值内；当前阈值为 `1e-4` share units，即 `0.01 percentage points`。超过阈值或产生负 signed risk share 时，该 scope 求解失败，不切换到 `abs` mode，也不返回旧求解器状态；
 - 单成员 scope 只允许输出数学上唯一确定的本地目标：非现金/普通成员权重 `100%`，现金 risk budget `0%`；
-- 根 scope 完成风险 sleeve 权重后，`target_volatility` / `fixed_gross` capital overlay 才对非现金目标权重整体放缩，并把残差写入 cash-like member；没有 cash-like member 时残差只作为显式诊断披露。
+- 根 scope 完成风险 sleeve 权重后，`target_volatility` / `fixed_gross` capital overlay 才对非现金目标权重整体放缩，并把残差写入 cash-like member；没有 cash-like member、目标波动率无法用正的估计波动率缩放或 overlay 后违反可行约束时，该 run 必须失败或显式 unavailable，不用 unit gross、等权或旧算法兜底。
 
 每次 run 必须输出 root `solve_event` 和完整 `scope_solve_events`，用于复核每层 scope 的默认维度、实际维度、solver、RC mode、risk gap 与成员数。
 
-每次 run 还必须输出 `calculation_frequency` profile，包括用户请求频率、最终解析频率、可选频率、源数据频率计数和状态文案。组合 workspace 的组合名状态栏展示当前组合的默认 risk basis，方便用户确认当前是 daily / weekly / monthly 口径。
+每次 run 还必须输出 `calculation_frequency` profile，包括用户请求频率、最终解析频率、可选频率、源数据频率计数和状态文案；同时输出 missing-return policy、rows before / after、missing rows、dropped rows、latest complete date 与 trailing staleness，便于复核样本是否被严格保留或显式 complete-case 删除。组合 workspace 的组合名状态栏展示当前组合的默认 risk basis，方便用户确认当前是 daily / weekly / monthly 口径。
 
 ## 11. Scenario P&L 口径
 

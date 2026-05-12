@@ -41,7 +41,7 @@ The same release pass rechecked the Portfolio background calculation and cache p
 
 - materialized holdings rows now include instrument market profile, quote-derived trend/risk fields and resolved risk frequency;
 - holdings workspace reads return the materialized profile when it matches the current risk basis instead of rebuilding every row;
-- legacy `asset_*` instrument references are normalized before boundary holdings and Research workbench responses are serialized;
+- the 2026-05-10 pass normalized legacy `asset_*` instrument references before boundary holdings and Research workbench responses were serialized; this response-boundary fix was superseded on 2026-05-12 by migration-level canonicalization and runtime rejection of legacy instrument fields;
 - daily snapshot calculation version was bumped so stale materialized rows are rebuilt instead of silently reused.
 
 ## 5. UI Copy Standard
@@ -63,3 +63,12 @@ Before merging a calculation change:
 - search docs and UI labels for stale substitute-success language tied to calculation results;
 - verify `git status --short` only contains intentional source and documentation changes;
 - keep `apps/portfolio/backend/research_outputs/` and frontend `dist/` as ignored runtime/build artifacts.
+
+## 7. 2026-05-12 Follow-Up
+
+See [04_INPUT_VALIDATION_AUDIT_2026_05_12.md](./04_INPUT_VALIDATION_AUDIT_2026_05_12.md) for the follow-up review. The current contract is stricter than this 2026-05-10 audit:
+
+- persisted transaction/research JSON is canonicalized to `instrument_*` keys by migration;
+- runtime store validation rejects legacy `asset_id` / `asset_name` / `asset_type` and `allowed_asset_types`;
+- Research risk inputs default to `strict` complete aligned returns and only allow explicit `complete_case_drop` under documented coverage and staleness caps;
+- risk-budget solve uses the `1e-4` max risk-share gap threshold and does not fall back to target weights, equal weights, alternate contribution modes or legacy solver output.
