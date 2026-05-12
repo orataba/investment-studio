@@ -1,14 +1,35 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date
 
 import pytest
+
+from tests.store_fixture import TEST_PORTFOLIO_STORE
 
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import daily_snapshots, portfolio_store
 from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
 from portfolio_app.services.ledger import _build_position_state, build_position_lots, derive_ledger_postings
+
+
+def test_store_reset_rejects_legacy_asset_references():
+    store = deepcopy(TEST_PORTFOLIO_STORE)
+    store["transactions"][2]["asset_id"] = store["transactions"][2].pop("instrument_id")
+    with pytest.raises(ValueError, match="legacy asset_id"):
+        portfolio_store.reset_store(store)
+
+    store = deepcopy(TEST_PORTFOLIO_STORE)
+    store["transactions"][2]["instrument_ref"] = {
+        "asset_id": "equity-us-abbv",
+        "asset_name": "AbbVie Inc",
+        "asset_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+    with pytest.raises(ValueError, match="legacy asset reference fields"):
+        portfolio_store.reset_store(store)
 
 
 def test_portfolio_instruments_endpoint_reads_shared_registry_via_portfolio_backend(client):

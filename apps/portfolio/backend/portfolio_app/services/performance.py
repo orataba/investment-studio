@@ -54,6 +54,7 @@ NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES = {
 }
 DAYS_PER_YEAR = 365.25
 _SUPPORTED_INSTRUMENT_TYPES = {"fund", "bond", "equity", "cash", "fx", "other"}
+_LEGACY_INSTRUMENT_REF_KEYS = {"asset_id", "asset_name", "asset_type"}
 
 
 def _safe_float(value: object) -> float | None:
@@ -71,23 +72,31 @@ def normalize_instrument_core(
     *,
     fallback_currency: str = "USD",
 ) -> dict[str, object]:
-    ref = instrument_ref if isinstance(instrument_ref, dict) else {}
-    resolved_id = str(ref.get("instrument_id") or ref.get("asset_id") or instrument_id or "").strip()
-    resolved_type = str(ref.get("instrument_type") or ref.get("asset_type") or "other").strip().lower()
+    if not isinstance(instrument_ref, dict):
+        raise ValueError(f"Instrument reference is required for '{instrument_id}'.")
+    legacy_keys = sorted(key for key in _LEGACY_INSTRUMENT_REF_KEYS if key in instrument_ref)
+    if legacy_keys:
+        raise ValueError(
+            f"Instrument reference for '{instrument_id}' uses legacy fields: {', '.join(legacy_keys)}"
+        )
+
+    resolved_id = str(instrument_ref.get("instrument_id") or "").strip()
+    if not resolved_id or resolved_id != str(instrument_id or "").strip():
+        raise ValueError(f"Instrument reference id must match '{instrument_id}'.")
+    resolved_type = str(instrument_ref.get("instrument_type") or "").strip().lower()
     if resolved_type not in _SUPPORTED_INSTRUMENT_TYPES:
-        resolved_type = "other"
+        raise ValueError(f"Instrument reference for '{instrument_id}' has unsupported instrument_type.")
+    instrument_name = str(instrument_ref.get("instrument_name") or "").strip()
+    currency = str(instrument_ref.get("currency") or "").strip().upper()
+    if not instrument_name or not currency:
+        raise ValueError(f"Instrument reference for '{instrument_id}' is incomplete.")
+    identifiers = instrument_ref.get("identifiers")
     return {
-        "instrument_id": resolved_id or str(instrument_id or "").strip(),
-        "instrument_name": str(
-            ref.get("instrument_name")
-            or ref.get("asset_name")
-            or resolved_id
-            or instrument_id
-            or ""
-        ),
+        "instrument_id": resolved_id,
+        "instrument_name": instrument_name,
         "instrument_type": resolved_type,
-        "currency": str(ref.get("currency") or fallback_currency or "USD").upper(),
-        "identifiers": list(ref.get("identifiers") or []) if isinstance(ref.get("identifiers"), list) else [],
+        "currency": currency,
+        "identifiers": list(identifiers or []) if isinstance(identifiers, list) else [],
     }
 
 
@@ -589,6 +598,8 @@ def _resolve_snapshot_window(
 
     resolved_start = start_date or (min(transaction_dates) if transaction_dates else portfolio_as_of)
     resolved_end = end_date or portfolio_as_of or (max(transaction_dates) if transaction_dates else None)
+    if portfolio_as_of is not None and resolved_end is not None and resolved_end > portfolio_as_of:
+        resolved_end = portfolio_as_of
     if resolved_start is None or resolved_end is None:
         return None
     if resolved_end < resolved_start:

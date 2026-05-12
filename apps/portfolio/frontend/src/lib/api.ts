@@ -623,6 +623,7 @@ export type PortfolioResearchRunStatus = 'running' | 'completed' | 'failed'
 export type PortfolioResearchTargetDimension = 'scope_default' | 'weight' | 'risk_budget'
 export type PortfolioResearchCapitalMode = 'unit_notional' | 'fixed_gross' | 'target_volatility'
 export type PortfolioResearchCalculationFrequency = 'auto' | 'daily' | 'weekly' | 'monthly'
+export type PortfolioResearchMissingReturnPolicy = 'strict' | 'complete_case_drop'
 export type PortfolioResearchArtifactPreviewKind = 'text' | 'html' | 'binary'
 
 export type PortfolioResearchPlanningTaxonomyOption = {
@@ -650,6 +651,7 @@ export type PortfolioResearchSettingsRecord = {
   as_of_date?: string | null
   lookback_days: number
   calculation_frequency: PortfolioResearchCalculationFrequency
+  missing_return_policy: PortfolioResearchMissingReturnPolicy
   target_dimension: PortfolioResearchTargetDimension
   capital_mode: PortfolioResearchCapitalMode
   gross_exposure?: number | null
@@ -666,6 +668,7 @@ export type PortfolioResearchSettingsUpdatePayload = {
   as_of_date?: string | null
   lookback_days: number
   calculation_frequency?: PortfolioResearchCalculationFrequency
+  missing_return_policy?: PortfolioResearchMissingReturnPolicy
   target_dimension?: PortfolioResearchTargetDimension
   capital_mode?: PortfolioResearchCapitalMode
   gross_exposure?: number | null
@@ -808,6 +811,14 @@ export type PortfolioResearchSolveEventRecord = {
   covariance_model?: string | null
   covariance_observations?: number | null
   risk_contribution_mode?: string | null
+  missing_return_policy?: PortfolioResearchMissingReturnPolicy | null
+  return_rows_before_policy?: number | null
+  return_rows_after_policy?: number | null
+  missing_return_row_count?: number | null
+  missing_return_row_fraction?: number | null
+  dropped_return_rows?: Array<{ date: string; missing_members: string[] }> | null
+  latest_complete_return_date?: string | null
+  trailing_complete_return_staleness_days?: number | null
   calculation_frequency?: Exclude<PortfolioResearchCalculationFrequency, 'auto'> | null
   gap_turnover?: number | null
   current_weight_total?: number | null

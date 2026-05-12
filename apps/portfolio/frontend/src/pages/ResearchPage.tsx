@@ -10,6 +10,7 @@ import {
   updatePortfolioResearchSettings,
   type PortfolioResearchCapitalMode,
   type PortfolioResearchCalculationFrequency,
+  type PortfolioResearchMissingReturnPolicy,
   type PortfolioResearchPlanningScopeOption,
   type PortfolioResearchRunRecord,
   type PortfolioResearchTargetDimension,
@@ -39,6 +40,11 @@ const CALCULATION_FREQUENCY_OPTIONS: Array<{ value: PortfolioResearchCalculation
   { value: 'daily', label: 'Daily' },
   { value: 'weekly', label: 'Weekly' },
   { value: 'monthly', label: 'Monthly' },
+]
+
+const MISSING_RETURN_POLICY_OPTIONS: Array<{ value: PortfolioResearchMissingReturnPolicy; label: string }> = [
+  { value: 'strict', label: 'Strict' },
+  { value: 'complete_case_drop', label: 'Complete Case Drop' },
 ]
 
 function TableStatusRow({
@@ -200,6 +206,7 @@ export default function ResearchPage() {
   const [asOfDate, setAsOfDate] = useState('')
   const [lookbackDays, setLookbackDays] = useState(String(LOOKBACK_OPTIONS[2]))
   const [calculationFrequency, setCalculationFrequency] = useState<PortfolioResearchCalculationFrequency>('auto')
+  const [missingReturnPolicy, setMissingReturnPolicy] = useState<PortfolioResearchMissingReturnPolicy>('strict')
   const [targetDimension, setTargetDimension] = useState<PortfolioResearchTargetDimension>('scope_default')
   const [capitalMode, setCapitalMode] = useState<PortfolioResearchCapitalMode>('unit_notional')
   const [grossExposure, setGrossExposure] = useState('')
@@ -263,6 +270,7 @@ export default function ResearchPage() {
     setAsOfDate(workbench.settings.as_of_date ?? workbench.as_of_date)
     setLookbackDays(String(workbench.settings.lookback_days))
     setCalculationFrequency(workbench.settings.calculation_frequency ?? 'auto')
+    setMissingReturnPolicy(workbench.settings.missing_return_policy ?? 'strict')
     setTargetDimension(workbench.settings.target_dimension)
     setCapitalMode(workbench.settings.capital_mode)
     setGrossExposure(workbench.settings.gross_exposure != null ? String(workbench.settings.gross_exposure) : '')
@@ -416,6 +424,7 @@ export default function ResearchPage() {
       as_of_date: asOfDate || null,
       lookback_days: Number(lookbackDays) || 90,
       calculation_frequency: calculationFrequency,
+      missing_return_policy: missingReturnPolicy,
       target_dimension: targetDimension,
       capital_mode: capitalMode,
       gross_exposure: capitalMode === 'fixed_gross' ? parsedGrossExposure : null,
@@ -618,6 +627,19 @@ export default function ResearchPage() {
                       >
                         {option.label}
                         {option.available ? '' : ' unavailable'}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Missing Returns</span>
+                  <select
+                    value={missingReturnPolicy}
+                    onChange={(event) => setMissingReturnPolicy(event.target.value as PortfolioResearchMissingReturnPolicy)}
+                  >
+                    {MISSING_RETURN_POLICY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
                       </option>
                     ))}
                   </select>
@@ -846,6 +868,10 @@ export default function ResearchPage() {
                           <th>RC Mode</th>
                           <td>{solveEvent?.risk_contribution_mode ? formatLabel(solveEvent.risk_contribution_mode) : '—'}</td>
                         </tr>
+                        <tr>
+                          <th>Missing Returns</th>
+                          <td>{selectedRunSignalMap.get('Missing Returns') ?? (solveEvent?.missing_return_policy ? formatLabel(solveEvent.missing_return_policy) : '—')}</td>
+                        </tr>
                       </tbody>
                     </table>
                   </div>
@@ -879,6 +905,14 @@ export default function ResearchPage() {
                         <tr>
                           <th>Warnings</th>
                           <td>{selectedRun.detail?.warnings.length ?? 0}</td>
+                        </tr>
+                        <tr>
+                          <th>Dropped Rows</th>
+                          <td>
+                            {solveEvent?.missing_return_row_count != null
+                              ? `${solveEvent.missing_return_row_count}/${solveEvent.return_rows_before_policy ?? '—'}`
+                              : '—'}
+                          </td>
                         </tr>
                         <tr>
                           <th>Lookback</th>

@@ -54,6 +54,7 @@ def update_portfolio_research_settings(
             as_of_date=payload.as_of_date,
             lookback_days=payload.lookback_days,
             calculation_frequency=payload.calculation_frequency,
+            missing_return_policy=payload.missing_return_policy,
             target_dimension=payload.target_dimension,
             capital_mode=payload.capital_mode,
             gross_exposure=payload.gross_exposure,

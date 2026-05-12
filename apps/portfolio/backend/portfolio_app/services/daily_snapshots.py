@@ -891,11 +891,19 @@ def build_materialized_contribution_report(
         if portfolio_record is None:
             return None
         portfolio = _serialize_portfolio_row(portfolio_record)
+        portfolio_as_of_date = portfolio_record.as_of_date
 
+    effective_end_date = end_date
+    if (
+        effective_end_date is not None
+        and portfolio_as_of_date is not None
+        and effective_end_date > portfolio_as_of_date
+    ):
+        effective_end_date = portfolio_as_of_date
     snapshots = list_materialized_daily_snapshots(
         portfolio_id,
         start_date=start_date,
-        end_date=end_date,
+        end_date=effective_end_date,
         ensure_current=False,
     )
     if not snapshots:
@@ -904,7 +912,7 @@ def build_materialized_contribution_report(
             [],
             [],
             start_date=start_date,
-            end_date=end_date,
+            end_date=effective_end_date,
             axis=axis,
             group_key=group_key,
         )
@@ -916,7 +924,7 @@ def build_materialized_contribution_report(
     if not available_dates:
         return None
     resolved_start_date = start_date or min(available_dates)
-    resolved_end_date = end_date or max(available_dates)
+    resolved_end_date = effective_end_date or max(available_dates)
     if resolved_start_date < min(available_dates) or resolved_end_date > max(available_dates):
         return None
 

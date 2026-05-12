@@ -23,6 +23,7 @@ from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_holdings_report
 from portfolio_app.services.research_solver import (
+    RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
     build_research_calculation_frequency_profile,
     build_research_scope_options,
     solve_current_target_weights,
@@ -95,6 +96,15 @@ def _format_solver_kind(value: object) -> str:
     return normalized.replace("-", " ").title()
 
 
+def _format_missing_return_policy(value: object) -> str:
+    normalized = str(value or RESEARCH_DEFAULT_MISSING_RETURN_POLICY).strip()
+    if normalized == "complete_case_drop":
+        return "Complete Case Drop"
+    if normalized == "strict":
+        return "Strict"
+    return normalized.replace("_", " ").title()
+
+
 def _research_outputs_root() -> Path:
     root = get_settings().research_outputs_root
     root.mkdir(parents=True, exist_ok=True)
@@ -162,6 +172,9 @@ def _ensure_research_settings_record(
         if not getattr(record, "calculation_frequency", None):
             record.calculation_frequency = "auto"
             changed = True
+        if not getattr(record, "missing_return_policy", None):
+            record.missing_return_policy = RESEARCH_DEFAULT_MISSING_RETURN_POLICY
+            changed = True
         if record.frozen_taxonomy_node_ids_json is None:
             record.frozen_taxonomy_node_ids_json = []
             changed = True
@@ -177,6 +190,7 @@ def _ensure_research_settings_record(
         as_of_date=default_as_of_date,
         lookback_days=90,
         calculation_frequency="auto",
+        missing_return_policy=RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
         target_dimension="scope_default",
         capital_mode="unit_notional",
         gross_exposure=None,
@@ -291,6 +305,7 @@ def _serialize_settings_row(
         "as_of_date": _iso_date(row.as_of_date),
         "lookback_days": int(row.lookback_days or 90),
         "calculation_frequency": row.calculation_frequency or "auto",
+        "missing_return_policy": row.missing_return_policy or RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
         "target_dimension": row.target_dimension or "scope_default",
         "capital_mode": row.capital_mode or "unit_notional",
         "gross_exposure": _safe_float(row.gross_exposure),
@@ -337,11 +352,14 @@ def _serialize_run_row(
 
 
 def _normalize_top_holding_snapshot(item: dict[str, object]) -> dict[str, object]:
-    instrument_id = str(item.get("instrument_id") or item.get("asset_id") or "").strip()
-    instrument_type = str(item.get("instrument_type") or item.get("asset_type") or "").strip() or None
+    instrument_id = str(item.get("instrument_id") or "").strip()
+    instrument_name = str(item.get("instrument_name") or "").strip()
+    instrument_type = str(item.get("instrument_type") or "").strip() or None
+    if not instrument_id or not instrument_name or not instrument_type:
+        raise ValueError("Top holding snapshots require canonical instrument_id, instrument_name, and instrument_type.")
     return {
         "instrument_id": instrument_id,
-        "instrument_name": str(item.get("instrument_name") or item.get("asset_name") or instrument_id),
+        "instrument_name": instrument_name,
         "instrument_type": instrument_type,
         "allocation": _safe_float(item.get("allocation")),
         "market_value_base": _safe_float(item.get("market_value_base")),
@@ -363,16 +381,13 @@ def _build_top_holdings_snapshot(
     )
     rendered: list[dict[str, object]] = []
     for position in sorted_positions[:8]:
-        instrument_ref = position.get("instrument_ref") or {}
+        instrument_ref = position.get("instrument_ref") if isinstance(position.get("instrument_ref"), dict) else {}
         rendered.append(
             _normalize_top_holding_snapshot(
                 {
                     "instrument_id": str(position.get("instrument_id") or ""),
-                    "asset_id": str(position.get("asset_id") or ""),
                     "instrument_name": str(instrument_ref.get("instrument_name") or ""),
-                    "asset_name": str(instrument_ref.get("asset_name") or ""),
                     "instrument_type": str(instrument_ref.get("instrument_type") or ""),
-                    "asset_type": str(instrument_ref.get("asset_type") or ""),
                     "allocation": _safe_float(position.get("portfolio_weight")),
                     "market_value_base": _safe_float(position.get("market_value_base")),
                     "cost_basis_base": _safe_float(position.get("cost_basis_base")),
@@ -737,6 +752,11 @@ def _build_current_target_signals(
             "tone": "neutral",
         },
         {
+            "label": "Missing Returns",
+            "value": _format_missing_return_policy(event.get("missing_return_policy") or settings_payload.get("missing_return_policy")),
+            "tone": "neutral",
+        },
+        {
             "label": "Frozen Sleeves",
             "value": str(len(list(settings_payload.get("frozen_taxonomy_node_ids") or []))) if list(settings_payload.get("frozen_taxonomy_node_ids") or []) else "—",
             "tone": "neutral",
@@ -878,6 +898,15 @@ def _build_target_assumptions(
     assumptions.append(
         f"Risk inputs are first aligned to a {frequency.replace('_', ' ')} calculation frequency, using the last valid observation inside each target period."
     )
+    missing_return_policy = str((solve_event or {}).get("missing_return_policy") or settings_payload.get("missing_return_policy") or RESEARCH_DEFAULT_MISSING_RETURN_POLICY)
+    if missing_return_policy == "complete_case_drop":
+        dropped_count = int((solve_event or {}).get("missing_return_row_count") or 0)
+        assumptions.append(
+            "Missing-return handling uses complete-case row drops: any period with an active member return missing is removed for covariance/RC, "
+            f"subject to the configured coverage caps; dropped rows in this solve: {dropped_count}."
+        )
+    else:
+        assumptions.append("Missing-return handling is strict: active covariance/RC inputs must have complete aligned returns.")
     if str(settings_payload.get("target_dimension") or "") == "scope_default":
         assumptions.append("Scope Default resolves each sleeve using that sleeve's own default target dimension before rolling results upward.")
     if str((solve_event or {}).get("target_dimension") or "") == "risk_budget":
@@ -1141,6 +1170,7 @@ def update_research_settings(
     as_of_date: date | None,
     lookback_days: int,
     calculation_frequency: str,
+    missing_return_policy: str,
     target_dimension: str,
     capital_mode: str,
     gross_exposure: float | None,
@@ -1191,6 +1221,7 @@ def update_research_settings(
         row.comparator_taxonomy_node_id = resolved_scope_node_id
         row.lookback_days = int(lookback_days or 90)
         row.calculation_frequency = (calculation_frequency or "auto").strip() or "auto"
+        row.missing_return_policy = (missing_return_policy or RESEARCH_DEFAULT_MISSING_RETURN_POLICY).strip() or RESEARCH_DEFAULT_MISSING_RETURN_POLICY
         row.target_dimension = (target_dimension or "scope_default").strip() or "scope_default"
         row.capital_mode = (capital_mode or "unit_notional").strip() or "unit_notional"
         row.gross_exposure = gross_exposure
@@ -1259,6 +1290,7 @@ def run_portfolio_research(
                 "as_of_date": _iso_date(effective_as_of_date),
                 "lookback_days": int(settings_row.lookback_days or 90),
                 "calculation_frequency": settings_row.calculation_frequency or "auto",
+                "missing_return_policy": settings_row.missing_return_policy or RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
                 "target_dimension": settings_row.target_dimension or "scope_default",
                 "capital_mode": settings_row.capital_mode or "unit_notional",
                 "gross_exposure": _safe_float(settings_row.gross_exposure),
@@ -1287,6 +1319,7 @@ def run_portfolio_research(
                 as_of_date=effective_as_of_date,
                 lookback_days=int(settings_row.lookback_days or 90),
                 calculation_frequency=settings_row.calculation_frequency or "auto",
+                missing_return_policy=settings_row.missing_return_policy or RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
                 target_dimension=settings_row.target_dimension or "scope_default",
                 capital_mode=settings_row.capital_mode or "unit_notional",
                 gross_exposure=_safe_float(settings_row.gross_exposure),

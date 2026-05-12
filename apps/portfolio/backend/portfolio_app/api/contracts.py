@@ -62,6 +62,7 @@ ResearchArtifactPreviewKind = Literal["text", "html", "binary"]
 ResearchTargetDimension = Literal["scope_default", "weight", "risk_budget"]
 ResearchCapitalMode = Literal["unit_notional", "fixed_gross", "target_volatility"]
 ResearchCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
+ResearchMissingReturnPolicy = Literal["strict", "complete_case_drop"]
 PortfolioCalculationFrequency = Literal["daily", "weekly", "monthly"]
 TargetSetType = Literal["saa", "taa"]
 
@@ -904,6 +905,7 @@ class ResearchSettingsRecord(BaseModel):
     as_of_date: date | None = None
     lookback_days: int = Field(default=90, ge=7, le=366)
     calculation_frequency: ResearchCalculationFrequency = "auto"
+    missing_return_policy: ResearchMissingReturnPolicy = "strict"
     target_dimension: ResearchTargetDimension = "scope_default"
     capital_mode: ResearchCapitalMode = "unit_notional"
     gross_exposure: float | None = Field(default=None, gt=0)
@@ -920,6 +922,7 @@ class ResearchSettingsUpdateRequest(BaseModel):
     as_of_date: date | None = None
     lookback_days: int = Field(default=90, ge=7, le=366)
     calculation_frequency: ResearchCalculationFrequency = "auto"
+    missing_return_policy: ResearchMissingReturnPolicy = "strict"
     target_dimension: ResearchTargetDimension = "scope_default"
     capital_mode: ResearchCapitalMode = "unit_notional"
     gross_exposure: float | None = Field(default=None, gt=0)
@@ -1083,6 +1086,14 @@ class ResearchSolveEventRecord(BaseModel):
     covariance_model: str | None = None
     covariance_observations: int | None = None
     risk_contribution_mode: str | None = None
+    missing_return_policy: ResearchMissingReturnPolicy | None = None
+    return_rows_before_policy: int | None = None
+    return_rows_after_policy: int | None = None
+    missing_return_row_count: int | None = None
+    missing_return_row_fraction: float | None = None
+    dropped_return_rows: list[dict[str, object]] = Field(default_factory=list)
+    latest_complete_return_date: str | None = None
+    trailing_complete_return_staleness_days: int | None = None
     calculation_frequency: Literal["daily", "weekly", "monthly"] | None = None
     gap_turnover: float | None = None
     current_weight_total: float | None = None

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from email.message import EmailMessage
+from email import policy
 from io import BytesIO
 import zipfile
 
 from openpyxl import Workbook
 
+from platform_app.services import market_data_ops
 from platform_app.services.market_data_ops import (
     _filter_rows_for_rule,
+    _import_rows_from_email_rules,
+    _normalized_email_rules,
     _parse_nav_rows_from_label_snapshot_matrix,
     _parse_nav_rows_from_xlsx,
 )
@@ -32,6 +37,36 @@ def _with_broken_dimension(file_bytes: bytes) -> bytes:
                 payload = payload.replace(b'dimension ref="A1:E2"', b'dimension ref="A1"')
             writer.writestr(info, payload)
     return output.getvalue()
+
+
+def _nav_email_bytes(*, subject: str, attachment_name: str, rows: list[list[object]]) -> bytes:
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = "yywbfa@cmschina.com.cn"
+    message.set_content("NAV attachment")
+    message.add_attachment(
+        _workbook_bytes(rows),
+        maintype="application",
+        subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=attachment_name,
+    )
+    return message.as_bytes(policy=policy.default)
+
+
+class _FakeMailbox:
+    def __init__(self, messages: dict[int, bytes]) -> None:
+        self.messages = messages
+
+    def uid(self, command: str, *args: object) -> tuple[str, list[object]]:
+        if command == "search":
+            return "OK", [b" ".join(str(uid).encode("ascii") for uid in sorted(self.messages))]
+        if command == "fetch":
+            uid = int(str(args[0]))
+            payload = self.messages.get(uid)
+            if payload is None:
+                return "NO", []
+            return "OK", [(b"1 (UID %d BODY[])" % uid, payload)]
+        return "NO", []
 
 
 def test_parse_nav_rows_from_xlsx_supports_chinese_headers() -> None:
@@ -157,6 +192,64 @@ def test_filter_rows_for_rule_supports_exact_code_match() -> None:
 
     assert len(filtered) == 1
     assert filtered[0]["instrument_code"] == "SAZB60"
+
+
+def test_incremental_email_import_uses_attachment_nav_dates_not_latest_received_uid(
+    monkeypatch,
+) -> None:
+    source_settings = {
+        "source_email_rules": [
+            {
+                "sender_equals": ["yywbfa@cmschina.com.cn"],
+                "subject_contains": ["润洲正行11号私募证券投资基金a", "虚拟计提净值表"],
+                "attachment_name_contains": ["润洲正行11号私募证券投资基金a", "虚拟计提后净值表"],
+                "attachment_extensions": ["xlsx"],
+                "row_code_equals": ["ZB945A"],
+                "row_name_equals": ["润洲正行11号私募证券投资基金A"],
+            }
+        ]
+    }
+    header = ["产品代码", "产品名称", "业务日期", "单位净值", "累计单位净值"]
+    messages = {
+        1: _nav_email_bytes(
+            subject="润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_虚拟计提净值表_20260403",
+            attachment_name="20260403_润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
+            rows=[
+                header,
+                ["ZB945A", "润洲正行11号私募证券投资基金A", "20260403", "0.9352", "1.4915"],
+            ],
+        ),
+        2: _nav_email_bytes(
+            subject="润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_虚拟计提净值表_20260402",
+            attachment_name="20260402_润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
+            rows=[
+                header,
+                ["ZB945A", "润洲正行11号私募证券投资基金A", "20260402", "0.9334", "1.4897"],
+            ],
+        ),
+    }
+    captured: dict[str, object] = {}
+
+    def fake_replace_nav_history(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"instrument_id": kwargs["instrument_id"]}
+
+    monkeypatch.setattr(market_data_ops, "replace_nav_history", fake_replace_nav_history)
+
+    record = _import_rows_from_email_rules(
+        instrument_id="zb945a",
+        rules=_normalized_email_rules(source_settings),
+        mailbox=_FakeMailbox(messages),
+        pending_uids=[1, 2],
+        updated_by="test",
+        full_history=False,
+    )
+
+    assert record == {"instrument_id": "zb945a"}
+    rows = captured["rows"]
+    assert [row["as_of_date"] for row in rows] == ["2026-04-02", "2026-04-03"]
+    assert captured["provider"] == "email:recent_window"
+    assert captured["message"] == "Imported 2 NAV rows from 2 recent email attachments."
 
 
 def test_parse_nav_rows_from_label_snapshot_matrix_extracts_nav_values() -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from math import sqrt
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -11,12 +12,17 @@ from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.instrument_charts import _annualized_volatility, _candidate_chart_bases
 
 from portfolio_app.services.research_solver import (
+    RiskBudgetProblem,
     TARGET_MEMBER_INSTRUMENT,
+    TARGET_MEMBER_NODE,
     ScopeMemberRecord,
     _align_member_series,
     _estimate_covariance,
     _infer_periods_per_year,
+    _periodic_nav_series,
     _selected_price_points,
+    _series_to_nav,
+    _solve_risk_budget_problem,
 )
 
 def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "weight") -> tuple[str, dict[str, str]]:
@@ -211,6 +217,7 @@ def test_research_workbench_returns_target_solve_defaults(client):
     assert payload["settings"]["target_dimension"] == "scope_default"
     assert payload["settings"]["capital_mode"] == "unit_notional"
     assert payload["settings"]["calculation_frequency"] == "auto"
+    assert payload["settings"]["missing_return_policy"] == "strict"
     assert payload["calculation_frequency"]["resolved_frequency"] == "daily"
     assert payload["settings"]["gross_exposure"] is None
     assert payload["settings"]["target_volatility"] is None
@@ -228,12 +235,12 @@ def test_research_workbench_returns_target_solve_defaults(client):
     assert payload["current_context"]["nav"] == payload["current_context"]["summary"]["end_nav"]
 
 
-def test_research_workbench_normalizes_legacy_run_top_holdings(client):
+def test_research_workbench_reads_canonical_run_top_holdings(client):
     session_factory = get_session_factory()
     with session_factory() as session:
         session.add(
             ResearchRunRecordModel(
-                research_run_id="legacy-run",
+                research_run_id="canonical-run",
                 portfolio_id="yungu",
                 job_type="target_weight_solve",
                 status="completed",
@@ -244,13 +251,13 @@ def test_research_workbench_normalizes_legacy_run_top_holdings(client):
                 planning_taxonomy_id=None,
                 lookback_days=90,
                 requested_by=None,
-                headline="Legacy run",
+                headline="Canonical run",
                 detail_json={
                     "top_holdings": [
                         {
-                            "asset_id": "equity-us-abbv",
-                            "asset_name": "AbbVie Inc",
-                            "asset_type": "equity",
+                            "instrument_id": "equity-us-abbv",
+                            "instrument_name": "AbbVie Inc",
+                            "instrument_type": "equity",
                             "allocation": 0.25,
                             "market_value_base": 100.0,
                             "cost_basis_base": 90.0,
@@ -561,13 +568,71 @@ def test_research_weekly_alignment_uses_period_end_observations() -> None:
     assert returns_by_member["instrument-b"].loc[date(2026, 1, 5)] == pytest.approx(101.0 / 102.0 - 1.0)
 
 
-def test_research_covariance_annualizes_each_pair_from_valid_dates() -> None:
+def test_research_weekly_staleness_applies_to_selected_period_observation_only() -> None:
+    series = pd.Series(
+        {
+            date(2026, 1, 5): 100.0,
+            date(2026, 1, 9): 101.0,
+            date(2026, 1, 12): 102.0,
+        },
+        dtype="float64",
+    )
+
+    periodic = _periodic_nav_series(
+        series,
+        calculation_frequency="weekly",
+        start_date=date(2026, 1, 5),
+        end_date=date(2026, 1, 9),
+    )
+
+    assert periodic.loc[date(2026, 1, 9)] == pytest.approx(101.0)
+    with pytest.raises(ValueError, match="stale observation"):
+        _periodic_nav_series(
+            pd.Series({date(2026, 1, 12): 102.0}, dtype="float64"),
+            calculation_frequency="weekly",
+            start_date=date(2026, 1, 12),
+            end_date=date(2026, 1, 16),
+        )
+
+
+def test_recursive_child_nav_preserves_first_valid_return_without_filling_internal_gaps() -> None:
+    child_returns = pd.Series(
+        {
+            date(2026, 1, 1): np.nan,
+            date(2026, 1, 2): 0.10,
+            date(2026, 1, 3): np.nan,
+            date(2026, 1, 4): 0.20,
+        },
+        dtype="float64",
+    )
+    child_nav = _series_to_nav(child_returns, as_of_date=date(2026, 1, 4))
+
+    assert child_nav.loc[date(2026, 1, 1)] == pytest.approx(1.0)
+    assert child_nav.loc[date(2026, 1, 2)] == pytest.approx(1.1)
+    assert pd.isna(child_nav.loc[date(2026, 1, 3)])
+    assert pd.isna(child_nav.loc[date(2026, 1, 4)])
+
+    aligned_members, _calendar, _warnings = _align_member_series(
+        [ScopeMemberRecord(member_type=TARGET_MEMBER_NODE, member_id="child", label="Child")],
+        {(TARGET_MEMBER_NODE, "child"): child_nav},
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 4),
+        calculation_frequency="daily",
+    )
+
+    parent_returns = aligned_members[0].returns
+    assert parent_returns.loc[date(2026, 1, 2)] == pytest.approx(0.1)
+    assert pd.isna(parent_returns.loc[date(2026, 1, 3)])
+    assert pd.isna(parent_returns.loc[date(2026, 1, 4)])
+
+
+def test_research_covariance_annualizes_complete_aligned_dates() -> None:
     returns = pd.DataFrame(
         {
-            "daily": [0.01, 0.02, 0.03, 0.04],
-            "weekly": [0.05, None, 0.07, None],
+            "asset_a": [0.01, 0.02, 0.03],
+            "asset_b": [0.05, 0.07, 0.04],
         },
-        index=[date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 8), date(2026, 1, 9)],
+        index=[date(2026, 1, 1), date(2026, 1, 8), date(2026, 1, 15)],
         dtype="float64",
     )
 
@@ -578,21 +643,15 @@ def test_research_covariance_annualizes_each_pair_from_valid_dates() -> None:
         parameters={"min_observations": 2},
     )
 
-    expected_daily_variance = (
-        returns[["daily"]].dropna(how="any").cov(ddof=1).loc["daily", "daily"]
-        * _infer_periods_per_year([date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 8), date(2026, 1, 9)])
-    )
-    expected_pair_covariance = (
-        returns[["daily", "weekly"]].dropna(how="any").cov(ddof=1).loc["daily", "weekly"]
-        * _infer_periods_per_year([date(2026, 1, 1), date(2026, 1, 8)])
-    )
+    annualization = _infer_periods_per_year([date(2026, 1, 1), date(2026, 1, 8), date(2026, 1, 15)])
+    expected_covariance = returns.cov(ddof=1) * annualization
 
-    assert covariance.loc["daily", "daily"] == pytest.approx(expected_daily_variance, abs=1e-11)
-    assert covariance.loc["daily", "weekly"] == pytest.approx(expected_pair_covariance)
-    assert covariance.loc["weekly", "daily"] == pytest.approx(expected_pair_covariance)
+    assert covariance.loc["asset_a", "asset_a"] == pytest.approx(expected_covariance.loc["asset_a", "asset_a"])
+    assert covariance.loc["asset_a", "asset_b"] == pytest.approx(expected_covariance.loc["asset_a", "asset_b"])
+    assert covariance.loc["asset_b", "asset_a"] == pytest.approx(expected_covariance.loc["asset_b", "asset_a"])
 
 
-def test_research_covariance_rejects_missing_pair_overlap() -> None:
+def test_research_covariance_rejects_partial_missing_rows() -> None:
     returns = pd.DataFrame(
         {
             "instrument_a": [0.01, 0.02, None, None],
@@ -602,13 +661,116 @@ def test_research_covariance_rejects_missing_pair_overlap() -> None:
         dtype="float64",
     )
 
-    with pytest.raises(ValueError, match="overlapping observations"):
+    with pytest.raises(ValueError, match="complete aligned return observations"):
         _estimate_covariance(
             returns,
             model_id="sample_covariance",
             lookback_days=30,
             parameters={"min_observations": 2},
         )
+
+
+def test_research_covariance_complete_case_drop_uses_only_complete_rows() -> None:
+    dates = [date(2026, 1, day) for day in range(1, 12)]
+    returns = pd.DataFrame(
+        {
+            "instrument_a": [0.001 * day for day in range(1, 12)],
+            "instrument_b": [0.002 * day for day in range(1, 12)],
+        },
+        index=dates,
+        dtype="float64",
+    )
+    returns.loc[date(2026, 1, 5), "instrument_b"] = np.nan
+
+    covariance = _estimate_covariance(
+        returns,
+        model_id="sample_covariance",
+        lookback_days=30,
+        parameters={"min_observations": 5},
+        missing_return_policy="complete_case_drop",
+        calculation_frequency="daily",
+        as_of_date=date(2026, 1, 11),
+    )
+
+    complete = returns.dropna(how="any")
+    expected_covariance = complete.cov(ddof=1) * _infer_periods_per_year(list(complete.index))
+    assert covariance.loc["instrument_a", "instrument_a"] == pytest.approx(
+        expected_covariance.loc["instrument_a", "instrument_a"]
+    )
+    assert covariance.loc["instrument_a", "instrument_b"] == pytest.approx(
+        expected_covariance.loc["instrument_a", "instrument_b"]
+    )
+
+
+def test_research_covariance_complete_case_drop_rejects_excessive_missing_rows() -> None:
+    dates = [date(2026, 1, day) for day in range(1, 11)]
+    returns = pd.DataFrame(
+        {
+            "instrument_a": [0.001 * day for day in range(1, 11)],
+            "instrument_b": [0.002 * day for day in range(1, 11)],
+        },
+        index=dates,
+        dtype="float64",
+    )
+    returns.loc[[date(2026, 1, 4), date(2026, 1, 8)], "instrument_b"] = np.nan
+
+    with pytest.raises(ValueError, match="exceeding"):
+        _estimate_covariance(
+            returns,
+            model_id="sample_covariance",
+            lookback_days=30,
+            parameters={"min_observations": 5},
+            missing_return_policy="complete_case_drop",
+            calculation_frequency="daily",
+            as_of_date=date(2026, 1, 10),
+        )
+
+
+def test_research_covariance_complete_case_drop_rejects_stale_latest_complete_row() -> None:
+    dates = [date(2026, 1, day) for day in range(1, 21)]
+    returns = pd.DataFrame(
+        {
+            "instrument_a": [0.001 * day for day in range(1, 21)],
+            "instrument_b": [0.002 * day for day in range(1, 21)],
+        },
+        index=dates,
+        dtype="float64",
+    )
+    returns.loc[date(2026, 1, 20), "instrument_b"] = np.nan
+
+    with pytest.raises(ValueError, match="latest complete return observation"):
+        _estimate_covariance(
+            returns,
+            model_id="sample_covariance",
+            lookback_days=30,
+            parameters={"min_observations": 5},
+            missing_return_policy="complete_case_drop",
+            calculation_frequency="daily",
+            as_of_date=date(2026, 1, 31),
+        )
+
+
+def test_research_risk_budget_solver_matches_tight_tolerance() -> None:
+    problem = RiskBudgetProblem(
+        bucket_ids=["asset_a", "asset_b", "asset_c"],
+        covariance=np.array(
+            [
+                [0.04, 0.01, 0.002],
+                [0.01, 0.01, 0.001],
+                [0.002, 0.001, 0.0225],
+            ],
+            dtype="float64",
+        ),
+        target_risk_shares=np.array([0.4, 0.35, 0.25], dtype="float64"),
+        lower_bounds=np.zeros(3, dtype="float64"),
+        upper_bounds=np.ones(3, dtype="float64"),
+        reference_weights=np.array([0.33, 0.34, 0.33], dtype="float64"),
+    )
+
+    solution = _solve_risk_budget_problem(problem)
+
+    assert solution.max_abs_share_gap <= 1e-4
+    assert solution.weights.sum() == pytest.approx(1.0)
 
 
 def test_research_run_creates_current_target_weight_outputs(client):
@@ -675,6 +837,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     signal_labels = {item["label"] for item in run_payload["detail"]["signals"]}
     assert "Scope Default" in signal_labels
     assert "Solver" in signal_labels
+    assert "Missing Returns" in signal_labels
     assert "Estimated Volatility" in signal_labels
     reference_tape_artifact = next(item for item in run_payload["artifacts"] if item["artifact_id"] == "reference_tape")
     assert reference_tape_artifact["label"] == "Reference Tape CSV"
@@ -876,6 +1039,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
         "comparator_taxonomy_node_id": None,
         "as_of_date": "2026-04-15",
         "lookback_days": 90,
+        "missing_return_policy": "complete_case_drop",
         "target_dimension": "scope_default",
         "capital_mode": "unit_notional",
         "frozen_taxonomy_node_ids": [node_ids["Risk Assets"]],
@@ -883,6 +1047,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
     initial_response = client.put("/api/portfolios/yungu/research/settings", json=payload)
     assert initial_response.status_code == 200
     assert initial_response.json()["frozen_taxonomy_node_ids"] == [node_ids["Risk Assets"]]
+    assert initial_response.json()["missing_return_policy"] == "complete_case_drop"
 
     omitted_payload = dict(payload)
     omitted_payload.pop("frozen_taxonomy_node_ids")
@@ -898,7 +1063,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
     assert clear_response.json()["frozen_taxonomy_node_ids"] == []
 
 
-def test_research_target_volatility_keeps_unit_gross_without_aligned_risk_history(client):
+def test_research_target_volatility_rejects_unaligned_risk_history(client):
     taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
     _create_target_sets(client, taxonomy_id, _node_ids)
 
@@ -925,28 +1090,11 @@ def test_research_target_volatility_keeps_unit_gross_without_aligned_risk_histor
         "/api/portfolios/yungu/research/runs",
         json={"requested_by": "pytest"},
     )
-    assert run_response.status_code == 200, run_response.json()
-    run_payload = run_response.json()
-    signal_map = {item["label"]: item["value"] for item in run_payload["detail"]["signals"]}
-    assert signal_map["Capital Mode"] == "Target Volatility"
-    assert signal_map["Target Volatility"] == "0.01%"
-
-    cash_row = next(
-        item
-        for item in run_payload["detail"]["target_rows"]
-        if item["label"] == "Cash Reserve"
-    )
-    assert cash_row["implementation_weight"] is not None
-    assert cash_row["implementation_weight"] == pytest.approx(0.0)
-    assert any(
-        "could not estimate risky-sleeve volatility" in item
-        for item in run_payload["detail"]["warnings"]
-    )
-    leaf_targets_by_member = {item["member_id"]: item for item in run_payload["detail"]["leaf_targets"]}
-    assert leaf_targets_by_member["fund-hk-2800"]["selected_target_dimension"] == "risk_budget"
+    assert run_response.status_code == 400, run_response.json()
+    assert "does not have enough history for aligned research dates" in run_response.json()["detail"]
 
 
-def test_research_target_volatility_starts_from_full_risk_sleeve_weights(client):
+def test_research_target_volatility_rejects_missing_child_sleeve_history(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client, root_default_target_dimension="weight")
     _create_target_sets(client, taxonomy_id, node_ids)
 
@@ -969,24 +1117,8 @@ def test_research_target_volatility_starts_from_full_risk_sleeve_weights(client)
         "/api/portfolios/yungu/research/runs",
         json={"requested_by": "pytest"},
     )
-    assert run_response.status_code == 200, run_response.json()
-    run_payload = run_response.json()
-    cash_row = next(
-        item
-        for item in run_payload["detail"]["target_rows"]
-        if item["label"] == "Cash Reserve"
-    )
-    risk_rows = [
-        item
-        for item in run_payload["detail"]["target_rows"]
-        if item["label"] != "Cash Reserve" and item["implementation_weight"] is not None
-    ]
-
-    assert cash_row["target_weight"] == pytest.approx(0.15)
-    assert cash_row["implementation_weight"] == pytest.approx(0.0, abs=1e-9)
-    assert sum(item["implementation_weight"] for item in risk_rows) == pytest.approx(1.0)
-    assert run_payload["detail"]["solve_event"]["gross_exposure"] == pytest.approx(1.0)
-    assert len(run_payload["detail"]["scope_solve_events"]) >= 3
+    assert run_response.status_code == 400, run_response.json()
+    assert "does not have enough history for aligned research dates" in run_response.json()["detail"]
 
 
 def test_research_run_rejects_insufficient_history_for_unaligned_sparse_window(client):
@@ -1011,4 +1143,4 @@ def test_research_run_rejects_insufficient_history_for_unaligned_sparse_window(c
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()
-    assert "Risk budget solve requires at least two aligned return observations" in run_response.json()["detail"]
+    assert "does not have enough history for aligned research dates" in run_response.json()["detail"]

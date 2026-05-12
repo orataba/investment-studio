@@ -42,6 +42,8 @@ EMPTY_STORE: dict[str, list[dict[str, Any]]] = {
 UNSET = object()
 TARGET_SET_EPSILON = 0.0005
 TARGET_MEMBER_NODE = "taxonomy_node"
+LEGACY_ASSET_REFERENCE_KEYS = {"asset_id", "asset_name", "asset_type"}
+INSTRUMENT_REF_REQUIRED_KEYS = {"instrument_id", "instrument_name", "instrument_type", "currency"}
 
 
 def _current_utc_timestamp() -> str:
@@ -69,6 +71,25 @@ def _parse_time_component(value: object) -> time | None:
 
 def _format_trade_time(value: time) -> str:
     return f"{value.hour:02d}:{value.minute:02d}"
+
+
+def _validate_instrument_ref_contract(
+    instrument_ref: dict[str, object],
+    *,
+    context: str,
+    expected_instrument_id: str | None = None,
+) -> None:
+    legacy_keys = sorted(key for key in LEGACY_ASSET_REFERENCE_KEYS if key in instrument_ref)
+    if legacy_keys:
+        raise ValueError(f"{context} uses legacy asset reference fields: {', '.join(legacy_keys)}")
+    missing_keys = sorted(key for key in INSTRUMENT_REF_REQUIRED_KEYS if not instrument_ref.get(key))
+    if missing_keys:
+        raise ValueError(f"{context} is missing instrument reference fields: {', '.join(missing_keys)}")
+    if expected_instrument_id and str(instrument_ref["instrument_id"]) != expected_instrument_id:
+        raise ValueError(f"{context} instrument_ref.instrument_id must match instrument_id")
+    identifiers = instrument_ref.get("identifiers")
+    if identifiers is not None and not isinstance(identifiers, list):
+        raise ValueError(f"{context} instrument_ref.identifiers must be a list")
 
 
 def resolve_trade_timing(
@@ -120,11 +141,31 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
             portfolio.setdefault("valuation_cutoff_policy", "latest_complete_eod")
             portfolio.setdefault("default_planning_taxonomy_id", None)
     for account in normalized["accounts"]:
-        if isinstance(account, dict) and "allowed_instrument_types" not in account:
+        if not isinstance(account, dict):
+            continue
+        if "allowed_asset_types" in account:
+            raise ValueError(
+                f"Account '{account.get('account_id')}' uses legacy allowed_asset_types; use allowed_instrument_types."
+            )
+        if "allowed_instrument_types" not in account:
             account["allowed_instrument_types"] = None
     for transaction in normalized["transactions"]:
         if not isinstance(transaction, dict):
             continue
+        if "asset_id" in transaction:
+            raise ValueError(
+                f"Transaction '{transaction.get('transaction_id')}' uses legacy asset_id; use instrument_id."
+            )
+        instrument_id = str(transaction.get("instrument_id") or "").strip()
+        instrument_ref = transaction.get("instrument_ref")
+        if isinstance(instrument_ref, dict):
+            _validate_instrument_ref_contract(
+                instrument_ref,
+                context=f"Transaction '{transaction.get('transaction_id')}'",
+                expected_instrument_id=instrument_id or None,
+            )
+        elif instrument_id:
+            raise ValueError(f"Transaction '{transaction.get('transaction_id')}' with instrument_id requires instrument_ref.")
         if "counter_amount" not in transaction:
             transaction["counter_amount"] = None
         if "fx_rate" not in transaction:
@@ -3352,6 +3393,15 @@ def _apply_transaction_record(
     note: str | None,
     created_at: str,
 ) -> None:
+    if isinstance(instrument_ref, dict):
+        _validate_instrument_ref_contract(
+            instrument_ref,
+            context=f"Transaction '{record.transaction_id}'",
+            expected_instrument_id=instrument_id,
+        )
+    elif instrument_id:
+        raise ValueError(f"Transaction '{record.transaction_id}' with instrument_id requires instrument_ref.")
+
     resolved_timing = resolve_trade_timing(trade_date=trade_date, trade_time=trade_time)
     record.transaction_type = transaction_type
     record.trade_date = trade_date

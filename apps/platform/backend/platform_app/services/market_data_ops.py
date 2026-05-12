@@ -678,8 +678,9 @@ def _import_rows_from_email_rules(
     full_history: bool,
 ) -> dict[str, object] | None:
     matched_rows: list[dict[str, object]] = []
-    matched_providers: list[str] = []
-    ordered_uids = pending_uids if full_history else list(reversed(pending_uids))
+    matched_provider_refs: list[str] = []
+    matched_attachment_names: list[str] = []
+    ordered_uids = pending_uids
 
     for rule in rules:
         parser_profile = str(rule.get("parser_profile") or "generic_nav_table")
@@ -688,8 +689,7 @@ def _import_rows_from_email_rules(
             rule=rule,
             fallback_uids=ordered_uids,
         )
-        candidate_uids = rule_uids if full_history else list(reversed(rule_uids))
-        for uid in candidate_uids:
+        for uid in rule_uids:
             header_bytes = _fetch_message_bytes(
                 mailbox,
                 uid,
@@ -726,38 +726,39 @@ def _import_rows_from_email_rules(
                 rows = _filter_rows_for_rule(rule=rule, rows=rows)
                 if not rows:
                     continue
-                if full_history:
-                    matched_rows.extend(rows)
-                    matched_providers.append(f"{uid}:{attachment_name}")
-                    break
-                return replace_nav_history(
-                    instrument_id=instrument_id,
-                    rows=rows,
-                    provider=f"email:{attachment_name}",
-                    point_status=_normalize_import_status(rows, "complete"),
-                    refresh_status="imported",
-                    updated_by=updated_by,
-                    message=f"Imported {len(rows)} NAV rows from email attachment {attachment_name}.",
-                    mode="email",
-                )
-
-    if not full_history:
-        return None
+                matched_rows.extend(rows)
+                matched_provider_refs.append(f"{uid}:{attachment_name}")
+                matched_attachment_names.append(attachment_name)
+                break
 
     merged_rows = _merge_rows_by_date(matched_rows)
     if not merged_rows:
         return None
+    if full_history:
+        provider = "email:history"
+        message = (
+            f"Imported {len(merged_rows)} NAV rows from {len(matched_provider_refs)} "
+            "email attachments."
+        )
+    else:
+        unique_attachment_names = list(dict.fromkeys(matched_attachment_names))
+        provider = (
+            f"email:{unique_attachment_names[0]}"
+            if len(unique_attachment_names) == 1
+            else "email:recent_window"
+        )
+        message = (
+            f"Imported {len(merged_rows)} NAV rows from {len(matched_provider_refs)} "
+            "recent email attachments."
+        )
     return replace_nav_history(
         instrument_id=instrument_id,
         rows=merged_rows,
-        provider="email:history",
+        provider=provider,
         point_status=_normalize_import_status(merged_rows, "complete"),
         refresh_status="imported",
         updated_by=updated_by,
-        message=(
-            f"Imported {len(merged_rows)} NAV rows from {len(matched_providers)} "
-            "email attachments."
-        ),
+        message=message,
         mode="email",
     )
 

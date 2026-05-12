@@ -43,14 +43,42 @@ CAPITAL_MODE_UNIT_NOTIONAL = "unit_notional"
 CAPITAL_MODE_FIXED_GROSS = "fixed_gross"
 CAPITAL_MODE_TARGET_VOLATILITY = "target_volatility"
 RESEARCH_COVARIANCE_MODEL_ID = "ewma_vol_shrinkage_corr_covariance"
-RESEARCH_COVARIANCE_PARAMETERS: dict[str, object] = {
-    "min_observations": 52,
-    "vol_decay": 0.97,
-    "corr_min_observations": 52,
-    "corr_shrinkage": 0.15,
+RESEARCH_COVARIANCE_FREQUENCY_PARAMETERS: dict[CalculationFrequency, dict[str, object]] = {
+    "daily": {
+        "min_observations": 52,
+        "vol_decay": 0.9945,
+        "corr_min_observations": 52,
+        "corr_shrinkage": 0.15,
+        "max_period_staleness_days": 0,
+    },
+    "weekly": {
+        "min_observations": 26,
+        "vol_decay": 0.9737,
+        "corr_min_observations": 26,
+        "corr_shrinkage": 0.15,
+        "max_period_staleness_days": 3,
+    },
+    "monthly": {
+        "min_observations": 12,
+        "vol_decay": 0.8909,
+        "corr_min_observations": 12,
+        "corr_shrinkage": 0.15,
+        "max_period_staleness_days": 7,
+    },
 }
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
-RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 0.05
+RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
+RESEARCH_COVARIANCE_PSD_TOLERANCE = 1e-10
+ABS_RC_SMOOTHING_EPS = 1e-12
+MISSING_RETURN_POLICY_STRICT = "strict"
+MISSING_RETURN_POLICY_COMPLETE_CASE_DROP = "complete_case_drop"
+RESEARCH_DEFAULT_MISSING_RETURN_POLICY = MISSING_RETURN_POLICY_STRICT
+RESEARCH_COMPLETE_CASE_DROP_MAX_MISSING_ROW_FRACTION = 0.10
+RESEARCH_COMPLETE_CASE_DROP_MAX_TRAILING_STALENESS_DAYS: dict[CalculationFrequency, int] = {
+    "daily": 5,
+    "weekly": 14,
+    "monthly": 62,
+}
 
 
 @dataclass(frozen=True)
@@ -123,6 +151,27 @@ class LocalRiskBudgetSolve:
     covariance_observations: int
     risk_contribution_mode: str | None
     message: str | None = None
+    missing_return_policy: str | None = None
+    return_rows_before_policy: int | None = None
+    return_rows_after_policy: int | None = None
+    missing_return_row_count: int | None = None
+    missing_return_row_fraction: float | None = None
+    dropped_return_rows: list[dict[str, object]] | None = None
+    latest_complete_return_date: str | None = None
+    trailing_complete_return_staleness_days: int | None = None
+
+
+@dataclass(frozen=True)
+class ReturnCoveragePolicyResult:
+    returns: pd.DataFrame
+    policy: str
+    rows_before: int
+    rows_after: int
+    missing_row_count: int
+    missing_row_fraction: float
+    dropped_rows: list[dict[str, object]]
+    latest_complete_date: date | None
+    trailing_staleness_days: int | None
 
 
 @dataclass(frozen=True)
@@ -245,7 +294,14 @@ def _selected_price_points(
         point_date = _parse_iso_date(raw_point.get("as_of_date"))
         point_value = _safe_float(raw_point.get("value"))
         quote_basis = str(raw_point.get("quote_basis") or "").strip()
-        if point_date is None or point_value is None or not quote_basis or point_date > end_date:
+        if (
+            point_date is None
+            or point_value is None
+            or not np.isfinite(point_value)
+            or point_value <= 0.0
+            or not quote_basis
+            or point_date > end_date
+        ):
             continue
         points_by_basis[quote_basis].append(
             (
@@ -384,22 +440,31 @@ def _annualized_portfolio_volatility(
     return_window: pd.DataFrame,
     weights: pd.Series,
     *,
+    as_of_date: date,
     lookback_days: int,
-) -> float | None:
+    calculation_frequency: CalculationFrequency,
+    missing_return_policy: str,
+) -> float:
     if return_window.empty or weights.empty:
-        return None
-    aligned = return_window.reindex(columns=weights.index, fill_value=0.0).dropna(how="all")
-    if aligned.shape[0] < 2:
-        return None
-    try:
-        covariance = _estimate_covariance(
-            aligned,
-            model_id=RESEARCH_COVARIANCE_MODEL_ID,
-            lookback_days=lookback_days,
-            parameters=RESEARCH_COVARIANCE_PARAMETERS,
+        raise ValueError("Target-volatility overlay requires non-empty aligned risky return history.")
+    missing_columns = [str(column) for column in weights.index if column not in return_window.columns]
+    if missing_columns:
+        raise ValueError(
+            "Target-volatility overlay is missing risky return columns: "
+            f"{', '.join(missing_columns[:8])}."
         )
-    except ValueError:
-        return None
+    aligned = return_window.reindex(columns=weights.index).dropna(how="all")
+    if aligned.shape[0] < 2:
+        raise ValueError("Target-volatility overlay requires at least two aligned risky return observations.")
+    covariance = _estimate_covariance(
+        aligned,
+        model_id=RESEARCH_COVARIANCE_MODEL_ID,
+        lookback_days=lookback_days,
+        parameters=_research_covariance_parameters(calculation_frequency),
+        missing_return_policy=missing_return_policy,
+        calculation_frequency=calculation_frequency,
+        as_of_date=as_of_date,
+    )
     ordered_weights = weights.reindex(covariance.index, fill_value=0.0).astype("float64")
     matrix = covariance.to_numpy(dtype="float64")
     vector = ordered_weights.to_numpy(dtype="float64")
@@ -425,6 +490,27 @@ def _allocate_cash_weights(
     if preferred_total > 1e-12:
         return preferred / preferred_total * clipped_total
     return pd.Series(clipped_total / float(len(cash_index)), index=cash_index, dtype="float64")
+
+
+def _research_covariance_parameters(calculation_frequency: CalculationFrequency) -> dict[str, object]:
+    try:
+        return dict(RESEARCH_COVARIANCE_FREQUENCY_PARAMETERS[calculation_frequency])
+    except KeyError as error:
+        raise ValueError(f"Unsupported calculation frequency: {calculation_frequency}.") from error
+
+
+def _normalize_missing_return_policy(value: object) -> str:
+    normalized = str(value or RESEARCH_DEFAULT_MISSING_RETURN_POLICY).strip().lower()
+    if normalized in {MISSING_RETURN_POLICY_STRICT, MISSING_RETURN_POLICY_COMPLETE_CASE_DROP}:
+        return normalized
+    raise ValueError(f"Unsupported missing-return policy: {value}.")
+
+
+def _max_complete_case_drop_staleness_days(calculation_frequency: CalculationFrequency) -> int:
+    try:
+        return RESEARCH_COMPLETE_CASE_DROP_MAX_TRAILING_STALENESS_DAYS[calculation_frequency]
+    except KeyError as error:
+        raise ValueError(f"Unsupported calculation frequency: {calculation_frequency}.") from error
 
 
 def _infer_periods_per_year(dates: list[date]) -> float:
@@ -458,23 +544,12 @@ def _index_dates(index: pd.Index) -> list[date]:
     return dates
 
 
-def _pair_periods_per_year(returns: pd.DataFrame, left_column: object, right_column: object) -> float:
-    if left_column not in returns.columns or right_column not in returns.columns:
-        return 1.0
-    pair = returns[[left_column, right_column]].dropna(how="any")
-    return _infer_periods_per_year(_index_dates(pair.index))
-
-
-def _annualize_pairwise_covariance(covariance: pd.DataFrame, returns: pd.DataFrame) -> pd.DataFrame:
+def _annualize_covariance(covariance: pd.DataFrame, returns: pd.DataFrame) -> pd.DataFrame:
     if covariance.empty:
         return covariance
     cleaned = _clean_return_frame(returns).reindex(columns=covariance.columns)
-    annualized = covariance.copy().astype("float64")
-    for row_label in covariance.index:
-        for column_label in covariance.columns:
-            factor = _pair_periods_per_year(cleaned, row_label, column_label)
-            annualized.loc[row_label, column_label] = float(covariance.loc[row_label, column_label]) * factor
-    return annualized
+    complete = cleaned.dropna(how="any")
+    return covariance.copy().astype("float64") * _infer_periods_per_year(_index_dates(complete.index))
 
 
 def _clean_return_frame(returns: pd.DataFrame) -> pd.DataFrame:
@@ -486,11 +561,43 @@ def _clean_return_frame(returns: pd.DataFrame) -> pd.DataFrame:
     return cleaned.astype("float64")
 
 
-def _select_return_window(
+def _format_index_sample(index: pd.Index, *, limit: int = 5) -> str:
+    rendered: list[str] = []
+    for item in index.tolist()[:limit]:
+        try:
+            rendered.append(pd.Timestamp(item).date().isoformat())
+        except (TypeError, ValueError):
+            rendered.append(str(item))
+    return ", ".join(rendered)
+
+
+def _validate_complete_return_coverage(
+    returns: pd.DataFrame,
+    *,
+    min_observations: int,
+    label: str,
+) -> None:
+    required = max(int(min_observations), 2)
+    if returns.empty:
+        raise ValueError(f"{label} requires non-empty aligned returns.")
+    missing_mask = returns.isna().any(axis=1)
+    if bool(missing_mask.any()):
+        missing_rows = returns.loc[missing_mask]
+        missing_dates = _format_index_sample(missing_rows.index)
+        raise ValueError(
+            f"{label} requires complete aligned return observations; "
+            f"missing return values were found on {missing_dates}."
+        )
+    if len(returns) < required:
+        raise ValueError(
+            f"{label} requires at least {required} complete aligned return observations; got {len(returns)}."
+        )
+
+
+def _return_window_for_lookback(
     returns: pd.DataFrame,
     *,
     lookback_days: int,
-    min_observations: int,
 ) -> pd.DataFrame:
     cleaned = _clean_return_frame(returns)
     if cleaned.empty:
@@ -498,40 +605,129 @@ def _select_return_window(
     end_date = max(cleaned.index)
     start_date = end_date - pd.Timedelta(days=max(int(lookback_days), 1))
     start_day = start_date.date() if hasattr(start_date, "date") else start_date
-    window = cleaned.loc[cleaned.index >= start_day].copy()
-    required = max(int(min_observations), 2)
-    if len(window) < required:
-        raise ValueError(
-            "Covariance estimation requires at least "
-            f"{required} return observations in the selected lookback window."
+    return cleaned.loc[cleaned.index >= start_day].copy()
+
+
+def _render_missing_return_rows(returns: pd.DataFrame) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    if returns.empty:
+        return rows
+    for index, row in returns.loc[returns.isna().any(axis=1)].iterrows():
+        rows.append(
+            {
+                "date": pd.Timestamp(index).date().isoformat(),
+                "missing_members": [str(column) for column, value in row.items() if pd.isna(value)],
+            }
         )
-    return window
+    return rows
 
 
-def _pair_observation_count(returns: pd.DataFrame, left_label: object, right_label: object) -> int:
-    pair_values = returns.loc[:, [left_label, right_label]].to_numpy(dtype="float64")
-    return int(np.isfinite(pair_values).all(axis=1).sum())
-
-
-def _validate_pairwise_return_coverage(
+def _apply_missing_return_policy(
     returns: pd.DataFrame,
     *,
     min_observations: int,
     label: str,
-) -> None:
+    missing_return_policy: str,
+    calculation_frequency: CalculationFrequency,
+    as_of_date: date | None,
+) -> ReturnCoveragePolicyResult:
+    policy = _normalize_missing_return_policy(missing_return_policy)
     required = max(int(min_observations), 2)
-    columns = list(returns.columns)
-    insufficient: list[str] = []
-    for row_index, row_label in enumerate(columns):
-        for column_label in columns[row_index:]:
-            count = _pair_observation_count(returns, row_label, column_label)
-            if count < required:
-                insufficient.append(f"{row_label}/{column_label}: {count}")
-    if insufficient:
-        raise ValueError(
-            f"{label} requires at least {required} overlapping observations for every active return pair. "
-            f"Insufficient pairs: {', '.join(insufficient[:8])}."
+    if returns.empty:
+        raise ValueError(f"{label} requires non-empty aligned returns.")
+
+    missing_mask = returns.isna().any(axis=1)
+    missing_count = int(missing_mask.sum())
+    missing_fraction = float(missing_count / max(len(returns), 1))
+    dropped_rows = _render_missing_return_rows(returns)
+
+    if policy == MISSING_RETURN_POLICY_STRICT:
+        _validate_complete_return_coverage(
+            returns,
+            min_observations=min_observations,
+            label=label,
         )
+        complete = returns.copy()
+    else:
+        complete = returns.loc[~missing_mask].copy()
+        if missing_count and missing_fraction > RESEARCH_COMPLETE_CASE_DROP_MAX_MISSING_ROW_FRACTION + 1e-12:
+            raise ValueError(
+                f"{label} complete-case drop would remove {missing_count} of {len(returns)} return rows "
+                f"({missing_fraction:.2%}), exceeding the "
+                f"{RESEARCH_COMPLETE_CASE_DROP_MAX_MISSING_ROW_FRACTION:.2%} limit. "
+                f"Missing rows: {_format_index_sample(returns.loc[missing_mask].index)}."
+            )
+        if len(complete) < required:
+            raise ValueError(
+                f"{label} complete-case drop requires at least {required} complete aligned return observations; "
+                f"got {len(complete)} after dropping {missing_count} rows."
+            )
+        if as_of_date is not None and len(complete):
+            latest_date = pd.Timestamp(max(complete.index)).date()
+            staleness_days = int((as_of_date - latest_date).days)
+            max_staleness_days = _max_complete_case_drop_staleness_days(calculation_frequency)
+            if staleness_days > max_staleness_days:
+                raise ValueError(
+                    f"{label} complete-case drop latest complete return observation is "
+                    f"{latest_date.isoformat()} ({staleness_days} days before {as_of_date.isoformat()}); "
+                    f"maximum allowed for {calculation_frequency} is {max_staleness_days} days."
+                )
+    if len(complete) < required:
+        raise ValueError(f"{label} requires at least {required} complete aligned return observations; got {len(complete)}.")
+
+    latest_complete_date = pd.Timestamp(max(complete.index)).date() if len(complete) else None
+    trailing_staleness_days = (
+        int((as_of_date - latest_complete_date).days)
+        if as_of_date is not None and latest_complete_date is not None
+        else None
+    )
+    return ReturnCoveragePolicyResult(
+        returns=complete.astype("float64"),
+        policy=policy,
+        rows_before=int(len(returns)),
+        rows_after=int(len(complete)),
+        missing_row_count=missing_count,
+        missing_row_fraction=missing_fraction,
+        dropped_rows=dropped_rows,
+        latest_complete_date=latest_complete_date,
+        trailing_staleness_days=trailing_staleness_days,
+    )
+
+
+def _prepare_return_window_for_covariance(
+    returns: pd.DataFrame,
+    *,
+    lookback_days: int,
+    min_observations: int,
+    label: str,
+    missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+    calculation_frequency: CalculationFrequency = "daily",
+    as_of_date: date | None = None,
+) -> ReturnCoveragePolicyResult:
+    window = _return_window_for_lookback(returns, lookback_days=lookback_days)
+    return _apply_missing_return_policy(
+        window,
+        min_observations=min_observations,
+        label=label,
+        missing_return_policy=missing_return_policy,
+        calculation_frequency=calculation_frequency,
+        as_of_date=as_of_date,
+    )
+
+
+def _select_return_window(
+    returns: pd.DataFrame,
+    *,
+    lookback_days: int,
+    min_observations: int,
+) -> pd.DataFrame:
+    window = _return_window_for_lookback(returns, lookback_days=lookback_days)
+    _validate_complete_return_coverage(
+        window,
+        min_observations=min_observations,
+        label="Covariance estimation",
+    )
+    return window
 
 
 def _apply_diagonal_shrinkage(covariance: pd.DataFrame, shrinkage: float) -> pd.DataFrame:
@@ -546,7 +742,7 @@ def _apply_diagonal_shrinkage(covariance: pd.DataFrame, shrinkage: float) -> pd.
 def _estimate_ewma_covariance(returns: pd.DataFrame, *, decay: float, min_observations: int) -> pd.DataFrame:
     if not 0.0 < decay < 1.0:
         raise ValueError("EWMA decay must be in (0, 1).")
-    _validate_pairwise_return_coverage(
+    _validate_complete_return_coverage(
         returns,
         min_observations=min_observations,
         label="EWMA covariance estimation",
@@ -574,22 +770,15 @@ def _estimate_ewma_covariance(returns: pd.DataFrame, *, decay: float, min_observ
     return pd.DataFrame(covariance, index=returns.columns, columns=returns.columns)
 
 
-def _estimate_pairwise_sample_covariance(returns: pd.DataFrame, *, min_observations: int) -> pd.DataFrame:
-    _validate_pairwise_return_coverage(
+def _estimate_sample_covariance(returns: pd.DataFrame, *, min_observations: int) -> pd.DataFrame:
+    _validate_complete_return_coverage(
         returns,
         min_observations=min_observations,
         label="Sample covariance estimation",
     )
     values = returns.to_numpy(dtype="float64")
-    covariance = np.zeros((values.shape[1], values.shape[1]), dtype="float64")
-    for row_index in range(values.shape[1]):
-        for column_index in range(row_index, values.shape[1]):
-            pair_values = values[:, [row_index, column_index]]
-            valid_values = pair_values[np.isfinite(pair_values).all(axis=1)]
-            centered = valid_values - valid_values.mean(axis=0, keepdims=True)
-            pair_covariance = float(np.sum(centered[:, 0] * centered[:, 1]) / float(len(valid_values) - 1))
-            covariance[row_index, column_index] = pair_covariance
-            covariance[column_index, row_index] = pair_covariance
+    centered = values - values.mean(axis=0, keepdims=True)
+    covariance = centered.T @ centered / float(len(values) - 1)
     return pd.DataFrame(covariance, index=returns.columns, columns=returns.columns)
 
 
@@ -617,34 +806,67 @@ def _estimate_ledoit_wolf_covariance(returns: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(covariance, index=returns.columns, columns=returns.columns)
 
 
+def _finalize_covariance(covariance: pd.DataFrame) -> pd.DataFrame:
+    matrix = covariance.to_numpy(dtype="float64")
+    if not np.isfinite(matrix).all():
+        raise ValueError("Covariance estimation produced non-finite values.")
+    matrix = 0.5 * (matrix + matrix.T)
+    if len(matrix):
+        eigenvalues, eigenvectors = np.linalg.eigh(matrix)
+        scale = max(float(np.max(np.abs(eigenvalues))), float(np.max(np.abs(np.diag(matrix)))), 1.0)
+        min_eigenvalue = float(eigenvalues.min())
+        if min_eigenvalue < -RESEARCH_COVARIANCE_PSD_TOLERANCE * scale:
+            raise ValueError(
+                "Covariance estimation produced a non-positive-semidefinite matrix; "
+                f"minimum eigenvalue is {min_eigenvalue:.6g}."
+            )
+        clipped = np.clip(eigenvalues, 1e-12, None)
+        matrix = (eigenvectors * clipped) @ eigenvectors.T
+        matrix = 0.5 * (matrix + matrix.T)
+    return pd.DataFrame(matrix, index=covariance.index, columns=covariance.columns)
+
+
 def _estimate_ewma_vol_shrinkage_corr_covariance(
     returns: pd.DataFrame,
     *,
     lookback_days: int,
     parameters: dict[str, object],
+    missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+    calculation_frequency: CalculationFrequency = "daily",
+    as_of_date: date | None = None,
 ) -> pd.DataFrame:
     vol_min_observations = int(parameters.get("min_observations", 2))
-    vol_window = _select_return_window(
+    vol_coverage = _prepare_return_window_for_covariance(
         returns,
         lookback_days=lookback_days,
         min_observations=vol_min_observations,
+        label="Volatility covariance estimation",
+        missing_return_policy=missing_return_policy,
+        calculation_frequency=calculation_frequency,
+        as_of_date=as_of_date,
     )
+    vol_window = vol_coverage.returns
     vol_decay = float(parameters.get("vol_decay", parameters.get("decay", 0.97)))
     ewma_covariance = _estimate_ewma_covariance(
         vol_window,
         decay=vol_decay,
         min_observations=vol_min_observations,
     )
-    annualized_ewma_covariance = _annualize_pairwise_covariance(ewma_covariance, vol_window)
+    annualized_ewma_covariance = _annualize_covariance(ewma_covariance, vol_window)
     ewma_vol = np.sqrt(np.maximum(np.diag(annualized_ewma_covariance.to_numpy(dtype="float64")), 1e-12))
 
     corr_min_observations = int(parameters.get("corr_min_observations", parameters.get("min_observations", 2)))
-    corr_window = _select_return_window(
+    corr_coverage = _prepare_return_window_for_covariance(
         returns,
         lookback_days=int(parameters.get("corr_lookback_days", lookback_days)),
         min_observations=corr_min_observations,
+        label="Correlation estimation",
+        missing_return_policy=missing_return_policy,
+        calculation_frequency=calculation_frequency,
+        as_of_date=as_of_date,
     )
-    _validate_pairwise_return_coverage(
+    corr_window = corr_coverage.returns
+    _validate_complete_return_coverage(
         corr_window,
         min_observations=corr_min_observations,
         label="Correlation estimation",
@@ -670,18 +892,26 @@ def _estimate_covariance(
     model_id: str,
     lookback_days: int,
     parameters: dict[str, object] | None = None,
+    missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+    calculation_frequency: CalculationFrequency = "daily",
+    as_of_date: date | None = None,
 ) -> pd.DataFrame:
     parameters = dict(parameters or {})
     min_observations = int(parameters.get("min_observations", 2))
     if model_id in {"sample_covariance", "simple_covariance", "lw_covariance", "lw", "ewma_covariance"}:
-        window = _select_return_window(
+        coverage = _prepare_return_window_for_covariance(
             returns,
             lookback_days=lookback_days,
             min_observations=min_observations,
+            label="Covariance estimation",
+            missing_return_policy=missing_return_policy,
+            calculation_frequency=calculation_frequency,
+            as_of_date=as_of_date,
         )
+        window = coverage.returns
     if model_id in {"sample_covariance", "simple_covariance"}:
-        covariance = _estimate_pairwise_sample_covariance(window, min_observations=min_observations)
-        covariance = _annualize_pairwise_covariance(covariance, window)
+        covariance = _estimate_sample_covariance(window, min_observations=min_observations)
+        covariance = _annualize_covariance(covariance, window)
     elif model_id in {"lw_covariance", "lw"}:
         covariance = _estimate_ledoit_wolf_covariance(window)
         covariance = covariance * _infer_periods_per_year(_index_dates(window.dropna(how="any").index))
@@ -691,12 +921,15 @@ def _estimate_covariance(
             decay=float(parameters.get("decay", 0.94)),
             min_observations=min_observations,
         )
-        covariance = _annualize_pairwise_covariance(covariance, window)
+        covariance = _annualize_covariance(covariance, window)
     elif model_id in {"ewma_vol_shrinkage_corr_covariance", "ewma_vol_corr_covariance"}:
         covariance = _estimate_ewma_vol_shrinkage_corr_covariance(
             returns,
             lookback_days=lookback_days,
             parameters=parameters,
+            missing_return_policy=missing_return_policy,
+            calculation_frequency=calculation_frequency,
+            as_of_date=as_of_date,
         )
     else:
         raise ValueError(f"Unsupported covariance model: {model_id}.")
@@ -705,16 +938,7 @@ def _estimate_covariance(
     if shrinkage:
         covariance = _apply_diagonal_shrinkage(covariance, shrinkage)
 
-    matrix = covariance.to_numpy(dtype="float64")
-    if not np.isfinite(matrix).all():
-        raise ValueError("Covariance estimation produced non-finite values.")
-    matrix = 0.5 * (matrix + matrix.T)
-    if len(matrix):
-        eigenvalues, eigenvectors = np.linalg.eigh(matrix)
-        clipped = np.clip(eigenvalues, 1e-12, None)
-        matrix = (eigenvectors * clipped) @ eigenvectors.T
-        matrix = 0.5 * (matrix + matrix.T)
-    return pd.DataFrame(matrix, index=covariance.index, columns=covariance.columns)
+    return _finalize_covariance(covariance)
 
 
 def _normalize_positive_vector(values: np.ndarray) -> np.ndarray:
@@ -737,12 +961,12 @@ def _risk_contribution_shares(
     if mode == "signed":
         contributions = signed
     elif mode == "abs":
-        contributions = np.abs(signed)
+        contributions = np.sqrt(np.square(signed) + ABS_RC_SMOOTHING_EPS)
     else:
         raise ValueError(f"Unsupported risk contribution mode: {contribution_mode}.")
     contribution_total = float(contributions.sum())
     if contribution_total <= 1e-12:
-        return np.full(len(weights), 1.0 / max(len(weights), 1), dtype="float64")
+        raise ValueError("Risk contribution requires positive aggregate portfolio variance.")
     shares = contributions / contribution_total
     if not np.isfinite(shares).all():
         raise ValueError("Risk contribution produced non-finite shares.")
@@ -1042,10 +1266,13 @@ def _solve_risk_budget_weights(
     target_shares: np.ndarray,
     return_window: pd.DataFrame,
     reference_weights: np.ndarray | None,
+    as_of_date: date,
     lookback_days: int,
+    calculation_frequency: CalculationFrequency,
+    missing_return_policy: str,
 ) -> LocalRiskBudgetSolve:
     count = len(target_shares)
-    cleaned_observation_count = int(len(_clean_return_frame(return_window)))
+    normalized_missing_return_policy = _normalize_missing_return_policy(missing_return_policy)
     if count == 1:
         return LocalRiskBudgetSolve(
             weights=np.asarray([1.0], dtype="float64"),
@@ -1055,13 +1282,27 @@ def _solve_risk_budget_weights(
             covariance_model=None,
             covariance_observations=0,
             risk_contribution_mode=None,
+            missing_return_policy=normalized_missing_return_policy,
         )
 
-    if cleaned_observation_count < 2:
+    cleaned_returns = _clean_return_frame(return_window)
+    complete_observation_count = int(len(cleaned_returns.dropna(how="any")))
+    if complete_observation_count < 2:
         raise ValueError(
             "Risk budget solve requires at least two aligned return observations; "
-            f"got {cleaned_observation_count}."
+            f"got {complete_observation_count}."
         )
+    covariance_parameters = _research_covariance_parameters(calculation_frequency)
+    coverage = _prepare_return_window_for_covariance(
+        return_window,
+        lookback_days=lookback_days,
+        min_observations=int(covariance_parameters.get("min_observations", 2)),
+        label="Risk budget solve",
+        missing_return_policy=normalized_missing_return_policy,
+        calculation_frequency=calculation_frequency,
+        as_of_date=as_of_date,
+    )
+    covariance_window = coverage.returns
 
     reference = (
         np.asarray(reference_weights, dtype="float64")
@@ -1071,10 +1312,13 @@ def _solve_risk_budget_weights(
     reference = _normalize_positive_vector(reference)
     target = _normalize_positive_vector(np.asarray(target_shares, dtype="float64"))
     covariance = _estimate_covariance(
-        return_window,
+        covariance_window,
         model_id=RESEARCH_COVARIANCE_MODEL_ID,
         lookback_days=lookback_days,
-        parameters=RESEARCH_COVARIANCE_PARAMETERS,
+        parameters=covariance_parameters,
+        missing_return_policy=MISSING_RETURN_POLICY_STRICT,
+        calculation_frequency=calculation_frequency,
+        as_of_date=as_of_date,
     )
     if covariance.shape != (count, count):
         raise ValueError("Risk covariance dimension does not match selected scope members.")
@@ -1095,14 +1339,26 @@ def _solve_risk_budget_weights(
         solver_kind="risk-budget",
         solver_detail=solution.solver_kind,
         covariance_model=RESEARCH_COVARIANCE_MODEL_ID,
-        covariance_observations=cleaned_observation_count,
+        covariance_observations=int(len(covariance_window)),
         risk_contribution_mode=solution.contribution_mode,
         message=solution.message,
+        missing_return_policy=coverage.policy,
+        return_rows_before_policy=coverage.rows_before,
+        return_rows_after_policy=coverage.rows_after,
+        missing_return_row_count=coverage.missing_row_count,
+        missing_return_row_fraction=coverage.missing_row_fraction,
+        dropped_return_rows=coverage.dropped_rows,
+        latest_complete_return_date=coverage.latest_complete_date.isoformat() if coverage.latest_complete_date else None,
+        trailing_complete_return_staleness_days=coverage.trailing_staleness_days,
     )
 
 
 def _series_observation_frequency(series: pd.Series) -> CalculationFrequency:
     return infer_observation_frequency(_index_dates(series.index))
+
+
+def _max_period_staleness_days(calculation_frequency: CalculationFrequency) -> int:
+    return int(_research_covariance_parameters(calculation_frequency).get("max_period_staleness_days", 0))
 
 
 def _periodic_nav_series(
@@ -1127,6 +1383,16 @@ def _periodic_nav_series(
         current = rows.get(target_date)
         if current is None or point_date >= current[0]:
             rows[target_date] = (point_date, point_value)
+    if calculation_frequency != "daily":
+        max_stale_days = _max_period_staleness_days(calculation_frequency)
+        for target_date, (point_date, _point_value) in rows.items():
+            stale_days = (target_date - point_date).days
+            if stale_days > max_stale_days:
+                raise ValueError(
+                    f"{calculation_frequency.title()} research alignment found a stale observation: "
+                    f"period ending {target_date.isoformat()} uses {point_date.isoformat()} "
+                    f"({stale_days} days old)."
+                )
     return pd.Series({target_date: value for target_date, (_point_date, value) in rows.items()}, dtype="float64").sort_index()
 
 
@@ -1462,16 +1728,13 @@ def _solver_return_window(
         return pd.DataFrame()
     start_date = as_of_date - pd.Timedelta(days=max(int(lookback_days), 1))
     start_day = start_date.date() if hasattr(start_date, "date") else start_date
-    try:
-        aligned_members, _calendar, _warnings = _align_member_series(
-            members,
-            nav_series_by_member,
-            start_date=start_day,
-            end_date=as_of_date,
-            calculation_frequency=calculation_frequency,
-        )
-    except ValueError:
-        return pd.DataFrame()
+    aligned_members, _calendar, _warnings = _align_member_series(
+        members,
+        nav_series_by_member,
+        start_date=start_day,
+        end_date=as_of_date,
+        calculation_frequency=calculation_frequency,
+    )
     frame = pd.DataFrame(
         {
             f"{member.member.member_type}::{member.member.member_id}": member.returns
@@ -1484,12 +1747,23 @@ def _solver_return_window(
 def _series_to_nav(return_series: pd.Series, *, as_of_date: date) -> pd.Series:
     if return_series.empty:
         return pd.Series({as_of_date: 1.0}, dtype="float64")
-    return (1.0 + return_series.astype("float64")).cumprod()
+    cleaned = return_series.astype("float64").replace([np.inf, -np.inf], np.nan).sort_index()
+    gross_returns = 1.0 + cleaned
+    if len(gross_returns) and pd.isna(gross_returns.iloc[0]):
+        gross_returns.iloc[0] = 1.0
+    return gross_returns.cumprod(skipna=False)
 
 
 def _weighted_complete_return_series(return_window: pd.DataFrame, weights: pd.Series) -> pd.Series:
     if return_window.empty or weights.empty:
         return pd.Series(dtype="float64")
+    missing_active_columns = [
+        str(column)
+        for column, weight in weights.items()
+        if abs(float(weight or 0.0)) > 1e-12 and column not in return_window.columns
+    ]
+    if missing_active_columns:
+        raise ValueError(f"Return window is missing active weighted columns: {', '.join(missing_active_columns[:5])}.")
     aligned_weights = weights.reindex(return_window.columns, fill_value=0.0).astype("float64")
     active_columns = [column for column in return_window.columns if abs(float(aligned_weights.get(column, 0.0))) > 1e-12]
     if not active_columns:
@@ -1512,43 +1786,47 @@ def _estimate_scope_risk_share_map(
     as_of_date: date,
     lookback_days: int,
     calculation_frequency: CalculationFrequency,
+    missing_return_policy: str,
     contribution_mode: str,
-) -> dict[str, float]:
+) -> tuple[dict[str, float], list[str]]:
     if not risk_keys:
-        return {}
+        return {}, []
     risky_weights = weights_by_key.reindex(risk_keys, fill_value=0.0).astype("float64")
     if float(np.abs(risky_weights.to_numpy(dtype="float64")).sum()) <= 1e-12:
-        return {key: 0.0 for key in risk_keys}
+        return {key: 0.0 for key in risk_keys}, []
     if len(risk_keys) == 1:
-        return {risk_keys[0]: 1.0}
+        return {risk_keys[0]: 1.0}, []
     member_by_key = {f"{member.member_type}::{member.member_id}": member for member in members}
     solver_members = [member_by_key[key] for key in risk_keys if key in member_by_key]
     if len(solver_members) != len(risk_keys):
-        return {}
-    return_window = _solver_return_window(
-        members=solver_members,
-        nav_series_by_member=nav_series_by_member,
-        as_of_date=as_of_date,
-        lookback_days=lookback_days,
-        calculation_frequency=calculation_frequency,
-    )
-    if return_window.empty:
-        return {}
+        return {}, ["Current risk-share estimate skipped because scope member keys could not be resolved."]
     try:
+        return_window = _solver_return_window(
+            members=solver_members,
+            nav_series_by_member=nav_series_by_member,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+            calculation_frequency=calculation_frequency,
+        )
+        if return_window.empty:
+            return {}, ["Current risk-share estimate skipped because aligned return history is empty."]
         covariance = _estimate_covariance(
             return_window.reindex(columns=risk_keys),
             model_id=RESEARCH_COVARIANCE_MODEL_ID,
             lookback_days=lookback_days,
-            parameters=RESEARCH_COVARIANCE_PARAMETERS,
+            parameters=_research_covariance_parameters(calculation_frequency),
+            missing_return_policy=missing_return_policy,
+            calculation_frequency=calculation_frequency,
+            as_of_date=as_of_date,
         )
         shares = _risk_contribution_shares(
             covariance.reindex(index=risk_keys, columns=risk_keys).to_numpy(dtype="float64"),
             risky_weights.to_numpy(dtype="float64"),
             contribution_mode=contribution_mode,
         )
-    except ValueError:
-        return {}
-    return {key: float(shares[index]) for index, key in enumerate(risk_keys)}
+    except ValueError as error:
+        return {}, [f"Current risk-share estimate skipped: {error}"]
+    return {key: float(shares[index]) for index, key in enumerate(risk_keys)}, []
 
 
 def _solve_current_scope(
@@ -1563,6 +1841,7 @@ def _solve_current_scope(
     gross_exposure: float | None,
     target_volatility: float | None,
     max_gross_exposure: float | None,
+    missing_return_policy: str,
     apply_capital_overlay: bool,
 ) -> ScopeTargetSolveResult:
     scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
@@ -1595,6 +1874,7 @@ def _solve_current_scope(
                 gross_exposure=gross_exposure,
                 target_volatility=target_volatility,
                 max_gross_exposure=max_gross_exposure,
+                missing_return_policy=missing_return_policy,
                 apply_capital_overlay=False,
             )
             child_results_by_key[member_key] = child_result
@@ -1711,7 +1991,10 @@ def _solve_current_scope(
                 target_shares=target_values.reindex(risk_keys, fill_value=0.0).to_numpy(dtype="float64"),
                 return_window=return_window,
                 reference_weights=reference.to_numpy(dtype="float64"),
+                as_of_date=as_of_date,
                 lookback_days=lookback_days,
+                calculation_frequency=calculation_frequency,
+                missing_return_policy=missing_return_policy,
             )
             solved_weights = risk_solve.weights
             risk_gap = risk_solve.max_abs_share_gap
@@ -1805,7 +2088,12 @@ def _solve_current_scope(
         if capital_mode == CAPITAL_MODE_FIXED_GROSS:
             effective_gross_exposure = float(gross_exposure or 1.0)
         elif capital_mode == CAPITAL_MODE_TARGET_VOLATILITY:
-            solver_members = [member_by_key[key] for key in non_cash_keys]
+            active_risky_weights = risky_weights.loc[risky_weights.abs() > 1e-12]
+            if active_risky_weights.empty:
+                raise ValueError(
+                    f"{scope_label} target-volatility overlay requires at least one non-zero risky-sleeve weight."
+                )
+            solver_members = [member_by_key[key] for key in active_risky_weights.index]
             return_window = _solver_return_window(
                 members=solver_members,
                 nav_series_by_member=nav_series_by_member,
@@ -1815,17 +2103,18 @@ def _solve_current_scope(
             )
             estimated_risk_sleeve_volatility = _annualized_portfolio_volatility(
                 return_window,
-                risky_weights,
+                active_risky_weights,
+                as_of_date=as_of_date,
                 lookback_days=lookback_days,
+                calculation_frequency=calculation_frequency,
+                missing_return_policy=missing_return_policy,
             )
             if estimated_risk_sleeve_volatility and estimated_risk_sleeve_volatility > 0 and target_volatility:
                 effective_gross_exposure = float(target_volatility) / float(estimated_risk_sleeve_volatility)
             else:
-                effective_gross_exposure = 1.0
-                if target_volatility:
-                    warnings.append(
-                        f"{scope_label} could not estimate risky-sleeve volatility on {as_of_date.isoformat()}, so capital overlay stayed at unit gross."
-                    )
+                raise ValueError(
+                    f"{scope_label} target-volatility overlay requires positive estimated risky-sleeve volatility."
+                )
             if max_gross_exposure is not None:
                 effective_gross_exposure = min(float(effective_gross_exposure), float(max_gross_exposure))
         if effective_gross_exposure is not None:
@@ -1841,8 +2130,8 @@ def _solve_current_scope(
             else:
                 residual_cash = 1.0 - float(implementation_weights.loc[non_cash_keys].sum())
                 if abs(residual_cash) > 1e-9:
-                    warnings.append(
-                        f"{scope_label} has no cash-like member, so {residual_cash:.2%} capital-overlay residual is implicit cash."
+                    raise ValueError(
+                        f"{scope_label} capital overlay leaves a {residual_cash:.2%} residual but the scope has no cash-like member."
                     )
 
     for row in resolved_rows:
@@ -1850,7 +2139,7 @@ def _solve_current_scope(
         row["implementation_weight"] = float(implementation_weights.get(member_key, 0.0))
 
     current_weights = pd.Series(current_actual_weight_by_key, dtype="float64").reindex(member_keys, fill_value=0.0)
-    current_risk_share_by_key = _estimate_scope_risk_share_map(
+    current_risk_share_by_key, current_risk_share_warnings = _estimate_scope_risk_share_map(
         members=members,
         nav_series_by_member=current_nav_series_by_member,
         risk_keys=non_cash_keys,
@@ -1858,8 +2147,10 @@ def _solve_current_scope(
         as_of_date=as_of_date,
         lookback_days=lookback_days,
         calculation_frequency=calculation_frequency,
+        missing_return_policy=missing_return_policy,
         contribution_mode=risk_solve.risk_contribution_mode or RESEARCH_RISK_CONTRIBUTION_MODE,
     )
+    warnings.extend(current_risk_share_warnings)
     for key in cash_like_keys:
         current_risk_share_by_key[key] = 0.0
     gap_turnover = float(0.5 * np.abs(implementation_weights - current_weights).sum())
@@ -1879,6 +2170,14 @@ def _solve_current_scope(
         "covariance_model": risk_solve.covariance_model,
         "covariance_observations": risk_solve.covariance_observations,
         "risk_contribution_mode": risk_solve.risk_contribution_mode,
+        "missing_return_policy": risk_solve.missing_return_policy or _normalize_missing_return_policy(missing_return_policy),
+        "return_rows_before_policy": risk_solve.return_rows_before_policy,
+        "return_rows_after_policy": risk_solve.return_rows_after_policy,
+        "missing_return_row_count": risk_solve.missing_return_row_count,
+        "missing_return_row_fraction": risk_solve.missing_return_row_fraction,
+        "dropped_return_rows": deepcopy(risk_solve.dropped_return_rows or []),
+        "latest_complete_return_date": risk_solve.latest_complete_return_date,
+        "trailing_complete_return_staleness_days": risk_solve.trailing_complete_return_staleness_days,
         "calculation_frequency": calculation_frequency,
         "gap_turnover": gap_turnover,
         "current_weight_total": float(current_weights.sum()),
@@ -1995,24 +2294,32 @@ def _solve_current_scope(
             }
         )
 
-    scope_return_window = _solver_return_window(
-        members=members,
-        nav_series_by_member=nav_series_by_member,
-        as_of_date=as_of_date,
-        lookback_days=lookback_days,
-        calculation_frequency=calculation_frequency,
-    )
+    try:
+        scope_return_window = _solver_return_window(
+            members=members,
+            nav_series_by_member=nav_series_by_member,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+            calculation_frequency=calculation_frequency,
+        )
+    except ValueError as error:
+        scope_return_window = pd.DataFrame()
+        warnings.append(f"{scope_label} target return series unavailable: {error}")
     if scope_return_window.empty:
         scope_returns = pd.Series(dtype="float64")
     else:
         scope_returns = _weighted_complete_return_series(scope_return_window, implementation_weights)
-    current_scope_return_window = _solver_return_window(
-        members=members,
-        nav_series_by_member=current_nav_series_by_member,
-        as_of_date=as_of_date,
-        lookback_days=lookback_days,
-        calculation_frequency=calculation_frequency,
-    )
+    try:
+        current_scope_return_window = _solver_return_window(
+            members=members,
+            nav_series_by_member=current_nav_series_by_member,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+            calculation_frequency=calculation_frequency,
+        )
+    except ValueError as error:
+        current_scope_return_window = pd.DataFrame()
+        warnings.append(f"{scope_label} current return series unavailable: {error}")
     if current_scope_return_window.empty:
         current_scope_returns = pd.Series(dtype="float64")
     else:
@@ -2418,7 +2725,8 @@ def solve_current_target_weights(
     gross_exposure: float | None,
     target_volatility: float | None,
     max_gross_exposure: float | None,
-    frozen_taxonomy_node_ids: list[str] | None,
+    missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+    frozen_taxonomy_node_ids: list[str] | None = None,
 ) -> dict[str, object]:
     state = _build_taxonomy_state(
         portfolio_id,
@@ -2453,6 +2761,7 @@ def solve_current_target_weights(
         gross_exposure=gross_exposure,
         target_volatility=target_volatility,
         max_gross_exposure=max_gross_exposure,
+        missing_return_policy=_normalize_missing_return_policy(missing_return_policy),
         apply_capital_overlay=comparator_taxonomy_node_id is None,
     )
     actual_rows, actual_warnings = _current_scope_actuals(

@@ -585,6 +585,21 @@ def test_explicit_performance_period_uses_beginning_nav_boundary(client, monkeyp
     assert isclose(calculation_summary["delta"], 20.0, rel_tol=0.0, abs_tol=1e-12)
 
 
+def test_period_calculation_clamps_future_end_date_to_portfolio_as_of(client):
+    response = client.get(
+        "/api/portfolios/yungu/performance/calculation?start_date=2026-04-12&end_date=2026-05-11"
+    )
+    assert response.status_code == 200
+    assert response.json()["summary"]["end_date"] == "2026-04-15"
+
+    groups_response = client.get(
+        "/api/portfolios/yungu/performance/calculation/groups"
+        "?axis=instrument&start_date=2026-04-12&end_date=2026-05-11"
+    )
+    assert groups_response.status_code == 200
+    assert groups_response.json()["summary"]["end_date"] == "2026-04-15"
+
+
 def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
@@ -1704,9 +1719,9 @@ def test_period_boundary_holdings_report_returns_start_and_end_positions(client,
                 "settlement_cash_account_id": "cash-usd-main",
                 "instrument_id": "equity-us-test",
                 "instrument_ref": {
-                    "asset_id": "equity-us-test",
-                    "asset_name": "Test Equity",
-                    "asset_type": "equity",
+                    "instrument_id": "equity-us-test",
+                    "instrument_name": "Test Equity",
+                    "instrument_type": "equity",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },

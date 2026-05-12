@@ -18,14 +18,17 @@ import {
   getPortfolioInstrumentPriceChart,
   getPortfolioInstruments,
   getPortfolioPerformance,
+  getPortfolioPerformanceCalculationGroups,
   getPortfolioPerformanceContribution,
   getPortfolioTaxonomyCatalog,
   type HoldingsWorkspaceResponse,
   type PortfolioAccountsWorkspaceResponse,
   type PortfolioInstrumentPriceChartResponse,
+  type PortfolioPerformanceCalculationGroupsResponse,
   type PortfolioContributionReportResponse,
   type PortfolioDailyPerformancePoint,
   type PortfolioPerformanceResponse,
+  type PortfolioPerformanceCoverageState,
   type PortfolioTaxonomyCatalogResponse,
   type PortfolioTaxonomyNodeRecord,
   type PortfolioTargetSetLineRecord,
@@ -66,6 +69,7 @@ type ReturnPoint = {
 }
 
 type PortfolioTaxonomyRecord = PortfolioTaxonomyCatalogResponse['taxonomies'][number]
+type PortfolioTaxonomyAssignmentRecord = PortfolioTaxonomyCatalogResponse['taxonomy_assignments'][number]
 type ContributionSlice = PortfolioContributionReportResponse['daily_slices'][number]
 
 type ReturnSlice = Pick<
@@ -73,6 +77,8 @@ type ReturnSlice = Pick<
   | 'as_of_date'
   | 'group_key'
   | 'group_label'
+  | 'coverage_state'
+  | 'market_observation_count'
   | 'return_observation_eligible'
   | 'beginning_value_base'
   | 'ending_value_base'
@@ -125,6 +131,19 @@ type RiskContributionRow = {
   riskShare: number | null
   contributionToVariance: number | null
   observationCount: number
+}
+
+type RiskCalculationResult<T> = {
+  value: T
+  errors: string[]
+}
+
+function riskOk<T>(value: T): RiskCalculationResult<T> {
+  return { value, errors: [] }
+}
+
+function riskFail<T>(errors: string | string[], value: T): RiskCalculationResult<T> {
+  return { value, errors: Array.isArray(errors) ? errors : [errors] }
 }
 
 const RISK_WINDOW_OPTIONS = [
@@ -203,79 +222,30 @@ const CALCULATION_FREQUENCY_LABELS: Record<CalculationFrequency, string> = {
   monthly: 'Monthly',
 }
 
-const CALCULATION_FREQUENCY_RANK: Record<CalculationFrequency, number> = {
-  daily: 0,
-  weekly: 1,
-  monthly: 2,
+function isCalculationFrequency(value: string | null | undefined): value is CalculationFrequency {
+  return value === 'daily' || value === 'weekly' || value === 'monthly'
 }
 
-function inferObservationFrequency(dateKeys: string[]): CalculationFrequency {
-  const sortedDates = [...new Set(dateKeys)].sort()
-  if (sortedDates.length < 2) {
-    return 'daily'
+function riskFrequencyProfileFromCalculationGroups(
+  calculationGroups: PortfolioPerformanceCalculationGroupsResponse | null,
+): RiskCalculationResult<RiskFrequencyProfile> {
+  const unavailableProfile = {
+    frequency: 'daily',
+    statusLabel: 'Risk basis unavailable',
+  } satisfies RiskFrequencyProfile
+  if (!calculationGroups) {
+    return riskFail('Risk basis requires the performance calculation-groups response.', unavailableProfile)
   }
-  const gaps = sortedDates
-    .slice(1)
-    .map((dateKey, index) => dayDiff(sortedDates[index], dateKey))
-    .filter((value): value is number => value != null && value > 0)
-  if (!gaps.length) {
-    return 'daily'
+  const frequency = calculationGroups.summary.risk_calculation_frequency
+  if (!isCalculationFrequency(frequency)) {
+    return riskFail(`Risk basis response has invalid calculation frequency: ${frequency || 'missing'}.`, unavailableProfile)
   }
-  const sortedGaps = [...gaps].sort((left, right) => left - right)
-  const medianGap = sortedGaps[Math.floor(sortedGaps.length / 2)]
-  const dailyLikeCount = gaps.filter((gap) => gap <= 3).length
-  const weeklyLikeCount = gaps.filter((gap) => gap >= 4 && gap <= 10).length
-  const monthlyLikeCount = gaps.filter((gap) => gap >= 18 && gap <= 45).length
-
-  if (gaps.length < 5) {
-    if (dailyLikeCount) {
-      return 'daily'
-    }
-    if (weeklyLikeCount === gaps.length) {
-      return 'weekly'
-    }
-    if (monthlyLikeCount === gaps.length) {
-      return 'monthly'
-    }
-    return 'daily'
-  }
-
-  if (medianGap <= 3) {
-    return 'daily'
-  }
-  if (medianGap <= 10) {
-    return 'weekly'
-  }
-  if (dailyLikeCount && monthlyLikeCount < gaps.length * 0.6) {
-    return 'daily'
-  }
-  return 'monthly'
-}
-
-function defaultCalculationFrequency(series: GroupReturnSeries[]): CalculationFrequency {
-  return series
-    .map((item) => inferObservationFrequency([...item.returnsByDate.keys()]))
-    .reduce<CalculationFrequency>(
-      (current, next) =>
-        CALCULATION_FREQUENCY_RANK[next] > CALCULATION_FREQUENCY_RANK[current] ? next : current,
-      'daily',
-    )
-}
-
-function riskFrequencyProfile(series: GroupReturnSeries[]): RiskFrequencyProfile {
-  const frequency = defaultCalculationFrequency(series)
-  const frequencies = series.map((item) => inferObservationFrequency([...item.returnsByDate.keys()]))
-  const unique = new Set(frequencies)
-  const mixLabel =
-    unique.size > 1
-      ? unique.has('daily') && unique.has('weekly') && !unique.has('monthly')
-        ? 'mixed daily/weekly data'
-        : 'mixed frequencies'
-      : `${CALCULATION_FREQUENCY_LABELS[frequency].toLowerCase()} data`
-  return {
+  return riskOk({
     frequency,
-    statusLabel: `${CALCULATION_FREQUENCY_LABELS[frequency]} risk basis - ${mixLabel}`,
-  }
+    statusLabel:
+      calculationGroups.summary.risk_frequency_status_label ||
+      `${CALCULATION_FREQUENCY_LABELS[frequency]} risk basis`,
+  } satisfies RiskFrequencyProfile)
 }
 
 function periodEndKey(dateKey: string, frequency: CalculationFrequency, finalDate: string) {
@@ -387,6 +357,27 @@ function annualizedMeanReturn(values: number[], periodsPerYear: number | null) {
     return null
   }
   return (values.reduce((total, value) => total + value, 0) / values.length) * periodsPerYear
+}
+
+function sqrtNonNegative(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value) || value < -1e-12) {
+    return null
+  }
+  return Math.sqrt(value < 0 ? 0 : value)
+}
+
+function mergeCoverageState(states: PortfolioPerformanceCoverageState[]) {
+  const normalizedStates = states.filter(Boolean)
+  if (!normalizedStates.length) {
+    return 'unavailable' satisfies PortfolioPerformanceCoverageState
+  }
+  if (normalizedStates.every((state) => state === 'complete')) {
+    return 'complete' satisfies PortfolioPerformanceCoverageState
+  }
+  if (normalizedStates.some((state) => state === 'complete' || state === 'partial')) {
+    return 'partial' satisfies PortfolioPerformanceCoverageState
+  }
+  return 'unavailable' satisfies PortfolioPerformanceCoverageState
 }
 
 function windowLabel(lookbackDays: number) {
@@ -603,7 +594,10 @@ function estimateWindowRisk(returnPoints: ReturnPoint[], asOfDate: string, lookb
   if (variance == null || periodsPerYear == null) {
     return { volatility: null, sharpe: null, observationCount: values.length }
   }
-  const volatility = Math.sqrt(Math.max(variance, 0))
+  const volatility = sqrtNonNegative(variance)
+  if (volatility == null) {
+    return { volatility: null, sharpe: null, observationCount: values.length }
+  }
   const annualizedMean = annualizedMeanReturn(values, periodsPerYear)
   return {
     volatility,
@@ -671,8 +665,13 @@ function covarianceCell(
     if (leftVariance == null || rightVariance == null || correlation == null) {
       return { value: null, observationCount: pairs.length }
     }
+    const leftVolatility = sqrtNonNegative(leftVariance)
+    const rightVolatility = sqrtNonNegative(rightVariance)
+    if (leftVolatility == null || rightVolatility == null) {
+      return { value: null, observationCount: pairs.length }
+    }
     return {
-      value: correlation * Math.sqrt(Math.max(leftVariance, 0)) * Math.sqrt(Math.max(rightVariance, 0)),
+      value: correlation * leftVolatility * rightVolatility,
       observationCount: pairs.length,
     }
   }
@@ -700,7 +699,7 @@ function correlationCell(
     return { value: null, observationCount: pairs.length }
   }
   return {
-    value: Math.max(-1, Math.min(1, correlation)),
+    value: correlation,
     observationCount: pairs.length,
   }
 }
@@ -838,25 +837,38 @@ function buildRiskContributionRows(
   settings: RiskSettingsState,
 ) {
   if (!asOfDate) {
-    return [] satisfies RiskContributionRow[]
+    return riskFail('Risk contribution requires an as-of date.', [] satisfies RiskContributionRow[])
   }
-  const activeSeries = series
+  const weightedSeries = series
     .map((item) => ({
       item,
       weight: weightAtOrBefore(item, asOfDate),
       observationCount: returnObservationCount(item, asOfDate, settings.lookbackDays),
     }))
-    .filter((item) => item.observationCount >= 2 && Math.abs(item.weight ?? 0) > 1e-9)
+    .filter((item) => Math.abs(item.weight ?? 0) > 1e-9)
+  const insufficientSeries = weightedSeries.filter((item) => item.observationCount < 2)
+  if (insufficientSeries.length) {
+    return riskFail(
+      `Risk contribution requires at least two return observations for every active weighted group; insufficient: ${insufficientSeries
+        .map(({ item, observationCount }) => `${item.groupLabel} (${observationCount})`)
+        .join(', ')}.`,
+      [] satisfies RiskContributionRow[],
+    )
+  }
+  const activeSeries = weightedSeries
   const grossWeight = activeSeries.reduce((total, item) => total + Math.abs(item.weight ?? 0), 0)
   if (!activeSeries.length || grossWeight <= 1e-12) {
-    return [] satisfies RiskContributionRow[]
+    return riskFail(
+      'Risk contribution requires at least one active weighted group with valid point-in-time weight.',
+      [] satisfies RiskContributionRow[],
+    )
   }
 
+  const weights = activeSeries.map((item) => (item.weight ?? 0) / grossWeight)
   const firstActiveSeries = activeSeries[0]
   if (!firstActiveSeries) {
-    return [] satisfies RiskContributionRow[]
+    return riskFail('Risk contribution requires at least one active weighted group.', [] satisfies RiskContributionRow[])
   }
-  const weights = activeSeries.map((item) => (item.weight ?? 0) / grossWeight)
   const startDate = riskWindowStart(asOfDate, settings.lookbackDays)
   const commonDates = [...firstActiveSeries.item.returnsByDate.keys()]
     .filter((dateKey) => dateKey >= startDate && dateKey <= asOfDate)
@@ -868,7 +880,10 @@ function buildRiskContributionRows(
     )
     .sort()
   if (commonDates.length < 2) {
-    return [] satisfies RiskContributionRow[]
+    return riskFail(
+      `Risk contribution requires at least two common return dates across all active weighted groups; got ${commonDates.length}.`,
+      [] satisfies RiskContributionRow[],
+    )
   }
   const valuesByGroup = new Map(
     activeSeries.map((series) => [
@@ -880,11 +895,20 @@ function buildRiskContributionRows(
   for (const rowSeries of activeSeries) {
     const covarianceRow: number[] = []
     for (const columnSeries of activeSeries) {
-      const leftValues = valuesByGroup.get(rowSeries.item.groupKey) ?? []
-      const rightValues = valuesByGroup.get(columnSeries.item.groupKey) ?? []
+      const leftValues = valuesByGroup.get(rowSeries.item.groupKey)
+      const rightValues = valuesByGroup.get(columnSeries.item.groupKey)
+      if (!leftValues || !rightValues) {
+        return riskFail(
+          `Risk contribution internal return lookup failed for ${rowSeries.item.groupLabel} x ${columnSeries.item.groupLabel}.`,
+          [] satisfies RiskContributionRow[],
+        )
+      }
       const covarianceValue = annualizedCovarianceFromValues(leftValues, rightValues, commonDates, settings.modelId)
       if (covarianceValue == null || !Number.isFinite(covarianceValue)) {
-        return [] satisfies RiskContributionRow[]
+        return riskFail(
+          `Risk contribution covariance failed for ${rowSeries.item.groupLabel} x ${columnSeries.item.groupLabel}.`,
+          [] satisfies RiskContributionRow[],
+        )
       }
       covarianceRow.push(covarianceValue)
     }
@@ -894,33 +918,49 @@ function buildRiskContributionRows(
     row.reduce((total, covarianceValue, columnIndex) => total + covarianceValue * weights[columnIndex], 0),
   )
   const variance = weights.reduce((total, weight, index) => total + weight * marginal[index], 0)
+  if (!Number.isFinite(variance) || variance <= 1e-12) {
+    return riskFail(
+      `Risk contribution requires positive finite portfolio variance; got ${Number.isFinite(variance) ? formatNumber(variance, 6) : 'non-finite'}.`,
+      [] satisfies RiskContributionRow[],
+    )
+  }
   const signedContributions = activeSeries.map((_, index) => weights[index] * marginal[index])
   const absoluteContributionTotal = signedContributions.reduce((total, contribution) => total + Math.abs(contribution), 0)
+  if (settings.contributionMode === 'abs' && absoluteContributionTotal <= 1e-12) {
+    return riskFail(
+      'Absolute risk contribution requires a positive aggregate absolute contribution.',
+      [] satisfies RiskContributionRow[],
+    )
+  }
+  const invalidOwnVariance = activeSeries.find(({ item }, index) => sqrtNonNegative(covarianceMatrix[index]?.[index]) == null)
+  if (invalidOwnVariance) {
+    return riskFail(
+      `Risk contribution produced invalid own variance for ${invalidOwnVariance.item.groupLabel}.`,
+      [] satisfies RiskContributionRow[],
+    )
+  }
 
-  return activeSeries
+  const rows = activeSeries
     .map(({ item }, index) => {
-      const ownValues = valuesByGroup.get(item.groupKey) ?? []
-      const ownVariance = annualizedVarianceFromValues(ownValues, commonDates, settings.modelId)
+      const ownVariance = covarianceMatrix[index]?.[index] ?? null
+      const ownVolatility = sqrtNonNegative(ownVariance) as number
       const contributionToVariance = signedContributions[index]
       const riskShare =
         settings.contributionMode === 'abs'
-          ? absoluteContributionTotal > 1e-12
-            ? Math.abs(contributionToVariance) / absoluteContributionTotal
-            : null
-          : variance > 1e-12
-            ? contributionToVariance / variance
-            : null
+          ? Math.abs(contributionToVariance) / absoluteContributionTotal
+          : contributionToVariance / variance
       return {
         groupKey: item.groupKey,
         groupLabel: item.groupLabel,
         weight: weights[index],
-        annualizedVolatility: ownVariance != null ? Math.sqrt(Math.max(ownVariance, 0)) : null,
+        annualizedVolatility: ownVolatility,
         riskShare,
         contributionToVariance,
         observationCount: commonDates.length,
       } satisfies RiskContributionRow
     })
     .sort((left, right) => Math.abs(right.riskShare ?? 0) - Math.abs(left.riskShare ?? 0))
+  return riskOk(rows)
 }
 
 function buildNodeLookup(catalog: PortfolioTaxonomyCatalogResponse | null, taxonomyId: string | null | undefined) {
@@ -956,13 +996,13 @@ function isRecordActive(effectiveFrom?: string | null, effectiveTo?: string | nu
   return true
 }
 
-function findActiveAssignment(
+function resolveActiveAssignment(
   catalog: PortfolioTaxonomyCatalogResponse | null,
   taxonomyId: string,
   targetScope: TaxonomyAssignmentScope,
   entityId: string,
   referenceDate: string,
-) {
+): { assignment: PortfolioTaxonomyAssignmentRecord | null; error: string | null } {
   const matches = (catalog?.taxonomy_assignments ?? [])
     .filter(
       (assignment) =>
@@ -979,7 +1019,13 @@ function findActiveAssignment(
         right.assignment_id.localeCompare(left.assignment_id),
     )
 
-  return matches.length === 1 ? matches[0] : null
+  if (matches.length > 1) {
+    return {
+      assignment: null,
+      error: `Multiple active taxonomy assignments found for ${targetScope} ${entityId} in taxonomy ${taxonomyId} on ${referenceDate}.`,
+    }
+  }
+  return { assignment: matches[0] ?? null, error: null }
 }
 
 function resolveScopedTaxonomyNode(
@@ -1012,10 +1058,11 @@ function buildScopedTaxonomySlices(
   scopeNodeId = '',
 ) {
   if (!catalog || !taxonomy || taxonomy.primary_assignment_scope !== 'instrument') {
-    return []
+    return riskOk([] satisfies ReturnSlice[])
   }
 
   const nodeById = buildNodeLookup(catalog, taxonomy.taxonomy_id)
+  const errors: string[] = []
   const grouped = new Map<
     string,
     {
@@ -1028,24 +1075,57 @@ function buildScopedTaxonomySlices(
       ending_weight: number | null
       total_pnl: number | null
       daily_contribution: number | null
+      coverage_state: PortfolioPerformanceCoverageState
+      market_observation_count: number
       return_observation_eligible: boolean
     }
   >()
-  const eligibilityByGroup = new Map<string, boolean[]>()
+  const coverageStatesByGroup = new Map<string, PortfolioPerformanceCoverageState[]>()
 
   slices.forEach((slice) => {
-    const assignment = findActiveAssignment(
+    const assignmentResult = resolveActiveAssignment(
       catalog,
       taxonomy.taxonomy_id,
       'instrument',
       slice.group_key,
       slice.as_of_date,
     )
+    if (assignmentResult.error) {
+      errors.push(assignmentResult.error)
+      return
+    }
+    const assignment = assignmentResult.assignment
     const scopedNode = resolveScopedTaxonomyNode(assignment?.taxonomy_node_id, nodeById, scopeNodeId)
     if (!scopedNode) {
       if (scopeNodeId) {
         return
       }
+    }
+    const beginningValue = finiteNumber(slice.beginning_value_base)
+    const endingValue = finiteNumber(slice.ending_value_base)
+    const beginningWeight = finiteNumber(slice.beginning_weight)
+    const endingWeight = finiteNumber(slice.ending_weight)
+    const totalPnl = finiteNumber(slice.total_pnl)
+    const dailyContribution = finiteNumber(slice.daily_contribution)
+    const marketObservationCount = finiteNumber(slice.market_observation_count)
+    if (
+      beginningValue == null ||
+      endingValue == null ||
+      beginningWeight == null ||
+      endingWeight == null ||
+      totalPnl == null ||
+      dailyContribution == null ||
+      marketObservationCount == null ||
+      marketObservationCount < 0
+    ) {
+      errors.push(
+        `Taxonomy risk aggregation has incomplete numeric contribution data for ${slice.group_label || slice.group_key} on ${slice.as_of_date}.`,
+      )
+      return
+    }
+    if (!slice.coverage_state) {
+      errors.push(`Taxonomy risk aggregation is missing coverage state for ${slice.group_label || slice.group_key} on ${slice.as_of_date}.`)
+      return
     }
     const groupKey = scopedNode?.taxonomy_node_id ?? `unassigned:${taxonomy.taxonomy_id}`
     const groupLabel = scopedNode?.node_name ?? 'Unassigned'
@@ -1060,41 +1140,58 @@ function buildScopedTaxonomySlices(
       ending_weight: 0,
       total_pnl: 0,
       daily_contribution: 0,
+      coverage_state: 'complete',
+      market_observation_count: 0,
       return_observation_eligible: false,
     }
 
-    current.beginning_value_base = addMeasure(current.beginning_value_base, finiteNumber(slice.beginning_value_base))
-    current.ending_value_base = addMeasure(current.ending_value_base, finiteNumber(slice.ending_value_base))
-    current.beginning_weight = addMeasure(current.beginning_weight, finiteNumber(slice.beginning_weight))
-    current.ending_weight = addMeasure(current.ending_weight, finiteNumber(slice.ending_weight))
-    current.total_pnl = addMeasure(current.total_pnl, finiteNumber(slice.total_pnl))
-    current.daily_contribution = addMeasure(current.daily_contribution, finiteNumber(slice.daily_contribution))
-    const eligibility = eligibilityByGroup.get(aggregateKey) ?? []
-    eligibility.push(Boolean(slice.return_observation_eligible))
-    eligibilityByGroup.set(aggregateKey, eligibility)
+    current.beginning_value_base = addMeasure(current.beginning_value_base, beginningValue)
+    current.ending_value_base = addMeasure(current.ending_value_base, endingValue)
+    current.beginning_weight = addMeasure(current.beginning_weight, beginningWeight)
+    current.ending_weight = addMeasure(current.ending_weight, endingWeight)
+    current.total_pnl = addMeasure(current.total_pnl, totalPnl)
+    current.daily_contribution = addMeasure(current.daily_contribution, dailyContribution)
+    current.market_observation_count += marketObservationCount
+    const coverageStates = coverageStatesByGroup.get(aggregateKey) ?? []
+    coverageStates.push(slice.coverage_state)
+    coverageStatesByGroup.set(aggregateKey, coverageStates)
     grouped.set(aggregateKey, current)
   })
 
-  return [...grouped.values()].map((slice) => {
+  if (errors.length) {
+    return riskFail(errors, [] satisfies ReturnSlice[])
+  }
+  const missingCoverageState = [...grouped.values()].find(
+    (slice) => !(coverageStatesByGroup.get(`${slice.as_of_date}:${slice.group_key}`) ?? []).length,
+  )
+  if (missingCoverageState) {
+    return riskFail(
+      `Taxonomy risk aggregation lost coverage state for ${missingCoverageState.group_label} on ${missingCoverageState.as_of_date}.`,
+      [] satisfies ReturnSlice[],
+    )
+  }
+
+  const groupedSlices = [...grouped.values()].map((slice) => {
     const dailyReturn =
       slice.total_pnl != null && slice.beginning_value_base != null && slice.beginning_value_base > 1e-9
         ? slice.total_pnl / slice.beginning_value_base
         : null
-    const eligibility = eligibilityByGroup.get(`${slice.as_of_date}:${slice.group_key}`) ?? []
+    const coverageState = mergeCoverageState(coverageStatesByGroup.get(`${slice.as_of_date}:${slice.group_key}`) as PortfolioPerformanceCoverageState[])
     return {
       ...slice,
+      coverage_state: coverageState,
       daily_return: dailyReturn,
-      return_observation_eligible: dailyReturn != null && eligibility.length > 0 && eligibility.every(Boolean),
+      return_observation_eligible:
+        dailyReturn != null &&
+        coverageState === 'complete' &&
+        (slice.market_observation_count > 0 || Math.abs(dailyReturn) > 1e-12),
     }
   }) satisfies ReturnSlice[]
+  return riskOk(groupedSlices)
 }
 
 function accountValueBase(accountRow: PortfolioAccountsWorkspaceResponse['accounts'][number]) {
-  const explicitValue = finiteNumber(accountRow.account_value_base)
-  if (explicitValue != null) {
-    return explicitValue
-  }
-  return (finiteNumber(accountRow.derived_cash_balance_base) ?? 0) + (finiteNumber(accountRow.position_market_value) ?? 0)
+  return finiteNumber(accountRow.account_value_base)
 }
 
 function buildCurrentPlanningGroups({
@@ -1111,13 +1208,14 @@ function buildCurrentPlanningGroups({
   referenceDate: string | null
 }) {
   if (!holdingsWorkspace || !catalog || !taxonomy || !referenceDate) {
-    return []
+    return riskOk([] satisfies CurrentPlanningGroup[])
   }
 
   const taxonomyId = taxonomy.taxonomy_id
   const currentReferenceDate = referenceDate
   const nodeById = buildNodeLookup(catalog, taxonomyId)
   const groups = new Map<string, CurrentPlanningGroup>()
+  const errors: string[] = []
 
   function addEntity({
     targetScope,
@@ -1132,7 +1230,12 @@ function buildCurrentPlanningGroups({
     weightInput: number | null
     cashLike: boolean
   }) {
-    const assignment = findActiveAssignment(catalog, taxonomyId, targetScope, entityId, currentReferenceDate)
+    const assignmentResult = resolveActiveAssignment(catalog, taxonomyId, targetScope, entityId, currentReferenceDate)
+    if (assignmentResult.error) {
+      errors.push(assignmentResult.error)
+      return
+    }
+    const assignment = assignmentResult.assignment
     const topLevelNode = resolveScopedTaxonomyNode(assignment?.taxonomy_node_id, nodeById, '')
     const groupKey = topLevelNode?.taxonomy_node_id ?? `unassigned:${taxonomyId}`
     const label = topLevelNode?.node_name ?? 'Unassigned'
@@ -1159,29 +1262,58 @@ function buildCurrentPlanningGroups({
   }
 
   if (taxonomy.primary_assignment_scope === 'instrument') {
-    const accountRows = accountsWorkspace?.accounts ?? []
+    if (!accountsWorkspace) {
+      return riskFail(
+        'Current drift requires the accounts workspace so cash and pending settlement are included in portfolio NAV.',
+        [] satisfies CurrentPlanningGroup[],
+      )
+    }
+    const accountRows = accountsWorkspace.accounts
     const cashAccounts = taxonomy.planning_enabled
       ? accountRows.filter((accountRow) => {
           if (accountRow.account.account_type !== 'deposit_account') {
             return false
           }
-          const activeCashAssignment = findActiveAssignment(
+          const activeCashAssignmentResult = resolveActiveAssignment(
             catalog,
             taxonomyId,
             'cash_bucket',
             accountRow.account.account_id,
             referenceDate,
           )
-          return Boolean(activeCashAssignment) || Math.abs(finiteNumber(accountRow.derived_cash_balance_base) ?? 0) > 1e-9
+          if (activeCashAssignmentResult.error) {
+            errors.push(activeCashAssignmentResult.error)
+            return false
+          }
+          const valueBase = accountValueBase(accountRow)
+          if (valueBase == null) {
+            errors.push(`Current drift requires account_value_base for cash account ${accountRow.account.account_id}.`)
+            return false
+          }
+          return Boolean(activeCashAssignmentResult.assignment) || Math.abs(valueBase) > 1e-9
         })
       : []
+    const missingHoldingValueRows = holdingsWorkspace.rows.filter((row) => finiteNumber(row.market_value_base) == null)
+    if (missingHoldingValueRows.length) {
+      errors.push(
+        `Current drift requires market_value_base for every holding; missing: ${missingHoldingValueRows
+          .map((row) => row.instrument_core.instrument_name || row.instrument_core.instrument_id)
+          .join(', ')}.`,
+      )
+    }
     const totalValueBase =
       holdingsWorkspace.rows.reduce((total, row) => total + (finiteNumber(row.market_value_base) ?? 0), 0) +
-      cashAccounts.reduce((total, accountRow) => total + (finiteNumber(accountRow.derived_cash_balance_base) ?? 0), 0)
+      cashAccounts.reduce((total, accountRow) => total + (accountValueBase(accountRow) ?? 0), 0)
+    if (totalValueBase <= 1e-9 && (holdingsWorkspace.rows.length || cashAccounts.length)) {
+      errors.push('Current drift requires positive portfolio NAV from holdings plus cash account values.')
+    }
 
     holdingsWorkspace.rows.forEach((row) => {
       const valueBase = finiteNumber(row.market_value_base)
-      const weightInput = totalValueBase > 1e-9 && valueBase != null ? valueBase / totalValueBase : row.allocation
+      if (valueBase == null || totalValueBase <= 1e-9) {
+        return
+      }
+      const weightInput = valueBase / totalValueBase
       addEntity({
         targetScope: 'instrument',
         entityId: row.instrument_core.instrument_id,
@@ -1192,52 +1324,91 @@ function buildCurrentPlanningGroups({
     })
 
     cashAccounts.forEach((accountRow) => {
-      const valueBase = finiteNumber(accountRow.derived_cash_balance_base)
+      const valueBase = accountValueBase(accountRow)
+      if (valueBase == null || totalValueBase <= 1e-9) {
+        return
+      }
       addEntity({
         targetScope: 'cash_bucket',
         entityId: accountRow.account.account_id,
         valueBase,
-        weightInput: totalValueBase > 1e-9 && valueBase != null ? valueBase / totalValueBase : null,
+        weightInput: valueBase / totalValueBase,
         cashLike: true,
       })
     })
   } else if (taxonomy.primary_assignment_scope === 'cash_bucket') {
-    const cashAccounts = (accountsWorkspace?.accounts ?? []).filter(
+    if (!accountsWorkspace) {
+      return riskFail('Current drift requires the accounts workspace for cash-bucket taxonomies.', [] satisfies CurrentPlanningGroup[])
+    }
+    const cashAccounts = accountsWorkspace.accounts.filter(
       (accountRow) => accountRow.account.account_type === 'deposit_account',
     )
-    const totalValueBase = cashAccounts.reduce(
-      (total, accountRow) => total + (finiteNumber(accountRow.derived_cash_balance_base) ?? 0),
-      0,
-    )
+    const missingAccountValueRows = cashAccounts.filter((accountRow) => accountValueBase(accountRow) == null)
+    if (missingAccountValueRows.length) {
+      errors.push(
+        `Current drift requires account_value_base for every cash account; missing: ${missingAccountValueRows
+          .map((accountRow) => accountRow.account.account_id)
+          .join(', ')}.`,
+      )
+    }
+    const totalValueBase = cashAccounts.reduce((total, accountRow) => total + (accountValueBase(accountRow) ?? 0), 0)
+    if (totalValueBase <= 1e-9 && cashAccounts.length) {
+      errors.push('Current drift requires positive cash account value for cash-bucket taxonomies.')
+    }
     cashAccounts.forEach((accountRow) => {
-      const valueBase = finiteNumber(accountRow.derived_cash_balance_base)
+      const valueBase = accountValueBase(accountRow)
+      if (valueBase == null || totalValueBase <= 1e-9) {
+        return
+      }
       addEntity({
         targetScope: 'cash_bucket',
         entityId: accountRow.account.account_id,
         valueBase,
-        weightInput: totalValueBase > 1e-9 && valueBase != null ? valueBase / totalValueBase : null,
+        weightInput: valueBase / totalValueBase,
         cashLike: true,
       })
     })
   } else {
-    const accountRows = accountsWorkspace?.accounts ?? []
-    const totalValueBase = accountRows.reduce((total, accountRow) => total + accountValueBase(accountRow), 0)
+    if (!accountsWorkspace) {
+      return riskFail('Current drift requires the accounts workspace for account taxonomies.', [] satisfies CurrentPlanningGroup[])
+    }
+    const accountRows = accountsWorkspace.accounts
+    const missingAccountValueRows = accountRows.filter((accountRow) => accountValueBase(accountRow) == null)
+    if (missingAccountValueRows.length) {
+      errors.push(
+        `Current drift requires account_value_base for every account; missing: ${missingAccountValueRows
+          .map((accountRow) => accountRow.account.account_id)
+          .join(', ')}.`,
+      )
+    }
+    const totalValueBase = accountRows.reduce((total, accountRow) => total + (accountValueBase(accountRow) ?? 0), 0)
+    if (totalValueBase <= 1e-9 && accountRows.length) {
+      errors.push('Current drift requires positive account value for account taxonomies.')
+    }
     accountRows.forEach((accountRow) => {
       const valueBase = accountValueBase(accountRow)
+      if (valueBase == null || totalValueBase <= 1e-9) {
+        return
+      }
       const positionValue = finiteNumber(accountRow.position_market_value) ?? 0
       addEntity({
         targetScope: 'account',
         entityId: accountRow.account.account_id,
         valueBase,
-        weightInput: totalValueBase > 1e-9 ? valueBase / totalValueBase : null,
+        weightInput: valueBase / totalValueBase,
         cashLike: accountRow.account.account_type === 'deposit_account' && Math.abs(positionValue) <= 1e-9,
       })
     })
   }
 
-  return [...groups.values()]
+  if (errors.length) {
+    return riskFail(errors, [] satisfies CurrentPlanningGroup[])
+  }
+
+  const rows = [...groups.values()]
     .filter((group) => group.currentWeight != null || group.currentValueBase != null)
     .sort((left, right) => Math.abs(right.currentWeight ?? 0) - Math.abs(left.currentWeight ?? 0))
+  return riskOk(rows)
 }
 
 function targetMemberKey(memberType: PortfolioTargetSetLineRecord['target_member_type'], memberId: string) {
@@ -1263,6 +1434,7 @@ function buildTargetGapRows({
   targetLines,
   currentGroups,
   riskSharesByGroup,
+  riskShareErrors = [],
   nodeById,
   dimension,
   baseCurrency,
@@ -1271,38 +1443,95 @@ function buildTargetGapRows({
   targetLines: PortfolioTargetSetLineRecord[]
   currentGroups: CurrentPlanningGroup[]
   riskSharesByGroup: Map<string, number | null>
+  riskShareErrors?: string[]
   nodeById: Map<string, PortfolioTaxonomyNodeRecord>
   dimension: 'weight' | 'risk_budget'
   baseCurrency: string
 }) {
   if (!targetSet) {
-    return []
+    return riskOk([] satisfies RiskTargetGapChartRow[])
   }
   if (dimension === 'weight' && !targetSet.weight_enabled) {
-    return []
+    return riskOk([] satisfies RiskTargetGapChartRow[])
   }
   if (dimension === 'risk_budget' && !targetSet.risk_budget_enabled) {
-    return []
+    return riskOk([] satisfies RiskTargetGapChartRow[])
+  }
+  if (!targetLines.length) {
+    return riskFail(`${targetSet.name} is active but has no target lines.`, [] satisfies RiskTargetGapChartRow[])
+  }
+  const nonNodeLines = targetLines.filter((line) => line.target_member_type !== 'taxonomy_node')
+  if (nonNodeLines.length) {
+    return riskFail(
+      `${targetSet.name} root target drift must be defined on taxonomy_node budgeting members; unsupported direct members: ${nonNodeLines
+        .map((line) => `${line.target_member_type}:${line.target_member_id}`)
+        .join(', ')}.`,
+      [] satisfies RiskTargetGapChartRow[],
+    )
+  }
+  const missingTargetNodes = targetLines.filter((line) => !nodeById.has(line.target_member_id))
+  if (missingTargetNodes.length) {
+    return riskFail(
+      `${targetSet.name} references missing taxonomy nodes: ${missingTargetNodes.map((line) => line.target_member_id).join(', ')}.`,
+      [] satisfies RiskTargetGapChartRow[],
+    )
+  }
+  if (dimension === 'risk_budget' && riskShareErrors.length) {
+    return riskFail(
+      [`${targetSet.name} risk target gap cannot be calculated because current risk share failed.`].concat(riskShareErrors),
+      [] satisfies RiskTargetGapChartRow[],
+    )
+  }
+  const targetLineErrors = targetLines
+    .filter((line) => (dimension === 'weight' ? line.target_weight : line.target_risk_share) == null)
+    .map((line) => `${targetSet.name} is missing ${dimension === 'weight' ? 'target_weight' : 'target_risk_share'} for ${lineDisplayLabel(line, nodeById)}.`)
+  if (targetLineErrors.length) {
+    return riskFail(targetLineErrors, [] satisfies RiskTargetGapChartRow[])
+  }
+  const targetTotal = targetLines.reduce(
+    (total, line) => total + ((dimension === 'weight' ? line.target_weight : line.target_risk_share) ?? 0),
+    0,
+  )
+  if (Math.abs(targetTotal - 1) > 1e-6) {
+    return riskFail(
+      `${targetSet.name} ${dimension === 'weight' ? 'target weights' : 'risk targets'} must sum to 100%; got ${formatPercent(targetTotal)}.`,
+      [] satisfies RiskTargetGapChartRow[],
+    )
+  }
+
+  const normalizedBaseCurrency = baseCurrency.trim().toUpperCase()
+  if (!normalizedBaseCurrency && currentGroups.some((group) => group.currentValueBase != null)) {
+    return riskFail(
+      `${targetSet.name} target drift requires the portfolio base currency before value details can be rendered.`,
+      [] satisfies RiskTargetGapChartRow[],
+    )
   }
 
   const currentGroupByKey = new Map(currentGroups.map((group) => [group.groupKey, group] as const))
   const lineByKey = new Map(targetLines.map((line) => [lineDisplayKey(line), line] as const))
   const allKeys = new Set([...currentGroupByKey.keys(), ...lineByKey.keys()])
   const rows: RiskTargetGapChartRow[] = []
+  const errors: string[] = []
 
   allKeys.forEach((key) => {
     const currentGroup = currentGroupByKey.get(key) ?? null
     const line = lineByKey.get(key) ?? null
     const current =
       dimension === 'weight'
-        ? currentGroup?.currentWeight ?? null
+        ? currentGroup?.currentWeight ?? 0
         : riskSharesByGroup.has(key)
-          ? riskSharesByGroup.get(key) ?? null
+          ? riskSharesByGroup.get(key) ?? 0
           : currentGroup?.hasCashLikeInput && !currentGroup.hasMarketRiskInput
             ? 0
-            : null
-    const target = line ? (dimension === 'weight' ? line.target_weight ?? null : line.target_risk_share ?? null) : null
-    if (current == null && target == null) {
+            : currentGroup
+              ? null
+              : 0
+    if (dimension === 'risk_budget' && current == null && currentGroup?.hasMarketRiskInput) {
+      errors.push(`${targetSet.name} risk target gap is missing current risk share for ${currentGroup.label}.`)
+      return
+    }
+    const target = line ? ((dimension === 'weight' ? line.target_weight : line.target_risk_share) ?? 0) : 0
+    if (Math.abs(current ?? 0) <= 1e-12 && Math.abs(target) <= 1e-12) {
       return
     }
     rows.push({
@@ -1311,11 +1540,26 @@ function buildTargetGapRows({
       current,
       target,
       gap: current != null && target != null ? current - target : null,
-      detail: currentGroup?.currentValueBase != null ? formatCurrency(currentGroup.currentValueBase, baseCurrency) : undefined,
+      detail: currentGroup?.currentValueBase != null ? formatCurrency(currentGroup.currentValueBase, normalizedBaseCurrency) : undefined,
     })
   })
 
-  return rows.sort((left, right) => Math.abs(right.gap ?? 0) - Math.abs(left.gap ?? 0))
+  if (errors.length) {
+    return riskFail(errors, [] satisfies RiskTargetGapChartRow[])
+  }
+
+  return riskOk(rows.sort((left, right) => Math.abs(right.gap ?? 0) - Math.abs(left.gap ?? 0)))
+}
+
+function selectUniqueTargetSet(targetSets: PortfolioTargetSetRecord[], targetSetType: 'saa' | 'taa') {
+  const matches = targetSets.filter((targetSet) => targetSet.target_set_type === targetSetType)
+  if (matches.length > 1) {
+    return riskFail(
+      `Multiple active root ${targetSetType.toUpperCase()} target sets are configured; Risk cannot choose one implicitly.`,
+      null as PortfolioTargetSetRecord | null,
+    )
+  }
+  return riskOk(matches[0] ?? null)
 }
 
 function heatmapCellStyle(value: number | null | undefined, maxAbs: number): CSSProperties {
@@ -1574,9 +1818,11 @@ export default function RiskPage() {
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [performanceWorkspace, setPerformanceWorkspace] = useState<PortfolioPerformanceResponse | null>(null)
   const [instrumentContribution, setInstrumentContribution] = useState<PortfolioContributionReportResponse | null>(null)
+  const [riskBasisWorkspace, setRiskBasisWorkspace] = useState<PortfolioPerformanceCalculationGroupsResponse | null>(null)
   const [riskDataLoading, setRiskDataLoading] = useState(false)
   const [performanceError, setPerformanceError] = useState<string | null>(null)
   const [contributionError, setContributionError] = useState<string | null>(null)
+  const [riskBasisError, setRiskBasisError] = useState<string | null>(null)
   const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
@@ -1668,9 +1914,11 @@ export default function RiskPage() {
     if (!portfolioId || !riskWindowStartDate || !riskWindowEndDate) {
       setPerformanceWorkspace(null)
       setInstrumentContribution(null)
+      setRiskBasisWorkspace(null)
       setRiskDataLoading(false)
       setPerformanceError(null)
       setContributionError(null)
+      setRiskBasisError(null)
       return
     }
 
@@ -1678,6 +1926,8 @@ export default function RiskPage() {
     setRiskDataLoading(true)
     setPerformanceError(null)
     setContributionError(null)
+    setRiskBasisWorkspace(null)
+    setRiskBasisError(null)
 
     Promise.allSettled([
       getPortfolioPerformance(portfolioId, {
@@ -1689,8 +1939,13 @@ export default function RiskPage() {
         end_date: riskWindowEndDate,
         axis: 'instrument',
       }),
+      getPortfolioPerformanceCalculationGroups(portfolioId, {
+        start_date: riskWindowStartDate,
+        end_date: riskWindowEndDate,
+        axis: 'instrument',
+      }),
     ])
-      .then(([performanceResult, contributionResult]) => {
+      .then(([performanceResult, contributionResult, riskBasisResult]) => {
         if (cancelled) {
           return
         }
@@ -1715,6 +1970,18 @@ export default function RiskPage() {
             contributionResult.reason instanceof Error
               ? contributionResult.reason.message
               : 'Failed to load instrument return slices.',
+          )
+        }
+
+        if (riskBasisResult.status === 'fulfilled') {
+          setRiskBasisWorkspace(riskBasisResult.value)
+          setRiskBasisError(null)
+        } else {
+          setRiskBasisWorkspace(null)
+          setRiskBasisError(
+            riskBasisResult.reason instanceof Error
+              ? riskBasisResult.reason.message
+              : 'Failed to load risk frequency basis.',
           )
         }
       })
@@ -1785,10 +2052,10 @@ export default function RiskPage() {
       ),
     [defaultPlanningTaxonomy?.taxonomy_id, holdingsWorkspace?.as_of_date, taxonomyCatalog?.target_sets],
   )
-  const activeRootSaaTargetSet =
-    activeRootTargetSets.find((targetSet) => targetSet.target_set_type === 'saa') ?? null
-  const activeRootTaaTargetSet =
-    activeRootTargetSets.find((targetSet) => targetSet.target_set_type === 'taa') ?? null
+  const activeRootSaaTargetSetResult = useMemo(() => selectUniqueTargetSet(activeRootTargetSets, 'saa'), [activeRootTargetSets])
+  const activeRootTaaTargetSetResult = useMemo(() => selectUniqueTargetSet(activeRootTargetSets, 'taa'), [activeRootTargetSets])
+  const activeRootSaaTargetSet = activeRootSaaTargetSetResult.value
+  const activeRootTaaTargetSet = activeRootTaaTargetSetResult.value
   const targetLinesByTargetSetId = useMemo(() => {
     const lookup = new Map<string, PortfolioTargetSetLineRecord[]>()
     ;(taxonomyCatalog?.target_set_lines ?? []).forEach((line) => {
@@ -1804,15 +2071,40 @@ export default function RiskPage() {
   const benchmarkLabel = selectedBenchmarkInstrument ? instrumentPrimaryIdentifier(selectedBenchmarkInstrument) : null
   const instrumentSlices = instrumentContribution?.daily_slices ?? []
   const rawInstrumentReturnSeries = useMemo(() => buildGroupReturnSeries(instrumentSlices), [instrumentSlices])
-  const portfolioRiskFrequency = useMemo(() => riskFrequencyProfile(rawInstrumentReturnSeries), [rawInstrumentReturnSeries])
+  const riskBasisResolved = riskBasisWorkspace != null || riskBasisError != null
+  const riskBasisPending = Boolean(holdingsWorkspace && riskWindowStartDate && riskWindowEndDate && !riskBasisResolved)
+  const portfolioRiskFrequencyResult = useMemo(
+    () =>
+      riskBasisPending
+        ? riskOk({
+            frequency: 'daily',
+            statusLabel: 'Risk basis loading',
+          } satisfies RiskFrequencyProfile)
+        : riskBasisError
+        ? riskFail(
+            riskBasisError,
+            {
+              frequency: 'daily',
+              statusLabel: 'Risk basis unavailable',
+            } satisfies RiskFrequencyProfile,
+          )
+        : riskFrequencyProfileFromCalculationGroups(riskBasisWorkspace),
+    [riskBasisError, riskBasisPending, riskBasisWorkspace],
+  )
+  const portfolioRiskFrequency = portfolioRiskFrequencyResult.value
+  const portfolioRiskFrequencyErrors = portfolioRiskFrequencyResult.errors
+  const riskFrequencyReady = !riskBasisPending && portfolioRiskFrequencyErrors.length === 0
+  const riskBasisFinalDate = holdingsWorkspace?.as_of_date ?? riskWindowEndDate
   const instrumentReturnSeries = useMemo(
     () =>
-      alignReturnSeriesToFrequency(
-        rawInstrumentReturnSeries,
-        portfolioRiskFrequency.frequency,
-        holdingsWorkspace?.as_of_date ?? riskWindowEndDate,
-      ),
-    [holdingsWorkspace?.as_of_date, portfolioRiskFrequency.frequency, rawInstrumentReturnSeries, riskWindowEndDate],
+      riskFrequencyReady
+        ? alignReturnSeriesToFrequency(
+            rawInstrumentReturnSeries,
+            portfolioRiskFrequency.frequency,
+            riskBasisFinalDate,
+          )
+        : [],
+    [portfolioRiskFrequency.frequency, rawInstrumentReturnSeries, riskBasisFinalDate, riskFrequencyReady],
   )
   const portfolioReturnPointsRaw = useMemo(
     () => buildPortfolioReturnPoints(performanceWorkspace?.daily_series ?? []),
@@ -1820,22 +2112,26 @@ export default function RiskPage() {
   )
   const portfolioReturnPoints = useMemo(
     () =>
-      alignReturnPointsToFrequency(
-        portfolioReturnPointsRaw,
-        portfolioRiskFrequency.frequency,
-        holdingsWorkspace?.as_of_date ?? riskWindowEndDate,
-      ),
-    [holdingsWorkspace?.as_of_date, portfolioReturnPointsRaw, portfolioRiskFrequency.frequency, riskWindowEndDate],
+      riskFrequencyReady
+        ? alignReturnPointsToFrequency(
+            portfolioReturnPointsRaw,
+            portfolioRiskFrequency.frequency,
+            riskBasisFinalDate,
+          )
+        : [],
+    [portfolioReturnPointsRaw, portfolioRiskFrequency.frequency, riskBasisFinalDate, riskFrequencyReady],
   )
   const benchmarkReturnPointsRaw = useMemo(() => buildBenchmarkReturnPoints(benchmarkChart), [benchmarkChart])
   const benchmarkReturnPoints = useMemo(
     () =>
-      alignReturnPointsToFrequency(
-        benchmarkReturnPointsRaw,
-        portfolioRiskFrequency.frequency,
-        holdingsWorkspace?.as_of_date ?? riskWindowEndDate,
-      ),
-    [benchmarkReturnPointsRaw, holdingsWorkspace?.as_of_date, portfolioRiskFrequency.frequency, riskWindowEndDate],
+      riskFrequencyReady
+        ? alignReturnPointsToFrequency(
+            benchmarkReturnPointsRaw,
+            portfolioRiskFrequency.frequency,
+            riskBasisFinalDate,
+          )
+        : [],
+    [benchmarkReturnPointsRaw, portfolioRiskFrequency.frequency, riskBasisFinalDate, riskFrequencyReady],
   )
   const rollingWindow = windowLabel(rollingSettings.lookbackDays)
   const rollingVolatilityPoints = useMemo(
@@ -1870,12 +2166,24 @@ export default function RiskPage() {
   const riskDates = useMemo(() => uniqueSortedSeriesDates(instrumentReturnSeries), [instrumentReturnSeries])
 
   useEffect(() => {
+    if (!riskDates.length) {
+      if (matrixAsOfDate) {
+        setMatrixAsOfDate('')
+      }
+      return
+    }
     if (riskDates.length && !riskDates.includes(matrixAsOfDate)) {
       setMatrixAsOfDate(riskDates[riskDates.length - 1])
     }
   }, [matrixAsOfDate, riskDates])
 
   useEffect(() => {
+    if (!riskDates.length) {
+      if (contributionAsOfDate) {
+        setContributionAsOfDate('')
+      }
+      return
+    }
     if (riskDates.length && !riskDates.includes(contributionAsOfDate)) {
       setContributionAsOfDate(riskDates[riskDates.length - 1])
     }
@@ -1885,36 +2193,42 @@ export default function RiskPage() {
     () => taxonomyScopeOptions(defaultPlanningTaxonomy, taxonomyCatalog),
     [defaultPlanningTaxonomy, taxonomyCatalog],
   )
-  const matrixTaxonomySlices = useMemo(
+  const matrixTaxonomySlicesResult = useMemo(
     () => buildScopedTaxonomySlices(instrumentSlices, taxonomyCatalog, defaultPlanningTaxonomy, matrixScopeNodeId),
     [defaultPlanningTaxonomy, instrumentSlices, matrixScopeNodeId, taxonomyCatalog],
   )
+  const matrixTaxonomySlices = matrixTaxonomySlicesResult.value
   const matrixTaxonomySeries = useMemo(() => buildGroupReturnSeries(matrixTaxonomySlices), [matrixTaxonomySlices])
   const alignedMatrixTaxonomySeries = useMemo(
     () =>
-      alignReturnSeriesToFrequency(
-        matrixTaxonomySeries,
-        portfolioRiskFrequency.frequency,
-        holdingsWorkspace?.as_of_date ?? riskWindowEndDate,
-      ),
-    [holdingsWorkspace?.as_of_date, matrixTaxonomySeries, portfolioRiskFrequency.frequency, riskWindowEndDate],
+      riskFrequencyReady
+        ? alignReturnSeriesToFrequency(
+            matrixTaxonomySeries,
+            portfolioRiskFrequency.frequency,
+            riskBasisFinalDate,
+          )
+        : [],
+    [matrixTaxonomySeries, portfolioRiskFrequency.frequency, riskBasisFinalDate, riskFrequencyReady],
   )
-  const topLevelTaxonomySlices = useMemo(
+  const topLevelTaxonomySlicesResult = useMemo(
     () => buildScopedTaxonomySlices(instrumentSlices, taxonomyCatalog, defaultPlanningTaxonomy, ''),
     [defaultPlanningTaxonomy, instrumentSlices, taxonomyCatalog],
   )
+  const topLevelTaxonomySlices = topLevelTaxonomySlicesResult.value
   const topLevelTaxonomySeries = useMemo(
     () => buildGroupReturnSeries(topLevelTaxonomySlices),
     [topLevelTaxonomySlices],
   )
   const alignedTopLevelTaxonomySeries = useMemo(
     () =>
-      alignReturnSeriesToFrequency(
-        topLevelTaxonomySeries,
-        portfolioRiskFrequency.frequency,
-        holdingsWorkspace?.as_of_date ?? riskWindowEndDate,
-      ),
-    [holdingsWorkspace?.as_of_date, portfolioRiskFrequency.frequency, riskWindowEndDate, topLevelTaxonomySeries],
+      riskFrequencyReady
+        ? alignReturnSeriesToFrequency(
+            topLevelTaxonomySeries,
+            portfolioRiskFrequency.frequency,
+            riskBasisFinalDate,
+          )
+        : [],
+    [portfolioRiskFrequency.frequency, riskBasisFinalDate, riskFrequencyReady, topLevelTaxonomySeries],
   )
   const instrumentCorrelationMatrix = useMemo(
     () => buildCorrelationMatrix(instrumentReturnSeries, matrixAsOfDate, matrixSettings),
@@ -1924,15 +2238,28 @@ export default function RiskPage() {
     () => buildCorrelationMatrix(alignedMatrixTaxonomySeries, matrixAsOfDate, matrixSettings),
     [alignedMatrixTaxonomySeries, matrixAsOfDate, matrixSettings],
   )
-  const topLevelRiskContributionRows = useMemo(
-    () => buildRiskContributionRows(alignedTopLevelTaxonomySeries, holdingsWorkspace?.as_of_date ?? '', driftSettings),
-    [alignedTopLevelTaxonomySeries, driftSettings, holdingsWorkspace?.as_of_date],
+  const topLevelRiskContributionResult = useMemo(
+    () =>
+      riskFrequencyReady
+        ? buildRiskContributionRows(alignedTopLevelTaxonomySeries, holdingsWorkspace?.as_of_date ?? '', driftSettings)
+        : riskBasisPending
+          ? riskOk([] satisfies RiskContributionRow[])
+          : riskFail(portfolioRiskFrequencyErrors, [] satisfies RiskContributionRow[]),
+    [
+      alignedTopLevelTaxonomySeries,
+      driftSettings,
+      holdingsWorkspace?.as_of_date,
+      riskBasisPending,
+      portfolioRiskFrequencyErrors,
+      riskFrequencyReady,
+    ],
   )
+  const topLevelRiskContributionRows = topLevelRiskContributionResult.value
   const riskSharesByTopLevelGroup = useMemo(
     () => new Map(topLevelRiskContributionRows.map((row) => [row.groupKey, row.riskShare] as const)),
     [topLevelRiskContributionRows],
   )
-  const currentPlanningGroups = useMemo(
+  const currentPlanningGroupsResult = useMemo(
     () =>
       buildCurrentPlanningGroups({
         holdingsWorkspace,
@@ -1943,8 +2270,10 @@ export default function RiskPage() {
       }),
     [accountsWorkspace, defaultPlanningTaxonomy, holdingsWorkspace, taxonomyCatalog],
   )
+  const currentPlanningGroups = currentPlanningGroupsResult.value
+  const portfolioBaseCurrency = holdingsWorkspace?.base_currency ?? ''
 
-  const saaWeightGapRows = useMemo(
+  const saaWeightGapResult = useMemo(
     () =>
       buildTargetGapRows({
         targetSet: activeRootSaaTargetSet,
@@ -1953,18 +2282,19 @@ export default function RiskPage() {
         riskSharesByGroup: riskSharesByTopLevelGroup,
         nodeById: defaultTaxonomyNodeById,
         dimension: 'weight',
-        baseCurrency: holdingsWorkspace?.base_currency ?? 'USD',
+        baseCurrency: portfolioBaseCurrency,
       }),
     [
       activeRootSaaTargetSet,
       currentPlanningGroups,
       defaultTaxonomyNodeById,
-      holdingsWorkspace?.base_currency,
+      portfolioBaseCurrency,
       riskSharesByTopLevelGroup,
       targetLinesByTargetSetId,
     ],
   )
-  const taaWeightGapRows = useMemo(
+  const saaWeightGapRows = saaWeightGapResult.value
+  const taaWeightGapResult = useMemo(
     () =>
       buildTargetGapRows({
         targetSet: activeRootTaaTargetSet,
@@ -1973,63 +2303,95 @@ export default function RiskPage() {
         riskSharesByGroup: riskSharesByTopLevelGroup,
         nodeById: defaultTaxonomyNodeById,
         dimension: 'weight',
-        baseCurrency: holdingsWorkspace?.base_currency ?? 'USD',
+        baseCurrency: portfolioBaseCurrency,
       }),
     [
       activeRootTaaTargetSet,
       currentPlanningGroups,
       defaultTaxonomyNodeById,
-      holdingsWorkspace?.base_currency,
+      portfolioBaseCurrency,
       riskSharesByTopLevelGroup,
       targetLinesByTargetSetId,
     ],
   )
-  const saaRiskGapRows = useMemo(
+  const taaWeightGapRows = taaWeightGapResult.value
+  const saaRiskGapResult = useMemo(
     () =>
       buildTargetGapRows({
         targetSet: activeRootSaaTargetSet,
         targetLines: targetLinesByTargetSetId.get(activeRootSaaTargetSet?.target_set_id ?? '') ?? [],
         currentGroups: currentPlanningGroups,
         riskSharesByGroup: riskSharesByTopLevelGroup,
+        riskShareErrors: topLevelRiskContributionResult.errors,
         nodeById: defaultTaxonomyNodeById,
         dimension: 'risk_budget',
-        baseCurrency: holdingsWorkspace?.base_currency ?? 'USD',
+        baseCurrency: portfolioBaseCurrency,
       }),
     [
       activeRootSaaTargetSet,
       currentPlanningGroups,
       defaultTaxonomyNodeById,
-      holdingsWorkspace?.base_currency,
+      portfolioBaseCurrency,
       riskSharesByTopLevelGroup,
+      topLevelRiskContributionResult.errors,
       targetLinesByTargetSetId,
     ],
   )
-  const taaRiskGapRows = useMemo(
+  const saaRiskGapRows = saaRiskGapResult.value
+  const taaRiskGapResult = useMemo(
     () =>
       buildTargetGapRows({
         targetSet: activeRootTaaTargetSet,
         targetLines: targetLinesByTargetSetId.get(activeRootTaaTargetSet?.target_set_id ?? '') ?? [],
         currentGroups: currentPlanningGroups,
         riskSharesByGroup: riskSharesByTopLevelGroup,
+        riskShareErrors: topLevelRiskContributionResult.errors,
         nodeById: defaultTaxonomyNodeById,
         dimension: 'risk_budget',
-        baseCurrency: holdingsWorkspace?.base_currency ?? 'USD',
+        baseCurrency: portfolioBaseCurrency,
       }),
     [
       activeRootTaaTargetSet,
       currentPlanningGroups,
       defaultTaxonomyNodeById,
-      holdingsWorkspace?.base_currency,
+      portfolioBaseCurrency,
       riskSharesByTopLevelGroup,
+      topLevelRiskContributionResult.errors,
       targetLinesByTargetSetId,
     ],
   )
-  const instrumentRiskContributionRows = useMemo(
-    () => buildRiskContributionRows(instrumentReturnSeries, contributionAsOfDate, contributionSettings),
-    [instrumentReturnSeries, contributionAsOfDate, contributionSettings],
+  const taaRiskGapRows = taaRiskGapResult.value
+  const instrumentRiskContributionResult = useMemo(
+    () =>
+      riskFrequencyReady
+        ? buildRiskContributionRows(instrumentReturnSeries, contributionAsOfDate, contributionSettings)
+        : riskBasisPending
+          ? riskOk([] satisfies RiskContributionRow[])
+          : riskFail(portfolioRiskFrequencyErrors, [] satisfies RiskContributionRow[]),
+    [
+      instrumentReturnSeries,
+      contributionAsOfDate,
+      contributionSettings,
+      riskBasisPending,
+      portfolioRiskFrequencyErrors,
+      riskFrequencyReady,
+    ],
   )
   const selectedMatrixScopeLabel =
     matrixTaxonomyScopeOptions.find((option) => option.value === matrixScopeNodeId)?.label ?? 'Top Level'
+
+  function renderRiskErrors(errors: string[]) {
+    if (!errors.length) {
+      return null
+    }
+    return (
+      <div className="inline-notice inline-notice-error">
+        {errors.map((error, index) => (
+          <div key={`${index}:${error}`}>{error}</div>
+        ))}
+      </div>
+    )
+  }
 
   function renderCorrelationMatrix(matrix: CorrelationMatrix, emptyLabel: string) {
     if (!matrix.groups.length) {
@@ -2074,7 +2436,11 @@ export default function RiskPage() {
     )
   }
 
-  function renderRiskContributionTable(rows: RiskContributionRow[]) {
+  function renderRiskContributionTable(result: RiskCalculationResult<RiskContributionRow[]>) {
+    if (result.errors.length) {
+      return renderRiskErrors(result.errors)
+    }
+    const rows = result.value
     const maxAbsRiskShare = Math.max(
       0,
       ...rows
@@ -2129,12 +2495,13 @@ export default function RiskPage() {
         {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
         {performanceError ? <div className="inline-notice inline-notice-error">{performanceError}</div> : null}
         {contributionError ? <div className="inline-notice inline-notice-error">{contributionError}</div> : null}
+        {holdingsWorkspace && !riskDataLoading ? renderRiskErrors(portfolioRiskFrequencyErrors) : null}
 
         {workspaceLoading ? (
           <CalculationStatus />
         ) : null}
 
-        {riskDataLoading && !performanceWorkspace && !instrumentContribution ? (
+        {riskDataLoading && !performanceWorkspace && !instrumentContribution && !riskBasisWorkspace ? (
           <CalculationStatus />
         ) : null}
 
@@ -2240,12 +2607,14 @@ export default function RiskPage() {
                 </div>
                 <div className="risk-matrix-panel">
                   <div className="risk-matrix-panel-title">Taxonomy: {selectedMatrixScopeLabel}</div>
-                  {renderCorrelationMatrix(
-                    taxonomyCorrelationMatrix,
-                    defaultPlanningTaxonomy
-                      ? 'No matrix.'
-                      : 'No taxonomy.',
-                  )}
+                  {matrixTaxonomySlicesResult.errors.length
+                    ? renderRiskErrors(matrixTaxonomySlicesResult.errors)
+                    : renderCorrelationMatrix(
+                        taxonomyCorrelationMatrix,
+                        defaultPlanningTaxonomy
+                          ? 'No matrix.'
+                          : 'No taxonomy.',
+                      )}
                 </div>
               </div>
             </section>
@@ -2267,42 +2636,64 @@ export default function RiskPage() {
                   includeContributionMode
                 />
               </div>
+              {renderRiskErrors([
+                ...activeRootSaaTargetSetResult.errors,
+                ...activeRootTaaTargetSetResult.errors,
+                ...topLevelTaxonomySlicesResult.errors,
+                ...currentPlanningGroupsResult.errors,
+              ])}
               <div className="risk-target-grid">
                 <div className="risk-target-panel">
                   <div className="risk-matrix-panel-title">SAA Weight Target Gap</div>
-                  <RiskTargetGapChart
-                    rows={saaWeightGapRows}
-                    ariaLabel="SAA weight target drift"
-                    emptyLabel="No SAA weight target."
-                  />
+                  {saaWeightGapResult.errors.length ? (
+                    renderRiskErrors(saaWeightGapResult.errors)
+                  ) : (
+                    <RiskTargetGapChart
+                      rows={saaWeightGapRows}
+                      ariaLabel="SAA weight target drift"
+                      emptyLabel="No SAA weight target."
+                    />
+                  )}
                 </div>
                 <div className="risk-target-panel">
                   <div className="risk-matrix-panel-title">TAA Weight Target Gap</div>
-                  <RiskTargetGapChart
-                    rows={taaWeightGapRows}
-                    ariaLabel="TAA weight target drift"
-                    emptyLabel="No TAA weight target."
-                  />
+                  {taaWeightGapResult.errors.length ? (
+                    renderRiskErrors(taaWeightGapResult.errors)
+                  ) : (
+                    <RiskTargetGapChart
+                      rows={taaWeightGapRows}
+                      ariaLabel="TAA weight target drift"
+                      emptyLabel="No TAA weight target."
+                    />
+                  )}
                 </div>
                 <div className="risk-target-panel">
                   <div className="risk-matrix-panel-title">SAA Risk Target Gap</div>
-                  <RiskTargetGapChart
-                    rows={saaRiskGapRows}
-                    ariaLabel="SAA risk budget target gap"
-                    emptyLabel="No SAA risk target."
-                    currentLabel="Risk Share"
-                    targetLabel="Risk Target"
-                  />
+                  {saaRiskGapResult.errors.length ? (
+                    renderRiskErrors(saaRiskGapResult.errors)
+                  ) : (
+                    <RiskTargetGapChart
+                      rows={saaRiskGapRows}
+                      ariaLabel="SAA risk budget target gap"
+                      emptyLabel="No SAA risk target."
+                      currentLabel="Risk Share"
+                      targetLabel="Risk Target"
+                    />
+                  )}
                 </div>
                 <div className="risk-target-panel">
                   <div className="risk-matrix-panel-title">TAA Risk Target Gap</div>
-                  <RiskTargetGapChart
-                    rows={taaRiskGapRows}
-                    ariaLabel="TAA risk budget target gap"
-                    emptyLabel="No TAA risk target."
-                    currentLabel="Risk Share"
-                    targetLabel="Risk Target"
-                  />
+                  {taaRiskGapResult.errors.length ? (
+                    renderRiskErrors(taaRiskGapResult.errors)
+                  ) : (
+                    <RiskTargetGapChart
+                      rows={taaRiskGapRows}
+                      ariaLabel="TAA risk budget target gap"
+                      emptyLabel="No TAA risk target."
+                      currentLabel="Risk Share"
+                      targetLabel="Risk Target"
+                    />
+                  )}
                 </div>
               </div>
             </section>
@@ -2330,7 +2721,7 @@ export default function RiskPage() {
                 onChange={setContributionAsOfDate}
                 label="Contribution as of"
               />
-              {renderRiskContributionTable(instrumentRiskContributionRows)}
+              {renderRiskContributionTable(instrumentRiskContributionResult)}
             </section>
           </>
         ) : null}

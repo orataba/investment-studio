@@ -398,6 +398,7 @@ class ResearchSettingsRecordModel(Base):
     as_of_date: Mapped[date | None] = mapped_column(Date)
     lookback_days: Mapped[int] = mapped_column(nullable=False, default=90)
     calculation_frequency: Mapped[str] = mapped_column(String, nullable=False, default="auto")
+    missing_return_policy: Mapped[str] = mapped_column(String, nullable=False, default="strict")
     target_dimension: Mapped[str] = mapped_column(String, nullable=False, default="scope_default")
     capital_mode: Mapped[str] = mapped_column(String, nullable=False, default="unit_notional")
     gross_exposure: Mapped[float | None]
