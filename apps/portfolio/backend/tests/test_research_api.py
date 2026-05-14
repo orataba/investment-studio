@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from math import sqrt
 
 import numpy as np
@@ -9,7 +9,11 @@ import pytest
 
 from portfolio_app.db.models import ResearchRunRecordModel
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.instrument_charts import _annualized_volatility, _candidate_chart_bases
+from portfolio_app.services.instrument_charts import (
+    _annualized_volatility,
+    _candidate_chart_bases,
+    build_instrument_trend_metrics_from_detail,
+)
 
 from portfolio_app.services.research_solver import (
     RiskBudgetProblem,
@@ -419,6 +423,58 @@ def test_instrument_trend_volatility_can_use_weekly_risk_basis() -> None:
         calculation_frequency="weekly",
         final_date=date(2026, 1, 16),
     ) == pytest.approx(sample_stddev * sqrt(periods_per_year))
+
+
+def test_holdings_instrument_volatility_requires_window_start_coverage() -> None:
+    detail = {
+        "currency": "USD",
+        "quote_selection_policy": {"total_return": ["close"]},
+        "market_data": [
+            {
+                "metric_family": "price",
+                "quote_basis": "close",
+                "as_of_date": (date(2026, 1, 1) + timedelta(days=offset)).isoformat(),
+                "value": str(100.0 + offset / 10),
+                "currency": "USD",
+                "status": "complete",
+            }
+            for offset in range(0, 106, 7)
+        ],
+    }
+
+    metrics = build_instrument_trend_metrics_from_detail(
+        detail,
+        as_of_date=date(2026, 4, 16),
+        calculation_frequency="weekly",
+    )
+
+    assert metrics["instrument_volatility_6m"] is None
+
+
+def test_holdings_instrument_volatility_allows_complete_weekly_window() -> None:
+    detail = {
+        "currency": "USD",
+        "quote_selection_policy": {"total_return": ["close"]},
+        "market_data": [
+            {
+                "metric_family": "price",
+                "quote_basis": "close",
+                "as_of_date": (date(2025, 10, 16) + timedelta(days=offset)).isoformat(),
+                "value": str(100.0 + offset / 10),
+                "currency": "USD",
+                "status": "complete",
+            }
+            for offset in range(0, 183, 7)
+        ],
+    }
+
+    metrics = build_instrument_trend_metrics_from_detail(
+        detail,
+        as_of_date=date(2026, 4, 16),
+        calculation_frequency="weekly",
+    )
+
+    assert metrics["instrument_volatility_6m"] is not None
 
 
 def test_research_series_prefers_adjusted_close_for_equities() -> None:

@@ -364,17 +364,47 @@ $$
 
 它不是某一笔交易的 purchase price。真实交易价格在 lot 层用 `entry_price = entry_gross_amount / entry_quantity` 表示，且不包含资本化费用和税费；`entry_cost_per_unit` 才包含资本化费用和税费。`moving_average` 的 synthetic lot 没有真实 tax-lot purchase price，展示时应优先使用当前 `Avg Cost`。
 
-Holdings 是当前持仓状态表，只展示当前仍然 open 的 quantity、quote、market value、weight、open-position cost basis 与 unrealized P&L。资产级 TWR、period contribution、realized gain、dividend / coupon income、fees / taxes impact 和 closed positions 属于 `Performance` / security detail 的区间绩效视图，不进入 Holdings 默认列，也不作为 Holdings 的 canonical 语义。
+Holdings 是当前持仓状态表，只展示当前仍然 open 的 position quantity、settled cash balance、quote、market value、weight、open-position cost basis 与 unrealized P&L。资产级 TWR、period contribution、realized gain、dividend / coupon income、fees / taxes impact 和 closed positions 属于 `Performance` / security detail 的区间绩效视图，不进入 Holdings 默认列，也不作为 Holdings 的 canonical 语义。
+
+Holdings 中的现金行按 settled cash ledger 逐币种生成，`instrument_id = cash:{currency}`：
+
+- `market_value` 等于该币种 settled cash amount；
+- `market_value_base` 等于该现金金额按 as-of date FX 转成组合 base currency 后的值；
+- `cost_basis`、`cost_basis_base`、`Avg Cost` 与 unrealized P&L 对现金不适用；
+- base-currency cash 的 instrument return、day return 和 volatility 为 `0`；
+- non-base cash 的 instrument return / day return 来自该现金币种兑 base currency 的 FX series；
+- pending settlement 不生成 Holdings cash row，但仍进入组合 NAV 与 pending settlement total。
+
+`Market Value Base` 是任意 holding row 的 base-currency fair value。对非现金资产，它等于 `quantity * selected valuation quote` 再按 as-of date FX 转换；对现金，它等于 settled cash amount 的 base-currency value。Holdings `Portfolio Total` 的 market value 包含非现金市值与 settled cash，不包含 pending settlement；NAV 另行等于 market value 加 pending settlement。
+
+`Day Change` / `Day Return` 是 as-of date 当前持仓规模上的一天市场变动，不是区间绩效：
+
+- 非现金资产使用当前 selected valuation quote 与同一 quote basis 的上一可用 quote，`day_return = current_quote / previous_quote - 1`；
+- 非现金资产的 `day_change_value` 使用当前 quantity 乘以 quote 变动；`day_change_value_base` 再按 as-of date FX 转 base currency；
+- base-currency cash 的 day change 为 `0`；
+- non-base cash 的 day return 使用当前 FX 与上一可用 FX，`day_change_value_base = cash_amount * (current_fx - previous_fx)`；
+- 若缺少当前点、上一点或 FX，相关字段必须为空，不得用 0 或 chart sample 补齐。
 
 Holdings 可以展示 quote-derived instrument market trend 指标，作为扫描当前持仓标的自身近期市场表现的辅助列：
 
-- `Chart 6M` 使用同一 selected quote series 的 6M 路径；
+- `Chart 1M / 3M / 6M / 1Y` 是前端展示用的 sampled path；
 - `1W Return / MTD / YTD / 1Y` 只使用标的自身 selected quote series，计算为 `latest_quote / anchor_quote - 1`；
 - selected quote series 按 `quote_selection_policy.total_return -> chart -> valuation -> reference` 选择；若策略为空，则选用截至 as-of 最新的一条 quote basis，不能混用多个 basis；
 - `1W Return` / `1Y` 的 anchor quote 是目标日期或之前最近 quote；
 - `MTD` / `YTD` 的 anchor quote 是月初 / 年初之前最近 quote；若历史不足，则只能使用期间内第一条 quote 作为明确标记的 partial-data anchor，不能展示为完整区间收益；
 - `Current DD` 计算为 `latest_quote / max_available_selected_quote_to_date - 1`；
+- `Vol 1M / 3M / 6M / 1Y` 使用同一 selected quote series 先按组合 resolved risk frequency 取 daily / weekly / monthly period returns，再按实际 elapsed days 年化；不得使用 `Chart *` sampled points；
+- volatility 窗口必须有接近窗口起点的初始 quote、足够 elapsed-day 覆盖和最小收益样本数，否则为空。当前门槛为 daily `10 / 30 / 60 / 120`、weekly `3 / 6 / 12 / 24`、monthly `2 / 2 / 4 / 6`，分别对应 `1M / 3M / 6M / 1Y`；
 - 这些指标不读取 quantity、cash flow、cost basis、FIFO / moving average、realized gain 或 income，因此不属于组合 TWR、holding contribution 或 book P&L。
+
+Holdings group rows 不是后端 period-performance group：
+
+- market value、cost basis、day change、open lots 等绝对量按组内 rows 汇总；
+- unrealized return 使用组内非现金 `unrealized P&L / cost basis`，不是成员百分比的加权平均；
+- `1W / MTD / YTD / 1Y Return` 使用 as-of date base-currency market value 权重对成员自身 return 加权；覆盖不足时为空；
+- group volatility / drawdown 用组内成员 return series 在共同 period 上组成当前权重的组 return series 后计算，包含协方差效果，不等于成员 volatility 或 drawdown 的加权平均；
+- base-currency cash 可作为 0-return 成员参与覆盖；non-base cash 使用其 FX return series；
+- UI 中的 `Non-cash Portfolio` 行是当前 rows 的非现金 subtotal，只服务展示和导出，不是源事实、不参与 group、sort、detail 或 portfolio totals。
 
 #### Unrealized P&L
 

@@ -22,7 +22,7 @@ from portfolio_app.services.ledger import (
     summarize_position_lots,
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
-from portfolio_app.services.performance import build_holdings_report
+from portfolio_app.services.performance import build_holdings_report, is_cash_holding_instrument_id
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
     get_portfolio_live_summary,
@@ -44,6 +44,12 @@ _HOLDINGS_TREND_FIELD_NAMES = (
     "instrument_volatility_3m",
     "instrument_volatility_6m",
     "instrument_volatility_1y",
+    "instrument_return_series_1m",
+    "instrument_return_series_3m",
+    "instrument_return_series_6m",
+    "instrument_return_series_1y",
+    "instrument_return_series_all",
+    "instrument_holding_return_series",
     "instrument_current_drawdown",
     "instrument_max_drawdown",
     "instrument_holding_max_drawdown",
@@ -93,6 +99,11 @@ def _instrument_ids_from_holdings_workspace(workspace: dict[str, object]) -> lis
         if not isinstance(row, dict):
             continue
         instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
+        if (
+            str(instrument_core.get("instrument_type") or "").strip().lower() == "cash"
+            or is_cash_holding_instrument_id(instrument_core.get("instrument_id") or row.get("line_id"))
+        ):
+            continue
         instrument_id = str(instrument_core.get("instrument_id") or row.get("line_id") or "").strip()
         if instrument_id and instrument_id not in instrument_ids:
             instrument_ids.append(instrument_id)
@@ -153,6 +164,39 @@ def _enrich_holdings_workspace_market_data(
             continue
         instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
         instrument_id = str(instrument_core.get("instrument_id") or row.get("line_id") or "")
+        if (
+            str(instrument_core.get("instrument_type") or "").strip().lower() == "cash"
+            or is_cash_holding_instrument_id(instrument_id)
+        ):
+            row.pop("price_chart", None)
+            for range_key in HOLDINGS_PRICE_CHART_RANGE_KEYS:
+                row.setdefault(f"price_chart_{range_key}", [])
+            row.setdefault(
+                "instrument_return_series_1m",
+                {"first_return_start_date": None, "points": []},
+            )
+            row.setdefault(
+                "instrument_return_series_3m",
+                {"first_return_start_date": None, "points": []},
+            )
+            row.setdefault(
+                "instrument_return_series_6m",
+                {"first_return_start_date": None, "points": []},
+            )
+            row.setdefault(
+                "instrument_return_series_1y",
+                {"first_return_start_date": None, "points": []},
+            )
+            row.setdefault(
+                "instrument_return_series_all",
+                {"first_return_start_date": None, "points": []},
+            )
+            row.setdefault(
+                "instrument_holding_return_series",
+                {"first_return_start_date": None, "points": []},
+            )
+            row.setdefault("instrument_risk_frequency", calculation_frequency)
+            continue
         if not instrument_id:
             row.pop("price_chart", None)
             row.update(
@@ -341,12 +385,6 @@ def holdings_workspace(
     accounts = list_accounts(resolved_portfolio_id)
     transactions = list_transactions(resolved_portfolio_id)
     try:
-        statement = build_holdings_report(
-            resolved_portfolio,
-            accounts,
-            transactions,
-            as_of_date=resolved_as_of_date,
-        )
         position_lots = build_position_lots(
             resolved_portfolio_id,
             accounts,
@@ -354,16 +392,26 @@ def holdings_workspace(
             as_of_date=resolved_as_of_date,
         )
         holding_start_dates = _holding_start_dates_by_instrument(position_lots)
-        instrument_ids = [
-            str(position.get("instrument_id") or "")
-            for position in statement.get("positions", [])
-            if str(position.get("instrument_id") or "")
-        ]
+        instrument_ids = []
+        for position_lot in position_lots:
+            if str(position_lot.get("status") or "") != "open":
+                continue
+            instrument_id = str(position_lot.get("instrument_id") or "").strip()
+            if instrument_id and instrument_id not in instrument_ids:
+                instrument_ids.append(instrument_id)
         risk_basis_profile = calculation_frequency_profile_for_instruments(
             instrument_ids,
             end_date=resolved_as_of_date,
         )
         calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
+        statement = build_holdings_report(
+            resolved_portfolio,
+            accounts,
+            transactions,
+            as_of_date=resolved_as_of_date,
+            include_cash_rows=True,
+            calculation_frequency=calculation_frequency,
+        )
         market_profile_by_instrument = {
             str(position.get("instrument_id") or ""): build_instrument_holdings_market_profile(
                 str(position.get("instrument_id") or ""),
@@ -372,7 +420,7 @@ def holdings_workspace(
                 calculation_frequency=calculation_frequency,
             )
             for position in statement.get("positions", [])
-            if str(position.get("instrument_id") or "")
+            if str(position.get("instrument_id") or "") and not is_cash_holding_instrument_id(position.get("instrument_id"))
         }
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
@@ -383,9 +431,26 @@ def holdings_workspace(
 
     def market_profile_for_position(position: dict[str, object]) -> dict[str, object]:
         instrument_id = str(position.get("instrument_id") or "")
+        if is_cash_holding_instrument_id(instrument_id):
+            profile = {
+                f"price_chart_{range_key}": (
+                    position.get(f"price_chart_{range_key}")
+                    if isinstance(position.get(f"price_chart_{range_key}"), list)
+                    else []
+                )
+                for range_key in HOLDINGS_PRICE_CHART_RANGE_KEYS
+            }
+            for field_name in _HOLDINGS_TREND_FIELD_NAMES:
+                profile[field_name] = position.get(field_name)
+            profile["instrument_holding_start_date"] = position.get("instrument_holding_start_date")
+            profile["instrument_trend_as_of_date"] = position.get("instrument_trend_as_of_date")
+            profile["instrument_trend_basis"] = position.get("instrument_trend_basis")
+            profile["instrument_risk_frequency"] = position.get("instrument_risk_frequency") or calculation_frequency
+            return profile
         return (
             market_profile_by_instrument[instrument_id]
             if instrument_id
+            and instrument_id in market_profile_by_instrument
             else empty_instrument_holdings_market_profile(calculation_frequency=calculation_frequency)
         )
 
@@ -402,14 +467,21 @@ def holdings_workspace(
             "quote_status": position.get("quote_status"),
             "market_value": position.get("market_value"),
             "market_value_base": position.get("market_value_base"),
-            "day_change_pct": None,
-            "day_change_value": None,
+            "day_change_pct": position.get("day_change_pct"),
+            "day_change_value": position.get("day_change_value"),
+            "day_change_value_base": position.get("day_change_value_base"),
             "cost_basis_method": position.get("cost_basis_method"),
             "cost_basis": position.get("cost_basis"),
             "cost_basis_base": position.get("cost_basis_base"),
             "allocation": position.get("portfolio_weight"),
             **market_profile_for_position(position),
-            "coverage_status": "price-nav-fx" if position.get("market_value_base") is not None else "unpriced",
+            "coverage_status": position.get("coverage_status")
+            or ("price-nav-fx" if position.get("market_value_base") is not None else "unpriced"),
+            "account_ids": [
+                str(account_id)
+                for account_id in list(position.get("account_ids") or [])
+                if str(account_id or "")
+            ],
             "account_count": int(position.get("account_count") or 0),
             "open_position_lot_count": int(position.get("open_position_lot_count") or 0),
         }
@@ -417,11 +489,21 @@ def holdings_workspace(
     ]
     total_market_value_base = statement.get("total_market_value_base")
     total_nav_base = statement.get("total_nav_base")
-    total_cost_basis_base = sum(
-        float(row["cost_basis_base"])
-        for row in rows
-        if row.get("cost_basis_base") is not None
-    ) if rows and all(row.get("cost_basis_base") is not None for row in rows if row.get("cost_basis") is not None) else None
+    def is_cash_workspace_row(row: dict[str, object]) -> bool:
+        instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
+        return (
+            str(instrument_core.get("instrument_type") or "").strip().lower() == "cash"
+            or is_cash_holding_instrument_id(instrument_core.get("instrument_id") or row.get("line_id"))
+        )
+
+    cost_basis_rows = [row for row in rows if not is_cash_workspace_row(row)]
+    total_cost_basis_base = (
+        sum(float(row["cost_basis_base"]) for row in cost_basis_rows)
+        if cost_basis_rows and all(row.get("cost_basis_base") is not None for row in cost_basis_rows)
+        else 0.0
+        if not cost_basis_rows
+        else None
+    )
 
     return {
         "portfolio_id": resolved_portfolio["portfolio_id"],

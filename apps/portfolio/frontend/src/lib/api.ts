@@ -59,6 +59,17 @@ export type SparklinePoint = {
   value: number
 }
 
+export type ReturnSeriesPoint = {
+  start_date?: string | null
+  date: string
+  value: number
+}
+
+export type HoldingReturnSeries = {
+  first_return_start_date?: string | null
+  points: ReturnSeriesPoint[]
+}
+
 export type PortfolioInstrumentChartRangeKey = '1m' | '3m' | '6m' | 'ytd' | '1y' | 'all'
 
 export type PortfolioInstrumentPriceChartPoint = {
@@ -417,6 +428,7 @@ export type PortfolioHoldingRow = {
   market_value_base?: number | null
   day_change_pct: number | null
   day_change_value: number | null
+  day_change_value_base?: number | null
   cost_basis_method?: 'fifo' | 'moving_average' | 'mixed' | string | null
   cost_basis: number | null
   cost_basis_base?: number | null
@@ -436,11 +448,18 @@ export type PortfolioHoldingRow = {
   instrument_volatility_3m?: number | null
   instrument_volatility_6m?: number | null
   instrument_volatility_1y?: number | null
+  instrument_return_series_1m?: HoldingReturnSeries | null
+  instrument_return_series_3m?: HoldingReturnSeries | null
+  instrument_return_series_6m?: HoldingReturnSeries | null
+  instrument_return_series_1y?: HoldingReturnSeries | null
+  instrument_return_series_all?: HoldingReturnSeries | null
+  instrument_holding_return_series?: HoldingReturnSeries | null
   instrument_current_drawdown?: number | null
   instrument_max_drawdown?: number | null
   instrument_holding_max_drawdown?: number | null
   instrument_holding_start_date?: string | null
   coverage_status: string
+  account_ids?: string[]
   account_count?: number
   open_position_lot_count?: number
 }
@@ -1401,6 +1420,16 @@ export type PortfolioTransactionDeleteResponse = {
   transfer_group_id?: string | null
 }
 
+export type PortfolioTableViewScope = 'holdings' | 'performance_calculation'
+
+export type PortfolioTableViewStoreResponse<TStore = unknown> = {
+  portfolio_id: string
+  view_scope: PortfolioTableViewScope
+  store: TStore | null
+  created_at: string | null
+  updated_at: string | null
+}
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 const GET_CACHE_TTL_MS = 60_000
 const GET_CACHE_MAX_ENTRIES = 128
@@ -1584,6 +1613,31 @@ export function reorderPortfolios(portfolioIds: string[]) {
     method: 'POST',
     body: JSON.stringify({ portfolio_ids: portfolioIds }),
   })
+}
+
+export function getPortfolioTableViewStore<TStore>(
+  portfolioId: string,
+  viewScope: PortfolioTableViewScope,
+) {
+  return fetchJson<PortfolioTableViewStoreResponse<TStore>>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/table-views/${viewScope}`,
+  )
+}
+
+export function savePortfolioTableViewStore<TStore>(
+  portfolioId: string,
+  viewScope: PortfolioTableViewScope,
+  store: TStore,
+) {
+  return fetchJson<PortfolioTableViewStoreResponse<TStore>>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/table-views/${viewScope}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ store }),
+    },
+  )
 }
 
 export function getPortfolioAccounts(portfolioId: string) {

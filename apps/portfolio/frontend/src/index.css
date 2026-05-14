@@ -20,6 +20,11 @@
   --portfolio-date-control-height: 30px;
   --portfolio-date-control-width: 136px;
   --portfolio-date-picker-size: 16px;
+  --portfolio-table-font-size: 13px;
+  --portfolio-table-line-height: 1.35;
+  --portfolio-table-cell-padding: 10px 12px;
+  --portfolio-table-header-background: var(--portfolio-band);
+  --portfolio-table-group-background: var(--portfolio-band);
 }
 
 * {
@@ -1086,14 +1091,16 @@ input[type='checkbox'] {
 
 .overview-key-metrics-table {
   border-collapse: collapse;
+  border-top: 1px solid var(--portfolio-line-strong);
+  border-bottom: 1px solid var(--portfolio-line-strong);
 }
 
 .overview-key-metrics-table thead th {
-  padding: 11px 0 7px;
+  padding: var(--portfolio-table-cell-padding);
   border-bottom: 1px solid var(--portfolio-line-strong);
-  background: transparent;
+  background: var(--portfolio-table-header-background);
   color: var(--portfolio-ink);
-  font-size: 12px;
+  font-size: var(--portfolio-table-font-size);
   font-weight: 400;
   letter-spacing: 0.01em;
   text-transform: none;
@@ -1101,7 +1108,7 @@ input[type='checkbox'] {
 
 .overview-key-metrics-table tbody th,
 .overview-key-metrics-table tbody td {
-  padding: 7px 0;
+  padding: var(--portfolio-table-cell-padding);
   border-bottom: 1px solid var(--portfolio-line);
   background: transparent;
   vertical-align: top;
@@ -1116,15 +1123,17 @@ input[type='checkbox'] {
   width: 42%;
   padding-right: 16px;
   color: var(--portfolio-muted);
-  font-size: 12px;
+  font-size: var(--portfolio-table-font-size);
   font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
   white-space: normal;
 }
 
 .overview-key-metrics-table tbody td {
   color: var(--portfolio-ink);
-  font-size: 13px;
-  line-height: 1.35;
+  font-size: var(--portfolio-table-font-size);
+  line-height: var(--portfolio-table-line-height);
   text-align: right;
   white-space: normal;
 }
@@ -1132,7 +1141,7 @@ input[type='checkbox'] {
 .overview-key-metrics-table tbody td strong {
   display: block;
   color: var(--portfolio-ink);
-  font-size: 13px;
+  font-size: var(--portfolio-table-font-size);
   font-weight: 400;
 }
 
@@ -1140,16 +1149,19 @@ input[type='checkbox'] {
   display: block;
   margin-top: 2px;
   color: var(--portfolio-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .overview-key-metric-emphasis {
-  font-size: 15px !important;
+  font-size: var(--portfolio-table-font-size);
 }
 
 .overview-key-metric-emphasis strong {
-  font-size: 15px !important;
+  font-size: var(--portfolio-table-font-size);
+  font-weight: 400;
 }
 
 .overview-sleeve-donut {
@@ -1441,7 +1453,7 @@ input[type='checkbox'] {
 
 .performance-summary-table thead th,
 .performance-summary-table tbody th {
-  background: var(--portfolio-band);
+  background: var(--portfolio-table-header-background);
 }
 
 .performance-summary-table tbody th {
@@ -1688,7 +1700,7 @@ input[type='checkbox'] {
   min-width: 840px;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: 12px;
+  font-size: var(--portfolio-table-font-size);
 }
 
 .risk-covariance-table {
@@ -1702,7 +1714,7 @@ input[type='checkbox'] {
 .risk-heatmap-table th,
 .risk-heatmap-table td {
   border: 1px solid var(--portfolio-line);
-  padding: 8px 9px;
+  padding: var(--portfolio-table-cell-padding);
   text-align: right;
   white-space: nowrap;
 }
@@ -1712,7 +1724,7 @@ input[type='checkbox'] {
   position: sticky;
   left: 0;
   z-index: 1;
-  background: var(--portfolio-band);
+  background: var(--portfolio-table-header-background);
   color: var(--portfolio-ink);
   text-align: left;
 }
@@ -2529,6 +2541,7 @@ input[type='checkbox'] {
 
 .holdings-main-table {
   table-layout: fixed;
+  background: #ffffff;
 }
 
 .holdings-main-table th,
@@ -2539,8 +2552,6 @@ input[type='checkbox'] {
 
 .holdings-main-table thead th {
   position: relative;
-  font-weight: 400;
-  letter-spacing: 0.01em;
 }
 
 .holdings-th-sortable:hover,
@@ -2561,6 +2572,16 @@ input[type='checkbox'] {
 
 .holdings-main-table th.numeric-cell .holdings-th-sortable {
   justify-content: flex-end;
+}
+
+.holdings-main-table .center-cell {
+  text-align: center;
+  white-space: nowrap;
+}
+
+.holdings-main-table th.center-cell .holdings-th-sortable {
+  justify-content: center;
+  width: 100%;
 }
 
 .holdings-main-table th.chart-cell,
@@ -2602,12 +2623,9 @@ input[type='checkbox'] {
 }
 
 .holdings-group-row td {
-  padding: 10px 12px;
   border-top: 1px solid var(--portfolio-line-strong);
-  border-bottom: 1px solid var(--portfolio-line);
-  background: var(--portfolio-band);
-  color: var(--portfolio-muted);
-  font-weight: 400;
+  background: var(--portfolio-table-group-background);
+  color: var(--portfolio-ink);
 }
 
 .holdings-group-row .holdings-group-name-cell {
@@ -2619,8 +2637,6 @@ input[type='checkbox'] {
   align-items: center;
   gap: 10px;
   color: var(--portfolio-ink);
-  font-size: 14px;
-  font-weight: 500;
   text-align: left;
 }
 
@@ -2630,12 +2646,16 @@ input[type='checkbox'] {
 
 .holdings-group-count {
   color: var(--portfolio-muted);
-  font-size: 12px;
-  font-weight: 400;
 }
 
 .holdings-total-row td {
   border-top: 1px solid var(--portfolio-line-strong);
+}
+
+.holdings-noncash-row td {
+  border-top: 1px solid var(--portfolio-line);
+  border-bottom: 1px solid var(--portfolio-line);
+  background: var(--portfolio-table-group-background);
 }
 
 .holdings-modal-backdrop {
@@ -2966,11 +2986,11 @@ input[type='checkbox'] {
 
 .holdings-summary-matrix th,
 .holdings-summary-table th {
-  background: var(--portfolio-band);
+  background: var(--portfolio-table-header-background);
 }
 
 .holdings-summary-matrix tbody td {
-  font-size: 18px;
+  font-size: var(--portfolio-table-font-size);
   font-weight: 400;
   color: var(--portfolio-ink);
 }
@@ -3987,7 +4007,7 @@ input[type='checkbox'] {
 }
 
 .accounts-table thead th {
-  background: var(--portfolio-band);
+  background: var(--portfolio-table-header-background);
 }
 
 .account-row-active {
@@ -4556,7 +4576,7 @@ input[type='checkbox'] {
 }
 
 .taxonomy-levels-table {
-  border-top: 1.5px solid var(--portfolio-ink);
+  border-top: 1px solid var(--portfolio-line-strong);
   border-bottom: 1px solid var(--portfolio-line-strong);
 }
 
@@ -4565,17 +4585,9 @@ input[type='checkbox'] {
 }
 
 .taxonomy-levels-table thead th {
-  padding-top: 10px;
-  padding-bottom: 10px;
   border-bottom: 1px solid var(--portfolio-line-strong);
-  color: #374151;
-  background: transparent;
-}
-
-.taxonomy-levels-table td {
-  vertical-align: middle;
-  padding-top: 10px;
-  padding-bottom: 10px;
+  color: var(--portfolio-ink);
+  background: var(--portfolio-table-header-background);
 }
 
 .taxonomy-levels-table input,
@@ -4916,17 +4928,8 @@ input[type='checkbox'] {
 
 .transactions-table thead th {
   border-bottom: 1px solid var(--portfolio-line-strong);
-  background: var(--portfolio-band);
+  background: var(--portfolio-table-header-background);
   color: var(--portfolio-ink);
-}
-
-.performance-summary-table thead th,
-.performance-summary-table tbody th,
-.transactions-table thead th,
-.risk-heatmap-table thead th,
-.risk-heatmap-table tbody th {
-  font-weight: 400;
-  letter-spacing: 0.01em;
 }
 
 .transactions-table tbody tr:hover,
@@ -5409,22 +5412,29 @@ table {
 
 th,
 td {
-  padding: 10px 12px;
+  padding: var(--portfolio-table-cell-padding);
   border-bottom: 1px solid var(--portfolio-line);
   text-align: left;
-  font-size: 13px;
-  line-height: 1.35;
+  color: var(--portfolio-ink);
+  font-size: var(--portfolio-table-font-size);
+  font-weight: 400;
+  line-height: var(--portfolio-table-line-height);
   white-space: nowrap;
 }
 
 th {
-  border-bottom-color: var(--portfolio-line-strong);
-  background: var(--portfolio-band);
-  color: #4b5563;
-  font-size: 12px;
+  background: #ffffff;
+  color: var(--portfolio-ink);
+  font-size: var(--portfolio-table-font-size);
   font-weight: 400;
+  text-transform: none;
+}
+
+thead th {
+  border-bottom-color: var(--portfolio-line-strong);
+  background: var(--portfolio-table-header-background);
   letter-spacing: 0.01em;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 td,
@@ -5824,34 +5834,26 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .performance-metric-column-title {
   padding: 0 0 7px;
   color: var(--portfolio-ink);
-  font-size: 13px;
-  font-weight: 500;
+  font-size: var(--portfolio-table-font-size);
+  font-weight: 400;
 }
 
 .performance-metric-table {
   width: 100%;
   border-collapse: collapse;
-  border-top: 2px solid var(--portfolio-ink);
+  border-top: 1px solid var(--portfolio-line-strong);
   border-bottom: 1px solid var(--portfolio-line-strong);
-  font-size: 12px;
+  font-size: var(--portfolio-table-font-size);
   table-layout: fixed;
 }
 
 .performance-metric-table th,
 .performance-metric-table td {
-  height: 34px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--portfolio-line);
-  background: #ffffff;
   vertical-align: middle;
 }
 
 .performance-metric-table thead th {
-  height: 30px;
-  border-bottom: 1px solid var(--portfolio-line-strong);
-  color: var(--portfolio-muted);
-  font-size: 11px;
-  font-weight: 400;
+  color: var(--portfolio-ink);
 }
 
 .performance-metric-table tbody tr:last-child th,
@@ -5904,8 +5906,8 @@ input[type='date']::-webkit-calendar-picker-indicator {
   max-width: 100%;
   align-items: center;
   gap: 6px;
-  color: var(--portfolio-ink);
-  font-size: 12px;
+  color: var(--portfolio-muted);
+  font-size: var(--portfolio-table-font-size);
   font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
@@ -5923,9 +5925,9 @@ input[type='date']::-webkit-calendar-picker-indicator {
   table-layout: fixed;
 }
 
-.performance-return-matrix-table th,
+.performance-return-matrix-table tbody th,
 .performance-return-matrix-table td,
-.performance-calculation-table th,
+.performance-calculation-table tbody th,
 .performance-calculation-table td {
   background: #ffffff;
 }
@@ -5944,7 +5946,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 }
 
 .performance-return-cell {
-  font-size: 12px;
+  font-size: var(--portfolio-table-font-size);
 }
 
 .coverage-dot {
@@ -5969,6 +5971,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .performance-calculation-table {
   min-width: 1640px;
+  background: #ffffff;
 }
 
 .performance-calculation-table th:first-child,
@@ -5981,16 +5984,28 @@ input[type='date']::-webkit-calendar-picker-indicator {
   text-align: right;
 }
 
-.performance-calculation-table thead th:first-child,
+.performance-calculation-table th .holdings-th-sortable {
+  max-width: 100%;
+}
+
+.performance-calculation-table th.performance-cell-number .holdings-th-sortable {
+  justify-content: flex-end;
+  width: 100%;
+  text-align: right;
+}
+
+.performance-calculation-table thead th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--portfolio-table-header-background);
+}
+
 .performance-calculation-table tbody th:first-child {
   position: sticky;
   left: 0;
   z-index: 1;
   background: #ffffff;
-}
-
-.performance-calculation-table tbody th:first-child {
-  background: #fff;
 }
 
 .performance-calculation-boundary-row th,
@@ -6004,8 +6019,11 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .performance-calculation-group-row th,
 .performance-calculation-group-row td {
-  background: #f8fafc;
-  font-weight: 400;
+  background: var(--portfolio-table-group-background);
+}
+
+.performance-calculation-table tbody .performance-calculation-group-row th:first-child {
+  background: var(--portfolio-table-group-background);
 }
 
 .performance-calculation-child-row th,
@@ -6021,8 +6039,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .performance-calculation-total-row th,
 .performance-calculation-total-row td {
   border-top: 1px solid var(--portfolio-line-strong);
-  background: #fff;
-  font-weight: 400;
+  background: var(--portfolio-table-group-background);
 }
 
 .performance-calculation-final-row th,
@@ -6032,6 +6049,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .performance-calculation-table .table-empty-cell {
   text-align: center;
+  background: #ffffff;
 }
 
 .table-empty-cell {
@@ -6476,24 +6494,6 @@ input[type='date']::-webkit-calendar-picker-indicator {
 .portfolio-workspace-page .overview-key-metrics {
   border-top: 1px solid var(--portfolio-line-strong);
   border-bottom: 1px solid var(--portfolio-line-strong);
-}
-
-.portfolio-workspace-page .overview-key-metrics-table tbody th,
-.portfolio-workspace-page .overview-key-metrics-table tbody td small {
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.portfolio-workspace-page .overview-key-metrics-table thead th {
-  color: var(--portfolio-ink);
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.portfolio-workspace-page .overview-key-metrics-table tbody td strong {
-  font-weight: 400;
 }
 
 /* Portfolio overview chart follows the Fund Detail overview chart grammar. */

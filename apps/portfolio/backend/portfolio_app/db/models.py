@@ -62,6 +62,10 @@ class PortfolioRecordModel(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    table_view_stores: Mapped[list["PortfolioTableViewStoreModel"]] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
 
 
 class PortfolioDailySnapshotModel(Base):
@@ -159,6 +163,21 @@ class PortfolioCalculationStateModel(Base):
     error_message: Mapped[str | None] = mapped_column(String)
 
     portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="calculation_state")
+
+
+class PortfolioTableViewStoreModel(Base):
+    __tablename__ = "portfolio_table_view_store"
+
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    view_scope: Mapped[str] = mapped_column(String, primary_key=True)
+    store_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="table_view_stores")
 
 
 class AccountRecordModel(Base):

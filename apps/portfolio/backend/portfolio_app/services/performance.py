@@ -119,6 +119,147 @@ def _normalized_currency(value: object, *, fallback: str = "USD") -> str:
     return normalized or fallback
 
 
+def cash_holding_instrument_id(currency: str) -> str:
+    return f"cash:{_normalized_currency(currency, fallback='CASH')}"
+
+
+def is_cash_holding_instrument_id(instrument_id: object) -> bool:
+    return str(instrument_id or "").strip().lower().startswith("cash:")
+
+
+def _cash_holding_instrument_ref(currency: str) -> dict[str, object]:
+    normalized_currency = _normalized_currency(currency)
+    instrument_id = cash_holding_instrument_id(normalized_currency)
+    return {
+        "instrument_id": instrument_id,
+        "instrument_name": f"Cash ({normalized_currency})",
+        "instrument_type": "cash",
+        "currency": normalized_currency,
+        "identifiers": [
+            {
+                "identifier_type": "cash_currency",
+                "identifier_value": normalized_currency,
+                "is_primary": True,
+            }
+        ],
+    }
+
+
+def _empty_return_series_payload() -> dict[str, object]:
+    return {"first_return_start_date": None, "points": []}
+
+
+def _cash_fx_conversion_detail(
+    *,
+    currency: str,
+    base_currency: str,
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+) -> dict[str, object] | None:
+    normalized_currency = _normalized_currency(currency)
+    normalized_base = _normalized_currency(base_currency)
+    if normalized_currency == normalized_base:
+        return None
+
+    fx_instrument_id: str | None = None
+    invert_values = False
+    if (normalized_currency, normalized_base) in direct_fx_instruments:
+        fx_instrument_id = direct_fx_instruments[(normalized_currency, normalized_base)]
+    elif (normalized_base, normalized_currency) in direct_fx_instruments:
+        fx_instrument_id = direct_fx_instruments[(normalized_base, normalized_currency)]
+        invert_values = True
+    if not fx_instrument_id:
+        return None
+
+    detail = _instrument_detail_cache_get(fx_instrument_id, instrument_detail_cache)
+    if not isinstance(detail, dict):
+        return None
+
+    transformed_detail = deepcopy(detail)
+    transformed_detail["instrument_id"] = cash_holding_instrument_id(normalized_currency)
+    transformed_detail["instrument_name"] = f"Cash ({normalized_currency})"
+    transformed_detail["instrument_type"] = "cash"
+    transformed_detail["currency"] = normalized_base
+    transformed_detail["identifiers"] = [
+        {
+            "identifier_type": "cash_currency",
+            "identifier_value": normalized_currency,
+            "is_primary": True,
+        }
+    ]
+    transformed_market_data: list[dict[str, object]] = []
+    raw_market_data = detail.get("market_data")
+    if isinstance(raw_market_data, list):
+        for raw_point in raw_market_data:
+            if not isinstance(raw_point, dict):
+                continue
+            value = _safe_float(raw_point.get("value"))
+            if value is None or value <= 1e-12:
+                continue
+            transformed_value = (1.0 / value) if invert_values else value
+            transformed_point = dict(raw_point)
+            transformed_point["value"] = str(transformed_value)
+            transformed_point["currency"] = normalized_base
+            transformed_point["metric_family"] = "fx"
+            transformed_market_data.append(transformed_point)
+    transformed_detail["market_data"] = transformed_market_data
+    return transformed_detail
+
+
+def _cash_holding_market_profile(
+    *,
+    currency: str,
+    base_currency: str,
+    as_of_date: date,
+    calculation_frequency: CalculationFrequency,
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+) -> dict[str, object]:
+    is_base_cash = _normalized_currency(currency) == _normalized_currency(base_currency)
+    if not is_base_cash:
+        conversion_detail = _cash_fx_conversion_detail(
+            currency=currency,
+            base_currency=base_currency,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        if conversion_detail is not None:
+            return build_instrument_holdings_market_profile_from_detail(
+                conversion_detail,
+                instrument_id=cash_holding_instrument_id(currency),
+                as_of_date=as_of_date,
+                calculation_frequency=calculation_frequency,
+            )
+    zero_or_none = 0.0 if is_base_cash else None
+    return {
+        "price_chart_1m": [],
+        "price_chart_3m": [],
+        "price_chart_6m": [],
+        "price_chart_1y": [],
+        "instrument_trend_as_of_date": as_of_date.isoformat(),
+        "instrument_trend_basis": "cash_balance",
+        "instrument_risk_frequency": calculation_frequency,
+        "instrument_return_1w": zero_or_none,
+        "instrument_return_mtd": zero_or_none,
+        "instrument_return_ytd": zero_or_none,
+        "instrument_return_1y": zero_or_none,
+        "instrument_volatility_1m": zero_or_none,
+        "instrument_volatility_3m": zero_or_none,
+        "instrument_volatility_6m": zero_or_none,
+        "instrument_volatility_1y": zero_or_none,
+        "instrument_return_series_1m": _empty_return_series_payload(),
+        "instrument_return_series_3m": _empty_return_series_payload(),
+        "instrument_return_series_6m": _empty_return_series_payload(),
+        "instrument_return_series_1y": _empty_return_series_payload(),
+        "instrument_return_series_all": _empty_return_series_payload(),
+        "instrument_holding_return_series": _empty_return_series_payload(),
+        "instrument_current_drawdown": zero_or_none,
+        "instrument_max_drawdown": zero_or_none,
+        "instrument_holding_max_drawdown": zero_or_none,
+        "instrument_holding_start_date": None,
+    }
+
+
 _CALCULATION_DETAIL_SUFFIX = "_detail"
 _CALCULATION_DETAIL_GROUP_SEPARATOR = "\x1f"
 _CALCULATION_DETAIL_PARENT_AXES = {"instrument", "account", "instrument_type", "currency", "taxonomy"}
@@ -319,6 +460,68 @@ def _select_market_point_as_of(
     return None
 
 
+def _previous_market_point_for_selected_point(
+    *,
+    detail: dict[str, object],
+    selected_point: dict[str, object] | None,
+) -> dict[str, object] | None:
+    if selected_point is None:
+        return None
+    quote_basis = str(selected_point.get("quote_basis") or "").strip()
+    selected_date = _parse_iso_date(selected_point.get("as_of_date"))
+    if not quote_basis or selected_date is None:
+        return None
+    for point in reversed(_market_points_by_basis(detail).get(quote_basis, [])):
+        point_date = _parse_iso_date(point.get("as_of_date"))
+        if point_date is None or point_date >= selected_date:
+            continue
+        resolved_value = _safe_float(point.get("value"))
+        if resolved_value is None:
+            continue
+        return {
+            "value": resolved_value,
+            "as_of_date": point_date,
+            "currency": _normalized_currency(
+                point.get("currency"),
+                fallback=str(detail.get("currency") or "USD"),
+            ),
+            "metric_family": str(point.get("metric_family") or ""),
+            "quote_basis": quote_basis,
+            "provider": point.get("provider"),
+            "status": market_data_status(point),
+            "stale": False,
+        }
+    return None
+
+
+def _holding_day_change_metrics(
+    *,
+    quantity: float,
+    current_price: float | None,
+    previous_price: float | None,
+    instrument_ref: dict[str, object] | None,
+) -> tuple[float | None, float | None]:
+    if current_price is None or previous_price is None or abs(previous_price) <= 1e-12:
+        return None, None
+    day_change_pct = current_price / previous_price - 1.0
+    current_market_value = _position_market_value(
+        quantity=quantity,
+        last_price=current_price,
+        instrument_ref=instrument_ref,
+    )
+    previous_market_value = _position_market_value(
+        quantity=quantity,
+        last_price=previous_price,
+        instrument_ref=instrument_ref,
+    )
+    day_change_value = (
+        current_market_value - previous_market_value
+        if current_market_value is not None and previous_market_value is not None
+        else None
+    )
+    return day_change_pct, day_change_value
+
+
 def _fx_direct_instrument_map(fx_payload: dict[str, object]) -> dict[tuple[str, str], str]:
     direct_instruments: dict[tuple[str, str], str] = {}
     for item in fx_payload.get("rates", []):
@@ -367,6 +570,40 @@ def _direct_fx_point_as_of(
         "status": market_data_status(point),
         "stale": point_date < as_of_date,
     }
+
+
+def _direct_fx_point_before(
+    *,
+    instrument_id: str,
+    before_date: date,
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+) -> dict[str, object] | None:
+    detail = _instrument_detail_cache_get(instrument_id, instrument_detail_cache)
+    if not isinstance(detail, dict):
+        return None
+    market_data = detail.get("market_data", [])
+    if not isinstance(market_data, list):
+        return None
+    points = [
+        point
+        for point in market_data
+        if is_usable_market_data_point(point)
+        and str(point.get("metric_family") or "") == "fx"
+        and str(point.get("quote_basis") or "") == "spot"
+    ]
+    points.sort(key=lambda item: str(item.get("as_of_date") or ""))
+    for point in reversed(points):
+        point_date = _parse_iso_date(point.get("as_of_date"))
+        rate = _safe_float(point.get("value"))
+        if point_date is None or point_date >= before_date or rate is None or rate <= 0:
+            continue
+        return {
+            "rate": rate,
+            "as_of_date": point_date,
+            "status": market_data_status(point),
+            "stale": False,
+        }
+    return None
 
 
 def resolve_fx_rate_on(
@@ -439,7 +676,101 @@ def resolve_fx_rate_on(
     quote_rate = _safe_float(quote_leg.get("rate"))
     base_date = _parse_iso_date(base_leg.get("as_of_date"))
     quote_date = _parse_iso_date(quote_leg.get("as_of_date"))
-    if base_rate is None or quote_rate is None or base_rate <= 0 or base_date is None or quote_date is None:
+    if (
+        base_rate is None
+        or quote_rate is None
+        or base_rate <= 0
+        or quote_rate <= 0
+        or base_date is None
+        or quote_date is None
+    ):
+        return None
+    return {
+        "rate": quote_rate / base_rate,
+        "as_of_date": min(base_date, quote_date),
+        "status": "complete",
+        "stale": bool(base_leg.get("stale")) or bool(quote_leg.get("stale")),
+    }
+
+
+def resolve_previous_fx_rate_before(
+    *,
+    before_date: date,
+    base_currency: str,
+    quote_currency: str,
+    direct_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+) -> dict[str, object] | None:
+    normalized_base = _normalized_currency(base_currency, fallback="")
+    normalized_quote = _normalized_currency(quote_currency, fallback="")
+    if not normalized_base or not normalized_quote:
+        return None
+    if normalized_base == normalized_quote:
+        return {
+            "rate": 1.0,
+            "as_of_date": before_date,
+            "status": "complete",
+            "stale": False,
+        }
+
+    direct_instrument_id = direct_instruments.get((normalized_base, normalized_quote))
+    if direct_instrument_id:
+        direct_point = _direct_fx_point_before(
+            instrument_id=direct_instrument_id,
+            before_date=before_date,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        if direct_point is not None:
+            return direct_point
+
+    inverse_instrument_id = direct_instruments.get((normalized_quote, normalized_base))
+    if inverse_instrument_id:
+        inverse_point = _direct_fx_point_before(
+            instrument_id=inverse_instrument_id,
+            before_date=before_date,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        if inverse_point is not None:
+            return {
+                "rate": 1.0 / float(inverse_point["rate"]),
+                "as_of_date": inverse_point["as_of_date"],
+                "status": inverse_point["status"],
+                "stale": bool(inverse_point["stale"]),
+            }
+
+    pivot_currency = "USD"
+    if normalized_base == pivot_currency or normalized_quote == pivot_currency:
+        return None
+
+    base_leg = resolve_previous_fx_rate_before(
+        before_date=before_date,
+        base_currency=pivot_currency,
+        quote_currency=normalized_base,
+        direct_instruments=direct_instruments,
+        instrument_detail_cache=instrument_detail_cache,
+    )
+    quote_leg = resolve_previous_fx_rate_before(
+        before_date=before_date,
+        base_currency=pivot_currency,
+        quote_currency=normalized_quote,
+        direct_instruments=direct_instruments,
+        instrument_detail_cache=instrument_detail_cache,
+    )
+    if base_leg is None or quote_leg is None:
+        return None
+
+    base_rate = _safe_float(base_leg.get("rate"))
+    quote_rate = _safe_float(quote_leg.get("rate"))
+    base_date = _parse_iso_date(base_leg.get("as_of_date"))
+    quote_date = _parse_iso_date(quote_leg.get("as_of_date"))
+    if (
+        base_rate is None
+        or quote_rate is None
+        or base_rate <= 0
+        or quote_rate <= 0
+        or base_date is None
+        or quote_date is None
+    ):
         return None
     return {
         "rate": quote_rate / base_rate,
@@ -473,6 +804,117 @@ def convert_amount_on(
     if rate is None or rate <= 0:
         return None, False
     return float(amount) * rate, bool(resolved_fx.get("stale"))
+
+
+def _cash_day_change_metrics(
+    *,
+    amount: float,
+    currency: str,
+    base_currency: str,
+    as_of_date: date,
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+) -> tuple[float | None, float | None]:
+    normalized_currency = _normalized_currency(currency)
+    normalized_base = _normalized_currency(base_currency)
+    if normalized_currency == normalized_base:
+        return 0.0, 0.0
+
+    current_fx = resolve_fx_rate_on(
+        as_of_date=as_of_date,
+        base_currency=normalized_currency,
+        quote_currency=normalized_base,
+        direct_instruments=direct_fx_instruments,
+        instrument_detail_cache=instrument_detail_cache,
+    )
+    current_rate = _safe_float((current_fx or {}).get("rate"))
+    current_rate_date = _parse_iso_date((current_fx or {}).get("as_of_date"))
+    if current_rate is None or current_rate <= 0 or current_rate_date is None:
+        return None, None
+
+    previous_fx = resolve_previous_fx_rate_before(
+        before_date=current_rate_date,
+        base_currency=normalized_currency,
+        quote_currency=normalized_base,
+        direct_instruments=direct_fx_instruments,
+        instrument_detail_cache=instrument_detail_cache,
+    )
+    previous_rate = _safe_float((previous_fx or {}).get("rate"))
+    if previous_rate is None or previous_rate <= 0:
+        return None, None
+
+    day_change_pct = current_rate / previous_rate - 1.0
+    return day_change_pct, amount * (current_rate - previous_rate)
+
+
+def _build_cash_holding_rows(
+    *,
+    cash_balances: list[dict[str, object]],
+    as_of_date: date,
+    base_currency: str,
+    direct_fx_instruments: dict[tuple[str, str], str],
+    instrument_detail_cache: dict[str, dict[str, object] | None],
+    calculation_frequency: CalculationFrequency,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for balance in cash_balances:
+        currency = _normalized_currency(balance.get("currency"), fallback=base_currency)
+        amount = _safe_float(balance.get("amount"))
+        if amount is None or abs(amount) <= 1e-9:
+            continue
+        amount_base = _safe_float(balance.get("amount_base"))
+        instrument_id = cash_holding_instrument_id(currency)
+        day_change_pct, day_change_value_base = _cash_day_change_metrics(
+            amount=amount,
+            currency=currency,
+            base_currency=base_currency,
+            as_of_date=as_of_date,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+        )
+        is_base_cash = currency == _normalized_currency(base_currency)
+        account_ids = sorted(str(account_id) for account_id in list(balance.get("account_ids") or []) if str(account_id or ""))
+        rows.append(
+            {
+                "position_id": instrument_id,
+                "instrument_id": instrument_id,
+                "account_id": instrument_id,
+                "line_id": instrument_id,
+                "instrument_ref": _cash_holding_instrument_ref(currency),
+                "quantity": amount,
+                "cost_basis_method": None,
+                "cost_basis": None,
+                "cost_basis_base": None,
+                "last_price": 1.0,
+                "quote_as_of_date": as_of_date.isoformat(),
+                "quote_metric_family": "cash",
+                "quote_basis": "cash_balance",
+                "quote_provider": "ledger",
+                "quote_status": "complete" if amount_base is not None else "unpriced",
+                "market_value": amount,
+                "market_value_base": amount_base,
+                "day_change_pct": day_change_pct,
+                "day_change_value": 0.0 if is_base_cash else None,
+                "day_change_value_base": day_change_value_base,
+                "currency": currency,
+                "portfolio_weight": None,
+                "account_ids": account_ids,
+                "account_count": len(account_ids) if account_ids else 1,
+                "open_position_lot_count": 0,
+                "price_chart": [],
+                **_cash_holding_market_profile(
+                    currency=currency,
+                    base_currency=base_currency,
+                    as_of_date=as_of_date,
+                    calculation_frequency=calculation_frequency,
+                    direct_fx_instruments=direct_fx_instruments,
+                    instrument_detail_cache=instrument_detail_cache,
+                ),
+                "coverage_status": "cash" if amount_base is not None else "unpriced",
+            }
+        )
+    rows.sort(key=lambda item: str(item.get("currency") or ""))
+    return rows
 
 
 def _position_buckets_from_lots(position_lots: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -610,6 +1052,7 @@ def _resolve_snapshot_window(
 def _build_materialized_holding_rows(
     *,
     account_instrument_buckets: list[dict[str, object]],
+    cash_balances: list[dict[str, object]] | None = None,
     as_of_date: date,
     base_currency: str,
     direct_fx_instruments: dict[tuple[str, str], str],
@@ -641,12 +1084,33 @@ def _build_materialized_holding_rows(
             if isinstance(detail, dict)
             else None
         )
+        previous_price_point = (
+            _previous_market_point_for_selected_point(detail=detail, selected_point=price_point)
+            if isinstance(detail, dict)
+            else None
+        )
         holding_start_date = _parse_iso_date(bucket.get("holding_start_date"))
         last_price = _safe_float((price_point or {}).get("value"))
+        previous_price = _safe_float((previous_price_point or {}).get("value"))
+        instrument_ref = bucket.get("instrument_ref") if isinstance(bucket.get("instrument_ref"), dict) else None
         market_value = _position_market_value(
             quantity=quantity,
             last_price=last_price,
-            instrument_ref=(bucket.get("instrument_ref") if isinstance(bucket.get("instrument_ref"), dict) else None),
+            instrument_ref=instrument_ref,
+        )
+        day_change_pct, day_change_value = _holding_day_change_metrics(
+            quantity=quantity,
+            current_price=last_price,
+            previous_price=previous_price,
+            instrument_ref=instrument_ref,
+        )
+        converted_day_change_value, _ = convert_amount_on(
+            day_change_value,
+            as_of_date=as_of_date,
+            from_currency=currency,
+            to_currency=base_currency,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
         )
         converted_market_value, _ = convert_amount_on(
             market_value,
@@ -658,7 +1122,7 @@ def _build_materialized_holding_rows(
         )
         instrument_core = normalize_instrument_core(
             instrument_id,
-            bucket.get("instrument_ref") if isinstance(bucket.get("instrument_ref"), dict) else None,
+            instrument_ref,
             fallback_currency=currency,
         )
         instrument_market_profile = (
@@ -690,6 +1154,9 @@ def _build_materialized_holding_rows(
                 "quote_status": (price_point or {}).get("status"),
                 "market_value": market_value,
                 "market_value_base": converted_market_value,
+                "day_change_pct": day_change_pct,
+                "day_change_value": day_change_value,
+                "day_change_value_base": converted_day_change_value,
                 "currency": currency,
                 "portfolio_weight": (
                     converted_market_value / nav
@@ -713,6 +1180,17 @@ def _build_materialized_holding_rows(
             }
         )
 
+    rows.extend(
+        _build_cash_holding_rows(
+            cash_balances=list(cash_balances or []),
+            as_of_date=as_of_date,
+            base_currency=base_currency,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
+            calculation_frequency=calculation_frequency,
+        )
+    )
+    _apply_position_portfolio_weights(rows, nav)
     rows.sort(
         key=lambda item: (
             str(item.get("account_id") or ""),
@@ -1524,12 +2002,14 @@ def build_daily_portfolio_snapshots(
         pending_settlement_complete = True
         stale_fx_flag = False
         cash_balances_by_currency: dict[str, float] = defaultdict(float)
+        cash_account_ids_by_currency: dict[str, set[str]] = defaultdict(set)
         for posting in postings:
             cash_delta = _safe_float(posting.get("cash_amount_delta"))
             if cash_delta is None:
                 continue
             posting_currency = _normalized_currency(posting.get("currency"), fallback=base_currency)
             posting_effective_date = ledger_posting_effective_date_iso(posting)
+            posting_account_id = str(posting.get("account_id") or "").strip()
             converted_cash_delta, is_stale = convert_amount_on(
                 cash_delta,
                 as_of_date=as_of_date,
@@ -1540,6 +2020,9 @@ def build_daily_portfolio_snapshots(
             )
             if converted_cash_delta is None:
                 if posting_effective_date <= as_of_iso:
+                    cash_balances_by_currency[posting_currency] += cash_delta
+                    if posting_account_id:
+                        cash_account_ids_by_currency[posting_currency].add(posting_account_id)
                     cash_complete = False
                 else:
                     pending_settlement_complete = False
@@ -1547,6 +2030,8 @@ def build_daily_portfolio_snapshots(
             stale_fx_flag = stale_fx_flag or is_stale
             if posting_effective_date <= as_of_iso:
                 cash_balances_by_currency[posting_currency] += cash_delta
+                if posting_account_id:
+                    cash_account_ids_by_currency[posting_currency].add(posting_account_id)
                 cash_balance_base += converted_cash_delta
             else:
                 pending_settlement_base += converted_cash_delta
@@ -1837,6 +2322,25 @@ def build_daily_portfolio_snapshots(
         if include_materialized_rows:
             snapshot_payload["_holding_rows"] = _build_materialized_holding_rows(
                 account_instrument_buckets=account_instrument_buckets,
+                cash_balances=[
+                    {
+                        "currency": currency,
+                        "amount": amount,
+                        "amount_base": (
+                            convert_amount_on(
+                                amount,
+                                as_of_date=as_of_date,
+                                from_currency=currency,
+                                to_currency=base_currency,
+                                direct_fx_instruments=direct_fx_instruments,
+                                instrument_detail_cache=instrument_detail_cache,
+                            )[0]
+                        ),
+                        "account_ids": sorted(cash_account_ids_by_currency[currency]),
+                    }
+                    for currency, amount in sorted(cash_balances_by_currency.items())
+                    if abs(amount) > 1e-9
+                ],
                 as_of_date=as_of_date,
                 base_currency=base_currency,
                 direct_fx_instruments=direct_fx_instruments,
@@ -2769,11 +3273,32 @@ def _build_boundary_holding_records(
             if isinstance(detail, dict)
             else None
         )
+        previous_price_point = (
+            _previous_market_point_for_selected_point(detail=detail, selected_point=price_point)
+            if isinstance(detail, dict)
+            else None
+        )
         last_price = _safe_float((price_point or {}).get("value"))
+        previous_price = _safe_float((previous_price_point or {}).get("value"))
+        instrument_ref = bucket.get("instrument_ref") if isinstance(bucket.get("instrument_ref"), dict) else None
         market_value_local = _position_market_value(
             quantity=quantity,
             last_price=last_price,
-            instrument_ref=(bucket.get("instrument_ref") if isinstance(bucket.get("instrument_ref"), dict) else None),
+            instrument_ref=instrument_ref,
+        )
+        day_change_pct, day_change_value = _holding_day_change_metrics(
+            quantity=quantity,
+            current_price=last_price,
+            previous_price=previous_price,
+            instrument_ref=instrument_ref,
+        )
+        converted_day_change_value, _ = convert_amount_on(
+            day_change_value,
+            as_of_date=as_of_date,
+            from_currency=currency,
+            to_currency=base_currency,
+            direct_fx_instruments=direct_fx_instruments,
+            instrument_detail_cache=instrument_detail_cache,
         )
         converted_market_value, _ = convert_amount_on(
             market_value_local,
@@ -2794,7 +3319,7 @@ def _build_boundary_holding_records(
                 "instrument_id": str(bucket.get("instrument_id") or ""),
                 "instrument_ref": normalize_instrument_core(
                     str(bucket.get("instrument_id") or ""),
-                    bucket.get("instrument_ref") if isinstance(bucket.get("instrument_ref"), dict) else None,
+                    instrument_ref,
                     fallback_currency=currency,
                 ),
                 "quantity": quantity,
@@ -2809,6 +3334,9 @@ def _build_boundary_holding_records(
                 "quote_status": (price_point or {}).get("status"),
                 "market_value": market_value_local,
                 "market_value_base": converted_market_value,
+                "day_change_pct": day_change_pct,
+                "day_change_value": day_change_value,
+                "day_change_value_base": converted_day_change_value,
                 "currency": currency,
                 "portfolio_weight": None,
                 "account_ids": list(bucket.get("account_ids") or []),
@@ -2863,12 +3391,17 @@ def _statement_cash_nav_components(
     pending_settlement_base = 0.0
     cash_complete = True
     pending_settlement_complete = True
+    cash_balances_by_currency: dict[str, float] = defaultdict(float)
+    cash_balance_base_by_currency: dict[str, float] = defaultdict(float)
+    cash_balance_complete_by_currency: dict[str, bool] = defaultdict(lambda: True)
+    cash_account_ids_by_currency: dict[str, set[str]] = defaultdict(set)
     for posting in postings:
         cash_delta = _safe_float(posting.get("cash_amount_delta"))
         if cash_delta is None:
             continue
         posting_currency = _normalized_currency(posting.get("currency"), fallback=base_currency)
         posting_effective_date = ledger_posting_effective_date_iso(posting)
+        posting_account_id = str(posting.get("account_id") or "").strip()
         converted_cash_delta, _ = convert_amount_on(
             cash_delta,
             as_of_date=as_of_date,
@@ -2880,10 +3413,18 @@ def _statement_cash_nav_components(
         if converted_cash_delta is None:
             if posting_effective_date <= as_of_iso:
                 cash_complete = False
+                cash_balances_by_currency[posting_currency] += cash_delta
+                cash_balance_complete_by_currency[posting_currency] = False
+                if posting_account_id:
+                    cash_account_ids_by_currency[posting_currency].add(posting_account_id)
             else:
                 pending_settlement_complete = False
             continue
         if posting_effective_date <= as_of_iso:
+            cash_balances_by_currency[posting_currency] += cash_delta
+            cash_balance_base_by_currency[posting_currency] += converted_cash_delta
+            if posting_account_id:
+                cash_account_ids_by_currency[posting_currency].add(posting_account_id)
             cash_balance_base += converted_cash_delta
         else:
             pending_settlement_base += converted_cash_delta
@@ -2891,6 +3432,20 @@ def _statement_cash_nav_components(
     return {
         "cash_balance_base": cash_balance_base if cash_complete else None,
         "pending_settlement_base": pending_settlement_base if pending_settlement_complete else None,
+        "cash_balances": [
+            {
+                "currency": currency,
+                "amount": amount,
+                "amount_base": (
+                    cash_balance_base_by_currency[currency]
+                    if cash_balance_complete_by_currency[currency]
+                    else None
+                ),
+                "account_ids": sorted(cash_account_ids_by_currency[currency]),
+            }
+            for currency, amount in sorted(cash_balances_by_currency.items())
+            if abs(amount) > 1e-9
+        ],
     }
 
 
@@ -2900,6 +3455,8 @@ def build_holdings_report(
     transactions: list[dict[str, object]],
     *,
     as_of_date: date,
+    include_cash_rows: bool = False,
+    calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
     base_currency = _normalized_currency(portfolio.get("base_currency"))
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
@@ -2910,7 +3467,7 @@ def build_holdings_report(
     fx_payload = get_platform_fx_rates()
     direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
     instrument_detail_cache: dict[str, dict[str, object] | None] = {}
-    positions, total_market_value_base = _build_boundary_holding_records(
+    positions, position_market_value_base = _build_boundary_holding_records(
         portfolio_id=str(portfolio.get("portfolio_id") or ""),
         accounts=accounts,
         transactions=boundary_transactions,
@@ -2932,15 +3489,32 @@ def build_holdings_report(
     cash_balance_base = _safe_float(cash_components.get("cash_balance_base"))
     pending_settlement_base = _safe_float(cash_components.get("pending_settlement_base"))
     total_nav_base = (
-        cash_balance_base + pending_settlement_base + total_market_value_base
+        cash_balance_base + pending_settlement_base + position_market_value_base
         if (
             cash_balance_base is not None
             and pending_settlement_base is not None
-            and total_market_value_base is not None
+            and position_market_value_base is not None
         )
         else None
     )
+    if include_cash_rows:
+        positions = [
+            *positions,
+            *_build_cash_holding_rows(
+                cash_balances=list(cash_components.get("cash_balances") or []),
+                as_of_date=as_of_date,
+                base_currency=base_currency,
+                direct_fx_instruments=direct_fx_instruments,
+                instrument_detail_cache=instrument_detail_cache,
+                calculation_frequency=calculation_frequency,
+            ),
+        ]
     _apply_position_portfolio_weights(positions, total_nav_base)
+    total_market_value_base = (
+        (position_market_value_base + cash_balance_base)
+        if include_cash_rows and position_market_value_base is not None and cash_balance_base is not None
+        else position_market_value_base
+    )
     return {
         "portfolio_id": str(portfolio.get("portfolio_id") or ""),
         "portfolio_name": str(portfolio.get("portfolio_name") or portfolio.get("portfolio_id") or ""),
@@ -2950,6 +3524,7 @@ def build_holdings_report(
         "as_of_date": as_of_date,
         "positions": positions,
         "total_market_value_base": total_market_value_base,
+        "position_market_value_base": position_market_value_base,
         "cash_balance_base": cash_balance_base,
         "pending_settlement_base": pending_settlement_base,
         "total_nav_base": total_nav_base,
@@ -6228,6 +6803,74 @@ def _bucketed_group_risk_inputs(
     return grouped
 
 
+def _bucketed_realized_contribution_matrix(
+    daily_slices: list[dict[str, object]],
+    portfolio_daily_series: list[dict[str, object]],
+    *,
+    calculation_frequency: CalculationFrequency,
+    final_date: date | None,
+) -> tuple[list[date], list[float], dict[str, list[float]]]:
+    portfolio_observations_by_bucket: dict[date, list[tuple[date, float]]] = defaultdict(list)
+    eligible_portfolio_dates: set[date] = set()
+    for point in sorted(portfolio_daily_series, key=lambda item: str(item.get("as_of_date") or "")):
+        as_of_date = _parse_iso_date(point.get("as_of_date"))
+        daily_return = _safe_float(point.get("daily_twr"))
+        if as_of_date is None or daily_return is None or not isfinite(daily_return):
+            continue
+        if not bool(point.get("return_observation_eligible")):
+            continue
+        eligible_portfolio_dates.add(as_of_date)
+        bucket_date = period_end_date(as_of_date, calculation_frequency, final_date=final_date)
+        portfolio_observations_by_bucket[bucket_date].append((as_of_date, daily_return))
+
+    group_daily_contributions: dict[str, dict[date, float]] = defaultdict(dict)
+    invalid_bucket_dates: set[date] = set()
+    for daily_slice in daily_slices:
+        group_key = str(daily_slice.get("group_key") or "")
+        as_of_date = _parse_iso_date(daily_slice.get("as_of_date"))
+        if not group_key or as_of_date is None or as_of_date not in eligible_portfolio_dates:
+            continue
+        bucket_date = period_end_date(as_of_date, calculation_frequency, final_date=final_date)
+        daily_contribution = _safe_float(daily_slice.get("daily_contribution"))
+        if daily_contribution is None or not isfinite(daily_contribution):
+            invalid_bucket_dates.add(bucket_date)
+            continue
+        group_daily_contributions[group_key][as_of_date] = (
+            group_daily_contributions[group_key].get(as_of_date, 0.0) + daily_contribution
+        )
+
+    bucket_dates: list[date] = []
+    portfolio_bucket_returns: list[float] = []
+    group_bucket_contributions: dict[str, list[float]] = {
+        group_key: [] for group_key in sorted(group_daily_contributions)
+    }
+    for bucket_date in sorted(portfolio_observations_by_bucket):
+        if bucket_date in invalid_bucket_dates:
+            continue
+        observations = sorted(portfolio_observations_by_bucket[bucket_date], key=lambda item: item[0])
+        daily_returns = [value for _as_of_date, value in observations]
+        portfolio_bucket_return = _compound_returns(daily_returns)
+        if portfolio_bucket_return is None:
+            continue
+
+        trailing_growth_by_date: dict[date, float] = {}
+        trailing_growth = 1.0
+        for as_of_date, daily_return in reversed(observations):
+            trailing_growth_by_date[as_of_date] = trailing_growth
+            trailing_growth *= 1.0 + daily_return
+
+        bucket_dates.append(bucket_date)
+        portfolio_bucket_returns.append(portfolio_bucket_return)
+        for group_key, contributions_by_date in group_daily_contributions.items():
+            bucket_contribution = sum(
+                contributions_by_date.get(as_of_date, 0.0) * trailing_growth_by_date[as_of_date]
+                for as_of_date, _daily_return in observations
+            )
+            group_bucket_contributions[group_key].append(bucket_contribution)
+
+    return bucket_dates, portfolio_bucket_returns, group_bucket_contributions
+
+
 def _realized_risk_attribution_by_group(
     daily_slices: list[dict[str, object]],
     portfolio_daily_series: list[dict[str, object]],
@@ -6293,13 +6936,6 @@ def _realized_risk_attribution_by_group(
             for bucket_date in contributions_by_date
             if bucket_date in portfolio_returns
         )
-        contribution_values = [contributions_by_date[item] for item in contribution_pair_dates]
-        portfolio_returns_for_contribution = [portfolio_returns[item] for item in contribution_pair_dates]
-        contribution_covariance = _sample_covariance(contribution_values, portfolio_returns_for_contribution)
-        portfolio_variance = _sample_covariance(
-            portfolio_returns_for_contribution,
-            portfolio_returns_for_contribution,
-        )
 
         own_pair_dates = sorted(bucket_date for bucket_date in own_returns_by_date if bucket_date in portfolio_returns)
         own_pair_values = [own_returns_by_date[item] for item in own_pair_dates]
@@ -6321,14 +6957,28 @@ def _realized_risk_attribution_by_group(
                 and own_pair_portfolio_variance > 1e-12
                 else None
             ),
-            "realized_risk_contribution": (
-                contribution_covariance / portfolio_variance
-                if contribution_covariance is not None
-                and portfolio_variance is not None
-                and portfolio_variance > 1e-12
-                else None
-            ),
+            "realized_risk_contribution": None,
         }
+    common_dates, common_portfolio_returns, common_group_contributions = _bucketed_realized_contribution_matrix(
+        daily_slices,
+        portfolio_daily_series,
+        calculation_frequency=calculation_frequency,
+        final_date=final_date,
+    )
+    common_portfolio_variance = _sample_covariance(common_portfolio_returns, common_portfolio_returns)
+    common_observation_count = len(common_dates)
+    for group_key, contribution_values in common_group_contributions.items():
+        group_metrics = risk_by_group.setdefault(group_key, _risk_metric_defaults(calculation_frequency))
+        contribution_covariance = _sample_covariance(contribution_values, common_portfolio_returns)
+        if int(group_metrics.get("risk_return_observation_count") or 0) <= 0:
+            group_metrics["risk_return_observation_count"] = common_observation_count
+        group_metrics["realized_risk_contribution"] = (
+            contribution_covariance / common_portfolio_variance
+            if contribution_covariance is not None
+            and common_portfolio_variance is not None
+            and common_portfolio_variance > 1e-12
+            else None
+        )
     return risk_by_group
 
 

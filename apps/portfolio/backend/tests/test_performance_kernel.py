@@ -4,6 +4,8 @@ from copy import deepcopy
 from datetime import date
 from math import isclose, sqrt
 
+import pytest
+
 from portfolio_app.api.routes import performance as performance_routes
 from portfolio_app.api.routes import workspace as workspace_routes
 from portfolio_app.db.models import (
@@ -46,6 +48,110 @@ def _test_instrument_detail(
             for as_of_date, value in history
         ],
     }
+
+
+def test_realized_risk_contribution_uses_common_matrix_for_sparse_instruments():
+    portfolio_daily_series = [
+        {"as_of_date": date(2026, 1, 1), "daily_twr": 0.01, "return_observation_eligible": True},
+        {"as_of_date": date(2026, 1, 2), "daily_twr": 0.02, "return_observation_eligible": True},
+        {"as_of_date": date(2026, 1, 3), "daily_twr": -0.01, "return_observation_eligible": True},
+    ]
+    daily_slices = []
+    for as_of_date, a_contribution, has_b_slice, b_contribution in [
+        (date(2026, 1, 1), 0.004, True, 0.006),
+        (date(2026, 1, 2), 0.020, False, 0.000),
+        (date(2026, 1, 3), -0.006, True, -0.004),
+    ]:
+        daily_slices.append(
+            {
+                "as_of_date": as_of_date,
+                "group_key": "instrument-a",
+                "daily_return": a_contribution,
+                "daily_contribution": a_contribution,
+                "return_observation_eligible": True,
+            }
+        )
+        if has_b_slice:
+            daily_slices.append(
+                {
+                    "as_of_date": as_of_date,
+                    "group_key": "instrument-b",
+                    "daily_return": b_contribution,
+                    "daily_contribution": b_contribution,
+                    "return_observation_eligible": True,
+                }
+            )
+
+    metrics = performance._realized_risk_attribution_by_group(
+        daily_slices,
+        portfolio_daily_series,
+        calculation_frequency="daily",
+        final_date=date(2026, 1, 3),
+    )
+
+    assert isclose(metrics["instrument-a"]["realized_risk_contribution"], 0.8142857142857135)
+    assert isclose(metrics["instrument-b"]["realized_risk_contribution"], 0.18571428571428558)
+    assert isclose(
+        sum(item["realized_risk_contribution"] or 0.0 for item in metrics.values()),
+        1.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert metrics["instrument-a"]["risk_return_observation_count"] == 3
+    assert metrics["instrument-b"]["risk_return_observation_count"] == 2
+
+
+def test_realized_risk_contribution_links_daily_contributions_for_weekly_frequency():
+    daily_rows = [
+        (date(2026, 1, 5), 0.10, 0.06, 0.04),
+        (date(2026, 1, 6), 0.10, 0.04, 0.06),
+        (date(2026, 1, 12), -0.05, -0.03, -0.02),
+        (date(2026, 1, 13), 0.02, 0.01, 0.01),
+        (date(2026, 1, 19), 0.03, 0.02, 0.01),
+        (date(2026, 1, 20), 0.04, 0.02, 0.02),
+    ]
+    portfolio_daily_series = [
+        {"as_of_date": as_of_date, "daily_twr": portfolio_return, "return_observation_eligible": True}
+        for as_of_date, portfolio_return, _a_contribution, _b_contribution in daily_rows
+    ]
+    daily_slices = []
+    for as_of_date, _portfolio_return, a_contribution, b_contribution in daily_rows:
+        daily_slices.extend(
+            [
+                {
+                    "as_of_date": as_of_date,
+                    "group_key": "instrument-a",
+                    "daily_return": a_contribution,
+                    "daily_contribution": a_contribution,
+                    "return_observation_eligible": True,
+                },
+                {
+                    "as_of_date": as_of_date,
+                    "group_key": "instrument-b",
+                    "daily_return": b_contribution,
+                    "daily_contribution": b_contribution,
+                    "return_observation_eligible": True,
+                },
+            ]
+        )
+
+    metrics = performance._realized_risk_attribution_by_group(
+        daily_slices,
+        portfolio_daily_series,
+        calculation_frequency="weekly",
+        final_date=date(2026, 1, 20),
+    )
+
+    assert isclose(metrics["instrument-a"]["realized_risk_contribution"], 0.522095588536811)
+    assert isclose(metrics["instrument-b"]["realized_risk_contribution"], 0.47790441146318824)
+    assert isclose(
+        sum(item["realized_risk_contribution"] or 0.0 for item in metrics.values()),
+        1.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert metrics["instrument-a"]["risk_return_observation_count"] == 3
+    assert metrics["instrument-b"]["risk_return_observation_count"] == 3
 
 
 def test_valuation_quote_selection_rejects_reference_and_total_return_fallbacks():
@@ -332,7 +438,11 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
 
     holdings_response = client.get("/api/workspace/holdings?portfolio_id=yungu")
     assert holdings_response.status_code == 200
-    assert holdings_response.json()["rows"]
+    holdings_rows = holdings_response.json()["rows"]
+    assert holdings_rows
+    abbv_row = next(row for row in holdings_rows if row["instrument_core"]["instrument_id"] == "equity-us-abbv")
+    assert abbv_row["day_change_pct"] == pytest.approx(206.47 / 207.18 - 1)
+    assert abbv_row["day_change_value"] == pytest.approx(abbv_row["quantity"] * (206.47 - 207.18))
 
     contribution_response = client.get("/api/portfolios/yungu/performance/contribution?axis=instrument")
     assert contribution_response.status_code == 200
@@ -7183,6 +7293,31 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(performance_summary["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(performance_summary["cumulative_twr"], 0.04, rel_tol=0.0, abs_tol=1e-12)
 
+    holdings_response = client.get("/api/workspace/holdings", params={"portfolio_id": "cash-fx-test"})
+    assert holdings_response.status_code == 200
+    holdings_payload = holdings_response.json()
+    hkd_cash_row = next(
+        row for row in holdings_payload["rows"] if row["instrument_core"]["instrument_id"] == "cash:HKD"
+    )
+    assert hkd_cash_row["instrument_core"]["instrument_type"] == "cash"
+    assert hkd_cash_row["coverage_status"] == "cash"
+    assert isclose(hkd_cash_row["quantity"], 780.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(hkd_cash_row["market_value"], 780.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(hkd_cash_row["market_value_base"], 104.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(hkd_cash_row["day_change_pct"], 0.04, rel_tol=0.0, abs_tol=1e-12)
+    assert hkd_cash_row["day_change_value"] is None
+    assert isclose(hkd_cash_row["day_change_value_base"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(hkd_cash_row["allocation"], 1.0, rel_tol=0.0, abs_tol=1e-12)
+    assert hkd_cash_row["price_chart_1m"][0]["date"] == "2026-01-01"
+    assert isclose(hkd_cash_row["price_chart_1m"][0]["value"], 1 / 7.8, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(hkd_cash_row["price_chart_1m"][-1]["value"], 1 / 7.5, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(hkd_cash_row["instrument_return_mtd"], 0.04, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(hkd_cash_row["instrument_return_ytd"], 0.04, rel_tol=0.0, abs_tol=1e-12)
+    assert hkd_cash_row["instrument_volatility_1m"] is None
+    assert isclose(holdings_payload["totals"]["market_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(holdings_payload["totals"]["cash_balance"], 104.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(holdings_payload["totals"]["nav"], 104.0, rel_tol=0.0, abs_tol=1e-12)
+
     calculation_response = client.get("/api/portfolios/cash-fx-test/performance/calculation")
     assert calculation_response.status_code == 200
     calculation_payload = calculation_response.json()
@@ -7221,6 +7356,48 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(cash_child["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(cash_child["final_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(cash_child["cash_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_previous_fx_rate_resolves_cross_rate_through_usd_pivot():
+    instrument_detail_cache = {
+        "fx-usd-hkd": {
+            "market_data": [
+                {
+                    "metric_family": "fx",
+                    "quote_basis": "spot",
+                    "as_of_date": "2026-01-02",
+                    "value": "7.8",
+                    "status": "complete",
+                }
+            ]
+        },
+        "fx-usd-cny": {
+            "market_data": [
+                {
+                    "metric_family": "fx",
+                    "quote_basis": "spot",
+                    "as_of_date": "2026-01-02",
+                    "value": "7.2",
+                    "status": "complete",
+                }
+            ]
+        },
+    }
+
+    resolved = performance.resolve_previous_fx_rate_before(
+        before_date=date(2026, 1, 10),
+        base_currency="HKD",
+        quote_currency="CNY",
+        direct_instruments={
+            ("USD", "HKD"): "fx-usd-hkd",
+            ("USD", "CNY"): "fx-usd-cny",
+        },
+        instrument_detail_cache=instrument_detail_cache,
+    )
+
+    assert resolved is not None
+    assert resolved["rate"] == pytest.approx(7.2 / 7.8)
+    assert resolved["as_of_date"] == date(2026, 1, 2)
 
 
 def test_instrument_currency_gains_flow_through_performance_and_calculation(client, monkeypatch):

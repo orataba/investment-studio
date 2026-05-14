@@ -32,7 +32,7 @@ _LOCAL_REFRESH_LOCKS: dict[str, Lock] = {}
 _LOCAL_REFRESH_LOCKS_GUARD = Lock()
 _RUNNING_REFRESH_WAIT_SECONDS = 30.0
 _RUNNING_REFRESH_POLL_SECONDS = 0.1
-DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260510-materialized-holdings-risk-frequency"
+DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260512-holdings-cash-fx-profile"
 
 
 def _current_utc_timestamp() -> str:
@@ -630,6 +630,12 @@ def _first_present(rows: list[dict[str, object]], key: str) -> object | None:
     return None
 
 
+def _is_cash_holding_payload(row: dict[str, object]) -> bool:
+    instrument_core = row.get("instrument_ref") if isinstance(row.get("instrument_ref"), dict) else None
+    instrument_type = str((instrument_core or {}).get("instrument_type") or "").strip().lower()
+    return instrument_type == "cash" or performance.is_cash_holding_instrument_id(row.get("instrument_id") or row.get("line_id"))
+
+
 def _instrument_trend_metrics(instrument_id: str, as_of_date: date | None) -> dict[str, object]:
     if not instrument_id or as_of_date is None:
         return {}
@@ -691,6 +697,12 @@ def _aggregate_holding_rows(
             "instrument_volatility_3m": _first_present(instrument_rows, "instrument_volatility_3m"),
             "instrument_volatility_6m": _first_present(instrument_rows, "instrument_volatility_6m"),
             "instrument_volatility_1y": _first_present(instrument_rows, "instrument_volatility_1y"),
+            "instrument_return_series_1m": _first_present(instrument_rows, "instrument_return_series_1m"),
+            "instrument_return_series_3m": _first_present(instrument_rows, "instrument_return_series_3m"),
+            "instrument_return_series_6m": _first_present(instrument_rows, "instrument_return_series_6m"),
+            "instrument_return_series_1y": _first_present(instrument_rows, "instrument_return_series_1y"),
+            "instrument_return_series_all": _first_present(instrument_rows, "instrument_return_series_all"),
+            "instrument_holding_return_series": _first_present(instrument_rows, "instrument_holding_return_series"),
             "instrument_current_drawdown": _first_present(instrument_rows, "instrument_current_drawdown"),
             "instrument_max_drawdown": _first_present(instrument_rows, "instrument_max_drawdown"),
             "instrument_holding_max_drawdown": _first_present(instrument_rows, "instrument_holding_max_drawdown"),
@@ -702,6 +714,10 @@ def _aggregate_holding_rows(
         if all(value is None for value in trend_metrics.values()):
             snapshot_as_of_date = _parse_date(_first_present(instrument_rows, "_snapshot_as_of_date"))
             trend_metrics = _instrument_trend_metrics(instrument_id, snapshot_as_of_date)
+        market_value = _sum_complete([row.get("market_value") for row in instrument_rows])
+        day_change_value = _sum_complete([row.get("day_change_value") for row in instrument_rows])
+        day_change_value_base = _sum_complete([row.get("day_change_value_base") for row in instrument_rows])
+        is_cash_row = _is_cash_holding_payload(first_row)
         aggregated_rows.append(
             {
                 "line_id": instrument_id,
@@ -717,12 +733,15 @@ def _aggregate_holding_rows(
                 "quote_basis": _first_present(instrument_rows, "quote_basis"),
                 "quote_provider": _first_present(instrument_rows, "quote_provider"),
                 "quote_status": _first_present(instrument_rows, "quote_status"),
-                "market_value": _sum_complete([row.get("market_value") for row in instrument_rows]),
+                "market_value": market_value,
                 "market_value_base": market_value_base,
-                "day_change_pct": None,
-                "day_change_value": None,
+                "day_change_pct": _first_present(instrument_rows, "day_change_pct"),
+                "day_change_value": day_change_value,
+                "day_change_value_base": day_change_value_base,
                 "cost_basis_method": (
-                    cost_basis_methods[0]
+                    None
+                    if is_cash_row
+                    else cost_basis_methods[0]
                     if len(cost_basis_methods) == 1
                     else "mixed"
                     if cost_basis_methods
@@ -737,7 +756,13 @@ def _aggregate_holding_rows(
                 ),
                 **price_charts,
                 **trend_metrics,
-                "coverage_status": "price-nav-fx" if market_value_base is not None else "unpriced",
+                "coverage_status": (
+                    _first_present(instrument_rows, "coverage_status")
+                    if is_cash_row
+                    else "price-nav-fx"
+                    if market_value_base is not None
+                    else "unpriced"
+                ),
                 "account_count": len(account_ids),
                 "open_position_lot_count": sum(int(row.get("open_position_lot_count") or 0) for row in instrument_rows),
             }
@@ -794,9 +819,14 @@ def build_materialized_holdings_workspace(
         portfolio = _serialize_portfolio_row(portfolio_record)
 
     total_nav_base = _safe_float(snapshot_payload.get("nav"))
-    total_market_value_base = _safe_float(snapshot_payload.get("position_market_value"))
-    total_cost_basis_base = _sum_complete([row.cost_basis_base for row in rows]) if rows else 0.0
     aggregated_rows = _aggregate_holding_rows(rows, total_nav_base=total_nav_base)
+    total_market_value_base = (
+        _sum_complete([row.get("market_value_base") for row in aggregated_rows]) if aggregated_rows else 0.0
+    )
+    noncash_snapshot_rows = [row for row in rows if not performance.is_cash_holding_instrument_id(row.instrument_id)]
+    total_cost_basis_base = (
+        _sum_complete([row.cost_basis_base for row in noncash_snapshot_rows]) if noncash_snapshot_rows else 0.0
+    )
     position_count = len(aggregated_rows)
     priced_position_count = sum(1 for row in aggregated_rows if row.get("market_value_base") is not None)
 

@@ -134,6 +134,14 @@ function primaryIdentifier(row: PortfolioHoldingRow) {
   )
 }
 
+function isCashHoldingRow(row: PortfolioHoldingRow) {
+  return (
+    row.instrument_core.instrument_type === 'cash' ||
+    row.instrument_core.instrument_id.toLowerCase().startsWith('cash:') ||
+    row.line_id.toLowerCase().startsWith('cash:')
+  )
+}
+
 function signedPercent(value: number | null | undefined, digits = 2) {
   if (value == null || Number.isNaN(value)) {
     return '—'
@@ -716,24 +724,25 @@ export default function OverviewPage() {
   }, [benchmarkInstrumentId, holdingsWorkspace?.as_of_date, portfolioId, summary?.as_of_date])
 
   const holdingsRows = holdingsWorkspace?.rows ?? []
+  const nonCashHoldingsRows = useMemo(() => holdingsRows.filter((row) => !isCashHoldingRow(row)), [holdingsRows])
   const resolvedBaseCurrency =
     summary?.base_currency ?? holdingsWorkspace?.base_currency ?? performanceWorkspace?.base_currency ?? 'USD'
   const sortedHoldings = useMemo(
     () =>
-      [...holdingsRows].sort(
+      [...nonCashHoldingsRows].sort(
         (left, right) =>
           (right.allocation ?? 0) - (left.allocation ?? 0) ||
           (right.market_value_base ?? right.market_value ?? 0) - (left.market_value_base ?? left.market_value ?? 0),
       ),
-    [holdingsRows],
+    [nonCashHoldingsRows],
   )
   const holdingsMarketValueBase = useMemo(
     () =>
-      holdingsRows.reduce(
+      nonCashHoldingsRows.reduce(
         (sum, row) => sum + (row.market_value_base ?? row.market_value ?? 0),
         0,
       ),
-    [holdingsRows],
+    [nonCashHoldingsRows],
   )
   const cashValueRaw = (summary?.nav ?? 0) - holdingsMarketValueBase
   const cashValue = Math.abs(cashValueRaw) < 1 ? 0 : cashValueRaw
@@ -791,7 +800,7 @@ export default function OverviewPage() {
       }
     >()
 
-    holdingsRows.forEach((row) => {
+    nonCashHoldingsRows.forEach((row) => {
       const value = row.market_value_base ?? row.market_value ?? 0
       const weight = row.allocation ?? ((summary?.nav ?? 0) > 0 ? value / (summary?.nav ?? 1) : 0)
       const assignment = assignmentByInstrumentId.get(row.instrument_core.instrument_id)
@@ -817,33 +826,6 @@ export default function OverviewPage() {
       })
     })
 
-    const cashNode =
-      (taxonomyCatalog?.taxonomy_assignments ?? []).find(
-        (assignment) =>
-          assignment.taxonomy_id === defaultPlanningTaxonomyId &&
-          assignment.target_scope === 'cash_bucket' &&
-          assignment.status === 'active' &&
-          isRecordActive(assignment.effective_from, assignment.effective_to, holdingsWorkspace?.as_of_date ?? summary?.as_of_date),
-      ) ?? null
-
-    const cashLeafNode = cashNode ? nodesById.get(cashNode.taxonomy_node_id) ?? null : null
-    const cashPath = cashLeafNode ? resolveNodePath(cashLeafNode.taxonomy_node_id, nodesById) : []
-    const cashTopLevelNode = cashPath[0] ?? cashLeafNode
-
-    if (cashValue > 0) {
-      const topLevelId = cashTopLevelNode?.taxonomy_node_id ?? '__cash__'
-      const topLevelLabel = cashTopLevelNode?.node_name ?? '现金'
-
-      accumulateBucket(topLevelBuckets, {
-        id: topLevelId,
-        label: topLevelLabel,
-        topLevelId,
-        topLevelLabel,
-        value: cashValue,
-        weight: cashWeight ?? 0,
-      })
-    }
-
     const sortedTopLevelBuckets = [...topLevelBuckets.values()].sort(
       (left, right) => right.weight - left.weight || right.value - left.value,
     )
@@ -853,10 +835,8 @@ export default function OverviewPage() {
       assignedLabelByInstrumentId,
     }
   }, [
-    cashValue,
-    cashWeight,
     defaultPlanningTaxonomyId,
-    holdingsRows,
+    nonCashHoldingsRows,
     holdingsWorkspace?.as_of_date,
     summary?.as_of_date,
     summary?.nav,
@@ -1022,7 +1002,7 @@ export default function OverviewPage() {
       label: TOP_HOLDING_COLUMN_LABELS.day_change,
       render: (row) => (
         <span className={signedValueClass(row.day_change_pct)}>
-          {formatSignedCurrency(row.day_change_value, resolvedBaseCurrency)} ({signedPercent(row.day_change_pct)})
+          {formatSignedCurrency(row.day_change_value_base ?? row.day_change_value, resolvedBaseCurrency)} ({signedPercent(row.day_change_pct)})
         </span>
       ),
     },
@@ -1177,7 +1157,6 @@ export default function OverviewPage() {
                           <th key={monthLabel}>{monthLabel}</th>
                         ))}
                         <th>YTD</th>
-                        <th>Obs</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1208,13 +1187,10 @@ export default function OverviewPage() {
                             <td className={`performance-cell-number performance-return-cell ${signedValueClass(row.ytd)}`}>
                               {signedPercent(row.ytd)}
                             </td>
-                            <td className="performance-cell-number performance-cell-muted">
-                              {formatNumber(row.observationCount, 0)}
-                            </td>
                           </tr>
                         ))
                       ) : (
-                        <TableStatusRow colSpan={15} label="No monthly returns." />
+                        <TableStatusRow colSpan={14} label="No monthly returns." />
                       )}
                     </tbody>
                   </table>

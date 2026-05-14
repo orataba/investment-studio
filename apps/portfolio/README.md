@@ -58,7 +58,7 @@ uvicorn portfolio_app.main:app --reload --host 127.0.0.1 --port 8001
 - backend 顶层包名现在是 `portfolio_app`
 - 交易、账户和研究快照使用 canonical `instrument_id` / `instrument_name` / `instrument_type`；迁移会规范历史 JSON，运行时不再接受 `asset_id` / `asset_name` / `asset_type` 或 `allowed_asset_types`
 - daily snapshots 已物化到数据库，并显式保存每日 `beginning_nav` / `ending_nav`；`Performance`、`Holdings`、instrument/account contribution 读路径默认复用物化结果。交易、账户或行情变更会用 `refresh_request_id` 把相关组合标记为 stale 并触发刷新。若刷新中又收到新数据，当前计算不会清掉新的 stale 标记，而是串行再跑一轮后才置为 current。
-- `Holdings` 的物化行包含 instrument market profile 与 resolved risk frequency；读路径命中物化 profile 时不再逐行重建行情趋势和风险字段。
+- `Holdings` 的物化行包含 instrument market profile 与 resolved risk frequency；读路径命中物化 profile 时不再逐行重建行情趋势和风险字段。Holdings 还会按 settled cash ledger 生成逐币种现金行，market value total 包含非现金市值与 settled cash，pending settlement 仍单独进入 NAV。
 
 ### 2. 前端
 
@@ -72,6 +72,7 @@ npm run dev
 
 - Vite 默认监听 `http://127.0.0.1:5174`
 - `/api` 已代理到 `http://127.0.0.1:8001`
+- Holdings 与 Performance Calculation 的自定义 table view 存在后端 `portfolio_table_view_store` 中，按 `portfolio_id + view_scope` 隔离；浏览器 `localStorage` 只作为首次迁移和后端不可用时的本地 fallback，不在读取失败时回写覆盖后端配置。
 
 ## 重建本地数据库后
 
@@ -97,6 +98,7 @@ npm --prefix apps/portfolio/frontend run build
 - 组合级 TWR 使用日频 true time-weighted 口径：外部流入进分母，外部流出加回分子，区间结果几何复合。
 - FIFO / moving average 只影响 book cost、book realized gain、book unrealized P&L 和 lot 展示；不影响 fair-value based TWR。
 - Performance `Calculation` 使用 `Initial Value + Net External Flow + Period P&L = Final Value` 的期间桥接。资本利得拆分使用期初市值重置后的期间成本，而不是账户 book cost。Calculation 默认视图命名为 `Default`，展示 realized risk attribution；用户可像 Holdings 一样保存自定义表格视图。Group By 默认是 `None`，内部映射到底层 instrument lines；也支持 instrument type / currency / account / taxonomy，TWR 与 contribution 在后端按对应轴计算，表格可导出 CSV。
+- `Holdings` 中的 `Market Value Base` 是 base-currency fair value；现金行使用 settled cash 的 base value。Day change 使用同一 quote basis 的上一可用市场点，非 base cash 使用 FX 变动。Instrument return / volatility / drawdown 基于原始 selected quote series 和 resolved risk frequency，不能基于 sampled price chart；volatility 有窗口起点覆盖和最小样本门槛。Holdings group rows 的 return 使用当前 base-value 权重，volatility / drawdown 基于组 return series 计算，不使用成员风险指标的加权平均。
 - `moving_average` 在底层按 `account + instrument` 维护一个 rolling average cost bucket；API 为 UI 和转仓审计输出一个 synthetic position lot。
 - `Overview`、`Performance`、`Review` 的 TWR index、daily series 和 drawdown 均按查询窗口重新复合；不得复用 inception-to-date 的累计 TWR 作为区间曲线。
 - `Risk` 的 rolling volatility / Sharpe 输入来自 `daily_twr` simple return 序列，并排除仅由 stale price carry-forward 得到的非市场观察日。相关性矩阵和风险贡献使用 as-of date + lookback covariance 的单点风险口径；`sample_covariance` 使用样本协方差 `n - 1`，不使用总体协方差。混合频率和稀疏序列先解析 daily / weekly / monthly calculation basis，再按目标 period 的最后有效观测对齐，不跨期前向填充；协方差默认要求 active return matrix 是完整对齐样本，按完整样本的实际观察密度年化，不做 pairwise 拼矩阵或缺失收益补 0。区间风险贡献归入 Performance `Calculation` 的 realized risk attribution columns。

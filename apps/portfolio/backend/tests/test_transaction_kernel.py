@@ -492,9 +492,26 @@ def test_holdings_and_account_workspace_use_base_currency_valuation(client):
     )
     assert holdings["totals"]["market_value"] == pytest.approx(expected_total_market_value)
 
+    cash_rows = [row for row in holdings["rows"] if row["instrument_core"]["instrument_type"] == "cash"]
+    assert cash_rows
+    expected_cash_balance = sum(
+        (row["market_value"] or 0.0) * fx_to_usd[row["instrument_core"]["currency"]]
+        for row in cash_rows
+        if row["market_value"] is not None
+    )
+    assert holdings["totals"]["cash_balance"] == pytest.approx(expected_cash_balance)
+    usd_cash_row = next(row for row in cash_rows if row["instrument_core"]["instrument_id"] == "cash:USD")
+    assert usd_cash_row["instrument_core"]["instrument_name"] == "Cash (USD)"
+    assert usd_cash_row["coverage_status"] == "cash"
+    assert usd_cash_row["cost_basis"] is None
+    assert usd_cash_row["cost_basis_base"] is None
+    assert usd_cash_row["market_value_base"] == pytest.approx(usd_cash_row["market_value"])
+    assert usd_cash_row["day_change_pct"] == pytest.approx(0.0)
+    assert usd_cash_row["day_change_value"] == pytest.approx(0.0)
+    assert usd_cash_row["day_change_value_base"] == pytest.approx(0.0)
+
     hkd_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "fund-hk-2800")
     expected_total_nav = holdings["totals"]["nav"]
-    assert expected_total_nav != pytest.approx(expected_total_market_value)
     expected_hkd_allocation = (hkd_row["market_value"] * fx_to_usd["HKD"]) / expected_total_nav
     assert hkd_row["allocation"] == pytest.approx(expected_hkd_allocation)
     assert holdings["totals"]["allocation"] == pytest.approx(expected_total_market_value / expected_total_nav)
@@ -622,6 +639,8 @@ def test_holdings_workspace_includes_shared_price_sparklines(client):
     assert abbv_row["price_chart_1y"][-1]["value"] == pytest.approx(206.47)
     assert abbv_row["instrument_trend_as_of_date"] == "2026-04-15"
     assert abbv_row["instrument_trend_basis"] == "close"
+    assert abbv_row["day_change_pct"] == pytest.approx(206.47 / 207.18 - 1)
+    assert abbv_row["day_change_value"] == pytest.approx(abbv_row["quantity"] * (206.47 - 207.18))
     assert abbv_row["instrument_return_1w"] == pytest.approx(206.47 / 207.18 - 1)
     assert abbv_row["instrument_return_mtd"] == pytest.approx(206.47 / 210.20 - 1)
     assert abbv_row["instrument_return_ytd"] == pytest.approx(0)
@@ -630,13 +649,36 @@ def test_holdings_workspace_includes_shared_price_sparklines(client):
     assert abbv_row["instrument_max_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
     assert abbv_row["instrument_holding_max_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
     assert abbv_row["instrument_holding_start_date"] == "2026-02-10"
-    assert abbv_row["instrument_volatility_1m"] is not None
-    assert abbv_row["instrument_volatility_3m"] is not None
-    assert abbv_row["instrument_volatility_6m"] is not None
-    assert abbv_row["instrument_volatility_1y"] is not None
+    assert abbv_row["instrument_volatility_1m"] is None
+    assert abbv_row["instrument_volatility_3m"] is None
+    assert abbv_row["instrument_volatility_6m"] is None
+    assert abbv_row["instrument_volatility_1y"] is None
 
     assert abbv_row["price_chart_3m"][0]["date"] == "2026-02-10"
     assert abbv_row["instrument_return_mtd"] == pytest.approx(206.47 / 210.20 - 1)
+
+
+def test_live_holdings_workspace_propagates_position_day_change(client, monkeypatch):
+    from portfolio_app.api.routes import workspace as workspace_routes
+
+    monkeypatch.setattr(
+        workspace_routes,
+        "get_cached_materialized_holdings_workspace",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = client.get("/api/workspace/holdings", params={"portfolio_id": "yungu"})
+    assert response.status_code == 200
+    holdings = response.json()
+
+    abbv_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "equity-us-abbv")
+    assert abbv_row["day_change_pct"] == pytest.approx(206.47 / 207.18 - 1)
+    assert abbv_row["day_change_value"] == pytest.approx(abbv_row["quantity"] * (206.47 - 207.18))
+    usd_cash_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "cash:USD")
+    assert usd_cash_row["instrument_core"]["instrument_type"] == "cash"
+    assert usd_cash_row["coverage_status"] == "cash"
+    assert usd_cash_row["day_change_pct"] == pytest.approx(0.0)
+    assert usd_cash_row["day_change_value"] == pytest.approx(0.0)
 
 
 def test_instrument_price_chart_endpoint_returns_filtered_shared_history(client):

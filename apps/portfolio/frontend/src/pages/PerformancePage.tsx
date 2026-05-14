@@ -13,7 +13,9 @@ import {
   getPortfolioPerformance,
   getPortfolioPerformanceCalculation,
   getPortfolioPerformanceCalculationGroups,
+  getPortfolioTableViewStore,
   getPortfolioTaxonomyCatalog,
+  savePortfolioTableViewStore,
   type PortfolioInstrumentPriceChartPoint,
   type PortfolioInstrumentPriceChartResponse,
   type PortfolioContributionAxis,
@@ -88,6 +90,8 @@ type CalculationGroupByOption = {
 type CalculationGroupByKey = 'none' | 'account' | 'instrument_type' | 'currency' | 'taxonomy'
 
 type CalculationTableMode = 'risk_attribution' | 'calculation'
+type CalculationSortDirection = 'asc' | 'desc'
+type CalculationSortableValue = number | string | null | undefined
 
 type CalculationColumnKey =
   | 'line'
@@ -114,6 +118,8 @@ type CalculationColumnKey =
 type CalculationTableViewState = {
   columns: CalculationColumnKey[]
   mode: CalculationTableMode
+  sortField: CalculationColumnKey | null
+  sortDirection: CalculationSortDirection
 }
 
 type CalculationTableView = PortfolioTableViewOption & {
@@ -255,6 +261,8 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
 const DEFAULT_CALCULATION_TABLE_VIEW_STATE: CalculationTableViewState = {
   columns: RISK_ATTRIBUTION_COLUMNS,
   mode: 'risk_attribution',
+  sortField: null,
+  sortDirection: 'asc',
 }
 
 const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
@@ -271,6 +279,8 @@ const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
     state: {
       columns: FULL_CALCULATION_COLUMNS,
       mode: 'calculation',
+      sortField: null,
+      sortDirection: 'asc',
     },
   },
   {
@@ -292,6 +302,8 @@ const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
         'return_contribution',
       ],
       mode: 'calculation',
+      sortField: null,
+      sortDirection: 'asc',
     },
   },
 ]
@@ -359,6 +371,51 @@ function fxPnlAmount(row: Pick<CalculationGroupRow, 'cash_currency_gains' | 'ins
   return sumNullable(row.cash_currency_gains, row.instrument_currency_gains)
 }
 
+function calculationDisplayMetricValue(source: CalculationDisplayRow, column: CalculationColumnKey): number | null {
+  switch (column) {
+    case 'pnl_flow':
+      return finiteNumber(source.total_pnl)
+    case 'start_value':
+      return finiteNumber(source.initial_value)
+    case 'end_value':
+      return finiteNumber(source.final_value)
+    case 'avg_weight':
+      return finiteNumber(source.average_weight)
+    case 'end_weight':
+      return finiteNumber(source.ending_weight)
+    case 'realized_gain':
+      return finiteNumber(source.realized_capital_gains)
+    case 'unrealized_gain':
+      return finiteNumber(source.unrealized_pnl_change)
+    case 'income':
+      return finiteNumber(source.earnings)
+    case 'fees':
+      return finiteNumber(expenseImpact(source.fees))
+    case 'taxes':
+      return finiteNumber(expenseImpact(source.taxes))
+    case 'fx_pnl':
+      return finiteNumber(fxPnlAmount(source))
+    case 'period_return':
+      return finiteNumber(source.period_return)
+    case 'return_contribution':
+      return finiteNumber(source.period_contribution)
+    case 'own_vol':
+      return finiteNumber(source.annualized_volatility)
+    case 'own_sharpe':
+      return finiteNumber(source.sharpe_ratio)
+    case 'own_corr':
+      return finiteNumber(source.correlation_to_portfolio)
+    case 'beta':
+      return finiteNumber(source.beta_to_portfolio)
+    case 'risk_contribution':
+      return finiteNumber(source.realized_risk_contribution)
+    case 'observations':
+      return finiteNumber(source.risk_return_observation_count)
+    default:
+      return null
+  }
+}
+
 function isCalculationChildRow(row: CalculationDisplayRow): row is CalculationGroupChildRow {
   return 'item_key' in row
 }
@@ -399,6 +456,92 @@ function calculationAxisCountLabel(axis: PortfolioContributionAxis) {
   return 'instruments'
 }
 
+function parseCalculationSortField(value: string | null | undefined): CalculationColumnKey | null {
+  return value && ALL_CALCULATION_COLUMN_KEYS.includes(value as CalculationColumnKey)
+    ? (value as CalculationColumnKey)
+    : null
+}
+
+function parseCalculationSortDirection(value: string | null | undefined): CalculationSortDirection {
+  return value === 'asc' || value === 'desc' ? value : 'asc'
+}
+
+function compareCalculationSortableValue(
+  left: CalculationSortableValue,
+  right: CalculationSortableValue,
+  direction: CalculationSortDirection,
+) {
+  const leftMissing = left == null || left === ''
+  const rightMissing = right == null || right === ''
+  if (leftMissing || rightMissing) {
+    if (leftMissing && rightMissing) {
+      return 0
+    }
+    return leftMissing ? 1 : -1
+  }
+
+  if (typeof left === 'number' || typeof right === 'number') {
+    const result = Number(left) - Number(right)
+    return direction === 'asc' ? result : -result
+  }
+
+  const result = String(left).localeCompare(String(right), 'zh-Hans-CN')
+  return direction === 'asc' ? result : -result
+}
+
+function calculationSortValue(row: CalculationDisplayRow, column: CalculationColumnKey): CalculationSortableValue {
+  return column === 'line' ? calculationDisplayLabel(row) : calculationDisplayMetricValue(row, column)
+}
+
+function defaultCalculationGroupCompare(
+  left: CalculationGroupRow,
+  right: CalculationGroupRow,
+  mode: CalculationTableMode,
+) {
+  if (mode === 'risk_attribution') {
+    const leftRisk = Math.abs(finiteNumber(left.realized_risk_contribution) ?? 0)
+    const rightRisk = Math.abs(finiteNumber(right.realized_risk_contribution) ?? 0)
+    const leftContribution = Math.abs(finiteNumber(left.period_contribution) ?? 0)
+    const rightContribution = Math.abs(finiteNumber(right.period_contribution) ?? 0)
+    return (
+      rightRisk - leftRisk ||
+      rightContribution - leftContribution ||
+      left.group_label.localeCompare(right.group_label, 'zh-Hans-CN')
+    )
+  }
+
+  const leftMagnitude = Math.abs(finiteNumber(left.period_contribution) ?? finiteNumber(left.total_pnl) ?? 0)
+  const rightMagnitude = Math.abs(finiteNumber(right.period_contribution) ?? finiteNumber(right.total_pnl) ?? 0)
+  return rightMagnitude - leftMagnitude || left.group_label.localeCompare(right.group_label, 'zh-Hans-CN')
+}
+
+function defaultCalculationChildCompare(left: CalculationGroupChildRow, right: CalculationGroupChildRow) {
+  const leftKindOrder = left.item_kind === 'instrument' ? 0 : 1
+  const rightKindOrder = right.item_kind === 'instrument' ? 0 : 1
+  const leftMagnitude = Math.abs(finiteNumber(left.period_contribution) ?? finiteNumber(left.total_pnl) ?? 0)
+  const rightMagnitude = Math.abs(finiteNumber(right.period_contribution) ?? finiteNumber(right.total_pnl) ?? 0)
+  return (
+    leftKindOrder - rightKindOrder ||
+    rightMagnitude - leftMagnitude ||
+    left.item_label.localeCompare(right.item_label, 'zh-Hans-CN')
+  )
+}
+
+function compareCalculationRowsByColumn(
+  left: CalculationDisplayRow,
+  right: CalculationDisplayRow,
+  sortField: CalculationColumnKey,
+  sortDirection: CalculationSortDirection,
+) {
+  return (
+    compareCalculationSortableValue(
+      calculationSortValue(left, sortField),
+      calculationSortValue(right, sortField),
+      sortDirection,
+    ) || calculationDisplayLabel(left).localeCompare(calculationDisplayLabel(right), 'zh-Hans-CN')
+  )
+}
+
 function normalizeCalculationColumns(columns: CalculationColumnKey[]) {
   const seen = new Set<CalculationColumnKey>()
   const normalized: CalculationColumnKey[] = [LOCKED_CALCULATION_COLUMN]
@@ -425,11 +568,14 @@ function normalizeCalculationTableViewState(value: unknown): CalculationTableVie
     return DEFAULT_CALCULATION_TABLE_VIEW_STATE
   }
   const record = value as Partial<CalculationTableViewState>
+  const sortField = parseCalculationSortField(typeof record.sortField === 'string' ? record.sortField : null)
   return {
     columns: normalizeCalculationColumns(
       Array.isArray(record.columns) ? (record.columns as CalculationColumnKey[]) : RISK_ATTRIBUTION_COLUMNS,
     ),
     mode: parseCalculationTableMode(typeof record.mode === 'string' ? record.mode : null),
+    sortField,
+    sortDirection: parseCalculationSortDirection(typeof record.sortDirection === 'string' ? record.sortDirection : null),
   }
 }
 
@@ -438,6 +584,8 @@ function serializeCalculationTableViewState(value: CalculationTableViewState) {
   return JSON.stringify({
     columns: normalized.columns,
     mode: normalized.mode,
+    sortField: normalized.sortField,
+    sortDirection: normalized.sortDirection,
   })
 }
 
@@ -1115,6 +1263,7 @@ function PerformancePage() {
   const [calculationTableViewStore, setCalculationTableViewStore] = useState<CalculationTableViewStore>(
     () => initialCalculationTableViewStore,
   )
+  const [calculationTableViewStoreRemoteReady, setCalculationTableViewStoreRemoteReady] = useState(false)
   const [activeCalculationTableViewId, setActiveCalculationTableViewId] = useState(
     initialCalculationTableViewStore.activeViewId,
   )
@@ -1126,6 +1275,12 @@ function PerformancePage() {
   )
   const [calculationTableMode, setCalculationTableMode] = useState<CalculationTableMode>(
     () => initialCalculationTableViewState.mode,
+  )
+  const [calculationSortField, setCalculationSortField] = useState<CalculationColumnKey | null>(
+    () => initialCalculationTableViewState.sortField,
+  )
+  const [calculationSortDirection, setCalculationSortDirection] = useState<CalculationSortDirection>(
+    () => initialCalculationTableViewState.sortDirection,
   )
   const [calculationModeDraft, setCalculationModeDraft] = useState<CalculationTableMode>(
     () => initialCalculationTableViewState.mode,
@@ -1198,8 +1353,10 @@ function PerformancePage() {
     () => ({
       columns: normalizeCalculationColumns(calculationColumns),
       mode: calculationTableMode,
+      sortField: calculationSortField,
+      sortDirection: calculationSortDirection,
     }),
-    [calculationColumns, calculationTableMode],
+    [calculationColumns, calculationSortDirection, calculationSortField, calculationTableMode],
   )
   const calculationTableViewEdited = !calculationTableViewStatesEqual(
     currentCalculationTableViewState,
@@ -1235,12 +1392,27 @@ function PerformancePage() {
     setCalculationGroupByOpen(false)
   }
 
+  function handleCalculationSort(column: CalculationColumnKey) {
+    let nextSortField: CalculationColumnKey | null = column
+    let nextSortDirection: CalculationSortDirection = 'asc'
+    if (calculationSortField === column && calculationSortDirection === 'asc') {
+      nextSortDirection = 'desc'
+    } else if (calculationSortField === column && calculationSortDirection === 'desc') {
+      nextSortField = null
+      nextSortDirection = 'asc'
+    }
+    setCalculationSortField(nextSortField)
+    setCalculationSortDirection(nextSortDirection)
+  }
+
   function applyCalculationTableViewState(state: CalculationTableViewState) {
     const normalized = normalizeCalculationTableViewState(state)
     setCalculationColumns(normalized.columns)
     setCalculationColumnDraft(normalized.columns)
     setCalculationTableMode(normalized.mode)
     setCalculationModeDraft(normalized.mode)
+    setCalculationSortField(normalized.sortField)
+    setCalculationSortDirection(normalized.sortDirection)
   }
 
   function handleSelectCalculationTableView(viewId: string) {
@@ -1314,8 +1486,48 @@ function PerformancePage() {
   }
 
   useEffect(() => {
+    if (!portfolioId) {
+      setCalculationTableViewStoreRemoteReady(false)
+      return
+    }
+
+    let cancelled = false
+    setCalculationTableViewStoreRemoteReady(false)
+    getPortfolioTableViewStore<CalculationTableViewStore>(portfolioId, 'performance_calculation')
+      .then((response) => {
+        if (cancelled) {
+          return
+        }
+        const nextStore = response.store
+          ? normalizeCalculationTableViewStore(response.store)
+          : normalizeCalculationTableViewStore(loadCalculationTableViewStore())
+        setCalculationTableViewStore(nextStore)
+        setActiveCalculationTableViewId(nextStore.activeViewId)
+        applyCalculationTableViewState(resolveCalculationTableViewState(nextStore, nextStore.activeViewId))
+        setCalculationTableViewStoreRemoteReady(true)
+      })
+      .catch((requestError: unknown) => {
+        if (!cancelled) {
+          console.warn('Failed to load persisted calculation views.', requestError)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [portfolioId])
+
+  useEffect(() => {
     saveCalculationTableViewStore(calculationTableViewStore)
-  }, [calculationTableViewStore])
+    if (!portfolioId || !calculationTableViewStoreRemoteReady) {
+      return
+    }
+    savePortfolioTableViewStore(portfolioId, 'performance_calculation', calculationTableViewStore).catch(
+      (requestError: unknown) => {
+        console.warn('Failed to persist calculation views.', requestError)
+      },
+    )
+  }, [calculationTableViewStore, calculationTableViewStoreRemoteReady, portfolioId])
 
   useEffect(() => {
     if (!portfolioId) {
@@ -1547,21 +1759,28 @@ function PerformancePage() {
     if (!calculationGroupsWorkspace) {
       return []
     }
-    return calculationGroupsWorkspace.groups.slice().sort((left, right) => {
-      const leftMagnitude = Math.abs(finiteNumber(left.period_contribution) ?? finiteNumber(left.total_pnl) ?? 0)
-      const rightMagnitude = Math.abs(finiteNumber(right.period_contribution) ?? finiteNumber(right.total_pnl) ?? 0)
-      return rightMagnitude - leftMagnitude || left.group_label.localeCompare(right.group_label)
+    const rows: CalculationGroupRow[] = calculationGroupsWorkspace.groups.map((group) => {
+      const children = (group.children ?? []).slice().sort((left, right) => {
+        if (calculationSortField) {
+          return (
+            compareCalculationRowsByColumn(left, right, calculationSortField, calculationSortDirection) ||
+            defaultCalculationChildCompare(left, right)
+          )
+        }
+        return defaultCalculationChildCompare(left, right)
+      })
+      return { ...group, children }
     })
-  }, [calculationGroupsWorkspace])
-  const riskAttributionRows = useMemo(() => {
-    return calculationRows.slice().sort((left, right) => {
-      const leftRisk = Math.abs(finiteNumber(left.realized_risk_contribution) ?? 0)
-      const rightRisk = Math.abs(finiteNumber(right.realized_risk_contribution) ?? 0)
-      const leftContribution = Math.abs(finiteNumber(left.period_contribution) ?? 0)
-      const rightContribution = Math.abs(finiteNumber(right.period_contribution) ?? 0)
-      return rightRisk - leftRisk || rightContribution - leftContribution || left.group_label.localeCompare(right.group_label)
+    return rows.sort((left, right) => {
+      if (calculationSortField) {
+        return (
+          compareCalculationRowsByColumn(left, right, calculationSortField, calculationSortDirection) ||
+          defaultCalculationGroupCompare(left, right, calculationTableMode)
+        )
+      }
+      return defaultCalculationGroupCompare(left, right, calculationTableMode)
     })
-  }, [calculationRows])
+  }, [calculationGroupsWorkspace, calculationSortDirection, calculationSortField, calculationTableMode])
 
   const calculationSummary = calculationWorkspace?.summary ?? null
   const calculationGroupsSummary = calculationGroupsWorkspace?.summary ?? null
@@ -1585,11 +1804,11 @@ function PerformancePage() {
   )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} instruments/cash` : ''}${
     calculationRiskStatusLabel ? ` · ${calculationRiskStatusLabel}` : ''
   }`
-  const riskContributionTotal = riskAttributionRows.reduce(
+  const riskContributionTotal = calculationRows.reduce(
     (total, row) => total + (finiteNumber(row.realized_risk_contribution) ?? 0),
     0,
   )
-  const riskContributionResidual = riskAttributionRows.length ? 1 - riskContributionTotal : null
+  const riskContributionResidual = calculationRows.length ? 1 - riskContributionTotal : null
   const showRiskContributionResidual =
     calculationTableMode === 'risk_attribution' &&
     visibleCalculationColumns.includes('risk_contribution') &&
@@ -1597,12 +1816,23 @@ function PerformancePage() {
     Math.abs(riskContributionResidual) > 0.0005
   const calculationTableRows = useMemo<CalculationTableRow[]>(() => {
     if (calculationTableMode === 'risk_attribution') {
-      const rows: CalculationTableRow[] = riskAttributionRows.map((row) => ({
-        kind: 'group',
-        key: `risk:${row.group_key}`,
-        className: 'performance-calculation-group-row',
-        row,
-      }))
+      const rows: CalculationTableRow[] = []
+      calculationRows.forEach((row) => {
+        rows.push({
+          kind: 'group',
+          key: `risk:${row.group_key}`,
+          className: row.children?.length ? 'performance-calculation-group-row' : undefined,
+          row,
+        })
+        ;(row.children ?? []).forEach((child) => {
+          rows.push({
+            kind: 'child',
+            key: `risk-child:${child.parent_group_key}:${child.item_kind}:${child.item_key}`,
+            className: 'performance-calculation-child-row',
+            row: child,
+          })
+        })
+      })
       rows.push({
         kind: 'synthetic',
         key: 'portfolio-total',
@@ -1687,7 +1917,7 @@ function PerformancePage() {
       syntheticKind: 'final',
     })
     return rows
-  }, [calculationRows, calculationTableMode, riskAttributionRows, showContributionResidual, showRiskContributionResidual])
+  }, [calculationRows, calculationTableMode, showContributionResidual, showRiskContributionResidual])
 
   function calculationTableRowLabel(row: CalculationTableRow) {
     if (row.kind === 'synthetic') {
@@ -1762,49 +1992,7 @@ function PerformancePage() {
       }
     }
 
-    const source = row.row
-    switch (column) {
-      case 'pnl_flow':
-        return finiteNumber(source.total_pnl)
-      case 'start_value':
-        return finiteNumber(source.initial_value)
-      case 'end_value':
-        return finiteNumber(source.final_value)
-      case 'avg_weight':
-        return finiteNumber(source.average_weight)
-      case 'end_weight':
-        return finiteNumber(source.ending_weight)
-      case 'realized_gain':
-        return finiteNumber(source.realized_capital_gains)
-      case 'unrealized_gain':
-        return finiteNumber(source.unrealized_pnl_change)
-      case 'income':
-        return finiteNumber(source.earnings)
-      case 'fees':
-        return finiteNumber(expenseImpact(source.fees))
-      case 'taxes':
-        return finiteNumber(expenseImpact(source.taxes))
-      case 'fx_pnl':
-        return finiteNumber(fxPnlAmount(source))
-      case 'period_return':
-        return finiteNumber(source.period_return)
-      case 'return_contribution':
-        return finiteNumber(source.period_contribution)
-      case 'own_vol':
-        return finiteNumber(source.annualized_volatility)
-      case 'own_sharpe':
-        return finiteNumber(source.sharpe_ratio)
-      case 'own_corr':
-        return finiteNumber(source.correlation_to_portfolio)
-      case 'beta':
-        return finiteNumber(source.beta_to_portfolio)
-      case 'risk_contribution':
-        return finiteNumber(source.realized_risk_contribution)
-      case 'observations':
-        return finiteNumber(source.risk_return_observation_count)
-      default:
-        return null
-    }
+    return calculationDisplayMetricValue(row.row, column)
   }
 
   function calculationTableCellClassName(row: CalculationTableRow, column: CalculationColumnKey) {
@@ -1850,6 +2038,25 @@ function PerformancePage() {
       default:
         return '—'
     }
+  }
+
+  function renderCalculationSortHeader(column: CalculationColumnKey) {
+    const active = calculationSortField === column
+    const nextSortLabel = !active ? 'ascending' : calculationSortDirection === 'asc' ? 'descending' : 'no sorting'
+    return (
+      <button
+        type="button"
+        className={`holdings-th-label holdings-th-sortable ${active ? 'holdings-th-sortable-active' : ''}`}
+        onClick={() => handleCalculationSort(column)}
+        title={`Sort ${CALCULATION_COLUMN_LABELS[column]}: ${nextSortLabel}`}
+        aria-label={`Sort ${CALCULATION_COLUMN_LABELS[column]}: ${nextSortLabel}`}
+      >
+        <span>{CALCULATION_COLUMN_LABELS[column]}</span>
+        {active ? (
+          <span className="holdings-sort-indicator">{calculationSortDirection === 'asc' ? '↑' : '↓'}</span>
+        ) : null}
+      </button>
+    )
   }
 
   function renderCalculationTableRow(row: CalculationTableRow) {
@@ -2024,8 +2231,18 @@ function PerformancePage() {
                   <thead>
                     <tr>
                       {visibleCalculationColumns.map((column) => (
-                        <th key={column}>
-                          {CALCULATION_COLUMN_LABELS[column]}
+                        <th
+                          key={column}
+                          className={column === 'line' ? undefined : 'performance-cell-number'}
+                          aria-sort={
+                            calculationSortField === column
+                              ? calculationSortDirection === 'asc'
+                                ? 'ascending'
+                                : 'descending'
+                              : 'none'
+                          }
+                        >
+                          {renderCalculationSortHeader(column)}
                         </th>
                       ))}
                     </tr>
