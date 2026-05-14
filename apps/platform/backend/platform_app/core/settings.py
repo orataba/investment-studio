@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     email_imap_password: str | None = None
     email_imap_folder: str = "INBOX"
     email_imap_use_ssl: bool = True
+    email_imap_timeout_seconds: int = 60
     email_imap_max_messages: int = 500
     email_imap_mark_seen: bool = False
 

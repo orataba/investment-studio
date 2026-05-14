@@ -5033,6 +5033,8 @@ def _group_contribution_slices_by_taxonomy(
     taxonomy_nodes: list[dict[str, object]],
     taxonomy_assignments: list[dict[str, object]],
     base_daily_slices: list[dict[str, object]],
+    assignment_as_of_date: date | None = None,
+    preserve_cash_group: bool = False,
 ) -> list[dict[str, object]]:
     taxonomy_id = str(taxonomy.get("taxonomy_id") or "")
     target_scope = str(taxonomy.get("primary_assignment_scope") or "")
@@ -5065,13 +5067,16 @@ def _group_contribution_slices_by_taxonomy(
         if not isinstance(as_of_date, date):
             continue
         base_group_key = str(base_slice.get("group_key") or "")
-        taxonomy_group_key, taxonomy_group_label = _resolve_taxonomy_group_for_date(
-            taxonomy=taxonomy,
-            taxonomy_nodes_by_id=taxonomy_nodes_by_id,
-            assignments_by_entity=assignments_by_entity,
-            target_entity_id=base_group_key,
-            as_of_date=as_of_date,
-        )
+        if preserve_cash_group and target_scope == "instrument" and base_group_key == "cash":
+            taxonomy_group_key, taxonomy_group_label = ("cash", "Cash")
+        else:
+            taxonomy_group_key, taxonomy_group_label = _resolve_taxonomy_group_for_date(
+                taxonomy=taxonomy,
+                taxonomy_nodes_by_id=taxonomy_nodes_by_id,
+                assignments_by_entity=assignments_by_entity,
+                target_entity_id=base_group_key,
+                as_of_date=assignment_as_of_date or as_of_date,
+            )
         slice_key = (as_of_date, taxonomy_group_key)
         grouped_slice = grouped.setdefault(
             slice_key,
@@ -5205,6 +5210,7 @@ def _build_taxonomy_contribution_report(
 
     line_accumulators: dict[str, dict[str, object]] = {}
     start_values: dict[str, float | None] = {}
+    beginning_weights: dict[str, float | None] = {}
     end_values: dict[str, float | None] = {}
     ending_weights: dict[str, float | None] = {}
     first_slice_dates: dict[str, date] = {}
@@ -5217,6 +5223,7 @@ def _build_taxonomy_contribution_report(
 
         if group_key not in first_slice_dates or as_of_date < first_slice_dates[group_key]:
             start_values[group_key] = _safe_float(grouped_slice.get("beginning_value_base"))
+            beginning_weights[group_key] = _safe_float(grouped_slice.get("beginning_weight"))
             first_slice_dates[group_key] = as_of_date
         if as_of_date == resolved_end_date:
             end_values[group_key] = _safe_float(grouped_slice.get("ending_value_base"))
@@ -5230,6 +5237,7 @@ def _build_taxonomy_contribution_report(
                 "group_label": str(grouped_slice.get("group_label") or group_key),
                 "start_value_base": 0.0,
                 "end_value_base": 0.0,
+                "beginning_weight": 0.0,
                 "average_weight": 0.0,
                 "ending_weight": 0.0,
                 "realized_pnl": 0.0,
@@ -5280,6 +5288,11 @@ def _build_taxonomy_contribution_report(
         accumulator["end_value_base"] = (
             end_values.get(group_key, 0.0)
             if end_value_available
+            else None
+        )
+        accumulator["beginning_weight"] = (
+            beginning_weights.get(group_key, 0.0)
+            if start_value_available
             else None
         )
         accumulator["ending_weight"] = (
@@ -5348,6 +5361,9 @@ def build_taxonomy_contribution_report_from_base_report(
     taxonomy_id: str | None,
     group_key: str | None = None,
     base_report: dict[str, object],
+    use_period_end_taxonomy_assignments: bool = False,
+    apply_boundary_values: bool = True,
+    preserve_cash_group: bool = False,
 ) -> dict[str, object]:
     resolved_taxonomy_id = str(taxonomy_id or "").strip()
     taxonomy = next(
@@ -5372,18 +5388,30 @@ def build_taxonomy_contribution_report_from_base_report(
         base_daily_slices = [
             item for item in base_daily_slices if str(item.get("group_key") or "") in cash_bucket_ids
         ]
+    base_summary = base_report.get("summary") if isinstance(base_report.get("summary"), dict) else {}
+    assignment_as_of_date = (
+        _parse_iso_date(base_summary.get("end_date"))
+        if use_period_end_taxonomy_assignments
+        else None
+    )
     grouped_daily_slices = _group_contribution_slices_by_taxonomy(
         taxonomy=taxonomy,
         taxonomy_nodes=taxonomy_nodes or [],
         taxonomy_assignments=taxonomy_assignments or [],
         base_daily_slices=base_daily_slices,
+        assignment_as_of_date=assignment_as_of_date,
+        preserve_cash_group=preserve_cash_group,
     )
     report = _build_taxonomy_contribution_report(
         taxonomy=taxonomy,
         base_report=base_report,
         grouped_daily_slices=grouped_daily_slices,
     )
-    if primary_assignment_scope == "instrument":
+    if use_period_end_taxonomy_assignments:
+        report["_taxonomy_assignment_mode"] = "period_end"
+    if preserve_cash_group:
+        report["_taxonomy_preserve_cash_group"] = True
+    if primary_assignment_scope == "instrument" and apply_boundary_values:
         boundary_report = build_period_boundary_groups_report(
             portfolio,
             accounts,
@@ -5442,6 +5470,7 @@ def _apply_taxonomy_boundary_values_to_contribution_report(
         )
         start_value = _safe_float(start_group.get("market_value_base"))
         end_value = _safe_float(end_group.get("market_value_base"))
+        beginning_weight = _safe_float(start_group.get("portfolio_weight"))
         ending_weight = _safe_float(end_group.get("portfolio_weight"))
         line["start_value_base"] = (
             start_value
@@ -5452,6 +5481,11 @@ def _apply_taxonomy_boundary_values_to_contribution_report(
             end_value
             if end_value is not None
             else (_safe_float(line.get("end_value_base")) or 0.0)
+        )
+        line["beginning_weight"] = (
+            beginning_weight
+            if beginning_weight is not None
+            else (_safe_float(line.get("beginning_weight")) or 0.0)
         )
         line["ending_weight"] = (
             ending_weight
@@ -5639,8 +5673,12 @@ def build_contribution_report_from_daily_slices(
             observation_count += 1
 
     line_accumulators: dict[str, dict[str, object]] = {}
+    line_first_slice_dates: dict[str, date] = {}
     for daily_slice in in_period_slices:
         line_group_key = str(daily_slice.get("group_key") or "")
+        as_of_date = daily_slice.get("as_of_date")
+        if not isinstance(as_of_date, date):
+            continue
         accumulator = line_accumulators.setdefault(
             line_group_key,
             {
@@ -5649,6 +5687,7 @@ def build_contribution_report_from_daily_slices(
                 "group_label": str(daily_slice.get("group_label") or line_group_key),
                 "start_value_base": daily_slice.get("beginning_value_base"),
                 "end_value_base": daily_slice.get("ending_value_base"),
+                "beginning_weight": daily_slice.get("beginning_weight"),
                 "average_weight": 0.0,
                 "_weight_count": 0,
                 "ending_weight": daily_slice.get("ending_weight"),
@@ -5664,6 +5703,10 @@ def build_contribution_report_from_daily_slices(
                 "period_contribution": 0.0,
             },
         )
+        if line_group_key not in line_first_slice_dates or as_of_date < line_first_slice_dates[line_group_key]:
+            accumulator["start_value_base"] = daily_slice.get("beginning_value_base")
+            accumulator["beginning_weight"] = daily_slice.get("beginning_weight")
+            line_first_slice_dates[line_group_key] = as_of_date
         accumulator["end_value_base"] = daily_slice.get("ending_value_base")
         accumulator["ending_weight"] = daily_slice.get("ending_weight")
         beginning_weight = _safe_float(daily_slice.get("beginning_weight"))
@@ -6054,6 +6097,7 @@ def build_contribution_calendar_report(
 
     bucket_accumulators: dict[tuple[str, str], dict[str, object]] = {}
     bucket_start_values: dict[tuple[str, str], float | None] = {}
+    bucket_beginning_weights: dict[tuple[str, str], float | None] = {}
     bucket_end_values: dict[tuple[str, str], float | None] = {}
     bucket_ending_weights: dict[tuple[str, str], float | None] = {}
     bucket_coverage_states: dict[tuple[str, str], list[str]] = defaultdict(list)
@@ -6073,6 +6117,7 @@ def build_contribution_calendar_report(
         bucket_group_key = (bucket_key, group_key)
         if as_of_date == window["start_date"]:
             bucket_start_values[bucket_group_key] = _safe_float(daily_slice.get("beginning_value_base"))
+            bucket_beginning_weights[bucket_group_key] = _safe_float(daily_slice.get("beginning_weight"))
         if as_of_date == window["end_date"]:
             bucket_end_values[bucket_group_key] = _safe_float(daily_slice.get("ending_value_base"))
             bucket_ending_weights[bucket_group_key] = _safe_float(daily_slice.get("ending_weight"))
@@ -6095,6 +6140,7 @@ def build_contribution_calendar_report(
                 "observation_count": 0,
                 "beginning_value_base": 0.0,
                 "ending_value_base": 0.0,
+                "beginning_weight": 0.0,
                 "average_weight": 0.0,
                 "ending_weight": 0.0,
                 "realized_pnl": 0.0,
@@ -6147,6 +6193,11 @@ def build_contribution_calendar_report(
         accumulator["ending_value_base"] = (
             bucket_end_values.get(bucket_group_key, 0.0)
             if _safe_float(summary.get("end_nav")) is not None
+            else None
+        )
+        accumulator["beginning_weight"] = (
+            bucket_beginning_weights.get(bucket_group_key, 0.0)
+            if bucket_group_key in bucket_beginning_weights or _safe_float(summary.get("start_nav")) is not None
             else None
         )
         accumulator["ending_weight"] = (
@@ -6203,6 +6254,7 @@ def build_contribution_calendar_report(
 _CONTRIBUTION_BUCKET_FIELD_MAP: dict[str, str] = {
     "start_value": "start_value_base",
     "end_value": "end_value_base",
+    "beginning_weight": "beginning_weight",
     "average_weight": "average_weight",
     "ending_weight": "ending_weight",
     "realized_pnl": "realized_pnl",
@@ -6219,6 +6271,7 @@ _CONTRIBUTION_BUCKET_FIELD_MAP: dict[str, str] = {
 _CONTRIBUTION_CALENDAR_BUCKET_FIELD_MAP: dict[str, str] = {
     "start_value": "beginning_value_base",
     "end_value": "ending_value_base",
+    "beginning_weight": "beginning_weight",
     "average_weight": "average_weight",
     "ending_weight": "ending_weight",
     "realized_pnl": "realized_pnl",
@@ -6524,6 +6577,8 @@ def _build_taxonomy_calculation_detail_report(
     end_date: date | None,
     taxonomy_id: str | None,
     base_report: dict[str, object] | None = None,
+    use_period_end_taxonomy_assignments: bool = False,
+    preserve_cash_group: bool = False,
 ) -> dict[str, object]:
     resolved_taxonomy_id = str(taxonomy_id or "").strip()
     taxonomy = next(
@@ -6560,6 +6615,12 @@ def _build_taxonomy_calculation_detail_report(
         end_date=end_date,
         axis=base_axis,
         allow_internal_detail_axis=True,
+    )
+    base_summary = resolved_base_report.get("summary") if isinstance(resolved_base_report.get("summary"), dict) else {}
+    assignment_as_of_date = (
+        _parse_iso_date(base_summary.get("end_date"))
+        if use_period_end_taxonomy_assignments
+        else None
     )
     taxonomy_nodes_by_id = {
         str(node.get("taxonomy_node_id") or ""): node
@@ -6610,13 +6671,16 @@ def _build_taxonomy_calculation_detail_report(
             else:
                 target_entity_id, item_kind, detail_item_key = decoded
 
-        parent_group_key, _parent_group_label = _resolve_taxonomy_group_for_date(
-            taxonomy=taxonomy,
-            taxonomy_nodes_by_id=taxonomy_nodes_by_id,
-            assignments_by_entity=assignments_by_entity,
-            target_entity_id=target_entity_id,
-            as_of_date=as_of_date,
-        )
+        if preserve_cash_group and target_scope == "instrument" and item_kind == "cash":
+            parent_group_key = "cash"
+        else:
+            parent_group_key, _parent_group_label = _resolve_taxonomy_group_for_date(
+                taxonomy=taxonomy,
+                taxonomy_nodes_by_id=taxonomy_nodes_by_id,
+                assignments_by_entity=assignments_by_entity,
+                target_entity_id=target_entity_id,
+                as_of_date=assignment_as_of_date or as_of_date,
+            )
         detail_slice = dict(base_slice)
         detail_slice["axis"] = detail_axis
         detail_slice["group_key"] = _encode_calculation_detail_group_key(
@@ -6653,6 +6717,8 @@ def build_taxonomy_calculation_detail_report_from_base_report(
     end_date: date | None,
     taxonomy_id: str | None,
     base_report: dict[str, object],
+    use_period_end_taxonomy_assignments: bool = False,
+    preserve_cash_group: bool = False,
 ) -> dict[str, object]:
     return _build_taxonomy_calculation_detail_report(
         portfolio,
@@ -6665,6 +6731,8 @@ def build_taxonomy_calculation_detail_report_from_base_report(
         end_date=end_date,
         taxonomy_id=taxonomy_id,
         base_report=base_report,
+        use_period_end_taxonomy_assignments=use_period_end_taxonomy_assignments,
+        preserve_cash_group=preserve_cash_group,
     )
 
 
@@ -7104,6 +7172,7 @@ def _build_period_calculation_child_records(
     risk_calculation_frequency: CalculationFrequency,
     portfolio_daily_series: list[dict[str, object]],
     risk_final_date: date | None,
+    portfolio_start_weight_denominator: float | None,
     detail_contribution_report: dict[str, object] | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     parent_labels = {
@@ -7141,6 +7210,8 @@ def _build_period_calculation_child_records(
             start_date=start_date,
             end_date=end_date,
             taxonomy_id=taxonomy_id,
+            use_period_end_taxonomy_assignments=True,
+            preserve_cash_group=True,
         )
     else:
         return {}
@@ -7248,6 +7319,9 @@ def _build_period_calculation_child_records(
             if delta is not None and child_total_pnl is not None
             else None
         )
+        beginning_weight = _safe_float(line.get("beginning_weight"))
+        if initial_value is not None and portfolio_start_weight_denominator is not None:
+            beginning_weight = initial_value / portfolio_start_weight_denominator
         children_by_parent[parent_group_key].append(
             {
                 "axis": axis,
@@ -7257,6 +7331,7 @@ def _build_period_calculation_child_records(
                 "item_key": item_key,
                 "item_label": str(line.get("group_label") or item_key),
                 "item_kind": item_kind,
+                "beginning_weight": beginning_weight,
                 "average_weight": _safe_float(line.get("average_weight")),
                 "ending_weight": _safe_float(line.get("ending_weight")),
                 "period_return": period_returns.get(candidate_child_key),
@@ -7379,6 +7454,7 @@ def _build_period_calculation_cash_parent_group(
         "taxonomy_id": None,
         "group_key": "cash",
         "group_label": "Cash",
+        "beginning_weight": _safe_float(line.get("beginning_weight")),
         "average_weight": _safe_float(line.get("average_weight")),
         "ending_weight": _safe_float(line.get("ending_weight")),
         "period_return": period_returns.get("cash"),
@@ -7418,18 +7494,59 @@ def build_period_calculation_groups_report(
     detail_contribution_report: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if contribution_report is None:
-        contribution_report = build_contribution_report(
-            portfolio,
-            accounts,
-            transactions,
-            taxonomies=taxonomies,
-            taxonomy_nodes=taxonomy_nodes,
-            taxonomy_assignments=taxonomy_assignments,
-            start_date=start_date,
-            end_date=end_date,
-            axis=axis,
-            taxonomy_id=taxonomy_id,
-        )
+        if axis == "taxonomy":
+            resolved_taxonomy_id = str(taxonomy_id or "").strip()
+            taxonomy = next(
+                (
+                    item
+                    for item in taxonomies or []
+                    if str(item.get("taxonomy_id") or "") == resolved_taxonomy_id
+                ),
+                None,
+            )
+            if taxonomy is None:
+                raise ValueError("Selected taxonomy was not found.")
+            primary_assignment_scope = str(taxonomy.get("primary_assignment_scope") or "")
+            base_axis = "account" if primary_assignment_scope in {"account", "cash_bucket"} else "instrument"
+            base_contribution_report = build_contribution_report(
+                portfolio,
+                accounts,
+                transactions,
+                taxonomies=taxonomies,
+                taxonomy_nodes=taxonomy_nodes,
+                taxonomy_assignments=taxonomy_assignments,
+                start_date=start_date,
+                end_date=end_date,
+                axis=base_axis,
+            )
+            contribution_report = build_taxonomy_contribution_report_from_base_report(
+                portfolio,
+                accounts,
+                transactions,
+                taxonomies=taxonomies,
+                taxonomy_nodes=taxonomy_nodes,
+                taxonomy_assignments=taxonomy_assignments,
+                start_date=start_date,
+                end_date=end_date,
+                taxonomy_id=resolved_taxonomy_id,
+                base_report=base_contribution_report,
+                use_period_end_taxonomy_assignments=True,
+                apply_boundary_values=False,
+                preserve_cash_group=True,
+            )
+        else:
+            contribution_report = build_contribution_report(
+                portfolio,
+                accounts,
+                transactions,
+                taxonomies=taxonomies,
+                taxonomy_nodes=taxonomy_nodes,
+                taxonomy_assignments=taxonomy_assignments,
+                start_date=start_date,
+                end_date=end_date,
+                axis=axis,
+                taxonomy_id=taxonomy_id,
+            )
     summary = (
         deepcopy(contribution_report.get("summary"))
         if isinstance(contribution_report.get("summary"), dict)
@@ -7440,7 +7557,10 @@ def build_period_calculation_groups_report(
     boundary_start_values: dict[str, float | None] = {}
     boundary_end_values: dict[str, float | None] = {}
     boundary_labels: dict[str, str] = {}
-    if axis == "taxonomy":
+    taxonomy_uses_period_end_assignments = (
+        axis == "taxonomy" and contribution_report.get("_taxonomy_assignment_mode") == "period_end"
+    )
+    if axis == "taxonomy" and not taxonomy_uses_period_end_assignments:
         boundary_report = build_period_boundary_groups_report(
             portfolio,
             accounts,
@@ -7596,6 +7716,7 @@ def build_period_calculation_groups_report(
                     or boundary_labels.get(candidate_group_key)
                     or candidate_group_key
                 ),
+                "beginning_weight": _safe_float(line.get("beginning_weight")),
                 "average_weight": _safe_float(line.get("average_weight")),
                 "ending_weight": _safe_float(line.get("ending_weight")),
                 "period_return": period_returns.get(candidate_group_key),
@@ -7653,6 +7774,27 @@ def build_period_calculation_groups_report(
             )
             groups.append(cash_parent_group)
 
+    full_period_initial_value_total = 0.0
+    full_period_initial_value_complete = True
+    for item in groups:
+        initial_value = _safe_float(item.get("initial_value"))
+        if initial_value is None:
+            full_period_initial_value_complete = False
+        else:
+            full_period_initial_value_total += initial_value
+    full_period_start_weight_denominator = (
+        full_period_initial_value_total
+        if full_period_initial_value_complete and full_period_initial_value_total > 1e-9
+        else None
+    )
+    for item in groups:
+        initial_value = _safe_float(item.get("initial_value"))
+        item["beginning_weight"] = (
+            initial_value / full_period_start_weight_denominator
+            if initial_value is not None and full_period_start_weight_denominator is not None
+            else _safe_float(item.get("beginning_weight"))
+        )
+
     groups.sort(
         key=lambda item: (
             -abs(_safe_float(item.get("period_contribution")) or 0.0),
@@ -7708,11 +7850,9 @@ def build_period_calculation_groups_report(
             ending_weight = final_value / end_weight_denominator
             item["ending_weight"] = ending_weight
         if _safe_float(item.get("average_weight")) is None:
-            start_weight = (
-                initial_value / start_weight_denominator
-                if initial_value is not None and start_weight_denominator is not None
-                else None
-            )
+            start_weight = _safe_float(item.get("beginning_weight"))
+            if start_weight is None and initial_value is not None and start_weight_denominator is not None:
+                start_weight = initial_value / start_weight_denominator
             if start_weight is not None and ending_weight is not None:
                 item["average_weight"] = (start_weight + ending_weight) / 2.0
             elif start_weight is not None:
@@ -7737,6 +7877,7 @@ def build_period_calculation_groups_report(
         risk_calculation_frequency=risk_calculation_frequency,
         portfolio_daily_series=portfolio_daily_series,
         risk_final_date=resolved_end_date,
+        portfolio_start_weight_denominator=full_period_start_weight_denominator,
         detail_contribution_report=detail_contribution_report,
     )
     for item in groups:
@@ -7897,6 +8038,7 @@ def build_period_calculation_groups_calendar_report(
                 "group_label": str(bucket.get("group_label") or bucket_group_key),
                 "coverage_state": str(bucket.get("coverage_state") or "unavailable"),
                 "observation_count": int(bucket.get("observation_count") or 0),
+                "beginning_weight": _safe_float(bucket.get("beginning_weight")),
                 "average_weight": _safe_float(bucket.get("average_weight")),
                 "ending_weight": _safe_float(bucket.get("ending_weight")),
                 "initial_value": initial_value,
@@ -8010,6 +8152,7 @@ def build_period_calculation_groups_calendar_report(
 _CALCULATION_BUCKET_FIELD_MAP: dict[str, str] = {
     "initial_value": "initial_value",
     "final_value": "final_value",
+    "beginning_weight": "beginning_weight",
     "capital_gains": "capital_gains",
     "realized_capital_gains": "realized_capital_gains",
     "unrealized_capital_gains": "unrealized_pnl_change",

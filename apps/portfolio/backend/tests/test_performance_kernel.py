@@ -15,7 +15,7 @@ from portfolio_app.db.models import (
     PortfolioDailySnapshotModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import ledger, performance, portfolio_store
+from portfolio_app.services import daily_snapshots, ledger, performance, portfolio_store
 
 
 def _write_store(store: dict[str, object]) -> None:
@@ -447,6 +447,42 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
     contribution_response = client.get("/api/portfolios/yungu/performance/contribution?axis=instrument")
     assert contribution_response.status_code == 200
     assert contribution_response.json()["daily_slices"]
+
+    lookback_response = client.get(
+        "/api/portfolios/yungu/performance/contribution"
+        "?axis=instrument&start_date=2025-01-01&end_date=2026-04-15"
+    )
+    assert lookback_response.status_code == 200
+    lookback_payload = lookback_response.json()
+    assert lookback_payload["daily_slices"]
+    assert lookback_payload["summary"]["start_date"] == lookback_payload["daily_slices"][0]["as_of_date"]
+
+
+def test_materialized_contribution_rejects_missing_tail_snapshot(client):
+    response = client.get("/api/portfolios/yungu/snapshots/daily")
+    assert response.status_code == 200
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        latest_snapshot = (
+            session.query(PortfolioDailySnapshotModel)
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "yungu")
+            .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
+            .first()
+        )
+        assert latest_snapshot is not None
+        latest_snapshot_date = latest_snapshot.as_of_date
+        session.delete(latest_snapshot)
+        session.commit()
+
+    report = daily_snapshots.build_materialized_contribution_report(
+        "yungu",
+        start_date=latest_snapshot_date,
+        end_date=latest_snapshot_date,
+        axis="instrument",
+    )
+
+    assert report is None
 
 
 def test_daily_snapshot_refresh_endpoint_refreshes_impacted_instrument_portfolios(client):
@@ -2522,6 +2558,7 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
     assert fifo["calculation_group"]["realized_capital_gains"] == 100000.0
     assert fifo["calculation_group"]["unrealized_pnl_change"] == -100000.0
     assert fifo["calculation_group"]["total_pnl"] == 0.0
+    assert fifo["calculation_group"]["beginning_weight"] is not None
     assert fifo["calculation_group"]["average_weight"] is not None
     assert fifo["calculation_group"]["ending_weight"] is not None
 
@@ -5541,9 +5578,102 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
     assert groups["cash"]["group_label"] == "Cash"
     assert isclose(groups["cash"]["initial_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["cash"]["final_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["cash"]["beginning_weight"], 50.0 / 150.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["cash"]["total_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["equity-us-cash-line-test"]["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(groups["equity-us-cash-line-test"]["final_value"], 110.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(
+        groups["equity-us-cash-line-test"]["beginning_weight"],
+        100.0 / 150.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+
+    explicit_calculation_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/calculation"
+        "?start_date=2026-01-02&end_date=2026-01-02"
+    )
+    assert explicit_calculation_response.status_code == 200
+    explicit_calculation_summary = explicit_calculation_response.json()["summary"]
+    assert isclose(explicit_calculation_summary["initial_value"], 150.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(explicit_calculation_summary["final_value"], 160.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(explicit_calculation_summary["delta"], 10.0, rel_tol=0.0, abs_tol=1e-12)
+
+    explicit_groups_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/calculation/groups"
+        "?axis=instrument&start_date=2026-01-02&end_date=2026-01-02"
+    )
+    assert explicit_groups_response.status_code == 200
+    explicit_groups_payload = explicit_groups_response.json()
+    explicit_groups = {item["group_key"]: item for item in explicit_groups_payload["groups"]}
+    assert isclose(
+        explicit_groups_payload["summary"]["total_initial_value"],
+        150.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert isclose(
+        explicit_groups_payload["summary"]["total_final_value"],
+        160.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert isclose(explicit_groups["cash"]["initial_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(explicit_groups["cash"]["final_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(explicit_groups["cash"]["beginning_weight"], 50.0 / 150.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(
+        explicit_groups["equity-us-cash-line-test"]["initial_value"],
+        100.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert isclose(
+        explicit_groups["equity-us-cash-line-test"]["final_value"],
+        110.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert isclose(
+        explicit_groups["equity-us-cash-line-test"]["beginning_weight"],
+        100.0 / 150.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+
+    explicit_calendar_response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/calculation/groups/calendar"
+        "?axis=instrument&frequency=weekly&start_date=2026-01-02&end_date=2026-01-02"
+    )
+    assert explicit_calendar_response.status_code == 200
+    explicit_calendar_buckets = {
+        item["group_key"]: item for item in explicit_calendar_response.json()["buckets"]
+    }
+    assert isclose(explicit_calendar_buckets["cash"]["initial_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(explicit_calendar_buckets["cash"]["final_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(
+        explicit_calendar_buckets["cash"]["beginning_weight"],
+        50.0 / 150.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert isclose(
+        explicit_calendar_buckets["equity-us-cash-line-test"]["initial_value"],
+        100.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert isclose(
+        explicit_calendar_buckets["equity-us-cash-line-test"]["final_value"],
+        110.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert isclose(
+        explicit_calendar_buckets["equity-us-cash-line-test"]["beginning_weight"],
+        100.0 / 150.0,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
 
 
 def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(client, monkeypatch):
@@ -5985,7 +6115,7 @@ def test_taxonomy_boundary_groups_report_uses_effective_assignment_on_start_and_
     assert isclose(payload["end_groups"][0]["market_value_base"], 121.0, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_taxonomy_calculation_groups_report_surfaces_residual_reclassification_delta(client, monkeypatch):
+def test_taxonomy_calculation_groups_use_period_end_view_and_preserve_cash_group(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
@@ -6021,7 +6151,7 @@ def test_taxonomy_calculation_groups_report_surfaces_residual_reclassification_d
                 "instrument_ref": None,
                 "quantity": None,
                 "price": None,
-                "gross_amount": 100.0,
+                "gross_amount": 150.0,
                 "fees": 0.0,
                 "taxes": 0.0,
                 "currency": "USD",
@@ -6135,19 +6265,25 @@ def test_taxonomy_calculation_groups_report_surfaces_residual_reclassification_d
     summary = payload["summary"]
     assert summary["axis"] == "taxonomy"
     assert summary["taxonomy_id"] == "tax-sector"
-    assert isclose(summary["total_initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["total_final_value"], 121.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["total_initial_value"], 150.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(summary["total_final_value"], 171.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["total_delta"], 21.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["total_pnl"], 21.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["total_residual_delta"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
     groups = {item["group_key"]: item for item in payload["groups"]}
-    assert isclose(groups["tax-sector-value"]["delta"], -100.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(groups["tax-sector-value"]["total_pnl"], 10.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(groups["tax-sector-value"]["residual_delta"], -110.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(groups["tax-sector-growth"]["delta"], 121.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(groups["tax-sector-growth"]["total_pnl"], 11.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(groups["tax-sector-growth"]["residual_delta"], 110.0, rel_tol=0.0, abs_tol=1e-12)
+    assert "unassigned:tax-sector" not in groups
+    assert "tax-sector-value" not in groups
+    assert set(groups) == {"tax-sector-growth", "cash"}
+    assert isclose(groups["tax-sector-growth"]["initial_value"], 100.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["tax-sector-growth"]["final_value"], 121.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["tax-sector-growth"]["delta"], 21.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["tax-sector-growth"]["total_pnl"], 21.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["tax-sector-growth"]["residual_delta"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["cash"]["initial_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["cash"]["final_value"], 50.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["cash"]["delta"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["cash"]["total_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_period_calculation_drilldown_returns_instrument_capital_gains(client, monkeypatch):
@@ -6249,7 +6385,7 @@ def test_period_calculation_drilldown_returns_instrument_capital_gains(client, m
     assert isclose(groups["cash"]["amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_period_calculation_drilldown_taxonomy_exposes_reclassification_residual(client, monkeypatch):
+def test_period_calculation_drilldown_taxonomy_uses_period_end_view(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
@@ -6401,8 +6537,10 @@ def test_period_calculation_drilldown_taxonomy_exposes_reclassification_residual
     assert payload["summary"]["taxonomy_id"] == "tax-sector"
     assert isclose(payload["summary"]["total_amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     groups = {item["group_key"]: item for item in payload["groups"]}
-    assert isclose(groups["tax-sector-value"]["amount"], -110.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(groups["tax-sector-growth"]["amount"], 110.0, rel_tol=0.0, abs_tol=1e-12)
+    assert "tax-sector-value" not in groups
+    assert set(groups) == {"tax-sector-growth", "cash"}
+    assert isclose(groups["tax-sector-growth"]["amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["cash"]["amount"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_period_calculation_entries_extract_attached_tax_bucket_by_instrument(client, monkeypatch):

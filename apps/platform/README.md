@@ -46,6 +46,8 @@
 
 这些文件通常包含外部导出的运行数据，目录已加入 `.gitignore`，不再作为源码资产提交。
 
+Database Dashboard 的邮件刷新使用显式产品规则匹配发件人、主题、附件名与行级产品信息。非 full-history 刷新会先读取该 instrument 已有最新 NAV 日期，再用 IMAP `SINCE` 缩小邮件搜索范围，并在解析后过滤早于该 NAV 日期的行；若没有历史 NAV，才退回最近邮件窗口。IMAP 连接超时由 `email_imap_timeout_seconds` 控制，避免邮件服务器阻塞整个刷新请求。
+
 ## Downstream Refresh
 
 `Database Dashboard` 更新共享市场数据后，Platform 会通过后台通知刷新 downstream app：

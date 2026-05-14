@@ -252,6 +252,133 @@ def test_incremental_email_import_uses_attachment_nav_dates_not_latest_received_
     assert captured["message"] == "Imported 2 NAV rows from 2 recent email attachments."
 
 
+def test_email_refresh_searches_since_latest_nav_date_and_filters_older_rows(
+    monkeypatch,
+) -> None:
+    source_settings = {
+        "source_email_rules": [
+            {
+                "sender_equals": ["yywbfa@cmschina.com.cn"],
+                "subject_contains": ["润洲正行11号私募证券投资基金a", "虚拟计提净值表"],
+                "attachment_name_contains": ["润洲正行11号私募证券投资基金a", "虚拟计提后净值表"],
+                "attachment_extensions": ["xlsx"],
+                "row_code_equals": ["ZB945A"],
+                "row_name_equals": ["润洲正行11号私募证券投资基金A"],
+            }
+        ]
+    }
+    header = ["产品代码", "产品名称", "业务日期", "单位净值", "累计单位净值"]
+    messages = {
+        1: _nav_email_bytes(
+            subject="润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_虚拟计提净值表_20260402",
+            attachment_name="20260402_润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
+            rows=[
+                header,
+                ["ZB945A", "润洲正行11号私募证券投资基金A", "20260402", "0.9334", "1.4897"],
+            ],
+        ),
+        2: _nav_email_bytes(
+            subject="润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_虚拟计提净值表_20260403",
+            attachment_name="20260403_润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
+            rows=[
+                header,
+                ["ZB945A", "润洲正行11号私募证券投资基金A", "20260403", "0.9352", "1.4915"],
+            ],
+        ),
+    }
+    mailboxes: list[_FakeMailbox] = []
+
+    class FakeSettings:
+        email_sync_enabled = True
+        email_imap_host = "imap.example.test"
+        email_imap_port = 993
+        email_imap_username = "nav-sync@example.test"
+        email_imap_password = "secret"
+        email_imap_folder = "INBOX"
+        email_imap_use_ssl = True
+        email_imap_timeout_seconds = 60
+        email_imap_max_messages = 500
+        email_imap_mark_seen = False
+
+        @property
+        def email_sync_ready(self) -> bool:
+            return True
+
+    class FakeRefreshMailbox(_FakeMailbox):
+        def __init__(self, host: str, port: int, timeout: int) -> None:
+            del host, port, timeout
+            super().__init__(messages)
+            self.search_calls: list[tuple[object, ...]] = []
+            mailboxes.append(self)
+
+        def login(self, username: str, password: str) -> tuple[str, list[object]]:
+            del username, password
+            return "OK", []
+
+        def select(self, folder: str, readonly: bool = True) -> tuple[str, list[object]]:
+            del folder, readonly
+            return "OK", []
+
+        def close(self) -> tuple[str, list[object]]:
+            return "OK", []
+
+        def logout(self) -> tuple[str, list[object]]:
+            return "OK", []
+
+        def uid(self, command: str, *args: object) -> tuple[str, list[object]]:
+            if command == "search":
+                self.search_calls.append(args)
+            return super().uid(command, *args)
+
+    captured: dict[str, object] = {}
+
+    def fake_replace_nav_history(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"instrument_id": kwargs["instrument_id"]}
+
+    def fake_update_refresh_status(**kwargs: object) -> dict[str, object]:
+        captured.update({"refresh_status": kwargs})
+        return {"instrument_id": kwargs["instrument_id"]}
+
+    monkeypatch.setattr(market_data_ops, "get_settings", lambda: FakeSettings())
+    monkeypatch.setattr(market_data_ops.imaplib, "IMAP4_SSL", FakeRefreshMailbox)
+    monkeypatch.setattr(market_data_ops, "replace_nav_history", fake_replace_nav_history)
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
+
+    record = market_data_ops._refresh_from_email(
+        instrument_id="zb945a",
+        instrument={
+            "market_data": [
+                {
+                    "metric_family": "nav",
+                    "quote_basis": "official_nav",
+                    "as_of_date": "2026-04-03",
+                    "value": "0.9352",
+                    "currency": "CNY",
+                    "provider": "email:previous",
+                    "status": "complete",
+                }
+            ]
+        },
+        source_settings=source_settings,
+        updated_by="test",
+        full_history=False,
+    )
+
+    assert record == {"instrument_id": "zb945a"}
+    assert mailboxes[0].search_calls[0] == (None, "SINCE", "03-Apr-2026")
+    assert mailboxes[0].search_calls[1] == (
+        None,
+        "FROM",
+        "yywbfa@cmschina.com.cn",
+        "SINCE",
+        "03-Apr-2026",
+    )
+    rows = captured["rows"]
+    assert [row["as_of_date"] for row in rows] == ["2026-04-03"]
+    assert captured["message"] == "Imported 1 NAV rows from 1 recent email attachments since 2026-04-03."
+
+
 def test_parse_nav_rows_from_label_snapshot_matrix_extracts_nav_values() -> None:
     matrix = [
         ["招商证券股份有限公司_九慕云谷1号私募证券投资基金_专用表", None],

@@ -1495,6 +1495,7 @@ ContributionAxis = Literal["instrument", "account", "instrument_type", "currency
 CalculationBucket = Literal[
     "initial_value",
     "final_value",
+    "beginning_weight",
     "capital_gains",
     "realized_capital_gains",
     "unrealized_capital_gains",
@@ -1552,6 +1553,7 @@ class ContributionLineRecord(BaseModel):
     group_label: str
     start_value_base: float | None = None
     end_value_base: float | None = None
+    beginning_weight: float | None = None
     average_weight: float | None = None
     ending_weight: float | None = None
     realized_pnl: float | None = None
@@ -1607,6 +1609,7 @@ class ContributionCalendarBucketRecord(BaseModel):
     observation_count: int = 0
     beginning_value_base: float | None = None
     ending_value_base: float | None = None
+    beginning_weight: float | None = None
     average_weight: float | None = None
     ending_weight: float | None = None
     realized_pnl: float | None = None
@@ -1648,6 +1651,7 @@ class ContributionCalendarResponse(BaseModel):
 ContributionBucket = Literal[
     "start_value",
     "end_value",
+    "beginning_weight",
     "average_weight",
     "ending_weight",
     "realized_pnl",
@@ -1874,6 +1878,7 @@ class PeriodCalculationGroupChildRecord(BaseModel):
     item_key: str
     item_label: str
     item_kind: Literal["instrument", "cash"]
+    beginning_weight: float | None = None
     average_weight: float | None = None
     ending_weight: float | None = None
     period_return: float | None = None
@@ -1907,6 +1912,7 @@ class PeriodCalculationGroupRecord(BaseModel):
     taxonomy_id: str | None = None
     group_key: str
     group_label: str
+    beginning_weight: float | None = None
     average_weight: float | None = None
     ending_weight: float | None = None
     period_return: float | None = None
@@ -1979,6 +1985,7 @@ class PeriodCalculationGroupCalendarBucketRecord(BaseModel):
     group_label: str
     coverage_state: CoverageState
     observation_count: int = 0
+    beginning_weight: float | None = None
     average_weight: float | None = None
     ending_weight: float | None = None
     initial_value: float | None = None

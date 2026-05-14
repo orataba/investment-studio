@@ -3281,6 +3281,14 @@ td:last-child {
   color: #b91c1c;
 }
 
+.instrument-series-label-secondary-row span {
+  color: #0f766e;
+}
+
+.instrument-series-label-benchmark-muted-row span {
+  color: #a16207;
+}
+
 .instrument-series-label em {
   font-style: normal;
   color: #0d7a38;
@@ -3348,6 +3356,17 @@ td:last-child {
 .instrument-line-path-benchmark {
   stroke: #b91c1c;
   stroke-width: 1.65;
+}
+
+.instrument-line-path-secondary {
+  stroke: #0f766e;
+  stroke-width: 1.65;
+}
+
+.instrument-line-path-benchmark-muted {
+  stroke: #a16207;
+  stroke-width: 1.55;
+  stroke-dasharray: 5 4;
 }
 
 .instrument-hover-line {
@@ -6972,6 +6991,16 @@ input[type='checkbox'] {
 .instrument-series-label-benchmark-row strong,
 .instrument-series-label-benchmark-row span {
   color: #b91c1c;
+}
+
+.instrument-series-label-secondary-row strong,
+.instrument-series-label-secondary-row span {
+  color: #0f766e;
+}
+
+.instrument-series-label-benchmark-muted-row strong,
+.instrument-series-label-benchmark-muted-row span {
+  color: #a16207;
 }
 
 .instrument-drawdown-header {

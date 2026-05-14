@@ -651,21 +651,72 @@ def _search_uids_for_rule(
     *,
     rule: dict[str, object],
     fallback_uids: list[int],
+    search_criteria: tuple[str, ...] = ("ALL",),
 ) -> list[int]:
     sender_equals = list(rule.get("sender_equals", []))
     if not sender_equals:
         return fallback_uids
 
     matched: set[int] = set()
+    criteria_suffix = () if search_criteria == ("ALL",) else search_criteria
     for sender in sender_equals:
-        search_status, search_data = mailbox.uid("search", None, "FROM", sender)
+        search_status, search_data = mailbox.uid("search", None, "FROM", sender, *criteria_suffix)
         if search_status != "OK":
             return fallback_uids
         raw_uid_list = search_data[0] if search_data and search_data[0] else b""
         matched.update(int(item) for item in raw_uid_list.split() if item)
     if not matched:
         return []
-    return [uid for uid in sorted(matched) if uid in set(fallback_uids)]
+    fallback_set = set(fallback_uids)
+    return [uid for uid in sorted(matched) if uid in fallback_set]
+
+
+def _latest_nav_date_from_instrument(instrument: dict[str, object]) -> date | None:
+    latest_nav_date: date | None = None
+    for point in list(instrument.get("market_data", [])):
+        if not isinstance(point, dict):
+            continue
+        if str(point.get("metric_family") or "").strip() != "nav":
+            continue
+        current_date = _parse_nav_date(point.get("as_of_date"))
+        if current_date is None:
+            continue
+        if latest_nav_date is None or current_date > latest_nav_date:
+            latest_nav_date = current_date
+    return latest_nav_date
+
+
+def _format_imap_since_date(value: date) -> str:
+    month = (
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+    )[value.month - 1]
+    return f"{value.day:02d}-{month}-{value.year}"
+
+
+def _filter_rows_since_nav_date(
+    rows: list[dict[str, object]],
+    *,
+    nav_since_date: date | None,
+) -> list[dict[str, object]]:
+    if nav_since_date is None:
+        return rows
+    filtered_rows: list[dict[str, object]] = []
+    for row in rows:
+        row_date = _parse_nav_date(row.get("as_of_date"))
+        if row_date is not None and row_date >= nav_since_date:
+            filtered_rows.append(row)
+    return filtered_rows
 
 
 def _import_rows_from_email_rules(
@@ -676,6 +727,8 @@ def _import_rows_from_email_rules(
     pending_uids: list[int],
     updated_by: str | None,
     full_history: bool,
+    nav_since_date: date | None = None,
+    search_criteria: tuple[str, ...] = ("ALL",),
 ) -> dict[str, object] | None:
     matched_rows: list[dict[str, object]] = []
     matched_provider_refs: list[str] = []
@@ -688,6 +741,7 @@ def _import_rows_from_email_rules(
             mailbox,
             rule=rule,
             fallback_uids=ordered_uids,
+            search_criteria=search_criteria,
         )
         for uid in rule_uids:
             header_bytes = _fetch_message_bytes(
@@ -724,6 +778,7 @@ def _import_rows_from_email_rules(
                     parser_profile=parser_profile,
                 )
                 rows = _filter_rows_for_rule(rule=rule, rows=rows)
+                rows = _filter_rows_since_nav_date(rows, nav_since_date=nav_since_date)
                 if not rows:
                     continue
                 matched_rows.extend(rows)
@@ -747,9 +802,10 @@ def _import_rows_from_email_rules(
             if len(unique_attachment_names) == 1
             else "email:recent_window"
         )
+        since_text = f" since {nav_since_date.isoformat()}" if nav_since_date else ""
         message = (
             f"Imported {len(merged_rows)} NAV rows from {len(matched_provider_refs)} "
-            "recent email attachments."
+            f"recent email attachments{since_text}."
         )
     return replace_nav_history(
         instrument_id=instrument_id,
@@ -911,7 +967,11 @@ def _refresh_from_email(
         )
     try:
         mailbox_cls = imaplib.IMAP4_SSL if settings.email_imap_use_ssl else imaplib.IMAP4
-        mailbox = mailbox_cls(settings.email_imap_host, settings.email_imap_port, timeout=300)
+        mailbox = mailbox_cls(
+            settings.email_imap_host,
+            settings.email_imap_port,
+            timeout=settings.email_imap_timeout_seconds,
+        )
         login_status, _ = mailbox.login(settings.email_imap_username, settings.email_imap_password)
         if login_status != "OK":
             return update_refresh_status(
@@ -939,7 +999,13 @@ def _refresh_from_email(
                 mode="email",
             )
 
-        search_status, search_data = mailbox.uid("search", None, "ALL")
+        nav_since_date = None if full_history else _latest_nav_date_from_instrument(instrument)
+        search_criteria = (
+            ("ALL",)
+            if full_history or nav_since_date is None
+            else ("SINCE", _format_imap_since_date(nav_since_date))
+        )
+        search_status, search_data = mailbox.uid("search", None, *search_criteria)
         if search_status != "OK":
             return update_refresh_status(
                 instrument_id=instrument_id,
@@ -950,7 +1016,11 @@ def _refresh_from_email(
             )
         raw_uid_list = search_data[0] if search_data and search_data[0] else b""
         available_uids = [int(item) for item in raw_uid_list.split() if item]
-        pending_uids = available_uids if full_history else available_uids[-settings.email_imap_max_messages :]
+        pending_uids = (
+            available_uids
+            if full_history or nav_since_date is not None
+            else available_uids[-settings.email_imap_max_messages :]
+        )
 
         if email_rules:
             record = _import_rows_from_email_rules(
@@ -960,14 +1030,17 @@ def _refresh_from_email(
                 pending_uids=pending_uids,
                 updated_by=updated_by,
                 full_history=full_history,
+                nav_since_date=nav_since_date,
+                search_criteria=search_criteria,
             )
             if record is not None:
                 return record
 
+        since_text = f" since {nav_since_date.isoformat()}" if nav_since_date else ""
         return update_refresh_status(
             instrument_id=instrument_id,
             status="no_match",
-            message="No email attachment matched the explicit product rules.",
+            message=f"No email attachment matched the explicit product rules{since_text}.",
             updated_by=updated_by,
             mode="email",
         )

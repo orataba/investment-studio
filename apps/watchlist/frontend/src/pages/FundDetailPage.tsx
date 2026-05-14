@@ -263,7 +263,7 @@ type PerformanceMatrixRowKey =
   | 'recovery_days'
   | 'upside_capture'
   | 'downside_capture'
-type RollingRiskWindowMonths = 6 | 12 | 24 | 36
+type RollingRiskWindowMonths = 1 | 3 | 6 | 12 | 24 | 36
 type PerformanceMetricSnapshot = {
   periodReturn: number | null
   annualizedReturn: number | null
@@ -321,6 +321,8 @@ const ROLLING_RISK_WINDOW_OPTIONS: Array<{
   months: RollingRiskWindowMonths
   label: string
 }> = [
+  { months: 1, label: '1M' },
+  { months: 3, label: '3M' },
   { months: 6, label: '6M' },
   { months: 12, label: '12M' },
   { months: 24, label: '24M' },
@@ -1290,6 +1292,80 @@ function buildSmoothChartLinePath(
 
   const projectedPoints = getProjectedSeriesPoints(points, geometry, min, max)
   if (projectedPoints.length === 2) {
+    return projectedPoints
+      .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+      .join(' ')
+  }
+
+  const commands = [`M ${projectedPoints[0].x.toFixed(2)} ${projectedPoints[0].y.toFixed(2)}`]
+  for (let index = 0; index < projectedPoints.length - 1; index += 1) {
+    const previous = projectedPoints[Math.max(index - 1, 0)]
+    const current = projectedPoints[index]
+    const next = projectedPoints[index + 1]
+    const nextNext = projectedPoints[Math.min(index + 2, projectedPoints.length - 1)]
+    const control1X = current.x + (next.x - previous.x) / 6
+    const control1Y = current.y + (next.y - previous.y) / 6
+    const control2X = next.x - (nextNext.x - current.x) / 6
+    const control2Y = next.y - (nextNext.y - current.y) / 6
+    commands.push(
+      [
+        'C',
+        control1X.toFixed(2),
+        control1Y.toFixed(2),
+        control2X.toFixed(2),
+        control2Y.toFixed(2),
+        next.x.toFixed(2),
+        next.y.toFixed(2),
+      ].join(' '),
+    )
+  }
+  return commands.join(' ')
+}
+
+function buildDateScaledLinePath(
+  points: FundChartPoint[],
+  geometry: ChartGeometry,
+  min: number,
+  max: number,
+  startDate: string | null | undefined,
+  endDate: string | null | undefined,
+  smooth = false,
+) {
+  const sortedPoints = sortSeriesByDate(points)
+    .map((point) => {
+      const parsed = parseChartDateParts(point.date)
+      return parsed ? { point, time: parsed.time } : null
+    })
+    .filter((item): item is { point: FundChartPoint; time: number } => item !== null)
+
+  if (sortedPoints.length < 2) {
+    return ''
+  }
+
+  const parsedStart = startDate ? parseChartDateParts(startDate) : null
+  const parsedEnd = endDate ? parseChartDateParts(endDate) : null
+  const firstTime = parsedStart?.time ?? sortedPoints[0].time
+  const lastTime = parsedEnd?.time ?? sortedPoints[sortedPoints.length - 1].time
+  const timeRange = lastTime - firstTime
+
+  if (timeRange <= 0) {
+    return smooth
+      ? buildSmoothChartLinePath(points, geometry, min, max)
+      : buildChartLinePath(points, geometry, min, max)
+  }
+
+  const plotWidth = geometry.width - geometry.paddingLeft - geometry.paddingRight
+  const projectedPoints = sortedPoints
+    .filter(({ time }) => time >= firstTime && time <= lastTime)
+    .map(({ point, time }) => ({
+      x: geometry.paddingLeft + ((time - firstTime) / timeRange) * plotWidth,
+      y: projectChartValue(point.value, min, max, geometry),
+    }))
+
+  if (projectedPoints.length < 2) {
+    return ''
+  }
+  if (!smooth || projectedPoints.length === 2) {
     return projectedPoints
       .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
       .join(' ')
@@ -3185,11 +3261,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkSearchFocused, setBenchmarkSearchFocused] = useState(false)
   const [benchmarkNavSeries, setBenchmarkNavSeries] = useState<FundNavSeriesResponse | null>(null)
-  const [metricBenchmarkFundId, setMetricBenchmarkFundId] = useState('')
-  const [metricBenchmarkSearch, setMetricBenchmarkSearch] = useState('')
-  const [metricBenchmarkSearchFocused, setMetricBenchmarkSearchFocused] = useState(false)
-  const [metricBenchmarkNavSeries, setMetricBenchmarkNavSeries] =
-    useState<FundNavSeriesResponse | null>(null)
   const [performanceMatrixMode, setPerformanceMatrixMode] =
     useState<PerformanceMatrixMode>('values')
   const [rollingRiskWindowMonths, setRollingRiskWindowMonths] =
@@ -3247,7 +3318,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [openProductFrameworkPickerKey, setOpenProductFrameworkPickerKey] =
     useState<string | null>(null)
   const deferredBenchmarkSearch = useDeferredValue(benchmarkSearch)
-  const deferredMetricBenchmarkSearch = useDeferredValue(metricBenchmarkSearch)
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
@@ -3531,42 +3601,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   }, [benchmarkFundId, fundId])
 
   useEffect(() => {
-    let cancelled = false
-
-    async function loadMetricBenchmark() {
-      if (!metricBenchmarkFundId || metricBenchmarkFundId === fundId) {
-        setMetricBenchmarkNavSeries(null)
-        return
-      }
-
-      try {
-        const response = await getInstrumentNavSeries(metricBenchmarkFundId)
-        if (!cancelled) {
-          setMetricBenchmarkNavSeries(response)
-        }
-      } catch {
-        if (!cancelled) {
-          setMetricBenchmarkNavSeries(null)
-        }
-      }
-    }
-
-    void loadMetricBenchmark()
-
-    return () => {
-      cancelled = true
-    }
-  }, [metricBenchmarkFundId, fundId])
-
-  useEffect(() => {
     setBenchmarkFundId('')
     setBenchmarkSearch('')
     setBenchmarkSearchFocused(false)
     setBenchmarkNavSeries(null)
-    setMetricBenchmarkFundId('')
-    setMetricBenchmarkSearch('')
-    setMetricBenchmarkSearchFocused(false)
-    setMetricBenchmarkNavSeries(null)
     setQuoteActionNotice(null)
     setOpenQuoteChartMenu(null)
   }, [fundId])
@@ -4077,16 +4115,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     [benchmarkOptions, deferredBenchmarkSearch],
   )
   const showBenchmarkResults = benchmarkSearchFocused
-  const selectedMetricBenchmark =
-    benchmarkOptions.find((item) => item.fund_id === metricBenchmarkFundId) || null
-  const selectedMetricBenchmarkLabel = selectedMetricBenchmark ? benchmarkLibraryLabel(selectedMetricBenchmark) : ''
-  const metricBenchmarkInputValue =
-    selectedMetricBenchmark && !metricBenchmarkSearch ? selectedMetricBenchmarkLabel : metricBenchmarkSearch
-  const filteredMetricBenchmarkOptions = useMemo(
-    () => filterBenchmarkOptions(benchmarkOptions, deferredMetricBenchmarkSearch),
-    [benchmarkOptions, deferredMetricBenchmarkSearch],
-  )
-  const showMetricBenchmarkResults = metricBenchmarkSearchFocused
 
   if (loading) {
     return (
@@ -4174,30 +4202,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     filterSeriesByDateWindow(benchmarkNavBasisSeries, effectiveStartDate, effectiveEndDate),
     chartFrequency,
   )
-  const metricBenchmarkRowsByCurrency =
-    getRowsForCurrency(metricBenchmarkNavSeries?.rows || [], effectiveCurrency)
-  const metricBenchmarkSourceRows =
-    metricBenchmarkRowsByCurrency.length > 0
-      ? metricBenchmarkRowsByCurrency
-      : metricBenchmarkNavSeries?.rows || []
-  const metricBenchmarkAvailableBases = getAvailableQuoteBases(metricBenchmarkSourceRows)
-  const activeMetricBenchmarkBasis = metricBenchmarkAvailableBases.includes(activeQuoteBasis)
-    ? activeQuoteBasis
-    : metricBenchmarkAvailableBases[0] || null
-  const metricBenchmarkNavBasisSeries =
-    activeMetricBenchmarkBasis
-      ? buildBasisSeries(metricBenchmarkSourceRows, activeMetricBenchmarkBasis)
-      : []
-  const metricBenchmarkReturnBasis = resolveReturnQuoteBasis(
-    metricBenchmarkSourceRows,
-    metricBenchmarkNavSeries?.nav_basis_type,
-  )
-  const metricBenchmarkReturnBasisSeries =
-    metricBenchmarkReturnBasis
-      ? buildBasisSeries(metricBenchmarkSourceRows, metricBenchmarkReturnBasis)
-      : []
-  const metricBenchmarkCalculationSeries = metricBenchmarkNavSeries
-    ? buildCalculationPointSeries(metricBenchmarkNavSeries.calculation_series)
+  const benchmarkCalculationSeries = benchmarkNavSeries
+    ? buildCalculationPointSeries(benchmarkNavSeries.calculation_series)
     : []
   const shouldIndexCompareSeries = Boolean(selectedBenchmark)
   const indexedNavSeries = shouldIndexCompareSeries ? rebaseSeries(visibleNavSeries, 1) : []
@@ -5086,7 +5092,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const performancePeriodSnapshots = PERFORMANCE_METRIC_PERIODS.map((period) => {
     const fundWindow = getAnchoredWindow(calculationBasisSeries, period.key, performanceReferenceEndDate)
     const benchmarkWindow = getAnchoredWindow(
-      metricBenchmarkCalculationSeries,
+      benchmarkCalculationSeries,
       period.key,
       performanceReferenceEndDate,
     )
@@ -5132,7 +5138,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     }
     return `${formatNumber(snapshot.recoveryDays, 0)} d`
   }
-  const benchmarkMetricPrefix = selectedMetricBenchmark ? 'BM' : null
+  const benchmarkMetricPrefix = selectedBenchmark ? 'BM' : null
   const buildBenchmarkNote = (value: string | null) =>
     benchmarkMetricPrefix && value ? `${benchmarkMetricPrefix} ${value}` : null
   const buildPeerPerformanceMatrixCell = (
@@ -5379,8 +5385,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       RISK_SCATTER_GEOMETRY.paddingBottom -
       ((row.returnValue - riskReturnMin) / Math.max(riskReturnMax - riskReturnMin, 1)) * riskPlotHeight,
   }))
-  const riskBenchmarkLabel = selectedMetricBenchmark
-    ? selectedMetricBenchmark.ticker_or_isin || selectedMetricBenchmark.fund_name
+  const riskBenchmarkLabel = selectedBenchmark
+    ? selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name
     : 'Not selected'
   const riskMatrixSnapshots = performancePeriodSnapshots.filter(({ key }) => RISK_MATRIX_PERIOD_KEYS.has(key))
   const lifetimeRiskSnapshot =
@@ -5510,6 +5516,13 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     calculationBasisSeries,
     rollingRiskWindowMonths,
   ).slice(-ROLLING_CHART_MAX_POINTS)
+  const benchmarkRollingVolatilitySeries =
+    selectedBenchmark && benchmarkCalculationSeries.length > 0
+      ? buildRollingAnnualizedVolatilitySeries(
+          benchmarkCalculationSeries,
+          rollingRiskWindowMonths,
+        ).slice(-ROLLING_CHART_MAX_POINTS)
+      : []
   const rollingVolatilityBounds = rollingVolatilitySeries.length
     ? getPaddedAxisBounds(
         Math.min(0, ...rollingVolatilitySeries.map((point) => point.value)),
@@ -5541,7 +5554,19 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     calculationBasisSeries,
     rollingRiskWindowMonths,
   ).slice(-ROLLING_CHART_MAX_POINTS)
-  const rollingReturnVolSeries = [...rollingAnnualizedReturnSeries, ...rollingVolatilitySeries]
+  const benchmarkRollingAnnualizedReturnSeries =
+    selectedBenchmark && benchmarkCalculationSeries.length > 0
+      ? buildRollingAnnualizedReturnSeries(
+          benchmarkCalculationSeries,
+          rollingRiskWindowMonths,
+        ).slice(-ROLLING_CHART_MAX_POINTS)
+      : []
+  const rollingReturnVolSeries = [
+    ...rollingAnnualizedReturnSeries,
+    ...rollingVolatilitySeries,
+    ...benchmarkRollingAnnualizedReturnSeries,
+    ...benchmarkRollingVolatilitySeries,
+  ]
   const rollingReturnVolBounds = rollingReturnVolSeries.length
     ? getPaddedAxisBounds(
         Math.min(0, ...rollingReturnVolSeries.map((point) => point.value)),
@@ -5555,29 +5580,61 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     rollingReturnVolBounds.max,
     4,
   )
-  const rollingReturnVolDateSeries =
-    rollingAnnualizedReturnSeries.length > 0 ? rollingAnnualizedReturnSeries : rollingVolatilitySeries
+  const rollingReturnVolDateSeries = sortSeriesByDate(rollingReturnVolSeries)
+  const rollingReturnVolStartDate = rollingReturnVolDateSeries[0]?.date || null
+  const rollingReturnVolEndDate = rollingReturnVolDateSeries[rollingReturnVolDateSeries.length - 1]?.date || null
   const rollingReturnVolTickDates = getChartAxisTicks(rollingReturnVolDateSeries, 8)
   const rollingReturnVolTickSpanDays = getChartDateSpanDays(rollingReturnVolDateSeries)
-  const rollingAnnualizedReturnLinePath = buildSmoothChartLinePath(
+  const rollingAnnualizedReturnLinePath = buildDateScaledLinePath(
     rollingAnnualizedReturnSeries,
     SECONDARY_SERIES_GEOMETRY,
     rollingReturnVolBounds.min,
     rollingReturnVolBounds.max,
+    rollingReturnVolStartDate,
+    rollingReturnVolEndDate,
+    true,
   )
-  const rollingAnnualizedVolatilityLinePath = buildSmoothChartLinePath(
+  const rollingAnnualizedVolatilityLinePath = buildDateScaledLinePath(
     rollingVolatilitySeries,
     SECONDARY_SERIES_GEOMETRY,
     rollingReturnVolBounds.min,
     rollingReturnVolBounds.max,
+    rollingReturnVolStartDate,
+    rollingReturnVolEndDate,
+    true,
+  )
+  const benchmarkRollingAnnualizedReturnLinePath = buildDateScaledLinePath(
+    benchmarkRollingAnnualizedReturnSeries,
+    SECONDARY_SERIES_GEOMETRY,
+    rollingReturnVolBounds.min,
+    rollingReturnVolBounds.max,
+    rollingReturnVolStartDate,
+    rollingReturnVolEndDate,
+    true,
+  )
+  const benchmarkRollingAnnualizedVolatilityLinePath = buildDateScaledLinePath(
+    benchmarkRollingVolatilitySeries,
+    SECONDARY_SERIES_GEOMETRY,
+    rollingReturnVolBounds.min,
+    rollingReturnVolBounds.max,
+    rollingReturnVolStartDate,
+    rollingReturnVolEndDate,
+    true,
   )
   const rollingSharpeSeries = buildRollingSharpeSeries(calculationBasisSeries, rollingRiskWindowMonths).slice(
     -ROLLING_CHART_MAX_POINTS,
   )
-  const rollingSharpeBounds = rollingSharpeSeries.length
+  const benchmarkRollingSharpeSeries =
+    selectedBenchmark && benchmarkCalculationSeries.length > 0
+      ? buildRollingSharpeSeries(benchmarkCalculationSeries, rollingRiskWindowMonths).slice(
+          -ROLLING_CHART_MAX_POINTS,
+        )
+      : []
+  const rollingSharpeCombinedSeries = [...rollingSharpeSeries, ...benchmarkRollingSharpeSeries]
+  const rollingSharpeBounds = rollingSharpeCombinedSeries.length
     ? getPaddedAxisBounds(
-        Math.min(0, ...rollingSharpeSeries.map((point) => point.value)),
-        Math.max(...rollingSharpeSeries.map((point) => point.value)),
+        Math.min(0, ...rollingSharpeCombinedSeries.map((point) => point.value)),
+        Math.max(...rollingSharpeCombinedSeries.map((point) => point.value)),
         0.15,
         0.25,
       )
@@ -5587,17 +5644,39 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     rollingSharpeBounds.max,
     4,
   )
-  const rollingSharpeTickDates = getChartAxisTicks(rollingSharpeSeries, 8)
-  const rollingSharpeTickSpanDays = getChartDateSpanDays(rollingSharpeSeries)
-  const rollingSharpeLinePath = buildSmoothChartLinePath(
+  const rollingSharpeDateSeries = sortSeriesByDate(rollingSharpeCombinedSeries)
+  const rollingSharpeStartDate = rollingSharpeDateSeries[0]?.date || null
+  const rollingSharpeEndDate = rollingSharpeDateSeries[rollingSharpeDateSeries.length - 1]?.date || null
+  const rollingSharpeTickDates = getChartAxisTicks(rollingSharpeDateSeries, 8)
+  const rollingSharpeTickSpanDays = getChartDateSpanDays(rollingSharpeDateSeries)
+  const rollingSharpeLinePath = buildDateScaledLinePath(
     rollingSharpeSeries,
     SECONDARY_SERIES_GEOMETRY,
     rollingSharpeBounds.min,
     rollingSharpeBounds.max,
+    rollingSharpeStartDate,
+    rollingSharpeEndDate,
+    true,
   )
+  const benchmarkRollingSharpeLinePath = buildDateScaledLinePath(
+    benchmarkRollingSharpeSeries,
+    SECONDARY_SERIES_GEOMETRY,
+    rollingSharpeBounds.min,
+    rollingSharpeBounds.max,
+    rollingSharpeStartDate,
+    rollingSharpeEndDate,
+    true,
+  )
+  const hasRollingReturnVolChart =
+    rollingAnnualizedReturnSeries.length > 1 ||
+    rollingVolatilitySeries.length > 1 ||
+    benchmarkRollingAnnualizedReturnSeries.length > 1 ||
+    benchmarkRollingVolatilitySeries.length > 1
+  const hasRollingSharpeChart =
+    rollingSharpeSeries.length > 1 || benchmarkRollingSharpeSeries.length > 1
   const rollingBetaSeries =
-    selectedMetricBenchmark && metricBenchmarkCalculationSeries.length > 0
-      ? buildRollingBetaSeries(calculationBasisSeries, metricBenchmarkCalculationSeries).slice(-60)
+    selectedBenchmark && benchmarkCalculationSeries.length > 0
+      ? buildRollingBetaSeries(calculationBasisSeries, benchmarkCalculationSeries).slice(-60)
       : []
   const rollingBetaBounds = rollingBetaSeries.length
     ? getPaddedAxisBounds(
@@ -5642,7 +5721,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       value:
         rollingBetaSeries.length > 0
           ? formatNumber(rollingBetaSeries[rollingBetaSeries.length - 1].value, 2)
-          : selectedMetricBenchmark
+          : selectedBenchmark
             ? 'Insufficient overlap'
             : 'No benchmark selected',
     },
@@ -5767,10 +5846,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     }
   })()
   const betaDriftWatch = (() => {
-    if (!selectedMetricBenchmark) {
+    if (!selectedBenchmark) {
       return {
         level: 'N/A',
-        reading: 'N/A · Select a benchmark in Performance',
+        reading: 'N/A · Select a benchmark',
       }
     }
     if (latestRollingBetaValue == null || rollingBetaMedianValue == null || rollingBetaPercentile == null) {
@@ -5981,7 +6060,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           ? '—'
           : `${structuralRiskLabel} beta ${structuralRelativeSnapshot?.beta == null ? '—' : formatNumber(structuralRelativeSnapshot.beta, 2)} · TE ${structuralRelativeSnapshot?.trackingError == null ? '—' : formatPercent(structuralRelativeSnapshot.trackingError)}`,
       interpretation:
-        !selectedMetricBenchmark
+        !selectedBenchmark
           ? 'No benchmark selected, so benchmark dependence is not fully specified.'
           : structuralRelativeSnapshot?.beta == null || structuralRelativeSnapshot?.trackingError == null
             ? 'Need more overlap with the current benchmark to characterize sensitivity.'
@@ -5998,7 +6077,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           ? '—'
           : `${structuralRiskLabel} up ${structuralRelativeSnapshot?.upsideCapture == null ? '—' : formatPercent(structuralRelativeSnapshot.upsideCapture, 0)} · down ${structuralRelativeSnapshot?.downsideCapture == null ? '—' : formatPercent(structuralRelativeSnapshot.downsideCapture, 0)}`,
       interpretation:
-        !selectedMetricBenchmark
+        !selectedBenchmark
           ? '—'
           : structuralRelativeSnapshot?.upsideCapture == null || structuralRelativeSnapshot?.downsideCapture == null
             ? 'Capture profile needs a longer overlapping benchmark history.'
@@ -6065,7 +6144,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       signal: 'Rolling Beta',
       current:
         latestRollingBetaValue == null
-          ? (selectedMetricBenchmark ? '—' : 'No benchmark selected')
+          ? (selectedBenchmark ? '—' : 'No benchmark selected')
           : formatNumber(latestRollingBetaValue, 2),
       baseline:
         rollingBetaMedianValue == null
@@ -6261,6 +6340,84 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       })),
     },
   ]
+  const renderBenchmarkSearch = (ariaLabel: string, extraClassName = '') => {
+    const className = ['instrument-chart-compare', extraClassName].filter(Boolean).join(' ')
+    return (
+      <div className={className}>
+        <label className="instrument-chart-compare-search">
+          <div className="instrument-chart-compare-search-box">
+            <input
+              type="search"
+              aria-label={ariaLabel}
+              placeholder="Compare benchmark..."
+              value={benchmarkInputValue}
+              onFocus={() => setBenchmarkSearchFocused(true)}
+              onBlur={() => window.setTimeout(() => setBenchmarkSearchFocused(false), 140)}
+              onChange={(event) => {
+                const nextValue = event.target.value
+                setBenchmarkSearch(nextValue)
+                if (selectedBenchmark && nextValue !== selectedBenchmarkLabel) {
+                  setBenchmarkFundId('')
+                  setBenchmarkNavSeries(null)
+                }
+              }}
+            />
+            {selectedBenchmark ? (
+              <button
+                type="button"
+                className="instrument-chart-compare-clear"
+                aria-label="Clear benchmark"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  setBenchmarkFundId('')
+                  setBenchmarkSearch('')
+                  setBenchmarkNavSeries(null)
+                }}
+              >
+                ×
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="instrument-chart-compare-toggle"
+                aria-label="Show benchmark choices"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => setBenchmarkSearchFocused((current) => !current)}
+              >
+                <span aria-hidden="true" />
+              </button>
+            )}
+            {showBenchmarkResults ? (
+              <div className="instrument-chart-compare-results">
+                {filteredBenchmarkOptions.length ? (
+                  filteredBenchmarkOptions.map((item) => (
+                    <button
+                      type="button"
+                      key={item.fund_id}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        setBenchmarkFundId(item.fund_id)
+                        setBenchmarkSearch(benchmarkLibraryLabel(item))
+                        setBenchmarkSearchFocused(false)
+                        setBenchmarkNavSeries(null)
+                      }}
+                    >
+                      <strong>{item.fund_name}</strong>
+                      <span>
+                        {item.ticker_or_isin || item.fund_id} · {formatLabel(item.product_type)}
+                      </span>
+                    </button>
+                  ))
+                ) : (
+                  <div className="instrument-chart-compare-empty">No database match</div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </label>
+      </div>
+    )
+  }
   function resolveChartPointerSelection(
     event: ReactMouseEvent<SVGSVGElement>,
     geometry: ChartGeometry,
@@ -6674,78 +6831,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
               <div className="instrument-chart-main">
                 <div className="instrument-quote-control-bar">
                   <div className="instrument-quote-toolbar-primary">
-                    <div className="instrument-chart-compare">
-                      <label className="instrument-chart-compare-search">
-                        <div className="instrument-chart-compare-search-box">
-                          <input
-                            type="search"
-                            aria-label="Compare benchmark"
-                            placeholder="Compare benchmark..."
-                            value={benchmarkInputValue}
-                            onFocus={() => setBenchmarkSearchFocused(true)}
-                            onBlur={() => window.setTimeout(() => setBenchmarkSearchFocused(false), 140)}
-                            onChange={(event) => {
-                              const nextValue = event.target.value
-                              setBenchmarkSearch(nextValue)
-                              if (selectedBenchmark && nextValue !== selectedBenchmarkLabel) {
-                                setBenchmarkFundId('')
-                                setBenchmarkNavSeries(null)
-                              }
-                            }}
-                          />
-                          {selectedBenchmark ? (
-                            <button
-                              type="button"
-                              className="instrument-chart-compare-clear"
-                              aria-label="Clear benchmark"
-                              onMouseDown={(event) => event.preventDefault()}
-                              onClick={() => {
-                                setBenchmarkFundId('')
-                                setBenchmarkSearch('')
-                                setBenchmarkNavSeries(null)
-                              }}
-                            >
-                              ×
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="instrument-chart-compare-toggle"
-                              aria-label="Show benchmark choices"
-                              onMouseDown={(event) => event.preventDefault()}
-                              onClick={() => setBenchmarkSearchFocused((current) => !current)}
-                            >
-                              <span aria-hidden="true" />
-                            </button>
-                          )}
-                          {showBenchmarkResults ? (
-                            <div className="instrument-chart-compare-results">
-                              {filteredBenchmarkOptions.length ? (
-                                filteredBenchmarkOptions.map((item) => (
-                                  <button
-                                    type="button"
-                                    key={item.fund_id}
-                                    onMouseDown={(event) => event.preventDefault()}
-                                    onClick={() => {
-                                      setBenchmarkFundId(item.fund_id)
-                                      setBenchmarkSearch(benchmarkLibraryLabel(item))
-                                      setBenchmarkSearchFocused(false)
-                                    }}
-                                  >
-                                    <strong>{item.fund_name}</strong>
-                                    <span>
-                                      {item.ticker_or_isin || item.fund_id} · {formatLabel(item.product_type)}
-                                    </span>
-                                  </button>
-                                ))
-                              ) : (
-                                <div className="instrument-chart-compare-empty">No database match</div>
-                              )}
-                            </div>
-                          ) : null}
-                        </div>
-                      </label>
-                    </div>
+                    {renderBenchmarkSearch('Compare benchmark')}
                   </div>
                 </div>
 
@@ -7647,78 +7733,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 <div className="panel-title">Performance</div>
                 <div className="instrument-performance-title-row">
                   <div className="instrument-section-title">Metrics Matrix</div>
-                  <div className="instrument-chart-compare instrument-performance-benchmark-select">
-                    <label className="instrument-chart-compare-search">
-                      <div className="instrument-chart-compare-search-box">
-                        <input
-                          type="search"
-                          aria-label="Performance benchmark"
-                          placeholder="Compare benchmark..."
-                          value={metricBenchmarkInputValue}
-                          onFocus={() => setMetricBenchmarkSearchFocused(true)}
-                          onBlur={() => window.setTimeout(() => setMetricBenchmarkSearchFocused(false), 140)}
-                          onChange={(event) => {
-                            const nextValue = event.target.value
-                            setMetricBenchmarkSearch(nextValue)
-                            if (selectedMetricBenchmark && nextValue !== selectedMetricBenchmarkLabel) {
-                              setMetricBenchmarkFundId('')
-                              setMetricBenchmarkNavSeries(null)
-                            }
-                          }}
-                        />
-                        {selectedMetricBenchmark ? (
-                          <button
-                            type="button"
-                            className="instrument-chart-compare-clear"
-                            aria-label="Clear benchmark"
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => {
-                              setMetricBenchmarkFundId('')
-                              setMetricBenchmarkSearch('')
-                              setMetricBenchmarkNavSeries(null)
-                            }}
-                          >
-                            ×
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className="instrument-chart-compare-toggle"
-                            aria-label="Show benchmark choices"
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => setMetricBenchmarkSearchFocused((current) => !current)}
-                          >
-                            <span aria-hidden="true" />
-                          </button>
-                        )}
-                        {showMetricBenchmarkResults ? (
-                          <div className="instrument-chart-compare-results">
-                            {filteredMetricBenchmarkOptions.length ? (
-                              filteredMetricBenchmarkOptions.map((item) => (
-                                <button
-                                  type="button"
-                                  key={item.fund_id}
-                                  onMouseDown={(event) => event.preventDefault()}
-                                  onClick={() => {
-                                    setMetricBenchmarkFundId(item.fund_id)
-                                    setMetricBenchmarkSearch(benchmarkLibraryLabel(item))
-                                    setMetricBenchmarkSearchFocused(false)
-                                  }}
-                                >
-                                  <strong>{item.fund_name}</strong>
-                                  <span>
-                                    {item.ticker_or_isin || item.fund_id} · {formatLabel(item.product_type)}
-                                  </span>
-                                </button>
-                              ))
-                            ) : (
-                              <div className="instrument-chart-compare-empty">No database match</div>
-                            )}
-                          </div>
-                        ) : null}
-                      </div>
-                    </label>
-                  </div>
+                  {renderBenchmarkSearch('Performance benchmark', 'instrument-performance-benchmark-select')}
                 </div>
               </div>
               <div className="instrument-performance-matrix-controls">
@@ -7846,6 +7861,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                 <div className="panel-title">Risk</div>
                 <div className="instrument-performance-title-row">
                   <div className="instrument-section-title">Rolling Ann. Return / Volatility</div>
+                  {renderBenchmarkSearch('Risk benchmark', 'instrument-performance-benchmark-select')}
                 </div>
               </div>
               <div className="instrument-performance-matrix-controls">
@@ -7877,7 +7893,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                             : '—'}
                         </span>
                       </div>
-                      <div className="instrument-series-label instrument-series-label-benchmark-row">
+                      <div className="instrument-series-label instrument-series-label-secondary-row">
                         <strong>Volatility</strong>
                         <span>{rollingRiskWindowLabel}</span>
                         <span>
@@ -7886,9 +7902,39 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                             : '—'}
                         </span>
                       </div>
+                      {selectedBenchmark ? (
+                        <div className="instrument-series-label instrument-series-label-benchmark-row">
+                          <strong>BM Return</strong>
+                          <span>{selectedBenchmark.ticker_or_isin || 'Benchmark'}</span>
+                          <span>
+                            {benchmarkRollingAnnualizedReturnSeries.length > 0
+                              ? formatPercent(
+                                  benchmarkRollingAnnualizedReturnSeries[
+                                    benchmarkRollingAnnualizedReturnSeries.length - 1
+                                  ].value,
+                                )
+                              : '—'}
+                          </span>
+                        </div>
+                      ) : null}
+                      {selectedBenchmark ? (
+                        <div className="instrument-series-label instrument-series-label-benchmark-muted-row">
+                          <strong>BM Volatility</strong>
+                          <span>{selectedBenchmark.ticker_or_isin || 'Benchmark'}</span>
+                          <span>
+                            {benchmarkRollingVolatilitySeries.length > 0
+                              ? formatPercent(
+                                  benchmarkRollingVolatilitySeries[
+                                    benchmarkRollingVolatilitySeries.length - 1
+                                  ].value,
+                                )
+                              : '—'}
+                          </span>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
-                  {rollingAnnualizedReturnSeries.length > 1 || rollingVolatilitySeries.length > 1 ? (
+                  {hasRollingReturnVolChart ? (
                     <div className="instrument-chart-plot-shell instrument-performance-visual-shell">
                       <svg
                         viewBox={`0 0 ${SECONDARY_SERIES_GEOMETRY.width} ${SECONDARY_SERIES_GEOMETRY.height}`}
@@ -7958,7 +8004,19 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                         {rollingVolatilitySeries.length > 1 ? (
                           <path
                             d={rollingAnnualizedVolatilityLinePath}
+                            className="instrument-line-path instrument-line-path-secondary"
+                          />
+                        ) : null}
+                        {benchmarkRollingAnnualizedReturnSeries.length > 1 ? (
+                          <path
+                            d={benchmarkRollingAnnualizedReturnLinePath}
                             className="instrument-line-path instrument-line-path-benchmark"
+                          />
+                        ) : null}
+                        {benchmarkRollingVolatilitySeries.length > 1 ? (
+                          <path
+                            d={benchmarkRollingAnnualizedVolatilityLinePath}
+                            className="instrument-line-path instrument-line-path-benchmark-muted"
                           />
                         ) : null}
                       </svg>
@@ -7987,9 +8045,25 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                             : '—'}
                         </em>
                       </div>
+                      {selectedBenchmark ? (
+                        <div className="instrument-series-label instrument-series-label-benchmark-row">
+                          <strong>BM Sharpe</strong>
+                          <span>{selectedBenchmark.ticker_or_isin || 'Benchmark'}</span>
+                          <em>
+                            {benchmarkRollingSharpeSeries.length > 0
+                              ? formatNumber(
+                                  benchmarkRollingSharpeSeries[
+                                    benchmarkRollingSharpeSeries.length - 1
+                                  ].value,
+                                  2,
+                                )
+                              : '—'}
+                          </em>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
-                  {rollingSharpeSeries.length > 1 ? (
+                  {hasRollingSharpeChart ? (
                     <div className="instrument-chart-plot-shell instrument-performance-visual-shell">
                       <svg
                         viewBox={`0 0 ${SECONDARY_SERIES_GEOMETRY.width} ${SECONDARY_SERIES_GEOMETRY.height}`}
@@ -8053,7 +8127,15 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                             'rolling-sharpe-x',
                           )
                         })}
-                        <path d={rollingSharpeLinePath} className="instrument-line-path" />
+                        {rollingSharpeSeries.length > 1 ? (
+                          <path d={rollingSharpeLinePath} className="instrument-line-path" />
+                        ) : null}
+                        {benchmarkRollingSharpeSeries.length > 1 ? (
+                          <path
+                            d={benchmarkRollingSharpeLinePath}
+                            className="instrument-line-path instrument-line-path-benchmark"
+                          />
+                        ) : null}
                       </svg>
                     </div>
                   ) : (

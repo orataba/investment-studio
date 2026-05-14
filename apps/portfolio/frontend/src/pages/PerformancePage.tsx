@@ -98,6 +98,7 @@ type CalculationColumnKey =
   | 'pnl_flow'
   | 'start_value'
   | 'end_value'
+  | 'begin_weight'
   | 'avg_weight'
   | 'end_weight'
   | 'realized_gain'
@@ -118,6 +119,7 @@ type CalculationColumnKey =
 type CalculationTableViewState = {
   columns: CalculationColumnKey[]
   mode: CalculationTableMode
+  groupBy: CalculationGroupByKey
   sortField: CalculationColumnKey | null
   sortDirection: CalculationSortDirection
 }
@@ -169,6 +171,7 @@ const CALCULATION_TABLE_VIEWS_STORAGE_KEY = 'yungu.portfolio.performance.calcula
 
 const RISK_ATTRIBUTION_COLUMNS: CalculationColumnKey[] = [
   'line',
+  'begin_weight',
   'avg_weight',
   'end_weight',
   'period_return',
@@ -185,6 +188,7 @@ const FULL_CALCULATION_COLUMNS: CalculationColumnKey[] = [
   'pnl_flow',
   'start_value',
   'end_value',
+  'begin_weight',
   'avg_weight',
   'end_weight',
   'realized_gain',
@@ -198,7 +202,7 @@ const FULL_CALCULATION_COLUMNS: CalculationColumnKey[] = [
 ]
 
 const CALCULATION_COLUMN_GROUPS: Array<{ label: string; columns: CalculationColumnKey[] }> = [
-  { label: 'Core', columns: ['line', 'avg_weight', 'end_weight', 'period_return', 'return_contribution'] },
+  { label: 'Core', columns: ['line', 'begin_weight', 'avg_weight', 'end_weight', 'period_return', 'return_contribution'] },
   {
     label: 'P&L',
     columns: [
@@ -240,6 +244,7 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
   pnl_flow: 'P&L / Flow',
   start_value: 'Start Value',
   end_value: 'End Value',
+  begin_weight: 'Begin Weight',
   avg_weight: 'Avg Weight',
   end_weight: 'End Weight',
   realized_gain: 'Realized Gain',
@@ -261,6 +266,7 @@ const CALCULATION_COLUMN_LABELS: Record<CalculationColumnKey, string> = {
 const DEFAULT_CALCULATION_TABLE_VIEW_STATE: CalculationTableViewState = {
   columns: RISK_ATTRIBUTION_COLUMNS,
   mode: 'risk_attribution',
+  groupBy: 'none',
   sortField: null,
   sortDirection: 'asc',
 }
@@ -279,6 +285,7 @@ const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
     state: {
       columns: FULL_CALCULATION_COLUMNS,
       mode: 'calculation',
+      groupBy: 'none',
       sortField: null,
       sortDirection: 'asc',
     },
@@ -302,6 +309,7 @@ const SYSTEM_CALCULATION_TABLE_VIEWS: CalculationTableView[] = [
         'return_contribution',
       ],
       mode: 'calculation',
+      groupBy: 'none',
       sortField: null,
       sortDirection: 'asc',
     },
@@ -379,6 +387,8 @@ function calculationDisplayMetricValue(source: CalculationDisplayRow, column: Ca
       return finiteNumber(source.initial_value)
     case 'end_value':
       return finiteNumber(source.final_value)
+    case 'begin_weight':
+      return finiteNumber(source.beginning_weight)
     case 'avg_weight':
       return finiteNumber(source.average_weight)
     case 'end_weight':
@@ -563,6 +573,16 @@ function parseCalculationTableMode(value: string | null | undefined): Calculatio
   return value === 'calculation' || value === 'risk_attribution' ? value : 'risk_attribution'
 }
 
+function parseCalculationGroupBy(value: string | null | undefined): CalculationGroupByKey {
+  return value === 'none' ||
+    value === 'account' ||
+    value === 'instrument_type' ||
+    value === 'currency' ||
+    value === 'taxonomy'
+    ? value
+    : 'none'
+}
+
 function normalizeCalculationTableViewState(value: unknown): CalculationTableViewState {
   if (!value || typeof value !== 'object') {
     return DEFAULT_CALCULATION_TABLE_VIEW_STATE
@@ -574,6 +594,7 @@ function normalizeCalculationTableViewState(value: unknown): CalculationTableVie
       Array.isArray(record.columns) ? (record.columns as CalculationColumnKey[]) : RISK_ATTRIBUTION_COLUMNS,
     ),
     mode: parseCalculationTableMode(typeof record.mode === 'string' ? record.mode : null),
+    groupBy: parseCalculationGroupBy(typeof record.groupBy === 'string' ? record.groupBy : null),
     sortField,
     sortDirection: parseCalculationSortDirection(typeof record.sortDirection === 'string' ? record.sortDirection : null),
   }
@@ -584,6 +605,7 @@ function serializeCalculationTableViewState(value: CalculationTableViewState) {
   return JSON.stringify({
     columns: normalized.columns,
     mode: normalized.mode,
+    groupBy: normalized.groupBy,
     sortField: normalized.sortField,
     sortDirection: normalized.sortDirection,
   })
@@ -627,7 +649,14 @@ function normalizeCalculationTableViewStore(value: unknown): CalculationTableVie
   const storedViewById = new Map((storedViews || []).map((view) => [view.id, view]))
   const systemViews = SYSTEM_CALCULATION_TABLE_VIEWS.map((defaultView) => {
     const storedView = storedViewById.get(defaultView.id)
-    return storedView ? { ...storedView, readonly: true } : defaultView
+    return storedView
+      ? {
+          ...defaultView,
+          createdAt: storedView.createdAt,
+          updatedAt: storedView.updatedAt,
+          readonly: true,
+        }
+      : defaultView
   })
   const customViews = storedViews
     ? storedViews.filter((view) => !SYSTEM_CALCULATION_TABLE_VIEW_IDS.has(view.id)).map((view) => ({ ...view, readonly: false }))
@@ -1249,8 +1278,6 @@ function PerformancePage() {
   const [calculationWorkspace, setCalculationWorkspace] = useState<PortfolioPerformanceCalculationResponse | null>(null)
   const [calculationLoading, setCalculationLoading] = useState(false)
   const [calculationError, setCalculationError] = useState<string | null>(null)
-  const [calculationGroupBy, setCalculationGroupBy] = useState<CalculationGroupByKey>('none')
-  const [calculationGroupByOpen, setCalculationGroupByOpen] = useState(false)
   const [calculationGroupsWorkspace, setCalculationGroupsWorkspace] =
     useState<PortfolioPerformanceCalculationGroupsResponse | null>(null)
   const [calculationGroupsLoading, setCalculationGroupsLoading] = useState(false)
@@ -1260,6 +1287,10 @@ function PerformancePage() {
     () => resolveCalculationTableViewState(initialCalculationTableViewStore, initialCalculationTableViewStore.activeViewId),
     [initialCalculationTableViewStore],
   )
+  const [calculationGroupBy, setCalculationGroupBy] = useState<CalculationGroupByKey>(
+    () => initialCalculationTableViewState.groupBy,
+  )
+  const [calculationGroupByOpen, setCalculationGroupByOpen] = useState(false)
   const [calculationTableViewStore, setCalculationTableViewStore] = useState<CalculationTableViewStore>(
     () => initialCalculationTableViewStore,
   )
@@ -1353,10 +1384,11 @@ function PerformancePage() {
     () => ({
       columns: normalizeCalculationColumns(calculationColumns),
       mode: calculationTableMode,
+      groupBy: calculationGroupBy,
       sortField: calculationSortField,
       sortDirection: calculationSortDirection,
     }),
-    [calculationColumns, calculationSortDirection, calculationSortField, calculationTableMode],
+    [calculationColumns, calculationGroupBy, calculationSortDirection, calculationSortField, calculationTableMode],
   )
   const calculationTableViewEdited = !calculationTableViewStatesEqual(
     currentCalculationTableViewState,
@@ -1411,6 +1443,7 @@ function PerformancePage() {
     setCalculationColumnDraft(normalized.columns)
     setCalculationTableMode(normalized.mode)
     setCalculationModeDraft(normalized.mode)
+    setCalculationGroupBy(normalized.groupBy)
     setCalculationSortField(normalized.sortField)
     setCalculationSortDirection(normalized.sortDirection)
   }
@@ -1953,6 +1986,7 @@ function PerformancePage() {
               return finiteNumber(summary?.start_nav)
             case 'end_value':
               return finiteNumber(summary?.end_nav)
+            case 'begin_weight':
             case 'avg_weight':
             case 'end_weight':
               return 1
@@ -2020,6 +2054,7 @@ function PerformancePage() {
       case 'start_value':
       case 'end_value':
         return formatCurrency(value, baseCurrency)
+      case 'begin_weight':
       case 'avg_weight':
       case 'end_weight':
       case 'own_vol':
@@ -2181,7 +2216,7 @@ function PerformancePage() {
                       views={calculationTableViews}
                       activeViewId={activeCalculationTableViewId}
                       edited={calculationTableViewEdited}
-                      canSave
+                      canSave={!activeCalculationTableView.readonly}
                       canDelete
                       onSelect={handleSelectCalculationTableView}
                       onSave={handleSaveCalculationTableView}

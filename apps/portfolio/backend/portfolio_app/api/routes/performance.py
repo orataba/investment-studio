@@ -324,6 +324,37 @@ def get_portfolio_period_calculation_groups(
                         taxonomy_id=taxonomy_id,
                         group_key=group_key,
                         base_report=base_contribution_report,
+                        use_period_end_taxonomy_assignments=True,
+                        apply_boundary_values=False,
+                        preserve_cash_group=True,
+                    )
+                else:
+                    base_contribution_report = build_contribution_report(
+                        portfolio,
+                        accounts,
+                        transactions,
+                        taxonomies=taxonomies,
+                        taxonomy_nodes=taxonomy_nodes,
+                        taxonomy_assignments=taxonomy_assignments,
+                        start_date=start_date,
+                        end_date=end_date,
+                        axis=base_axis,
+                    )
+                    contribution_report = build_taxonomy_contribution_report_from_base_report(
+                        portfolio,
+                        accounts,
+                        transactions,
+                        taxonomies=taxonomies,
+                        taxonomy_nodes=taxonomy_nodes,
+                        taxonomy_assignments=taxonomy_assignments,
+                        start_date=start_date,
+                        end_date=end_date,
+                        taxonomy_id=taxonomy_id,
+                        group_key=group_key,
+                        base_report=base_contribution_report,
+                        use_period_end_taxonomy_assignments=True,
+                        apply_boundary_values=False,
+                        preserve_cash_group=True,
                     )
                 if base_detail_report is not None:
                     detail_contribution_report = build_taxonomy_calculation_detail_report_from_base_report(
@@ -337,6 +368,35 @@ def get_portfolio_period_calculation_groups(
                         end_date=end_date,
                         taxonomy_id=taxonomy_id,
                         base_report=base_detail_report,
+                        use_period_end_taxonomy_assignments=True,
+                        preserve_cash_group=True,
+                    )
+                else:
+                    base_detail_report = build_contribution_report(
+                        portfolio,
+                        accounts,
+                        transactions,
+                        taxonomies=taxonomies,
+                        taxonomy_nodes=taxonomy_nodes,
+                        taxonomy_assignments=taxonomy_assignments,
+                        start_date=start_date,
+                        end_date=end_date,
+                        axis=base_detail_axis,
+                        allow_internal_detail_axis=True,
+                    )
+                    detail_contribution_report = build_taxonomy_calculation_detail_report_from_base_report(
+                        portfolio,
+                        accounts,
+                        transactions,
+                        taxonomies=taxonomies,
+                        taxonomy_nodes=taxonomy_nodes,
+                        taxonomy_assignments=taxonomy_assignments,
+                        start_date=start_date,
+                        end_date=end_date,
+                        taxonomy_id=taxonomy_id,
+                        base_report=base_detail_report,
+                        use_period_end_taxonomy_assignments=True,
+                        preserve_cash_group=True,
                     )
         report = build_period_calculation_groups_report(
             portfolio,

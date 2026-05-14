@@ -922,6 +922,19 @@ def build_materialized_contribution_report(
             return None
         portfolio = _serialize_portfolio_row(portfolio_record)
         portfolio_as_of_date = portfolio_record.as_of_date
+        first_transaction_date = session.scalar(
+            select(func.min(TransactionRecordModel.trade_date)).where(
+                TransactionRecordModel.portfolio_id == portfolio_id
+            )
+        )
+        snapshot_bounds = session.execute(
+            select(
+                func.min(PortfolioDailySnapshotModel.as_of_date),
+                func.max(PortfolioDailySnapshotModel.as_of_date),
+            ).where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)
+        ).one()
+        first_snapshot_date = snapshot_bounds[0]
+        last_snapshot_date = snapshot_bounds[1]
 
     effective_end_date = end_date
     if (
@@ -930,13 +943,9 @@ def build_materialized_contribution_report(
         and effective_end_date > portfolio_as_of_date
     ):
         effective_end_date = portfolio_as_of_date
-    snapshots = list_materialized_daily_snapshots(
-        portfolio_id,
-        start_date=start_date,
-        end_date=effective_end_date,
-        ensure_current=False,
-    )
-    if not snapshots:
+    if first_snapshot_date is None or last_snapshot_date is None:
+        if first_transaction_date is not None:
+            return None
         return performance.build_contribution_report_from_daily_slices(
             portfolio,
             [],
@@ -946,6 +955,40 @@ def build_materialized_contribution_report(
             axis=axis,
             group_key=group_key,
         )
+    requested_start_date = start_date or first_snapshot_date
+    requested_end_date = effective_end_date or last_snapshot_date
+    if (
+        requested_start_date < first_snapshot_date
+        and first_transaction_date is not None
+        and first_snapshot_date > first_transaction_date
+    ):
+        return None
+    if (
+        requested_end_date > last_snapshot_date
+        and portfolio_as_of_date is not None
+        and last_snapshot_date < portfolio_as_of_date
+    ):
+        return None
+    if requested_end_date < first_snapshot_date or requested_start_date > last_snapshot_date:
+        return performance.build_contribution_report_from_daily_slices(
+            portfolio,
+            [],
+            [],
+            start_date=requested_start_date,
+            end_date=requested_end_date,
+            axis=axis,
+            group_key=group_key,
+        )
+    resolved_start_date = max(requested_start_date, first_snapshot_date)
+    resolved_end_date = min(requested_end_date, last_snapshot_date)
+    snapshots = list_materialized_daily_snapshots(
+        portfolio_id,
+        start_date=resolved_start_date,
+        end_date=resolved_end_date,
+        ensure_current=False,
+    )
+    if not snapshots:
+        return None
     available_dates = [
         parsed_date
         for parsed_date in (_parse_date(snapshot.get("as_of_date")) for snapshot in snapshots)
@@ -953,9 +996,9 @@ def build_materialized_contribution_report(
     ]
     if not available_dates:
         return None
-    resolved_start_date = start_date or min(available_dates)
-    resolved_end_date = effective_end_date or max(available_dates)
-    if resolved_start_date < min(available_dates) or resolved_end_date > max(available_dates):
+    first_available_date = min(available_dates)
+    last_available_date = max(available_dates)
+    if first_available_date > resolved_start_date or last_available_date < resolved_end_date:
         return None
 
     slices = list_materialized_contribution_slices(

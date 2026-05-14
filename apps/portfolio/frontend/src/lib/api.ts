@@ -219,6 +219,7 @@ export type PortfolioContributionAxis = 'instrument' | 'account' | 'instrument_t
 export type PortfolioCalculationFrequency = 'daily' | 'weekly' | 'monthly'
 
 export type PortfolioPeriodCalculationGroupMetrics = {
+  beginning_weight: number | null
   average_weight: number | null
   ending_weight: number | null
   period_return: number | null
@@ -344,6 +345,7 @@ export type PortfolioContributionLineRecord = {
   group_label: string
   start_value_base: number | null
   end_value_base: number | null
+  beginning_weight: number | null
   average_weight: number | null
   ending_weight: number | null
   realized_pnl: number | null
