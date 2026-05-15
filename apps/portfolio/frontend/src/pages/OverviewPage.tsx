@@ -84,6 +84,7 @@ type OverviewMetricRow = {
   benchmark?: string | null
   emphasis?: boolean
   toneClassName?: string
+  title?: string
 }
 
 const DEFAULT_TOP_HOLDING_COLUMNS: TopHoldingColumnKey[] = [
@@ -210,43 +211,26 @@ function formatDateKey(date: Date) {
   return `${year}-${month}-${day}`
 }
 
-function findAnchorPerformancePoint(points: PortfolioDailyPerformancePoint[], targetDate: string) {
-  let anchor: PortfolioDailyPerformancePoint | null = null
-  points.forEach((point) => {
-    if (point.as_of_date <= targetDate) {
-      anchor = point
-    }
-  })
-  return anchor ?? points[0] ?? null
-}
-
 function periodReturnFromTwr(
   points: PortfolioDailyPerformancePoint[],
   targetDate: string | null,
   fallbackToFirst = true,
 ) {
   const sortedPoints = points
-    .filter((point) => point.cumulative_twr != null)
+    .filter((point) => point.daily_twr != null && Number.isFinite(point.daily_twr))
     .slice()
     .sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
-  if (sortedPoints.length < 2) {
+  if (!sortedPoints.length) {
     return null
   }
 
-  const latestPoint = sortedPoints[sortedPoints.length - 1]
-  const anchorPoint = targetDate
-    ? findAnchorPerformancePoint(sortedPoints, targetDate) ?? (fallbackToFirst ? sortedPoints[0] : null)
-    : sortedPoints[0]
-  if (!anchorPoint) {
+  const periodPoints = targetDate ? sortedPoints.filter((point) => point.as_of_date > targetDate) : sortedPoints
+  if (!periodPoints.length && !fallbackToFirst) {
     return null
   }
+  const returnPoints = periodPoints.length ? periodPoints : sortedPoints
 
-  if (latestPoint.cumulative_twr != null && anchorPoint.cumulative_twr != null) {
-    const anchorGrowth = 1 + anchorPoint.cumulative_twr
-    return anchorGrowth !== 0 ? (1 + latestPoint.cumulative_twr) / anchorGrowth - 1 : null
-  }
-
-  return null
+  return returnPoints.reduce((growthIndex, point) => growthIndex * (1 + (point.daily_twr ?? 0)), 1) - 1
 }
 
 function buildPortfolioReturnMetrics(points: PortfolioDailyPerformancePoint[]) {
@@ -265,11 +249,14 @@ function buildPortfolioReturnMetrics(points: PortfolioDailyPerformancePoint[]) {
   const yearStart = new Date(latestDate.getFullYear(), 0, 1)
   const priorMonthEnd = addDays(monthStart, -1)
   const priorYearEnd = addDays(yearStart, -1)
+  const hasYearStartAnchor = sortedPoints.some(
+    (point) => point.ending_nav != null && point.as_of_date <= formatDateKey(yearStart),
+  )
 
   return {
     oneWeek: periodReturnFromTwr(sortedPoints, formatDateKey(addDays(latestDate, -7))),
     mtd: periodReturnFromTwr(sortedPoints, formatDateKey(priorMonthEnd), false),
-    ytd: periodReturnFromTwr(sortedPoints, formatDateKey(priorYearEnd), false),
+    ytd: hasYearStartAnchor ? periodReturnFromTwr(sortedPoints, formatDateKey(priorYearEnd), false) : null,
   }
 }
 
@@ -338,6 +325,55 @@ function annualizedMeanReturn(values: number[], periodsPerYear: number | null) {
   return (values.reduce((sum, value) => sum + value, 0) / values.length) * periodsPerYear
 }
 
+function trailingAnnualizedVolatility(
+  points: Array<{ date: string; value: number }>,
+  latestDate: Date,
+  lookbackDays: number,
+) {
+  const startDate = formatDateKey(addDays(latestDate, -lookbackDays))
+  const hasStartAnchor = points.some((point) => point.date <= startDate)
+  if (!hasStartAnchor) {
+    return null
+  }
+  const windowPoints = points.filter((point) => point.date > startDate)
+  if (windowPoints.length < 2) {
+    return null
+  }
+  const values = windowPoints.map((point) => point.value)
+  const volatility = sampleStandardDeviation(values)
+  const periodsPerYear = annualizationPeriodsPerYear(
+    windowPoints.map((point) => point.date),
+    windowPoints.length,
+    startDate,
+  )
+  return volatility == null || periodsPerYear == null ? null : volatility * Math.sqrt(periodsPerYear)
+}
+
+function buildPortfolioRiskMetrics(points: PortfolioDailyPerformancePoint[]) {
+  const sortedPoints = points
+    .filter(
+      (point) =>
+        point.return_observation_eligible &&
+        point.daily_twr != null &&
+        Number.isFinite(point.daily_twr),
+    )
+    .map((point) => ({ date: point.as_of_date, value: point.daily_twr as number }))
+    .sort((left, right) => left.date.localeCompare(right.date))
+  const latestPoint = sortedPoints[sortedPoints.length - 1]
+  const latestDate = latestPoint ? dateFromString(latestPoint.date) : null
+  if (!latestDate) {
+    return {
+      volatility1m: null,
+      volatility3m: null,
+    }
+  }
+
+  return {
+    volatility1m: trailingAnnualizedVolatility(sortedPoints, latestDate, 30),
+    volatility3m: trailingAnnualizedVolatility(sortedPoints, latestDate, 90),
+  }
+}
+
 function buildDrawdownMetrics(points: PortfolioInstrumentPriceChartPoint[]) {
   let highWater = points[0]?.value ?? 0
   let maxDrawdown: number | null = null
@@ -402,6 +438,8 @@ function buildBenchmarkMetrics(points: PortfolioInstrumentPriceChartPoint[]) {
     sinceInception,
     annualizedReturn,
     annualizedVolatility,
+    volatility1m: trailingAnnualizedVolatility(dailyReturns, latestDate, 30),
+    volatility3m: trailingAnnualizedVolatility(dailyReturns, latestDate, 90),
     sharpe:
       annualizedMean != null && annualizedVolatility != null && annualizedVolatility !== 0
         ? annualizedMean / annualizedVolatility
@@ -868,6 +906,10 @@ export default function OverviewPage() {
     () => buildPortfolioReturnMetrics(performanceWorkspace?.daily_series ?? []),
     [performanceWorkspace],
   )
+  const portfolioRiskMetrics = useMemo(
+    () => buildPortfolioRiskMetrics(performanceWorkspace?.daily_series ?? []),
+    [performanceWorkspace],
+  )
   const monthlyBuckets = useMemo(
     () => buildMonthlyBuckets(performanceWorkspace?.daily_series ?? []),
     [performanceWorkspace],
@@ -898,6 +940,7 @@ export default function OverviewPage() {
           benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.ytd),
           emphasis: true,
           toneClassName: signedValueClass(portfolioReturnMetrics.ytd),
+          title: portfolioReturnMetrics.ytd == null ? 'No year-start anchor.' : undefined,
         },
         {
           label: 'Since Inception',
@@ -922,6 +965,28 @@ export default function OverviewPage() {
           value: signedPercent(performanceWorkspace?.summary.max_drawdown),
           benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.maxDrawdown),
           toneClassName: signedValueClass(performanceWorkspace?.summary.max_drawdown),
+        },
+        {
+          label: '1M VOL',
+          value: formatPercent(portfolioRiskMetrics.volatility1m),
+          benchmark: benchmarkNote(
+            selectedBenchmarkInstrument,
+            benchmarkLoading,
+            benchmarkMetrics?.volatility1m,
+            formatPercent,
+          ),
+          title: portfolioRiskMetrics.volatility1m == null ? 'Need full 1M history.' : undefined,
+        },
+        {
+          label: '3M VOL',
+          value: formatPercent(portfolioRiskMetrics.volatility3m),
+          benchmark: benchmarkNote(
+            selectedBenchmarkInstrument,
+            benchmarkLoading,
+            benchmarkMetrics?.volatility3m,
+            formatPercent,
+          ),
+          title: portfolioRiskMetrics.volatility3m == null ? 'Need full 3M history.' : undefined,
         },
       ],
     },
@@ -1122,7 +1187,7 @@ export default function OverviewPage() {
                           <tbody>
                             {group.rows.map((row) => (
                               <tr key={`${group.label}:${row.label}`}>
-                                <th>{row.label}</th>
+                                <th title={row.title}>{row.label}</th>
                                 <td
                                   className={[
                                     row.emphasis ? 'overview-key-metric-emphasis' : '',
@@ -1156,7 +1221,7 @@ export default function OverviewPage() {
                         {MONTH_LABELS.map((monthLabel) => (
                           <th key={monthLabel}>{monthLabel}</th>
                         ))}
-                        <th>YTD</th>
+                        <th title="Requires year-start anchor.">YTD</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1184,7 +1249,10 @@ export default function OverviewPage() {
                                 {signedPercent(bucket?.cumulative_twr)}
                               </td>
                             ))}
-                            <td className={`performance-cell-number performance-return-cell ${signedValueClass(row.ytd)}`}>
+                            <td
+                              className={`performance-cell-number performance-return-cell ${signedValueClass(row.ytd)}`}
+                              title={row.hasYearStartAnchor ? `${row.year} YTD` : 'No year-start anchor.'}
+                            >
                               {signedPercent(row.ytd)}
                             </td>
                           </tr>

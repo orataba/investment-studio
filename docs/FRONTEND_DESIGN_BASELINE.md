@@ -45,7 +45,13 @@
 - Overview chart 使用白底、细灰 grid、蓝色主线和克制 tooltip。
 - Portfolio overview 主图使用 `Portfolio Value / TWR Index` 口径；drawdown 是主图下方的附属区，并固定基于 TWR，不和资产规模曲线混为同级。
 - 组合价值、fund quote、performance、risk 等图表优先保持可扫读，不使用渐变背景或装饰性卡片。
+- Benchmark 对比曲线只在双方有重叠日期窗口时展示；图表横轴按真实日期比例定位，不把缺口期压缩成等距样本。
 - 数据 palette 避免棕色、橙色、米黄色作为主视觉；必要的警示含义用文字色或边框表达。
+
+## Data Tables
+
+- 宽表的首列如果承载主要对象名称，应在横向滚动时冻结；冻结列需要显式背景和右侧细线，避免透出后方单元格。
+- 短列名优先，例如 `YTD`、`1M VOL`、`3M VOL`；缺少窗口锚点等不可用原因放在 hover title 或诊断状态里，不拉长表头。
 
 ## Shared UI Boundary
 

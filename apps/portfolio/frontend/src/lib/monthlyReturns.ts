@@ -23,6 +23,7 @@ export type MonthlyReturnMatrixRow = {
   year: string
   months: Array<MonthlyBucket | null>
   ytd: number | null
+  hasYearStartAnchor: boolean
   observationCount: number
   coverageState: PortfolioPerformanceCoverageState
 }
@@ -143,6 +144,7 @@ export function buildMonthlyReturnMatrixRows(buckets: MonthlyBucket[]): MonthlyR
         year,
         months: Array.from({ length: 12 }, () => null),
         ytd: null,
+        hasYearStartAnchor: false,
         observationCount: 0,
         coverageState: 'unavailable',
       })
@@ -157,12 +159,14 @@ export function buildMonthlyReturnMatrixRows(buckets: MonthlyBucket[]): MonthlyR
   return [...rowsByYear.values()]
     .map((row) => {
       const populatedMonths = row.months.filter((bucket): bucket is MonthlyBucket => bucket != null)
+      const hasYearStartAnchor = populatedMonths.some((bucket) => bucket.start_date <= `${row.year}-01-01`)
       const returns = populatedMonths
         .map((bucket) => finiteNumber(bucket.cumulative_twr))
         .filter((value): value is number => value != null)
       return {
         ...row,
-        ytd: compoundReturn(returns),
+        hasYearStartAnchor,
+        ytd: hasYearStartAnchor ? compoundReturn(returns) : null,
         observationCount: populatedMonths.reduce((total, bucket) => total + bucket.observation_count, 0),
         coverageState: combineCoverage(populatedMonths.map((bucket) => bucket.coverage_state)),
       }

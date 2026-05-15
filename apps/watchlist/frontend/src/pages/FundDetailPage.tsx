@@ -1396,6 +1396,96 @@ function buildDateScaledLinePath(
   return commands.join(' ')
 }
 
+function getDateScaleDomain(
+  points: FundChartPoint[],
+  startDate: string | null | undefined,
+  endDate: string | null | undefined,
+) {
+  const datedPoints = sortSeriesByDate(points)
+    .map((point) => {
+      const parsed = parseChartDateParts(point.date)
+      return parsed ? { point, time: parsed.time } : null
+    })
+    .filter((item): item is { point: FundChartPoint; time: number } => item !== null)
+
+  if (!datedPoints.length) {
+    return null
+  }
+
+  const parsedStart = startDate ? parseChartDateParts(startDate) : null
+  const parsedEnd = endDate ? parseChartDateParts(endDate) : null
+  const startTime = parsedStart?.time ?? datedPoints[0].time
+  const endTime = parsedEnd?.time ?? datedPoints[datedPoints.length - 1].time
+
+  if (endTime <= startTime) {
+    return null
+  }
+
+  return { startTime, endTime }
+}
+
+function getDateScaledProjectedPoints(
+  points: FundChartPoint[],
+  geometry: ChartGeometry,
+  min: number,
+  max: number,
+  startDate: string | null | undefined,
+  endDate: string | null | undefined,
+) {
+  const sortedPoints = sortSeriesByDate(points)
+  const domain = getDateScaleDomain(sortedPoints, startDate, endDate)
+
+  if (!domain) {
+    return getProjectedSeriesPoints(sortedPoints, geometry, min, max).map((point, index) => ({
+      point: sortedPoints[index],
+      x: point.x,
+      y: point.y,
+    }))
+  }
+
+  const plotWidth = geometry.width - geometry.paddingLeft - geometry.paddingRight
+  const timeRange = domain.endTime - domain.startTime
+
+  return sortedPoints
+    .map((point) => {
+      const parsed = parseChartDateParts(point.date)
+      return parsed ? { point, time: parsed.time } : null
+    })
+    .filter(
+      (item): item is { point: FundChartPoint; time: number } =>
+        item !== null && item.time >= domain.startTime && item.time <= domain.endTime,
+    )
+    .map(({ point, time }) => ({
+      point,
+      x: geometry.paddingLeft + ((time - domain.startTime) / timeRange) * plotWidth,
+      y: projectChartValue(point.value, min, max, geometry),
+    }))
+}
+
+function buildDateScaledAreaPath(
+  points: FundChartPoint[],
+  geometry: ChartGeometry,
+  min: number,
+  max: number,
+  startDate: string | null | undefined,
+  endDate: string | null | undefined,
+  baselineValue?: number,
+) {
+  const projectedPoints = getDateScaledProjectedPoints(points, geometry, min, max, startDate, endDate)
+  if (projectedPoints.length < 2) {
+    return ''
+  }
+
+  const topPath = projectedPoints
+    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(' ')
+  const firstX = projectedPoints[0].x
+  const lastX = projectedPoints[projectedPoints.length - 1].x
+  const baseline = projectChartValue(baselineValue ?? min, min, max, geometry)
+
+  return `${topPath} L ${lastX.toFixed(2)} ${baseline.toFixed(2)} L ${firstX.toFixed(2)} ${baseline.toFixed(2)} Z`
+}
+
 function buildChartAreaPath(
   points: FundChartPoint[],
   geometry: ChartGeometry = PRIMARY_CHART_GEOMETRY,
@@ -1806,6 +1896,40 @@ function filterSeriesByDateWindow(
     }
     return true
   })
+}
+
+function getSeriesDateWindow(points: FundChartPoint[]) {
+  if (!points.length) {
+    return null
+  }
+  const sortedPoints = sortSeriesByDate(points)
+  return {
+    start: sortedPoints[0].date,
+    end: sortedPoints[sortedPoints.length - 1].date,
+  }
+}
+
+function getOverlappingDateWindow(leftPoints: FundChartPoint[], rightPoints: FundChartPoint[]) {
+  const leftWindow = getSeriesDateWindow(leftPoints)
+  const rightWindow = getSeriesDateWindow(rightPoints)
+  if (!leftWindow || !rightWindow) {
+    return null
+  }
+
+  const start = leftWindow.start > rightWindow.start ? leftWindow.start : rightWindow.start
+  const end = leftWindow.end < rightWindow.end ? leftWindow.end : rightWindow.end
+
+  if (start >= end) {
+    return null
+  }
+
+  const leftOverlapCount = filterSeriesByDateWindow(leftPoints, start, end).length
+  const rightOverlapCount = filterSeriesByDateWindow(rightPoints, start, end).length
+  if (leftOverlapCount < 2 || rightOverlapCount < 2) {
+    return null
+  }
+
+  return { start, end }
 }
 
 function getMonthBucket(value: string) {
@@ -2980,6 +3104,23 @@ function buildPositionedPoints(
   }))
 }
 
+function buildDateScaledPositionedPoints(
+  points: FundChartPoint[],
+  min: number,
+  max: number,
+  geometry: ChartGeometry,
+  startDate: string | null | undefined,
+  endDate: string | null | undefined,
+) {
+  return getDateScaledProjectedPoints(points, geometry, min, max, startDate, endDate).map(
+    ({ point, x, y }) => ({
+      ...point,
+      x,
+      y,
+    }),
+  )
+}
+
 function findNearestChartPoint(points: FundChartPoint[], targetDate: string | undefined) {
   if (!points.length || !targetDate) {
     return null
@@ -2996,6 +3137,44 @@ function findNearestChartPoint(points: FundChartPoint[], targetDate: string | un
     const closestDistance = Math.abs(new Date(`${closest.date}T00:00:00`).getTime() - targetTime)
     return pointDistance < closestDistance ? point : closest
   }, null)
+}
+
+function findNearestPointIndexByDateRatio(
+  points: FundChartPoint[],
+  xRatio: number,
+  startDate: string | null | undefined,
+  endDate: string | null | undefined,
+) {
+  if (!points.length) {
+    return -1
+  }
+
+  const domain = getDateScaleDomain(points, startDate, endDate)
+  if (!domain) {
+    return Math.min(
+      Math.max(Math.round(Math.min(Math.max(xRatio, 0), 1) * (points.length - 1)), 0),
+      points.length - 1,
+    )
+  }
+
+  const targetTime =
+    domain.startTime + (domain.endTime - domain.startTime) * Math.min(Math.max(xRatio, 0), 1)
+  let nearestIndex = 0
+  let nearestDistance = Number.POSITIVE_INFINITY
+
+  points.forEach((point, index) => {
+    const parsed = parseChartDateParts(point.date)
+    if (!parsed) {
+      return
+    }
+    const distance = Math.abs(parsed.time - targetTime)
+    if (distance < nearestDistance) {
+      nearestDistance = distance
+      nearestIndex = index
+    }
+  })
+
+  return nearestIndex
 }
 
 function renderStackRows(items: Record<string, unknown>) {
@@ -4186,7 +4365,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const zoomSelectionLeftPct = zoomMaxIndex > 0 ? (zoomStartIndex / zoomMaxIndex) * 100 : 0
   const zoomSelectionRightPct =
     zoomMaxIndex > 0 ? ((zoomMaxIndex - zoomEndIndex) / zoomMaxIndex) * 100 : 0
-  const visibleNavSeries = resampleSeries(
+  const rawVisibleNavSeries = resampleSeries(
     filterSeriesByDateWindow(navBasisSeries, effectiveStartDate, effectiveEndDate),
     chartFrequency,
   )
@@ -4198,23 +4377,44 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     ? activeQuoteBasis
     : benchmarkAvailableBases[0] || null
   const benchmarkNavBasisSeries = activeBenchmarkBasis ? buildBasisSeries(benchmarkSourceRows, activeBenchmarkBasis) : []
-  const benchmarkVisibleNavSeries = resampleSeries(
+  const rawBenchmarkVisibleNavSeries = resampleSeries(
     filterSeriesByDateWindow(benchmarkNavBasisSeries, effectiveStartDate, effectiveEndDate),
     chartFrequency,
   )
   const benchmarkCalculationSeries = benchmarkNavSeries
     ? buildCalculationPointSeries(benchmarkNavSeries.calculation_series)
     : []
-  const shouldIndexCompareSeries = Boolean(selectedBenchmark)
+  const benchmarkComparisonWindow = selectedBenchmark
+    ? getOverlappingDateWindow(rawVisibleNavSeries, rawBenchmarkVisibleNavSeries)
+    : null
+  const visibleNavSeries = benchmarkComparisonWindow
+    ? filterSeriesByDateWindow(
+        rawVisibleNavSeries,
+        benchmarkComparisonWindow.start,
+        benchmarkComparisonWindow.end,
+      )
+    : rawVisibleNavSeries
+  const benchmarkVisibleNavSeries = benchmarkComparisonWindow
+    ? filterSeriesByDateWindow(
+        rawBenchmarkVisibleNavSeries,
+        benchmarkComparisonWindow.start,
+        benchmarkComparisonWindow.end,
+      )
+    : rawBenchmarkVisibleNavSeries
+  const shouldIndexCompareSeries = Boolean(
+    selectedBenchmark && visibleNavSeries.length > 1 && benchmarkVisibleNavSeries.length > 1,
+  )
   const indexedNavSeries = shouldIndexCompareSeries ? rebaseSeries(visibleNavSeries, 1) : []
   const indexedBenchmarkSeries = shouldIndexCompareSeries ? rebaseSeries(benchmarkVisibleNavSeries, 1) : []
   const chartNavSeries =
     shouldIndexCompareSeries && indexedNavSeries.length ? indexedNavSeries : visibleNavSeries
   const chartBenchmarkSeries = shouldIndexCompareSeries
     ? indexedBenchmarkSeries
-    : benchmarkVisibleNavSeries
+    : []
   const drawdownSeries = buildDrawdownSeries(visibleNavSeries)
-  const benchmarkDrawdownSeries = buildDrawdownSeries(benchmarkVisibleNavSeries)
+  const benchmarkDrawdownSeries = shouldIndexCompareSeries
+    ? buildDrawdownSeries(benchmarkVisibleNavSeries)
+    : []
   const latestPoint = visibleNavSeries.length ? visibleNavSeries[visibleNavSeries.length - 1] : undefined
   const periodLow =
     visibleNavSeries.length > 0 ? Math.min(...visibleNavSeries.map((point) => point.value)) : null
@@ -4645,30 +4845,53 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const scaledVisibleSeries = applyChartScale(chartNavSeries, effectiveChartScale)
   const scaledBenchmarkVisibleSeries = applyChartScale(chartBenchmarkSeries, effectiveChartScale)
   const combinedScaledSeries = [...scaledVisibleSeries, ...scaledBenchmarkVisibleSeries]
-  const chartTickDates = getChartAxisTicks(chartNavSeries, 8)
-  const chartTickSpanDays = getChartDateSpanDays(chartNavSeries)
+  const chartAxisSeries = sortSeriesByDate([...chartNavSeries, ...chartBenchmarkSeries])
+  const chartDateWindow = getSeriesDateWindow(chartAxisSeries)
+  const chartDateStart = chartDateWindow?.start || null
+  const chartDateEnd = chartDateWindow?.end || null
+  const chartTickDates = getChartAxisTicks(chartAxisSeries.length ? chartAxisSeries : chartNavSeries, 8)
+  const chartTickSpanDays = getChartDateSpanDays(chartAxisSeries.length ? chartAxisSeries : chartNavSeries)
   const chartBands = buildChartBands(chartNavSeries, PRIMARY_CHART_GEOMETRY, 10)
   const rawChartMin = combinedScaledSeries.length ? Math.min(...combinedScaledSeries.map((point) => point.value)) : 0
   const rawChartMax = combinedScaledSeries.length ? Math.max(...combinedScaledSeries.map((point) => point.value)) : 1
   const chartRenderBounds = getPaddedAxisBounds(rawChartMin, rawChartMax, 0.045, 0.01)
   const chartMin = chartRenderBounds.min
   const chartMax = chartRenderBounds.max
-  const chartLinePath = buildChartLinePath(scaledVisibleSeries, PRIMARY_CHART_GEOMETRY, chartMin, chartMax)
-  const benchmarkChartLinePath = buildChartLinePath(
+  const chartLinePath = buildDateScaledLinePath(
+    scaledVisibleSeries,
+    PRIMARY_CHART_GEOMETRY,
+    chartMin,
+    chartMax,
+    chartDateStart,
+    chartDateEnd,
+  )
+  const benchmarkChartLinePath = buildDateScaledLinePath(
     scaledBenchmarkVisibleSeries,
     PRIMARY_CHART_GEOMETRY,
     chartMin,
     chartMax,
+    chartDateStart,
+    chartDateEnd,
   )
   const chartAreaPath =
     chartDisplayStyle === 'mountain'
-      ? buildChartAreaPath(scaledVisibleSeries, PRIMARY_CHART_GEOMETRY, chartMin, chartMax)
+      ? buildDateScaledAreaPath(
+          scaledVisibleSeries,
+          PRIMARY_CHART_GEOMETRY,
+          chartMin,
+          chartMax,
+          chartDateStart,
+          chartDateEnd,
+        )
       : ''
   const chartTickValues =
     effectiveChartScale === 'logarithmic'
       ? getLogTickValuesFromBounds(chartMin, chartMax, 5)
       : getLinearTickValues(chartMin, chartMax, 5)
   const combinedDrawdownSeries = [...drawdownSeries, ...benchmarkDrawdownSeries]
+  const drawdownDateWindow = getSeriesDateWindow(combinedDrawdownSeries)
+  const drawdownDateStart = drawdownDateWindow?.start || chartDateStart
+  const drawdownDateEnd = drawdownDateWindow?.end || chartDateEnd
   const drawdownBounds = getDrawdownAxisBounds(combinedDrawdownSeries)
   const drawdownBands = buildChartBands(drawdownSeries, DRAWDOWN_CHART_GEOMETRY, 10)
   const drawdownMin = drawdownBounds.min
@@ -4677,43 +4900,62 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     drawdownMin === drawdownMax
       ? [drawdownMin]
       : [drawdownMin, drawdownMax]
-  const drawdownLinePath = buildChartLinePath(drawdownSeries, DRAWDOWN_CHART_GEOMETRY, drawdownMin, drawdownMax)
-  const benchmarkDrawdownLinePath = buildChartLinePath(
-    benchmarkDrawdownSeries,
-    DRAWDOWN_CHART_GEOMETRY,
-    drawdownMin,
-    drawdownMax,
-  )
-  const drawdownAreaPath = buildChartAreaPath(
+  const drawdownLinePath = buildDateScaledLinePath(
     drawdownSeries,
     DRAWDOWN_CHART_GEOMETRY,
     drawdownMin,
     drawdownMax,
+    drawdownDateStart,
+    drawdownDateEnd,
+  )
+  const benchmarkDrawdownLinePath = buildDateScaledLinePath(
+    benchmarkDrawdownSeries,
+    DRAWDOWN_CHART_GEOMETRY,
+    drawdownMin,
+    drawdownMax,
+    drawdownDateStart,
+    drawdownDateEnd,
+  )
+  const drawdownAreaPath = buildDateScaledAreaPath(
+    drawdownSeries,
+    DRAWDOWN_CHART_GEOMETRY,
+    drawdownMin,
+    drawdownMax,
+    drawdownDateStart,
+    drawdownDateEnd,
     0,
   )
-  const positionedChartPoints = buildPositionedPoints(
+  const positionedChartPoints = buildDateScaledPositionedPoints(
     scaledVisibleSeries,
     chartMin,
     chartMax,
     PRIMARY_CHART_GEOMETRY,
+    chartDateStart,
+    chartDateEnd,
   )
-  const positionedBenchmarkPoints = buildPositionedPoints(
+  const positionedBenchmarkPoints = buildDateScaledPositionedPoints(
     scaledBenchmarkVisibleSeries,
     chartMin,
     chartMax,
     PRIMARY_CHART_GEOMETRY,
+    chartDateStart,
+    chartDateEnd,
   )
-  const positionedDrawdownPoints = buildPositionedPoints(
+  const positionedDrawdownPoints = buildDateScaledPositionedPoints(
     drawdownSeries,
     drawdownMin,
     drawdownMax,
     DRAWDOWN_CHART_GEOMETRY,
+    drawdownDateStart,
+    drawdownDateEnd,
   )
-  const positionedBenchmarkDrawdownPoints = buildPositionedPoints(
+  const positionedBenchmarkDrawdownPoints = buildDateScaledPositionedPoints(
     benchmarkDrawdownSeries,
     drawdownMin,
     drawdownMax,
     DRAWDOWN_CHART_GEOMETRY,
+    drawdownDateStart,
+    drawdownDateEnd,
   )
   const activeHoverIndex =
     chartHoverIndex == null || !scaledVisibleSeries.length
@@ -6441,7 +6683,15 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       return null
     }
     const xRatio = (relativeX - plotBounds.left) / Math.max(plotBounds.width, 1)
-    const nextIndex = Math.round(xRatio * (scaledVisibleSeries.length - 1))
+    const nextIndex = findNearestPointIndexByDateRatio(
+      scaledVisibleSeries,
+      xRatio,
+      chartDateStart,
+      chartDateEnd,
+    )
+    if (nextIndex < 0) {
+      return null
+    }
     const resolvedIndex = Math.min(Math.max(nextIndex, 0), scaledVisibleSeries.length - 1)
     return {
       index: resolvedIndex,

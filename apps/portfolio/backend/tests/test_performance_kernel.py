@@ -2362,6 +2362,205 @@ def test_instrument_contribution_report_tracks_daily_pnl_and_residual(client, mo
     assert isclose(slice_by_date["2026-01-02"]["total_pnl"], 10.0, rel_tol=0.0, abs_tol=1e-12)
 
 
+def test_calculation_period_return_uses_group_twr_with_intraperiod_trades(client, monkeypatch):
+    instrument_id = "equity-us-line-twr"
+    instrument_ref = {
+        "instrument_id": instrument_id,
+        "instrument_name": "Line TWR Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": "LTWR", "is_primary": True}],
+    }
+    instrument_detail = _test_instrument_detail(
+        instrument_id=instrument_id,
+        instrument_name="Line TWR Equity",
+        history=[
+            ("2026-01-01", "100.00"),
+            ("2026-01-02", "110.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda requested_instrument_id: deepcopy(instrument_detail) if requested_instrument_id == instrument_id else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+
+    def transaction(
+        transaction_id: str,
+        transaction_type: str,
+        trade_date: str,
+        *,
+        portfolio_id: str,
+        account_id: str,
+        instrument_id_value: str | None,
+        quantity: float | None,
+        price: float | None,
+        gross_amount: float,
+        created_at: str,
+    ) -> dict[str, object]:
+        return {
+            "transaction_id": transaction_id,
+            "portfolio_id": portfolio_id,
+            "transaction_type": transaction_type,
+            "trade_date": trade_date,
+            "settlement_date": trade_date,
+            "account_id": account_id,
+            "settlement_cash_account_id": (
+                "cash-usd-main" if transaction_type in {"buy", "sell"} else None
+            ),
+            "instrument_id": instrument_id_value,
+            "instrument_ref": deepcopy(instrument_ref) if instrument_id_value else None,
+            "quantity": quantity,
+            "price": price,
+            "gross_amount": gross_amount,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "transfer_scope": None,
+            "transfer_object_type": None,
+            "transfer_group_id": None,
+            "counterparty_account_id": None,
+            "note": transaction_type,
+            "created_at": created_at,
+        }
+
+    def calculation_group_period_return(portfolio_id: str, transactions: list[dict[str, object]]) -> float:
+        store = _minimal_store(portfolio_id=portfolio_id, transactions=transactions)
+        store["portfolios"][0]["as_of_date"] = "2026-01-02"
+        _write_store(store)
+        response = client.get(f"/api/portfolios/{portfolio_id}/performance/calculation/groups?axis=instrument")
+        assert response.status_code == 200
+        group = next(item for item in response.json()["groups"] if item["group_key"] == instrument_id)
+        return group["period_return"]
+
+    new_buy_transactions = [
+        transaction(
+            "txn-0001",
+            "opening_balance",
+            "2026-01-01",
+            portfolio_id="line-twr-new-buy-test",
+            account_id="cash-usd-main",
+            instrument_id_value=None,
+            quantity=None,
+            price=None,
+            gross_amount=100.0,
+            created_at="2026-01-01T09:00:00Z",
+        ),
+        transaction(
+            "txn-0002",
+            "buy",
+            "2026-01-02",
+            portfolio_id="line-twr-new-buy-test",
+            account_id="broker-us-core",
+            instrument_id_value=instrument_id,
+            quantity=1.0,
+            price=100.0,
+            gross_amount=100.0,
+            created_at="2026-01-02T09:30:00Z",
+        ),
+    ]
+    add_buy_transactions = [
+        transaction(
+            "txn-0001",
+            "opening_balance",
+            "2026-01-01",
+            portfolio_id="line-twr-add-buy-test",
+            account_id="cash-usd-main",
+            instrument_id_value=None,
+            quantity=None,
+            price=None,
+            gross_amount=200.0,
+            created_at="2026-01-01T09:00:00Z",
+        ),
+        transaction(
+            "txn-0002",
+            "buy",
+            "2026-01-01",
+            portfolio_id="line-twr-add-buy-test",
+            account_id="broker-us-core",
+            instrument_id_value=instrument_id,
+            quantity=1.0,
+            price=100.0,
+            gross_amount=100.0,
+            created_at="2026-01-01T09:30:00Z",
+        ),
+        transaction(
+            "txn-0003",
+            "buy",
+            "2026-01-02",
+            portfolio_id="line-twr-add-buy-test",
+            account_id="broker-us-core",
+            instrument_id_value=instrument_id,
+            quantity=1.0,
+            price=100.0,
+            gross_amount=100.0,
+            created_at="2026-01-02T09:30:00Z",
+        ),
+    ]
+    roundtrip_transactions = [
+        transaction(
+            "txn-0001",
+            "opening_balance",
+            "2026-01-01",
+            portfolio_id="line-twr-roundtrip-test",
+            account_id="cash-usd-main",
+            instrument_id_value=None,
+            quantity=None,
+            price=None,
+            gross_amount=100.0,
+            created_at="2026-01-01T09:00:00Z",
+        ),
+        transaction(
+            "txn-0002",
+            "buy",
+            "2026-01-02",
+            portfolio_id="line-twr-roundtrip-test",
+            account_id="broker-us-core",
+            instrument_id_value=instrument_id,
+            quantity=1.0,
+            price=100.0,
+            gross_amount=100.0,
+            created_at="2026-01-02T09:30:00Z",
+        ),
+        transaction(
+            "txn-0003",
+            "sell",
+            "2026-01-02",
+            portfolio_id="line-twr-roundtrip-test",
+            account_id="broker-us-core",
+            instrument_id_value=instrument_id,
+            quantity=1.0,
+            price=110.0,
+            gross_amount=110.0,
+            created_at="2026-01-02T10:30:00Z",
+        ),
+    ]
+
+    assert isclose(
+        calculation_group_period_return("line-twr-new-buy-test", new_buy_transactions),
+        0.1,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert isclose(
+        calculation_group_period_return("line-twr-add-buy-test", add_buy_transactions),
+        0.1,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    assert isclose(
+        calculation_group_period_return("line-twr-roundtrip-test", roundtrip_transactions),
+        0.1,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+
+
 def test_cost_basis_method_changes_book_split_not_economic_contribution(client, monkeypatch):
     instrument_id = "equity-us-cost-method"
     instrument_ref = {

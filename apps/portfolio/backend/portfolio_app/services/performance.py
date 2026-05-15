@@ -52,6 +52,8 @@ NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES = {
     "interest",
     "return_of_capital",
 }
+GROUP_CAPITAL_FLOW_IN_FIELD = "capital_flow_in_base"
+GROUP_CAPITAL_FLOW_OUT_FIELD = "capital_flow_out_base"
 DAYS_PER_YEAR = 365.25
 _SUPPORTED_INSTRUMENT_TYPES = {"fund", "bond", "equity", "cash", "fx", "other"}
 _LEGACY_INSTRUMENT_REF_KEYS = {"asset_id", "asset_name", "asset_type"}
@@ -4612,6 +4614,8 @@ def _build_contribution_daily_events(
                 "tax_amount": 0.0,
                 "cash_currency_gains": 0.0,
                 "instrument_currency_gains": 0.0,
+                GROUP_CAPITAL_FLOW_IN_FIELD: 0.0,
+                GROUP_CAPITAL_FLOW_OUT_FIELD: 0.0,
             },
         )
 
@@ -4641,6 +4645,68 @@ def _build_contribution_daily_events(
         if current_value is None:
             return
         event[field_name] = (_safe_float(current_value) or 0.0) + converted_amount
+
+    def add_flow(
+        *,
+        group_key: str,
+        group_label: str,
+        field_name: str,
+        amount: float,
+        trade_date: date,
+        currency: str,
+    ) -> None:
+        if not group_key or amount <= 1e-9:
+            return
+        add_amount(
+            group_key=group_key,
+            group_label=group_label,
+            field_name=field_name,
+            amount=amount,
+            trade_date=trade_date,
+            currency=currency,
+        )
+
+    def cash_group(account_id: object, currency: str) -> tuple[str, str]:
+        resolved_account_id = str(account_id or "").strip()
+        if not resolved_account_id:
+            return ("", "")
+        return _cash_group_for_axis(
+            axis=axis,
+            account_id=resolved_account_id,
+            currency=currency,
+            account_name_map=account_name_map,
+        )
+
+    def add_transfer_flow(
+        *,
+        source_group_key: str,
+        source_group_label: str,
+        target_group_key: str,
+        target_group_label: str,
+        amount: float,
+        trade_date: date,
+        currency: str,
+    ) -> None:
+        if amount <= 1e-9:
+            return
+        if source_group_key and target_group_key and source_group_key == target_group_key:
+            return
+        add_flow(
+            group_key=source_group_key,
+            group_label=source_group_label,
+            field_name=GROUP_CAPITAL_FLOW_OUT_FIELD,
+            amount=amount,
+            trade_date=trade_date,
+            currency=currency,
+        )
+        add_flow(
+            group_key=target_group_key,
+            group_label=target_group_label,
+            field_name=GROUP_CAPITAL_FLOW_IN_FIELD,
+            amount=amount,
+            trade_date=trade_date,
+            currency=currency,
+        )
 
     for position_lot in position_lots:
         group_key, group_label = _position_group_for_axis(
@@ -4695,6 +4761,68 @@ def _build_contribution_daily_events(
         gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
         fee_amount = _safe_float(transaction.get("fees")) or 0.0
         tax_amount = _safe_float(transaction.get("taxes")) or 0.0
+        settlement_cash_account_id = transaction.get("settlement_cash_account_id")
+
+        if transaction_type == "opening_balance":
+            add_flow(
+                group_key=group_key,
+                group_label=group_label,
+                field_name=GROUP_CAPITAL_FLOW_IN_FIELD,
+                amount=gross_amount + fee_amount + tax_amount if instrument_id else gross_amount,
+                trade_date=as_of_date,
+                currency=currency,
+            )
+        elif transaction_type == "deposit":
+            add_flow(
+                group_key=group_key,
+                group_label=group_label,
+                field_name=GROUP_CAPITAL_FLOW_IN_FIELD,
+                amount=gross_amount,
+                trade_date=as_of_date,
+                currency=currency,
+            )
+        elif transaction_type == "withdrawal":
+            add_flow(
+                group_key=group_key,
+                group_label=group_label,
+                field_name=GROUP_CAPITAL_FLOW_OUT_FIELD,
+                amount=gross_amount,
+                trade_date=as_of_date,
+                currency=currency,
+            )
+        elif transaction_type == "buy":
+            source_group_key, source_group_label = cash_group(settlement_cash_account_id, currency)
+            add_transfer_flow(
+                source_group_key=source_group_key,
+                source_group_label=source_group_label,
+                target_group_key=group_key,
+                target_group_label=group_label,
+                amount=gross_amount + fee_amount + tax_amount,
+                trade_date=as_of_date,
+                currency=currency,
+            )
+        elif transaction_type in {"sell", "maturity_redemption"}:
+            target_group_key, target_group_label = cash_group(settlement_cash_account_id, currency)
+            add_transfer_flow(
+                source_group_key=group_key,
+                source_group_label=group_label,
+                target_group_key=target_group_key,
+                target_group_label=target_group_label,
+                amount=max(gross_amount - fee_amount - tax_amount, 0.0),
+                trade_date=as_of_date,
+                currency=currency,
+            )
+        elif transaction_type == "return_of_capital":
+            target_group_key, target_group_label = cash_group(settlement_cash_account_id, currency)
+            if target_group_key and target_group_key != group_key:
+                add_flow(
+                    group_key=target_group_key,
+                    group_label=target_group_label,
+                    field_name=GROUP_CAPITAL_FLOW_IN_FIELD,
+                    amount=max(gross_amount - fee_amount - tax_amount, 0.0),
+                    trade_date=as_of_date,
+                    currency=currency,
+                )
 
         if transaction_type in {"dividend", "coupon", "dividend_reinvestment"}:
             if axis == "instrument" and not instrument_id:
@@ -4707,6 +4835,17 @@ def _build_contribution_daily_events(
                 trade_date=as_of_date,
                 currency=currency,
             )
+            if transaction_type in {"dividend", "coupon"}:
+                target_group_key, target_group_label = cash_group(settlement_cash_account_id, currency)
+                if target_group_key and target_group_key != group_key:
+                    add_flow(
+                        group_key=target_group_key,
+                        group_label=target_group_label,
+                        field_name=GROUP_CAPITAL_FLOW_IN_FIELD,
+                        amount=max(gross_amount - fee_amount - tax_amount, 0.0),
+                        trade_date=as_of_date,
+                        currency=currency,
+                    )
         elif transaction_type == "interest" and _axis_includes_cash_balance(axis):
             add_amount(
                 group_key=group_key,
@@ -4825,6 +4964,8 @@ def _build_contribution_slices_for_date(
         expense_cash_amount = _safe_float((current_event or {}).get("expense_cash_amount"))
         fee_amount = _safe_float((current_event or {}).get("fee_amount"))
         tax_amount = _safe_float((current_event or {}).get("tax_amount"))
+        capital_flow_in_base = _safe_float((current_event or {}).get(GROUP_CAPITAL_FLOW_IN_FIELD))
+        capital_flow_out_base = _safe_float((current_event or {}).get(GROUP_CAPITAL_FLOW_OUT_FIELD))
         cash_currency_gains = None
         instrument_currency_gains = None
         if previous_state is None:
@@ -4858,6 +4999,10 @@ def _build_contribution_slices_for_date(
             fee_amount = 0.0
         if tax_amount is None and current_event is None:
             tax_amount = 0.0
+        if capital_flow_in_base is None and current_event is None:
+            capital_flow_in_base = 0.0
+        if capital_flow_out_base is None and current_event is None:
+            capital_flow_out_base = 0.0
         if instrument_currency_gains is None and current_event is None:
             instrument_currency_gains = 0.0
         if _axis_includes_cash_balance(axis) and cash_currency_gains is None and current_event is None:
@@ -4892,14 +5037,34 @@ def _build_contribution_slices_for_date(
             or (_axis_includes_cash_balance(axis) and current_state is not None and ending_cash_balance_base is None)
             or (instrument_currency_gains is None)
             or (_axis_includes_cash_balance(axis) and cash_currency_gains is None)
+            or capital_flow_in_base is None
+            or capital_flow_out_base is None
             or total_pnl is None
         ):
             if slice_coverage_state == "complete":
                 slice_coverage_state = "partial"
 
+        implied_capital_flow_in = 0.0
+        if (
+            beginning_value_base is not None
+            and ending_value_base is not None
+            and total_pnl is not None
+        ):
+            implied_net_flow = ending_value_base - beginning_value_base - total_pnl
+            if implied_net_flow > 1e-9:
+                implied_capital_flow_in = implied_net_flow
+        period_capital_flow_in = max(capital_flow_in_base or 0.0, implied_capital_flow_in)
+        return_denominator = (
+            beginning_value_base + period_capital_flow_in
+            if beginning_value_base is not None
+            and capital_flow_in_base is not None
+            and capital_flow_out_base is not None
+            and total_pnl is not None
+            else None
+        )
         daily_return = (
-            total_pnl / beginning_value_base
-            if total_pnl is not None and beginning_value_base is not None and beginning_value_base > 1e-9
+            total_pnl / return_denominator
+            if return_denominator is not None and return_denominator > 1e-9
             else None
         )
         daily_contribution = (
@@ -4948,6 +5113,8 @@ def _build_contribution_slices_for_date(
                 "tax_amount": tax_amount,
                 "cash_currency_gains": cash_currency_gains,
                 "instrument_currency_gains": instrument_currency_gains,
+                GROUP_CAPITAL_FLOW_IN_FIELD: capital_flow_in_base,
+                GROUP_CAPITAL_FLOW_OUT_FIELD: capital_flow_out_base,
                 "total_pnl": total_pnl,
                 "daily_return": daily_return,
                 "daily_contribution": daily_contribution,

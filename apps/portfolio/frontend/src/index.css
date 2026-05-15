@@ -2554,6 +2554,22 @@ input[type='checkbox'] {
   position: relative;
 }
 
+.holdings-main-table thead th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--portfolio-table-header-background);
+  box-shadow: 1px 0 0 var(--portfolio-line);
+}
+
+.holdings-main-table tbody td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: #ffffff;
+  box-shadow: 1px 0 0 var(--portfolio-line);
+}
+
 .holdings-th-sortable:hover,
 .holdings-th-sortable-active {
   color: var(--portfolio-ink);
@@ -2628,6 +2644,10 @@ input[type='checkbox'] {
   color: var(--portfolio-ink);
 }
 
+.holdings-main-table .holdings-group-row td:first-child {
+  background: var(--portfolio-table-group-background);
+}
+
 .holdings-group-row .holdings-group-name-cell {
   color: var(--portfolio-ink);
 }
@@ -2656,6 +2676,17 @@ input[type='checkbox'] {
   border-top: 1px solid var(--portfolio-line);
   border-bottom: 1px solid var(--portfolio-line);
   background: var(--portfolio-table-group-background);
+}
+
+.holdings-main-table .holdings-noncash-row td:first-child {
+  background: var(--portfolio-table-group-background);
+}
+
+.holdings-main-table .holdings-row-active td:first-child {
+  background: var(--portfolio-accent-soft);
+  box-shadow:
+    inset 3px 0 0 var(--portfolio-accent),
+    1px 0 0 var(--portfolio-line);
 }
 
 .holdings-modal-backdrop {
