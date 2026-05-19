@@ -403,7 +403,7 @@ Holdings 可以展示 quote-derived instrument market trend 指标，作为扫�
 Holdings group rows 不是后端 period-performance group：
 
 - market value、cost basis、day change、open lots 等绝对量按组内 rows 汇总；
-- unrealized return 使用组内非现金 `unrealized P&L / cost basis`，不是成员百分比的加权平均；
+- unrealized return 使用组内非现金 `unrealized P&L / cost basis`，不是成员百分比的加权平均；`Portfolio Total` 若包含 cash row，则 cash 以 0 unrealized P&L、cash market value 作为分母的一部分稀释该比例；
 - `1W / MTD / YTD / 1Y Return` 使用 as-of date base-currency market value 权重对成员自身 return 加权；覆盖不足时为空；
 - group volatility / drawdown 用组内成员 return series 在共同 period 上组成当前权重的组 return series 后计算，包含协方差效果，不等于成员 volatility 或 drawdown 的加权平均；
 - base-currency cash 可作为 0-return 成员参与覆盖；non-base cash 使用其 FX return series；

@@ -687,10 +687,19 @@ function totalUnrealizedPct(rows: PortfolioHoldingRow[], workspace: HoldingsWork
     baseAmountForRow(row, workspace.base_currency, row.cost_basis_base, row.cost_basis),
   )
   const unrealized = totalUnrealizedBase(rows, workspace)
-  if (costBasis == null || Math.abs(costBasis) <= 1e-12 || unrealized == null) {
+  if (costBasis == null || unrealized == null) {
     return null
   }
-  return unrealized / Math.abs(costBasis)
+  const cashRows = rowsCoverWorkspace(rows, workspace) ? rows.filter((row) => isCashHoldingRow(row)) : []
+  const cashBasis = cashRows.length ? sumCompleteNumbers(cashRows, (row) => rowMarketValueBase(row, workspace)) : 0
+  if (cashBasis == null) {
+    return null
+  }
+  const denominator = costBasis + cashBasis
+  if (Math.abs(denominator) <= 1e-12) {
+    return null
+  }
+  return unrealized / Math.abs(denominator)
 }
 
 function totalMarketValueBase(rows: PortfolioHoldingRow[], workspace: HoldingsWorkspaceResponse) {

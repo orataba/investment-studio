@@ -175,12 +175,15 @@ def present_group_by_options(fields: Sequence[FieldRegistry]) -> list[dict[str, 
         field
         for field in fields
         if field.group_mode != "none"
-        and field.field_key in GROUP_BY_FIELD_ORDER_INDEX
+        and (
+            field.field_key in GROUP_BY_FIELD_ORDER_INDEX
+            or field.source_domain == "custom_attribute"
+        )
     ]
     for field in sorted(
         groupable_fields,
         key=lambda item: (
-            GROUP_BY_FIELD_ORDER_INDEX[item.field_key],
+            GROUP_BY_FIELD_ORDER_INDEX.get(item.field_key, len(GROUP_BY_FIELD_ORDER_INDEX)),
             item.label,
         ),
     ):

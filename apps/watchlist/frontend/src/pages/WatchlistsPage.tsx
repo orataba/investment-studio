@@ -27,6 +27,8 @@ import {
   getWatchlists,
   moveWatchlistItems,
   resolveSharedInstrument,
+  updateFundTaxonomy,
+  updateInstrumentAttributes,
   updateWatchlistView,
   runScreenerQuery,
 } from '../lib/api'
@@ -66,6 +68,14 @@ type WatchlistRowGroup = {
   summaryRows: Array<Record<string, unknown>>
   rowCount: number
   depth: number
+  taxonomyPath?: string[]
+}
+type GroupDropTarget = {
+  groupKey: string
+  fieldKey: string
+  value: unknown
+  taxonomyNodeId?: string | null
+  rowPatch: Record<string, unknown>
 }
 type GroupAverageCell = {
   value: number
@@ -91,6 +101,11 @@ const TAXONOMY_GROUP_FIELD_KEYS = [
   'attr.fund_taxonomy_level_4',
   'attr.fund_taxonomy_level_5',
   'attr.fund_taxonomy_level_6',
+]
+const TAXONOMY_ASSIGNMENT_FIELD_KEYS = [
+  ...TAXONOMY_GROUP_FIELD_KEYS,
+  'attr.fund_taxonomy_path',
+  'attr.fund_taxonomy_leaf',
 ]
 const TAXONOMY_GROUP_DEPTH_INDENT_PX = 18
 const TAXONOMY_GROUP_LABEL_OFFSET_PX = 26
@@ -236,6 +251,28 @@ function taxonomyPathFromRow(row: Record<string, unknown>) {
     path.push(String(value))
   }
   return path
+}
+
+function taxonomyRowPatch(path: string[]) {
+  const patch: Record<string, unknown> = {}
+  TAXONOMY_GROUP_FIELD_KEYS.forEach((fieldKey, index) => {
+    patch[fieldKey] = path[index] || null
+  })
+  patch['attr.fund_taxonomy_path'] = path.length ? taxonomyPathKey(path) : null
+  patch['attr.fund_taxonomy_leaf'] = path[path.length - 1] || null
+  return patch
+}
+
+function rowHasPatchValues(row: Record<string, unknown>, patch: Record<string, unknown>) {
+  let compared = false
+  const matchesLoadedValues = Object.entries(patch).every(([fieldKey, value]) => {
+    if (!Object.prototype.hasOwnProperty.call(row, fieldKey)) {
+      return true
+    }
+    compared = true
+    return row[fieldKey] === value
+  })
+  return compared && matchesLoadedValues
 }
 
 function removeTaxonomyFilters(filters: FilterState) {
@@ -717,6 +754,9 @@ export default function WatchlistsPage() {
   const [error, setError] = useState<string | null>(null)
   const [sparklineMap, setSparklineMap] = useState<Record<string, SparklineCacheEntry>>({})
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(new Set())
+  const [draggingInstrumentId, setDraggingInstrumentId] = useState<string | null>(null)
+  const [groupDropTargetKey, setGroupDropTargetKey] = useState<string | null>(null)
+  const [updatingGroupInstrumentId, setUpdatingGroupInstrumentId] = useState<string | null>(null)
   const [reloadToken, setReloadToken] = useState(0)
   const filterMenuRef = useRef<HTMLDivElement | null>(null)
   const groupMenuRef = useRef<HTMLDivElement | null>(null)
@@ -738,7 +778,7 @@ export default function WatchlistsPage() {
 
     const requestedFields = workingColumns.length ? [...workingColumns] : [primaryDisplayColumn]
     if (workingGroupBy === TAXONOMY_GROUP_BY_CODE) {
-      TAXONOMY_GROUP_FIELD_KEYS.forEach((fieldKey) => {
+      TAXONOMY_ASSIGNMENT_FIELD_KEYS.forEach((fieldKey) => {
         if (!requestedFields.includes(fieldKey)) {
           requestedFields.push(fieldKey)
         }
@@ -1260,8 +1300,16 @@ export default function WatchlistsPage() {
     return map
   }, [taxonomyNodesByParent])
   const ensureRequiredColumns = (columns: string[]) => {
-    const rest = columns.filter((field) => !requiredColumns.includes(field))
-    return [...requiredColumns, ...rest]
+    const seen = new Set<string>()
+    const normalized: string[] = []
+    ;[...requiredColumns, ...columns].forEach((field) => {
+      if (!field || seen.has(field)) {
+        return
+      }
+      seen.add(field)
+      normalized.push(field)
+    })
+    return normalized
   }
   function viewColumnWidths(view: WatchlistView | null) {
     const nextWidths: Record<string, number> = {}
@@ -1301,7 +1349,7 @@ export default function WatchlistsPage() {
     })
     return map
   }, [mergedFieldRegistry])
-  const visibleColumns = workingColumns.length ? workingColumns : [primaryDisplayColumn]
+  const visibleColumns = ensureRequiredColumns(workingColumns.length ? workingColumns : [primaryDisplayColumn])
   const baseColumns = activeView?.columns || []
   const baseGroupBy = activeView?.default_group_by || 'none'
   const baseSort = activeView?.default_sort || []
@@ -1349,6 +1397,20 @@ export default function WatchlistsPage() {
   const displayColumnWidths = compactWatchlistColumns.widths
   const watchlistTableMinWidth = compactWatchlistColumns.totalWidth
   const activeGroupBy = workingGroupBy && workingGroupBy !== 'none' ? workingGroupBy : null
+  const activeGroupField = activeGroupBy ? fieldByKey.get(activeGroupBy) || null : null
+  const activeAttributeGroupDefinition = activeGroupBy?.startsWith('attr.')
+    ? activeGroupField?.source_domain === 'custom_attribute'
+      ? activeGroupBy.slice(5)
+      : ''
+    : ''
+  const activeGroupIsWritableAttribute =
+    Boolean(activeAttributeGroupDefinition) &&
+    activeGroupField?.group_mode === 'discrete' &&
+    ['single_select', 'text', 'string'].includes(activeGroupField?.data_type || '')
+  const activeGroupIsWritableTaxonomy =
+    activeGroupBy === TAXONOMY_GROUP_BY_CODE ||
+    (activeGroupBy === 'attr.fund_taxonomy_path' && activeGroupField?.source_domain === 'taxonomy')
+  const activeGroupSupportsDrop = activeGroupIsWritableAttribute || activeGroupIsWritableTaxonomy
   const sortField = sortRules[0]?.field || null
   const sortDirection = sortRules[0]?.direction || 'asc'
 
@@ -1395,6 +1457,166 @@ export default function WatchlistsPage() {
     setColumnDropTarget('')
   }
 
+  function buildGroupDropTarget(group: WatchlistRowGroup): GroupDropTarget | null {
+    if (!activeGroupBy || !activeGroupSupportsDrop) {
+      return null
+    }
+
+    if (activeGroupIsWritableTaxonomy) {
+      const path =
+        group.taxonomyPath ||
+        (group.key && group.key !== 'Unspecified'
+          ? group.key.replace(/::direct$/, '').split(' / ').filter(Boolean)
+          : [])
+      if (!path.length) {
+        return {
+          groupKey: group.key,
+          fieldKey: TAXONOMY_GROUP_BY_CODE,
+          value: null,
+          taxonomyNodeId: null,
+          rowPatch: taxonomyRowPatch([]),
+        }
+      }
+      const node = taxonomyNodeByPath.get(taxonomyPathKey(path))
+      if (!node) {
+        return null
+      }
+      return {
+        groupKey: group.key,
+        fieldKey: TAXONOMY_GROUP_BY_CODE,
+        value: node.label,
+        taxonomyNodeId: node.node_id,
+        rowPatch: taxonomyRowPatch(node.path_labels),
+      }
+    }
+
+    if (!activeGroupIsWritableAttribute || !activeGroupBy || !activeAttributeGroupDefinition) {
+      return null
+    }
+
+    const value = group.key === 'Unspecified' ? null : group.key
+    return {
+      groupKey: group.key,
+      fieldKey: activeGroupBy,
+      value,
+      rowPatch: { [activeGroupBy]: value },
+    }
+  }
+
+  function patchScreenerRow(instrumentId: string, patch: Record<string, unknown>) {
+    setScreenerResult((current) =>
+      current
+        ? {
+            ...current,
+            rows: current.rows.map((row) =>
+              String(row.instrument_id) === instrumentId
+                ? { ...row, ...patch }
+                : row,
+            ),
+          }
+        : current,
+    )
+  }
+
+  function handleInstrumentDragStart(
+    event: React.DragEvent<HTMLTableRowElement>,
+    instrumentId: string,
+  ) {
+    const target = event.target as HTMLElement | null
+    if (target?.closest('a, button, input, select, textarea')) {
+      event.preventDefault()
+      return
+    }
+    if (!activeGroupSupportsDrop || updatingGroupInstrumentId) {
+      event.preventDefault()
+      return
+    }
+    event.dataTransfer.setData('text/plain', instrumentId)
+    event.dataTransfer.setData('application/x-yungu-instrument-id', instrumentId)
+    event.dataTransfer.effectAllowed = 'move'
+    setDraggingInstrumentId(instrumentId)
+  }
+
+  function handleInstrumentDragEnd() {
+    setDraggingInstrumentId(null)
+    setGroupDropTargetKey(null)
+  }
+
+  function handleGroupDragOver(
+    event: React.DragEvent<HTMLTableRowElement>,
+    target: GroupDropTarget | null,
+  ) {
+    if (!target || updatingGroupInstrumentId) {
+      return
+    }
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    setGroupDropTargetKey(target.groupKey)
+  }
+
+  async function handleGroupDrop(
+    event: React.DragEvent<HTMLTableRowElement>,
+    target: GroupDropTarget | null,
+  ) {
+    event.preventDefault()
+    setGroupDropTargetKey(null)
+    const instrumentId =
+      event.dataTransfer.getData('application/x-yungu-instrument-id') ||
+      event.dataTransfer.getData('text/plain') ||
+      draggingInstrumentId ||
+      ''
+    if (!target || !instrumentId || updatingGroupInstrumentId) {
+      return
+    }
+
+    const currentRow = screenerResult?.rows.find((row) => String(row.instrument_id) === instrumentId)
+    if (!currentRow) {
+      return
+    }
+    if (rowHasPatchValues(currentRow, target.rowPatch)) {
+      setDraggingInstrumentId(null)
+      return
+    }
+
+    const previousPatch = Object.fromEntries(
+      Object.keys(target.rowPatch).map((fieldKey) => [fieldKey, currentRow[fieldKey]]),
+    )
+    setUpdatingGroupInstrumentId(instrumentId)
+    setError(null)
+    setNotice(null)
+    patchScreenerRow(instrumentId, target.rowPatch)
+
+    try {
+      if (target.fieldKey === TAXONOMY_GROUP_BY_CODE) {
+        await updateFundTaxonomy(instrumentId, {
+          node_id: target.taxonomyNodeId || null,
+          updated_by: 'watchlist_group_drag',
+        })
+      } else {
+        await updateInstrumentAttributes(instrumentId, {
+          values: [
+            {
+              attribute_key: activeAttributeGroupDefinition,
+              value: target.value,
+            },
+          ],
+        })
+      }
+      setReloadToken(Date.now())
+      setViewToast({
+        id: Date.now(),
+        message: `Moved ${String(currentRow.instrument_name || instrumentId)} to ${target.value || 'Unspecified'}.`,
+        tone: 'success',
+      })
+    } catch (dropError) {
+      patchScreenerRow(instrumentId, previousPatch)
+      setError(dropError instanceof Error ? dropError.message : 'Failed to update group assignment.')
+    } finally {
+      setUpdatingGroupInstrumentId(null)
+      setDraggingInstrumentId(null)
+    }
+  }
+
   useEffect(() => {
     setCollapsedGroupKeys(new Set())
   }, [activeGroupBy, screenerCriteriaKey])
@@ -1435,6 +1657,9 @@ export default function WatchlistsPage() {
   }, [availableCategoryList, selectedFieldCategory])
 
   const filteredFieldRegistry = scopedFieldRegistry.filter((field) => {
+    if (requiredColumns.includes(field.field_key)) {
+      return false
+    }
     const matchesCategory = !selectedFieldCategory || field.category_code === selectedFieldCategory
     const matchesSearch =
       !fieldSearch.trim() ||
@@ -1674,6 +1899,7 @@ export default function WatchlistsPage() {
             summaryRows: node.summaryRows,
             rowCount: node.rowCount,
             depth: node.depth,
+            taxonomyPath: node.key === 'Unspecified' ? [] : node.key.split(' / '),
           })
           visit([...node.children.values()])
           if (node.children.size && node.rows.length) {
@@ -1684,6 +1910,7 @@ export default function WatchlistsPage() {
               summaryRows: node.rows,
               rowCount: node.rows.length,
               depth: node.depth + 1,
+              taxonomyPath: node.key === 'Unspecified' ? [] : node.key.split(' / '),
             })
           }
         })
@@ -2222,7 +2449,7 @@ export default function WatchlistsPage() {
               type="button"
               className="watchlists-toolbar-button"
               onClick={() => {
-                setColumnDraft(visibleColumns)
+                setColumnDraft(ensureRequiredColumns(visibleColumns))
                 setModalKind('columns')
                 setFilterMenuOpen(false)
                 setGroupMenuOpen(false)
@@ -2610,10 +2837,25 @@ export default function WatchlistsPage() {
               {screenerResult?.rows.length ? (
                 visibleGroupedRows.map((group, groupIndex) => {
                   const collapsed = collapsedGroupKeys.has(group.key)
+                  const groupDropTarget = buildGroupDropTarget(group)
+                  const groupCanDrop = Boolean(groupDropTarget)
                   return (
                     <React.Fragment key={group.key || `group-${groupIndex}`}>
                       {activeGroupBy ? (
-                        <tr className="watchlists-group-row">
+                        <tr
+                          className={[
+                            'watchlists-group-row',
+                            groupCanDrop ? 'watchlists-group-row-droppable' : '',
+                            groupDropTargetKey === group.key ? 'watchlists-group-row-drop-target' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ')}
+                          onDragOver={(event) => handleGroupDragOver(event, groupDropTarget)}
+                          onDragLeave={() =>
+                            setGroupDropTargetKey((current) => (current === group.key ? null : current))
+                          }
+                          onDrop={(event) => void handleGroupDrop(event, groupDropTarget)}
+                        >
                           <td className="watchlists-select-col watchlists-group-spacer" aria-hidden="true" />
                           {visibleColumns.map((column, columnIndex) => {
                             if (columnIndex === 0) {
@@ -2687,7 +2929,19 @@ export default function WatchlistsPage() {
                         const instrumentId = String(row.instrument_id || `row-${index}`)
                         const checked = selectedRows.includes(instrumentId)
                         return (
-                          <tr key={instrumentId}>
+                          <tr
+                            key={instrumentId}
+                            className={[
+                              activeGroupSupportsDrop ? 'watchlists-row-draggable' : '',
+                              draggingInstrumentId === instrumentId ? 'watchlists-row-dragging' : '',
+                              updatingGroupInstrumentId === instrumentId ? 'watchlists-row-updating' : '',
+                            ]
+                              .filter(Boolean)
+                              .join(' ')}
+                            draggable={activeGroupSupportsDrop && !updatingGroupInstrumentId}
+                            onDragStart={(event) => handleInstrumentDragStart(event, instrumentId)}
+                            onDragEnd={handleInstrumentDragEnd}
+                          >
                             <td className="watchlists-select-col">
                               <input
                                 type="checkbox"
@@ -2803,13 +3057,11 @@ export default function WatchlistsPage() {
               <div className="watchlists-modal-fields">
                 {filteredFieldRegistry.map((field) => {
                   const checked = columnDraft.includes(field.field_key)
-                  const locked = requiredColumns.includes(field.field_key)
                   return (
                     <label key={field.field_key} className="watchlists-field-item">
                       <input
                         type="checkbox"
                         checked={checked}
-                        disabled={locked}
                         onChange={(event) =>
                           setColumnDraft((current) =>
                             event.target.checked
@@ -2822,7 +3074,6 @@ export default function WatchlistsPage() {
                         <div className="watchlists-field-label">{field.label}</div>
                         <div className="watchlists-field-meta">
                           {field.field_key}
-                          {locked ? ' · required' : ''}
                         </div>
                       </div>
                     </label>
@@ -2836,7 +3087,7 @@ export default function WatchlistsPage() {
               <button
                 type="button"
                 onClick={() => {
-                  setColumnDraft(visibleColumns)
+                  setColumnDraft(ensureRequiredColumns(visibleColumns))
                   setModalKind(null)
                 }}
               >
@@ -2846,7 +3097,7 @@ export default function WatchlistsPage() {
                 type="button"
                 className="button-primary"
                 onClick={() => {
-                  setWorkingColumns(columnDraft.length ? columnDraft : [primaryDisplayColumn])
+                  setWorkingColumns(ensureRequiredColumns(columnDraft.length ? columnDraft : [primaryDisplayColumn]))
                   setModalKind(null)
                   setViewToast({ id: Date.now(), message: 'Columns updated. Save the view to keep changes.', tone: 'info' })
                 }}

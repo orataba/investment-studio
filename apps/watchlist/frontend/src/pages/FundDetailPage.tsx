@@ -1786,6 +1786,22 @@ function getPlotXFromRatio(geometry: ChartGeometry, xRatio: number, inset = CHAR
   return plotBounds.left + plotBounds.width * Math.min(Math.max(xRatio, 0), 1)
 }
 
+function findNearestPositionedPointIndex(points: Array<FundChartPoint & { x: number }>, targetX: number) {
+  if (!points.length) {
+    return -1
+  }
+  let nearestIndex = 0
+  let nearestDistance = Math.abs(points[0].x - targetX)
+  for (let index = 1; index < points.length; index += 1) {
+    const distance = Math.abs(points[index].x - targetX)
+    if (distance < nearestDistance) {
+      nearestIndex = index
+      nearestDistance = distance
+    }
+  }
+  return nearestIndex
+}
+
 function applyChartScale(points: FundChartPoint[], scale: ChartScale) {
   if (!points.length) {
     return []
@@ -1898,40 +1914,6 @@ function filterSeriesByDateWindow(
   })
 }
 
-function getSeriesDateWindow(points: FundChartPoint[]) {
-  if (!points.length) {
-    return null
-  }
-  const sortedPoints = sortSeriesByDate(points)
-  return {
-    start: sortedPoints[0].date,
-    end: sortedPoints[sortedPoints.length - 1].date,
-  }
-}
-
-function getOverlappingDateWindow(leftPoints: FundChartPoint[], rightPoints: FundChartPoint[]) {
-  const leftWindow = getSeriesDateWindow(leftPoints)
-  const rightWindow = getSeriesDateWindow(rightPoints)
-  if (!leftWindow || !rightWindow) {
-    return null
-  }
-
-  const start = leftWindow.start > rightWindow.start ? leftWindow.start : rightWindow.start
-  const end = leftWindow.end < rightWindow.end ? leftWindow.end : rightWindow.end
-
-  if (start >= end) {
-    return null
-  }
-
-  const leftOverlapCount = filterSeriesByDateWindow(leftPoints, start, end).length
-  const rightOverlapCount = filterSeriesByDateWindow(rightPoints, start, end).length
-  if (leftOverlapCount < 2 || rightOverlapCount < 2) {
-    return null
-  }
-
-  return { start, end }
-}
-
 function getMonthBucket(value: string) {
   return value.slice(0, 7)
 }
@@ -1962,6 +1944,165 @@ function rebaseSeries(points: FundChartPoint[], baseValue = 100) {
     date: point.date,
     value: (point.value / startingValue) * baseValue,
   }))
+}
+
+function buildCommonDateWindow(leftPoints: FundChartPoint[], rightPoints: FundChartPoint[]) {
+  if (!leftPoints.length || !rightPoints.length) {
+    return null
+  }
+
+  const sortedLeft = sortSeriesByDate(leftPoints)
+  const sortedRight = sortSeriesByDate(rightPoints)
+  const start = sortedLeft[0].date > sortedRight[0].date ? sortedLeft[0].date : sortedRight[0].date
+  const end =
+    sortedLeft[sortedLeft.length - 1].date < sortedRight[sortedRight.length - 1].date
+      ? sortedLeft[sortedLeft.length - 1].date
+      : sortedRight[sortedRight.length - 1].date
+
+  if (start > end) {
+    return null
+  }
+
+  return { start, end }
+}
+
+function buildCommonWindowSeries(
+  points: FundChartPoint[],
+  commonWindow: { start: string; end: string } | null,
+) {
+  if (!commonWindow) {
+    return []
+  }
+
+  const sortedPoints = sortSeriesByDate(points)
+  if (!sortedPoints.length) {
+    return []
+  }
+
+  const startIndex = findLastPointIndexOnOrBefore(sortedPoints, commonWindow.start)
+  const firstInWindowIndex = sortedPoints.findIndex((point) => point.date >= commonWindow.start)
+  const anchorPoint =
+    startIndex >= 0
+      ? sortedPoints[startIndex]
+      : firstInWindowIndex >= 0
+        ? sortedPoints[firstInWindowIndex]
+        : null
+  if (!anchorPoint || anchorPoint.date > commonWindow.end) {
+    return []
+  }
+
+  const windowPoints: FundChartPoint[] = [
+    {
+      date: commonWindow.start,
+      value: anchorPoint.value,
+    },
+  ]
+
+  sortedPoints.forEach((point) => {
+    if (point.date <= commonWindow.start || point.date > commonWindow.end) {
+      return
+    }
+    windowPoints.push(point)
+  })
+
+  const lastPoint = windowPoints[windowPoints.length - 1]
+  if (lastPoint && lastPoint.date < commonWindow.end) {
+    windowPoints.push({
+      date: commonWindow.end,
+      value: lastPoint.value,
+    })
+  }
+
+  return windowPoints
+}
+
+function buildCommonRebasedSeries(
+  points: FundChartPoint[],
+  commonWindow: { start: string; end: string } | null,
+  baseValue = 1,
+) {
+  const windowPoints = buildCommonWindowSeries(points, commonWindow)
+  return rebaseSeries(windowPoints, baseValue)
+}
+
+function getRangeWindowWithinDateWindow(
+  dateWindow: { start: string; end: string },
+  range: ChartRange,
+) {
+  if (range === 'MAX') {
+    return dateWindow
+  }
+
+  const end = dateWindow.end
+  const start =
+    range === 'YTD'
+      ? `${end.slice(0, 4)}-01-01`
+      : range === '1M'
+        ? shiftIsoDate(end, { months: -1 })
+        : range === '3M'
+          ? shiftIsoDate(end, { months: -3 })
+          : range === '6M'
+            ? shiftIsoDate(end, { months: -6 })
+            : range === '1Y'
+              ? shiftIsoDate(end, { years: -1 })
+              : range === '3Y'
+                ? shiftIsoDate(end, { years: -3 })
+                : range === '5Y'
+                  ? shiftIsoDate(end, { years: -5 })
+                  : range === '10Y'
+                    ? shiftIsoDate(end, { years: -10 })
+                    : dateWindow.start
+
+  return {
+    start: start && start > dateWindow.start ? start : dateWindow.start,
+    end,
+  }
+}
+
+function resolveCommonChartWindow(
+  commonWindow: { start: string; end: string } | null,
+  range: ChartRange,
+  customStartDate: string,
+  customEndDate: string,
+) {
+  if (!commonWindow) {
+    return null
+  }
+
+  const resolvedWindow =
+    range === 'CUSTOM'
+      ? {
+          start: customStartDate && customStartDate > commonWindow.start ? customStartDate : commonWindow.start,
+          end: customEndDate && customEndDate < commonWindow.end ? customEndDate : commonWindow.end,
+        }
+      : getRangeWindowWithinDateWindow(commonWindow, range)
+
+  return resolvedWindow.start <= resolvedWindow.end ? resolvedWindow : null
+}
+
+function resampleSeriesPreservingBounds(points: FundChartPoint[], frequency: ChartFrequency) {
+  if (frequency === 'daily' || points.length < 2) {
+    return points
+  }
+
+  const sampledPoints = resampleSeries(points, frequency)
+  const firstPoint = points[0]
+  const lastPoint = points[points.length - 1]
+  const pointMap = new Map(sampledPoints.map((point) => [point.date, point] as const))
+  pointMap.set(firstPoint.date, firstPoint)
+  pointMap.set(lastPoint.date, lastPoint)
+  return sortSeriesByDate(Array.from(pointMap.values()))
+}
+
+function getPointAtDate<T extends FundChartPoint>(points: T[], targetDate: string | undefined) {
+  if (!targetDate) {
+    return null
+  }
+  return points.find((point) => point.date === targetDate) || null
+}
+
+function getPointAtOrNearestDate(points: FundChartPoint[], targetDate: string | undefined) {
+  return getPointAtDate(points, targetDate) || findNearestChartPoint(points, targetDate)
 }
 
 function buildMonthlyReturnSeries(points: FundChartPoint[]) {
@@ -3039,6 +3180,27 @@ function getChartAxisTicks(points: FundChartPoint[], count = 7): ChartAxisTick[]
   })
 }
 
+function getChartAxisTicksForWindow(
+  startDate: string | null | undefined,
+  endDate: string | null | undefined,
+  count = 7,
+): ChartAxisTick[] {
+  const start = startDate ? parseChartDateParts(startDate) : null
+  const end = endDate ? parseChartDateParts(endDate) : null
+  if (!start || !end || end.time <= start.time) {
+    return []
+  }
+  const spanDays = Math.max(1, Math.round((end.time - start.time) / 86_400_000))
+  const targetCount = Math.min(Math.max(count, 2), spanDays + 1)
+  return Array.from({ length: targetCount }, (_, index) => {
+    const xRatio = index / Math.max(targetCount - 1, 1)
+    return {
+      date: formatUtcChartDate(start.time + (end.time - start.time) * xRatio),
+      xRatio,
+    }
+  })
+}
+
 function buildChartBands(
   points: FundChartPoint[],
   geometry: ChartGeometry = PRIMARY_CHART_GEOMETRY,
@@ -3060,23 +3222,6 @@ function buildChartBands(
   }).filter((band): band is { x: number; width: number } => band !== null)
 }
 
-function projectChartPoint(
-  point: FundChartPoint,
-  points: FundChartPoint[],
-  min: number,
-  max: number,
-  geometry: ChartGeometry = PRIMARY_CHART_GEOMETRY,
-) {
-  const { width, height, paddingLeft, paddingRight, paddingTop, paddingBottom } = geometry
-  const range = max - min || 1
-  const index = points.findIndex((item) => item.date === point.date)
-  const x =
-    paddingLeft +
-    (Math.max(index, 0) / Math.max(points.length - 1, 1)) * (width - paddingLeft - paddingRight)
-  const y = projectChartValue(point.value, min, max, geometry)
-  return { x, y }
-}
-
 function projectChartValue(
   value: number,
   min: number,
@@ -3090,18 +3235,6 @@ function projectChartValue(
     paddingBottom -
     ((value - min) / range) * (height - paddingTop - paddingBottom)
   return y
-}
-
-function buildPositionedPoints(
-  points: FundChartPoint[],
-  min: number,
-  max: number,
-  geometry: ChartGeometry = PRIMARY_CHART_GEOMETRY,
-) {
-  return points.map((point) => ({
-    ...point,
-    ...projectChartPoint(point, points, min, max, geometry),
-  }))
 }
 
 function buildDateScaledPositionedPoints(
@@ -3137,44 +3270,6 @@ function findNearestChartPoint(points: FundChartPoint[], targetDate: string | un
     const closestDistance = Math.abs(new Date(`${closest.date}T00:00:00`).getTime() - targetTime)
     return pointDistance < closestDistance ? point : closest
   }, null)
-}
-
-function findNearestPointIndexByDateRatio(
-  points: FundChartPoint[],
-  xRatio: number,
-  startDate: string | null | undefined,
-  endDate: string | null | undefined,
-) {
-  if (!points.length) {
-    return -1
-  }
-
-  const domain = getDateScaleDomain(points, startDate, endDate)
-  if (!domain) {
-    return Math.min(
-      Math.max(Math.round(Math.min(Math.max(xRatio, 0), 1) * (points.length - 1)), 0),
-      points.length - 1,
-    )
-  }
-
-  const targetTime =
-    domain.startTime + (domain.endTime - domain.startTime) * Math.min(Math.max(xRatio, 0), 1)
-  let nearestIndex = 0
-  let nearestDistance = Number.POSITIVE_INFINITY
-
-  points.forEach((point, index) => {
-    const parsed = parseChartDateParts(point.date)
-    if (!parsed) {
-      return
-    }
-    const distance = Math.abs(parsed.time - targetTime)
-    if (distance < nearestDistance) {
-      nearestDistance = distance
-      nearestIndex = index
-    }
-  })
-
-  return nearestIndex
 }
 
 function renderStackRows(items: Record<string, unknown>) {
@@ -4365,10 +4460,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const zoomSelectionLeftPct = zoomMaxIndex > 0 ? (zoomStartIndex / zoomMaxIndex) * 100 : 0
   const zoomSelectionRightPct =
     zoomMaxIndex > 0 ? ((zoomMaxIndex - zoomEndIndex) / zoomMaxIndex) * 100 : 0
-  const rawVisibleNavSeries = resampleSeries(
-    filterSeriesByDateWindow(navBasisSeries, effectiveStartDate, effectiveEndDate),
-    chartFrequency,
-  )
   const benchmarkRowsByCurrency =
     getRowsForCurrency(benchmarkNavSeries?.rows || [], effectiveCurrency)
   const benchmarkSourceRows = benchmarkRowsByCurrency.length > 0 ? benchmarkRowsByCurrency : benchmarkNavSeries?.rows || []
@@ -4377,44 +4468,62 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     ? activeQuoteBasis
     : benchmarkAvailableBases[0] || null
   const benchmarkNavBasisSeries = activeBenchmarkBasis ? buildBasisSeries(benchmarkSourceRows, activeBenchmarkBasis) : []
-  const rawBenchmarkVisibleNavSeries = resampleSeries(
-    filterSeriesByDateWindow(benchmarkNavBasisSeries, effectiveStartDate, effectiveEndDate),
-    chartFrequency,
-  )
   const benchmarkCalculationSeries = benchmarkNavSeries
     ? buildCalculationPointSeries(benchmarkNavSeries.calculation_series)
     : []
-  const benchmarkComparisonWindow = selectedBenchmark
-    ? getOverlappingDateWindow(rawVisibleNavSeries, rawBenchmarkVisibleNavSeries)
+  const hasBenchmarkSelection = Boolean(selectedBenchmark)
+  const rawCompareDateWindow = hasBenchmarkSelection
+    ? buildCommonDateWindow(navBasisSeries, benchmarkNavBasisSeries)
     : null
-  const visibleNavSeries = benchmarkComparisonWindow
-    ? filterSeriesByDateWindow(
-        rawVisibleNavSeries,
-        benchmarkComparisonWindow.start,
-        benchmarkComparisonWindow.end,
-      )
-    : rawVisibleNavSeries
-  const benchmarkVisibleNavSeries = benchmarkComparisonWindow
-    ? filterSeriesByDateWindow(
-        rawBenchmarkVisibleNavSeries,
-        benchmarkComparisonWindow.start,
-        benchmarkComparisonWindow.end,
-      )
-    : rawBenchmarkVisibleNavSeries
+  const compareDateWindow = hasBenchmarkSelection
+    ? resolveCommonChartWindow(rawCompareDateWindow, chartRange, chartStartDate, chartEndDate)
+    : null
+  const rawCommonNavSeries = compareDateWindow ? buildCommonWindowSeries(navBasisSeries, compareDateWindow) : []
+  const rawCommonBenchmarkSeries = compareDateWindow
+    ? buildCommonWindowSeries(benchmarkNavBasisSeries, compareDateWindow)
+    : []
   const shouldIndexCompareSeries = Boolean(
-    selectedBenchmark && visibleNavSeries.length > 1 && benchmarkVisibleNavSeries.length > 1,
+    hasBenchmarkSelection &&
+      compareDateWindow &&
+      rawCommonNavSeries.length > 1 &&
+      rawCommonBenchmarkSeries.length > 1,
   )
-  const indexedNavSeries = shouldIndexCompareSeries ? rebaseSeries(visibleNavSeries, 1) : []
-  const indexedBenchmarkSeries = shouldIndexCompareSeries ? rebaseSeries(benchmarkVisibleNavSeries, 1) : []
+  const visibleNavSeries = shouldIndexCompareSeries
+    ? resampleSeriesPreservingBounds(rawCommonNavSeries, chartFrequency)
+    : resampleSeries(
+        filterSeriesByDateWindow(navBasisSeries, effectiveStartDate, effectiveEndDate),
+        chartFrequency,
+      )
+  const benchmarkVisibleNavSeries = shouldIndexCompareSeries
+    ? resampleSeriesPreservingBounds(rawCommonBenchmarkSeries, chartFrequency)
+    : []
+  const indexedNavSeries = shouldIndexCompareSeries
+    ? buildCommonRebasedSeries(visibleNavSeries, compareDateWindow, 1)
+    : []
+  const indexedBenchmarkSeries = shouldIndexCompareSeries
+    ? buildCommonRebasedSeries(benchmarkVisibleNavSeries, compareDateWindow, 1)
+    : []
   const chartNavSeries =
     shouldIndexCompareSeries && indexedNavSeries.length ? indexedNavSeries : visibleNavSeries
   const chartBenchmarkSeries = shouldIndexCompareSeries
     ? indexedBenchmarkSeries
     : []
-  const drawdownSeries = buildDrawdownSeries(visibleNavSeries)
-  const benchmarkDrawdownSeries = shouldIndexCompareSeries
-    ? buildDrawdownSeries(benchmarkVisibleNavSeries)
-    : []
+  const chartDateWindow = shouldIndexCompareSeries && compareDateWindow
+    ? compareDateWindow
+    : {
+        start: visibleNavSeries[0]?.date || effectiveStartDate,
+        end: visibleNavSeries[visibleNavSeries.length - 1]?.date || effectiveEndDate,
+      }
+  const drawdownSourceSeries =
+    shouldIndexCompareSeries && compareDateWindow
+      ? buildCommonWindowSeries(visibleNavSeries, compareDateWindow)
+      : visibleNavSeries
+  const benchmarkDrawdownSourceSeries =
+    shouldIndexCompareSeries && compareDateWindow
+      ? buildCommonWindowSeries(benchmarkVisibleNavSeries, compareDateWindow)
+      : benchmarkVisibleNavSeries
+  const drawdownSeries = buildDrawdownSeries(drawdownSourceSeries)
+  const benchmarkDrawdownSeries = buildDrawdownSeries(benchmarkDrawdownSourceSeries)
   const latestPoint = visibleNavSeries.length ? visibleNavSeries[visibleNavSeries.length - 1] : undefined
   const periodLow =
     visibleNavSeries.length > 0 ? Math.min(...visibleNavSeries.map((point) => point.value)) : null
@@ -4845,12 +4954,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const scaledVisibleSeries = applyChartScale(chartNavSeries, effectiveChartScale)
   const scaledBenchmarkVisibleSeries = applyChartScale(chartBenchmarkSeries, effectiveChartScale)
   const combinedScaledSeries = [...scaledVisibleSeries, ...scaledBenchmarkVisibleSeries]
-  const chartAxisSeries = sortSeriesByDate([...chartNavSeries, ...chartBenchmarkSeries])
-  const chartDateWindow = getSeriesDateWindow(chartAxisSeries)
-  const chartDateStart = chartDateWindow?.start || null
-  const chartDateEnd = chartDateWindow?.end || null
-  const chartTickDates = getChartAxisTicks(chartAxisSeries.length ? chartAxisSeries : chartNavSeries, 8)
-  const chartTickSpanDays = getChartDateSpanDays(chartAxisSeries.length ? chartAxisSeries : chartNavSeries)
+  const chartWindowTickDates = getChartAxisTicksForWindow(chartDateWindow.start, chartDateWindow.end, 8)
+  const chartTickDates =
+    chartWindowTickDates.length ? chartWindowTickDates : getChartAxisTicks(chartNavSeries, 8)
+  const chartTickSpanDays = getDateDifferenceInDays(chartDateWindow.start, chartDateWindow.end) ?? getChartDateSpanDays(chartNavSeries)
   const chartBands = buildChartBands(chartNavSeries, PRIMARY_CHART_GEOMETRY, 10)
   const rawChartMin = combinedScaledSeries.length ? Math.min(...combinedScaledSeries.map((point) => point.value)) : 0
   const rawChartMax = combinedScaledSeries.length ? Math.max(...combinedScaledSeries.map((point) => point.value)) : 1
@@ -4862,16 +4969,16 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     PRIMARY_CHART_GEOMETRY,
     chartMin,
     chartMax,
-    chartDateStart,
-    chartDateEnd,
+    chartDateWindow.start,
+    chartDateWindow.end,
   )
   const benchmarkChartLinePath = buildDateScaledLinePath(
     scaledBenchmarkVisibleSeries,
     PRIMARY_CHART_GEOMETRY,
     chartMin,
     chartMax,
-    chartDateStart,
-    chartDateEnd,
+    chartDateWindow.start,
+    chartDateWindow.end,
   )
   const chartAreaPath =
     chartDisplayStyle === 'mountain'
@@ -4880,8 +4987,8 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           PRIMARY_CHART_GEOMETRY,
           chartMin,
           chartMax,
-          chartDateStart,
-          chartDateEnd,
+          chartDateWindow.start,
+          chartDateWindow.end,
         )
       : ''
   const chartTickValues =
@@ -4889,9 +4996,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       ? getLogTickValuesFromBounds(chartMin, chartMax, 5)
       : getLinearTickValues(chartMin, chartMax, 5)
   const combinedDrawdownSeries = [...drawdownSeries, ...benchmarkDrawdownSeries]
-  const drawdownDateWindow = getSeriesDateWindow(combinedDrawdownSeries)
-  const drawdownDateStart = drawdownDateWindow?.start || chartDateStart
-  const drawdownDateEnd = drawdownDateWindow?.end || chartDateEnd
   const drawdownBounds = getDrawdownAxisBounds(combinedDrawdownSeries)
   const drawdownBands = buildChartBands(drawdownSeries, DRAWDOWN_CHART_GEOMETRY, 10)
   const drawdownMin = drawdownBounds.min
@@ -4905,24 +5009,24 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     DRAWDOWN_CHART_GEOMETRY,
     drawdownMin,
     drawdownMax,
-    drawdownDateStart,
-    drawdownDateEnd,
+    chartDateWindow.start,
+    chartDateWindow.end,
   )
   const benchmarkDrawdownLinePath = buildDateScaledLinePath(
     benchmarkDrawdownSeries,
     DRAWDOWN_CHART_GEOMETRY,
     drawdownMin,
     drawdownMax,
-    drawdownDateStart,
-    drawdownDateEnd,
+    chartDateWindow.start,
+    chartDateWindow.end,
   )
   const drawdownAreaPath = buildDateScaledAreaPath(
     drawdownSeries,
     DRAWDOWN_CHART_GEOMETRY,
     drawdownMin,
     drawdownMax,
-    drawdownDateStart,
-    drawdownDateEnd,
+    chartDateWindow.start,
+    chartDateWindow.end,
     0,
   )
   const positionedChartPoints = buildDateScaledPositionedPoints(
@@ -4930,32 +5034,32 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     chartMin,
     chartMax,
     PRIMARY_CHART_GEOMETRY,
-    chartDateStart,
-    chartDateEnd,
+    chartDateWindow.start,
+    chartDateWindow.end,
   )
   const positionedBenchmarkPoints = buildDateScaledPositionedPoints(
     scaledBenchmarkVisibleSeries,
     chartMin,
     chartMax,
     PRIMARY_CHART_GEOMETRY,
-    chartDateStart,
-    chartDateEnd,
+    chartDateWindow.start,
+    chartDateWindow.end,
   )
   const positionedDrawdownPoints = buildDateScaledPositionedPoints(
     drawdownSeries,
     drawdownMin,
     drawdownMax,
     DRAWDOWN_CHART_GEOMETRY,
-    drawdownDateStart,
-    drawdownDateEnd,
+    chartDateWindow.start,
+    chartDateWindow.end,
   )
   const positionedBenchmarkDrawdownPoints = buildDateScaledPositionedPoints(
     benchmarkDrawdownSeries,
     drawdownMin,
     drawdownMax,
     DRAWDOWN_CHART_GEOMETRY,
-    drawdownDateStart,
-    drawdownDateEnd,
+    chartDateWindow.start,
+    chartDateWindow.end,
   )
   const activeHoverIndex =
     chartHoverIndex == null || !scaledVisibleSeries.length
@@ -4963,39 +5067,41 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       : Math.min(Math.max(chartHoverIndex, 0), scaledVisibleSeries.length - 1)
   const displayIndex =
     !scaledVisibleSeries.length ? null : activeHoverIndex ?? scaledVisibleSeries.length - 1
-  const displayedDrawdownPoint = displayIndex == null ? undefined : positionedDrawdownPoints[displayIndex]
   const displayedNavPoint = displayIndex == null ? undefined : chartNavSeries[displayIndex]
+  const displayedDrawdownPoint =
+    displayIndex == null ? undefined : getPointAtDate(positionedDrawdownPoints, displayedNavPoint?.date) || undefined
   const primaryHoverGuideX = chartHoverCursor ? getPlotXFromRatio(PRIMARY_CHART_GEOMETRY, chartHoverCursor.xRatio) : null
   const drawdownHoverGuideX = chartHoverCursor ? getPlotXFromRatio(DRAWDOWN_CHART_GEOMETRY, chartHoverCursor.xRatio) : null
   const activeChartGuidePoint = activeHoverIndex == null ? null : positionedChartPoints[activeHoverIndex]
-  const activeDrawdownGuidePoint = activeHoverIndex == null ? null : positionedDrawdownPoints[activeHoverIndex]
+  const activeDrawdownGuidePoint =
+    activeHoverIndex == null ? null : getPointAtDate(positionedDrawdownPoints, chartNavSeries[activeHoverIndex]?.date)
   const isPrimaryHoverActive = chartHoverPanel === 'primary' && chartHoverCursor != null && activeChartGuidePoint != null
   const isDrawdownHoverActive = chartHoverPanel === 'drawdown' && chartHoverCursor != null && activeDrawdownGuidePoint != null
   const hoveredChartPoint = isPrimaryHoverActive ? activeChartGuidePoint : null
   const hoveredDrawdownPoint = isDrawdownHoverActive ? activeDrawdownGuidePoint : null
   const hoveredNavPoint = activeHoverIndex == null ? null : chartNavSeries[activeHoverIndex]
-  const displayedBenchmarkBasePoint = findNearestChartPoint(
+  const displayedBenchmarkBasePoint = getPointAtOrNearestDate(
     chartBenchmarkSeries,
     displayedNavPoint?.date || chartNavSeries[chartNavSeries.length - 1]?.date,
   )
-  const displayedBenchmarkDrawdownBasePoint = findNearestChartPoint(
+  const displayedBenchmarkDrawdownBasePoint = getPointAtOrNearestDate(
     benchmarkDrawdownSeries,
     displayedNavPoint?.date || chartNavSeries[chartNavSeries.length - 1]?.date,
   )
-  const hoveredBenchmarkBasePoint = activeHoverIndex == null ? null : findNearestChartPoint(
+  const hoveredBenchmarkBasePoint = activeHoverIndex == null ? null : getPointAtOrNearestDate(
     chartBenchmarkSeries,
     hoveredNavPoint?.date,
   )
-  const hoveredBenchmarkDrawdownBasePoint = activeHoverIndex == null ? null : findNearestChartPoint(
+  const hoveredBenchmarkDrawdownBasePoint = activeHoverIndex == null ? null : getPointAtOrNearestDate(
     benchmarkDrawdownSeries,
     hoveredNavPoint?.date,
   )
   const hoveredBenchmarkPoint =
     hoveredBenchmarkBasePoint &&
-    positionedBenchmarkPoints.find((point) => point.date === hoveredBenchmarkBasePoint.date)
+    getPointAtDate(positionedBenchmarkPoints, hoveredBenchmarkBasePoint.date)
   const hoveredBenchmarkDrawdownPoint =
     hoveredBenchmarkDrawdownBasePoint &&
-    positionedBenchmarkDrawdownPoints.find((point) => point.date === hoveredBenchmarkDrawdownBasePoint.date)
+    getPointAtDate(positionedBenchmarkDrawdownPoints, hoveredBenchmarkDrawdownBasePoint.date)
   const distributionRows = [...currencyFilteredRows]
     .filter((row) => row.distribution_amount != null && row.distribution_amount !== 0)
     .filter((row) => (!effectiveStartDate || row.as_of_date >= effectiveStartDate) && (!effectiveEndDate || row.as_of_date <= effectiveEndDate))
@@ -6682,22 +6788,20 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     ) {
       return null
     }
-    const xRatio = (relativeX - plotBounds.left) / Math.max(plotBounds.width, 1)
-    const nextIndex = findNearestPointIndexByDateRatio(
-      scaledVisibleSeries,
-      xRatio,
-      chartDateStart,
-      chartDateEnd,
-    )
-    if (nextIndex < 0) {
+    const positionedPoints =
+      geometry === DRAWDOWN_CHART_GEOMETRY ? positionedDrawdownPoints : positionedChartPoints
+    const resolvedIndex = findNearestPositionedPointIndex(positionedPoints, relativeX)
+    if (resolvedIndex < 0) {
       return null
     }
-    const resolvedIndex = Math.min(Math.max(nextIndex, 0), scaledVisibleSeries.length - 1)
+    const selectedPositionedPoint = positionedPoints[resolvedIndex]
+    const selectedXRatio =
+      (selectedPositionedPoint.x - plotBounds.left) / Math.max(plotBounds.width, 1)
     return {
       index: resolvedIndex,
       point: scaledVisibleSeries[resolvedIndex],
       cursor: {
-        xRatio: Math.min(Math.max(xRatio, 0), 1),
+        xRatio: Math.min(Math.max(selectedXRatio, 0), 1),
         y: relativeY,
       },
     }

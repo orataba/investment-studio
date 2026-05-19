@@ -2632,6 +2632,45 @@ def test_seeded_private_fund_watchlist_tags_are_available(client: TestClient) ->
     assert fields_by_key["attr.peer_annualized_return_percentile"]["label"] == "Ann. Pctl"
 
 
+def test_custom_attribute_group_by_is_available_for_watchlist_views(client: TestClient) -> None:
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Attribute Grouping", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["fund-us-agg", "sxv264"]},
+    )
+    assert add_response.status_code == 200
+
+    update_response = client.post(
+        "/api/instrument-attributes/instruments/sxv264",
+        json={"values": [{"attribute_key": "coverage_status", "value": "Invested"}]},
+    )
+    assert update_response.status_code == 200
+
+    detail_response = client.get(f"/api/watchlists/{watchlist_id}")
+    assert detail_response.status_code == 200
+    group_by_codes = [item["code"] for item in detail_response.json()["available_group_bys"]]
+    assert "attr.coverage_status" in group_by_codes
+
+    screener_response = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "selected_fields": ["instrument_name", "attr.coverage_status"],
+            "group_by": "attr.coverage_status",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert screener_response.status_code == 200
+    payload = screener_response.json()
+    group_counts = {item["group_value"]: item["row_count"] for item in payload["groups"]}
+    assert group_counts["Invested"] == 1
+    assert group_counts["Unspecified"] == 1
+
+
 def test_adding_funds_does_not_inject_product_framework_values(client: TestClient) -> None:
     created_watchlist = client.post(
         "/api/watchlists",
@@ -2881,7 +2920,8 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
 
     detail_response = client.get(f"/api/watchlists/{watchlist_id}")
     assert detail_response.status_code == 200
-    assert [item["code"] for item in detail_response.json()["available_group_bys"]] == [
+    group_by_codes = [item["code"] for item in detail_response.json()["available_group_bys"]]
+    assert group_by_codes[:6] == [
         "none",
         "taxonomy",
         "management_firm_name",
@@ -2889,6 +2929,8 @@ def test_fund_taxonomy_assignment_updates_summary_attribute_context_and_watchlis
         "analyst_stance",
         "data_freshness_status",
     ]
+    assert "attr.coverage_status" in group_by_codes
+    assert "attr.focus_bucket" in group_by_codes
 
     screener_response = client.post(
         "/api/screener/query",

@@ -1516,6 +1516,32 @@ th {
   padding: 0;
 }
 
+.watchlists-group-row-droppable td {
+  transition: background-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.watchlists-table tbody .watchlists-group-row-drop-target td {
+  background: #edf6ff;
+  box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+}
+
+.watchlists-row-draggable {
+  cursor: grab;
+}
+
+.watchlists-row-draggable:active,
+.watchlists-row-dragging {
+  cursor: grabbing;
+}
+
+.watchlists-row-dragging td {
+  opacity: 0.55;
+}
+
+.watchlists-row-updating td {
+  opacity: 0.7;
+}
+
 .watchlists-group-header {
   display: inline-flex;
   align-items: center;
