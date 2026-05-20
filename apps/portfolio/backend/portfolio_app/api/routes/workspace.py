@@ -22,7 +22,11 @@ from portfolio_app.services.ledger import (
     summarize_position_lots,
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
-from portfolio_app.services.performance import build_holdings_report, is_cash_holding_instrument_id
+from portfolio_app.services.performance import (
+    build_holdings_report,
+    is_cash_holding_instrument_id,
+    summarize_holding_day_change,
+)
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
     get_portfolio_live_summary,
@@ -489,6 +493,8 @@ def holdings_workspace(
     ]
     total_market_value_base = statement.get("total_market_value_base")
     total_nav_base = statement.get("total_nav_base")
+    day_change_totals = summarize_holding_day_change(rows, total_market_value_base=total_market_value_base)
+
     def is_cash_workspace_row(row: dict[str, object]) -> bool:
         instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
         return (
@@ -537,8 +543,8 @@ def holdings_workspace(
             "cash_balance": statement.get("cash_balance_base"),
             "pending_settlement": statement.get("pending_settlement_base"),
             "nav": total_nav_base,
-            "day_change_pct": resolved_portfolio.get("day_change_pct", 0.0),
-            "day_change_value": resolved_portfolio.get("day_change_value", 0.0),
+            "day_change_pct": day_change_totals["day_change_pct"],
+            "day_change_value": day_change_totals["day_change_value"],
             "cost_basis": total_cost_basis_base,
             "allocation": (
                 total_market_value_base / total_nav_base

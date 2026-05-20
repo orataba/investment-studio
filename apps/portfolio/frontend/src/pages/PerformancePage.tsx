@@ -349,6 +349,10 @@ function finiteNumber(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
+function normalizedCurrency(value: string | null | undefined) {
+  return String(value ?? '').trim().toUpperCase()
+}
+
 function csvNumber(value: number | null | undefined) {
   return finiteNumber(value)
 }
@@ -839,46 +843,135 @@ function ratioToDrawdown(returnValue: number | null | undefined, maxDrawdown: nu
     : null
 }
 
+function latestBenchmarkPointOnOrBefore(
+  points: PortfolioInstrumentPriceChartPoint[],
+  targetDate: string,
+): PortfolioInstrumentPriceChartPoint | null {
+  let selected: PortfolioInstrumentPriceChartPoint | null = null
+  for (const point of points) {
+    if (point.date <= targetDate) {
+      selected = point
+    }
+  }
+  return selected
+}
+
+function benchmarkPointByDate(points: PortfolioInstrumentPriceChartPoint[]) {
+  return new Map(points.map((point) => [point.date, point]))
+}
+
+function eligiblePortfolioReturnDates(
+  portfolioDailySeries: PortfolioDailyPerformancePoint[],
+  startDate: string,
+  endDate: string,
+) {
+  return portfolioDailySeries
+    .filter((point) => {
+      const portfolioReturn = finiteNumber(point.daily_twr)
+      return (
+        point.as_of_date >= startDate &&
+        point.as_of_date <= endDate &&
+        portfolioReturn != null &&
+        point.return_observation_eligible
+      )
+    })
+    .map((point) => point.as_of_date)
+    .sort()
+}
+
+function benchmarkAlignedDailyReturns(
+  points: PortfolioInstrumentPriceChartPoint[],
+  portfolioDailySeries: PortfolioDailyPerformancePoint[],
+  startBoundaryDate: string,
+  startDate: string,
+  endDate: string,
+) {
+  if (!portfolioDailySeries.length) {
+    const returns: Array<{ date: string; value: number }> = []
+    for (let index = 1; index < points.length; index += 1) {
+      const previous = points[index - 1]
+      const point = points[index]
+      if (previous.value === 0) {
+        return null
+      }
+      returns.push({ date: point.date, value: point.value / previous.value - 1 })
+    }
+    return returns
+  }
+
+  const eligiblePortfolioDates = eligiblePortfolioReturnDates(portfolioDailySeries, startDate, endDate)
+  const benchmarkByDate = benchmarkPointByDate(points)
+  if (!eligiblePortfolioDates.length || eligiblePortfolioDates.some((dateKey) => !benchmarkByDate.has(dateKey))) {
+    return null
+  }
+
+  const dailyReturns: Array<{ date: string; value: number }> = []
+  let previousBenchmarkPoint = latestBenchmarkPointOnOrBefore(points, startBoundaryDate)
+
+  for (const dateKey of eligiblePortfolioDates) {
+    const currentBenchmarkPoint = benchmarkByDate.get(dateKey)
+    if (!currentBenchmarkPoint || !previousBenchmarkPoint || previousBenchmarkPoint.value === 0) {
+      return null
+    }
+    dailyReturns.push({
+      date: dateKey,
+      value: currentBenchmarkPoint.value / previousBenchmarkPoint.value - 1,
+    })
+    previousBenchmarkPoint = currentBenchmarkPoint
+  }
+
+  return dailyReturns
+}
+
 function buildBenchmarkPeriodMetrics(
   points: PortfolioInstrumentPriceChartPoint[],
   startDate: string,
   endDate: string,
+  portfolioDailySeries: PortfolioDailyPerformancePoint[] = [],
 ): BenchmarkPeriodMetrics | null {
+  const startBoundaryDate = shiftIsoDate(startDate, -1)
   const sortedPoints = points
-    .filter((point) => Number.isFinite(point.value) && point.date >= startDate && point.date <= endDate)
+    .filter((point) => Number.isFinite(point.value) && point.date <= endDate)
     .slice()
     .sort((left, right) => left.date.localeCompare(right.date))
-  const firstPoint = sortedPoints[0]
-  const lastPoint = sortedPoints[sortedPoints.length - 1]
-  if (!firstPoint || !lastPoint || sortedPoints.length < 2) {
+  const startAnchorPoint = latestBenchmarkPointOnOrBefore(sortedPoints, startBoundaryDate)
+  if (!startAnchorPoint) {
+    return null
+  }
+  const periodPoints = sortedPoints.filter((point) => point.date >= startAnchorPoint.date && point.date <= endDate)
+
+  const dailyReturns = benchmarkAlignedDailyReturns(
+    periodPoints,
+    portfolioDailySeries,
+    startBoundaryDate,
+    startDate,
+    endDate,
+  )
+  if (!dailyReturns?.length) {
     return null
   }
 
-  const dailyReturns = sortedPoints
-    .slice(1)
-    .map((point, index) => {
-      const previous = sortedPoints[index]
-      return previous.value !== 0 ? { date: point.date, value: point.value / previous.value - 1 } : null
-    })
-    .filter((value): value is { date: string; value: number } => value != null)
-  const periodReturn = firstPoint.value !== 0 ? lastPoint.value / firstPoint.value - 1 : null
-  const elapsedDays = dayDiff(firstPoint.date, lastPoint.date)
+  const periodReturn = compoundReturn(dailyReturns.map((point) => point.value))
+  const lastReturnDate = dailyReturns[dailyReturns.length - 1]?.date ?? null
+  const elapsedDays = lastReturnDate ? dayDiff(startBoundaryDate, lastReturnDate) : null
   const annualizedReturn =
     periodReturn != null && elapsedDays != null && elapsedDays > 0
       ? (1 + periodReturn) ** (DAYS_PER_YEAR / elapsedDays) - 1
       : null
   const dailyReturnValues = dailyReturns.map((point) => point.value)
   const dailyReturnDates = dailyReturns.map((point) => point.date)
-  const annualizedVol = annualizedVolatility(dailyReturnValues, dailyReturnDates, firstPoint.date)
-  const annualizedDownsideVol = annualizedDownsideVolatility(dailyReturnValues, dailyReturnDates, firstPoint.date)
-  const annualizedMean = annualizedMeanReturn(dailyReturnValues, dailyReturnDates, firstPoint.date)
+  const annualizedVol = annualizedVolatility(dailyReturnValues, dailyReturnDates, startBoundaryDate)
+  const annualizedDownsideVol = annualizedDownsideVolatility(dailyReturnValues, dailyReturnDates, startBoundaryDate)
+  const annualizedMean = annualizedMeanReturn(dailyReturnValues, dailyReturnDates, startBoundaryDate)
 
-  let highWater = firstPoint.value
+  let highWater = 1
+  let benchmarkGrowth = 1
   let currentDrawdown: number | null = null
   let maxDrawdown: number | null = null
-  sortedPoints.forEach((point) => {
-    highWater = Math.max(highWater, point.value)
-    const drawdown = highWater > 0 ? point.value / highWater - 1 : null
+  dailyReturns.forEach((point) => {
+    benchmarkGrowth *= 1 + point.value
+    highWater = Math.max(highWater, benchmarkGrowth)
+    const drawdown = highWater > 0 ? benchmarkGrowth / highWater - 1 : null
     if (drawdown != null) {
       currentDrawdown = drawdown
       maxDrawdown = maxDrawdown == null ? drawdown : Math.min(maxDrawdown, drawdown)
@@ -1770,9 +1863,23 @@ function PerformancePage() {
 
   const selectedBenchmarkInstrument =
     benchmarkInstruments.find((instrument) => instrument.instrument_id === benchmarkInstrumentId) ?? null
+  const benchmarkCurrencyMismatch =
+    selectedBenchmarkInstrument != null &&
+    benchmarkChart != null &&
+    normalizedCurrency(benchmarkChart.currency) !== '' &&
+    normalizedCurrency(baseCurrency) !== '' &&
+    normalizedCurrency(benchmarkChart.currency) !== normalizedCurrency(baseCurrency)
   const benchmarkMetrics = useMemo(
-    () => buildBenchmarkPeriodMetrics(benchmarkChart?.points ?? [], effectiveStartDate, effectiveEndDate),
-    [benchmarkChart, effectiveStartDate, effectiveEndDate],
+    () =>
+      benchmarkCurrencyMismatch
+        ? null
+        : buildBenchmarkPeriodMetrics(
+            benchmarkChart?.points ?? [],
+            effectiveStartDate,
+            effectiveEndDate,
+            workspace?.daily_series ?? [],
+          ),
+    [benchmarkChart, benchmarkCurrencyMismatch, effectiveStartDate, effectiveEndDate, workspace?.daily_series],
   )
   const metricRows = useMemo(
     () =>
@@ -2186,6 +2293,12 @@ function PerformancePage() {
 
         {error ? <div className="inline-notice inline-notice-error">{error}</div> : null}
         {benchmarkError ? <div className="inline-notice inline-notice-error">{benchmarkError}</div> : null}
+        {!benchmarkError && benchmarkCurrencyMismatch ? (
+          <div className="inline-notice inline-notice-error">
+            Benchmark currency {normalizedCurrency(benchmarkChart?.currency)} does not match portfolio base{' '}
+            {normalizedCurrency(baseCurrency)}.
+          </div>
+        ) : null}
         {loading && !workspace ? <CalculationStatus /> : null}
         {loading && workspace ? <CalculationStatus /> : null}
         {!loading && !workspace && !error ? (
@@ -2216,7 +2329,7 @@ function PerformancePage() {
                       views={calculationTableViews}
                       activeViewId={activeCalculationTableViewId}
                       edited={calculationTableViewEdited}
-                      canSave={!activeCalculationTableView.readonly}
+                      canSave
                       canDelete
                       onSelect={handleSelectCalculationTableView}
                       onSave={handleSaveCalculationTableView}

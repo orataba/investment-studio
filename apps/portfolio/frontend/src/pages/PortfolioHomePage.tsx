@@ -690,7 +690,7 @@ function totalUnrealizedPct(rows: PortfolioHoldingRow[], workspace: HoldingsWork
   if (costBasis == null || unrealized == null) {
     return null
   }
-  const cashRows = rowsCoverWorkspace(rows, workspace) ? rows.filter((row) => isCashHoldingRow(row)) : []
+  const cashRows = rows.filter((row) => isCashHoldingRow(row))
   const cashBasis = cashRows.length ? sumCompleteNumbers(cashRows, (row) => rowMarketValueBase(row, workspace)) : 0
   if (cashBasis == null) {
     return null
@@ -1525,6 +1525,28 @@ function holdingColumnTotalExportValue(
       return totalUnrealizedBase(rows, context.workspace)
     case 'unrealized_pct':
       return totalUnrealizedPct(rows, context.workspace)
+    case 'instrument_return_1w':
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1w)
+    case 'instrument_return_mtd':
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_mtd)
+    case 'instrument_return_ytd':
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_ytd)
+    case 'instrument_return_1y':
+      return weightedHoldingMetric(rows, context.workspace, (row) => row.instrument_return_1y)
+    case 'instrument_current_drawdown':
+      return groupedCurrentDrawdown(rows, context.workspace)
+    case 'instrument_volatility_1m':
+      return groupedAnnualizedVolatility(rows, context.workspace, '1m')
+    case 'instrument_volatility_3m':
+      return groupedAnnualizedVolatility(rows, context.workspace, '3m')
+    case 'instrument_volatility_6m':
+      return groupedAnnualizedVolatility(rows, context.workspace, '6m')
+    case 'instrument_volatility_1y':
+      return groupedAnnualizedVolatility(rows, context.workspace, '1y')
+    case 'instrument_max_drawdown':
+      return groupedMaxDrawdown(rows, context.workspace, 'all')
+    case 'instrument_holding_max_drawdown':
+      return groupedMaxDrawdown(rows, context.workspace, 'holding')
     default:
       return null
   }

@@ -679,6 +679,12 @@ def test_live_holdings_workspace_propagates_position_day_change(client, monkeypa
     assert usd_cash_row["coverage_status"] == "cash"
     assert usd_cash_row["day_change_pct"] == pytest.approx(0.0)
     assert usd_cash_row["day_change_value"] == pytest.approx(0.0)
+    expected_day_change_base = sum(row["day_change_value_base"] for row in holdings["rows"])
+    expected_prior_market_value = holdings["totals"]["market_value"] - expected_day_change_base
+    assert holdings["totals"]["day_change_value"] == pytest.approx(expected_day_change_base)
+    assert holdings["totals"]["day_change_pct"] == pytest.approx(
+        expected_day_change_base / expected_prior_market_value
+    )
 
 
 def test_instrument_price_chart_endpoint_returns_filtered_shared_history(client):

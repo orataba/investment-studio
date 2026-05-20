@@ -226,6 +226,18 @@ def _selected_chart_points(
 
     if selected_points:
         return selected_points, selected_basis
+    if not candidate_bases:
+        fallback_candidates: list[tuple[date, str, list[dict[str, object]]]] = []
+        for quote_basis, points in points_by_basis.items():
+            eligible_points = [point for point in points if point["date"] <= as_of_date]
+            if not eligible_points:
+                continue
+            latest_date = eligible_points[-1].get("date")
+            if isinstance(latest_date, date):
+                fallback_candidates.append((latest_date, quote_basis, eligible_points))
+        if fallback_candidates:
+            _, selected_basis, selected_points = max(fallback_candidates, key=lambda item: (item[0], item[1]))
+            return selected_points, selected_basis
 
     return [], None
 

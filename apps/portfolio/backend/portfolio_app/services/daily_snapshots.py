@@ -823,6 +823,10 @@ def build_materialized_holdings_workspace(
     total_market_value_base = (
         _sum_complete([row.get("market_value_base") for row in aggregated_rows]) if aggregated_rows else 0.0
     )
+    day_change_totals = performance.summarize_holding_day_change(
+        aggregated_rows,
+        total_market_value_base=total_market_value_base,
+    )
     noncash_snapshot_rows = [row for row in rows if not performance.is_cash_holding_instrument_id(row.instrument_id)]
     total_cost_basis_base = (
         _sum_complete([row.cost_basis_base for row in noncash_snapshot_rows]) if noncash_snapshot_rows else 0.0
@@ -860,8 +864,8 @@ def build_materialized_holdings_workspace(
             "cash_balance": snapshot_payload.get("cash_balance"),
             "pending_settlement": snapshot_payload.get("pending_settlement"),
             "nav": total_nav_base,
-            "day_change_pct": snapshot_payload.get("daily_twr"),
-            "day_change_value": snapshot_payload.get("absolute_change"),
+            "day_change_pct": day_change_totals["day_change_pct"],
+            "day_change_value": day_change_totals["day_change_value"],
             "cost_basis": total_cost_basis_base,
             "allocation": (
                 total_market_value_base / total_nav_base

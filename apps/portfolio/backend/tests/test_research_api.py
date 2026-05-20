@@ -390,6 +390,43 @@ def test_instrument_chart_bases_prefer_total_return_role() -> None:
     assert _candidate_chart_bases(detail) == ["total_return_nav", "official_nav"]
 
 
+def test_instrument_trend_falls_back_to_latest_basis_when_policy_empty() -> None:
+    detail = {
+        "currency": "USD",
+        "market_data": [
+            {
+                "metric_family": "price",
+                "quote_basis": "close",
+                "as_of_date": "2026-01-01",
+                "value": "100",
+                "currency": "USD",
+                "status": "complete",
+            },
+            {
+                "metric_family": "price",
+                "quote_basis": "adjusted_close",
+                "as_of_date": "2026-01-01",
+                "value": "100",
+                "currency": "USD",
+                "status": "complete",
+            },
+            {
+                "metric_family": "price",
+                "quote_basis": "adjusted_close",
+                "as_of_date": "2026-01-10",
+                "value": "110",
+                "currency": "USD",
+                "status": "complete",
+            },
+        ],
+    }
+
+    metrics = build_instrument_trend_metrics_from_detail(detail, as_of_date=date(2026, 1, 10))
+
+    assert metrics["instrument_trend_basis"] == "adjusted_close"
+    assert metrics["instrument_return_ytd"] == pytest.approx(0.1)
+
+
 def test_instrument_trend_volatility_uses_quote_observation_density() -> None:
     points = [
         {"date": date(2026, 1, 1), "value": 100.0},

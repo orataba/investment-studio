@@ -403,7 +403,7 @@ Holdings 可以展示 quote-derived instrument market trend 指标，作为扫�
 Holdings group rows 不是后端 period-performance group：
 
 - market value、cost basis、day change、open lots 等绝对量按组内 rows 汇总；
-- unrealized return 使用组内非现金 `unrealized P&L / cost basis`，不是成员百分比的加权平均；`Portfolio Total` 若包含 cash row，则 cash 以 0 unrealized P&L、cash market value 作为分母的一部分稀释该比例；
+- unrealized return 使用组内非现金 `unrealized P&L / cost basis`，不是成员百分比的加权平均；若任一 group / subtotal / `Portfolio Total` 同时包含非现金 row 与 cash row，则 cash 以 0 unrealized P&L、cash market value 作为分母的一部分稀释该比例；纯 cash group 因 cost basis 不适用而为空；
 - `1W / MTD / YTD / 1Y Return` 使用 as-of date base-currency market value 权重对成员自身 return 加权；覆盖不足时为空；
 - group volatility / drawdown 用组内成员 return series 在共同 period 上组成当前权重的组 return series 后计算，包含协方差效果，不等于成员 volatility 或 drawdown 的加权平均；
 - base-currency cash 可作为 0-return 成员参与覆盖；non-base cash 使用其 FX return series；
@@ -539,6 +539,7 @@ Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要�
 
 - `Return & Risk Metrics`：组合级 TWR / annualized TWR、IRR / MWR、risk、drawdown。return / risk 类指标可选择 benchmark price series 做 period return、annualized return、volatility、drawdown 的轻量对比；
 - `Calculation`：合并 realized risk attribution、initial value、group rows、external flow、portfolio total 与 final value。表格有和 Holdings 一致的 view selector；系统默认视图命名为 `Default`，展示区间期初权重、平均权重、期末权重、区间收益、收益贡献、标的自身风险、相关性和风险贡献；`Beta to Portfolio` 保留为高级可选列，不进入默认视图。Group By 默认是 `None`，语义是直接展示 instrument lines，不做额外分组；也可按 instrument type / currency / account / default planning taxonomy 聚合。instrument type 与 currency 是底层 contribution axis，不允许仅在前端把 instrument rows 相加；taxonomy 聚合用于期间复盘时使用区间期末 assignment 并保留 cash 独立组，不把 reclassification residual 当成真实 P&L。`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
+- Performance group daily return 使用组内 `total_pnl / (beginning_value + period capital flow in)`；直接 axis、taxonomy regroup 与 calculation detail 聚合必须沿用同一分母，不能在聚合后退化成只除以 beginning value。
 - Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。期初已有持仓按 start date 的 beginning market value 重置为期间成本，区间内买入按成交 gross amount 建立期间成本，期末未卖出的持仓用 end date market value 计算 `Unrealized Gain`。
 - `Capital Gain = Realized Gain + Unrealized Gain`；`Realized Gain` 是期间卖出部分相对于期间成本的资本利得，`Unrealized Gain` 是期末仍持有部分相对于期间成本的资本利得。FIFO / moving average 只影响 Holdings / book P&L，不改变 Performance Calculation 的期间资本利得拆分。
 - `Income` 只包含 dividend / coupon / interest / dividend reinvestment 收益确认，不包含 realized capital gain。fees、taxes、FX P&L 分列。P&L 与 book attribution 不和 benchmark 对比。
@@ -752,6 +753,8 @@ $$
 ### 6.1 基准序列
 
 benchmark 必须先转化到组合基准货币，并对齐到组合估值日期。
+
+当前 Performance 页的手动 `Compare benchmark` 是轻量对比：仅在 benchmark chart currency 与 portfolio base currency 一致、存在 period start boundary 之前或当日的 benchmark level，且每个组合 eligible return date 都有同日 benchmark level 时输出比较值；若币种不同、起点锚点缺失或 benchmark 覆盖不完整，在未接入后端 benchmark FX conversion / coverage reporting 前不得输出 raw-currency、stale-filled 或半截区间相对指标。
 
 若 benchmark 提供的是 NAV / index level：
 

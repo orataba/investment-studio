@@ -438,11 +438,18 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
 
     holdings_response = client.get("/api/workspace/holdings?portfolio_id=yungu")
     assert holdings_response.status_code == 200
-    holdings_rows = holdings_response.json()["rows"]
+    holdings_payload = holdings_response.json()
+    holdings_rows = holdings_payload["rows"]
     assert holdings_rows
     abbv_row = next(row for row in holdings_rows if row["instrument_core"]["instrument_id"] == "equity-us-abbv")
     assert abbv_row["day_change_pct"] == pytest.approx(206.47 / 207.18 - 1)
     assert abbv_row["day_change_value"] == pytest.approx(abbv_row["quantity"] * (206.47 - 207.18))
+    expected_day_change_base = sum(row["day_change_value_base"] for row in holdings_rows)
+    expected_prior_market_value = holdings_payload["totals"]["market_value"] - expected_day_change_base
+    assert holdings_payload["totals"]["day_change_value"] == pytest.approx(expected_day_change_base)
+    assert holdings_payload["totals"]["day_change_pct"] == pytest.approx(
+        expected_day_change_base / expected_prior_market_value
+    )
 
     contribution_response = client.get("/api/portfolios/yungu/performance/contribution?axis=instrument")
     assert contribution_response.status_code == 200
@@ -4333,6 +4340,148 @@ def test_taxonomy_contribution_report_regroups_instrument_slices_by_effective_as
     )
 
 
+def test_taxonomy_group_return_uses_capital_flow_denominator_for_in_period_buys(client, monkeypatch):
+    instrument_detail = _test_instrument_detail(
+        instrument_id="equity-us-flow-test",
+        instrument_name="Flow Test Equity",
+        history=[
+            ("2026-01-02", "110.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-flow-test" else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+
+    store = _minimal_store(
+        portfolio_id="taxonomy-flow-return-test",
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": "taxonomy-flow-return-test",
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Opening cash.",
+                "created_at": "2026-01-01T09:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": "taxonomy-flow-return-test",
+                "transaction_type": "buy",
+                "trade_date": "2026-01-02",
+                "settlement_date": "2026-01-02",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "instrument_id": "equity-us-flow-test",
+                "instrument_ref": {
+                    "instrument_id": "equity-us-flow-test",
+                    "instrument_name": "Flow Test Equity",
+                    "instrument_type": "equity",
+                    "currency": "USD",
+                    "identifiers": [{"identifier_type": "ticker", "identifier_value": "FLOW", "is_primary": True}],
+                },
+                "quantity": 1.0,
+                "price": 100.0,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Buy flow test equity.",
+                "created_at": "2026-01-02T09:30:00Z",
+            },
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-02"
+    store["taxonomies"] = [
+        {
+            "taxonomy_id": "tax-sector",
+            "portfolio_id": "taxonomy-flow-return-test",
+            "name": "Sector",
+            "taxonomy_type": "custom",
+            "purpose": "performance_grouping",
+            "primary_assignment_scope": "instrument",
+            "planning_enabled": False,
+            "budgeting_level": None,
+            "effective_from": "2026-01-01",
+            "effective_to": None,
+            "status": "active",
+            "source_template_ref": None,
+        }
+    ]
+    store["taxonomy_nodes"] = [
+        {
+            "taxonomy_node_id": "tax-sector-core",
+            "taxonomy_id": "tax-sector",
+            "parent_taxonomy_node_id": None,
+            "node_name": "Core",
+            "node_code": "CORE",
+            "sort_order": 0,
+            "is_terminal": True,
+            "status": "active",
+        }
+    ]
+    store["taxonomy_assignments"] = [
+        {
+            "assignment_id": "assign-0001",
+            "taxonomy_id": "tax-sector",
+            "target_scope": "instrument",
+            "target_entity_id": "equity-us-flow-test",
+            "taxonomy_node_id": "tax-sector-core",
+            "effective_from": "2026-01-01",
+            "effective_to": None,
+            "status": "active",
+        }
+    ]
+    _write_store(store)
+
+    contribution_response = client.get(
+        "/api/portfolios/taxonomy-flow-return-test/performance/contribution"
+        "?axis=taxonomy&taxonomy_id=tax-sector&start_date=2026-01-02&end_date=2026-01-02"
+    )
+    assert contribution_response.status_code == 200
+    contribution_payload = contribution_response.json()
+    contribution_slices = {
+        (item["as_of_date"], item["group_key"]): item for item in contribution_payload["daily_slices"]
+    }
+    core_slice = contribution_slices[("2026-01-02", "tax-sector-core")]
+    assert isclose(core_slice["daily_return"], 0.1, rel_tol=0.0, abs_tol=1e-12)
+    assert core_slice["return_observation_eligible"] is True
+
+    groups_response = client.get(
+        "/api/portfolios/taxonomy-flow-return-test/performance/calculation/groups"
+        "?axis=taxonomy&taxonomy_id=tax-sector&start_date=2026-01-02&end_date=2026-01-02"
+    )
+    assert groups_response.status_code == 200
+    groups_payload = groups_response.json()
+    groups = {item["group_key"]: item for item in groups_payload["groups"]}
+    assert isclose(groups["tax-sector-core"]["period_return"], 0.1, rel_tol=0.0, abs_tol=1e-12)
+
+
 def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-cash-bucket",
@@ -7652,6 +7801,8 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(hkd_cash_row["instrument_return_ytd"], 0.04, rel_tol=0.0, abs_tol=1e-12)
     assert hkd_cash_row["instrument_volatility_1m"] is None
     assert isclose(holdings_payload["totals"]["market_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(holdings_payload["totals"]["day_change_value"], 4.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(holdings_payload["totals"]["day_change_pct"], 0.04, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(holdings_payload["totals"]["cash_balance"], 104.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(holdings_payload["totals"]["nav"], 104.0, rel_tol=0.0, abs_tol=1e-12)
 

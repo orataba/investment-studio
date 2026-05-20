@@ -68,6 +68,33 @@ def _safe_float(value: object) -> float | None:
         return None
 
 
+def summarize_holding_day_change(
+    rows: list[dict[str, object]],
+    *,
+    total_market_value_base: object,
+) -> dict[str, float | None]:
+    total_day_change_base = 0.0
+    for row in rows:
+        day_change_value = _safe_float(row.get("day_change_value_base"))
+        if day_change_value is None:
+            return {"day_change_value": None, "day_change_pct": None}
+        total_day_change_base += day_change_value
+
+    market_value_base = _safe_float(total_market_value_base)
+    prior_market_value_base = (
+        market_value_base - total_day_change_base if market_value_base is not None else None
+    )
+    day_change_pct = (
+        total_day_change_base / prior_market_value_base
+        if prior_market_value_base is not None and abs(prior_market_value_base) > 1e-12
+        else None
+    )
+    return {
+        "day_change_value": total_day_change_base,
+        "day_change_pct": day_change_pct,
+    }
+
+
 def normalize_instrument_core(
     instrument_id: str,
     instrument_ref: dict[str, object] | None,
@@ -5044,28 +5071,12 @@ def _build_contribution_slices_for_date(
             if slice_coverage_state == "complete":
                 slice_coverage_state = "partial"
 
-        implied_capital_flow_in = 0.0
-        if (
-            beginning_value_base is not None
-            and ending_value_base is not None
-            and total_pnl is not None
-        ):
-            implied_net_flow = ending_value_base - beginning_value_base - total_pnl
-            if implied_net_flow > 1e-9:
-                implied_capital_flow_in = implied_net_flow
-        period_capital_flow_in = max(capital_flow_in_base or 0.0, implied_capital_flow_in)
-        return_denominator = (
-            beginning_value_base + period_capital_flow_in
-            if beginning_value_base is not None
-            and capital_flow_in_base is not None
-            and capital_flow_out_base is not None
-            and total_pnl is not None
-            else None
-        )
-        daily_return = (
-            total_pnl / return_denominator
-            if return_denominator is not None and return_denominator > 1e-9
-            else None
+        daily_return = _daily_group_return_from_components(
+            beginning_value_base=beginning_value_base,
+            ending_value_base=ending_value_base,
+            total_pnl=total_pnl,
+            capital_flow_in_base=capital_flow_in_base,
+            capital_flow_out_base=capital_flow_out_base,
         )
         daily_contribution = (
             total_pnl / beginning_nav
@@ -5122,6 +5133,33 @@ def _build_contribution_slices_for_date(
         )
 
     return daily_slices
+
+
+def _daily_group_return_from_components(
+    *,
+    beginning_value_base: float | None,
+    ending_value_base: float | None,
+    total_pnl: float | None,
+    capital_flow_in_base: float | None,
+    capital_flow_out_base: float | None,
+) -> float | None:
+    if (
+        beginning_value_base is None
+        or ending_value_base is None
+        or total_pnl is None
+        or capital_flow_in_base is None
+        or capital_flow_out_base is None
+    ):
+        return None
+
+    implied_capital_flow_in = 0.0
+    implied_net_flow = ending_value_base - beginning_value_base - total_pnl
+    if implied_net_flow > 1e-9:
+        implied_capital_flow_in = implied_net_flow
+    return_denominator = beginning_value_base + max(capital_flow_in_base, implied_capital_flow_in)
+    if return_denominator <= 1e-9:
+        return None
+    return total_pnl / return_denominator
 
 
 def _is_effective_on(
@@ -5270,6 +5308,8 @@ def _group_contribution_slices_by_taxonomy(
                 "tax_amount": 0.0,
                 "cash_currency_gains": 0.0,
                 "instrument_currency_gains": 0.0,
+                GROUP_CAPITAL_FLOW_IN_FIELD: 0.0,
+                GROUP_CAPITAL_FLOW_OUT_FIELD: 0.0,
                 "total_pnl": 0.0,
                 "daily_return": None,
                 "daily_contribution": 0.0,
@@ -5299,6 +5339,8 @@ def _group_contribution_slices_by_taxonomy(
             "tax_amount",
             "cash_currency_gains",
             "instrument_currency_gains",
+            GROUP_CAPITAL_FLOW_IN_FIELD,
+            GROUP_CAPITAL_FLOW_OUT_FIELD,
             "total_pnl",
             "daily_contribution",
         ):
@@ -5317,10 +5359,15 @@ def _group_contribution_slices_by_taxonomy(
         grouped_slice["coverage_state"] = _merge_group_coverage_state(coverage_states_by_group[slice_key])
         total_pnl = _safe_float(grouped_slice.get("total_pnl"))
         beginning_value_base = _safe_float(grouped_slice.get("beginning_value_base"))
-        grouped_slice["daily_return"] = (
-            total_pnl / beginning_value_base
-            if total_pnl is not None and beginning_value_base is not None and beginning_value_base > 1e-9
-            else None
+        ending_value_base = _safe_float(grouped_slice.get("ending_value_base"))
+        capital_flow_in_base = _safe_float(grouped_slice.get(GROUP_CAPITAL_FLOW_IN_FIELD))
+        capital_flow_out_base = _safe_float(grouped_slice.get(GROUP_CAPITAL_FLOW_OUT_FIELD))
+        grouped_slice["daily_return"] = _daily_group_return_from_components(
+            beginning_value_base=beginning_value_base,
+            ending_value_base=ending_value_base,
+            total_pnl=total_pnl,
+            capital_flow_in_base=capital_flow_in_base,
+            capital_flow_out_base=capital_flow_out_base,
         )
         grouped_slice["return_observation_eligible"] = (
             grouped_slice["daily_return"] is not None
@@ -6664,6 +6711,8 @@ _CALCULATION_DETAIL_ADDITIVE_SLICE_FIELDS = (
     "tax_amount",
     "cash_currency_gains",
     "instrument_currency_gains",
+    GROUP_CAPITAL_FLOW_IN_FIELD,
+    GROUP_CAPITAL_FLOW_OUT_FIELD,
     "total_pnl",
     "daily_contribution",
 )
@@ -6716,10 +6765,15 @@ def _merge_calculation_detail_daily_slices(
         grouped_slice["coverage_state"] = _merge_group_coverage_state(coverage_states_by_group[slice_key])
         total_pnl = _safe_float(grouped_slice.get("total_pnl"))
         beginning_value_base = _safe_float(grouped_slice.get("beginning_value_base"))
-        grouped_slice["daily_return"] = (
-            total_pnl / beginning_value_base
-            if total_pnl is not None and beginning_value_base is not None and beginning_value_base > 1e-9
-            else None
+        ending_value_base = _safe_float(grouped_slice.get("ending_value_base"))
+        capital_flow_in_base = _safe_float(grouped_slice.get(GROUP_CAPITAL_FLOW_IN_FIELD))
+        capital_flow_out_base = _safe_float(grouped_slice.get(GROUP_CAPITAL_FLOW_OUT_FIELD))
+        grouped_slice["daily_return"] = _daily_group_return_from_components(
+            beginning_value_base=beginning_value_base,
+            ending_value_base=ending_value_base,
+            total_pnl=total_pnl,
+            capital_flow_in_base=capital_flow_in_base,
+            capital_flow_out_base=capital_flow_out_base,
         )
         grouped_slice["return_observation_eligible"] = (
             grouped_slice["daily_return"] is not None

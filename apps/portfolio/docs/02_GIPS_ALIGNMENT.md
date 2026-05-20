@@ -76,7 +76,7 @@ GIPS-informed 绩效口径以 fair value、外部现金流中性化和几何链�
 - 修改账户成本法时，系统从 transaction facts 重算成本相关 read models，而不是保留历史算法兼容层。
 
 Performance `Calculation` 使用 period bridge：`Initial Value + Net External Flow + Period P&L = Final Value`。其中 capital gain 使用 fair-value period basis：期初已有持仓按期初市值重置，区间内买入按成交 gross amount 建立期间成本，期末仍持有部分形成 unrealized gain。这个拆分服务绩效解释，不读取 FIFO / moving average 的 book cost 分支。
-Calculation 的 group axis 包括 instrument、instrument type、currency、account 与 planning taxonomy；TWR 和 contribution 必须在后端按目标轴从 daily slices 计算，不能在前端简单汇总instrument rows。
+Calculation 的 group axis 包括 instrument、instrument type、currency、account 与 planning taxonomy；TWR 和 contribution 必须在后端按目标轴从 daily slices 计算，不能在前端简单汇总 instrument rows。Group daily return 必须使用组内 `total_pnl / (beginning_value + period capital flow in)`，taxonomy regroup 与 calculation detail 聚合也必须保留同一 capital-flow denominator。
 
 Holdings 只作为当前持仓状态表。资产级 TWR、区间 contribution、realized gain、income 和 closed positions 必须从 `Performance` 或 security detail 读取，避免把 current holdings 和 period performance 混成一个口径。
 
@@ -96,6 +96,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 - 若输出正式 GIPS Composite / Pooled Fund Report 风格披露，ex-post standard deviation 必须使用 monthly returns，组合与 benchmark 必须使用同一 periodicity 与同一计算方法；
 - 非市场观察日的 stale-price carry-forward 0 return 不进入风险样本；
 - `NAV_t` 只用于资产规模和现金流调节，不作为组合级波动率输入。
+- 手动 benchmark 对比只有在币种一致、起点锚点存在且 benchmark 覆盖组合 eligible return dates 时才输出；当前未接入后端 benchmark FX conversion / coverage reporting，不能用 stale-filled 或 raw-currency 序列替代。
 
 ## 3. 当前实现映射
 
@@ -112,6 +113,8 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 | 物化读模型 | `PortfolioDailySnapshotModel` / holding snapshot / contribution slice |
 | 刷新治理 | `PortfolioCalculationStateModel.refresh_request_id` 对 stale 请求去重，刷新串行 claim；计算期间若收到新请求会再跑一轮 |
 | MWR | `_solve_xirr()` 输出 `irr` / `mwror`，作为补充指标 |
+| Performance group TWR | `_daily_group_return_from_components()` 在 instrument / taxonomy / calculation detail 聚合间复用同一 flow-adjusted denominator |
+| Manual benchmark guard | Performance 页面要求同币种、起点锚点和 eligible return date 覆盖完整后才展示轻量 benchmark metrics |
 
 ## 4. 暂不覆盖的 GIPS 能力
 
