@@ -5232,6 +5232,60 @@ def _resolve_taxonomy_group_for_date(
     )
 
 
+def _is_taxonomy_unassigned_group(group_key: str, taxonomy_id: str) -> bool:
+    return group_key == f"unassigned:{taxonomy_id}"
+
+
+def _daily_slice_has_period_end_exposure(daily_slice: dict[str, object]) -> bool:
+    for field_name in (
+        "ending_value_base",
+        "position_market_value_base",
+        "open_cost_basis_base",
+        "cash_balance_base",
+    ):
+        value = _safe_float(daily_slice.get(field_name))
+        if value is not None and abs(value) > 1e-9:
+            return True
+    return False
+
+
+def _resolve_period_taxonomy_group_for_slice(
+    *,
+    taxonomy: dict[str, object],
+    taxonomy_nodes_by_id: dict[str, dict[str, object]],
+    assignments_by_entity: dict[str, list[dict[str, object]]],
+    target_scope: str,
+    target_entity_id: str,
+    slice_date: date,
+    assignment_as_of_date: date | None,
+    entities_present_at_assignment_date: set[str],
+) -> tuple[str, str]:
+    taxonomy_id = str(taxonomy.get("taxonomy_id") or "")
+    taxonomy_group_key, taxonomy_group_label = _resolve_taxonomy_group_for_date(
+        taxonomy=taxonomy,
+        taxonomy_nodes_by_id=taxonomy_nodes_by_id,
+        assignments_by_entity=assignments_by_entity,
+        target_entity_id=target_entity_id,
+        as_of_date=assignment_as_of_date or slice_date,
+    )
+    if (
+        assignment_as_of_date is not None
+        and target_scope == "instrument"
+        and target_entity_id not in entities_present_at_assignment_date
+        and _is_taxonomy_unassigned_group(taxonomy_group_key, taxonomy_id)
+    ):
+        fallback_group_key, fallback_group_label = _resolve_taxonomy_group_for_date(
+            taxonomy=taxonomy,
+            taxonomy_nodes_by_id=taxonomy_nodes_by_id,
+            assignments_by_entity=assignments_by_entity,
+            target_entity_id=target_entity_id,
+            as_of_date=slice_date,
+        )
+        if not _is_taxonomy_unassigned_group(fallback_group_key, taxonomy_id):
+            return (fallback_group_key, fallback_group_label)
+    return (taxonomy_group_key, taxonomy_group_label)
+
+
 def _group_contribution_slices_by_taxonomy(
     *,
     taxonomy: dict[str, object],
@@ -5266,6 +5320,15 @@ def _group_contribution_slices_by_taxonomy(
 
     grouped: dict[tuple[date, str], dict[str, object]] = {}
     coverage_states_by_group: dict[tuple[date, str], list[str]] = defaultdict(list)
+    entities_present_at_assignment_date: set[str] = set()
+    if assignment_as_of_date is not None:
+        for base_slice in base_daily_slices:
+            as_of_date = base_slice.get("as_of_date")
+            if as_of_date != assignment_as_of_date:
+                continue
+            base_group_key = str(base_slice.get("group_key") or "")
+            if base_group_key and _daily_slice_has_period_end_exposure(base_slice):
+                entities_present_at_assignment_date.add(base_group_key)
 
     for base_slice in base_daily_slices:
         as_of_date = base_slice.get("as_of_date")
@@ -5275,12 +5338,15 @@ def _group_contribution_slices_by_taxonomy(
         if preserve_cash_group and target_scope == "instrument" and base_group_key == "cash":
             taxonomy_group_key, taxonomy_group_label = ("cash", "Cash")
         else:
-            taxonomy_group_key, taxonomy_group_label = _resolve_taxonomy_group_for_date(
+            taxonomy_group_key, taxonomy_group_label = _resolve_period_taxonomy_group_for_slice(
                 taxonomy=taxonomy,
                 taxonomy_nodes_by_id=taxonomy_nodes_by_id,
                 assignments_by_entity=assignments_by_entity,
+                target_scope=target_scope,
                 target_entity_id=base_group_key,
-                as_of_date=assignment_as_of_date or as_of_date,
+                slice_date=as_of_date,
+                assignment_as_of_date=assignment_as_of_date,
+                entities_present_at_assignment_date=entities_present_at_assignment_date,
             )
         slice_key = (as_of_date, taxonomy_group_key)
         grouped_slice = grouped.setdefault(
@@ -6865,6 +6931,41 @@ def _build_taxonomy_calculation_detail_report(
         )
 
     cash_bucket_ids = _cash_bucket_account_ids(accounts) if target_scope == "cash_bucket" else set()
+
+    def detail_target_for_base_group_key(base_group_key: str) -> tuple[str, str, str] | None:
+        if target_scope in {"account", "cash_bucket"}:
+            decoded = _decode_calculation_detail_group_key(base_group_key)
+            if decoded is None:
+                return None
+            target_entity_id, item_kind, item_key = decoded
+            if target_scope == "cash_bucket" and target_entity_id not in cash_bucket_ids:
+                return None
+            return (target_entity_id, item_kind, item_key)
+
+        decoded = _decode_calculation_detail_group_key(base_group_key)
+        if decoded is None:
+            target_entity_id = base_group_key
+            item_kind = "cash" if base_group_key == "cash" else "instrument"
+            detail_item_key = base_group_key
+        else:
+            target_entity_id, item_kind, detail_item_key = decoded
+        return (target_entity_id, item_kind, detail_item_key)
+
+    entities_present_at_assignment_date: set[str] = set()
+    if assignment_as_of_date is not None:
+        for base_slice in list(resolved_base_report.get("daily_slices") or []):
+            as_of_date = base_slice.get("as_of_date")
+            if as_of_date != assignment_as_of_date:
+                continue
+            base_group_key = str(base_slice.get("group_key") or "")
+            if not base_group_key or not _daily_slice_has_period_end_exposure(base_slice):
+                continue
+            resolved_detail_target = detail_target_for_base_group_key(base_group_key)
+            if resolved_detail_target is None:
+                continue
+            target_entity_id, _item_kind, _detail_item_key = resolved_detail_target
+            entities_present_at_assignment_date.add(target_entity_id)
+
     detail_axis = _calculation_detail_axis("taxonomy")
     detail_daily_slices: list[dict[str, object]] = []
     for base_slice in list(resolved_base_report.get("daily_slices") or []):
@@ -6875,32 +6976,23 @@ def _build_taxonomy_calculation_detail_report(
         if not base_group_key:
             continue
 
-        if target_scope in {"account", "cash_bucket"}:
-            decoded = _decode_calculation_detail_group_key(base_group_key)
-            if decoded is None:
-                continue
-            target_entity_id, item_kind, item_key = decoded
-            if target_scope == "cash_bucket" and target_entity_id not in cash_bucket_ids:
-                continue
-            detail_item_key = item_key
-        else:
-            decoded = _decode_calculation_detail_group_key(base_group_key)
-            if decoded is None:
-                target_entity_id = base_group_key
-                item_kind = "cash" if base_group_key == "cash" else "instrument"
-                detail_item_key = base_group_key
-            else:
-                target_entity_id, item_kind, detail_item_key = decoded
+        resolved_detail_target = detail_target_for_base_group_key(base_group_key)
+        if resolved_detail_target is None:
+            continue
+        target_entity_id, item_kind, detail_item_key = resolved_detail_target
 
         if preserve_cash_group and target_scope == "instrument" and item_kind == "cash":
             parent_group_key = "cash"
         else:
-            parent_group_key, _parent_group_label = _resolve_taxonomy_group_for_date(
+            parent_group_key, _parent_group_label = _resolve_period_taxonomy_group_for_slice(
                 taxonomy=taxonomy,
                 taxonomy_nodes_by_id=taxonomy_nodes_by_id,
                 assignments_by_entity=assignments_by_entity,
+                target_scope=target_scope,
                 target_entity_id=target_entity_id,
-                as_of_date=assignment_as_of_date or as_of_date,
+                slice_date=as_of_date,
+                assignment_as_of_date=assignment_as_of_date,
+                entities_present_at_assignment_date=entities_present_at_assignment_date,
             )
         detail_slice = dict(base_slice)
         detail_slice["axis"] = detail_axis

@@ -9,8 +9,6 @@ export type RiskChartDisplayStyle = 'mountain' | 'line' | 'dot'
 
 type RollingRiskMetricChartProps = {
   title: string
-  metricLabel: string
-  windowLabel: string
   points: RollingRiskMetricPoint[]
   benchmarkPoints?: RollingRiskMetricPoint[]
   benchmarkLabel?: string | null
@@ -77,8 +75,6 @@ function dateLabel(point: RollingRiskMetricPoint | undefined) {
 
 export default function RollingRiskMetricChart({
   title,
-  metricLabel,
-  windowLabel,
   points,
   benchmarkPoints = [],
   benchmarkLabel = null,
@@ -165,19 +161,16 @@ export default function RollingRiskMetricChart({
   }
 
   return (
-    <section className="rolling-risk-chart" aria-label={`${windowLabel} ${title}`}>
+    <section className="rolling-risk-chart" aria-label={title}>
       <div className="rolling-risk-chart-head">
         <div className="portfolio-series-legend">
           <div className="portfolio-series-label">
             <strong>{title}</strong>
-            <span>{metricLabel}</span>
-            <em>{windowLabel}</em>
             <em>{formatValue(activePoint.value)}</em>
           </div>
           {hasBenchmark ? (
             <div className="portfolio-series-label portfolio-series-label-benchmark-row">
               <strong>{benchmarkLabel}</strong>
-              <span>Benchmark</span>
               <em>{formatValue(activeBenchmarkPoint?.value)}</em>
             </div>
           ) : null}

@@ -256,6 +256,8 @@ Risk 与 Research 的 covariance / correlation / risk contribution 必须先确�
 - 若未来传入显式交易日日历，日频对齐应以日历校验 holiday vs missing：共同非交易日不生成样本；日历交易日缺价必须进入 coverage / missing 诊断，而不是隐式填值。
 - Portfolio Risk 页的 `risk_basis` 来自 Holdings workspace，是当前 active non-cash holdings 的 return alignment 元数据，不是一个风险指标。它必须能覆盖全部参与风险计算的非现金持仓，并且 `resolved_frequency` 只能是 `daily` / `weekly` / `monthly`；缺失、非法或来源频率不完整时，Risk 页面进入 basis unavailable / incomplete，不得临时从 calculation groups 或默认 daily 兜底。
 - Risk 页 rolling metrics、correlation matrix、Current Drift 和 point-in-time risk contribution 是当前权重口径：用当前持仓权重与资产自身历史收益窗口估计当前组合风险，语义上等同于“当前组合如果在历史窗口内一直以当前权重持有”。因此这些指标不得被 portfolio inception、holding start date 或 materialized contribution slices 截断。真实成立以来/真实持仓期间的 realized attribution 留在 Performance `Calculation`。
+- Risk 页 correlation matrix 是窗口内 sample correlation 展示层，只受 lookback、calculation frequency、coverage 和 scope 影响；EWMA、vol shrinkage、correlation shrinkage 是协方差估计模型，应保留在 rolling risk、Current Drift risk gap 与 point-in-time risk contribution 等需要协方差的计算中。
+- Risk 页 instrument-scope planning taxonomy 的 Current Drift 用非现金 Holdings rows 与 Accounts workspace 现金账户值合成当前 NAV；现金 exposure 来自 Accounts 的 cash bucket/account value，Holdings cash rows 不得再作为 instrument leg 参与分母或分组。
 - Risk 页 rolling metrics、correlation matrix 与 point-in-time risk contribution 必须进一步校验 lookback window 覆盖率：按 resolved frequency 使用最小收益样本数、窗口起点最大偏离和至少 80% elapsed-day 覆盖。覆盖不足时结果为 insufficient-history / unavailable，不用更短窗口、pairwise dates、0 return 或前向填充替代。
 
 ### 2.7 缺失数据与覆盖率
@@ -538,7 +540,7 @@ Overview 展示 `Monthly Return Matrix`，按 year x month 展示月度 TWR，YT
 Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要结构为：
 
 - `Return & Risk Metrics`：组合级 TWR / annualized TWR、IRR / MWR、risk、drawdown。return / risk 类指标可选择 benchmark price series 做 period return、annualized return、volatility、drawdown 的轻量对比；
-- `Calculation`：合并 realized risk attribution、initial value、group rows、external flow、portfolio total 与 final value。表格有和 Holdings 一致的 view selector；系统默认视图命名为 `Default`，展示区间期初权重、平均权重、期末权重、区间收益、收益贡献、标的自身风险、相关性和风险贡献；`Beta to Portfolio` 保留为高级可选列，不进入默认视图。Group By 默认是 `None`，语义是直接展示 instrument lines，不做额外分组；也可按 instrument type / currency / account / default planning taxonomy 聚合。instrument type 与 currency 是底层 contribution axis，不允许仅在前端把 instrument rows 相加；taxonomy 聚合用于期间复盘时使用区间期末 assignment 并保留 cash 独立组，不把 reclassification residual 当成真实 P&L。`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
+- `Calculation`：合并 realized risk attribution、initial value、group rows、external flow、portfolio total 与 final value。表格有和 Holdings 一致的 view selector；系统默认视图命名为 `Default`，展示区间期初权重、平均权重、期末权重、区间收益、收益贡献、标的自身风险、相关性和风险贡献；`Beta to Portfolio` 保留为高级可选列，不进入默认视图。Group By 默认是 `None`，语义是直接展示 instrument lines，不做额外分组；也可按 instrument type / currency / account / default planning taxonomy 聚合。instrument type 与 currency 是底层 contribution axis，不允许仅在前端把 instrument rows 相加；taxonomy 聚合用于期间复盘时优先使用区间期末 assignment 并保留 cash 独立组，不把 reclassification residual 当成真实 P&L；若 instrument 期末已清仓且期末不再有 active assignment，则使用其区间内有效 assignment 承接历史 P&L，不归入 Unassigned。`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
 - Performance group daily return 使用组内 `total_pnl / (beginning_value + period capital flow in)`；直接 axis、taxonomy regroup 与 calculation detail 聚合必须沿用同一分母，不能在聚合后退化成只除以 beginning value。
 - Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。期初已有持仓按 start date 的 beginning market value 重置为期间成本，区间内买入按成交 gross amount 建立期间成本，期末未卖出的持仓用 end date market value 计算 `Unrealized Gain`。
 - `Capital Gain = Realized Gain + Unrealized Gain`；`Realized Gain` 是期间卖出部分相对于期间成本的资本利得，`Unrealized Gain` 是期末仍持有部分相对于期间成本的资本利得。FIFO / moving average 只影响 Holdings / book P&L，不改变 Performance Calculation 的期间资本利得拆分。
@@ -1238,6 +1240,7 @@ daily snapshot、holding snapshot、contribution slice 是可重建的读模型�
 
 - 交易、账户、共享行情或 FX 变化先写入源事实，再把受影响组合标记为 `stale`；
 - 每次 stale 标记生成新的 `refresh_request_id`，用于表示“至少需要覆盖到这次事实更新之后”；
+- 物化 payload schema 或核心计算口径改变时必须提升 `calculation_version`，让旧 read model 自动失效并重建；不能在 daily snapshot、contribution regroup 或 calculation detail 聚合中长期保留旧字段兼容逻辑。
 - 同一组合的物化刷新串行执行；如果刷新期间又收到新的 `refresh_request_id`，当前计算结果不得把状态置为 `current` 或清空 `dirty_from`，必须继续按最新事实再计算一轮；
 - 邮件、文件或批量行情导入完成后按资产/组合去重触发刷新，不应在单个数据点写入过程中反复启动组合重建；
 - 读路径可以在发现状态不是 `current` 时触发 repair refresh，但 repair 必须复用同一套串行 claim 逻辑，不能并行删除/插入同一组合的物化表。

@@ -15,6 +15,7 @@ import {
   getPortfolioPerformanceCalculationGroups,
   getPortfolioTableViewStore,
   getPortfolioTaxonomyCatalog,
+  getWorkspaceSummaryForPortfolio,
   savePortfolioTableViewStore,
   type PortfolioInstrumentPriceChartPoint,
   type PortfolioInstrumentPriceChartResponse,
@@ -24,6 +25,7 @@ import {
   type PortfolioPerformanceCalculationResponse,
   type PortfolioPerformanceResponse,
   type PortfolioPerformanceSummary,
+  type PortfolioWorkspaceSummary,
   type SharedInstrumentRecord,
   type PortfolioTaxonomyCatalogResponse,
   type PortfolioTaxonomyRecord,
@@ -329,6 +331,10 @@ function shiftIsoDate(isoDate: string, days: number) {
   const nextDate = new Date(year, (month || 1) - 1, day || 1)
   nextDate.setDate(nextDate.getDate() + days)
   return localDateIso(nextDate)
+}
+
+function validIsoDate(value: string | null | undefined) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ''
 }
 
 function signedPercent(value: number | null | undefined, digits = 2) {
@@ -653,14 +659,7 @@ function normalizeCalculationTableViewStore(value: unknown): CalculationTableVie
   const storedViewById = new Map((storedViews || []).map((view) => [view.id, view]))
   const systemViews = SYSTEM_CALCULATION_TABLE_VIEWS.map((defaultView) => {
     const storedView = storedViewById.get(defaultView.id)
-    return storedView
-      ? {
-          ...defaultView,
-          createdAt: storedView.createdAt,
-          updatedAt: storedView.updatedAt,
-          readonly: true,
-        }
-      : defaultView
+    return storedView ? { ...storedView, readonly: true } : defaultView
   })
   const customViews = storedViews
     ? storedViews.filter((view) => !SYSTEM_CALCULATION_TABLE_VIEW_IDS.has(view.id)).map((view) => ({ ...view, readonly: false }))
@@ -1358,7 +1357,13 @@ function PerformancePage() {
   const todayDate = useMemo(() => localDateIso(), [])
   const appliedStartDate = searchParams.get('start_date') ?? ''
   const appliedEndDate = searchParams.get('end_date') ?? ''
-  const effectiveEndDate = appliedEndDate || todayDate
+  const [portfolioSummary, setPortfolioSummary] = useState<PortfolioWorkspaceSummary | null>(null)
+  const [portfolioSummaryReadyPortfolioId, setPortfolioSummaryReadyPortfolioId] = useState<string | null>(null)
+  const portfolioSummarySettled = Boolean(portfolioId && portfolioSummaryReadyPortfolioId === portfolioId)
+  const portfolioAsOfDate =
+    portfolioSummary && portfolioSummary.portfolio_id === portfolioId ? validIsoDate(portfolioSummary.as_of_date) : ''
+  const waitingForDefaultEndDate = Boolean(portfolioId && !appliedEndDate && !portfolioSummarySettled)
+  const effectiveEndDate = appliedEndDate || portfolioAsOfDate || todayDate
   const defaultStartDate = useMemo(
     () => shiftIsoDate(effectiveEndDate, -(DEFAULT_PERFORMANCE_LOOKBACK_DAYS - 1)),
     [effectiveEndDate],
@@ -1517,6 +1522,34 @@ function PerformancePage() {
     setCalculationGroupByOpen(false)
   }
 
+  useEffect(() => {
+    if (!portfolioId) {
+      setPortfolioSummary(null)
+      setPortfolioSummaryReadyPortfolioId(null)
+      return
+    }
+
+    let cancelled = false
+    setPortfolioSummaryReadyPortfolioId(null)
+    getWorkspaceSummaryForPortfolio(portfolioId)
+      .then((response) => {
+        if (!cancelled) {
+          setPortfolioSummary(response)
+          setPortfolioSummaryReadyPortfolioId(portfolioId)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPortfolioSummary(null)
+          setPortfolioSummaryReadyPortfolioId(portfolioId)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [portfolioId])
+
   function handleCalculationSort(column: CalculationColumnKey) {
     let nextSortField: CalculationColumnKey | null = column
     let nextSortDirection: CalculationSortDirection = 'asc'
@@ -1656,7 +1689,7 @@ function PerformancePage() {
   }, [calculationTableViewStore, calculationTableViewStoreRemoteReady, portfolioId])
 
   useEffect(() => {
-    if (!portfolioId) {
+    if (!portfolioId || waitingForDefaultEndDate) {
       setWorkspace(null)
       setLoading(false)
       setError(null)
@@ -1687,10 +1720,10 @@ function PerformancePage() {
     return () => {
       cancelled = true
     }
-  }, [portfolioId, effectiveStartDate, effectiveEndDate])
+  }, [portfolioId, effectiveStartDate, effectiveEndDate, waitingForDefaultEndDate])
 
   useEffect(() => {
-    if (!portfolioId) {
+    if (!portfolioId || waitingForDefaultEndDate) {
       setCalculationWorkspace(null)
       setCalculationLoading(false)
       setCalculationError(null)
@@ -1721,7 +1754,7 @@ function PerformancePage() {
     return () => {
       cancelled = true
     }
-  }, [portfolioId, effectiveStartDate, effectiveEndDate])
+  }, [portfolioId, effectiveStartDate, effectiveEndDate, waitingForDefaultEndDate])
 
   useEffect(() => {
     if (!portfolioId) {
@@ -1754,7 +1787,7 @@ function PerformancePage() {
   }, [portfolioId])
 
   useEffect(() => {
-    if (!portfolioId) {
+    if (!portfolioId || waitingForDefaultEndDate) {
       setCalculationGroupsWorkspace(null)
       setCalculationGroupsLoading(false)
       setCalculationGroupsError(null)
@@ -1799,10 +1832,11 @@ function PerformancePage() {
     effectiveEndDate,
     resolvedCalculationGroupBy,
     defaultPlanningTaxonomy?.taxonomy_id,
+    waitingForDefaultEndDate,
   ])
 
   useEffect(() => {
-    if (!portfolioId || !benchmarkInstrumentId) {
+    if (!portfolioId || !benchmarkInstrumentId || waitingForDefaultEndDate) {
       setBenchmarkChart(null)
       setBenchmarkLoading(false)
       setBenchmarkError(null)
@@ -1837,7 +1871,7 @@ function PerformancePage() {
     return () => {
       cancelled = true
     }
-  }, [benchmarkInstrumentId, effectiveEndDate, portfolioId])
+  }, [benchmarkInstrumentId, effectiveEndDate, portfolioId, waitingForDefaultEndDate])
 
   function updateWindowParams(nextStartDate: string | null, nextEndDate: string | null) {
     const nextParams = new URLSearchParams(searchParams)
@@ -1939,11 +1973,14 @@ function PerformancePage() {
   const calculationGroupLabel = calculationAxisLabel(resolvedCalculationGroupBy)
   const calculationChildRowCount = calculationRows.reduce((total, row) => total + (row.children?.length ?? 0), 0)
   const calculationRiskStatusLabel = calculationGroupsSummary?.risk_frequency_status_label ?? null
-  const calculationMeta = `${periodLabel} · ${formatNumber(calculationRows.length, 0)} ${calculationAxisCountLabel(
-    resolvedCalculationGroupBy,
-  )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} instruments/cash` : ''}${
-    calculationRiskStatusLabel ? ` · ${calculationRiskStatusLabel}` : ''
-  }`
+  const calculationMeta =
+    !calculationGroupsWorkspace && calculationGroupsLoading
+      ? `${periodLabel} · Loading`
+      : `${periodLabel} · ${formatNumber(calculationRows.length, 0)} ${calculationAxisCountLabel(
+          resolvedCalculationGroupBy,
+        )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} instruments/cash` : ''}${
+          calculationRiskStatusLabel ? ` · ${calculationRiskStatusLabel}` : ''
+        }`
   const riskContributionTotal = calculationRows.reduce(
     (total, row) => total + (finiteNumber(row.realized_risk_contribution) ?? 0),
     0,
@@ -1955,6 +1992,10 @@ function PerformancePage() {
     riskContributionResidual != null &&
     Math.abs(riskContributionResidual) > 0.0005
   const calculationTableRows = useMemo<CalculationTableRow[]>(() => {
+    if (!calculationGroupsWorkspace) {
+      return []
+    }
+
     if (calculationTableMode === 'risk_attribution') {
       const rows: CalculationTableRow[] = []
       calculationRows.forEach((row) => {
@@ -2057,7 +2098,13 @@ function PerformancePage() {
       syntheticKind: 'final',
     })
     return rows
-  }, [calculationRows, calculationTableMode, showContributionResidual, showRiskContributionResidual])
+  }, [
+    calculationGroupsWorkspace,
+    calculationRows,
+    calculationTableMode,
+    showContributionResidual,
+    showRiskContributionResidual,
+  ])
 
   function calculationTableRowLabel(row: CalculationTableRow) {
     if (row.kind === 'synthetic') {
@@ -2090,9 +2137,9 @@ function PerformancePage() {
             case 'pnl_flow':
               return finiteNumber(portfolioPeriodPnl)
             case 'start_value':
-              return finiteNumber(summary?.start_nav)
+              return finiteNumber(initialValue)
             case 'end_value':
-              return finiteNumber(summary?.end_nav)
+              return finiteNumber(finalValue)
             case 'begin_weight':
             case 'avg_weight':
             case 'end_weight':
@@ -2299,9 +2346,9 @@ function PerformancePage() {
             {normalizedCurrency(baseCurrency)}.
           </div>
         ) : null}
-        {loading && !workspace ? <CalculationStatus /> : null}
+        {(loading || waitingForDefaultEndDate) && !workspace ? <CalculationStatus /> : null}
         {loading && workspace ? <CalculationStatus /> : null}
-        {!loading && !workspace && !error ? (
+        {!waitingForDefaultEndDate && !loading && !workspace && !error ? (
           <div className="empty-state">No data.</div>
         ) : null}
 

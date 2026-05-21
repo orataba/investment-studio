@@ -32,7 +32,7 @@ _LOCAL_REFRESH_LOCKS: dict[str, Lock] = {}
 _LOCAL_REFRESH_LOCKS_GUARD = Lock()
 _RUNNING_REFRESH_WAIT_SECONDS = 30.0
 _RUNNING_REFRESH_POLL_SECONDS = 0.1
-DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260512-holdings-cash-fx-profile"
+DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260521-taxonomy-capital-flow"
 
 
 def _current_utc_timestamp() -> str:

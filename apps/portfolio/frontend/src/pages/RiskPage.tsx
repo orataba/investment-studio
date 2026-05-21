@@ -15,6 +15,7 @@ import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
   getHoldingsWorkspace,
   getPortfolioAccountsWorkspace,
+  getPortfolioPerformance,
   getPortfolioInstrumentPriceChart,
   getPortfolioInstruments,
   getPortfolioTaxonomyCatalog,
@@ -34,6 +35,7 @@ const DAYS_PER_YEAR = 365.25
 const RISK_MIN_WINDOW_COVERAGE_RATIO = 0.8
 const DEFAULT_RISK_LOOKBACK_DAYS = 90
 const DEFAULT_RISK_MODEL_ID = 'ewma_vol_shrinkage_corr_covariance'
+const MATRIX_SCOPE_ALL_INSTRUMENTS = '__all_instruments__'
 
 type RiskModelId = 'ewma_vol_shrinkage_corr_covariance' | 'ewma_covariance' | 'sample_covariance'
 type RiskContributionMode = 'signed' | 'abs'
@@ -246,9 +248,7 @@ function riskFrequencyProfileFromHoldingsWorkspace(
   if (!holdingsWorkspace) {
     return riskFail('Risk basis requires the holdings workspace response.', unavailableProfile)
   }
-  const riskyHoldingCount = holdingsWorkspace.rows.filter(
-    (row) => row.instrument_core.instrument_type !== 'cash',
-  ).length
+  const riskyHoldingCount = holdingsWorkspace.rows.filter((row) => !isCashHoldingRow(row)).length
   const sourceFrequencyCount = Object.values(holdingsWorkspace.risk_basis?.source_frequency_counts ?? {}).reduce(
     (total, count) => total + (Number.isFinite(count) ? count : 0),
     0,
@@ -816,7 +816,6 @@ function correlationCell(
   right: GroupReturnSeries,
   asOfDate: string,
   lookbackDays: number,
-  modelId: RiskModelId,
   frequency: CalculationFrequency,
 ) {
   const pairs = pairWindowReturns(left.returnsByDate, right.returnsByDate, asOfDate, lookbackDays)
@@ -844,7 +843,7 @@ function correlationCell(
   }
   const leftValues = pairs.map((pair) => pair.left)
   const rightValues = pairs.map((pair) => pair.right)
-  const correlation = estimateCorrelationFromValues(leftValues, rightValues, modelId)
+  const correlation = sampleCorrelation(leftValues, rightValues)
   if (correlation == null) {
     return { value: null, observationCount: pairs.length }
   }
@@ -884,7 +883,7 @@ function weightAtOrBefore(series: GroupReturnSeries, asOfDate: string) {
 function buildCorrelationMatrix(
   series: GroupReturnSeries[],
   asOfDate: string,
-  settings: RiskSettingsState,
+  lookbackDays: number,
   frequency: CalculationFrequency,
 ) {
   if (!asOfDate) {
@@ -893,7 +892,7 @@ function buildCorrelationMatrix(
   const activeSeries = series
     .map((item) => ({
       item,
-      coverage: returnWindowCoverage(item, asOfDate, settings.lookbackDays, frequency),
+      coverage: returnWindowCoverage(item, asOfDate, lookbackDays, frequency),
       weight: weightAtOrBefore(item, asOfDate),
     }))
     .filter((item) => item.coverage.ok)
@@ -912,8 +911,7 @@ function buildCorrelationMatrix(
               rowSeries.item,
               columnSeries.item,
               asOfDate,
-              settings.lookbackDays,
-              settings.modelId,
+              lookbackDays,
               frequency,
             )
       if (cell.value != null) {
@@ -939,6 +937,10 @@ function holdingRiskLabel(row: HoldingsWorkspaceResponse['rows'][number]) {
   return row.instrument_core.instrument_name || row.instrument_core.instrument_id || row.line_id
 }
 
+function isCashHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
+  return row.instrument_core.instrument_type.trim().toLowerCase() === 'cash'
+}
+
 function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWorkspaceResponse | null) {
   if (!holdingsWorkspace) {
     return riskFail('Current risk requires the holdings workspace.', [] satisfies GroupReturnSeries[])
@@ -950,7 +952,7 @@ function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWorkspace
 
   const errors: string[] = []
   const series = holdingsWorkspace.rows
-    .filter((row) => row.instrument_core.instrument_type !== 'cash')
+    .filter((row) => !isCashHoldingRow(row))
     .map((row): GroupReturnSeries | null => {
       const currentWeight = finiteNumber(row.allocation)
       const currentValueBase = finiteNumber(row.market_value_base)
@@ -1438,7 +1440,8 @@ function buildCurrentPlanningGroups({
           return Boolean(activeCashAssignmentResult.assignment) || Math.abs(valueBase) > 1e-9
         })
       : []
-    const missingHoldingValueRows = holdingsWorkspace.rows.filter((row) => finiteNumber(row.market_value_base) == null)
+    const nonCashHoldingRows = holdingsWorkspace.rows.filter((row) => !isCashHoldingRow(row))
+    const missingHoldingValueRows = nonCashHoldingRows.filter((row) => finiteNumber(row.market_value_base) == null)
     if (missingHoldingValueRows.length) {
       errors.push(
         `Current drift requires market_value_base for every holding; missing: ${missingHoldingValueRows
@@ -1447,13 +1450,13 @@ function buildCurrentPlanningGroups({
       )
     }
     const totalValueBase =
-      holdingsWorkspace.rows.reduce((total, row) => total + (finiteNumber(row.market_value_base) ?? 0), 0) +
+      nonCashHoldingRows.reduce((total, row) => total + (finiteNumber(row.market_value_base) ?? 0), 0) +
       cashAccounts.reduce((total, accountRow) => total + (accountValueBase(accountRow) ?? 0), 0)
-    if (totalValueBase <= 1e-9 && (holdingsWorkspace.rows.length || cashAccounts.length)) {
+    if (totalValueBase <= 1e-9 && (nonCashHoldingRows.length || cashAccounts.length)) {
       errors.push('Current drift requires positive portfolio NAV from holdings plus cash account values.')
     }
 
-    holdingsWorkspace.rows.forEach((row) => {
+    nonCashHoldingRows.forEach((row) => {
       const valueBase = finiteNumber(row.market_value_base)
       if (valueBase == null || totalValueBase <= 1e-9) {
         return
@@ -1733,6 +1736,14 @@ function uniqueSortedSeriesDates(series: GroupReturnSeries[]) {
   return [...dates].sort()
 }
 
+function datesFromPortfolioStart(dates: string[], portfolioStartDate: string | null) {
+  if (!portfolioStartDate) {
+    return dates
+  }
+  const filteredDates = dates.filter((dateKey) => dateKey >= portfolioStartDate)
+  return filteredDates.length ? filteredDates : dates
+}
+
 function taxonomyScopeOptions(
   taxonomy: PortfolioTaxonomyRecord | null,
   catalog: PortfolioTaxonomyCatalogResponse | null,
@@ -1760,12 +1771,16 @@ function RiskSettingsMenu<TSettings extends RiskSettingsState>({
   label,
   settings,
   onChange,
+  includeWindow = true,
+  includeModel = true,
   includeChartStyle = false,
   includeContributionMode = false,
 }: {
   label: string
   settings: TSettings
   onChange: (settings: TSettings) => void
+  includeWindow?: boolean
+  includeModel?: boolean
   includeChartStyle?: boolean
   includeContributionMode?: boolean
 }) {
@@ -1810,51 +1825,55 @@ function RiskSettingsMenu<TSettings extends RiskSettingsState>({
       {settingsOpen ? (
         <div className="portfolio-nav-settings-panel risk-settings-panel">
           <div className="portfolio-nav-settings-layout">
-            <section className="portfolio-nav-settings-block">
-              <div className="portfolio-nav-settings-block-head">
-                <span>Window</span>
-                <strong>{windowLabel(settings.lookbackDays)}</strong>
-              </div>
-              <div className="portfolio-nav-settings-option-grid">
-                {RISK_WINDOW_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={
-                      settings.lookbackDays === option.value
-                        ? 'portfolio-nav-option portfolio-nav-option-active'
-                        : 'portfolio-nav-option'
-                    }
-                    onClick={() => onChange({ ...settings, lookbackDays: option.value })}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </section>
+            {includeWindow ? (
+              <section className="portfolio-nav-settings-block">
+                <div className="portfolio-nav-settings-block-head">
+                  <span>Window</span>
+                  <strong>{windowLabel(settings.lookbackDays)}</strong>
+                </div>
+                <div className="portfolio-nav-settings-option-grid">
+                  {RISK_WINDOW_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={
+                        settings.lookbackDays === option.value
+                          ? 'portfolio-nav-option portfolio-nav-option-active'
+                          : 'portfolio-nav-option'
+                      }
+                      onClick={() => onChange({ ...settings, lookbackDays: option.value })}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
 
-            <section className="portfolio-nav-settings-block">
-              <div className="portfolio-nav-settings-block-head">
-                <span>Method</span>
-                <strong>{riskModelLabel(settings.modelId)}</strong>
-              </div>
-              <div className="portfolio-nav-settings-option-grid">
-                {RISK_MODEL_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={
-                      settings.modelId === option.value
-                        ? 'portfolio-nav-option portfolio-nav-option-active'
-                        : 'portfolio-nav-option'
-                    }
-                    onClick={() => onChange({ ...settings, modelId: option.value })}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </section>
+            {includeModel ? (
+              <section className="portfolio-nav-settings-block">
+                <div className="portfolio-nav-settings-block-head">
+                  <span>Method</span>
+                  <strong>{riskModelLabel(settings.modelId)}</strong>
+                </div>
+                <div className="portfolio-nav-settings-option-grid">
+                  {RISK_MODEL_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={
+                        settings.modelId === option.value
+                          ? 'portfolio-nav-option portfolio-nav-option-active'
+                          : 'portfolio-nav-option'
+                      }
+                      onClick={() => onChange({ ...settings, modelId: option.value })}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
 
             {includeContributionMode ? (
               <section className="portfolio-nav-settings-block portfolio-nav-settings-block-data">
@@ -1928,23 +1947,32 @@ function RiskDateTimeline({
   }
   const selectedIndex = dates.includes(value) ? dates.indexOf(value) : dates.length - 1
   const selectedDate = dates[selectedIndex]
+  const selectedPosition = dates.length > 1 ? (selectedIndex / (dates.length - 1)) * 100 : 0
   return (
-    <div className="risk-date-timeline">
-      <div>
+    <div
+      className="risk-date-scrubber"
+      style={{ '--risk-date-scrubber-position': `${selectedPosition}%` } as CSSProperties}
+    >
+      <div className="risk-date-scrubber-summary">
         <span>{label}</span>
         <strong>{selectedDate}</strong>
       </div>
-      <input
-        type="range"
-        min={0}
-        max={Math.max(0, dates.length - 1)}
-        value={selectedIndex}
-        onChange={(event) => onChange(dates[Number(event.target.value)] ?? value)}
-        aria-label={label}
-      />
-      <div className="risk-date-timeline-endpoints">
-        <span>{dates[0]}</span>
-        <span>{dates[dates.length - 1]}</span>
+      <div className="risk-date-scrubber-control">
+        <div className="risk-date-scrubber-current" aria-hidden="true">
+          {selectedDate}
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={Math.max(0, dates.length - 1)}
+          value={selectedIndex}
+          onChange={(event) => onChange(dates[Number(event.target.value)] ?? value)}
+          aria-label={label}
+        />
+        <div className="risk-date-scrubber-endpoints">
+          <span>{dates[0]}</span>
+          <span>{dates[dates.length - 1]}</span>
+        </div>
       </div>
     </div>
   )
@@ -1964,11 +1992,12 @@ export default function RiskPage() {
   const [benchmarkChart, setBenchmarkChart] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
+  const [portfolioStartDate, setPortfolioStartDate] = useState<string | null>(null)
   const [rollingSettings, setRollingSettings] = useState<RollingRiskSettingsState>(DEFAULT_ROLLING_SETTINGS)
   const [matrixSettings, setMatrixSettings] = useState<RiskSettingsState>(DEFAULT_RISK_SETTINGS)
   const [driftSettings, setDriftSettings] = useState<RiskSettingsState>(DEFAULT_RISK_SETTINGS)
   const [contributionSettings, setContributionSettings] = useState<RiskSettingsState>(DEFAULT_RISK_SETTINGS)
-  const [matrixScopeNodeId, setMatrixScopeNodeId] = useState('')
+  const [matrixScopeNodeId, setMatrixScopeNodeId] = useState(MATRIX_SCOPE_ALL_INSTRUMENTS)
   const [matrixAsOfDate, setMatrixAsOfDate] = useState('')
   const [contributionAsOfDate, setContributionAsOfDate] = useState('')
 
@@ -1979,6 +2008,7 @@ export default function RiskPage() {
       setHoldingsWorkspace(null)
       setAccountsWorkspace(null)
       setTaxonomyCatalog(null)
+      setPortfolioStartDate(null)
       setWorkspaceLoading(false)
       setWorkspaceError('Portfolio id is required.')
       setWorkspaceSupportError(null)
@@ -1992,6 +2022,7 @@ export default function RiskPage() {
     setHoldingsWorkspace(null)
     setAccountsWorkspace(null)
     setTaxonomyCatalog(null)
+    setPortfolioStartDate(null)
 
     getHoldingsWorkspace(portfolioId)
       .then((holdingsResponse) => {
@@ -2042,6 +2073,18 @@ export default function RiskPage() {
           )
         }
         setWorkspaceSupportError(supportErrors.length ? supportErrors.join(' ') : null)
+      })
+
+    getPortfolioPerformance(portfolioId)
+      .then((performanceResponse) => {
+        if (!cancelled) {
+          setPortfolioStartDate(performanceResponse.summary.start_date)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPortfolioStartDate(null)
+        }
       })
 
     return () => {
@@ -2190,7 +2233,6 @@ export default function RiskPage() {
         : [],
     [benchmarkReturnPointsRaw, portfolioRiskFrequency.frequency, riskBasisFinalDate, riskInputsReady],
   )
-  const rollingWindow = windowLabel(rollingSettings.lookbackDays)
   const rollingVolatilityPoints = useMemo(
     () =>
       buildRollingMetricPoints(
@@ -2237,49 +2279,74 @@ export default function RiskPage() {
   )
 
   const riskDates = useMemo(() => uniqueSortedSeriesDates(instrumentReturnSeries), [instrumentReturnSeries])
+  // The scrubber reflects the portfolio life, while the risk estimators still receive full asset histories.
+  const riskAsOfSelectionDates = useMemo(
+    () => datesFromPortfolioStart(riskDates, portfolioStartDate),
+    [portfolioStartDate, riskDates],
+  )
 
   useEffect(() => {
-    if (!riskDates.length) {
+    if (!riskAsOfSelectionDates.length) {
       if (matrixAsOfDate) {
         setMatrixAsOfDate('')
       }
       return
     }
-    if (riskDates.length && !riskDates.includes(matrixAsOfDate)) {
-      setMatrixAsOfDate(riskDates[riskDates.length - 1])
+    if (!riskAsOfSelectionDates.includes(matrixAsOfDate)) {
+      setMatrixAsOfDate(riskAsOfSelectionDates[riskAsOfSelectionDates.length - 1])
     }
-  }, [matrixAsOfDate, riskDates])
+  }, [matrixAsOfDate, riskAsOfSelectionDates])
 
   useEffect(() => {
-    if (!riskDates.length) {
+    if (!riskAsOfSelectionDates.length) {
       if (contributionAsOfDate) {
         setContributionAsOfDate('')
       }
       return
     }
-    if (riskDates.length && !riskDates.includes(contributionAsOfDate)) {
-      setContributionAsOfDate(riskDates[riskDates.length - 1])
+    if (!riskAsOfSelectionDates.includes(contributionAsOfDate)) {
+      setContributionAsOfDate(riskAsOfSelectionDates[riskAsOfSelectionDates.length - 1])
     }
-  }, [contributionAsOfDate, riskDates])
+  }, [contributionAsOfDate, riskAsOfSelectionDates])
 
   const matrixTaxonomyScopeOptions = useMemo(
     () => taxonomyScopeOptions(defaultPlanningTaxonomy, taxonomyCatalog),
     [defaultPlanningTaxonomy, taxonomyCatalog],
   )
+  const matrixScopeOptions = useMemo(
+    () => [
+      { value: MATRIX_SCOPE_ALL_INSTRUMENTS, label: 'All Instruments', kind: 'instrument' as const },
+      ...matrixTaxonomyScopeOptions.map((option) => ({
+        ...option,
+        kind: 'taxonomy' as const,
+      })),
+    ],
+    [matrixTaxonomyScopeOptions],
+  )
+  const matrixUsesAllInstruments = matrixScopeNodeId === MATRIX_SCOPE_ALL_INSTRUMENTS
+  const matrixTaxonomyScopeNodeId = matrixUsesAllInstruments ? '' : matrixScopeNodeId
+  useEffect(() => {
+    if (!matrixScopeOptions.some((option) => option.value === matrixScopeNodeId)) {
+      setMatrixScopeNodeId(MATRIX_SCOPE_ALL_INSTRUMENTS)
+    }
+  }, [matrixScopeNodeId, matrixScopeOptions])
   const matrixTaxonomySeriesResult = useMemo(
     () =>
-      buildCurrentTaxonomyReturnSeries({
-        instrumentSeries: instrumentReturnSeries,
-        catalog: taxonomyCatalog,
-        taxonomy: defaultPlanningTaxonomy,
-        scopeNodeId: matrixScopeNodeId,
-        referenceDate: holdingsWorkspace?.as_of_date ?? null,
-      }),
+      matrixUsesAllInstruments
+        ? riskOk([] satisfies GroupReturnSeries[])
+        : buildCurrentTaxonomyReturnSeries({
+            instrumentSeries: instrumentReturnSeries,
+            catalog: taxonomyCatalog,
+            taxonomy: defaultPlanningTaxonomy,
+            scopeNodeId: matrixTaxonomyScopeNodeId,
+            referenceDate: holdingsWorkspace?.as_of_date ?? null,
+          }),
     [
       defaultPlanningTaxonomy,
       holdingsWorkspace?.as_of_date,
       instrumentReturnSeries,
-      matrixScopeNodeId,
+      matrixTaxonomyScopeNodeId,
+      matrixUsesAllInstruments,
       taxonomyCatalog,
     ],
   )
@@ -2330,19 +2397,28 @@ export default function RiskPage() {
     ],
   )
   const instrumentCorrelationMatrix = useMemo(
-    () => buildCorrelationMatrix(instrumentReturnSeries, matrixAsOfDate, matrixSettings, portfolioRiskFrequency.frequency),
-    [instrumentReturnSeries, matrixAsOfDate, matrixSettings, portfolioRiskFrequency.frequency],
+    () =>
+      buildCorrelationMatrix(
+        instrumentReturnSeries,
+        matrixAsOfDate,
+        matrixSettings.lookbackDays,
+        portfolioRiskFrequency.frequency,
+      ),
+    [instrumentReturnSeries, matrixAsOfDate, matrixSettings.lookbackDays, portfolioRiskFrequency.frequency],
   )
   const taxonomyCorrelationMatrix = useMemo(
     () =>
       buildCorrelationMatrix(
         alignedMatrixTaxonomySeries,
         matrixAsOfDate,
-        matrixSettings,
+        matrixSettings.lookbackDays,
         portfolioRiskFrequency.frequency,
       ),
-    [alignedMatrixTaxonomySeries, matrixAsOfDate, matrixSettings, portfolioRiskFrequency.frequency],
+    [alignedMatrixTaxonomySeries, matrixAsOfDate, matrixSettings.lookbackDays, portfolioRiskFrequency.frequency],
   )
+  const selectedCorrelationMatrix = matrixUsesAllInstruments ? instrumentCorrelationMatrix : taxonomyCorrelationMatrix
+  const selectedMatrixErrors = matrixUsesAllInstruments ? [] : matrixTaxonomySeriesResult.errors
+  const selectedMatrixEmptyLabel = matrixUsesAllInstruments ? 'No matrix.' : defaultPlanningTaxonomy ? 'No matrix.' : 'No taxonomy.'
   const topLevelRiskContributionResult = useMemo(
     () =>
       riskInputsReady && !topLevelTaxonomySeriesResult.errors.length
@@ -2492,9 +2568,6 @@ export default function RiskPage() {
       riskInputsReady,
     ],
   )
-  const selectedMatrixScopeLabel =
-    matrixTaxonomyScopeOptions.find((option) => option.value === matrixScopeNodeId)?.label ?? 'Top Level'
-
   function renderRiskErrors(errors: string[]) {
     if (!errors.length) {
       return null
@@ -2512,16 +2585,23 @@ export default function RiskPage() {
     if (!matrix.groups.length) {
       return <div className="price-chart-empty">{emptyLabel}</div>
     }
+    const matrixMinWidth = Math.max(980, 220 + matrix.groups.length * 72)
 
     return (
       <div className="risk-matrix-scroll risk-covariance-scroll">
-        <table className="risk-heatmap-table risk-covariance-table">
+        <table className="risk-heatmap-table risk-covariance-table" style={{ minWidth: `${matrixMinWidth}px` }}>
+          <colgroup>
+            <col className="risk-matrix-label-col" />
+            {matrix.groups.map((group) => (
+              <col key={group.key} className="risk-matrix-value-col" />
+            ))}
+          </colgroup>
           <thead>
             <tr>
-              <th>Group</th>
+              <th className="risk-matrix-corner">Group</th>
               {matrix.groups.map((group) => (
-                <th key={group.key} title={`${group.label}; weight ${formatPercent(group.weight)}`}>
-                  {group.label}
+                <th className="risk-matrix-column-header" key={group.key} title={`${group.label}; weight ${formatPercent(group.weight)}`}>
+                  <span className="risk-matrix-column-label">{group.label}</span>
                 </th>
               ))}
             </tr>
@@ -2529,7 +2609,9 @@ export default function RiskPage() {
           <tbody>
             {matrix.groups.map((rowGroup, rowIndex) => (
               <tr key={rowGroup.key}>
-                <th title={`${rowGroup.label}; ${rowGroup.observationCount} return observations`}>{rowGroup.label}</th>
+                <th className="risk-matrix-row-header" title={`${rowGroup.label}; ${rowGroup.observationCount} return observations`}>
+                  <span className="risk-matrix-row-label">{rowGroup.label}</span>
+                </th>
                 {matrix.groups.map((columnGroup, columnIndex) => {
                   const cell = matrix.cells[rowIndex]?.[columnIndex]
                   return (
@@ -2622,39 +2704,57 @@ export default function RiskPage() {
         {holdingsWorkspace ? (
           <>
             <section className="performance-section-block risk-rolling-section">
-              <div className="risk-chart-controls overview-chart-controls">
-                <BenchmarkSearchBox
-                  instruments={benchmarkInstruments}
-                  selectedInstrumentId={benchmarkInstrumentId}
-                  searchValue={benchmarkSearch}
-                  onSearchChange={setBenchmarkSearch}
-                  onSelectInstrument={(instrument) => {
-                    setBenchmarkInstrumentId(instrument.instrument_id)
-                    setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
-                    setBenchmarkError(null)
-                  }}
-                  onClear={() => {
-                    setBenchmarkInstrumentId('')
-                    setBenchmarkSearch('')
-                    setBenchmarkChart(null)
-                    setBenchmarkError(null)
-                  }}
-                  placeholder="Compare benchmark..."
-                />
-                <RiskSettingsMenu
-                  label="Rolling risk"
-                  settings={rollingSettings}
-                  onChange={setRollingSettings}
-                  includeChartStyle
-                />
+              <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar risk-rolling-toolbar">
+                <div className="risk-toolbar-primary risk-rolling-toolbar-primary">
+                  <div>
+                    <div className="panel-title">Rolling Risk</div>
+                  </div>
+                  <BenchmarkSearchBox
+                    instruments={benchmarkInstruments}
+                    selectedInstrumentId={benchmarkInstrumentId}
+                    searchValue={benchmarkSearch}
+                    onSearchChange={setBenchmarkSearch}
+                    onSelectInstrument={(instrument) => {
+                      setBenchmarkInstrumentId(instrument.instrument_id)
+                      setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
+                      setBenchmarkError(null)
+                    }}
+                    onClear={() => {
+                      setBenchmarkInstrumentId('')
+                      setBenchmarkSearch('')
+                      setBenchmarkChart(null)
+                      setBenchmarkError(null)
+                    }}
+                    placeholder="Compare benchmark..."
+                  />
+                </div>
+                <div className="risk-section-actions">
+                  <div className="risk-toggle-group" role="group" aria-label="Rolling risk window">
+                    {RISK_WINDOW_OPTIONS.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={rollingSettings.lookbackDays === option.value ? 'risk-toggle-active' : undefined}
+                        onClick={() => setRollingSettings({ ...rollingSettings, lookbackDays: option.value })}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  <RiskSettingsMenu
+                    label="Rolling risk"
+                    settings={rollingSettings}
+                    onChange={setRollingSettings}
+                    includeWindow={false}
+                    includeChartStyle
+                  />
+                </div>
               </div>
               {benchmarkLoading ? <div className="portfolio-detail-meta">Loading</div> : null}
               {benchmarkError ? <div className="overview-benchmark-error">{benchmarkError}</div> : null}
               <div className="risk-rolling-grid">
                 <RollingRiskMetricChart
-                  title="Current-Weight Rolling Annualized Volatility"
-                  metricLabel={riskModelLabel(rollingSettings.modelId)}
-                  windowLabel={rollingWindow}
+                  title="Annualized Volatility"
                   points={rollingVolatilityPoints}
                   benchmarkPoints={benchmarkRollingVolatilityPoints}
                   benchmarkLabel={benchmarkLabel}
@@ -2663,9 +2763,7 @@ export default function RiskPage() {
                   emptyLabel="Insufficient data."
                 />
                 <RollingRiskMetricChart
-                  title="Current-Weight Rolling Sharpe Ratio"
-                  metricLabel={riskModelLabel(rollingSettings.modelId)}
-                  windowLabel={rollingWindow}
+                  title="Sharpe Ratio"
                   points={rollingSharpePoints}
                   benchmarkPoints={benchmarkRollingSharpePoints}
                   benchmarkLabel={benchmarkLabel}
@@ -2677,54 +2775,53 @@ export default function RiskPage() {
             </section>
 
             <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar">
-                <div>
-                  <div className="panel-title">Correlation Matrix</div>
-                  <div className="portfolio-detail-meta">
-                    {matrixAsOfDate
-                      ? `${matrixAsOfDate}; ${portfolioRiskFrequency.statusLabel}; ${windowLabel(matrixSettings.lookbackDays)} ${riskModelLabel(matrixSettings.modelId)}`
-                      : 'No active matrix date'}
+              <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar risk-matrix-toolbar">
+                <div className="risk-toolbar-primary risk-matrix-toolbar-primary">
+                  <div>
+                    <div className="panel-title">Correlation Matrix</div>
                   </div>
+                  <label className="risk-scope-select">
+                    <div className="risk-scope-select-box">
+                      <select
+                        value={matrixScopeNodeId}
+                        onChange={(event) => setMatrixScopeNodeId(event.target.value)}
+                        aria-label="Matrix scope"
+                      >
+                        {matrixScopeOptions.map((option) => (
+                          <option key={option.value || 'taxonomy-root'} value={option.value}>
+                            {option.kind === 'taxonomy' ? `Taxonomy: ${option.label}` : option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </label>
                 </div>
                 <div className="risk-section-actions">
-                  <label className="risk-scope-select">
-                    <span>Taxonomy Scope</span>
-                    <select value={matrixScopeNodeId} onChange={(event) => setMatrixScopeNodeId(event.target.value)}>
-                      {matrixTaxonomyScopeOptions.map((option) => (
-                        <option key={option.value || 'root'} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <RiskSettingsMenu
-                    label="Correlation matrix"
-                    settings={matrixSettings}
-                    onChange={setMatrixSettings}
-                  />
+                  <div className="risk-toggle-group" role="group" aria-label="Correlation matrix window">
+                    {RISK_WINDOW_OPTIONS.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={matrixSettings.lookbackDays === option.value ? 'risk-toggle-active' : undefined}
+                        onClick={() => setMatrixSettings({ ...matrixSettings, lookbackDays: option.value })}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
               <RiskDateTimeline
-                dates={riskDates}
+                dates={riskAsOfSelectionDates}
                 value={matrixAsOfDate}
                 onChange={setMatrixAsOfDate}
                 label="Matrix as of"
               />
               <div className="risk-correlation-stack">
                 <div className="risk-matrix-panel">
-                  <div className="risk-matrix-panel-title">All Instruments</div>
-                  {renderCorrelationMatrix(instrumentCorrelationMatrix, 'No matrix.')}
-                </div>
-                <div className="risk-matrix-panel">
-                  <div className="risk-matrix-panel-title">Taxonomy: {selectedMatrixScopeLabel}</div>
-                  {matrixTaxonomySeriesResult.errors.length
-                    ? renderRiskErrors(matrixTaxonomySeriesResult.errors)
-                    : renderCorrelationMatrix(
-                        taxonomyCorrelationMatrix,
-                        defaultPlanningTaxonomy
-                          ? 'No matrix.'
-                          : 'No taxonomy.',
-                      )}
+                  {selectedMatrixErrors.length
+                    ? renderRiskErrors(selectedMatrixErrors)
+                    : renderCorrelationMatrix(selectedCorrelationMatrix, selectedMatrixEmptyLabel)}
                 </div>
               </div>
             </section>
@@ -2826,7 +2923,7 @@ export default function RiskPage() {
                 />
               </div>
               <RiskDateTimeline
-                dates={riskDates}
+                dates={riskAsOfSelectionDates}
                 value={contributionAsOfDate}
                 onChange={setContributionAsOfDate}
                 label="Contribution as of"

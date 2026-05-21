@@ -61,6 +61,7 @@ GIPS 强调一致应用计算方法、建立政策，并披露方法边界。
 
 - `01_CALCULATION_SPEC.md` 作为 canonical 计算政策；
 - materialized snapshot 可重建，不能成为不可解释的手填事实；
+- materialized snapshot / contribution slice schema 变化通过 `calculation_version` 失效重建，不在收益读路径保留旧 schema 兼容层；
 - materialized snapshot 刷新必须可重复、可追踪，并在更新并发到达时保留最新 stale 请求；
 - `coverage_state`、`stale_price_flag`、`stale_fx_flag` 必须随关键结果返回；
 - 区间 daily series、summary、drawdown 必须使用同一组 window-rebased `daily_twr`。
@@ -76,7 +77,7 @@ GIPS-informed 绩效口径以 fair value、外部现金流中性化和几何链�
 - 修改账户成本法时，系统从 transaction facts 重算成本相关 read models，而不是保留历史算法兼容层。
 
 Performance `Calculation` 使用 period bridge：`Initial Value + Net External Flow + Period P&L = Final Value`。其中 capital gain 使用 fair-value period basis：期初已有持仓按期初市值重置，区间内买入按成交 gross amount 建立期间成本，期末仍持有部分形成 unrealized gain。这个拆分服务绩效解释，不读取 FIFO / moving average 的 book cost 分支。
-Calculation 的 group axis 包括 instrument、instrument type、currency、account 与 planning taxonomy；TWR 和 contribution 必须在后端按目标轴从 daily slices 计算，不能在前端简单汇总 instrument rows。Group daily return 必须使用组内 `total_pnl / (beginning_value + period capital flow in)`，taxonomy regroup 与 calculation detail 聚合也必须保留同一 capital-flow denominator。
+Calculation 的 group axis 包括 instrument、instrument type、currency、account 与 planning taxonomy；TWR 和 contribution 必须在后端按目标轴从 daily slices 计算，不能在前端简单汇总 instrument rows。Group daily return 必须使用组内 `total_pnl / (beginning_value + period capital flow in)`，taxonomy regroup 与 calculation detail 聚合也必须保留同一 capital-flow denominator。taxonomy period view 优先使用区间期末 assignment；期末已清仓且期末不再有 active assignment 的 instrument，使用其区间内有效 assignment 承接历史 P&L，避免把 closed-position attribution 误列为 Unassigned。
 
 Holdings 只作为当前持仓状态表。资产级 TWR、区间 contribution、realized gain、income 和 closed positions 必须从 `Performance` 或 security detail 读取，避免把 current holdings 和 period performance 混成一个口径。
 

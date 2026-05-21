@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { SharedInstrumentRecord } from '../lib/api'
 import { formatLabel } from '../lib/format'
@@ -41,10 +41,26 @@ export default function BenchmarkSearchBox({
   className,
 }: BenchmarkSearchBoxProps) {
   const [focused, setFocused] = useState(false)
+  const rootRef = useRef<HTMLLabelElement | null>(null)
   const deferredSearch = useDeferredValue(searchValue)
   const selectedInstrument = instruments.find((instrument) => instrument.instrument_id === selectedInstrumentId) ?? null
   const selectedLabel = selectedInstrument ? benchmarkInstrumentLabel(selectedInstrument) : ''
   const inputValue = selectedInstrument && !searchValue ? selectedLabel : searchValue
+
+  useEffect(() => {
+    if (!focused) {
+      return undefined
+    }
+
+    function handleDocumentPointerDown(event: PointerEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setFocused(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', handleDocumentPointerDown)
+    return () => document.removeEventListener('pointerdown', handleDocumentPointerDown)
+  }, [focused])
 
   const filteredOptions = useMemo(() => {
     const normalizedSearch = deferredSearch.trim().toLowerCase()
@@ -78,7 +94,7 @@ export default function BenchmarkSearchBox({
   }, [deferredSearch, instruments])
 
   return (
-    <label className={['overview-benchmark-search', className].filter(Boolean).join(' ') || undefined}>
+    <label className={['overview-benchmark-search', className].filter(Boolean).join(' ') || undefined} ref={rootRef}>
       <div className="overview-benchmark-search-box">
         <input
           type="search"

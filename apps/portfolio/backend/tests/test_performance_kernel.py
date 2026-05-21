@@ -6634,6 +6634,172 @@ def test_taxonomy_calculation_groups_use_period_end_view_and_preserve_cash_group
     assert isclose(groups["cash"]["total_pnl"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
 
+def test_taxonomy_calculation_groups_keep_sold_out_instruments_in_effective_group(client, monkeypatch):
+    instrument_id = "equity-us-sold-tax-test"
+    portfolio_id = "taxonomy-sold-out-period-end-test"
+    instrument_detail = _test_instrument_detail(
+        instrument_id=instrument_id,
+        instrument_name="Sold Taxonomy Equity",
+        history=[
+            ("2026-01-02", "100.00"),
+            ("2026-01-03", "110.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda target_id: deepcopy(instrument_detail) if target_id == instrument_id else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+
+    instrument_ref = {
+        "instrument_id": instrument_id,
+        "instrument_name": "Sold Taxonomy Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": "SOLD", "is_primary": True}],
+    }
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Opening cash.",
+                "created_at": "2026-01-01T09:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "buy",
+                "trade_date": "2026-01-02",
+                "settlement_date": "2026-01-02",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "instrument_id": instrument_id,
+                "instrument_ref": instrument_ref,
+                "quantity": 1.0,
+                "price": 100.0,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Buy sold taxonomy equity.",
+                "created_at": "2026-01-02T09:30:00Z",
+            },
+            {
+                "transaction_id": "txn-0003",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "sell",
+                "trade_date": "2026-01-03",
+                "settlement_date": "2026-01-03",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "instrument_id": instrument_id,
+                "instrument_ref": instrument_ref,
+                "quantity": 1.0,
+                "price": 110.0,
+                "gross_amount": 110.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Sell sold taxonomy equity.",
+                "created_at": "2026-01-03T15:00:00Z",
+            },
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-31"
+    store["taxonomies"] = [
+        {
+            "taxonomy_id": "tax-sector",
+            "portfolio_id": portfolio_id,
+            "name": "Sector",
+            "taxonomy_type": "custom",
+            "purpose": "performance_grouping",
+            "primary_assignment_scope": "instrument",
+            "planning_enabled": False,
+            "budgeting_level": None,
+            "effective_from": "2026-01-01",
+            "effective_to": None,
+            "status": "active",
+            "source_template_ref": None,
+        }
+    ]
+    store["taxonomy_nodes"] = [
+        {
+            "taxonomy_node_id": "tax-sector-core",
+            "taxonomy_id": "tax-sector",
+            "parent_taxonomy_node_id": None,
+            "node_name": "Core",
+            "node_code": "CORE",
+            "sort_order": 0,
+            "is_terminal": True,
+            "status": "active",
+        }
+    ]
+    store["taxonomy_assignments"] = [
+        {
+            "assignment_id": "assign-0001",
+            "taxonomy_id": "tax-sector",
+            "target_scope": "instrument",
+            "target_entity_id": instrument_id,
+            "taxonomy_node_id": "tax-sector-core",
+            "effective_from": "2026-01-02",
+            "effective_to": "2026-01-03",
+            "status": "active",
+        }
+    ]
+    _write_store(store)
+
+    response = client.get(
+        f"/api/portfolios/{portfolio_id}/performance/calculation/groups"
+        "?axis=taxonomy&taxonomy_id=tax-sector&start_date=2026-01-02&end_date=2026-01-31"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    groups = {item["group_key"]: item for item in payload["groups"]}
+    assert "unassigned:tax-sector" not in groups
+    assert set(groups) == {"tax-sector-core", "cash"}
+    assert isclose(groups["tax-sector-core"]["final_value"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["tax-sector-core"]["capital_gains"], 10.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["tax-sector-core"]["realized_capital_gains"], 10.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(groups["tax-sector-core"]["unrealized_pnl_change"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+
+    children = {item["item_key"]: item for item in groups["tax-sector-core"]["children"]}
+    assert instrument_id in children
+    assert isclose(children[instrument_id]["final_value"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(children[instrument_id]["realized_capital_gains"], 10.0, rel_tol=0.0, abs_tol=1e-12)
+
+
 def test_period_calculation_drilldown_returns_instrument_capital_gains(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
