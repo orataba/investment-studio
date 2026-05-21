@@ -27,12 +27,13 @@ from portfolio_app.services.portfolio_store import (
     _serialize_portfolio_row,
     _serialize_transaction_row,
 )
+from portfolio_app.services.snapshot_selection import default_portfolio_snapshot
 
 _LOCAL_REFRESH_LOCKS: dict[str, Lock] = {}
 _LOCAL_REFRESH_LOCKS_GUARD = Lock()
 _RUNNING_REFRESH_WAIT_SECONDS = 30.0
 _RUNNING_REFRESH_POLL_SECONDS = 0.1
-DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260521-taxonomy-capital-flow"
+DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260521-asof-source-date"
 
 
 def _current_utc_timestamp() -> str:
@@ -792,12 +793,14 @@ def build_materialized_holdings_workspace(
         if portfolio_record is None:
             return None
 
-        snapshot_statement = select(PortfolioDailySnapshotModel).where(
-            PortfolioDailySnapshotModel.portfolio_id == portfolio_id
-        )
-        if as_of_date is not None:
+        if as_of_date is None:
+            snapshot = default_portfolio_snapshot(session, portfolio_id)
+        else:
+            snapshot_statement = select(PortfolioDailySnapshotModel).where(
+                PortfolioDailySnapshotModel.portfolio_id == portfolio_id
+            )
             snapshot_statement = snapshot_statement.where(PortfolioDailySnapshotModel.as_of_date == as_of_date)
-        snapshot = session.scalar(snapshot_statement.order_by(PortfolioDailySnapshotModel.as_of_date.desc()))
+            snapshot = session.scalar(snapshot_statement.order_by(PortfolioDailySnapshotModel.as_of_date.desc()))
         if snapshot is None:
             return None
 

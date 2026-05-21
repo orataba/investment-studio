@@ -27,6 +27,7 @@ from portfolio_app.db.models import (
 )
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.ledger import build_account_workspace, build_position_lots
+from portfolio_app.services.snapshot_selection import default_portfolio_snapshot
 
 EMPTY_STORE: dict[str, list[dict[str, Any]]] = {
     "portfolios": [],
@@ -760,11 +761,16 @@ def _latest_market_data_date_for_instruments(session, instrument_ids: set[str]) 
         return None
 
     return session.scalar(
-        select(func.max(InstrumentMarketData.as_of_date)).where(
+        select(InstrumentMarketData.as_of_date)
+        .where(
             InstrumentMarketData.instrument_id.in_(normalized_instrument_ids),
             InstrumentMarketData.metric_family.in_(("price", "nav")),
             InstrumentMarketData.status != "error",
         )
+        .group_by(InstrumentMarketData.as_of_date)
+        .having(func.count(func.distinct(InstrumentMarketData.instrument_id)) == len(normalized_instrument_ids))
+        .order_by(InstrumentMarketData.as_of_date.desc())
+        .limit(1)
     )
 
 
@@ -784,16 +790,16 @@ def _resolve_live_portfolio_as_of_date(
         if str(transaction.instrument_id or "")
     }
 
-    candidate_dates = [
+    latest_transacted_market_date = _latest_market_data_date_for_instruments(session, transacted_instrument_ids)
+    source_candidate_dates = [
         candidate
         for candidate in (
-            portfolio_as_of_date,
             latest_trade_date,
-            _latest_market_data_date_for_instruments(session, transacted_instrument_ids),
+            latest_transacted_market_date,
         )
         if candidate is not None
     ]
-    candidate_as_of_date = max(candidate_dates, default=date.today())
+    candidate_as_of_date = max(source_candidate_dates, default=portfolio_as_of_date or date.today())
 
     boundary_transactions = [
         transaction
@@ -812,18 +818,27 @@ def _resolve_live_portfolio_as_of_date(
         if str(position_lot.get("instrument_id") or "")
     }
     latest_open_market_date = _latest_market_data_date_for_instruments(session, open_instrument_ids)
-    return max(
-        (
+    if latest_open_market_date is not None:
+        resolved_candidate_dates = [
             candidate
             for candidate in (
-                portfolio_as_of_date,
                 latest_trade_date,
                 latest_open_market_date,
             )
             if candidate is not None
-        ),
-        default=candidate_as_of_date,
-    )
+        ]
+        return max(resolved_candidate_dates, default=candidate_as_of_date)
+
+    fallback_candidate_dates = [
+        candidate
+        for candidate in (
+            latest_trade_date,
+            latest_transacted_market_date,
+            portfolio_as_of_date,
+        )
+        if candidate is not None
+    ]
+    return max(fallback_candidate_dates, default=candidate_as_of_date)
 
 
 def _build_live_portfolio_rollup(
@@ -894,11 +909,7 @@ def _serialize_portfolio_row_with_materialized_summary(
     item: PortfolioRecordModel,
 ) -> dict[str, object]:
     payload = _serialize_portfolio_row(item)
-    latest_snapshot = session.scalar(
-        select(PortfolioDailySnapshotModel)
-        .where(PortfolioDailySnapshotModel.portfolio_id == item.portfolio_id)
-        .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
-    )
+    latest_snapshot = default_portfolio_snapshot(session, item.portfolio_id)
     if latest_snapshot is None:
         return payload
 

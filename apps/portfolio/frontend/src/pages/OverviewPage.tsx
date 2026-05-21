@@ -29,7 +29,6 @@ import {
   type PortfolioTaxonomyNodeRecord,
   type PortfolioWorkspaceSummary,
   type SharedInstrumentRecord,
-  type SparklinePoint,
 } from '../lib/api'
 import {
   formatCurrency,
@@ -214,8 +213,10 @@ function formatDateKey(date: Date) {
 function periodReturnFromTwr(
   points: PortfolioDailyPerformancePoint[],
   targetDate: string | null,
-  fallbackToFirst = true,
+  options: { fallbackToFirst?: boolean; includeTargetDate?: boolean } = {},
 ) {
+  const fallbackToFirst = options.fallbackToFirst ?? true
+  const includeTargetDate = options.includeTargetDate ?? false
   const sortedPoints = points
     .filter((point) => point.daily_twr != null && Number.isFinite(point.daily_twr))
     .slice()
@@ -224,7 +225,11 @@ function periodReturnFromTwr(
     return null
   }
 
-  const periodPoints = targetDate ? sortedPoints.filter((point) => point.as_of_date > targetDate) : sortedPoints
+  const periodPoints = targetDate
+    ? sortedPoints.filter((point) =>
+        includeTargetDate ? point.as_of_date >= targetDate : point.as_of_date > targetDate,
+      )
+    : sortedPoints
   if (!periodPoints.length && !fallbackToFirst) {
     return null
   }
@@ -254,9 +259,13 @@ function buildPortfolioReturnMetrics(points: PortfolioDailyPerformancePoint[]) {
   )
 
   return {
-    oneWeek: periodReturnFromTwr(sortedPoints, formatDateKey(addDays(latestDate, -7))),
-    mtd: periodReturnFromTwr(sortedPoints, formatDateKey(priorMonthEnd), false),
-    ytd: hasYearStartAnchor ? periodReturnFromTwr(sortedPoints, formatDateKey(priorYearEnd), false) : null,
+    oneWeek: periodReturnFromTwr(sortedPoints, formatDateKey(addDays(latestDate, -7)), {
+      includeTargetDate: true,
+    }),
+    mtd: periodReturnFromTwr(sortedPoints, formatDateKey(priorMonthEnd), { fallbackToFirst: false }),
+    ytd: hasYearStartAnchor
+      ? periodReturnFromTwr(sortedPoints, formatDateKey(priorYearEnd), { fallbackToFirst: false })
+      : null,
   }
 }
 
@@ -281,31 +290,6 @@ function periodReturnFromValuePoints(
       ) ?? (fallbackToFirst ? sortedPoints[0] : null)
     : sortedPoints[0]
   return anchorPoint && anchorPoint.value !== 0 ? latestPoint.value / anchorPoint.value - 1 : null
-}
-
-function buildPriceReturnMetrics(points: SparklinePoint[]) {
-  const sortedPoints = points
-    .filter((point) => Number.isFinite(point.value))
-    .slice()
-    .sort((left, right) => left.date.localeCompare(right.date))
-  const latestPoint = sortedPoints[sortedPoints.length - 1]
-  const latestDate = latestPoint ? dateFromString(latestPoint.date) : null
-  if (!latestPoint || !latestDate) {
-    return {
-      oneWeek: null,
-      mtd: null,
-      ytd: null,
-    }
-  }
-
-  const monthStart = new Date(latestDate.getFullYear(), latestDate.getMonth(), 1)
-  const yearStart = new Date(latestDate.getFullYear(), 0, 1)
-
-  return {
-    oneWeek: periodReturnFromValuePoints(sortedPoints, formatDateKey(addDays(latestDate, -7))),
-    mtd: periodReturnFromValuePoints(sortedPoints, formatDateKey(addDays(monthStart, -1)), false),
-    ytd: periodReturnFromValuePoints(sortedPoints, formatDateKey(addDays(yearStart, -1)), false),
-  }
 }
 
 function sampleStandardDeviation(values: number[]) {
@@ -432,7 +416,7 @@ function buildBenchmarkMetrics(points: PortfolioInstrumentPriceChartPoint[]) {
   const drawdowns = buildDrawdownMetrics(sortedPoints)
 
   return {
-    oneWeek: periodReturnFromValuePoints(sortedPoints, formatDateKey(addDays(latestDate, -7))),
+    oneWeek: periodReturnFromValuePoints(sortedPoints, formatDateKey(addDays(latestDate, -8))),
     mtd: periodReturnFromValuePoints(sortedPoints, formatDateKey(priorMonthEnd), false),
     ytd: periodReturnFromValuePoints(sortedPoints, formatDateKey(priorYearEnd), false),
     sinceInception,
@@ -664,7 +648,8 @@ export default function OverviewPage() {
   }, [portfolioId])
 
   useEffect(() => {
-    if (!portfolioId) {
+    const asOfDate = holdingsWorkspace?.as_of_date ?? summary?.as_of_date
+    if (!portfolioId || !asOfDate) {
       setPerformanceWorkspace(null)
       setPerformanceLoading(false)
       setPerformanceError(null)
@@ -674,7 +659,7 @@ export default function OverviewPage() {
     let cancelled = false
     setPerformanceLoading(true)
 
-    getPortfolioPerformance(portfolioId)
+    getPortfolioPerformance(portfolioId, { end_date: asOfDate })
       .then((response) => {
         if (!cancelled) {
           setPerformanceWorkspace(response)
@@ -696,7 +681,7 @@ export default function OverviewPage() {
     return () => {
       cancelled = true
     }
-  }, [portfolioId])
+  }, [holdingsWorkspace?.as_of_date, portfolioId, summary?.as_of_date])
 
   useEffect(() => {
     if (!portfolioId) {
@@ -723,7 +708,7 @@ export default function OverviewPage() {
   }, [portfolioId])
 
   useEffect(() => {
-    const asOfDate = summary?.as_of_date ?? holdingsWorkspace?.as_of_date
+    const asOfDate = holdingsWorkspace?.as_of_date ?? summary?.as_of_date
     if (!portfolioId || !benchmarkInstrumentId || !asOfDate) {
       setBenchmarkChart(null)
       setBenchmarkLoading(false)
@@ -1089,7 +1074,7 @@ export default function OverviewPage() {
       key: 'return_1w',
       label: TOP_HOLDING_COLUMN_LABELS.return_1w,
       render: (row) => {
-        const value = buildPriceReturnMetrics(row.price_chart_6m).oneWeek
+        const value = row.instrument_return_1w ?? null
         return <span className={signedValueClass(value)}>{signedPercent(value)}</span>
       },
     },
@@ -1097,7 +1082,7 @@ export default function OverviewPage() {
       key: 'return_mtd',
       label: TOP_HOLDING_COLUMN_LABELS.return_mtd,
       render: (row) => {
-        const value = buildPriceReturnMetrics(row.price_chart_6m).mtd
+        const value = row.instrument_return_mtd ?? null
         return <span className={signedValueClass(value)}>{signedPercent(value)}</span>
       },
     },
@@ -1105,7 +1090,7 @@ export default function OverviewPage() {
       key: 'return_ytd',
       label: TOP_HOLDING_COLUMN_LABELS.return_ytd,
       render: (row) => {
-        const value = buildPriceReturnMetrics(row.price_chart_6m).ytd
+        const value = row.instrument_return_ytd ?? null
         return <span className={signedValueClass(value)}>{signedPercent(value)}</span>
       },
     },

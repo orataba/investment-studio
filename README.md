@@ -9,7 +9,7 @@
 - `apps/watchlist`
   已有可运行的前后端、数据库迁移、测试与文档，继续承载 fund-only watchlist / fund detail / facts / recalc 基线；Copilot 当前只保留后端扩展接口，默认 UI 不对外开放。
 - `apps/portfolio`
-  已有可运行的前后端、数据库迁移、交易与绩效内核，以及成体系的领域文档；部分 workspace 页面仍为占位实现。
+  已有可运行的前后端、数据库迁移、交易、绩效、持仓、风险、研究与 review 工作台，以及成体系的领域文档。
 
 当前架构约束：
 

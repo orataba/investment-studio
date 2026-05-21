@@ -3,10 +3,12 @@ from datetime import date
 from typing import cast
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from sqlalchemy import select
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency
-from portfolio_app.db.models import PortfolioCalculationStateModel
+from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
 from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.daily_snapshots import DAILY_SNAPSHOT_CALCULATION_VERSION, ensure_portfolio_daily_snapshots
 from portfolio_app.services.instrument_charts import (
     HOLDINGS_PRICE_CHART_RANGE_KEYS,
     build_instrument_holdings_market_profile,
@@ -33,6 +35,7 @@ from portfolio_app.services.portfolio_store import (
     list_accounts,
     list_transactions,
 )
+from portfolio_app.services.snapshot_selection import latest_fresh_complete_portfolio_snapshot
 
 router = APIRouter()
 
@@ -226,12 +229,30 @@ def _materialized_summary_is_current(portfolio_id: str) -> bool:
     session_factory = get_session_factory()
     with session_factory() as session:
         state = session.get(PortfolioCalculationStateModel, portfolio_id)
-        return state is not None and state.daily_snapshot_status == "current"
+        if state is None or state.daily_snapshot_status != "current":
+            return False
+        payload = session.scalar(
+            select(PortfolioDailySnapshotModel.snapshot_json)
+            .where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)
+            .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
+            .limit(1)
+        )
+        if not isinstance(payload, dict):
+            return False
+        return (
+            str(payload.get("calculation_version") or "") == DAILY_SNAPSHOT_CALCULATION_VERSION
+            and latest_fresh_complete_portfolio_snapshot(session, portfolio_id) is not None
+        )
 
 
 def _require_portfolio(portfolio_id: str | None, *, live_if_materialized_stale: bool = False) -> dict[str, object]:
     if not portfolio_id:
         raise HTTPException(status_code=400, detail="portfolio_id is required")
+    if live_if_materialized_stale:
+        try:
+            ensure_portfolio_daily_snapshots(portfolio_id)
+        except InstrumentRegistryError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
     if live_if_materialized_stale and not _materialized_summary_is_current(portfolio_id):
         resolved_portfolio = get_portfolio_live_summary(portfolio_id)
     else:
@@ -342,7 +363,7 @@ def holdings_workspace(
     portfolio_id: str | None = None,
     as_of_date: date | None = None,
 ) -> dict[str, object]:
-    resolved_portfolio = _require_portfolio(portfolio_id)
+    resolved_portfolio = _require_portfolio(portfolio_id, live_if_materialized_stale=as_of_date is None)
 
     portfolio_as_of_date = (
         date.fromisoformat(str(resolved_portfolio.get("as_of_date")))

@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from datetime import date
 
-from portfolio_app.db.models import AccountRecordModel, PortfolioRecordModel, TransactionRecordModel
+from portfolio_app.db.models import (
+    AccountRecordModel,
+    PortfolioCalculationStateModel,
+    PortfolioDailySnapshotModel,
+    PortfolioRecordModel,
+    TransactionRecordModel,
+)
+from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import portfolio_store
+from portfolio_app.services.daily_snapshots import DAILY_SNAPSHOT_CALCULATION_VERSION
 
 
 def test_reset_store_without_payload_leaves_store_empty() -> None:
@@ -12,6 +20,110 @@ def test_reset_store_without_payload_leaves_store_empty() -> None:
     assert portfolio_store.list_portfolios() == []
     assert portfolio_store.list_accounts("yungu") == []
     assert portfolio_store.list_transactions("yungu") == []
+
+
+def _seed_daily_snapshot(
+    *,
+    portfolio_id: str,
+    as_of_date: date,
+    nav: float,
+    daily_twr: float,
+    stale_price_flag: bool = False,
+    stale_fx_flag: bool = False,
+) -> PortfolioDailySnapshotModel:
+    beginning_nav = nav / (1 + daily_twr)
+    absolute_change = nav - beginning_nav
+    return PortfolioDailySnapshotModel(
+        portfolio_id=portfolio_id,
+        as_of_date=as_of_date,
+        coverage_state="complete",
+        nav=nav,
+        beginning_nav=beginning_nav,
+        ending_nav=nav,
+        daily_twr=daily_twr,
+        cumulative_twr=daily_twr,
+        drawdown=0.0,
+        snapshot_json={
+            "as_of_date": as_of_date.isoformat(),
+            "coverage_state": "complete",
+            "stale_price_flag": stale_price_flag,
+            "stale_fx_flag": stale_fx_flag,
+            "nav": nav,
+            "beginning_nav": beginning_nav,
+            "ending_nav": nav,
+            "external_cash_in": 0.0,
+            "external_cash_out": 0.0,
+            "net_external_inflow": 0.0,
+            "absolute_change": absolute_change,
+            "delta": absolute_change,
+            "daily_twr": daily_twr,
+            "cumulative_twr": daily_twr,
+            "drawdown": 0.0,
+            "total_position_count": 2,
+            "market_observation_count": 2,
+            "return_observation_eligible": True,
+            "calculation_version": DAILY_SNAPSHOT_CALCULATION_VERSION,
+        },
+        calculated_at="2026-05-21T00:00:00Z",
+    )
+
+
+def test_portfolio_summary_prefers_latest_fresh_complete_snapshot(client) -> None:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        session.add(
+            _seed_daily_snapshot(
+                portfolio_id="yungu",
+                as_of_date=date(2026, 5, 20),
+                nav=100.0,
+                daily_twr=0.02,
+            )
+        )
+        session.add(
+            _seed_daily_snapshot(
+                portfolio_id="yungu",
+                as_of_date=date(2026, 5, 21),
+                nav=101.0,
+                daily_twr=0.01,
+                stale_fx_flag=True,
+            )
+        )
+        session.add(
+            _seed_daily_snapshot(
+                portfolio_id="yungu",
+                as_of_date=date(2026, 5, 22),
+                nav=102.0,
+                daily_twr=0.01,
+                stale_price_flag=True,
+            )
+        )
+        state = session.get(PortfolioCalculationStateModel, "yungu")
+        if state is None:
+            state = PortfolioCalculationStateModel(portfolio_id="yungu", daily_snapshot_status="current")
+            session.add(state)
+        state.daily_snapshot_status = "current"
+        state.refreshed_from = date(2026, 5, 20)
+        state.refreshed_to = date(2026, 5, 22)
+        state.refreshed_at = "2026-05-21T00:00:00Z"
+        state.refresh_request_id = None
+        session.commit()
+
+    portfolio = portfolio_store.get_portfolio("yungu")
+    assert portfolio is not None
+    assert portfolio["as_of_date"] == "2026-05-21"
+    assert portfolio["nav"] == 101.0
+
+    response = client.get("/api/workspace/summary", params={"portfolio_id": "yungu"})
+    assert response.status_code == 200
+    assert response.json()["as_of_date"] == "2026-05-21"
+
+    holdings_response = client.get("/api/workspace/holdings", params={"portfolio_id": "yungu"})
+    assert holdings_response.status_code == 200
+    assert holdings_response.json()["as_of_date"] == "2026-05-21"
+
+    performance_response = client.get("/api/portfolios/yungu/performance", params={"end_date": "2026-05-21"})
+    assert performance_response.status_code == 200
+    assert performance_response.json()["summary"]["end_date"] == "2026-05-21"
 
 
 def test_live_portfolio_as_of_uses_current_holding_market_date(monkeypatch) -> None:
@@ -113,6 +225,76 @@ def test_live_portfolio_as_of_uses_current_holding_market_date(monkeypatch) -> N
         return None
 
     monkeypatch.setattr(portfolio_store, "_latest_market_data_date_for_instruments", fake_latest_market_date)
+    monkeypatch.setattr(
+        portfolio_store,
+        "build_position_lots",
+        lambda *args, **kwargs: [{"instrument_id": "open"}],
+    )
+
+    assert portfolio_store._resolve_live_portfolio_as_of_date(
+        object(),
+        portfolio,
+        accounts=[account],
+        transactions=transactions,
+    ) == date(2026, 4, 28)
+
+
+def test_live_portfolio_as_of_ignores_stale_cached_portfolio_date(monkeypatch) -> None:
+    portfolio = PortfolioRecordModel(
+        portfolio_id="p1",
+        portfolio_name="Portfolio",
+        base_currency="CNY",
+        valuation_timezone="Asia/Shanghai",
+        valuation_cutoff_policy="latest_complete_eod",
+        as_of_date=date(2026, 5, 21),
+        nav=0.0,
+        day_change_value=0.0,
+        day_change_pct=0.0,
+        securities_count=0,
+        sort_order=0,
+    )
+    account = AccountRecordModel(
+        account_id="broker",
+        portfolio_id="p1",
+        account_name="Broker",
+        account_type="securities_account",
+        currency="CNY",
+        institution=None,
+        default_settlement_cash_account_id=None,
+        cost_basis_method="fifo",
+        allowed_instrument_types_json=None,
+        opened_at=None,
+        closed_at=None,
+        status="active",
+    )
+    transactions = [
+        TransactionRecordModel(
+            transaction_id="buy-open",
+            portfolio_id="p1",
+            transaction_type="buy",
+            trade_date=date(2026, 4, 24),
+            trade_time="12:00",
+            trade_at="2026-04-24T04:00:00Z",
+            trade_timezone="Asia/Shanghai",
+            trade_time_is_estimated=True,
+            settlement_date=date(2026, 4, 24),
+            account_id="broker",
+            instrument_id="open",
+            instrument_ref_json={"instrument_id": "open"},
+            quantity=100.0,
+            price=1.0,
+            gross_amount=100.0,
+            fees=0.0,
+            taxes=0.0,
+            currency="CNY",
+        ),
+    ]
+
+    monkeypatch.setattr(
+        portfolio_store,
+        "_latest_market_data_date_for_instruments",
+        lambda _session, instrument_ids: date(2026, 4, 28) if instrument_ids == {"open"} else None,
+    )
     monkeypatch.setattr(
         portfolio_store,
         "build_position_lots",
