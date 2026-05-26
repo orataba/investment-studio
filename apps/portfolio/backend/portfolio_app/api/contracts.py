@@ -64,6 +64,9 @@ ResearchCapitalMode = Literal["unit_notional", "fixed_gross", "target_volatility
 ResearchCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
 ResearchMissingReturnPolicy = Literal["strict", "complete_case_drop"]
 PortfolioCalculationFrequency = Literal["daily", "weekly", "monthly"]
+PortfolioRiskCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
+PortfolioRiskCovarianceModel = Literal["ewma_vol_shrinkage_corr_covariance", "ewma_covariance", "sample_covariance"]
+PortfolioRiskContributionMode = Literal["signed", "abs"]
 TargetSetType = Literal["saa", "taa"]
 
 SUPPORTED_PORTFOLIO_CURRENCIES: tuple[SupportedCurrency, ...] = ("USD", "HKD", "CNY")
@@ -903,7 +906,7 @@ class ResearchSettingsRecord(BaseModel):
     comparator_taxonomy_node_id: str | None = None
     comparator_taxonomy_node_name: str | None = None
     as_of_date: date | None = None
-    lookback_days: int = Field(default=90, ge=7, le=366)
+    lookback_days: int = Field(default=90, ge=7, le=730)
     calculation_frequency: ResearchCalculationFrequency = "auto"
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
     target_dimension: ResearchTargetDimension = "scope_default"
@@ -920,9 +923,11 @@ class ResearchSettingsUpdateRequest(BaseModel):
     planning_taxonomy_id: str | None = None
     comparator_taxonomy_node_id: str | None = None
     as_of_date: date | None = None
-    lookback_days: int = Field(default=90, ge=7, le=366)
+    lookback_days: int = Field(default=90, ge=7, le=730)
     calculation_frequency: ResearchCalculationFrequency = "auto"
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
+    covariance_model_id: PortfolioRiskCovarianceModel = "ewma_vol_shrinkage_corr_covariance"
+    contribution_mode: PortfolioRiskContributionMode = "signed"
     target_dimension: ResearchTargetDimension = "scope_default"
     capital_mode: ResearchCapitalMode = "unit_notional"
     gross_exposure: float | None = Field(default=None, gt=0)
@@ -965,6 +970,27 @@ class ResearchSettingsUpdateRequest(BaseModel):
         ):
             raise ValueError("max_gross_exposure cannot be smaller than gross_exposure.")
         return self
+
+
+class PortfolioRiskPolicyRecord(BaseModel):
+    model_name: str = "Production Risk Model"
+    model_role: str = "production"
+    covariance_model_id: PortfolioRiskCovarianceModel = "ewma_vol_shrinkage_corr_covariance"
+    lookback_days: int = Field(default=90, ge=7, le=730)
+    calculation_frequency: PortfolioRiskCalculationFrequency = "auto"
+    resolved_calculation_frequency: PortfolioCalculationFrequency = "daily"
+    missing_return_policy: ResearchMissingReturnPolicy = "strict"
+    contribution_mode: PortfolioRiskContributionMode = "signed"
+    parameters: dict[str, object] = Field(default_factory=dict)
+    parameters_by_frequency: dict[str, dict[str, object]] = Field(default_factory=dict)
+
+
+class PortfolioRiskPolicyUpdateRequest(BaseModel):
+    covariance_model_id: PortfolioRiskCovarianceModel = "ewma_vol_shrinkage_corr_covariance"
+    lookback_days: int = Field(default=90, ge=7, le=730)
+    calculation_frequency: PortfolioRiskCalculationFrequency = "auto"
+    missing_return_policy: ResearchMissingReturnPolicy = "strict"
+    contribution_mode: PortfolioRiskContributionMode = "signed"
 
 
 class ResearchContextSignalRecord(BaseModel):
@@ -1205,6 +1231,7 @@ class ResearchWorkbenchResponse(BaseModel):
     planning_scope_options: list[ResearchPlanningScopeOption] = Field(default_factory=list)
     calculation_frequency: ResearchCalculationFrequencyProfile
     settings: ResearchSettingsRecord
+    risk_policy: PortfolioRiskPolicyRecord
     current_context: ResearchCurrentContextRecord
     runs: list[ResearchRunRecord] = Field(default_factory=list)
     selected_run: ResearchRunRecord | None = None

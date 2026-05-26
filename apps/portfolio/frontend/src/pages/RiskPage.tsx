@@ -45,6 +45,7 @@ type RiskSettingsState = {
   lookbackDays: number
   modelId: RiskModelId
   contributionMode: RiskContributionMode
+  parameters?: Record<string, unknown>
 }
 
 type RollingRiskSettingsState = RiskSettingsState & {
@@ -154,6 +155,27 @@ const DEFAULT_RISK_SETTINGS: RiskSettingsState = {
   lookbackDays: DEFAULT_RISK_LOOKBACK_DAYS,
   modelId: DEFAULT_RISK_MODEL_ID,
   contributionMode: 'signed',
+}
+
+const DEFAULT_RISK_MODEL_PARAMETERS: Record<CalculationFrequency, Record<string, number>> = {
+  daily: {
+    decay: 0.94,
+    vol_decay: 0.9945,
+    corr_shrinkage: 0.15,
+    min_observations: 52,
+  },
+  weekly: {
+    decay: 0.94,
+    vol_decay: 0.9737,
+    corr_shrinkage: 0.15,
+    min_observations: 26,
+  },
+  monthly: {
+    decay: 0.94,
+    vol_decay: 0.8909,
+    corr_shrinkage: 0.15,
+    min_observations: 12,
+  },
 }
 
 const DEFAULT_ROLLING_SETTINGS: RollingRiskSettingsState = {
@@ -397,15 +419,62 @@ function riskModelLabel(modelId: RiskModelId) {
   return RISK_MODEL_OPTIONS.find((option) => option.value === modelId)?.label ?? formatLabel(modelId)
 }
 
-function minReturnObservations(frequency: CalculationFrequency, lookbackDays: number) {
+function isRiskModelId(value: string | null | undefined): value is RiskModelId {
+  return value === 'ewma_vol_shrinkage_corr_covariance' || value === 'ewma_covariance' || value === 'sample_covariance'
+}
+
+function isRiskContributionMode(value: string | null | undefined): value is RiskContributionMode {
+  return value === 'signed' || value === 'abs'
+}
+
+function numericParameter(parameters: Record<string, unknown> | undefined, key: string, fallback: number) {
+  const value = parameters?.[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function riskModelParameters(settings: RiskSettingsState, frequency: CalculationFrequency) {
+  return {
+    ...DEFAULT_RISK_MODEL_PARAMETERS[frequency],
+    ...(settings.parameters ?? {}),
+  }
+}
+
+function riskSettingsFromPolicy(policy: HoldingsWorkspaceResponse['risk_policy'] | undefined | null): RiskSettingsState {
+  const modelId = isRiskModelId(policy?.covariance_model_id) ? policy.covariance_model_id : DEFAULT_RISK_SETTINGS.modelId
+  const contributionMode = isRiskContributionMode(policy?.contribution_mode)
+    ? policy.contribution_mode
+    : DEFAULT_RISK_SETTINGS.contributionMode
+  return {
+    lookbackDays: Number.isFinite(policy?.lookback_days) ? Number(policy?.lookback_days) : DEFAULT_RISK_SETTINGS.lookbackDays,
+    modelId,
+    contributionMode,
+    parameters: policy?.parameters ?? undefined,
+  }
+}
+
+function minReturnObservations(
+  frequency: CalculationFrequency,
+  lookbackDays: number,
+  parameters?: Record<string, unknown>,
+) {
+  const configured = numericParameter(parameters, 'min_observations', Number.NaN)
+  if (Number.isFinite(configured)) {
+    return Math.max(2, Math.floor(configured))
+  }
   const thresholds = RISK_MIN_RETURN_OBSERVATIONS[frequency]
   return thresholds[lookbackDays] ?? thresholds[366]
 }
 
-function assessRiskWindowCoverage(dateKeys: string[], asOfDate: string, lookbackDays: number, frequency: CalculationFrequency) {
+function assessRiskWindowCoverage(
+  dateKeys: string[],
+  asOfDate: string,
+  lookbackDays: number,
+  frequency: CalculationFrequency,
+  parameters?: Record<string, unknown>,
+) {
   const sortedDates = [...new Set(dateKeys)].filter(Boolean).sort()
   const observationCount = sortedDates.length
-  const minObservations = minReturnObservations(frequency, lookbackDays)
+  const minObservations = minReturnObservations(frequency, lookbackDays, parameters)
   if (!asOfDate) {
     return {
       ok: false,
@@ -584,7 +653,12 @@ function sampleCorrelation(leftValues: number[], rightValues: number[]) {
   return covariance / Math.sqrt(leftVariance * rightVariance)
 }
 
-function estimateCovarianceFromValues(leftValues: number[], rightValues: number[], modelId: RiskModelId) {
+function estimateCovarianceFromValues(
+  leftValues: number[],
+  rightValues: number[],
+  modelId: RiskModelId,
+  parameters: Record<string, unknown>,
+) {
   if (leftValues.length < 2 || rightValues.length !== leftValues.length) {
     return null
   }
@@ -592,11 +666,12 @@ function estimateCovarianceFromValues(leftValues: number[], rightValues: number[
     return sampleCovariance(leftValues, rightValues)
   }
   if (modelId === 'ewma_covariance') {
-    return ewmaCovariance(leftValues, rightValues, 0.94)
+    return ewmaCovariance(leftValues, rightValues, numericParameter(parameters, 'decay', 0.94))
   }
 
-  const leftVariance = ewmaCovariance(leftValues, leftValues, 0.97)
-  const rightVariance = ewmaCovariance(rightValues, rightValues, 0.97)
+  const volDecay = numericParameter(parameters, 'vol_decay', 0.9945)
+  const leftVariance = ewmaCovariance(leftValues, leftValues, volDecay)
+  const rightVariance = ewmaCovariance(rightValues, rightValues, volDecay)
   if (leftVariance == null || rightVariance == null || leftVariance < 0 || rightVariance < 0) {
     return null
   }
@@ -607,11 +682,16 @@ function estimateCovarianceFromValues(leftValues: number[], rightValues: number[
   if (correlation == null) {
     return null
   }
-  const shrunkCorrelation = correlation * 0.85
+  const shrunkCorrelation = correlation * (1 - numericParameter(parameters, 'corr_shrinkage', 0.15))
   return shrunkCorrelation * Math.sqrt(Math.max(leftVariance, 0)) * Math.sqrt(Math.max(rightVariance, 0))
 }
 
-function estimateCorrelationFromValues(leftValues: number[], rightValues: number[], modelId: RiskModelId) {
+function estimateCorrelationFromValues(
+  leftValues: number[],
+  rightValues: number[],
+  modelId: RiskModelId,
+  parameters: Record<string, unknown>,
+) {
   if (leftValues.length < 2 || rightValues.length !== leftValues.length) {
     return null
   }
@@ -619,9 +699,10 @@ function estimateCorrelationFromValues(leftValues: number[], rightValues: number
     return sampleCorrelation(leftValues, rightValues)
   }
   if (modelId === 'ewma_covariance') {
-    const covariance = ewmaCovariance(leftValues, rightValues, 0.94)
-    const leftVariance = ewmaCovariance(leftValues, leftValues, 0.94)
-    const rightVariance = ewmaCovariance(rightValues, rightValues, 0.94)
+    const decay = numericParameter(parameters, 'decay', 0.94)
+    const covariance = ewmaCovariance(leftValues, rightValues, decay)
+    const leftVariance = ewmaCovariance(leftValues, leftValues, decay)
+    const rightVariance = ewmaCovariance(rightValues, rightValues, decay)
     if (covariance == null || leftVariance == null || rightVariance == null || leftVariance <= 0 || rightVariance <= 0) {
       return null
     }
@@ -629,7 +710,7 @@ function estimateCorrelationFromValues(leftValues: number[], rightValues: number
   }
 
   const correlation = sampleCorrelation(leftValues, rightValues)
-  return correlation == null ? null : correlation * 0.85
+  return correlation == null ? null : correlation * (1 - numericParameter(parameters, 'corr_shrinkage', 0.15))
 }
 
 function windowReturnPoints(series: GroupReturnSeries, asOfDate: string, lookbackDays: number) {
@@ -643,14 +724,25 @@ function windowReturnPoints(series: GroupReturnSeries, asOfDate: string, lookbac
   return points.sort((left, right) => left.date.localeCompare(right.date))
 }
 
-function annualizedVarianceFromValues(values: number[], dates: string[], modelId: RiskModelId) {
+function annualizedVarianceFromValues(
+  values: number[],
+  dates: string[],
+  modelId: RiskModelId,
+  parameters: Record<string, unknown>,
+) {
   if (values.length < 2) {
     return null
   }
   const variance =
     modelId === 'sample_covariance'
       ? sampleCovariance(values, values)
-      : ewmaCovariance(values, values, modelId === 'ewma_covariance' ? 0.94 : 0.97)
+      : ewmaCovariance(
+          values,
+          values,
+          modelId === 'ewma_covariance'
+            ? numericParameter(parameters, 'decay', 0.94)
+            : numericParameter(parameters, 'vol_decay', 0.9945),
+        )
   const periodsPerYear = annualizationPeriodsPerYear(dates, values.length)
   return variance == null || periodsPerYear == null ? null : variance * periodsPerYear
 }
@@ -660,8 +752,9 @@ function annualizedCovarianceFromValues(
   rightValues: number[],
   dates: string[],
   modelId: RiskModelId,
+  parameters: Record<string, unknown>,
 ) {
-  const covariance = estimateCovarianceFromValues(leftValues, rightValues, modelId)
+  const covariance = estimateCovarianceFromValues(leftValues, rightValues, modelId, parameters)
   const periodsPerYear = annualizationPeriodsPerYear(dates, leftValues.length)
   return covariance == null || periodsPerYear == null ? null : covariance * periodsPerYear
 }
@@ -671,19 +764,20 @@ function estimateWindowRisk(
   asOfDate: string,
   lookbackDays: number,
   modelId: RiskModelId,
+  parameters: Record<string, unknown>,
   frequency: CalculationFrequency,
 ) {
   const windowPoints = returnPointsInWindow(returnPoints, asOfDate, lookbackDays)
   const values = windowPoints.map((point) => point.value)
   const dates = windowPoints.map((point) => point.date)
-  const coverage = assessRiskWindowCoverage(dates, asOfDate, lookbackDays, frequency)
+  const coverage = assessRiskWindowCoverage(dates, asOfDate, lookbackDays, frequency, parameters)
   if (!coverage.ok) {
     return { volatility: null, sharpe: null, observationCount: values.length }
   }
   if (values.length < 2) {
     return { volatility: null, sharpe: null, observationCount: values.length }
   }
-  const variance = annualizedVarianceFromValues(values, dates, modelId)
+  const variance = annualizedVarianceFromValues(values, dates, modelId, parameters)
   const periodsPerYear = annualizationPeriodsPerYear(dates, values.length)
   if (variance == null || periodsPerYear == null) {
     return { volatility: null, sharpe: null, observationCount: values.length }
@@ -702,15 +796,22 @@ function estimateWindowRisk(
 
 function buildRollingMetricPoints(
   returnPoints: ReturnPoint[],
-  lookbackDays: number,
-  modelId: RiskModelId,
+  settings: RiskSettingsState,
   metric: 'volatility' | 'sharpe',
   frequency: CalculationFrequency,
 ) {
+  const parameters = riskModelParameters(settings, frequency)
   const sortedPoints = returnPoints.slice().sort((left, right) => left.date.localeCompare(right.date))
   const rollingPoints: RollingRiskMetricPoint[] = []
   sortedPoints.forEach((point) => {
-    const risk = estimateWindowRisk(sortedPoints, point.date, lookbackDays, modelId, frequency)
+    const risk = estimateWindowRisk(
+      sortedPoints,
+      point.date,
+      settings.lookbackDays,
+      settings.modelId,
+      parameters,
+      frequency,
+    )
     const value = metric === 'volatility' ? risk.volatility : risk.sharpe
     if (value != null && Number.isFinite(value)) {
       rollingPoints.push({ date: point.date, value })
@@ -725,13 +826,14 @@ function covarianceCell(
   asOfDate: string,
   lookbackDays: number,
   modelId: RiskModelId,
+  parameters: Record<string, unknown>,
   frequency: CalculationFrequency,
 ) {
   if (left.groupKey === right.groupKey) {
     const points = windowReturnPoints(left, asOfDate, lookbackDays)
     const values = points.map((point) => point.value)
     const dates = points.map((point) => point.date)
-    const coverage = assessRiskWindowCoverage(dates, asOfDate, lookbackDays, frequency)
+    const coverage = assessRiskWindowCoverage(dates, asOfDate, lookbackDays, frequency, parameters)
     if (!coverage.ok) {
       return {
         value: null,
@@ -739,7 +841,7 @@ function covarianceCell(
       }
     }
     return {
-      value: annualizedVarianceFromValues(values, dates, modelId),
+      value: annualizedVarianceFromValues(values, dates, modelId, parameters),
       observationCount: values.length,
     }
   }
@@ -761,7 +863,7 @@ function covarianceCell(
   const leftValues = pairs.map((pair) => pair.left)
   const rightValues = pairs.map((pair) => pair.right)
   const dates = pairs.map((pair) => pair.date)
-  const coverage = assessRiskWindowCoverage(dates, asOfDate, lookbackDays, frequency)
+  const coverage = assessRiskWindowCoverage(dates, asOfDate, lookbackDays, frequency, parameters)
   if (!coverage.ok) {
     return { value: null, observationCount: pairs.length }
   }
@@ -771,12 +873,14 @@ function covarianceCell(
       asOfDate,
       lookbackDays,
       frequency,
+      parameters,
     )
     const rightCoverage = assessRiskWindowCoverage(
       rightWindowPoints.map((point) => point.date),
       asOfDate,
       lookbackDays,
       frequency,
+      parameters,
     )
     if (!leftCoverage.ok || !rightCoverage.ok) {
       return { value: null, observationCount: pairs.length }
@@ -785,13 +889,15 @@ function covarianceCell(
       leftWindowPoints.map((point) => point.value),
       leftWindowPoints.map((point) => point.date),
       modelId,
+      parameters,
     )
     const rightVariance = annualizedVarianceFromValues(
       rightWindowPoints.map((point) => point.value),
       rightWindowPoints.map((point) => point.date),
       modelId,
+      parameters,
     )
-    const correlation = estimateCorrelationFromValues(leftValues, rightValues, modelId)
+    const correlation = estimateCorrelationFromValues(leftValues, rightValues, modelId, parameters)
     if (leftVariance == null || rightVariance == null || correlation == null) {
       return { value: null, observationCount: pairs.length }
     }
@@ -806,7 +912,7 @@ function covarianceCell(
     }
   }
   return {
-    value: annualizedCovarianceFromValues(leftValues, rightValues, dates, modelId),
+    value: annualizedCovarianceFromValues(leftValues, rightValues, dates, modelId, parameters),
     observationCount: pairs.length,
   }
 }
@@ -858,6 +964,7 @@ function returnWindowCoverage(
   asOfDate: string,
   lookbackDays: number,
   frequency: CalculationFrequency,
+  parameters?: Record<string, unknown>,
 ) {
   const points = windowReturnPoints(series, asOfDate, lookbackDays)
   return assessRiskWindowCoverage(
@@ -865,6 +972,7 @@ function returnWindowCoverage(
     asOfDate,
     lookbackDays,
     frequency,
+    parameters,
   )
 }
 
@@ -1110,11 +1218,12 @@ function buildRiskContributionRows(
   if (!asOfDate) {
     return riskFail('Risk contribution requires an as-of date.', [] satisfies RiskContributionRow[])
   }
+  const parameters = riskModelParameters(settings, frequency)
   const weightedSeries = series
     .map((item) => ({
       item,
       weight: weightAtOrBefore(item, asOfDate),
-      coverage: returnWindowCoverage(item, asOfDate, settings.lookbackDays, frequency),
+      coverage: returnWindowCoverage(item, asOfDate, settings.lookbackDays, frequency, parameters),
     }))
     .filter((item) => Math.abs(item.weight ?? 0) > 1e-9)
   const insufficientSeries = weightedSeries.filter((item) => !item.coverage.ok)
@@ -1168,7 +1277,7 @@ function buildRiskContributionRows(
       [] satisfies RiskContributionRow[],
     )
   }
-  const commonCoverage = assessRiskWindowCoverage(commonDates, asOfDate, settings.lookbackDays, frequency)
+  const commonCoverage = assessRiskWindowCoverage(commonDates, asOfDate, settings.lookbackDays, frequency, parameters)
   if (!commonCoverage.ok) {
     return riskFail(
       `Risk contribution requires a complete common ${windowLabel(settings.lookbackDays)} ${frequency} return window; ${commonCoverage.error}`,
@@ -1193,7 +1302,13 @@ function buildRiskContributionRows(
           [] satisfies RiskContributionRow[],
         )
       }
-      const covarianceValue = annualizedCovarianceFromValues(leftValues, rightValues, commonDates, settings.modelId)
+      const covarianceValue = annualizedCovarianceFromValues(
+        leftValues,
+        rightValues,
+        commonDates,
+        settings.modelId,
+        parameters,
+      )
       if (covarianceValue == null || !Number.isFinite(covarianceValue)) {
         return riskFail(
           `Risk contribution covariance failed for ${rowSeries.item.groupLabel} x ${columnSeries.item.groupLabel}.`,
@@ -1995,8 +2110,6 @@ export default function RiskPage() {
   const [portfolioStartDate, setPortfolioStartDate] = useState<string | null>(null)
   const [rollingSettings, setRollingSettings] = useState<RollingRiskSettingsState>(DEFAULT_ROLLING_SETTINGS)
   const [matrixSettings, setMatrixSettings] = useState<RiskSettingsState>(DEFAULT_RISK_SETTINGS)
-  const [driftSettings, setDriftSettings] = useState<RiskSettingsState>(DEFAULT_RISK_SETTINGS)
-  const [contributionSettings, setContributionSettings] = useState<RiskSettingsState>(DEFAULT_RISK_SETTINGS)
   const [matrixScopeNodeId, setMatrixScopeNodeId] = useState(MATRIX_SCOPE_ALL_INSTRUMENTS)
   const [matrixAsOfDate, setMatrixAsOfDate] = useState('')
   const [contributionAsOfDate, setContributionAsOfDate] = useState('')
@@ -2195,6 +2308,23 @@ export default function RiskPage() {
   )
   const portfolioRiskFrequency = portfolioRiskFrequencyResult.value
   const portfolioRiskFrequencyErrors = portfolioRiskFrequencyResult.errors
+  const productionRiskPolicy = holdingsWorkspace?.risk_policy ?? null
+  const productionRiskPolicyParametersKey = JSON.stringify(productionRiskPolicy?.parameters ?? {})
+  const productionRiskSettings = useMemo(
+    () => riskSettingsFromPolicy(productionRiskPolicy),
+    [
+      productionRiskPolicy?.contribution_mode,
+      productionRiskPolicy?.covariance_model_id,
+      productionRiskPolicy?.lookback_days,
+      productionRiskPolicyParametersKey,
+    ],
+  )
+  const driftSettings = productionRiskSettings
+  const contributionSettings = productionRiskSettings
+  const productionRiskDescription = `${windowLabel(productionRiskSettings.lookbackDays)} ${riskModelLabel(
+    productionRiskSettings.modelId,
+  )}; ${formatLabel(productionRiskSettings.contributionMode)} RC`
+  const productionRiskMeta = `Production Risk Model; ${productionRiskDescription}`
   const riskBasisFinalDate = holdingsWorkspace?.as_of_date ?? riskWindowEndDate
   const rawInstrumentReturnSeriesResult = useMemo(
     () => buildCurrentInstrumentReturnSeries(holdingsWorkspace),
@@ -2237,45 +2367,41 @@ export default function RiskPage() {
     () =>
       buildRollingMetricPoints(
         portfolioReturnPoints,
-        rollingSettings.lookbackDays,
-        rollingSettings.modelId,
+        rollingSettings,
         'volatility',
         portfolioRiskFrequency.frequency,
       ),
-    [portfolioReturnPoints, portfolioRiskFrequency.frequency, rollingSettings.lookbackDays, rollingSettings.modelId],
+    [portfolioReturnPoints, portfolioRiskFrequency.frequency, rollingSettings],
   )
   const benchmarkRollingVolatilityPoints = useMemo(
     () =>
       buildRollingMetricPoints(
         benchmarkReturnPoints,
-        rollingSettings.lookbackDays,
-        rollingSettings.modelId,
+        rollingSettings,
         'volatility',
         portfolioRiskFrequency.frequency,
       ),
-    [benchmarkReturnPoints, portfolioRiskFrequency.frequency, rollingSettings.lookbackDays, rollingSettings.modelId],
+    [benchmarkReturnPoints, portfolioRiskFrequency.frequency, rollingSettings],
   )
   const rollingSharpePoints = useMemo(
     () =>
       buildRollingMetricPoints(
         portfolioReturnPoints,
-        rollingSettings.lookbackDays,
-        rollingSettings.modelId,
+        rollingSettings,
         'sharpe',
         portfolioRiskFrequency.frequency,
       ),
-    [portfolioReturnPoints, portfolioRiskFrequency.frequency, rollingSettings.lookbackDays, rollingSettings.modelId],
+    [portfolioReturnPoints, portfolioRiskFrequency.frequency, rollingSettings],
   )
   const benchmarkRollingSharpePoints = useMemo(
     () =>
       buildRollingMetricPoints(
         benchmarkReturnPoints,
-        rollingSettings.lookbackDays,
-        rollingSettings.modelId,
+        rollingSettings,
         'sharpe',
         portfolioRiskFrequency.frequency,
       ),
-    [benchmarkReturnPoints, portfolioRiskFrequency.frequency, rollingSettings.lookbackDays, rollingSettings.modelId],
+    [benchmarkReturnPoints, portfolioRiskFrequency.frequency, rollingSettings],
   )
 
   const riskDates = useMemo(() => uniqueSortedSeriesDates(instrumentReturnSeries), [instrumentReturnSeries])
@@ -2832,16 +2958,10 @@ export default function RiskPage() {
                   <div className="panel-title">Current Drift</div>
                   <div className="portfolio-detail-meta">
                     {defaultPlanningTaxonomy
-                      ? `${defaultPlanningTaxonomy.name}; ${holdingsWorkspace.as_of_date}; ${portfolioRiskFrequency.statusLabel}; ${windowLabel(driftSettings.lookbackDays)} ${riskModelLabel(driftSettings.modelId)}`
+                      ? `${defaultPlanningTaxonomy.name}; ${holdingsWorkspace.as_of_date}; ${portfolioRiskFrequency.statusLabel}; ${productionRiskMeta}`
                       : 'No taxonomy'}
                   </div>
                 </div>
-                <RiskSettingsMenu
-                  label="Current drift"
-                  settings={driftSettings}
-                  onChange={setDriftSettings}
-                  includeContributionMode
-                />
               </div>
               {renderRiskErrors([
                 ...activeRootSaaTargetSetResult.errors,
@@ -2911,16 +3031,10 @@ export default function RiskPage() {
                   <div className="panel-title">Risk Contribution</div>
                   <div className="portfolio-detail-meta">
                     {contributionAsOfDate
-                      ? `${contributionAsOfDate}; ${portfolioRiskFrequency.statusLabel}; point-in-time weights with ${windowLabel(contributionSettings.lookbackDays)} covariance`
+                      ? `${contributionAsOfDate}; ${portfolioRiskFrequency.statusLabel}; ${productionRiskMeta}`
                       : 'No active risk contribution date'}
                   </div>
                 </div>
-                <RiskSettingsMenu
-                  label="Risk contribution"
-                  settings={contributionSettings}
-                  onChange={setContributionSettings}
-                  includeContributionMode
-                />
               </div>
               <RiskDateTimeline
                 dates={riskAsOfSelectionDates}

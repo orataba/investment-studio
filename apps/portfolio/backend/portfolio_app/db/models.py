@@ -23,6 +23,7 @@ class PortfolioRecordModel(Base):
     securities_count: Mapped[int] = mapped_column(nullable=False, default=0)
     sort_order: Mapped[int] = mapped_column(nullable=False, default=0)
     default_planning_taxonomy_id: Mapped[str | None] = mapped_column(String)
+    risk_policy_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
 
     accounts: Mapped[list["AccountRecordModel"]] = relationship(
         back_populates="portfolio",

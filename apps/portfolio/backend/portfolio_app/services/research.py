@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
+    PortfolioRecordModel,
     ResearchRunRecordModel,
     ResearchSettingsRecordModel,
     TaxonomyNodeRecordModel,
@@ -37,6 +38,7 @@ from portfolio_app.services.portfolio_store import (
     list_accounts,
     list_transactions,
 )
+from portfolio_app.services.risk_model import get_portfolio_risk_policy, normalize_portfolio_risk_policy
 
 TEXT_SUFFIXES = {".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
 HTML_SUFFIXES = {".html"}
@@ -1114,6 +1116,7 @@ def get_research_workbench(
             planning_taxonomy_id=str(record.planning_taxonomy_id or "").strip() or None,
         )
         settings_payload = _serialize_settings_row(record, taxonomy_name_map, scope_name_map)
+        production_risk_model = get_portfolio_risk_policy(portfolio_id) or {}
         run_rows = session.scalars(
             select(ResearchRunRecordModel)
             .where(ResearchRunRecordModel.portfolio_id == portfolio_id)
@@ -1127,19 +1130,23 @@ def get_research_workbench(
     if selected_run is None and runs:
         selected_run = runs[0]
 
+    risk_lookback_days = int(production_risk_model.get("lookback_days") or settings_payload.get("lookback_days") or 90)
+    risk_calculation_frequency = str(
+        production_risk_model.get("calculation_frequency") or settings_payload.get("calculation_frequency") or "auto"
+    )
     context = _build_research_context(
         portfolio_id,
         planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
         as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
-        lookback_days=int(settings_payload.get("lookback_days") or 90),
+        lookback_days=risk_lookback_days,
     )
     calculation_frequency_profile = build_research_calculation_frequency_profile(
         portfolio_id,
         planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
         comparator_taxonomy_node_id=str(settings_payload.get("comparator_taxonomy_node_id") or "").strip() or None,
         as_of_date=date.fromisoformat(str(settings_payload["as_of_date"])),
-        lookback_days=int(settings_payload.get("lookback_days") or 90),
-        requested_frequency=str(settings_payload.get("calculation_frequency") or "auto"),
+        lookback_days=risk_lookback_days,
+        requested_frequency=risk_calculation_frequency,
     )
 
     return {
@@ -1156,6 +1163,7 @@ def get_research_workbench(
         ),
         "calculation_frequency": calculation_frequency_profile,
         "settings": settings_payload,
+        "risk_policy": production_risk_model,
         "current_context": context,
         "runs": runs,
         "selected_run": selected_run,
@@ -1171,6 +1179,8 @@ def update_research_settings(
     lookback_days: int,
     calculation_frequency: str,
     missing_return_policy: str,
+    covariance_model_id: str,
+    contribution_mode: str,
     target_dimension: str,
     capital_mode: str,
     gross_exposure: float | None,
@@ -1231,6 +1241,18 @@ def update_research_settings(
             row.frozen_taxonomy_node_ids_json = resolved_frozen_ids
         row.notes = notes
         row.updated_at = _utc_now_iso()
+        portfolio_row = session.get(PortfolioRecordModel, portfolio_id)
+        if portfolio_row is None:
+            return None
+        portfolio_row.risk_policy_json = normalize_portfolio_risk_policy(
+            {
+                "covariance_model_id": covariance_model_id,
+                "lookback_days": row.lookback_days,
+                "calculation_frequency": row.calculation_frequency,
+                "missing_return_policy": row.missing_return_policy,
+                "contribution_mode": contribution_mode,
+            }
+        )
         session.commit()
         taxonomy_name_map = _taxonomy_name_map(portfolio_id)
         scope_name_map = _scope_name_map(
@@ -1268,6 +1290,16 @@ def run_portfolio_research(
         requested_at = _utc_now_iso()
         run_id = _next_research_run_id(portfolio_id)
         effective_as_of_date = settings_row.as_of_date or _default_as_of_date(portfolio)
+        production_risk_model = get_portfolio_risk_policy(portfolio_id)
+        risk_lookback_days = int((production_risk_model or {}).get("lookback_days") or settings_row.lookback_days or 90)
+        risk_calculation_frequency = str(
+            (production_risk_model or {}).get("calculation_frequency") or settings_row.calculation_frequency or "auto"
+        )
+        risk_missing_return_policy = str(
+            (production_risk_model or {}).get("missing_return_policy")
+            or settings_row.missing_return_policy
+            or RESEARCH_DEFAULT_MISSING_RETURN_POLICY
+        )
         run_row = ResearchRunRecordModel(
             research_run_id=run_id,
             portfolio_id=portfolio_id,
@@ -1278,7 +1310,7 @@ def run_portfolio_research(
             finished_at=None,
             as_of_date=effective_as_of_date,
             planning_taxonomy_id=settings_row.planning_taxonomy_id,
-            lookback_days=int(settings_row.lookback_days or 90),
+            lookback_days=risk_lookback_days,
             requested_by=requested_by,
             headline=None,
             detail_json=None,
@@ -1288,9 +1320,10 @@ def run_portfolio_research(
                 "planning_taxonomy_id": settings_row.planning_taxonomy_id,
                 "comparator_taxonomy_node_id": resolved_scope_node_id,
                 "as_of_date": _iso_date(effective_as_of_date),
-                "lookback_days": int(settings_row.lookback_days or 90),
-                "calculation_frequency": settings_row.calculation_frequency or "auto",
-                "missing_return_policy": settings_row.missing_return_policy or RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+                "lookback_days": risk_lookback_days,
+                "calculation_frequency": risk_calculation_frequency,
+                "missing_return_policy": risk_missing_return_policy,
+                "risk_model": deepcopy(production_risk_model or {}),
                 "target_dimension": settings_row.target_dimension or "scope_default",
                 "capital_mode": settings_row.capital_mode or "unit_notional",
                 "gross_exposure": _safe_float(settings_row.gross_exposure),
@@ -1309,7 +1342,7 @@ def run_portfolio_research(
                 portfolio_id,
                 planning_taxonomy_id=str(settings_row.planning_taxonomy_id or "").strip() or None,
                 as_of_date=effective_as_of_date,
-                lookback_days=int(settings_row.lookback_days or 90),
+                lookback_days=risk_lookback_days,
             )
             planning_taxonomy_name = taxonomy_name_map.get(str(settings_row.planning_taxonomy_id or "").strip() or "")
             solution = solve_current_target_weights(
@@ -1317,15 +1350,16 @@ def run_portfolio_research(
                 planning_taxonomy_id=str(settings_row.planning_taxonomy_id or "").strip(),
                 comparator_taxonomy_node_id=resolved_scope_node_id,
                 as_of_date=effective_as_of_date,
-                lookback_days=int(settings_row.lookback_days or 90),
-                calculation_frequency=settings_row.calculation_frequency or "auto",
-                missing_return_policy=settings_row.missing_return_policy or RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+                lookback_days=risk_lookback_days,
+                calculation_frequency=risk_calculation_frequency,
+                missing_return_policy=risk_missing_return_policy,
                 target_dimension=settings_row.target_dimension or "scope_default",
                 capital_mode=settings_row.capital_mode or "unit_notional",
                 gross_exposure=_safe_float(settings_row.gross_exposure),
                 target_volatility=_safe_float(settings_row.target_volatility),
                 max_gross_exposure=_safe_float(settings_row.max_gross_exposure),
                 frozen_taxonomy_node_ids=deepcopy(settings_row.frozen_taxonomy_node_ids_json or []),
+                risk_model_config=deepcopy(production_risk_model or {}),
             )
             detail = _build_current_target_detail(
                 context,

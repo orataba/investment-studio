@@ -119,7 +119,11 @@ def test_portfolio_summary_prefers_latest_fresh_complete_snapshot(client) -> Non
 
     holdings_response = client.get("/api/workspace/holdings", params={"portfolio_id": "yungu"})
     assert holdings_response.status_code == 200
-    assert holdings_response.json()["as_of_date"] == "2026-05-21"
+    holdings_payload = holdings_response.json()
+    assert holdings_payload["as_of_date"] == "2026-05-21"
+    assert holdings_payload["risk_policy"]["model_role"] == "production"
+    assert holdings_payload["forward_risk"]["status"] in {"ok", "unavailable"}
+    assert all("forward_risk_status" in row for row in holdings_payload["rows"])
 
     performance_response = client.get("/api/portfolios/yungu/performance", params={"end_date": "2026-05-21"})
     assert performance_response.status_code == 200

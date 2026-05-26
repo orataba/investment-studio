@@ -35,6 +35,7 @@ from portfolio_app.services.portfolio_store import (
     list_accounts,
     list_transactions,
 )
+from portfolio_app.services.risk_model import enrich_holdings_forward_risk, get_portfolio_risk_policy
 from portfolio_app.services.snapshot_selection import latest_fresh_complete_portfolio_snapshot
 
 router = APIRouter()
@@ -372,6 +373,8 @@ def holdings_workspace(
     )
     resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
     resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
+    risk_policy = get_portfolio_risk_policy(resolved_portfolio_id)
+    requested_risk_frequency = str((risk_policy or {}).get("calculation_frequency") or "auto")
     materialized_workspace = get_cached_materialized_holdings_workspace(
         resolved_portfolio_id,
         as_of_date=resolved_as_of_date,
@@ -381,15 +384,22 @@ def holdings_workspace(
             risk_basis_profile = calculation_frequency_profile_for_instruments(
                 _instrument_ids_from_holdings_workspace(materialized_workspace),
                 end_date=resolved_as_of_date,
+                requested_frequency=requested_risk_frequency,
             )
             calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
             if _holdings_workspace_has_market_profile(
                 materialized_workspace,
                 calculation_frequency=calculation_frequency,
             ):
-                return _materialized_holdings_workspace_response(
+                response = _materialized_holdings_workspace_response(
                     materialized_workspace,
                     risk_basis_profile=risk_basis_profile,
+                )
+                return enrich_holdings_forward_risk(
+                    response,
+                    as_of_date=resolved_as_of_date,
+                    calculation_frequency=calculation_frequency,
+                    risk_policy=risk_policy or {},
                 )
             accounts = list_accounts(resolved_portfolio_id)
             position_lots = build_position_lots(
@@ -398,11 +408,17 @@ def holdings_workspace(
                 list_transactions(resolved_portfolio_id, end_date=resolved_as_of_date),
                 as_of_date=resolved_as_of_date,
             )
-            return _enrich_holdings_workspace_market_data(
+            response = _enrich_holdings_workspace_market_data(
                 materialized_workspace,
                 as_of_date=resolved_as_of_date,
                 position_lots=position_lots,
                 risk_basis_profile=risk_basis_profile,
+            )
+            return enrich_holdings_forward_risk(
+                response,
+                as_of_date=resolved_as_of_date,
+                calculation_frequency=calculation_frequency,
+                risk_policy=risk_policy or {},
             )
         except InstrumentRegistryError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
@@ -427,6 +443,7 @@ def holdings_workspace(
         risk_basis_profile = calculation_frequency_profile_for_instruments(
             instrument_ids,
             end_date=resolved_as_of_date,
+            requested_frequency=requested_risk_frequency,
         )
         calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
         statement = build_holdings_report(
@@ -532,7 +549,7 @@ def holdings_workspace(
         else None
     )
 
-    return {
+    response = {
         "portfolio_id": resolved_portfolio["portfolio_id"],
         "portfolio_name": resolved_portfolio["portfolio_name"],
         "base_currency": statement["base_currency"],
@@ -574,3 +591,9 @@ def holdings_workspace(
             ),
         },
     }
+    return enrich_holdings_forward_risk(
+        response,
+        as_of_date=resolved_as_of_date,
+        calculation_frequency=calculation_frequency,
+        risk_policy=risk_policy or {},
+    )

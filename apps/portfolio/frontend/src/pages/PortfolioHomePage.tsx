@@ -78,6 +78,7 @@ type HoldingsColumnKey =
   | 'instrument_volatility_3m'
   | 'instrument_volatility_6m'
   | 'instrument_volatility_1y'
+  | 'forward_risk_share'
   | 'price_chart_1m'
   | 'price_chart_3m'
   | 'price_chart_6m'
@@ -241,6 +242,7 @@ const HOLDINGS_COLUMN_GROUPS: Array<{ label: string; columns: HoldingsColumnKey[
       'instrument_volatility_3m',
       'instrument_volatility_6m',
       'instrument_volatility_1y',
+      'forward_risk_share',
       'instrument_current_drawdown',
       'instrument_max_drawdown',
       'instrument_holding_max_drawdown',
@@ -260,6 +262,7 @@ const DEFAULT_HOLDINGS_COLUMNS: HoldingsColumnKey[] = [
   'cost_basis',
   'market_value',
   'weight',
+  'forward_risk_share',
   'unrealized_value',
   'unrealized_pct',
 ]
@@ -302,6 +305,7 @@ const DEFAULT_HOLDINGS_COLUMN_WIDTHS: Record<HoldingsColumnKey, number> = {
   instrument_volatility_3m: 112,
   instrument_volatility_6m: 112,
   instrument_volatility_1y: 112,
+  forward_risk_share: 128,
   price_chart_1m: 132,
   price_chart_3m: 132,
   price_chart_6m: 132,
@@ -347,6 +351,7 @@ const COMPACT_HOLDINGS_COLUMN_MIN_WIDTHS: Partial<Record<HoldingsColumnKey, numb
   instrument_volatility_3m: 92,
   instrument_volatility_6m: 92,
   instrument_volatility_1y: 92,
+  forward_risk_share: 104,
   price_chart_1m: 104,
   price_chart_3m: 104,
   price_chart_6m: 104,
@@ -391,6 +396,7 @@ const SYSTEM_HOLDINGS_VIEWS: HoldingsTableView[] = [
         'instrument_volatility_3m',
         'instrument_volatility_6m',
         'instrument_volatility_1y',
+        'forward_risk_share',
         'instrument_current_drawdown',
         'instrument_max_drawdown',
         'instrument_holding_max_drawdown',
@@ -1485,6 +1491,8 @@ function holdingColumnExportValue(
       return row.instrument_volatility_6m ?? null
     case 'instrument_volatility_1y':
       return row.instrument_volatility_1y ?? null
+    case 'forward_risk_share':
+      return row.forward_risk_share ?? null
     case 'price_chart_1m':
     case 'price_chart_3m':
     case 'price_chart_6m':
@@ -1543,6 +1551,8 @@ function holdingColumnTotalExportValue(
       return groupedAnnualizedVolatility(rows, context.workspace, '6m')
     case 'instrument_volatility_1y':
       return groupedAnnualizedVolatility(rows, context.workspace, '1y')
+    case 'forward_risk_share':
+      return sumNumbers(rows, (row) => row.forward_risk_share)
     case 'instrument_max_drawdown':
       return groupedMaxDrawdown(rows, context.workspace, 'all')
     case 'instrument_holding_max_drawdown':
@@ -1859,6 +1869,16 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     render: (row) => formatPercent(row.instrument_volatility_1y),
     sortValue: (row) => row.instrument_volatility_1y,
     total: (rows, context) => formatPercent(groupedAnnualizedVolatility(rows, context.workspace, '1y')),
+  },
+  forward_risk_share: {
+    key: 'forward_risk_share',
+    label: 'Forward RC',
+    align: 'right',
+    render: (row) => signedPercent(row.forward_risk_share),
+    sortValue: (row) => row.forward_risk_share,
+    className: (row) => signedValueClass(row.forward_risk_share),
+    total: (rows) => signedPercent(sumNumbers(rows, (row) => row.forward_risk_share)),
+    totalClassName: (rows) => signedValueClass(sumNumbers(rows, (row) => row.forward_risk_share)),
   },
   instrument_max_drawdown: {
     key: 'instrument_max_drawdown',

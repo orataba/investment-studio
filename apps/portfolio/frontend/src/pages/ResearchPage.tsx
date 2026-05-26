@@ -8,6 +8,8 @@ import {
   getPortfolioTaxonomyCatalog,
   getPortfolioResearchWorkbench,
   updatePortfolioResearchSettings,
+  type PortfolioRiskContributionMode,
+  type PortfolioRiskCovarianceModel,
   type PortfolioResearchCapitalMode,
   type PortfolioResearchCalculationFrequency,
   type PortfolioResearchMissingReturnPolicy,
@@ -45,6 +47,17 @@ const CALCULATION_FREQUENCY_OPTIONS: Array<{ value: PortfolioResearchCalculation
 const MISSING_RETURN_POLICY_OPTIONS: Array<{ value: PortfolioResearchMissingReturnPolicy; label: string }> = [
   { value: 'strict', label: 'Strict' },
   { value: 'complete_case_drop', label: 'Complete Case Drop' },
+]
+
+const RISK_MODEL_OPTIONS: Array<{ value: PortfolioRiskCovarianceModel; label: string }> = [
+  { value: 'ewma_vol_shrinkage_corr_covariance', label: 'Research EWMA' },
+  { value: 'ewma_covariance', label: 'EWMA' },
+  { value: 'sample_covariance', label: 'Sample' },
+]
+
+const RISK_CONTRIBUTION_MODE_OPTIONS: Array<{ value: PortfolioRiskContributionMode; label: string }> = [
+  { value: 'signed', label: 'Signed' },
+  { value: 'abs', label: 'Absolute' },
 ]
 
 function TableStatusRow({
@@ -104,6 +117,13 @@ function formatCalculationFrequency(value: string | null | undefined) {
     return 'Auto'
   }
   return formatLabel(value)
+}
+
+function formatRiskModel(value: string | null | undefined) {
+  if (!value) {
+    return '—'
+  }
+  return RISK_MODEL_OPTIONS.find((option) => option.value === value)?.label ?? formatLabel(value)
 }
 
 function formatSolverKind(value: string | null | undefined) {
@@ -207,6 +227,8 @@ export default function ResearchPage() {
   const [lookbackDays, setLookbackDays] = useState(String(LOOKBACK_OPTIONS[2]))
   const [calculationFrequency, setCalculationFrequency] = useState<PortfolioResearchCalculationFrequency>('auto')
   const [missingReturnPolicy, setMissingReturnPolicy] = useState<PortfolioResearchMissingReturnPolicy>('strict')
+  const [riskModelId, setRiskModelId] = useState<PortfolioRiskCovarianceModel>('ewma_vol_shrinkage_corr_covariance')
+  const [riskContributionMode, setRiskContributionMode] = useState<PortfolioRiskContributionMode>('signed')
   const [targetDimension, setTargetDimension] = useState<PortfolioResearchTargetDimension>('scope_default')
   const [capitalMode, setCapitalMode] = useState<PortfolioResearchCapitalMode>('unit_notional')
   const [grossExposure, setGrossExposure] = useState('')
@@ -268,9 +290,11 @@ export default function ResearchPage() {
     setPlanningTaxonomyId(workbench.settings.planning_taxonomy_id ?? '')
     setComparatorScopeId(workbench.settings.comparator_taxonomy_node_id ?? '')
     setAsOfDate(workbench.settings.as_of_date ?? workbench.as_of_date)
-    setLookbackDays(String(workbench.settings.lookback_days))
-    setCalculationFrequency(workbench.settings.calculation_frequency ?? 'auto')
-    setMissingReturnPolicy(workbench.settings.missing_return_policy ?? 'strict')
+    setLookbackDays(String(workbench.risk_policy.lookback_days ?? workbench.settings.lookback_days))
+    setCalculationFrequency(workbench.risk_policy.calculation_frequency ?? workbench.settings.calculation_frequency ?? 'auto')
+    setMissingReturnPolicy(workbench.risk_policy.missing_return_policy ?? workbench.settings.missing_return_policy ?? 'strict')
+    setRiskModelId(workbench.risk_policy.covariance_model_id ?? 'ewma_vol_shrinkage_corr_covariance')
+    setRiskContributionMode(workbench.risk_policy.contribution_mode ?? 'signed')
     setTargetDimension(workbench.settings.target_dimension)
     setCapitalMode(workbench.settings.capital_mode)
     setGrossExposure(workbench.settings.gross_exposure != null ? String(workbench.settings.gross_exposure) : '')
@@ -418,13 +442,16 @@ export default function ResearchPage() {
     const parsedMaxGrossExposure = maxGrossExposure.trim() ? Number(maxGrossExposure) : null
     const validFrozenNodeIds = new Set(selectableFrozenScopes.map((item) => item.taxonomy_node_id ?? ''))
     const frozenTaxonomyNodeIds = frozenNodeIds.filter((nodeId) => validFrozenNodeIds.has(nodeId))
+    const resolvedLookbackDays = Number(lookbackDays) || 90
     return updatePortfolioResearchSettings(portfolioId, {
       planning_taxonomy_id: planningTaxonomyId || null,
       comparator_taxonomy_node_id: comparatorScopeId || null,
       as_of_date: asOfDate || null,
-      lookback_days: Number(lookbackDays) || 90,
+      lookback_days: resolvedLookbackDays,
       calculation_frequency: calculationFrequency,
       missing_return_policy: missingReturnPolicy,
+      covariance_model_id: riskModelId,
+      contribution_mode: riskContributionMode,
       target_dimension: targetDimension,
       capital_mode: capitalMode,
       gross_exposure: capitalMode === 'fixed_gross' ? parsedGrossExposure : null,
@@ -547,6 +574,14 @@ export default function ResearchPage() {
                       <td>{frequencyProfile?.status_label ?? formatCalculationFrequency(calculationFrequency)}</td>
                     </tr>
                     <tr>
+                      <th>Risk Model</th>
+                      <td>{formatRiskModel(riskModelId)}</td>
+                    </tr>
+                    <tr>
+                      <th>RC Mode</th>
+                      <td>{formatLabel(riskContributionMode)}</td>
+                    </tr>
+                    <tr>
                       <th>Runs</th>
                       <td>{workbench.runs.length}</td>
                     </tr>
@@ -638,6 +673,32 @@ export default function ResearchPage() {
                     onChange={(event) => setMissingReturnPolicy(event.target.value as PortfolioResearchMissingReturnPolicy)}
                   >
                     {MISSING_RETURN_POLICY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Risk Model</span>
+                  <select
+                    value={riskModelId}
+                    onChange={(event) => setRiskModelId(event.target.value as PortfolioRiskCovarianceModel)}
+                  >
+                    {RISK_MODEL_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>RC Mode</span>
+                  <select
+                    value={riskContributionMode}
+                    onChange={(event) => setRiskContributionMode(event.target.value as PortfolioRiskContributionMode)}
+                  >
+                    {RISK_CONTRIBUTION_MODE_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
                       </option>

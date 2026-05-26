@@ -444,6 +444,7 @@ def _annualized_portfolio_volatility(
     lookback_days: int,
     calculation_frequency: CalculationFrequency,
     missing_return_policy: str,
+    risk_model_config: dict[str, object] | None = None,
 ) -> float:
     if return_window.empty or weights.empty:
         raise ValueError("Target-volatility overlay requires non-empty aligned risky return history.")
@@ -458,9 +459,9 @@ def _annualized_portfolio_volatility(
         raise ValueError("Target-volatility overlay requires at least two aligned risky return observations.")
     covariance = _estimate_covariance(
         aligned,
-        model_id=RESEARCH_COVARIANCE_MODEL_ID,
+        model_id=_risk_model_covariance_model_id(risk_model_config),
         lookback_days=lookback_days,
-        parameters=_research_covariance_parameters(calculation_frequency),
+        parameters=_risk_model_covariance_parameters(risk_model_config, calculation_frequency),
         missing_return_policy=missing_return_policy,
         calculation_frequency=calculation_frequency,
         as_of_date=as_of_date,
@@ -499,11 +500,47 @@ def _research_covariance_parameters(calculation_frequency: CalculationFrequency)
         raise ValueError(f"Unsupported calculation frequency: {calculation_frequency}.") from error
 
 
+def research_covariance_parameters(calculation_frequency: CalculationFrequency) -> dict[str, object]:
+    return _research_covariance_parameters(calculation_frequency)
+
+
+def _risk_model_covariance_model_id(risk_model_config: dict[str, object] | None) -> str:
+    if not isinstance(risk_model_config, dict):
+        return RESEARCH_COVARIANCE_MODEL_ID
+    return str(risk_model_config.get("covariance_model_id") or RESEARCH_COVARIANCE_MODEL_ID)
+
+
+def _risk_model_contribution_mode(risk_model_config: dict[str, object] | None) -> str:
+    if not isinstance(risk_model_config, dict):
+        return RESEARCH_RISK_CONTRIBUTION_MODE
+    return str(risk_model_config.get("contribution_mode") or RESEARCH_RISK_CONTRIBUTION_MODE)
+
+
+def _risk_model_covariance_parameters(
+    risk_model_config: dict[str, object] | None,
+    calculation_frequency: CalculationFrequency,
+) -> dict[str, object]:
+    if isinstance(risk_model_config, dict):
+        parameters_by_frequency = risk_model_config.get("parameters_by_frequency")
+        if isinstance(parameters_by_frequency, dict):
+            frequency_parameters = parameters_by_frequency.get(calculation_frequency)
+            if isinstance(frequency_parameters, dict):
+                return dict(frequency_parameters)
+        parameters = risk_model_config.get("parameters")
+        if isinstance(parameters, dict):
+            return dict(parameters)
+    return _research_covariance_parameters(calculation_frequency)
+
+
 def _normalize_missing_return_policy(value: object) -> str:
     normalized = str(value or RESEARCH_DEFAULT_MISSING_RETURN_POLICY).strip().lower()
     if normalized in {MISSING_RETURN_POLICY_STRICT, MISSING_RETURN_POLICY_COMPLETE_CASE_DROP}:
         return normalized
     raise ValueError(f"Unsupported missing-return policy: {value}.")
+
+
+def normalize_missing_return_policy(value: object) -> str:
+    return _normalize_missing_return_policy(value)
 
 
 def _max_complete_case_drop_staleness_days(calculation_frequency: CalculationFrequency) -> int:
@@ -707,6 +744,27 @@ def _prepare_return_window_for_covariance(
     window = _return_window_for_lookback(returns, lookback_days=lookback_days)
     return _apply_missing_return_policy(
         window,
+        min_observations=min_observations,
+        label=label,
+        missing_return_policy=missing_return_policy,
+        calculation_frequency=calculation_frequency,
+        as_of_date=as_of_date,
+    )
+
+
+def prepare_return_window_for_covariance(
+    returns: pd.DataFrame,
+    *,
+    lookback_days: int,
+    min_observations: int,
+    label: str,
+    missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+    calculation_frequency: CalculationFrequency = "daily",
+    as_of_date: date | None = None,
+) -> ReturnCoveragePolicyResult:
+    return _prepare_return_window_for_covariance(
+        returns,
+        lookback_days=lookback_days,
         min_observations=min_observations,
         label=label,
         missing_return_policy=missing_return_policy,
@@ -941,6 +999,27 @@ def _estimate_covariance(
     return _finalize_covariance(covariance)
 
 
+def estimate_covariance(
+    returns: pd.DataFrame,
+    *,
+    model_id: str,
+    lookback_days: int,
+    parameters: dict[str, object] | None = None,
+    missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+    calculation_frequency: CalculationFrequency = "daily",
+    as_of_date: date | None = None,
+) -> pd.DataFrame:
+    return _estimate_covariance(
+        returns,
+        model_id=model_id,
+        lookback_days=lookback_days,
+        parameters=parameters,
+        missing_return_policy=missing_return_policy,
+        calculation_frequency=calculation_frequency,
+        as_of_date=as_of_date,
+    )
+
+
 def _normalize_positive_vector(values: np.ndarray) -> np.ndarray:
     vector = np.clip(np.asarray(values, dtype="float64"), 0.0, None)
     total = float(vector.sum())
@@ -971,6 +1050,15 @@ def _risk_contribution_shares(
     if not np.isfinite(shares).all():
         raise ValueError("Risk contribution produced non-finite shares.")
     return shares
+
+
+def risk_contribution_shares(
+    covariance: np.ndarray,
+    weights: np.ndarray,
+    *,
+    contribution_mode: str,
+) -> np.ndarray:
+    return _risk_contribution_shares(covariance, weights, contribution_mode=contribution_mode)
 
 
 def _project_to_bounded_simplex(
@@ -1270,6 +1358,7 @@ def _solve_risk_budget_weights(
     lookback_days: int,
     calculation_frequency: CalculationFrequency,
     missing_return_policy: str,
+    risk_model_config: dict[str, object] | None = None,
 ) -> LocalRiskBudgetSolve:
     count = len(target_shares)
     normalized_missing_return_policy = _normalize_missing_return_policy(missing_return_policy)
@@ -1292,7 +1381,9 @@ def _solve_risk_budget_weights(
             "Risk budget solve requires at least two aligned return observations; "
             f"got {complete_observation_count}."
         )
-    covariance_parameters = _research_covariance_parameters(calculation_frequency)
+    covariance_parameters = _risk_model_covariance_parameters(risk_model_config, calculation_frequency)
+    covariance_model_id = _risk_model_covariance_model_id(risk_model_config)
+    contribution_mode = _risk_model_contribution_mode(risk_model_config)
     coverage = _prepare_return_window_for_covariance(
         return_window,
         lookback_days=lookback_days,
@@ -1313,7 +1404,7 @@ def _solve_risk_budget_weights(
     target = _normalize_positive_vector(np.asarray(target_shares, dtype="float64"))
     covariance = _estimate_covariance(
         covariance_window,
-        model_id=RESEARCH_COVARIANCE_MODEL_ID,
+        model_id=covariance_model_id,
         lookback_days=lookback_days,
         parameters=covariance_parameters,
         missing_return_policy=MISSING_RETURN_POLICY_STRICT,
@@ -1329,7 +1420,7 @@ def _solve_risk_budget_weights(
         lower_bounds=np.zeros(count, dtype="float64"),
         upper_bounds=np.ones(count, dtype="float64"),
         reference_weights=reference,
-        contribution_mode=RESEARCH_RISK_CONTRIBUTION_MODE,
+        contribution_mode=contribution_mode,
     )
     solution = _solve_risk_budget_problem(primary_problem)
 
@@ -1338,7 +1429,7 @@ def _solve_risk_budget_weights(
         max_abs_share_gap=float(solution.max_abs_share_gap),
         solver_kind="risk-budget",
         solver_detail=solution.solver_kind,
-        covariance_model=RESEARCH_COVARIANCE_MODEL_ID,
+        covariance_model=covariance_model_id,
         covariance_observations=int(len(covariance_window)),
         risk_contribution_mode=solution.contribution_mode,
         message=solution.message,
@@ -1788,6 +1879,7 @@ def _estimate_scope_risk_share_map(
     calculation_frequency: CalculationFrequency,
     missing_return_policy: str,
     contribution_mode: str,
+    risk_model_config: dict[str, object] | None = None,
 ) -> tuple[dict[str, float], list[str]]:
     if not risk_keys:
         return {}, []
@@ -1812,9 +1904,9 @@ def _estimate_scope_risk_share_map(
             return {}, ["Current risk-share estimate skipped because aligned return history is empty."]
         covariance = _estimate_covariance(
             return_window.reindex(columns=risk_keys),
-            model_id=RESEARCH_COVARIANCE_MODEL_ID,
+            model_id=_risk_model_covariance_model_id(risk_model_config),
             lookback_days=lookback_days,
-            parameters=_research_covariance_parameters(calculation_frequency),
+            parameters=_risk_model_covariance_parameters(risk_model_config, calculation_frequency),
             missing_return_policy=missing_return_policy,
             calculation_frequency=calculation_frequency,
             as_of_date=as_of_date,
@@ -1843,6 +1935,7 @@ def _solve_current_scope(
     max_gross_exposure: float | None,
     missing_return_policy: str,
     apply_capital_overlay: bool,
+    risk_model_config: dict[str, object] | None = None,
 ) -> ScopeTargetSolveResult:
     scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
     scope_path = state.node_path_by_id.get(scope_node_id or ROOT_SCOPE_MEMBER_ID, ROOT_SCOPE_LABEL)
@@ -1876,6 +1969,7 @@ def _solve_current_scope(
                 max_gross_exposure=max_gross_exposure,
                 missing_return_policy=missing_return_policy,
                 apply_capital_overlay=False,
+                risk_model_config=risk_model_config,
             )
             child_results_by_key[member_key] = child_result
             child_scope_solve_events.extend(child_result.scope_solve_events)
@@ -1995,6 +2089,7 @@ def _solve_current_scope(
                 lookback_days=lookback_days,
                 calculation_frequency=calculation_frequency,
                 missing_return_policy=missing_return_policy,
+                risk_model_config=risk_model_config,
             )
             solved_weights = risk_solve.weights
             risk_gap = risk_solve.max_abs_share_gap
@@ -2108,6 +2203,7 @@ def _solve_current_scope(
                 lookback_days=lookback_days,
                 calculation_frequency=calculation_frequency,
                 missing_return_policy=missing_return_policy,
+                risk_model_config=risk_model_config,
             )
             if estimated_risk_sleeve_volatility and estimated_risk_sleeve_volatility > 0 and target_volatility:
                 effective_gross_exposure = float(target_volatility) / float(estimated_risk_sleeve_volatility)
@@ -2149,6 +2245,7 @@ def _solve_current_scope(
         calculation_frequency=calculation_frequency,
         missing_return_policy=missing_return_policy,
         contribution_mode=risk_solve.risk_contribution_mode or RESEARCH_RISK_CONTRIBUTION_MODE,
+        risk_model_config=risk_model_config,
     )
     warnings.extend(current_risk_share_warnings)
     for key in cash_like_keys:
@@ -2727,6 +2824,7 @@ def solve_current_target_weights(
     max_gross_exposure: float | None,
     missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
     frozen_taxonomy_node_ids: list[str] | None = None,
+    risk_model_config: dict[str, object] | None = None,
 ) -> dict[str, object]:
     state = _build_taxonomy_state(
         portfolio_id,
@@ -2763,6 +2861,7 @@ def solve_current_target_weights(
         max_gross_exposure=max_gross_exposure,
         missing_return_policy=_normalize_missing_return_policy(missing_return_policy),
         apply_capital_overlay=comparator_taxonomy_node_id is None,
+        risk_model_config=risk_model_config,
     )
     actual_rows, actual_warnings = _current_scope_actuals(
         state,

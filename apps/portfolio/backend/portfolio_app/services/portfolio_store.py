@@ -463,6 +463,11 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                     if raw_portfolio.get("default_planning_taxonomy_id")
                     else None
                 ),
+                risk_policy_json=(
+                    deepcopy(raw_portfolio.get("risk_policy_json"))
+                    if isinstance(raw_portfolio.get("risk_policy_json"), dict)
+                    else None
+                ),
             )
         )
 
@@ -728,6 +733,7 @@ def _serialize_portfolio_row(item: PortfolioRecordModel) -> dict[str, object]:
         "securities_count": item.securities_count,
         "sort_order": item.sort_order,
         "default_planning_taxonomy_id": item.default_planning_taxonomy_id,
+        "risk_policy_json": deepcopy(item.risk_policy_json) if isinstance(item.risk_policy_json, dict) else None,
     }
 
 
@@ -2543,6 +2549,7 @@ def create_portfolio(name: str | None = None) -> dict[str, object]:
             securities_count=0,
             sort_order=len(portfolios),
             default_planning_taxonomy_id=None,
+            risk_policy_json=None,
         )
         session.add(record)
         session.commit()
@@ -2584,6 +2591,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
             securities_count=source.securities_count,
             sort_order=len(portfolios),
             default_planning_taxonomy_id=None,
+            risk_policy_json=deepcopy(source.risk_policy_json) if isinstance(source.risk_policy_json, dict) else None,
         )
         session.add(copied)
 

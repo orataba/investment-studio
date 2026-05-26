@@ -217,6 +217,34 @@ export type PortfolioPerformanceCalculationResponse = {
 
 export type PortfolioContributionAxis = 'instrument' | 'account' | 'instrument_type' | 'currency' | 'taxonomy'
 export type PortfolioCalculationFrequency = 'daily' | 'weekly' | 'monthly'
+export type PortfolioRiskCalculationFrequency = 'auto' | PortfolioCalculationFrequency
+export type PortfolioRiskCovarianceModel =
+  | 'ewma_vol_shrinkage_corr_covariance'
+  | 'ewma_covariance'
+  | 'sample_covariance'
+export type PortfolioRiskContributionMode = 'signed' | 'abs'
+
+export type PortfolioRiskPolicyRecord = {
+  model_name: string
+  model_role: 'production' | string
+  covariance_model_id: PortfolioRiskCovarianceModel
+  lookback_days: number
+  calculation_frequency: PortfolioRiskCalculationFrequency
+  resolved_calculation_frequency: PortfolioCalculationFrequency
+  missing_return_policy: PortfolioResearchMissingReturnPolicy
+  contribution_mode: PortfolioRiskContributionMode
+  parameters: Record<string, unknown>
+  parameters_by_frequency: Record<string, Record<string, unknown>>
+}
+
+export type PortfolioForwardRiskSummary = {
+  status: 'ok' | 'unavailable' | string
+  errors: string[]
+  risk_model?: PortfolioRiskPolicyRecord | null
+  portfolio_variance?: number | null
+  portfolio_volatility?: number | null
+  observation_count?: number | null
+}
 
 export type PortfolioPeriodCalculationGroupMetrics = {
   beginning_weight: number | null
@@ -460,6 +488,11 @@ export type PortfolioHoldingRow = {
   instrument_max_drawdown?: number | null
   instrument_holding_max_drawdown?: number | null
   instrument_holding_start_date?: string | null
+  forward_risk_share?: number | null
+  forward_contribution_to_variance?: number | null
+  forward_annualized_volatility?: number | null
+  forward_risk_observation_count?: number | null
+  forward_risk_status?: string | null
   coverage_status: string
   account_ids?: string[]
   account_count?: number
@@ -480,6 +513,8 @@ export type HoldingsWorkspaceResponse = {
     source_frequency_counts: Record<string, number>
     status_label: string
   }
+  risk_policy?: PortfolioRiskPolicyRecord | null
+  forward_risk?: PortfolioForwardRiskSummary | null
   summary_cards: HoldingsSummaryCard[]
   rows: PortfolioHoldingRow[]
   totals: {
@@ -690,6 +725,8 @@ export type PortfolioResearchSettingsUpdatePayload = {
   lookback_days: number
   calculation_frequency?: PortfolioResearchCalculationFrequency
   missing_return_policy?: PortfolioResearchMissingReturnPolicy
+  covariance_model_id?: PortfolioRiskCovarianceModel
+  contribution_mode?: PortfolioRiskContributionMode
   target_dimension?: PortfolioResearchTargetDimension
   capital_mode?: PortfolioResearchCapitalMode
   gross_exposure?: number | null
@@ -946,6 +983,7 @@ export type PortfolioResearchWorkbenchResponse = {
   planning_scope_options: PortfolioResearchPlanningScopeOption[]
   calculation_frequency: PortfolioResearchCalculationFrequencyProfile
   settings: PortfolioResearchSettingsRecord
+  risk_policy: PortfolioRiskPolicyRecord
   current_context: PortfolioResearchCurrentContextRecord
   runs: PortfolioResearchRunRecord[]
   selected_run?: PortfolioResearchRunRecord | null
@@ -1597,6 +1635,25 @@ export function createPortfolio(payload: PortfolioCreatePayload) {
 export function copyPortfolio(portfolioId: string) {
   return fetchJson<PortfolioEntryRecord>(API_BASE_URL, `/api/portfolios/${portfolioId}/copy`, {
     method: 'POST',
+  })
+}
+
+export type PortfolioRiskPolicyUpdatePayload = {
+  covariance_model_id: PortfolioRiskCovarianceModel
+  lookback_days: number
+  calculation_frequency: PortfolioRiskCalculationFrequency
+  missing_return_policy: PortfolioResearchMissingReturnPolicy
+  contribution_mode: PortfolioRiskContributionMode
+}
+
+export function getPortfolioRiskPolicy(portfolioId: string) {
+  return fetchJson<PortfolioRiskPolicyRecord>(API_BASE_URL, `/api/portfolios/${portfolioId}/risk-policy`)
+}
+
+export function updatePortfolioRiskPolicy(portfolioId: string, payload: PortfolioRiskPolicyUpdatePayload) {
+  return fetchJson<PortfolioRiskPolicyRecord>(API_BASE_URL, `/api/portfolios/${portfolioId}/risk-policy`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
   })
 }
 

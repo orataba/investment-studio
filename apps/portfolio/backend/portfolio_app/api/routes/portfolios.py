@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from portfolio_app.api.contracts import PortfolioRiskPolicyRecord, PortfolioRiskPolicyUpdateRequest
 from portfolio_app.services.portfolio_store import (
     copy_portfolio,
     create_portfolio,
@@ -10,6 +11,7 @@ from portfolio_app.services.portfolio_store import (
     list_portfolios,
     reorder_portfolios,
 )
+from portfolio_app.services.risk_model import get_portfolio_risk_policy, update_portfolio_risk_policy
 
 
 router = APIRouter()
@@ -44,6 +46,28 @@ def copy_portfolio_record(portfolio_id: str) -> dict[str, object]:
     if record is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return record
+
+
+@router.get("/{portfolio_id}/risk-policy", response_model=PortfolioRiskPolicyRecord)
+def get_portfolio_production_risk_policy(portfolio_id: str) -> PortfolioRiskPolicyRecord:
+    policy = get_portfolio_risk_policy(portfolio_id)
+    if policy is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return PortfolioRiskPolicyRecord.model_validate(policy)
+
+
+@router.put("/{portfolio_id}/risk-policy", response_model=PortfolioRiskPolicyRecord)
+def update_portfolio_production_risk_policy(
+    portfolio_id: str,
+    payload: PortfolioRiskPolicyUpdateRequest,
+) -> PortfolioRiskPolicyRecord:
+    try:
+        policy = update_portfolio_risk_policy(portfolio_id, payload.model_dump())
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if policy is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return PortfolioRiskPolicyRecord.model_validate(policy)
 
 
 @router.delete("/{portfolio_id}")

@@ -245,17 +245,20 @@
 
 ### 2.6.1 计算频率与节假日
 
+Holdings / Risk / Research 中所有 forward-looking covariance / risk contribution 计算共享组合级 `Production Risk Model`。该模型存储在 `portfolio_record.risk_policy_json`，包括 covariance model、lookback days、calculation frequency、missing-return policy 和 contribution mode。它是 forward RC、风险预算偏离、risk-budget solve 和 target-volatility overlay 的唯一生产风险模型来源；Research settings 中保留的 lookback/frequency 字段只作为 run setup 表单输入，不得成为第二套风险模型来源。Performance 中基于实际历史组合路径的 realized attribution 仍然独立保留，不和 forward RC 混用。
+
 Risk 与 Research 的 covariance / correlation / risk contribution 必须先确定一个 target calculation frequency，再把各资产 NAV/price series 对齐到该频率：
 
 - `auto` 规则：全部资产可判定为日频时使用 `daily`；日频和周频混合时使用 `weekly`；存在月频资产时使用 `monthly`。样本很短且间隔不规则时，不得把缺失观测误判为周频或月频，除非所有间隔都一致落在对应频率区间。
-- Research 允许用户显式选择 `daily` / `weekly` / `monthly`，但不能选择高于数据支持的频率。例如日频+周频混合不能强制按日频计算。
+- Research 允许用户通过组合级 `Production Risk Model` 显式选择 `daily` / `weekly` / `monthly`，但不能选择高于数据支持的频率。例如日频+周频混合不能强制按日频计算。
 - 对齐规则：每个资产在目标 period 内只取最后一个有效观测点；不得跨目标 period 前向填充生成假 NAV。若某资产缺少某个目标 period，该资产该 period 的 return 为 missing。
 - 节假日规则：若标准资产在某个交易所共同节假日都没有更新，则该日期不会进入共同收益样本；若只有单个资产缺失，而其他资产在该目标 period 有观测，则这是该资产的缺失数据，不应被当作 0 return 或 stale return。
 - Missing-return policy：默认 `strict`，任何 active member 在目标 period 缺失都使该风险/研究样本不可解。Research 可以由用户显式选择 `complete_case_drop`，但只能删除含缺失成员的整行，并受缺失行比例 `10%`、latest complete row 尾部新鲜度上限（日频 `5` 天、周频 `14` 天、月频 `62` 天）和最小完整观测数约束；结果必须暴露 rows before / after、dropped rows、latest complete date 与 trailing staleness。
 - 周频 period end 使用自然周五；若 as-of date 落在周中，则最后一个未完整周以 as-of date 作为 capped period end。月频使用自然月末，同样以 as-of date cap 最后一个 period。
 - 若未来传入显式交易日日历，日频对齐应以日历校验 holiday vs missing：共同非交易日不生成样本；日历交易日缺价必须进入 coverage / missing 诊断，而不是隐式填值。
 - Portfolio Risk 页的 `risk_basis` 来自 Holdings workspace，是当前 active non-cash holdings 的 return alignment 元数据，不是一个风险指标。它必须能覆盖全部参与风险计算的非现金持仓，并且 `resolved_frequency` 只能是 `daily` / `weekly` / `monthly`；缺失、非法或来源频率不完整时，Risk 页面进入 basis unavailable / incomplete，不得临时从 calculation groups 或默认 daily 兜底。
-- Risk 页 rolling metrics、correlation matrix、Current Drift 和 point-in-time risk contribution 是当前权重口径：用当前持仓权重与资产自身历史收益窗口估计当前组合风险，语义上等同于“当前组合如果在历史窗口内一直以当前权重持有”。因此这些指标不得被 portfolio inception、holding start date 或 materialized contribution slices 截断。真实成立以来/真实持仓期间的 realized attribution 留在 Performance `Calculation`。
+- Holdings `Forward RC`、Risk 页 Current Drift 和 point-in-time risk contribution 是当前权重口径：用当前持仓权重与资产自身历史收益窗口估计当前组合风险，语义上等同于“当前组合如果在历史窗口内一直以当前权重持有”。因此这些指标不得被 portfolio inception、holding start date 或 materialized contribution slices 截断。真实成立以来/真实持仓期间的 realized attribution 留在 Performance `Calculation`。
+- Risk 页 rolling metrics 可以作为交互式历史扫描保留自己的窗口设置；但凡是用于 risk-budget drift、rebalance trigger、Research solve 或 Holdings Forward RC 的 RC 相关指标，必须使用组合级 `Production Risk Model`，不能在不同页面各自硬编码 decay、shrinkage、lookback 或 contribution mode。
 - Risk 页 correlation matrix 是窗口内 sample correlation 展示层，只受 lookback、calculation frequency、coverage 和 scope 影响；EWMA、vol shrinkage、correlation shrinkage 是协方差估计模型，应保留在 rolling risk、Current Drift risk gap 与 point-in-time risk contribution 等需要协方差的计算中。
 - Risk 页 instrument-scope planning taxonomy 的 Current Drift 用非现金 Holdings rows 与 Accounts workspace 现金账户值合成当前 NAV；现金 exposure 来自 Accounts 的 cash bucket/account value，Holdings cash rows 不得再作为 instrument leg 参与分母或分组。
 - Risk 页 rolling metrics、correlation matrix 与 point-in-time risk contribution 必须进一步校验 lookback window 覆盖率：按 resolved frequency 使用最小收益样本数、窗口起点最大偏离和至少 80% elapsed-day 覆盖。覆盖不足时结果为 insufficient-history / unavailable，不用更短窗口、pairwise dates、0 return 或前向填充替代。
@@ -402,6 +405,14 @@ Holdings 可以展示 quote-derived instrument market trend 指标，作为扫�
 - volatility 窗口必须有接近窗口起点的初始 quote、足够 elapsed-day 覆盖和最小收益样本数，否则为空。当前门槛为 daily `10 / 30 / 60 / 120`、weekly `3 / 6 / 12 / 24`、monthly `2 / 2 / 4 / 6`，分别对应 `1M / 3M / 6M / 1Y`；
 - 这些指标不读取 quantity、cash flow、cost basis、FIFO / moving average、realized gain 或 income，因此不属于组合 TWR、holding contribution 或 book P&L。
 
+Holdings `Forward RC` 是当前持仓的组合级 forward risk contribution：
+
+- 只对 active non-cash holdings 参与协方差矩阵；现金行的 `forward_risk_share = 0`；
+- 权重使用当前 holdings row 的组合权重，分母是全组合非现金风险组合的 variance，不是 instrument 自身风险，也不是 sleeve local denominator；
+- covariance model、lookback、calculation frequency、missing-return policy 与 contribution mode 必须来自组合级 `Production Risk Model`；
+- 若任一 active non-cash holding 缺少完整收益窗口、权重或正的组合 variance，Forward RC 进入 `unavailable`，不得用短窗口、0 return、pairwise covariance 或现金归一化兜底；
+- Holdings 的 `Vol 1M / 3M / 6M / 1Y` 仍是标的自身 trailing sample volatility 观测列，不受 Production Risk Model 的 lookback 或 covariance model 影响，也不能替代 Forward RC。
+
 Holdings group rows 不是后端 period-performance group：
 
 - market value、cost basis、day change、open lots 等绝对量按组内 rows 汇总；
@@ -537,7 +548,7 @@ GIPS-informed 规则：
 
 Overview 展示 `Monthly Return Matrix`，按 year x month 展示月度 TWR，YTD 为可用月份的复合收益。
 
-Overview 的组合收益、benchmark 对比、1M / 3M VOL 和 drawdown 使用组合 fresh complete as-of 作为窗口终点。若组合最新物化日期中只有部分持仓资产更新，Overview 不得使用该日期计算组合层 return / risk；例如组合 fresh complete as-of 为 `2026-05-20` 时，`1W Return` 的 TWR 覆盖 `2026-05-13` 到 `2026-05-20`，经济语义为从 `2026-05-12` EOD 到 `2026-05-20` EOD。单资产 holdings trend metrics 仍使用标的自身 selected quote series 的最后行情日。
+Overview 的组合收益、benchmark 对比、1M / 3M VOL 和 drawdown 使用组合 fresh complete as-of 作为窗口终点。若组合最新物化日期中只有部分持仓资产更新，Overview 不得使用该日期计算组合层 return / risk；例如组合 fresh complete as-of 为 `2026-05-20` 时，`1W Return` 的 TWR 使用 `2026-05-13` EOD 到 `2026-05-20` EOD 的端点口径，几何链接 `2026-05-14` 至 `2026-05-20` 的 daily returns。单资产 holdings trend metrics 仍使用标的自身 selected quote series 的最后行情日。
 
 Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要结构为：
 
@@ -1073,9 +1084,9 @@ $$
 VCTR_i^{abs} = |VCTR_i^{signed}|
 $$
 
-### 10.4 Realized risk share
+### 10.4 Forward covariance risk share
 
-正式版同时保留 `signed` 与 `abs` 两种风险份额口径，并在 UI 和 Research 中使用同一组选项。Research solver 的 primary mode 是 `signed`；当 signed shares 因对冲或负相关导致目标预算不可稳定匹配时，只能由配置显式切换到 `abs` 作为 alternate diagnostic view，不能在求解失败后自动切换。
+正式版同时保留 `signed` 与 `abs` 两种 forward covariance risk share 口径，并在 Holdings、Risk 和 Research 中使用同一组选项。Research solver 的 primary mode 是 `signed`；当 signed shares 因对冲或负相关导致目标预算不可稳定匹配时，只能由配置显式切换到 `abs` 作为 alternate diagnostic view，不能在求解失败后自动切换。
 
 Signed share:
 
@@ -1095,6 +1106,7 @@ $$
 - `signed` 更忠实地描述边际组合风险，适合 research solver 的 primary diagnostic；
 - `abs` 更适合做 PM 视角的 alternate target risk share comparison；
 - 页面展示必须标明当前 contribution mode，不能把两种口径混合比较。
+- Performance `Calculation` 中的 realized risk attribution 使用实际区间组合路径和实际历史权重，是事后归因；不得用于判断当前持仓是否偏离风险预算，也不得和本节 forward risk share 直接相减。
 
 ### 10.5 Risk budget gap
 
@@ -1114,7 +1126,7 @@ $$
 
 - `TargetRiskShare_i` 来自当前选定的显式 risk comparator（`SAA Risk` 或 `TAA Risk`）对应 `TargetSetLine.target_risk_share`
 - canonical target 只能在 selected taxonomy 的 `budgeting_level` 上直接录入；父层节点目标必须派生汇总
-- `RiskShare_i` 与 `TargetRiskShare_i` 必须使用同一风险分母；首版 canonical top-level compare 的分母是 selected taxonomy 下的 portfolio-level absolute risk share
+- `RiskShare_i` 与 `TargetRiskShare_i` 必须使用同一风险分母和同一 contribution mode；首版 canonical top-level compare 的分母是 selected taxonomy 下的 portfolio-level forward risk share
 - 层级 sleeve 内部的 `25%` 这类 local risk budget 表示“占父 sleeve 内部风险的 25%”，不是全组合风险的 `25% × 父层预算`
 - 因而禁止通过祖先 `target_risk_share` 乘法把 local sleeve risk budget 铺平成全局 risk-budget target；若需要全局 leaf comparator，必须先由 solver / resolved implementation target 在全组合协方差下显式解出
 - risk budget gap 计算前必须先校验 resolved risk-budget target 可用，且其非现金节点的 `target_risk_share` 加总为 `100% ± epsilon`，现金节点 `target_risk_share = 0`
@@ -1123,7 +1135,7 @@ $$
 说明：
 
 - `RiskBudgetGap` 就是首版里唯一的风险预算偏离指标；
-- 其计算输入仍然是 `realized risk share` 与 `target_risk_share`；
+- 其计算输入是当前持仓 forward `RiskShare_i` 与 `target_risk_share`；
 - canonical 计算对象是 selected taxonomy 下按维度解析后的 risk-budget target，而不是简单等同于整套 active target set 或独立风险预算对象。
 - 若用户 drill into 某个 sleeve 做 local compare，则结果对象与 UI 必须显式标记 denominator = `parent_local_risk`，不得静默沿用 portfolio-level 含义。
 
@@ -1138,7 +1150,7 @@ $$
 如果 target-set 设计需要把 cash 作为 selected planning taxonomy 下的独立节点展示：
 
 - 它可以在 SAA 或 TAA `target_weight` 中存在；
-- 但在 covariance-based realized risk share 中通常为 `0`；
+- 但在 covariance-based forward risk share 中通常为 `0`；
 - UI 必须解释“capital share != risk share”。
 
 ### 10.7 Research target solve
@@ -1153,6 +1165,7 @@ Research current target solve 使用 planning taxonomy 的层级 scope 做递归
 - `risk_budget` scope 使用非现金 direct members 的 `target_risk_share` 求本地目标权重，现金的 `target_risk_share` 必须为 `0`，非现金风险份额加总为 `100%`；
 - 若某个成员被标记为 frozen，优先使用该成员 as-of actual weight；若 actual weight 不存在，只能使用已配置的 `target_weight`，不能把 `target_risk_share` 当作资金权重；
 - risk-budget solve 至少需要两个完整对齐 return observations；`strict` policy 下任何 active member 缺失都会失败，`complete_case_drop` 只能在显式选择且通过缺失行比例、latest complete row 新鲜度和最小完整观测数约束后使用，不能把 target risk share 当作 target weight；
+- risk-budget solve、current risk-share estimate 与 target-volatility overlay 必须使用组合级 `Production Risk Model` 的 covariance model、lookback、frequency、missing-return policy 和 contribution mode；
 - risk-budget solve 的 achieved risk share 最大绝对误差必须在显式阈值内；当前阈值为 `1e-4` share units，即 `0.01 percentage points`。超过阈值或产生负 signed risk share 时，该 scope 求解失败，不切换到 `abs` mode，也不返回旧求解器状态；
 - 单成员 scope 只允许输出数学上唯一确定的本地目标：非现金/普通成员权重 `100%`，现金 risk budget `0%`；
 - 根 scope 完成风险 sleeve 权重后，`target_volatility` / `fixed_gross` capital overlay 才对非现金目标权重整体放缩，并把残差写入 cash-like member；没有 cash-like member、目标波动率无法用正的估计波动率缩放或 overlay 后违反可行约束时，该 run 必须失败或显式 unavailable，不用 unit gross、等权或旧算法兜底。

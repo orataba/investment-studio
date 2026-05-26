@@ -223,6 +223,14 @@ def test_research_workbench_returns_target_solve_defaults(client):
     assert payload["settings"]["calculation_frequency"] == "auto"
     assert payload["settings"]["missing_return_policy"] == "strict"
     assert payload["calculation_frequency"]["resolved_frequency"] == "daily"
+    assert payload["risk_policy"]["model_name"] == "Production Risk Model"
+    assert payload["risk_policy"]["model_role"] == "production"
+    assert payload["risk_policy"]["covariance_model_id"] == "ewma_vol_shrinkage_corr_covariance"
+    assert payload["risk_policy"]["lookback_days"] == 90
+    assert payload["risk_policy"]["calculation_frequency"] == "auto"
+    assert payload["risk_policy"]["resolved_calculation_frequency"] == "daily"
+    assert payload["risk_policy"]["missing_return_policy"] == "strict"
+    assert payload["risk_policy"]["contribution_mode"] == "signed"
     assert payload["settings"]["gross_exposure"] is None
     assert payload["settings"]["target_volatility"] is None
     assert payload["settings"]["max_gross_exposure"] is None
@@ -237,6 +245,44 @@ def test_research_workbench_returns_target_solve_defaults(client):
     assert payload["current_context"]["holdings_count"] == 3
     assert payload["current_context"]["planning_group_count"] == 0
     assert payload["current_context"]["nav"] == payload["current_context"]["summary"]["end_nav"]
+
+
+def test_research_settings_updates_production_risk_policy(client):
+    settings_response = client.put(
+        "/api/portfolios/yungu/research/settings",
+        json={
+            "planning_taxonomy_id": None,
+            "comparator_taxonomy_node_id": None,
+            "as_of_date": "2026-04-15",
+            "lookback_days": 180,
+            "calculation_frequency": "weekly",
+            "missing_return_policy": "complete_case_drop",
+            "covariance_model_id": "sample_covariance",
+            "contribution_mode": "abs",
+            "target_dimension": "scope_default",
+            "capital_mode": "unit_notional",
+        },
+    )
+    assert settings_response.status_code == 200
+
+    risk_policy_response = client.get("/api/portfolios/yungu/risk-policy")
+    assert risk_policy_response.status_code == 200
+    risk_policy = risk_policy_response.json()
+    assert risk_policy["covariance_model_id"] == "sample_covariance"
+    assert risk_policy["lookback_days"] == 180
+    assert risk_policy["calculation_frequency"] == "weekly"
+    assert risk_policy["resolved_calculation_frequency"] == "weekly"
+    assert risk_policy["missing_return_policy"] == "complete_case_drop"
+    assert risk_policy["contribution_mode"] == "abs"
+
+    workbench_response = client.get("/api/portfolios/yungu/research/workbench")
+    assert workbench_response.status_code == 200
+    workbench_policy = workbench_response.json()["risk_policy"]
+    assert workbench_policy["covariance_model_id"] == "sample_covariance"
+    assert workbench_policy["lookback_days"] == 180
+    assert workbench_policy["calculation_frequency"] == "weekly"
+    assert workbench_policy["missing_return_policy"] == "complete_case_drop"
+    assert workbench_policy["contribution_mode"] == "abs"
 
 
 def test_research_workbench_reads_canonical_run_top_holdings(client):

@@ -259,9 +259,7 @@ function buildPortfolioReturnMetrics(points: PortfolioDailyPerformancePoint[]) {
   )
 
   return {
-    oneWeek: periodReturnFromTwr(sortedPoints, formatDateKey(addDays(latestDate, -7)), {
-      includeTargetDate: true,
-    }),
+    oneWeek: periodReturnFromTwr(sortedPoints, formatDateKey(addDays(latestDate, -7))),
     mtd: periodReturnFromTwr(sortedPoints, formatDateKey(priorMonthEnd), { fallbackToFirst: false }),
     ytd: hasYearStartAnchor
       ? periodReturnFromTwr(sortedPoints, formatDateKey(priorYearEnd), { fallbackToFirst: false })
@@ -416,7 +414,7 @@ function buildBenchmarkMetrics(points: PortfolioInstrumentPriceChartPoint[]) {
   const drawdowns = buildDrawdownMetrics(sortedPoints)
 
   return {
-    oneWeek: periodReturnFromValuePoints(sortedPoints, formatDateKey(addDays(latestDate, -8))),
+    oneWeek: periodReturnFromValuePoints(sortedPoints, formatDateKey(addDays(latestDate, -7))),
     mtd: periodReturnFromValuePoints(sortedPoints, formatDateKey(priorMonthEnd), false),
     ytd: periodReturnFromValuePoints(sortedPoints, formatDateKey(priorYearEnd), false),
     sinceInception,
