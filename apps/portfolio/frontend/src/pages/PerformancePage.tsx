@@ -5,8 +5,9 @@ import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/Benc
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
-import { downloadCsv } from '../lib/csv'
+import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
 import {
   getPortfolioInstrumentPriceChart,
   getPortfolioInstruments,
@@ -138,6 +139,11 @@ type CalculationTableViewStore = {
   views: CalculationTableView[]
 }
 
+type PerformanceWindowSelection = {
+  startDate: string
+  endDate: string
+}
+
 type CalculationSyntheticRowKind =
   | 'initial'
   | 'final'
@@ -169,6 +175,7 @@ type CalculationTableRow =
     }
 
 const LOCKED_CALCULATION_COLUMN: CalculationColumnKey = 'line'
+const PERFORMANCE_WINDOW_STORAGE_KEY = 'yungu.portfolio.performance.window.v1'
 const CALCULATION_TABLE_VIEWS_STORAGE_KEY = 'yungu.portfolio.performance.calculation.views.v1'
 
 const RISK_ATTRIBUTION_COLUMNS: CalculationColumnKey[] = [
@@ -335,6 +342,64 @@ function shiftIsoDate(isoDate: string, days: number) {
 
 function validIsoDate(value: string | null | undefined) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ''
+}
+
+function normalizePerformanceWindowSelection(value: unknown): PerformanceWindowSelection | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+  const record = value as { startDate?: unknown; endDate?: unknown }
+  const startDate = typeof record.startDate === 'string' ? validIsoDate(record.startDate) : ''
+  const endDate = typeof record.endDate === 'string' ? validIsoDate(record.endDate) : ''
+  return startDate || endDate ? { startDate, endDate } : null
+}
+
+function loadPerformanceWindowStore() {
+  const store: Record<string, PerformanceWindowSelection> = {}
+  if (typeof window === 'undefined') {
+    return store
+  }
+  try {
+    const rawValue = window.localStorage.getItem(PERFORMANCE_WINDOW_STORAGE_KEY)
+    const parsedValue = rawValue ? JSON.parse(rawValue) : null
+    if (!parsedValue || typeof parsedValue !== 'object') {
+      return store
+    }
+    Object.entries(parsedValue as Record<string, unknown>).forEach(([portfolioId, rawSelection]) => {
+      if (!portfolioId) {
+        return
+      }
+      const selection = normalizePerformanceWindowSelection(rawSelection)
+      if (selection) {
+        store[portfolioId] = selection
+      }
+    })
+  } catch {
+    return store
+  }
+  return store
+}
+
+function loadPerformanceWindowSelection(portfolioId: string) {
+  return loadPerformanceWindowStore()[portfolioId] ?? null
+}
+
+function savePerformanceWindowSelection(portfolioId: string, startDate: string | null, endDate: string | null) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    const store = loadPerformanceWindowStore()
+    const selection = normalizePerformanceWindowSelection({ startDate, endDate })
+    if (selection) {
+      store[portfolioId] = selection
+    } else {
+      delete store[portfolioId]
+    }
+    window.localStorage.setItem(PERFORMANCE_WINDOW_STORAGE_KEY, JSON.stringify(store))
+  } catch {
+    return
+  }
 }
 
 function signedPercent(value: number | null | undefined, digits = 2) {
@@ -1355,8 +1420,15 @@ function PerformancePage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
   const todayDate = useMemo(() => localDateIso(), [])
-  const appliedStartDate = searchParams.get('start_date') ?? ''
-  const appliedEndDate = searchParams.get('end_date') ?? ''
+  const queryStartDate = validIsoDate(searchParams.get('start_date'))
+  const queryEndDate = validIsoDate(searchParams.get('end_date'))
+  const hasDateWindowParams = searchParams.has('start_date') || searchParams.has('end_date')
+  const storedPerformanceWindow = useMemo(
+    () => (!hasDateWindowParams && portfolioId ? loadPerformanceWindowSelection(portfolioId) : null),
+    [hasDateWindowParams, portfolioId],
+  )
+  const appliedStartDate = queryStartDate || storedPerformanceWindow?.startDate || ''
+  const appliedEndDate = queryEndDate || storedPerformanceWindow?.endDate || ''
   const [portfolioSummary, setPortfolioSummary] = useState<PortfolioWorkspaceSummary | null>(null)
   const [portfolioSummaryReadyPortfolioId, setPortfolioSummaryReadyPortfolioId] = useState<string | null>(null)
   const portfolioSummarySettled = Boolean(portfolioId && portfolioSummaryReadyPortfolioId === portfolioId)
@@ -1874,16 +1946,21 @@ function PerformancePage() {
   }, [benchmarkInstrumentId, effectiveEndDate, portfolioId, waitingForDefaultEndDate])
 
   function updateWindowParams(nextStartDate: string | null, nextEndDate: string | null) {
+    const normalizedStartDate = validIsoDate(nextStartDate)
+    const normalizedEndDate = validIsoDate(nextEndDate)
     const nextParams = new URLSearchParams(searchParams)
-    if (nextStartDate) {
-      nextParams.set('start_date', nextStartDate)
+    if (normalizedStartDate) {
+      nextParams.set('start_date', normalizedStartDate)
     } else {
       nextParams.delete('start_date')
     }
-    if (nextEndDate) {
-      nextParams.set('end_date', nextEndDate)
+    if (normalizedEndDate) {
+      nextParams.set('end_date', normalizedEndDate)
     } else {
       nextParams.delete('end_date')
+    }
+    if (portfolioId) {
+      savePerformanceWindowSelection(portfolioId, normalizedStartDate, normalizedEndDate)
     }
     setSearchParams(nextParams)
   }
@@ -2267,13 +2344,13 @@ function PerformancePage() {
     )
   }
 
-  function handleDownloadCalculationCsv() {
+  function handleDownloadCalculation(format: TableExportFormat) {
     if (!portfolioId || !calculationGroupsWorkspace) {
       return
     }
 
     const header = visibleCalculationColumns.map((column) => CALCULATION_COLUMN_LABELS[column])
-    const rows: Array<Array<string | number | null>> = [
+    const rows: TableCell[][] = [
       header,
       ...calculationTableRows.map((row) =>
         visibleCalculationColumns.map((column) =>
@@ -2285,9 +2362,11 @@ function PerformancePage() {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '')
-    downloadCsv(
-      `performance-calculation-${viewSlug || 'view'}-${portfolioId}-${effectiveStartDate}-${effectiveEndDate}-${effectiveCalculationGroupBy}.csv`,
+    downloadTable(
+      `performance-calculation-${viewSlug || 'view'}-${portfolioId}-${effectiveStartDate}-${effectiveEndDate}-${effectiveCalculationGroupBy}`,
       rows,
+      format,
+      'Calculation',
     )
   }
 
@@ -2304,7 +2383,7 @@ function PerformancePage() {
                 className="transaction-filter-input"
                 type="date"
                 value={effectiveStartDate}
-                onChange={(event) => updateWindowParams(event.target.value || null, appliedEndDate || null)}
+                onChange={(event) => updateWindowParams(event.target.value || null, effectiveEndDate || null)}
               />
             </label>
             <label>
@@ -2313,7 +2392,7 @@ function PerformancePage() {
                 className="transaction-filter-input"
                 type="date"
                 value={effectiveEndDate}
-                onChange={(event) => updateWindowParams(appliedStartDate || null, event.target.value || null)}
+                onChange={(event) => updateWindowParams(effectiveStartDate || null, event.target.value || null)}
               />
             </label>
           </div>
@@ -2402,17 +2481,14 @@ function PerformancePage() {
                       Group By{'\u00A0: '}
                       {selectedCalculationGroupByOption.label}
                     </button>
-                    <button
-                      type="button"
-                      className="holdings-toolbar-button"
-                      onClick={handleDownloadCalculationCsv}
-                      disabled={
-                        !calculationGroupsWorkspace ||
-                        calculationGroupsLoading
-                      }
-                    >
-                      Download
-                    </button>
+                    <DownloadFormatMenu
+                      wrapperClassName="portfolio-download-menu"
+                      buttonClassName="holdings-toolbar-button"
+                      menuClassName="portfolio-download-menu-list"
+                      itemClassName="portfolio-download-menu-item"
+                      disabled={!calculationGroupsWorkspace || calculationGroupsLoading}
+                      onSelect={handleDownloadCalculation}
+                    />
                   </div>
                 </div>
               </div>

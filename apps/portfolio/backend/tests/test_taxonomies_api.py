@@ -56,6 +56,126 @@ def test_taxonomy_create_node_assignment_round_trip(client):
     assert catalog_payload["taxonomy_assignments"][0]["assignment_id"] == assignment_payload["assignment_id"]
 
 
+def test_taxonomy_catalog_includes_portfolio_instrument_universe(client):
+    initial_catalog_response = client.get("/api/portfolios/yungu/taxonomies")
+    assert initial_catalog_response.status_code == 200
+    initial_catalog_payload = initial_catalog_response.json()
+    initial_universe = {
+        item["instrument_id"]: item
+        for item in initial_catalog_payload["instrument_universe"]
+    }
+    assert "equity-us-abbv" in initial_universe
+    assert initial_universe["equity-us-abbv"]["transaction_count"] > 0
+
+    taxonomy_response = client.post(
+        "/api/portfolios/yungu/taxonomies",
+        json={
+            "name": "Watchlist Taxonomy",
+            "taxonomy_type": "custom",
+            "primary_assignment_scope": "instrument",
+        },
+    )
+    taxonomy_id = taxonomy_response.json()["taxonomy_id"]
+    node_response = client.post(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/nodes",
+        json={"node_name": "Research", "sort_order": 0},
+    )
+    node_id = node_response.json()["taxonomy_node_id"]
+    assignment_response = client.post(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/assignments",
+        json={
+            "target_scope": "instrument",
+            "target_entity_id": "fund-us-watch",
+            "taxonomy_node_id": node_id,
+        },
+    )
+    assert assignment_response.status_code == 200
+    assignment_id = assignment_response.json()["assignment_id"]
+
+    catalog_response = client.get("/api/portfolios/yungu/taxonomies")
+    assert catalog_response.status_code == 200
+    universe = {
+        item["instrument_id"]: item
+        for item in catalog_response.json()["instrument_universe"]
+    }
+    assert universe["fund-us-watch"]["source"] == "taxonomy"
+    assert universe["fund-us-watch"]["holding_state"] == "not_held"
+    assert universe["fund-us-watch"]["transaction_count"] == 0
+
+    archived_response = client.patch(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/assignments/{assignment_id}",
+        json={"status": "archived"},
+    )
+    assert archived_response.status_code == 200
+    archived_catalog_response = client.get("/api/portfolios/yungu/taxonomies")
+    assert archived_catalog_response.status_code == 200
+    archived_universe = {
+        item["instrument_id"]: item
+        for item in archived_catalog_response.json()["instrument_universe"]
+    }
+    assert "fund-us-watch" not in archived_universe
+
+    restored_response = client.patch(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/assignments/{assignment_id}",
+        json={"status": "active"},
+    )
+    assert restored_response.status_code == 200
+    delete_response = client.delete(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/assignments/{assignment_id}",
+    )
+    assert delete_response.status_code == 200
+    deleted_catalog_response = client.get("/api/portfolios/yungu/taxonomies")
+    assert deleted_catalog_response.status_code == 200
+    deleted_universe = {
+        item["instrument_id"]: item
+        for item in deleted_catalog_response.json()["instrument_universe"]
+    }
+    assert "fund-us-watch" not in deleted_universe
+
+
+def test_taxonomy_adds_registry_instrument_to_manual_universe(client):
+    response = client.post(
+        "/api/portfolios/yungu/taxonomies/instrument-universe",
+        json={"instrument_id": "fund-us-watch"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["instrument_id"] == "fund-us-watch"
+    assert payload["instrument_ref"]["instrument_name"] == "Watchlist Fund"
+    assert payload["source"] == "manual"
+    assert payload["holding_state"] == "not_held"
+    assert payload["transaction_count"] == 0
+
+    catalog_response = client.get("/api/portfolios/yungu/taxonomies")
+    assert catalog_response.status_code == 200
+    universe = {
+        item["instrument_id"]: item
+        for item in catalog_response.json()["instrument_universe"]
+    }
+    assert universe["fund-us-watch"]["source"] == "manual"
+    assert universe["fund-us-watch"]["instrument_ref"]["instrument_name"] == "Watchlist Fund"
+
+
+def test_taxonomy_deletes_manual_watch_instrument(client):
+    create_response = client.post(
+        "/api/portfolios/yungu/taxonomies/instrument-universe",
+        json={"instrument_id": "fund-us-watch"},
+    )
+    assert create_response.status_code == 200
+
+    delete_response = client.delete("/api/portfolios/yungu/taxonomies/instrument-universe/fund-us-watch")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["deleted"] is True
+
+    catalog_response = client.get("/api/portfolios/yungu/taxonomies")
+    assert catalog_response.status_code == 200
+    universe = {
+        item["instrument_id"]: item
+        for item in catalog_response.json()["instrument_universe"]
+    }
+    assert "fund-us-watch" not in universe
+
+
 def test_taxonomy_delete_node_rejects_parent_with_children(client):
     taxonomy_response = client.post(
         "/api/portfolios/yungu/taxonomies",
@@ -297,11 +417,11 @@ def test_taxonomy_update_node_and_assignment_round_trip(client):
     update_assignment_response = client.patch(
         f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/assignments/{assignment_id}",
         json={
-            "effective_to": "2026-12-31",
+            "status": "archived",
         },
     )
     assert update_assignment_response.status_code == 200
-    assert update_assignment_response.json()["effective_to"] == "2026-12-31"
+    assert update_assignment_response.json()["status"] == "archived"
 
     catalog_response = client.get("/api/portfolios/yungu/taxonomies")
     assert catalog_response.status_code == 200
@@ -311,7 +431,7 @@ def test_taxonomy_update_node_and_assignment_round_trip(client):
     updated_assignment = next(
         item for item in catalog_payload["taxonomy_assignments"] if item["assignment_id"] == assignment_id
     )
-    assert updated_assignment["effective_to"] == "2026-12-31"
+    assert updated_assignment["status"] == "archived"
 
 
 def test_planning_taxonomy_node_default_target_and_cash_bucket_assignment_round_trip(client):
@@ -465,7 +585,7 @@ def test_target_set_rejects_non_normalized_risk_share_totals(client):
     assert "sum to 100%" in target_set_response.json()["detail"]
 
 
-def test_target_set_scope_uses_effective_assignment_periods(client):
+def test_target_set_scope_uses_current_assignment_members(client):
     taxonomy_response = client.post(
         "/api/portfolios/yungu/taxonomies",
         json={
@@ -519,8 +639,13 @@ def test_target_set_scope_uses_effective_assignment_periods(client):
             "lines": [
                 {
                     "target_member_type": "instrument",
+                    "target_member_id": "equity-us-abbv",
+                    "target_weight": 0.4,
+                },
+                {
+                    "target_member_type": "instrument",
                     "target_member_id": "fund-us-agg",
-                    "target_weight": 1.0,
+                    "target_weight": 0.6,
                 }
             ],
         },
@@ -540,8 +665,18 @@ def test_target_set_scope_uses_effective_assignment_periods(client):
             "target_set_id": target_set_response.json()["target_set_id"],
             "taxonomy_node_id": None,
             "target_member_type": "instrument",
+            "target_member_id": "equity-us-abbv",
+            "target_weight": 0.4,
+            "target_risk_share": None,
+            "notes": None,
+        },
+        {
+            "target_line_id": saved_lines[1]["target_line_id"],
+            "target_set_id": target_set_response.json()["target_set_id"],
+            "taxonomy_node_id": None,
+            "target_member_type": "instrument",
             "target_member_id": "fund-us-agg",
-            "target_weight": 1.0,
+            "target_weight": 0.6,
             "target_risk_share": None,
             "notes": None,
         }
@@ -640,7 +775,6 @@ def test_target_set_create_update_and_catalog_round_trip(client):
             "comparator_taxonomy_node_id": core_node_id,
             "target_set_type": "taa",
             "name": "Core Sleeve TAA",
-            "effective_from": "2026-04-01",
             "weight_enabled": True,
             "risk_budget_enabled": True,
             "lines": [
@@ -662,7 +796,6 @@ def test_target_set_create_update_and_catalog_round_trip(client):
     update_response = client.patch(
         f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/target-sets/{saa_target_set_id}",
         json={
-            "effective_to": "2026-12-31",
             "lines": [
                 {
                     "taxonomy_node_id": core_node_id,
@@ -678,7 +811,7 @@ def test_target_set_create_update_and_catalog_round_trip(client):
         },
     )
     assert update_response.status_code == 200
-    assert update_response.json()["effective_to"] == "2026-12-31"
+    assert "effective_to" not in update_response.json()
 
     catalog_response = client.get("/api/portfolios/yungu/taxonomies")
     assert catalog_response.status_code == 200
@@ -686,7 +819,7 @@ def test_target_set_create_update_and_catalog_round_trip(client):
     assert len(catalog_payload["target_sets"]) == 2
     assert len(catalog_payload["target_set_lines"]) == 4
     updated_saa = next(item for item in catalog_payload["target_sets"] if item["target_set_id"] == saa_target_set_id)
-    assert updated_saa["effective_to"] == "2026-12-31"
+    assert "effective_to" not in updated_saa
     root_lines = [item for item in catalog_payload["target_set_lines"] if item["target_set_id"] == saa_target_set_id]
     assert sum(item["target_weight"] for item in root_lines) == pytest.approx(1.0)
 

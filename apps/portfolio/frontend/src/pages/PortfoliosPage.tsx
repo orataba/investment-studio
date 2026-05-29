@@ -61,6 +61,14 @@ export default function PortfoliosPage() {
     return () => document.removeEventListener('mousedown', handleClick)
   }, [menuOpenId])
 
+  useEffect(() => {
+    if (!notice) {
+      return undefined
+    }
+    const timeoutId = window.setTimeout(() => setNotice(null), 2800)
+    return () => window.clearTimeout(timeoutId)
+  }, [notice])
+
   const resolvedPortfolios = portfolios.length ? portfolios : FALLBACK_PORTFOLIOS
   const totalNav = resolvedPortfolios.reduce((sum, item) => sum + item.nav, 0)
   const totalDayChange = resolvedPortfolios.reduce((sum, item) => sum + (item.day_change_value ?? 0), 0)

@@ -1,17 +1,20 @@
-import { FormEvent, useEffect, useMemo, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
+import { FormEvent, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
+  createPortfolioInstrumentUniverseRecord,
   createPortfolioTaxonomy,
   createPortfolioTaxonomyAssignment,
   createPortfolioTaxonomyNode,
   createPortfolioTargetSet,
+  deletePortfolioInstrumentUniverseRecord,
   deletePortfolioTaxonomy,
   deletePortfolioTaxonomyNode,
   deletePortfolioTargetSet,
   getHoldingsWorkspace,
+  getPortfolioInstruments,
   getPortfolioAccountsWorkspace,
   getPortfolioTaxonomyCatalog,
   updatePortfolioDefaultPlanningTaxonomy,
@@ -22,12 +25,14 @@ import {
   type InstrumentCore,
   type HoldingsWorkspaceResponse,
   type PortfolioAccountsWorkspaceResponse,
+  type PortfolioInstrumentUniverseRecord,
   type PortfolioTargetSetLineRecord,
   type PortfolioTargetSetRecord,
   type PortfolioTaxonomyAssignmentRecord,
   type PortfolioTaxonomyCatalogResponse,
   type PortfolioTaxonomyNodeRecord,
   type PortfolioTaxonomyRecord,
+  type SharedInstrumentRecord,
   type TaxonomyAssignmentScope,
 } from '../lib/api'
 import { formatCurrency, formatLabel, formatPercent } from '../lib/format'
@@ -47,6 +52,9 @@ type CoverageEntity = {
   market_value_base: number | null
   current_assignment: PortfolioTaxonomyAssignmentRecord | null
   current_node: PortfolioTaxonomyNodeRecord | null
+  holding_state: 'held' | 'not_held'
+  instrument_state: 'held' | 'former' | 'watch' | null
+  instrument_state_label: string | null
   coverage_state: 'unassigned' | 'ambiguous' | 'selected' | 'other'
 }
 
@@ -77,8 +85,6 @@ type TargetScopeMember = {
 
 type TargetSetDraft = {
   name: string
-  effective_from: string
-  effective_to: string
   weight_enabled: boolean
   risk_budget_enabled: boolean
   status: string
@@ -109,11 +115,18 @@ type TaxonomyContextMenuState =
       x: number
       y: number
     }
+  | {
+      kind: 'taxonomy'
+      taxonomyId: string
+      x: number
+      y: number
+    }
 
 type WorkspaceFetchResult = {
   catalog: PortfolioTaxonomyCatalogResponse | null
   holdingsWorkspace: HoldingsWorkspaceResponse | null
   accountsResponse: PortfolioAccountsWorkspaceResponse | null
+  instrumentsResponse: { portfolio_id: string; instruments: SharedInstrumentRecord[] } | null
   workspaceError: string | null
   supplementalNotice: string | null
 }
@@ -123,8 +136,6 @@ const TAXONOMY_UNASSIGNED_ROW_ID = '__taxonomy_unassigned__'
 const ROOT_TARGET_SCOPE_KEY = '__target_scope_root__'
 const EMPTY_TARGET_SET_DRAFT: TargetSetDraft = {
   name: '',
-  effective_from: '',
-  effective_to: '',
   weight_enabled: false,
   risk_budget_enabled: false,
   status: 'active',
@@ -140,8 +151,35 @@ function targetScopeNodeId(scopeKey: string) {
   return scopeKey === ROOT_TARGET_SCOPE_KEY ? null : scopeKey
 }
 
-function primaryIdentifier(instrument: InstrumentCore) {
+function primaryIdentifier(instrument: Pick<InstrumentCore, 'instrument_id' | 'identifiers'>) {
   return instrument.identifiers.find((identifier) => identifier.is_primary)?.identifier_value ?? instrument.instrument_id
+}
+
+function isCashInstrument(instrument: Pick<InstrumentCore, 'instrument_id' | 'instrument_type'> | null | undefined) {
+  if (!instrument) {
+    return false
+  }
+  return (
+    instrument.instrument_type.trim().toLowerCase() === 'cash' ||
+    instrument.instrument_id.trim().toLowerCase().startsWith('cash:')
+  )
+}
+
+function instrumentStateForEntity(
+  holdingState: 'held' | 'not_held',
+  universeRecord?: PortfolioInstrumentUniverseRecord | null,
+): Pick<CoverageEntity, 'instrument_state' | 'instrument_state_label'> {
+  if (holdingState === 'held') {
+    return { instrument_state: 'held', instrument_state_label: 'Current Holding' }
+  }
+  if ((universeRecord?.transaction_count ?? 0) > 0 || universeRecord?.source === 'transaction') {
+    return { instrument_state: 'former', instrument_state_label: 'Former Holding' }
+  }
+  return { instrument_state: 'watch', instrument_state_label: 'Watchlist' }
+}
+
+function isCashHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
+  return isCashInstrument(row.instrument_core) || row.line_id.trim().toLowerCase().startsWith('cash:')
 }
 
 function TableStatusRow({
@@ -162,16 +200,29 @@ function TableStatusRow({
   )
 }
 
+function renderInstrumentStatusCell(entity: CoverageEntity) {
+  if (!entity.instrument_state || !entity.instrument_state_label) {
+    return null
+  }
+  return (
+    <span className={`taxonomy-instrument-status taxonomy-instrument-status-${entity.instrument_state}`}>
+      {entity.instrument_state_label}
+    </span>
+  )
+}
+
 function TaxonomyModal({
   open,
   title,
   onClose,
   children,
+  modalClassName,
 }: {
   open: boolean
   title: string
   onClose: () => void
   children: ReactNode
+  modalClassName?: string
 }) {
   if (!open) {
     return null
@@ -180,7 +231,7 @@ function TaxonomyModal({
   return (
     <div className="taxonomy-modal-overlay" role="presentation" onClick={onClose}>
       <div
-        className="taxonomy-modal"
+        className={['taxonomy-modal', modalClassName].filter(Boolean).join(' ')}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -204,62 +255,7 @@ function extractErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Request failed.'
 }
 
-function isRecordActive(effectiveFrom?: string | null, effectiveTo?: string | null, referenceDate?: string | null) {
-  if (!referenceDate) {
-    return true
-  }
-  if (effectiveFrom && effectiveFrom > referenceDate) {
-    return false
-  }
-  if (effectiveTo && effectiveTo < referenceDate) {
-    return false
-  }
-  return true
-}
-
-function allowedDimensionsForBudgetingLevel(budgetingLevel?: string | null) {
-  return {
-    weight: budgetingLevel === 'weight' || budgetingLevel === 'weight_and_risk_budget',
-    risk_budget: budgetingLevel === 'risk_budget' || budgetingLevel === 'weight_and_risk_budget',
-  }
-}
-
-function normalizeRootDefaultTargetDimension(
-  planningEnabled: boolean,
-  budgetingLevel: string,
-  preferred: 'weight' | 'risk_budget',
-) {
-  if (!planningEnabled) {
-    return preferred
-  }
-  if (budgetingLevel === 'weight') {
-    return 'weight'
-  }
-  if (budgetingLevel === 'risk_budget') {
-    return 'risk_budget'
-  }
-  return preferred
-}
-
-function planningConfigError(
-  planningEnabled: boolean,
-  budgetingLevel: string,
-  rootDefaultTargetDimension: 'weight' | 'risk_budget',
-) {
-  if (!planningEnabled) {
-    return null
-  }
-  if (!budgetingLevel) {
-    return 'Planning-enabled taxonomies must select a budgeting level before targets can be edited.'
-  }
-  if (budgetingLevel === 'weight' && rootDefaultTargetDimension !== 'weight') {
-    return 'Weight-only taxonomies must use Weight as the root default target dimension.'
-  }
-  if (budgetingLevel === 'risk_budget' && rootDefaultTargetDimension !== 'risk_budget') {
-    return 'Risk-budget-only taxonomies must use Risk Budget as the root default target dimension.'
-  }
-  return null
-}
+const PLANNING_BUDGETING_LEVEL = 'weight_and_risk_budget'
 
 function percentInputFromDecimal(value?: number | null) {
   if (value == null || Number.isNaN(value)) {
@@ -317,14 +313,58 @@ function buildTargetSetDraft(args: {
 
   return {
     name: targetSet?.name ?? defaultName,
-    effective_from: targetSet?.effective_from ?? '',
-    effective_to: targetSet?.effective_to ?? '',
-    weight_enabled: targetSet?.weight_enabled ?? defaultWeightEnabled,
-    risk_budget_enabled: targetSet?.risk_budget_enabled ?? defaultRiskBudgetEnabled,
+    weight_enabled: defaultWeightEnabled || Boolean(targetSet?.weight_enabled),
+    risk_budget_enabled: defaultRiskBudgetEnabled || Boolean(targetSet?.risk_budget_enabled),
     status: targetSet?.status ?? 'active',
     notes: targetSet?.notes ?? '',
     lines_by_member_key: linesByMemberKey,
   } satisfies TargetSetDraft
+}
+
+function targetLineDraftsEqual(left: TargetLineDraft, right: TargetLineDraft) {
+  return (
+    left.target_weight === right.target_weight &&
+    left.target_risk_share === right.target_risk_share &&
+    left.notes === right.notes
+  )
+}
+
+function targetSetDraftsEqual(left: TargetSetDraft, right: TargetSetDraft) {
+  const leftMemberKeys = Object.keys(left.lines_by_member_key)
+  const rightMemberKeys = Object.keys(right.lines_by_member_key)
+  return (
+    left.name === right.name &&
+    left.weight_enabled === right.weight_enabled &&
+    left.risk_budget_enabled === right.risk_budget_enabled &&
+    left.status === right.status &&
+    left.notes === right.notes &&
+    leftMemberKeys.length === rightMemberKeys.length &&
+    leftMemberKeys.every((memberKey) => {
+      const leftLine = left.lines_by_member_key[memberKey]
+      const rightLine = right.lines_by_member_key[memberKey]
+      return Boolean(rightLine) && targetLineDraftsEqual(leftLine, rightLine)
+    })
+  )
+}
+
+function targetDraftScopesEqual(
+  left: Record<string, { saa: TargetSetDraft; taa: TargetSetDraft }>,
+  right: Record<string, { saa: TargetSetDraft; taa: TargetSetDraft }>,
+) {
+  const leftScopeKeys = Object.keys(left)
+  const rightScopeKeys = Object.keys(right)
+  return (
+    leftScopeKeys.length === rightScopeKeys.length &&
+    leftScopeKeys.every((scopeKey) => {
+      const leftScopeDraft = left[scopeKey]
+      const rightScopeDraft = right[scopeKey]
+      return (
+        Boolean(rightScopeDraft) &&
+        targetSetDraftsEqual(leftScopeDraft.saa, rightScopeDraft.saa) &&
+        targetSetDraftsEqual(leftScopeDraft.taa, rightScopeDraft.taa)
+      )
+    })
+  )
 }
 
 function validateTargetSetDraft(
@@ -412,16 +452,18 @@ function buildChildrenByParent(nodes: PortfolioTaxonomyNodeRecord[]) {
 }
 
 async function fetchWorkspace(portfolioId: string): Promise<WorkspaceFetchResult> {
-  const [catalogResult, holdingsResult, accountsResult] = await Promise.allSettled([
+  const [catalogResult, holdingsResult, accountsResult, instrumentsResult] = await Promise.allSettled([
     getPortfolioTaxonomyCatalog(portfolioId),
     getHoldingsWorkspace(portfolioId),
     getPortfolioAccountsWorkspace(portfolioId),
+    getPortfolioInstruments(portfolioId),
   ])
 
   const supplementalMessages: string[] = []
   const catalog = catalogResult.status === 'fulfilled' ? catalogResult.value : null
   const holdingsWorkspace = holdingsResult.status === 'fulfilled' ? holdingsResult.value : null
   const accountsResponse = accountsResult.status === 'fulfilled' ? accountsResult.value : null
+  const instrumentsResponse = instrumentsResult.status === 'fulfilled' ? instrumentsResult.value : null
 
   if (holdingsResult.status === 'rejected') {
     supplementalMessages.push(`Current holdings coverage unavailable: ${extractErrorMessage(holdingsResult.reason)}`)
@@ -429,11 +471,14 @@ async function fetchWorkspace(portfolioId: string): Promise<WorkspaceFetchResult
   if (accountsResult.status === 'rejected') {
     supplementalMessages.push(`Account coverage unavailable: ${extractErrorMessage(accountsResult.reason)}`)
   }
-
+  if (instrumentsResult.status === 'rejected') {
+    supplementalMessages.push(`Instrument registry unavailable: ${extractErrorMessage(instrumentsResult.reason)}`)
+  }
   return {
     catalog,
     holdingsWorkspace,
     accountsResponse,
+    instrumentsResponse,
     workspaceError: catalogResult.status === 'rejected' ? extractErrorMessage(catalogResult.reason) : null,
     supplementalNotice: supplementalMessages.length ? supplementalMessages.join(' ') : null,
   }
@@ -445,6 +490,7 @@ export default function TaxonomiesPage() {
   const [catalog, setCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const [holdingsWorkspace, setHoldingsWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
   const [accountsResponse, setAccountsResponse] = useState<PortfolioAccountsWorkspaceResponse | null>(null)
+  const [instrumentsResponse, setInstrumentsResponse] = useState<{ portfolio_id: string; instruments: SharedInstrumentRecord[] } | null>(null)
   const [loading, setLoading] = useState(true)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [supplementalNotice, setSupplementalNotice] = useState<string | null>(null)
@@ -453,39 +499,29 @@ export default function TaxonomiesPage() {
   const [actionPending, setActionPending] = useState<string | null>(null)
 
   const [taxonomyName, setTaxonomyName] = useState('')
-  const [taxonomyType, setTaxonomyType] = useState('custom')
-  const [taxonomyPurpose, setTaxonomyPurpose] = useState('')
   const [taxonomyScope, setTaxonomyScope] = useState<TaxonomyAssignmentScope>('instrument')
-  const [taxonomyPlanningEnabled, setTaxonomyPlanningEnabled] = useState(false)
-  const [taxonomyBudgetingLevel, setTaxonomyBudgetingLevel] = useState('')
-  const [taxonomyRootDefaultTargetDimension, setTaxonomyRootDefaultTargetDimension] = useState<'weight' | 'risk_budget'>('weight')
+  const [taxonomyPickerOpen, setTaxonomyPickerOpen] = useState(false)
+  const [taxonomyRenameId, setTaxonomyRenameId] = useState<string | null>(null)
+  const [taxonomyRenameName, setTaxonomyRenameName] = useState('')
+  const taxonomyPickerRef = useRef<HTMLDivElement | null>(null)
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(new Set())
   const [selectedEntityIds, setSelectedEntityIds] = useState<Set<string>>(new Set())
   const [entitySearch, setEntitySearch] = useState('')
   const [entityFilter, setEntityFilter] = useState<'all' | 'unassigned' | 'selected' | 'other' | 'ambiguous'>('all')
-
-  const [selectedTaxonomyName, setSelectedTaxonomyName] = useState('')
-  const [selectedTaxonomyType, setSelectedTaxonomyType] = useState('custom')
-  const [selectedTaxonomyPurpose, setSelectedTaxonomyPurpose] = useState('')
-  const [selectedTaxonomyPlanningEnabled, setSelectedTaxonomyPlanningEnabled] = useState(false)
-  const [selectedTaxonomyBudgetingLevel, setSelectedTaxonomyBudgetingLevel] = useState('')
-  const [selectedTaxonomyRootDefaultTargetDimension, setSelectedTaxonomyRootDefaultTargetDimension] = useState<'weight' | 'risk_budget'>('weight')
-  const [selectedTaxonomyStatus, setSelectedTaxonomyStatus] = useState('active')
-  const [selectedTaxonomyEffectiveFrom, setSelectedTaxonomyEffectiveFrom] = useState('')
-  const [selectedTaxonomyEffectiveTo, setSelectedTaxonomyEffectiveTo] = useState('')
+  const [instrumentAddSearch, setInstrumentAddSearch] = useState('')
+  const [instrumentAddInstrumentId, setInstrumentAddInstrumentId] = useState('')
 
   const [newNodeName, setNewNodeName] = useState('')
-  const [newNodeCode, setNewNodeCode] = useState('')
-  const [newNodeSortOrder, setNewNodeSortOrder] = useState('')
-  const [newNodeDefaultTargetDimension, setNewNodeDefaultTargetDimension] = useState<'weight' | 'risk_budget'>('weight')
   const [targetDraftsByScope, setTargetDraftsByScope] = useState<
     Record<string, { saa: TargetSetDraft; taa: TargetSetDraft }>
   >({})
   const [activeTargetScopeKey, setActiveTargetScopeKey] = useState(ROOT_TARGET_SCOPE_KEY)
+  const [targetEditMode, setTargetEditMode] = useState(false)
   const [showTaxonomyCreate, setShowTaxonomyCreate] = useState(false)
-  const [showTaxonomyDetails, setShowTaxonomyDetails] = useState(false)
+  const [showTaxonomyRename, setShowTaxonomyRename] = useState(false)
+  const [showInstrumentAdd, setShowInstrumentAdd] = useState(false)
   const [showNodeCreate, setShowNodeCreate] = useState(false)
   const [showNodeEdit, setShowNodeEdit] = useState(false)
   const [nodeCreateMode, setNodeCreateMode] = useState<NodeCreateMode>('root')
@@ -493,9 +529,6 @@ export default function TaxonomiesPage() {
   const [nodeCreateAnchorNodeId, setNodeCreateAnchorNodeId] = useState<string | null>(null)
   const [nodeEditId, setNodeEditId] = useState<string | null>(null)
   const [nodeEditName, setNodeEditName] = useState('')
-  const [nodeEditCode, setNodeEditCode] = useState('')
-  const [nodeEditSortOrder, setNodeEditSortOrder] = useState('')
-  const [nodeEditDefaultTargetDimension, setNodeEditDefaultTargetDimension] = useState<'weight' | 'risk_budget'>('weight')
   const [contextMenuState, setContextMenuState] = useState<TaxonomyContextMenuState | null>(null)
   const [dragTargetNodeId, setDragTargetNodeId] = useState<string | null>(null)
 
@@ -504,6 +537,7 @@ export default function TaxonomiesPage() {
       setCatalog(null)
       setHoldingsWorkspace(null)
       setAccountsResponse(null)
+      setInstrumentsResponse(null)
       setWorkspaceError(null)
       setSupplementalNotice(null)
       setLoading(false)
@@ -521,6 +555,7 @@ export default function TaxonomiesPage() {
         setCatalog(result.catalog)
         setHoldingsWorkspace(result.holdingsWorkspace)
         setAccountsResponse(result.accountsResponse)
+        setInstrumentsResponse(result.instrumentsResponse)
         setWorkspaceError(result.workspaceError)
         setSupplementalNotice(result.supplementalNotice)
       })
@@ -535,6 +570,14 @@ export default function TaxonomiesPage() {
     }
   }, [portfolioId])
 
+  useEffect(() => {
+    if (!notice) {
+      return undefined
+    }
+    const timeoutId = window.setTimeout(() => setNotice(null), 2800)
+    return () => window.clearTimeout(timeoutId)
+  }, [notice])
+
   async function reloadWorkspace() {
     if (!portfolioId) {
       return
@@ -545,6 +588,7 @@ export default function TaxonomiesPage() {
       setCatalog(result.catalog)
       setHoldingsWorkspace(result.holdingsWorkspace)
       setAccountsResponse(result.accountsResponse)
+      setInstrumentsResponse(result.instrumentsResponse)
       setWorkspaceError(result.workspaceError)
       setSupplementalNotice(result.supplementalNotice)
     } finally {
@@ -569,9 +613,12 @@ export default function TaxonomiesPage() {
   const taxonomyNodes = catalog?.taxonomy_nodes ?? []
   const taxonomyAssignments = catalog?.taxonomy_assignments ?? []
   const requestedTaxonomyId = searchParams.get('taxonomy_id') ?? ''
+  const defaultPlanningTaxonomyId =
+    taxonomies.find((taxonomy) => taxonomy.taxonomy_id === catalog?.default_planning_taxonomy_id)?.taxonomy_id ?? ''
   const resolvedSelectedTaxonomyId =
-    taxonomies.find((taxonomy) => taxonomy.taxonomy_id === requestedTaxonomyId)?.taxonomy_id ??
-    taxonomies[0]?.taxonomy_id ??
+    taxonomies.find((taxonomy) => taxonomy.taxonomy_id === requestedTaxonomyId)?.taxonomy_id ||
+    defaultPlanningTaxonomyId ||
+    taxonomies[0]?.taxonomy_id ||
     ''
   const selectedTaxonomy = taxonomies.find((taxonomy) => taxonomy.taxonomy_id === resolvedSelectedTaxonomyId) ?? null
   const selectedTaxonomyNodes = useMemo(
@@ -582,8 +629,9 @@ export default function TaxonomiesPage() {
     () => taxonomyAssignments.filter((assignment) => assignment.taxonomy_id === resolvedSelectedTaxonomyId),
     [resolvedSelectedTaxonomyId, taxonomyAssignments],
   )
-  const referenceDate = holdingsWorkspace?.as_of_date ?? null
   const holdingsRows = holdingsWorkspace?.rows ?? []
+  const instrumentRows = instrumentsResponse?.instruments ?? []
+  const instrumentUniverseRows = catalog?.instrument_universe ?? []
   const baseCurrency = holdingsWorkspace?.base_currency ?? 'CNY'
   const accountRows = accountsResponse?.accounts ?? []
 
@@ -594,35 +642,9 @@ export default function TaxonomiesPage() {
   }, [taxonomies.length])
 
   useEffect(() => {
-    if (taxonomyScope !== 'instrument') {
-      setTaxonomyPlanningEnabled(false)
-      setTaxonomyBudgetingLevel('')
-    }
-  }, [taxonomyScope])
-
-  useEffect(() => {
-    if (!selectedTaxonomy) {
-      setSelectedTaxonomyName('')
-      setSelectedTaxonomyType('custom')
-      setSelectedTaxonomyPurpose('')
-      setSelectedTaxonomyPlanningEnabled(false)
-      setSelectedTaxonomyBudgetingLevel('')
-      setSelectedTaxonomyRootDefaultTargetDimension('weight')
-      setSelectedTaxonomyStatus('active')
-      setSelectedTaxonomyEffectiveFrom('')
-      setSelectedTaxonomyEffectiveTo('')
-      return
-    }
-    setSelectedTaxonomyName(selectedTaxonomy.name)
-    setSelectedTaxonomyType(selectedTaxonomy.taxonomy_type)
-    setSelectedTaxonomyPurpose(selectedTaxonomy.purpose ?? '')
-    setSelectedTaxonomyPlanningEnabled(selectedTaxonomy.planning_enabled)
-    setSelectedTaxonomyBudgetingLevel(selectedTaxonomy.budgeting_level ?? '')
-    setSelectedTaxonomyRootDefaultTargetDimension(selectedTaxonomy.root_default_target_dimension ?? 'weight')
-    setSelectedTaxonomyStatus(selectedTaxonomy.status)
-    setSelectedTaxonomyEffectiveFrom(selectedTaxonomy.effective_from ?? '')
-    setSelectedTaxonomyEffectiveTo(selectedTaxonomy.effective_to ?? '')
-  }, [selectedTaxonomy])
+    setInstrumentAddSearch('')
+    setInstrumentAddInstrumentId('')
+  }, [resolvedSelectedTaxonomyId])
 
   const nodeById = useMemo(() => {
     const lookup = new Map<string, PortfolioTaxonomyNodeRecord>()
@@ -656,26 +678,20 @@ export default function TaxonomiesPage() {
     return lookup
   }, [childrenByParent, selectedTaxonomyNodes])
 
-  const collapsibleNodeIds = useMemo(
-    () =>
-      new Set(
-        selectedTaxonomyNodes
-          .filter((node) => (childrenByParent.get(node.taxonomy_node_id) ?? []).length > 0)
-          .map((node) => node.taxonomy_node_id),
-      ),
-    [childrenByParent, selectedTaxonomyNodes],
-  )
-
   useEffect(() => {
     if (!selectedTaxonomy) {
-      setSelectedNodeId(null)
-      setCollapsedNodeIds(new Set())
-      setSelectedEntityIds(new Set())
+      if (selectedNodeId !== null) {
+        setSelectedNodeId(null)
+      }
+      setCollapsedNodeIds((current) => (current.size ? new Set() : current))
+      setSelectedEntityIds((current) => (current.size ? new Set() : current))
       return
     }
     const preferredNodeId = selectedNodeId && nodeById.has(selectedNodeId) ? selectedNodeId : null
-    setSelectedNodeId(preferredNodeId)
-  }, [childrenByParent, nodeById, selectedNodeId, selectedTaxonomy])
+    if (preferredNodeId !== selectedNodeId) {
+      setSelectedNodeId(preferredNodeId)
+    }
+  }, [nodeById, selectedNodeId, selectedTaxonomy])
 
   const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) ?? null : null
 
@@ -688,6 +704,19 @@ export default function TaxonomiesPage() {
       setContextMenuState(null)
     }
   }, [selectedTaxonomy])
+
+  useEffect(() => {
+    if (!taxonomyPickerOpen) {
+      return
+    }
+    function handleDocumentPointerDown(event: PointerEvent) {
+      if (!taxonomyPickerRef.current?.contains(event.target as Node)) {
+        setTaxonomyPickerOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', handleDocumentPointerDown)
+    return () => document.removeEventListener('pointerdown', handleDocumentPointerDown)
+  }, [taxonomyPickerOpen])
 
   useEffect(() => {
     if (!contextMenuState) {
@@ -739,11 +768,9 @@ export default function TaxonomiesPage() {
   const activeAssignments = useMemo(
     () =>
       selectedTaxonomyAssignments.filter(
-        (assignment) =>
-          assignment.status === 'active' &&
-          isRecordActive(assignment.effective_from, assignment.effective_to, referenceDate),
+        (assignment) => assignment.status === 'active',
       ),
-    [referenceDate, selectedTaxonomyAssignments],
+    [selectedTaxonomyAssignments],
   )
 
   const activeAssignmentsByEntityKey = useMemo(() => {
@@ -756,6 +783,35 @@ export default function TaxonomiesPage() {
     })
     return lookup
   }, [activeAssignments])
+
+  const instrumentById = useMemo(() => {
+    const lookup = new Map<string, SharedInstrumentRecord>()
+    instrumentRows.forEach((instrument) => {
+      lookup.set(instrument.instrument_id, instrument)
+    })
+    return lookup
+  }, [instrumentRows])
+
+  const universeInstrumentById = useMemo(() => {
+    const lookup = new Map<string, InstrumentCore>()
+    instrumentUniverseRows.forEach((item) => {
+      if (!item.instrument_id || !item.instrument_ref) {
+        return
+      }
+      lookup.set(item.instrument_id, item.instrument_ref)
+    })
+    return lookup
+  }, [instrumentUniverseRows])
+
+  const universeRecordByInstrumentId = useMemo(() => {
+    const lookup = new Map<string, PortfolioInstrumentUniverseRecord>()
+    instrumentUniverseRows.forEach((item) => {
+      if (item.instrument_id) {
+        lookup.set(item.instrument_id, item)
+      }
+    })
+    return lookup
+  }, [instrumentUniverseRows])
 
   const selectedNodeScopeIds = useMemo(() => {
     if (!selectedNode) {
@@ -780,13 +836,16 @@ export default function TaxonomiesPage() {
         const assignmentKey = coverageEntityKey('cash_bucket', accountRow.account.account_id)
         return (accountRow.derived_cash_balance_base ?? 0) !== 0 || activeAssignmentsByEntityKey.has(assignmentKey)
       })
+      const holdingRowsForEntities = includeCashBuckets
+        ? holdingsRows.filter((row) => !isCashHoldingRow(row))
+        : holdingsRows
       const totalEntityValueBase =
-        holdingsRows.reduce((total, row) => total + (row.market_value_base ?? 0), 0) +
+        holdingRowsForEntities.reduce((total, row) => total + (row.market_value_base ?? 0), 0) +
         (includeCashBuckets
           ? visibleCashAccounts.reduce((total, accountRow) => total + (accountRow.derived_cash_balance_base ?? 0), 0)
           : 0)
 
-      const holdingEntities = holdingsRows.map((row) => {
+      const holdingEntities = holdingRowsForEntities.map((row) => {
         const assignments = activeAssignmentsByEntityKey.get(coverageEntityKey('instrument', row.instrument_core.instrument_id)) ?? []
         const assignment = assignments.length === 1 ? assignments[0] : null
         const currentNode = assignment ? nodeById.get(assignment.taxonomy_node_id) ?? null : null
@@ -803,7 +862,7 @@ export default function TaxonomiesPage() {
           entity_id: row.instrument_core.instrument_id,
           target_scope: 'instrument' as const,
           label: `${primaryIdentifier(row.instrument_core)} · ${row.instrument_core.instrument_name}`,
-          supporting_label: row.market_value_base != null ? `${row.instrument_core.currency} · ${formatCurrency(row.market_value_base, baseCurrency)}` : row.instrument_core.currency,
+          supporting_label: row.instrument_core.currency,
           allocation:
             row.market_value_base != null && totalEntityValueBase > 1e-9
               ? row.market_value_base / totalEntityValueBase
@@ -811,12 +870,78 @@ export default function TaxonomiesPage() {
           market_value_base: row.market_value_base ?? null,
           current_assignment: assignment,
           current_node: currentNode,
+          holding_state: 'held',
+          ...instrumentStateForEntity('held', universeRecordByInstrumentId.get(row.instrument_core.instrument_id)),
           coverage_state: coverageState,
         } satisfies CoverageEntity
       })
 
+      const heldInstrumentIds = new Set(holdingRowsForEntities.map((row) => row.instrument_core.instrument_id))
+      const visibleNonHeldInstrumentIds = new Set<string>()
+      instrumentUniverseRows.forEach((item) => {
+        if (
+          item.status === 'active' &&
+          item.instrument_id &&
+          !heldInstrumentIds.has(item.instrument_id) &&
+          !(includeCashBuckets && isCashInstrument(item.instrument_ref))
+        ) {
+          visibleNonHeldInstrumentIds.add(item.instrument_id)
+        }
+      })
+      activeAssignments.forEach((assignment) => {
+        const assignedInstrument =
+          instrumentById.get(assignment.target_entity_id) ?? universeInstrumentById.get(assignment.target_entity_id) ?? null
+        if (
+          assignment.target_scope === 'instrument' &&
+          !heldInstrumentIds.has(assignment.target_entity_id) &&
+          !(includeCashBuckets && (assignment.target_entity_id.trim().toLowerCase().startsWith('cash:') || isCashInstrument(assignedInstrument)))
+        ) {
+          visibleNonHeldInstrumentIds.add(assignment.target_entity_id)
+        }
+      })
+
+      const nonHeldInstrumentEntities = Array.from(visibleNonHeldInstrumentIds)
+        .sort((left, right) => {
+          const leftInstrument = instrumentById.get(left) ?? universeInstrumentById.get(left)
+          const rightInstrument = instrumentById.get(right) ?? universeInstrumentById.get(right)
+          return (leftInstrument?.instrument_name ?? left).localeCompare(rightInstrument?.instrument_name ?? right)
+        })
+        .reduce<CoverageEntity[]>((entities, instrumentId) => {
+          if (entities.some((entity) => entity.entity_id === instrumentId)) {
+            return entities
+          }
+          const assignments =
+            activeAssignmentsByEntityKey.get(coverageEntityKey('instrument', instrumentId)) ?? []
+          const currentAssignment = assignments.length === 1 ? assignments[0] : null
+          const currentNode = currentAssignment ? nodeById.get(currentAssignment.taxonomy_node_id) ?? null : null
+          const instrument = instrumentById.get(instrumentId) ?? universeInstrumentById.get(instrumentId) ?? null
+          const universeRecord = universeRecordByInstrumentId.get(instrumentId) ?? null
+          let coverageState: CoverageEntity['coverage_state'] = 'unassigned'
+          if (assignments.length > 1) {
+            coverageState = 'ambiguous'
+          } else if (currentAssignment && selectedNodeScopeIds?.has(currentAssignment.taxonomy_node_id)) {
+            coverageState = 'selected'
+          } else if (currentAssignment) {
+            coverageState = 'other'
+          }
+          entities.push({
+            entity_id: instrumentId,
+            target_scope: 'instrument',
+            label: instrument ? `${primaryIdentifier(instrument)} · ${instrument.instrument_name}` : instrumentId,
+            supporting_label: instrument?.currency ?? '',
+            allocation: null,
+            market_value_base: null,
+            current_assignment: currentAssignment,
+            current_node: currentNode,
+            holding_state: 'not_held',
+            ...instrumentStateForEntity('not_held', universeRecord),
+            coverage_state: coverageState,
+          })
+          return entities
+        }, [])
+
       if (!includeCashBuckets) {
-        return holdingEntities
+        return [...holdingEntities, ...nonHeldInstrumentEntities]
       }
 
       const cashEntities = visibleCashAccounts.map((accountRow) => {
@@ -837,7 +962,7 @@ export default function TaxonomiesPage() {
           entity_id: accountRow.account.account_id,
           target_scope: 'cash_bucket' as const,
           label: `${accountRow.account.account_name} · Cash`,
-          supporting_label: `${accountRow.account.currency} · ${formatCurrency(accountRow.derived_cash_balance, accountRow.account.currency)}`,
+          supporting_label: accountRow.account.currency,
           allocation:
             accountRow.derived_cash_balance_base != null && totalEntityValueBase > 1e-9
               ? accountRow.derived_cash_balance_base / totalEntityValueBase
@@ -845,11 +970,14 @@ export default function TaxonomiesPage() {
           market_value_base: accountRow.derived_cash_balance_base ?? null,
           current_assignment: assignment,
           current_node: currentNode,
+          holding_state: 'held',
+          instrument_state: null,
+          instrument_state_label: null,
           coverage_state: coverageState,
         } satisfies CoverageEntity
       })
 
-      return [...holdingEntities, ...cashEntities]
+      return [...holdingEntities, ...nonHeldInstrumentEntities, ...cashEntities]
     }
 
     if (selectedTaxonomy.primary_assignment_scope === 'cash_bucket') {
@@ -873,11 +1001,14 @@ export default function TaxonomiesPage() {
             entity_id: accountRow.account.account_id,
             target_scope: 'cash_bucket',
             label: `${accountRow.account.account_name} · Cash`,
-            supporting_label: `${accountRow.account.currency} · ${formatCurrency(accountRow.derived_cash_balance, accountRow.account.currency)}`,
+            supporting_label: accountRow.account.currency,
             allocation: null,
             market_value_base: accountRow.derived_cash_balance_base ?? null,
             current_assignment: assignment,
             current_node: currentNode,
+            holding_state: 'held',
+            instrument_state: null,
+            instrument_state_label: null,
             coverage_state: coverageState,
           }
         })
@@ -906,27 +1037,41 @@ export default function TaxonomiesPage() {
         market_value_base: null,
         current_assignment: assignment,
         current_node: currentNode,
+        holding_state: 'held',
+        instrument_state: null,
+        instrument_state_label: null,
         coverage_state: coverageState,
       }
     })
   }, [
     accountRows,
+    activeAssignments,
     activeAssignmentsByEntityKey,
     baseCurrency,
     holdingsRows,
+    instrumentById,
+    instrumentUniverseRows,
     nodeById,
     selectedNodeScopeIds,
     selectedTaxonomy,
+    universeInstrumentById,
+    universeRecordByInstrumentId,
   ])
 
   const coverageSummary = useMemo(() => {
     const currentEntityCount = currentEntities.length
     const unassignedEntities = currentEntities.filter((entity) => entity.coverage_state === 'unassigned')
     const ambiguousEntities = currentEntities.filter((entity) => entity.coverage_state === 'ambiguous')
+    const heldEntityCount = currentEntities.filter((entity) => entity.holding_state === 'held').length
+    const formerEntityCount = currentEntities.filter((entity) => entity.instrument_state === 'former').length
+    const watchEntityCount = currentEntities.filter((entity) => entity.instrument_state === 'watch').length
     const assignedCount = currentEntityCount - unassignedEntities.length - ambiguousEntities.length
     return {
       currentEntityCount,
       assignedCount,
+      heldEntityCount,
+      formerEntityCount,
+      watchEntityCount,
       unassignedEntities,
       ambiguousEntities,
       coveragePct: currentEntityCount ? assignedCount / currentEntityCount : null,
@@ -1022,16 +1167,13 @@ export default function TaxonomiesPage() {
     return lookup
   }, [currentEntities])
 
-  const taxonomyAssignedSummary = useMemo(() => {
+  const taxonomyCurrentSummary = useMemo(() => {
     let weightTotal = 0
     let valueTotal = 0
     let weightSeen = false
     let valueSeen = false
 
     currentEntities.forEach((entity) => {
-      if (!entity.current_assignment || entity.coverage_state === 'ambiguous') {
-        return
-      }
       if (entity.allocation != null) {
         weightTotal += entity.allocation
         weightSeen = true
@@ -1110,22 +1252,68 @@ export default function TaxonomiesPage() {
       )
     })
   }, [currentEntities, entityFilter, entitySearch])
+  const currentInstrumentEntityIds = useMemo(
+    () =>
+      new Set(
+        currentEntities
+          .filter((entity) => entity.target_scope === 'instrument')
+          .map((entity) => entity.entity_id),
+      ),
+    [currentEntities],
+  )
+  const registryInstrumentOptions = useMemo(() => {
+    if (selectedTaxonomy?.primary_assignment_scope !== 'instrument') {
+      return []
+    }
+    const normalizedSearch = instrumentAddSearch.trim().toLowerCase()
+    const options = instrumentRows
+      .filter((instrument) => {
+        if (currentInstrumentEntityIds.has(instrument.instrument_id)) {
+          return false
+        }
+        if (activeAssignmentsByEntityKey.has(coverageEntityKey('instrument', instrument.instrument_id))) {
+          return false
+        }
+        if (!normalizedSearch) {
+          return true
+        }
+        return (
+          instrument.instrument_id.toLowerCase().includes(normalizedSearch) ||
+          instrument.instrument_name.toLowerCase().includes(normalizedSearch) ||
+          instrument.currency.toLowerCase().includes(normalizedSearch) ||
+          primaryIdentifier(instrument).toLowerCase().includes(normalizedSearch)
+        )
+      })
+      .sort(
+        (left, right) =>
+          left.instrument_name.localeCompare(right.instrument_name) ||
+          primaryIdentifier(left).localeCompare(primaryIdentifier(right)) ||
+          left.instrument_id.localeCompare(right.instrument_id),
+      )
+      .slice(0, 80)
+    const selectedInstrument = instrumentAddInstrumentId ? instrumentById.get(instrumentAddInstrumentId) ?? null : null
+    if (selectedInstrument && !options.some((instrument) => instrument.instrument_id === selectedInstrument.instrument_id)) {
+      return [selectedInstrument, ...options]
+    }
+    return options
+  }, [
+    activeAssignmentsByEntityKey,
+    currentInstrumentEntityIds,
+    instrumentAddInstrumentId,
+    instrumentAddSearch,
+    instrumentById,
+    instrumentRows,
+    selectedTaxonomy?.primary_assignment_scope,
+  ])
   const selectedEntityCount = selectedEntityIds.size
 
-  const planningTaxonomies = taxonomies.filter((taxonomy) => taxonomy.planning_enabled)
-  const defaultPlanningTaxonomy =
-    planningTaxonomies.find((taxonomy) => taxonomy.taxonomy_id === catalog?.default_planning_taxonomy_id) ?? null
   const selectedTaxonomyTargetSets = useMemo(
     () => (catalog?.target_sets ?? []).filter((targetSet) => targetSet.taxonomy_id === resolvedSelectedTaxonomyId),
     [catalog?.target_sets, resolvedSelectedTaxonomyId],
   )
   const selectedTaxonomyActiveTargetSets = useMemo(
-    () =>
-      selectedTaxonomyTargetSets.filter(
-        (targetSet) =>
-          targetSet.status === 'active' && isRecordActive(targetSet.effective_from, targetSet.effective_to, referenceDate),
-      ),
-    [referenceDate, selectedTaxonomyTargetSets],
+    () => selectedTaxonomyTargetSets.filter((targetSet) => targetSet.status === 'active'),
+    [selectedTaxonomyTargetSets],
   )
   const selectedTaxonomyTargetSetLines = useMemo(
     () => (catalog?.target_set_lines ?? []).filter((line) => selectedTaxonomyTargetSets.some((targetSet) => targetSet.target_set_id === line.target_set_id)),
@@ -1141,16 +1329,9 @@ export default function TaxonomiesPage() {
     return lookup
   }, [selectedTaxonomyTargetSetLines])
 
-  const selectedNodePath = selectedNode ? nodePathByNodeId.get(selectedNode.taxonomy_node_id) ?? [] : []
-  const taxonomyCreatePlanningError = planningConfigError(
-    taxonomyPlanningEnabled,
-    taxonomyBudgetingLevel,
-    taxonomyRootDefaultTargetDimension,
-  )
-  const taxonomyDetailsPlanningError = planningConfigError(
-    selectedTaxonomyPlanningEnabled,
-    selectedTaxonomyBudgetingLevel,
-    selectedTaxonomyRootDefaultTargetDimension,
+  const selectedNodePath = useMemo(
+    () => (selectedNode ? nodePathByNodeId.get(selectedNode.taxonomy_node_id) ?? [] : []),
+    [nodePathByNodeId, selectedNode],
   )
   const nodeCreateAnchorNode = nodeCreateAnchorNodeId ? nodeById.get(nodeCreateAnchorNodeId) ?? null : null
   const contextMenuNode = contextMenuState?.kind === 'node' ? nodeById.get(contextMenuState.nodeId) ?? null : null
@@ -1158,6 +1339,16 @@ export default function TaxonomiesPage() {
     contextMenuState?.kind === 'entity'
       ? currentEntities.find((entity) => entity.entity_id === contextMenuState.entityId) ?? null
       : null
+  const contextMenuTaxonomy =
+    contextMenuState?.kind === 'taxonomy'
+      ? taxonomies.find((taxonomy) => taxonomy.taxonomy_id === contextMenuState.taxonomyId) ?? null
+      : null
+  const contextMenuStyle = contextMenuState
+    ? {
+        left: Math.max(8, Math.min(contextMenuState.x, window.innerWidth - 220)),
+        top: Math.max(8, Math.min(contextMenuState.y, window.innerHeight - 280)),
+      }
+    : undefined
   const nodeCreateContextLabel =
     nodeCreateMode === 'root'
       ? 'Add Root Node'
@@ -1165,7 +1356,13 @@ export default function TaxonomiesPage() {
         ? `Add Same-Level Node${nodeCreateAnchorNode ? ` · ${nodeCreateAnchorNode.node_name}` : ''}`
         : `Add Child Node${nodeCreateAnchorNode ? ` · ${nodeCreateAnchorNode.node_name}` : ''}`
   const editingNode = nodeEditId ? nodeById.get(nodeEditId) ?? null : null
-  const allowedTargetDimensions = allowedDimensionsForBudgetingLevel(selectedTaxonomy?.budgeting_level)
+  const allowedTargetDimensions = useMemo(
+    () => ({
+      weight: Boolean(selectedTaxonomy?.planning_enabled),
+      risk_budget: Boolean(selectedTaxonomy?.planning_enabled),
+    }),
+    [selectedTaxonomy?.planning_enabled],
+  )
   const scopeMembersByScopeKey = useMemo(() => {
     const lookup = new Map<string, TargetScopeMember[]>()
 
@@ -1294,7 +1491,9 @@ export default function TaxonomiesPage() {
       }
     })
 
-    setTargetDraftsByScope(nextDraftsByScope)
+    setTargetDraftsByScope((current) =>
+      targetDraftScopesEqual(current, nextDraftsByScope) ? current : nextDraftsByScope,
+    )
   }, [
     allowedTargetDimensions.risk_budget,
     allowedTargetDimensions.weight,
@@ -1375,25 +1574,8 @@ export default function TaxonomiesPage() {
         onChange={(event) => void handleUpdateNodeDefaultTarget(node, event.target.value as 'weight' | 'risk_budget')}
         disabled={actionPending === `node-default-target-${node.taxonomy_node_id}`}
       >
-        <option value="weight">Weight</option>
-        <option value="risk_budget">Risk Budget</option>
-      </select>
-    )
-  }
-
-  function renderRootDefaultTargetCell() {
-    if (!selectedTaxonomy) {
-      return '—'
-    }
-    return (
-      <select
-        className="taxonomy-default-target-select"
-        value={selectedTaxonomy.root_default_target_dimension}
-        onChange={(event) => void handleUpdateRootDefaultTarget(event.target.value as 'weight' | 'risk_budget')}
-        disabled={actionPending === `taxonomy-root-default-${selectedTaxonomy.taxonomy_id}`}
-      >
-        <option value="weight">Weight</option>
-        <option value="risk_budget">Risk Budget</option>
+        <option value="weight">Target: Weight</option>
+        <option value="risk_budget">Target: Risk Budget</option>
       </select>
     )
   }
@@ -1458,21 +1640,17 @@ export default function TaxonomiesPage() {
 
   function resetNodeCreateDraft() {
     setNewNodeName('')
-    setNewNodeCode('')
-    setNewNodeSortOrder('')
-    setNewNodeDefaultTargetDimension('weight')
   }
 
   function resetNodeEditDraft() {
     setNodeEditId(null)
     setNodeEditName('')
-    setNodeEditCode('')
-    setNodeEditSortOrder('')
-    setNodeEditDefaultTargetDimension('weight')
   }
 
   function startNodeCreate(mode: NodeCreateMode, anchorNode?: PortfolioTaxonomyNodeRecord | null) {
     resetNodeCreateDraft()
+    setShowTaxonomyCreate(false)
+    setShowInstrumentAdd(false)
     setShowNodeCreate(true)
     setShowNodeEdit(false)
     setNodeCreateMode(mode)
@@ -1481,35 +1659,44 @@ export default function TaxonomiesPage() {
     if (mode === 'root' || !anchorNode) {
       setNodeCreateParentId('')
       setNodeCreateAnchorNodeId(null)
-      setNewNodeDefaultTargetDimension('weight')
       return
     }
 
     setSelectedNodeId(anchorNode.taxonomy_node_id)
     setNodeCreateAnchorNodeId(anchorNode.taxonomy_node_id)
     setNodeCreateParentId(mode === 'child' ? anchorNode.taxonomy_node_id : anchorNode.parent_taxonomy_node_id ?? '')
-    setNewNodeDefaultTargetDimension(anchorNode.default_target_dimension)
   }
 
   function startNodeEdit(node: PortfolioTaxonomyNodeRecord) {
     setContextMenuState(null)
     setShowTaxonomyCreate(false)
-    setShowTaxonomyDetails(false)
+    setShowInstrumentAdd(false)
     setShowNodeCreate(false)
     setShowNodeEdit(true)
     setSelectedNodeId(node.taxonomy_node_id)
     setNodeEditId(node.taxonomy_node_id)
     setNodeEditName(node.node_name)
-    setNodeEditCode(node.node_code ?? '')
-    setNodeEditSortOrder(String(node.sort_order))
-    setNodeEditDefaultTargetDimension(node.default_target_dimension)
+  }
+
+  function startTaxonomyRename(taxonomy: PortfolioTaxonomyRecord) {
+    setContextMenuState(null)
+    setTaxonomyPickerOpen(false)
+    setShowTaxonomyCreate(false)
+    setShowInstrumentAdd(false)
+    setShowNodeCreate(false)
+    setShowNodeEdit(false)
+    setShowTaxonomyRename(true)
+    setTaxonomyRenameId(taxonomy.taxonomy_id)
+    setTaxonomyRenameName(taxonomy.name)
   }
 
   function closeModalStack() {
     setShowTaxonomyCreate(false)
-    setShowTaxonomyDetails(false)
+    setShowTaxonomyRename(false)
+    setShowInstrumentAdd(false)
     setShowNodeCreate(false)
     setShowNodeEdit(false)
+    setTaxonomyPickerOpen(false)
   }
 
   function handleTaxonomySelection(taxonomyId: string) {
@@ -1518,6 +1705,7 @@ export default function TaxonomiesPage() {
     setSelectedEntityIds(new Set())
     setEntityFilter('all')
     setEntitySearch('')
+    setTargetEditMode(false)
     closeModalStack()
     setContextMenuState(null)
   }
@@ -1532,14 +1720,6 @@ export default function TaxonomiesPage() {
       }
       return next
     })
-  }
-
-  function expandAllNodes() {
-    setCollapsedNodeIds(new Set())
-  }
-
-  function collapseAllNodes() {
-    setCollapsedNodeIds(new Set(collapsibleNodeIds))
   }
 
   function handleNodeContextMenu(event: ReactMouseEvent, node: PortfolioTaxonomyNodeRecord) {
@@ -1652,8 +1832,6 @@ export default function TaxonomiesPage() {
   function buildTargetSetPayload(draft: TargetSetDraft) {
     return {
       name: draft.name.trim(),
-      effective_from: draft.effective_from || null,
-      effective_to: draft.effective_to || null,
       weight_enabled: draft.weight_enabled,
       risk_budget_enabled: draft.risk_budget_enabled,
       status: draft.status,
@@ -1694,7 +1872,12 @@ export default function TaxonomiesPage() {
     setActionError(null)
     setNotice(null)
     try {
-    const payload = buildTargetSetPayload(draft)
+      if (selectedTaxonomy.planning_enabled && selectedTaxonomy.budgeting_level !== PLANNING_BUDGETING_LEVEL) {
+        await updatePortfolioTaxonomy(portfolioId, selectedTaxonomy.taxonomy_id, {
+          budgeting_level: PLANNING_BUDGETING_LEVEL,
+        })
+      }
+      const payload = buildTargetSetPayload(draft)
       if (existingTargetSet) {
         await updatePortfolioTargetSet(portfolioId, selectedTaxonomy.taxonomy_id, existingTargetSet.target_set_id, payload)
         setNotice(`Saved ${kind.toUpperCase()} targets for ${currentScopeLabel}.`)
@@ -1744,35 +1927,21 @@ export default function TaxonomiesPage() {
     if (!portfolioId) {
       return
     }
-    if (taxonomyCreatePlanningError) {
-      setActionError(taxonomyCreatePlanningError)
-      setNotice(null)
-      return
-    }
     setActionPending('taxonomy-create')
     setActionError(null)
     setNotice(null)
     try {
       const created = await createPortfolioTaxonomy(portfolioId, {
         name: taxonomyName,
-        taxonomy_type: taxonomyType,
-        purpose: taxonomyPurpose || null,
+        taxonomy_type: 'custom',
+        purpose: null,
         primary_assignment_scope: taxonomyScope,
-        planning_enabled: taxonomyPlanningEnabled,
-        budgeting_level: taxonomyBudgetingLevel || null,
-        root_default_target_dimension: normalizeRootDefaultTargetDimension(
-          taxonomyPlanningEnabled,
-          taxonomyBudgetingLevel,
-          taxonomyRootDefaultTargetDimension,
-        ),
+        planning_enabled: false,
+        budgeting_level: null,
+        root_default_target_dimension: 'weight',
       })
       setTaxonomyName('')
-      setTaxonomyType('custom')
-      setTaxonomyPurpose('')
       setTaxonomyScope('instrument')
-      setTaxonomyPlanningEnabled(false)
-      setTaxonomyBudgetingLevel('')
-      setTaxonomyRootDefaultTargetDimension('weight')
       setShowTaxonomyCreate(false)
       handleTaxonomySelection(created.taxonomy_id)
       setNotice(`Created taxonomy "${created.name}".`)
@@ -1784,36 +1953,22 @@ export default function TaxonomiesPage() {
     }
   }
 
-  async function handleSaveSelectedTaxonomy(event: FormEvent<HTMLFormElement>) {
+  async function handleRenameTaxonomy(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!portfolioId || !selectedTaxonomy) {
+    const taxonomy = taxonomyRenameId ? taxonomies.find((item) => item.taxonomy_id === taxonomyRenameId) ?? null : null
+    const nextName = taxonomyRenameName.trim()
+    if (!portfolioId || !taxonomy || !nextName) {
       return
     }
-    if (taxonomyDetailsPlanningError) {
-      setActionError(taxonomyDetailsPlanningError)
-      setNotice(null)
-      return
-    }
-    setActionPending(`taxonomy-save-${selectedTaxonomy.taxonomy_id}`)
+    setActionPending(`taxonomy-rename-${taxonomy.taxonomy_id}`)
     setActionError(null)
     setNotice(null)
     try {
-      await updatePortfolioTaxonomy(portfolioId, selectedTaxonomy.taxonomy_id, {
-        name: selectedTaxonomyName,
-        taxonomy_type: selectedTaxonomyType,
-        purpose: selectedTaxonomyPurpose || null,
-        planning_enabled: selectedTaxonomyPlanningEnabled,
-        budgeting_level: selectedTaxonomyPlanningEnabled ? selectedTaxonomyBudgetingLevel || null : null,
-        root_default_target_dimension: normalizeRootDefaultTargetDimension(
-          selectedTaxonomyPlanningEnabled,
-          selectedTaxonomyBudgetingLevel,
-          selectedTaxonomyRootDefaultTargetDimension,
-        ),
-        effective_from: selectedTaxonomyEffectiveFrom || null,
-        effective_to: selectedTaxonomyEffectiveTo || null,
-        status: selectedTaxonomyStatus,
-      })
-      setNotice(`Saved taxonomy "${selectedTaxonomyName}".`)
+      await updatePortfolioTaxonomy(portfolioId, taxonomy.taxonomy_id, { name: nextName })
+      setShowTaxonomyRename(false)
+      setTaxonomyRenameId(null)
+      setTaxonomyRenameName('')
+      setNotice(`Renamed taxonomy to "${nextName}".`)
       await reloadWorkspace()
     } catch (error) {
       setActionError(extractErrorMessage(error))
@@ -1822,20 +1977,30 @@ export default function TaxonomiesPage() {
     }
   }
 
-  async function handleUpdateDefaultPlanningTaxonomy(taxonomyId: string | null) {
-    if (!portfolioId) {
+  async function handleDefaultTaxonomySelection(taxonomyId: string) {
+    const taxonomy = taxonomies.find((item) => item.taxonomy_id === taxonomyId) ?? null
+    setTaxonomyPickerOpen(false)
+    handleTaxonomySelection(taxonomyId)
+    if (!portfolioId || !taxonomy) {
       return
     }
-    setActionPending(`default-planning-${taxonomyId ?? 'clear'}`)
+    if (taxonomy.primary_assignment_scope !== 'instrument') {
+      setActionError('Only instrument taxonomies can be used as the default taxonomy for planning.')
+      setNotice(null)
+      return
+    }
+    setActionPending(`default-taxonomy-${taxonomyId}`)
     setActionError(null)
     setNotice(null)
     try {
+      if (!taxonomy.planning_enabled || taxonomy.budgeting_level !== PLANNING_BUDGETING_LEVEL) {
+        await updatePortfolioTaxonomy(portfolioId, taxonomy.taxonomy_id, {
+          planning_enabled: true,
+          budgeting_level: PLANNING_BUDGETING_LEVEL,
+        })
+      }
       await updatePortfolioDefaultPlanningTaxonomy(portfolioId, { taxonomy_id: taxonomyId })
-      setNotice(
-        taxonomyId == null
-          ? 'Cleared default planning taxonomy.'
-          : `Default planning taxonomy set to "${planningTaxonomies.find((item) => item.taxonomy_id === taxonomyId)?.name ?? taxonomyId}".`,
-      )
+      setNotice(`Default taxonomy set to "${taxonomy.name}".`)
       await reloadWorkspace()
     } catch (error) {
       setActionError(extractErrorMessage(error))
@@ -1859,6 +2024,8 @@ export default function TaxonomiesPage() {
       if (resolvedSelectedTaxonomyId === taxonomy.taxonomy_id) {
         updateSearchParam('taxonomy_id', null)
       }
+      setContextMenuState(null)
+      setTaxonomyPickerOpen(false)
       setNotice(`Deleted taxonomy "${taxonomy.name}".`)
       await reloadWorkspace()
     } catch (error) {
@@ -1879,10 +2046,7 @@ export default function TaxonomiesPage() {
     try {
       const created = await createPortfolioTaxonomyNode(portfolioId, selectedTaxonomy.taxonomy_id, {
         node_name: newNodeName,
-        node_code: newNodeCode || null,
         parent_taxonomy_node_id: nodeCreateParentId || null,
-        sort_order: newNodeSortOrder ? Number(newNodeSortOrder) : null,
-        default_target_dimension: newNodeDefaultTargetDimension,
       })
       resetNodeCreateDraft()
       setCollapsedNodeIds((current) => {
@@ -1915,9 +2079,6 @@ export default function TaxonomiesPage() {
     try {
       await updatePortfolioTaxonomyNode(portfolioId, selectedTaxonomy.taxonomy_id, editingNode.taxonomy_node_id, {
         node_name: nodeEditName,
-        node_code: nodeEditCode || null,
-        sort_order: nodeEditSortOrder ? Number(nodeEditSortOrder) : null,
-        default_target_dimension: nodeEditDefaultTargetDimension,
       })
       setShowNodeEdit(false)
       setNotice(`Updated node "${nodeEditName}".`)
@@ -1944,26 +2105,6 @@ export default function TaxonomiesPage() {
         default_target_dimension: defaultTargetDimension,
       })
       setNotice(`Updated default target for "${node.node_name}".`)
-      await reloadWorkspace()
-    } catch (error) {
-      setActionError(extractErrorMessage(error))
-    } finally {
-      setActionPending(null)
-    }
-  }
-
-  async function handleUpdateRootDefaultTarget(defaultTargetDimension: 'weight' | 'risk_budget') {
-    if (!portfolioId || !selectedTaxonomy || selectedTaxonomy.root_default_target_dimension === defaultTargetDimension) {
-      return
-    }
-    setActionPending(`taxonomy-root-default-${selectedTaxonomy.taxonomy_id}`)
-    setActionError(null)
-    setNotice(null)
-    try {
-      await updatePortfolioTaxonomy(portfolioId, selectedTaxonomy.taxonomy_id, {
-        root_default_target_dimension: defaultTargetDimension,
-      })
-      setNotice(`Updated root default target for "${selectedTaxonomy.name}".`)
       await reloadWorkspace()
     } catch (error) {
       setActionError(extractErrorMessage(error))
@@ -2054,6 +2195,69 @@ export default function TaxonomiesPage() {
     }
   }
 
+  async function handleAddRegistryInstrumentToUniverse(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!portfolioId || !selectedTaxonomy || selectedTaxonomy.primary_assignment_scope !== 'instrument') {
+      return
+    }
+    const instrument = instrumentAddInstrumentId ? instrumentById.get(instrumentAddInstrumentId) ?? null : null
+    if (!instrument) {
+      setActionError('Choose an instrument.')
+      setNotice(null)
+      return
+    }
+
+    setActionPending('instrument-add')
+    setActionError(null)
+    setNotice(null)
+    try {
+      await createPortfolioInstrumentUniverseRecord(portfolioId, {
+        instrument_id: instrument.instrument_id,
+      })
+      setInstrumentAddSearch('')
+      setInstrumentAddInstrumentId('')
+      setShowInstrumentAdd(false)
+      setNotice(`Added ${instrument.instrument_name} to unassigned instruments.`)
+      await reloadWorkspace()
+    } catch (error) {
+      setActionError(extractErrorMessage(error))
+    } finally {
+      setActionPending(null)
+    }
+  }
+
+  async function handleDeleteWatchInstrument(entity: CoverageEntity) {
+    if (!portfolioId || entity.target_scope !== 'instrument' || entity.instrument_state !== 'watch') {
+      return
+    }
+    if (entity.current_assignment) {
+      setActionError('Remove taxonomy assignment before removing this watchlist instrument.')
+      setNotice(null)
+      return
+    }
+    if (!window.confirm(`Remove watchlist instrument "${entity.label}"?`)) {
+      return
+    }
+    setActionPending(`instrument-watch-delete-${entity.entity_id}`)
+    setActionError(null)
+    setNotice(null)
+    try {
+      await deletePortfolioInstrumentUniverseRecord(portfolioId, entity.entity_id)
+      setContextMenuState(null)
+      setSelectedEntityIds((current) => {
+        const next = new Set(current)
+        next.delete(entity.entity_id)
+        return next
+      })
+      setNotice(`Removed watchlist instrument "${entity.label}".`)
+      await reloadWorkspace()
+    } catch (error) {
+      setActionError(extractErrorMessage(error))
+    } finally {
+      setActionPending(null)
+    }
+  }
+
   function renderEntityTreeRow(entity: CoverageEntity, depth: number) {
     const selected = selectedEntityIds.has(entity.entity_id)
     const targetMember: TargetScopeMember = {
@@ -2067,6 +2271,7 @@ export default function TaxonomiesPage() {
     }
     const scopeKey = targetScopeKey(entity.current_assignment?.taxonomy_node_id ?? null)
     const editable =
+      targetEditMode &&
       Boolean(selectedTaxonomy?.planning_enabled) &&
       Boolean(entity.current_assignment) &&
       Boolean(targetDraftsByScope[scopeKey])
@@ -2089,14 +2294,15 @@ export default function TaxonomiesPage() {
               <input type="checkbox" checked={selected} onChange={() => toggleEntitySelection(entity.entity_id)} />
             </label>
             <span className="taxonomy-level-label">{entity.label}</span>
-            </div>
-          </td>
-          <td>—</td>
-          <td>{renderTargetCell('saa', 'weight', targetMember, editable)}</td>
-          <td>{renderTargetCell('saa', 'risk_budget', targetMember, editable)}</td>
-          <td>{renderTargetCell('taa', 'weight', targetMember, editable)}</td>
-          <td>{renderTargetCell('taa', 'risk_budget', targetMember, editable)}</td>
-          <td>{entity.allocation != null ? formatPercent(entity.allocation) : '—'}</td>
+            {entity.supporting_label ? <span className="taxonomy-entity-supporting-label">{entity.supporting_label}</span> : null}
+          </div>
+        </td>
+        <td>{renderInstrumentStatusCell(entity)}</td>
+        <td>{renderTargetCell('saa', 'weight', targetMember, editable)}</td>
+        <td>{renderTargetCell('saa', 'risk_budget', targetMember, editable)}</td>
+        <td>{renderTargetCell('taa', 'weight', targetMember, editable)}</td>
+        <td>{renderTargetCell('taa', 'risk_budget', targetMember, editable)}</td>
+        <td>{entity.allocation != null ? formatPercent(entity.allocation) : '—'}</td>
         <td>{entity.market_value_base != null ? formatCurrency(entity.market_value_base, baseCurrency) : '—'}</td>
       </tr>
     )
@@ -2126,7 +2332,7 @@ export default function TaxonomiesPage() {
       }
       const isTargetScopeChild = currentScopeMemberKeySet.has(nodeTargetMember.member_key)
       const isEditableInTree =
-        Boolean(selectedTaxonomy?.planning_enabled) && Boolean(targetDraftsByScope[parentScopeKey])
+        targetEditMode && Boolean(selectedTaxonomy?.planning_enabled) && Boolean(targetDraftsByScope[parentScopeKey])
       const isDropTarget = dragTargetNodeId === node.taxonomy_node_id
       const isCollapsed = collapsedNodeIds.has(node.taxonomy_node_id)
       const rowClassName = [
@@ -2189,14 +2395,18 @@ export default function TaxonomiesPage() {
     return rows
   }
 
-  return (
-    <PortfolioWorkspaceLayout activeSection="Taxonomies" toolbarLabel="Page: Taxonomies">
-      <div className="taxonomy-page taxonomy-page-table">
-      {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}
-      {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
-      {actionError ? <div className="inline-notice inline-notice-error">{actionError}</div> : null}
-      {supplementalNotice ? <div className="inline-notice">{supplementalNotice}</div> : null}
-      {loading ? <CalculationStatus /> : null}
+    return (
+      <PortfolioWorkspaceLayout activeSection="Taxonomies" toolbarLabel="Page: Taxonomies">
+        <div className="taxonomy-page taxonomy-page-table">
+        {notice || workspaceError || actionError || supplementalNotice ? (
+          <div className="page-toast-stack" role="status" aria-live="polite">
+            {notice ? <div className="page-toast page-toast-success">{notice}</div> : null}
+            {workspaceError ? <div className="page-toast page-toast-error">{workspaceError}</div> : null}
+            {actionError ? <div className="page-toast page-toast-error">{actionError}</div> : null}
+            {supplementalNotice ? <div className="page-toast">{supplementalNotice}</div> : null}
+          </div>
+        ) : null}
+        {loading ? <CalculationStatus /> : null}
 
       {!loading && !catalog && !workspaceError ? <div className="empty-state">No data.</div> : null}
 
@@ -2204,96 +2414,111 @@ export default function TaxonomiesPage() {
         <>
           <section className="panel taxonomy-strip-section">
             <div className="taxonomy-topbar">
-              <label className="taxonomy-topbar-field">
-                <span>Taxonomy</span>
-                <select value={resolvedSelectedTaxonomyId} onChange={(event) => handleTaxonomySelection(event.target.value)}>
-                  {!taxonomies.length ? <option value="">No taxonomy</option> : null}
-                  {taxonomies.map((taxonomy) => (
-                    <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id}>
-                      {taxonomy.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="taxonomy-topbar-field" ref={taxonomyPickerRef}>
+                <span>Default Taxonomy:</span>
+                <div className="taxonomy-picker">
+                  <button
+                    type="button"
+                    className="taxonomy-picker-trigger"
+                    onClick={() => {
+                      setContextMenuState(null)
+                      setTaxonomyPickerOpen((current) => !current)
+                    }}
+                    disabled={actionPending?.startsWith('default-taxonomy-')}
+                  >
+                    <span>{selectedTaxonomy?.name ?? 'No taxonomy'}</span>
+                    <span className="taxonomy-picker-caret" aria-hidden="true" />
+                  </button>
+                  {taxonomyPickerOpen ? (
+                    <div className="taxonomy-picker-menu">
+                      {taxonomies.length ? (
+                        taxonomies.map((taxonomy) => (
+                          <button
+                            type="button"
+                            key={taxonomy.taxonomy_id}
+                            className={`taxonomy-picker-option ${
+                              taxonomy.taxonomy_id === resolvedSelectedTaxonomyId ? 'taxonomy-picker-option-active' : ''
+                            }`}
+                            onClick={() => void handleDefaultTaxonomySelection(taxonomy.taxonomy_id)}
+                            onContextMenu={(event) => {
+                              event.preventDefault()
+                              setContextMenuState({
+                                kind: 'taxonomy',
+                                taxonomyId: taxonomy.taxonomy_id,
+                                x: event.clientX,
+                                y: event.clientY,
+                              })
+                            }}
+                          >
+                            {taxonomy.name}
+                          </button>
+                        ))
+                      ) : (
+                        <div className="taxonomy-picker-empty">No taxonomy</div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
               <div className="taxonomy-header-actions">
                 <button
                   type="button"
                   className="toolbar-link button-primary"
                   onClick={() => {
-                    setShowTaxonomyDetails(false)
+                    setShowInstrumentAdd(false)
+                    setShowTaxonomyRename(false)
+                    setTaxonomyPickerOpen(false)
                     setContextMenuState(null)
                     setShowTaxonomyCreate(true)
                   }}
                 >
                   Add Taxonomy
                 </button>
-                {selectedTaxonomy?.planning_enabled ? (
-                  <button
-                    type="button"
-                    className="table-inline-button"
-                    onClick={() =>
-                      void handleUpdateDefaultPlanningTaxonomy(
-                        catalog?.default_planning_taxonomy_id === selectedTaxonomy.taxonomy_id ? null : selectedTaxonomy.taxonomy_id,
-                      )
-                    }
-                  >
-                    {catalog?.default_planning_taxonomy_id === selectedTaxonomy.taxonomy_id ? 'Clear Default' : 'Set Default'}
-                  </button>
-                ) : null}
                 {selectedTaxonomy ? (
                   <button
                     type="button"
-                    className="table-inline-button"
+                    className="toolbar-link button-primary"
                     onClick={() => {
                       setShowTaxonomyCreate(false)
+                      setShowTaxonomyRename(false)
+                      setShowInstrumentAdd(true)
+                      setTaxonomyPickerOpen(false)
                       setContextMenuState(null)
-                      setShowTaxonomyDetails(true)
                     }}
+                    disabled={selectedTaxonomy.primary_assignment_scope !== 'instrument'}
                   >
-                    Taxonomy Details
+                    Add Instrument
                   </button>
                 ) : null}
               </div>
-            </div>
-            <div className="taxonomy-collapsed-summary taxonomy-collapsed-summary-muted">
-              <span>{taxonomies.length} taxonomies</span>
-              <span>{planningTaxonomies.length} planning enabled</span>
-              <span>{defaultPlanningTaxonomy ? `Default: ${defaultPlanningTaxonomy.name}` : 'No default planning axis'}</span>
-              {selectedTaxonomy ? <span>Selected: {selectedTaxonomy.name}</span> : null}
-              {referenceDate ? <span>As of {referenceDate}</span> : null}
-              <span>{coverageSummary.coveragePct == null ? 'Coverage —' : `Coverage ${formatPercent(coverageSummary.coveragePct)}`}</span>
             </div>
           </section>
 
           {selectedTaxonomy ? (
             <section className="panel taxonomy-levels-section">
-              <div className="taxonomy-tree-toolbar taxonomy-tree-toolbar-compact">
-                <div className="taxonomy-header-actions">
-                  {selectedNode ? (
-                    <button type="button" className="table-inline-button" onClick={() => startNodeCreate('sibling', selectedNode)}>
-                      Add Same Level
-                    </button>
-                  ) : null}
-                  {selectedNode ? (
-                    <button type="button" className="table-inline-button" onClick={() => startNodeCreate('child', selectedNode)}>
-                      Add Child
-                    </button>
-                  ) : null}
-                  <button type="button" className="table-inline-button" onClick={expandAllNodes}>
-                    Expand All
-                  </button>
-                  <button
-                    type="button"
-                    className="table-inline-button"
-                    onClick={collapseAllNodes}
-                    disabled={collapsibleNodeIds.size === 0}
-                  >
-                    Collapse All
-                  </button>
+              <div className="taxonomy-collapsed-summary taxonomy-tree-summary taxonomy-target-summary-row">
+                <div className="taxonomy-target-summary-meta">
+                  <span>
+                    {selectedTaxonomy.primary_assignment_scope === 'instrument' ? 'Instruments' : 'Items'} {coverageSummary.currentEntityCount}
+                  </span>
+                  <span>Assigned {coverageSummary.assignedCount}</span>
+                  <span>Held {coverageSummary.heldEntityCount}</span>
+                  {coverageSummary.formerEntityCount ? <span>Former {coverageSummary.formerEntityCount}</span> : null}
+                  {coverageSummary.watchEntityCount ? <span>Watchlist {coverageSummary.watchEntityCount}</span> : null}
+                  {coverageSummary.ambiguousEntities.length ? <span>Ambiguous {coverageSummary.ambiguousEntities.length}</span> : null}
                 </div>
                 <div className="taxonomy-header-actions">
-                  <span className="portfolio-detail-meta">{currentScopeLabel}</span>
-                  {selectedTaxonomy.planning_enabled ? (
+                  {selectedTaxonomy.planning_enabled && !targetEditMode ? (
+                    <button
+                      type="button"
+                      className="table-inline-button"
+                      onClick={() => setTargetEditMode(true)}
+                      disabled={!hasTargetScope}
+                    >
+                      Edit
+                    </button>
+                  ) : null}
+                  {selectedTaxonomy.planning_enabled && targetEditMode ? (
                     <>
                       <button
                         type="button"
@@ -2315,15 +2540,20 @@ export default function TaxonomiesPage() {
                           ? 'Saving TAA…'
                           : `Save TAA · W ${formatDraftSum(taaValidation.weight_sum_pct)} · R ${formatDraftSum(taaValidation.risk_sum_pct)}`}
                       </button>
+                      <button
+                        type="button"
+                        className="table-inline-button"
+                        onClick={() => {
+                          setTargetEditMode(false)
+                          void reloadWorkspace()
+                        }}
+                        disabled={Boolean(actionPending)}
+                      >
+                        Cancel
+                      </button>
                     </>
                   ) : null}
                 </div>
-              </div>
-
-              <div className="taxonomy-collapsed-summary taxonomy-tree-summary">
-                <span>{selectedNode ? `Selected: ${selectedNode.node_name}` : 'Selected: Top Level'}</span>
-                <span>{coverageSummary.currentEntityCount ? `${coverageSummary.assignedCount} / ${coverageSummary.currentEntityCount} assigned` : 'No current entities'}</span>
-                <span>{coverageSummary.unassignedEntities.length} unassigned</span>
               </div>
 
               <div className="table-shell">
@@ -2331,7 +2561,7 @@ export default function TaxonomiesPage() {
                   <thead>
                     <tr>
                       <th>Levels</th>
-                      <th>Default Target</th>
+                      <th>Attributes</th>
                       <th>SAA Weight</th>
                       <th>SAA Risk</th>
                       <th>TAA Weight</th>
@@ -2360,13 +2590,13 @@ export default function TaxonomiesPage() {
                           </button>
                         </div>
                       </td>
-                      <td>{renderRootDefaultTargetCell()}</td>
-                      <td>—</td>
-                      <td>—</td>
-                      <td>—</td>
-                      <td>—</td>
-                      <td>{taxonomyAssignedSummary.current_weight != null ? formatPercent(taxonomyAssignedSummary.current_weight) : '—'}</td>
-                      <td>{taxonomyAssignedSummary.current_value_base != null ? formatCurrency(taxonomyAssignedSummary.current_value_base, baseCurrency) : '—'}</td>
+                      <td />
+                      <td />
+                      <td />
+                      <td />
+                      <td />
+                      <td>{taxonomyCurrentSummary.current_weight != null ? formatPercent(taxonomyCurrentSummary.current_weight) : '—'}</td>
+                      <td>{taxonomyCurrentSummary.current_value_base != null ? formatCurrency(taxonomyCurrentSummary.current_value_base, baseCurrency) : '—'}</td>
                     </tr>
 
                     {!collapsedNodeIds.has(TAXONOMY_ROOT_ROW_ID) ? (
@@ -2400,14 +2630,14 @@ export default function TaxonomiesPage() {
                                   }`}
                                 />
                               </button>
-                              <span className="taxonomy-level-label">Without Classification</span>
+                              <span className="taxonomy-level-label">Unassigned</span>
                             </div>
                           </td>
-                          <td>—</td>
-                          <td>—</td>
-                          <td>—</td>
-                          <td>—</td>
-                          <td>—</td>
+                          <td />
+                          <td />
+                          <td />
+                          <td />
+                          <td />
                           <td>{unassignedSummary.current_weight != null ? formatPercent(unassignedSummary.current_weight) : '—'}</td>
                           <td>{unassignedSummary.current_value_base != null ? formatCurrency(unassignedSummary.current_value_base, baseCurrency) : '—'}</td>
                         </tr>
@@ -2427,34 +2657,6 @@ export default function TaxonomiesPage() {
                 </table>
               </div>
 
-              {selectedTaxonomy.planning_enabled &&
-              (saaValidation.errors.length ||
-                saaValidation.warnings.length ||
-                taaValidation.errors.length ||
-                taaValidation.warnings.length) ? (
-                <div className="taxonomy-target-validation-grid">
-                  <div className="taxonomy-target-validation-row">
-                    <span className="taxonomy-target-validation-label">SAA</span>
-                    <span className={saaValidation.errors.length ? 'taxonomy-target-validation-error' : saaValidation.warnings.length ? 'taxonomy-target-validation-warning' : 'taxonomy-target-validation-ok'}>
-                      {saaValidation.errors.length
-                        ? saaValidation.errors[0]
-                        : saaValidation.warnings.length
-                          ? `${saaValidation.warnings[0]} Current totals: W ${formatDraftSum(saaValidation.weight_sum_pct)} · R ${formatDraftSum(saaValidation.risk_sum_pct)}.`
-                          : ''}
-                    </span>
-                  </div>
-                  <div className="taxonomy-target-validation-row">
-                    <span className="taxonomy-target-validation-label">TAA</span>
-                    <span className={taaValidation.errors.length ? 'taxonomy-target-validation-error' : taaValidation.warnings.length ? 'taxonomy-target-validation-warning' : 'taxonomy-target-validation-ok'}>
-                      {taaValidation.errors.length
-                        ? taaValidation.errors[0]
-                        : taaValidation.warnings.length
-                          ? `${taaValidation.warnings[0]} Current totals: W ${formatDraftSum(taaValidation.weight_sum_pct)} · R ${formatDraftSum(taaValidation.risk_sum_pct)}.`
-                          : ''}
-                    </span>
-                  </div>
-                </div>
-              ) : null}
             </section>
           ) : null}
           <TaxonomyModal
@@ -2469,18 +2671,6 @@ export default function TaxonomiesPage() {
                   <input value={taxonomyName} onChange={(event) => setTaxonomyName(event.target.value)} required />
                 </label>
                 <label>
-                  <span>Type</span>
-                  <select value={taxonomyType} onChange={(event) => setTaxonomyType(event.target.value)}>
-                    <option value="custom">Custom</option>
-                    <option value="risk_sleeve">Risk Sleeve (Semantic)</option>
-                    <option value="instrument_class">Instrument Class</option>
-                    <option value="sector">Sector</option>
-                    <option value="issuer">Issuer</option>
-                    <option value="factor">Factor</option>
-                    <option value="region">Region</option>
-                  </select>
-                </label>
-                <label>
                   <span>Assignment Scope</span>
                   <select value={taxonomyScope} onChange={(event) => setTaxonomyScope(event.target.value as TaxonomyAssignmentScope)}>
                     <option value="instrument">Instrument</option>
@@ -2488,69 +2678,7 @@ export default function TaxonomiesPage() {
                     <option value="cash_bucket">Cash Bucket</option>
                   </select>
                 </label>
-                <label>
-                  <span>Budgeting Level</span>
-                    <select
-                      value={taxonomyBudgetingLevel}
-                      disabled={taxonomyScope !== 'instrument'}
-                      onChange={(event) => {
-                        const value = event.target.value
-                        setTaxonomyBudgetingLevel(value)
-                        if (value) {
-                          setTaxonomyPlanningEnabled(true)
-                        }
-                        setTaxonomyRootDefaultTargetDimension((current) =>
-                          normalizeRootDefaultTargetDimension(Boolean(value), value, current),
-                        )
-                      }}
-                    >
-                    <option value="">None</option>
-                    <option value="weight">Weight</option>
-                    <option value="risk_budget">Risk Budget</option>
-                    <option value="weight_and_risk_budget">Weight + Risk Budget</option>
-                  </select>
-                </label>
-                <label>
-                  <span>Root Default Target</span>
-                  <select
-                    value={taxonomyRootDefaultTargetDimension}
-                    onChange={(event) =>
-                      setTaxonomyRootDefaultTargetDimension(event.target.value as 'weight' | 'risk_budget')
-                    }
-                  >
-                    <option value="weight">Weight</option>
-                    <option value="risk_budget">Risk Budget</option>
-                  </select>
-                </label>
-                <label className="taxonomy-form-span-2">
-                  <span>Purpose</span>
-                  <input value={taxonomyPurpose} onChange={(event) => setTaxonomyPurpose(event.target.value)} />
-                </label>
-                <label className="taxonomy-checkbox-field taxonomy-form-span-2">
-                  <span>Planning Enabled</span>
-                  <div className="transaction-checkbox-option">
-                    <input
-                      type="checkbox"
-                      checked={taxonomyPlanningEnabled}
-                      disabled={taxonomyScope !== 'instrument'}
-                      onChange={(event) => {
-                        const enabled = event.target.checked
-                        setTaxonomyPlanningEnabled(enabled)
-                        if (!enabled) {
-                          setTaxonomyBudgetingLevel('')
-                        }
-                        setTaxonomyRootDefaultTargetDimension((current) =>
-                          normalizeRootDefaultTargetDimension(enabled, enabled ? taxonomyBudgetingLevel : '', current),
-                        )
-                      }}
-                    />
-                    <span>Allow this taxonomy to feed Risk and Review defaults.</span>
-                  </div>
-                </label>
               </div>
-              {taxonomyCreatePlanningError ? (
-                <div className="inline-notice inline-notice-error">{taxonomyCreatePlanningError}</div>
-              ) : null}
               <div className="transaction-form-footer">
                 <div className="taxonomy-footer-actions">
                   <button type="button" className="toolbar-link" onClick={() => setShowTaxonomyCreate(false)}>
@@ -2564,132 +2692,120 @@ export default function TaxonomiesPage() {
             </form>
           </TaxonomyModal>
           <TaxonomyModal
-            open={showTaxonomyDetails && Boolean(selectedTaxonomy)}
-            title="Taxonomy Details"
-            onClose={() => setShowTaxonomyDetails(false)}
+            open={showTaxonomyRename && Boolean(taxonomyRenameId)}
+            title="Rename Taxonomy"
+            onClose={() => setShowTaxonomyRename(false)}
           >
-            {selectedTaxonomy ? (
-              <form className="transaction-form taxonomy-form-compact" onSubmit={(event) => void handleSaveSelectedTaxonomy(event)}>
-                <div className="taxonomy-form-grid taxonomy-form-grid-wide">
-                  <label>
-                    <span>Name</span>
-                    <input value={selectedTaxonomyName} onChange={(event) => setSelectedTaxonomyName(event.target.value)} required />
-                  </label>
-                  <label>
-                    <span>Type</span>
-                    <select value={selectedTaxonomyType} onChange={(event) => setSelectedTaxonomyType(event.target.value)}>
-                      <option value="custom">Custom</option>
-                      <option value="risk_sleeve">Risk Sleeve (Semantic)</option>
-                      <option value="instrument_class">Instrument Class</option>
-                      <option value="sector">Sector</option>
-                      <option value="issuer">Issuer</option>
-                      <option value="factor">Factor</option>
-                      <option value="region">Region</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Status</span>
-                    <select value={selectedTaxonomyStatus} onChange={(event) => setSelectedTaxonomyStatus(event.target.value)}>
-                      <option value="active">Active</option>
-                      <option value="archived">Archived</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Budgeting Level</span>
-                    <select
-                      value={selectedTaxonomyBudgetingLevel}
-                      disabled={!selectedTaxonomyPlanningEnabled}
-                      onChange={(event) => {
-                        const value = event.target.value
-                        setSelectedTaxonomyBudgetingLevel(value)
-                        if (value) {
-                          setSelectedTaxonomyPlanningEnabled(true)
-                        }
-                        setSelectedTaxonomyRootDefaultTargetDimension((current) =>
-                          normalizeRootDefaultTargetDimension(Boolean(value), value, current),
-                        )
-                      }}
-                    >
-                      <option value="">None</option>
-                      <option value="weight">Weight</option>
-                      <option value="risk_budget">Risk Budget</option>
-                      <option value="weight_and_risk_budget">Weight + Risk Budget</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Root Default Target</span>
-                    <select
-                      value={selectedTaxonomyRootDefaultTargetDimension}
-                      onChange={(event) =>
-                        setSelectedTaxonomyRootDefaultTargetDimension(event.target.value as 'weight' | 'risk_budget')
-                      }
-                    >
-                      <option value="weight">Weight</option>
-                      <option value="risk_budget">Risk Budget</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Effective From</span>
-                    <input type="date" value={selectedTaxonomyEffectiveFrom} onChange={(event) => setSelectedTaxonomyEffectiveFrom(event.target.value)} />
-                  </label>
-                  <label>
-                    <span>Effective To</span>
-                    <input type="date" value={selectedTaxonomyEffectiveTo} onChange={(event) => setSelectedTaxonomyEffectiveTo(event.target.value)} />
-                  </label>
-                  <label className="taxonomy-form-span-2">
-                    <span>Purpose</span>
-                    <input value={selectedTaxonomyPurpose} onChange={(event) => setSelectedTaxonomyPurpose(event.target.value)} />
-                  </label>
-                  <label className="taxonomy-checkbox-field">
-                    <span>Planning Enabled</span>
-                    <div className="transaction-checkbox-option">
-                      <input
-                        type="checkbox"
-                        checked={selectedTaxonomyPlanningEnabled}
-                        disabled={selectedTaxonomy.primary_assignment_scope !== 'instrument'}
-                        onChange={(event) => {
-                          const enabled = event.target.checked
-                          setSelectedTaxonomyPlanningEnabled(enabled)
-                          if (!enabled) {
-                            setSelectedTaxonomyBudgetingLevel('')
-                          }
-                          setSelectedTaxonomyRootDefaultTargetDimension((current) =>
-                            normalizeRootDefaultTargetDimension(
-                              enabled,
-                              enabled ? selectedTaxonomyBudgetingLevel : '',
-                              current,
-                            ),
-                          )
-                        }}
-                      />
-                      <span>Planning Axis</span>
-                    </div>
-                  </label>
+            <form className="transaction-form taxonomy-form-compact" onSubmit={(event) => void handleRenameTaxonomy(event)}>
+              <div className="taxonomy-form-grid taxonomy-node-name-grid">
+                <label>
+                  <span>Name</span>
+                  <input value={taxonomyRenameName} onChange={(event) => setTaxonomyRenameName(event.target.value)} required autoFocus />
+                </label>
+              </div>
+              <div className="transaction-form-footer">
+                <div className="taxonomy-footer-actions">
+                  <button type="button" className="toolbar-link" onClick={() => setShowTaxonomyRename(false)}>
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="toolbar-link button-primary"
+                    disabled={actionPending === `taxonomy-rename-${taxonomyRenameId}` || !taxonomyRenameName.trim()}
+                  >
+                    {actionPending === `taxonomy-rename-${taxonomyRenameId}` ? 'Saving…' : 'Rename Taxonomy'}
+                  </button>
                 </div>
-                {taxonomyDetailsPlanningError ? (
-                  <div className="inline-notice inline-notice-error">{taxonomyDetailsPlanningError}</div>
-                ) : null}
-                <div className="transaction-form-footer">
-                  <div className="taxonomy-footer-actions">
+              </div>
+            </form>
+          </TaxonomyModal>
+          <TaxonomyModal
+            open={showInstrumentAdd && selectedTaxonomy?.primary_assignment_scope === 'instrument'}
+            title="Add Instrument"
+            onClose={() => setShowInstrumentAdd(false)}
+            modalClassName="taxonomy-instrument-picker-modal"
+          >
+            <form
+              className="transaction-form taxonomy-form-compact taxonomy-instrument-picker-form"
+              onSubmit={(event) => void handleAddRegistryInstrumentToUniverse(event)}
+            >
+              <div className="taxonomy-instrument-picker">
+                <label className="taxonomy-instrument-picker-search">
+                  <span>Instrument</span>
+                  <input
+                    type="search"
+                    value={instrumentAddSearch}
+                    placeholder="Search instrument..."
+                    autoFocus
+                    onChange={(event) => {
+                      setInstrumentAddSearch(event.target.value)
+                      setInstrumentAddInstrumentId('')
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && !instrumentAddInstrumentId && registryInstrumentOptions[0]) {
+                        event.preventDefault()
+                        const instrument = registryInstrumentOptions[0]
+                        setInstrumentAddInstrumentId(instrument.instrument_id)
+                        setInstrumentAddSearch(`${primaryIdentifier(instrument)} · ${instrument.instrument_name}`)
+                      }
+                    }}
+                  />
+                  {instrumentAddSearch || instrumentAddInstrumentId ? (
                     <button
                       type="button"
-                      className="toolbar-link"
-                      onClick={() => void handleDeleteTaxonomy(selectedTaxonomy)}
-                      disabled={actionPending === `taxonomy-delete-${selectedTaxonomy.taxonomy_id}`}
+                      className="taxonomy-instrument-picker-clear"
+                      onClick={() => {
+                        setInstrumentAddSearch('')
+                        setInstrumentAddInstrumentId('')
+                      }}
                     >
-                      Delete Taxonomy
+                      Clear
                     </button>
-                    <button
-                      type="submit"
-                      className="toolbar-link button-primary"
-                      disabled={actionPending === `taxonomy-save-${selectedTaxonomy.taxonomy_id}`}
-                    >
-                      {actionPending === `taxonomy-save-${selectedTaxonomy.taxonomy_id}` ? 'Saving…' : 'Save Taxonomy'}
-                    </button>
-                  </div>
+                  ) : null}
+                </label>
+                <div className="taxonomy-instrument-picker-results" role="listbox" aria-label="Instrument results">
+                  {registryInstrumentOptions.length ? (
+                    registryInstrumentOptions.map((instrument) => {
+                      const selected = instrument.instrument_id === instrumentAddInstrumentId
+                      return (
+                        <button
+                          type="button"
+                          key={instrument.instrument_id}
+                          className={`taxonomy-instrument-picker-option ${selected ? 'taxonomy-instrument-picker-option-active' : ''}`}
+                          onClick={() => {
+                            setInstrumentAddInstrumentId(instrument.instrument_id)
+                            setInstrumentAddSearch(`${primaryIdentifier(instrument)} · ${instrument.instrument_name}`)
+                          }}
+                          role="option"
+                          aria-selected={selected}
+                        >
+                          <strong>{instrument.instrument_name}</strong>
+                          <span>
+                            {primaryIdentifier(instrument)} · {formatLabel(instrument.instrument_type)} · {instrument.currency}
+                          </span>
+                        </button>
+                      )
+                    })
+                  ) : (
+                    <div className="taxonomy-instrument-picker-empty">No database match</div>
+                  )}
                 </div>
-              </form>
-            ) : null}
+              </div>
+              <div className="transaction-form-footer">
+                <div className="taxonomy-footer-actions">
+                  <button type="button" className="toolbar-link" onClick={() => setShowInstrumentAdd(false)}>
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="toolbar-link button-primary"
+                    disabled={actionPending === 'instrument-add' || !instrumentAddInstrumentId}
+                  >
+                    {actionPending === 'instrument-add' ? 'Adding…' : 'Add Instrument'}
+                  </button>
+                </div>
+              </div>
+            </form>
           </TaxonomyModal>
           <TaxonomyModal
             open={showNodeCreate}
@@ -2697,33 +2813,10 @@ export default function TaxonomiesPage() {
             onClose={() => setShowNodeCreate(false)}
           >
             <form className="transaction-form taxonomy-form-compact" onSubmit={(event) => void handleCreateNode(event)}>
-              <div className="taxonomy-form-grid taxonomy-inline-create-grid">
+              <div className="taxonomy-form-grid taxonomy-node-name-grid">
                 <label>
                   <span>Node Name</span>
                   <input value={newNodeName} onChange={(event) => setNewNodeName(event.target.value)} required />
-                </label>
-                <label>
-                  <span>Node Code</span>
-                  <input value={newNodeCode} onChange={(event) => setNewNodeCode(event.target.value)} />
-                </label>
-                <label>
-                  <span>Sort Order</span>
-                  <input
-                    type="number"
-                    value={newNodeSortOrder}
-                    placeholder="Auto"
-                    onChange={(event) => setNewNodeSortOrder(event.target.value)}
-                  />
-                </label>
-                <label>
-                  <span>Default Target</span>
-                  <select
-                    value={newNodeDefaultTargetDimension}
-                    onChange={(event) => setNewNodeDefaultTargetDimension(event.target.value as 'weight' | 'risk_budget')}
-                  >
-                    <option value="weight">Weight</option>
-                    <option value="risk_budget">Risk Budget</option>
-                  </select>
                 </label>
               </div>
               <div className="transaction-form-footer">
@@ -2745,32 +2838,10 @@ export default function TaxonomiesPage() {
           >
             {editingNode ? (
               <form className="transaction-form taxonomy-form-compact" onSubmit={(event) => void handleSaveNodeEdit(event)}>
-                <div className="taxonomy-form-grid taxonomy-inline-create-grid">
+                <div className="taxonomy-form-grid taxonomy-node-name-grid">
                   <label>
                     <span>Node Name</span>
                     <input value={nodeEditName} onChange={(event) => setNodeEditName(event.target.value)} required />
-                  </label>
-                  <label>
-                    <span>Node Code</span>
-                    <input value={nodeEditCode} onChange={(event) => setNodeEditCode(event.target.value)} />
-                  </label>
-                  <label>
-                    <span>Sort Order</span>
-                    <input
-                      type="number"
-                      value={nodeEditSortOrder}
-                      onChange={(event) => setNodeEditSortOrder(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>Default Target</span>
-                    <select
-                      value={nodeEditDefaultTargetDimension}
-                      onChange={(event) => setNodeEditDefaultTargetDimension(event.target.value as 'weight' | 'risk_budget')}
-                    >
-                      <option value="weight">Weight</option>
-                      <option value="risk_budget">Risk Budget</option>
-                    </select>
                   </label>
                 </div>
                 <div className="transaction-form-footer">
@@ -2783,7 +2854,7 @@ export default function TaxonomiesPage() {
                       className="toolbar-link button-primary"
                       disabled={actionPending === `node-save-${editingNode.taxonomy_node_id}`}
                     >
-                      {actionPending === `node-save-${editingNode.taxonomy_node_id}` ? 'Saving…' : 'Save Node'}
+                      {actionPending === `node-save-${editingNode.taxonomy_node_id}` ? 'Saving…' : 'Rename Node'}
                     </button>
                   </div>
                 </div>
@@ -2793,10 +2864,27 @@ export default function TaxonomiesPage() {
           {contextMenuState ? (
             <div
               className="taxonomy-context-menu"
-              style={{ left: contextMenuState.x, top: contextMenuState.y }}
+              style={contextMenuStyle}
               onClick={(event) => event.stopPropagation()}
             >
-              {contextMenuNode ? (
+              {contextMenuTaxonomy ? (
+                <>
+                  <button type="button" className="taxonomy-context-menu-item" onClick={() => setContextMenuState(null)}>
+                    Keep Selected
+                  </button>
+                  <button type="button" className="taxonomy-context-menu-item" onClick={() => startTaxonomyRename(contextMenuTaxonomy)}>
+                    Rename
+                  </button>
+                  <button
+                    type="button"
+                    className="taxonomy-context-menu-item taxonomy-context-menu-item-danger"
+                    onClick={() => void handleDeleteTaxonomy(contextMenuTaxonomy)}
+                    disabled={actionPending === `taxonomy-delete-${contextMenuTaxonomy.taxonomy_id}`}
+                  >
+                    Delete Taxonomy
+                  </button>
+                </>
+              ) : contextMenuNode ? (
                 <>
                   <button type="button" className="taxonomy-context-menu-item" onClick={() => setContextMenuState(null)}>
                     Keep Selected
@@ -2820,7 +2908,7 @@ export default function TaxonomiesPage() {
                         void assignEntitiesToNode(contextMenuNode, Array.from(selectedEntityIds))
                       }}
                     >
-                    Assign Selected Items Here
+                      Assign Selected Items Here
                     </button>
                   ) : null}
                   <button
@@ -2865,6 +2953,16 @@ export default function TaxonomiesPage() {
                   >
                     Assign To Selected Leaf
                   </button>
+                  {contextMenuEntity.instrument_state === 'watch' ? (
+                    <button
+                      type="button"
+                      className="taxonomy-context-menu-item taxonomy-context-menu-item-danger"
+                      disabled={Boolean(contextMenuEntity.current_assignment)}
+                      onClick={() => void handleDeleteWatchInstrument(contextMenuEntity)}
+                    >
+                      Remove Watchlist Instrument
+                    </button>
+                  ) : null}
                 </>
               ) : null}
             </div>

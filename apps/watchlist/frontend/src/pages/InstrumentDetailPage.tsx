@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 
 import FundDetailPage from './FundDetailPage'
+import LoadingOverlay from '../components/LoadingOverlay'
 import {
   resolveInstrumentDetail,
   type InstrumentResolveResponse,
@@ -50,11 +51,7 @@ export default function InstrumentDetailPage() {
   }, [instrumentId])
 
   if (loading) {
-    return (
-      <section className="panel">
-        <div className="loading-state">Loading instrument detail...</div>
-      </section>
-    )
+    return <LoadingOverlay label="Loading instrument detail" />
   }
 
   if (error || !instrument) {

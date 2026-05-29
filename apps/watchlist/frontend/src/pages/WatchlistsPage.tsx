@@ -37,8 +37,11 @@ import {
   buildWatchlistPath,
   PLATFORM_HOME_URL,
 } from '../lib/navigation'
+import LoadingOverlay from '../components/LoadingOverlay'
+import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
+import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
 import {
   formatBoolean,
   formatCompactCurrency,
@@ -598,34 +601,31 @@ function renderCell(
   return String(value)
 }
 
-function downloadCsv(columns: string[], rows: Array<Record<string, unknown>>) {
-  const escapeCell = (value: unknown) => {
-    const text =
-      value == null
-        ? ''
-        : Array.isArray(value)
-          ? value.join(', ')
-          : String(value)
-    if (text.includes(',') || text.includes('"') || text.includes('\n')) {
-      return `"${text.replace(/"/g, '""')}"`
-    }
-    return text
+function watchlistExportCell(value: unknown): TableCell {
+  if (value == null) {
+    return null
   }
+  if (Array.isArray(value)) {
+    return value.join(', ')
+  }
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value
+  }
+  return String(value)
+}
 
-  const csv = [
-    columns.join(','),
-    ...rows.map((row) =>
-      columns.map((column) => escapeCell(row[column] ?? row[column.replace(/^attr\./, '')])).join(','),
-    ),
-  ].join('\n')
-
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = 'watchlist-export.csv'
-  anchor.click()
-  URL.revokeObjectURL(url)
+function downloadWatchlistRows(columns: string[], rows: Array<Record<string, unknown>>, format: TableExportFormat) {
+  downloadTable(
+    'watchlist-export',
+    [
+      columns,
+      ...rows.map((row) =>
+        columns.map((column) => watchlistExportCell(row[column] ?? row[column.replace(/^attr\./, '')])),
+      ),
+    ],
+    format,
+    'Watchlist',
+  )
 }
 
 function parseDelimitedRow(line: string, delimiter: string) {
@@ -771,6 +771,15 @@ export default function WatchlistsPage() {
   const resizeFrame = useRef<number | null>(null)
   const pendingResize = useRef<{ column: string; width: number } | null>(null)
   const batchFileInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (!notice) {
+      return undefined
+    }
+    const timeoutId = window.setTimeout(() => setNotice(null), 2800)
+    return () => window.clearTimeout(timeoutId)
+  }, [notice])
+
   const baseScreenerPayload = useMemo(() => {
     if (!watchlistId) {
       return null
@@ -2054,7 +2063,7 @@ export default function WatchlistsPage() {
     }
   }
 
-  async function handleDownloadCurrentView() {
+  async function handleDownloadCurrentView(format: TableExportFormat) {
     if (!baseScreenerPayload || !screenerResult?.total_rows) {
       setNotice('No visible rows to export.')
       return
@@ -2065,7 +2074,7 @@ export default function WatchlistsPage() {
     setNotice(null)
     try {
       const exportRows = await loadAllScreenerRows(baseScreenerPayload)
-      downloadCsv(['instrument_id', ...visibleColumns], exportRows)
+      downloadWatchlistRows(['instrument_id', ...visibleColumns], exportRows, format)
       setNotice(`Exported ${exportRows.length} rows from the current watchlist view.`)
     } catch (exportError) {
       setError(exportError instanceof Error ? exportError.message : 'Failed to export watchlist view.')
@@ -2218,9 +2227,7 @@ export default function WatchlistsPage() {
   if (loading) {
     return (
       <div className="watchlists-page">
-        <div className="panel">
-          <div className="loading-state">Loading watchlists...</div>
-        </div>
+        <LoadingOverlay label="Loading watchlists" />
       </div>
     )
   }
@@ -2645,14 +2652,21 @@ export default function WatchlistsPage() {
               ) : null}
             </div>
 
-            <button
-              type="button"
-              className="watchlists-toolbar-button"
+            <DownloadFormatMenu
+              wrapperClassName="watchlists-dropdown"
+              buttonClassName="watchlists-toolbar-button"
+              menuClassName="watchlists-menu"
+              itemClassName="watchlists-menu-item"
+              buttonLabel={isExporting ? 'Exporting...' : 'Download'}
               disabled={isExporting}
-              onClick={() => void handleDownloadCurrentView()}
-            >
-              {isExporting ? 'Exporting...' : 'Download'}
-            </button>
+              onBeforeOpen={() => {
+                setFilterMenuOpen(false)
+                setGroupMenuOpen(false)
+                setSelectorMenuOpen(false)
+                setModalKind(null)
+              }}
+              onSelect={(format) => void handleDownloadCurrentView(format)}
+            />
             {selectedRows.length ? (
               <button
                 type="button"

@@ -705,6 +705,14 @@ export default function TransactionsPage() {
   }
 
   useEffect(() => {
+    if (!notice) {
+      return undefined
+    }
+    const timeoutId = window.setTimeout(() => setNotice(null), 2800)
+    return () => window.clearTimeout(timeoutId)
+  }, [notice])
+
+  useEffect(() => {
     let cancelled = false
 
     if (!portfolioId) {

@@ -600,8 +600,6 @@ export type PortfolioTaxonomyRecord = {
   planning_enabled: boolean
   budgeting_level?: string | null
   root_default_target_dimension: 'weight' | 'risk_budget'
-  effective_from?: string | null
-  effective_to?: string | null
   status: string
   source_template_ref?: string | null
 }
@@ -624,8 +622,6 @@ export type PortfolioTaxonomyAssignmentRecord = {
   target_scope: TaxonomyAssignmentScope
   target_entity_id: string
   taxonomy_node_id: string
-  effective_from?: string | null
-  effective_to?: string | null
   status: string
 }
 
@@ -637,8 +633,6 @@ export type PortfolioTargetSetRecord = {
   comparator_taxonomy_node_id?: string | null
   target_set_type: PortfolioTargetSetType
   name: string
-  effective_from?: string | null
-  effective_to?: string | null
   weight_enabled: boolean
   risk_budget_enabled: boolean
   status: string
@@ -656,12 +650,27 @@ export type PortfolioTargetSetLineRecord = {
   notes?: string | null
 }
 
+export type PortfolioInstrumentUniverseRecord = {
+  portfolio_id: string
+  instrument_id: string
+  instrument_ref?: InstrumentCore | null
+  source: string
+  holding_state: 'held' | 'not_held' | string
+  first_transaction_date?: string | null
+  last_transaction_date?: string | null
+  transaction_count: number
+  status: string
+  created_at?: string | null
+  updated_at?: string | null
+}
+
 export type PortfolioTaxonomyCatalogResponse = {
   portfolio_id: string
   default_planning_taxonomy_id?: string | null
   taxonomies: PortfolioTaxonomyRecord[]
   taxonomy_nodes: PortfolioTaxonomyNodeRecord[]
   taxonomy_assignments: PortfolioTaxonomyAssignmentRecord[]
+  instrument_universe: PortfolioInstrumentUniverseRecord[]
   target_sets: PortfolioTargetSetRecord[]
   target_set_lines: PortfolioTargetSetLineRecord[]
 }
@@ -673,6 +682,10 @@ export type PortfolioDefaultPlanningTaxonomyUpdatePayload = {
 export type PortfolioDefaultPlanningTaxonomyResponse = {
   portfolio_id: string
   default_planning_taxonomy_id?: string | null
+}
+
+export type PortfolioInstrumentUniverseCreatePayload = {
+  instrument_id: string
 }
 
 export type PortfolioResearchRunStatus = 'running' | 'completed' | 'failed'
@@ -1006,8 +1019,6 @@ export type PortfolioTaxonomyCreatePayload = {
   planning_enabled?: boolean
   budgeting_level?: string | null
   root_default_target_dimension?: 'weight' | 'risk_budget'
-  effective_from?: string | null
-  effective_to?: string | null
   status?: string
   source_template_ref?: string | null
 }
@@ -1029,8 +1040,6 @@ export type PortfolioTaxonomyUpdatePayload = {
   planning_enabled?: boolean
   budgeting_level?: string | null
   root_default_target_dimension?: 'weight' | 'risk_budget' | null
-  effective_from?: string | null
-  effective_to?: string | null
   status?: string | null
 }
 
@@ -1047,15 +1056,11 @@ export type PortfolioTaxonomyAssignmentCreatePayload = {
   target_scope: TaxonomyAssignmentScope
   target_entity_id: string
   taxonomy_node_id: string
-  effective_from?: string | null
-  effective_to?: string | null
   status?: string
 }
 
 export type PortfolioTaxonomyAssignmentUpdatePayload = {
   taxonomy_node_id?: string | null
-  effective_from?: string | null
-  effective_to?: string | null
   status?: string | null
 }
 
@@ -1072,8 +1077,6 @@ export type PortfolioTargetSetCreatePayload = {
   comparator_taxonomy_node_id?: string | null
   target_set_type: PortfolioTargetSetType
   name: string
-  effective_from?: string | null
-  effective_to?: string | null
   weight_enabled: boolean
   risk_budget_enabled: boolean
   status?: string
@@ -1083,8 +1086,6 @@ export type PortfolioTargetSetCreatePayload = {
 
 export type PortfolioTargetSetUpdatePayload = {
   name?: string | null
-  effective_from?: string | null
-  effective_to?: string | null
   weight_enabled?: boolean
   risk_budget_enabled?: boolean
   status?: string | null
@@ -1879,6 +1880,30 @@ export function updatePortfolioDefaultPlanningTaxonomy(
     {
       method: 'PUT',
       body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function createPortfolioInstrumentUniverseRecord(
+  portfolioId: string,
+  payload: PortfolioInstrumentUniverseCreatePayload,
+) {
+  return fetchJson<PortfolioInstrumentUniverseRecord>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/taxonomies/instrument-universe`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function deletePortfolioInstrumentUniverseRecord(portfolioId: string, instrumentId: string) {
+  return fetchJson<{ portfolio_id: string; instrument_id: string; deleted: boolean }>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/taxonomies/instrument-universe/${encodeURIComponent(instrumentId)}`,
+    {
+      method: 'DELETE',
     },
   )
 }

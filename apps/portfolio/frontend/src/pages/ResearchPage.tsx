@@ -284,6 +284,14 @@ export default function ResearchPage() {
   }, [portfolioId, selectedRunId])
 
   useEffect(() => {
+    if (!notice) {
+      return undefined
+    }
+    const timeoutId = window.setTimeout(() => setNotice(null), 2800)
+    return () => window.clearTimeout(timeoutId)
+  }, [notice])
+
+  useEffect(() => {
     if (!workbench) {
       return
     }

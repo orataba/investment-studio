@@ -257,11 +257,12 @@ Risk 与 Research 的 covariance / correlation / risk contribution 必须先确�
 - 周频 period end 使用自然周五；若 as-of date 落在周中，则最后一个未完整周以 as-of date 作为 capped period end。月频使用自然月末，同样以 as-of date cap 最后一个 period。
 - 若未来传入显式交易日日历，日频对齐应以日历校验 holiday vs missing：共同非交易日不生成样本；日历交易日缺价必须进入 coverage / missing 诊断，而不是隐式填值。
 - Portfolio Risk 页的 `risk_basis` 来自 Holdings workspace，是当前 active non-cash holdings 的 return alignment 元数据，不是一个风险指标。它必须能覆盖全部参与风险计算的非现金持仓，并且 `resolved_frequency` 只能是 `daily` / `weekly` / `monthly`；缺失、非法或来源频率不完整时，Risk 页面进入 basis unavailable / incomplete，不得临时从 calculation groups 或默认 daily 兜底。
-- Holdings `Forward RC`、Risk 页 Current Drift 和 point-in-time risk contribution 是当前权重口径：用当前持仓权重与资产自身历史收益窗口估计当前组合风险，语义上等同于“当前组合如果在历史窗口内一直以当前权重持有”。因此这些指标不得被 portfolio inception、holding start date 或 materialized contribution slices 截断。真实成立以来/真实持仓期间的 realized attribution 留在 Performance `Calculation`。
-- Risk 页 rolling metrics 可以作为交互式历史扫描保留自己的窗口设置；但凡是用于 risk-budget drift、rebalance trigger、Research solve 或 Holdings Forward RC 的 RC 相关指标，必须使用组合级 `Production Risk Model`，不能在不同页面各自硬编码 decay、shrinkage、lookback 或 contribution mode。
-- Risk 页 correlation matrix 是窗口内 sample correlation 展示层，只受 lookback、calculation frequency、coverage 和 scope 影响；EWMA、vol shrinkage、correlation shrinkage 是协方差估计模型，应保留在 rolling risk、Current Drift risk gap 与 point-in-time risk contribution 等需要协方差的计算中。
+- Holdings `Forward RC` 和 Risk 页 Current Drift 是当前权重口径：用当前持仓权重与资产自身历史收益窗口估计当前组合风险，语义上等同于“当前组合如果在历史窗口内一直以当前权重持有”。因此这些指标不得被 portfolio inception、holding start date 或 materialized contribution slices 截断。真实成立以来/真实持仓期间的 realized attribution 留在 Performance `Calculation`。Risk 页不再提供单独的 point-in-time Risk Contribution 表；风险预算偏离只在 Current Drift 中展示。
+- Risk 页 Rolling Risk 是窗口内 sample volatility / sample Sharpe 展示层，只受 rolling lookback、calculation frequency 和 coverage 影响；不提供 EWMA / shrinkage 等 covariance model 选择。凡是用于 risk-budget drift、rebalance trigger、Research solve 或 Holdings Forward RC 的 RC 相关指标，必须使用组合级 `Production Risk Model`，不能在不同页面各自硬编码 decay、shrinkage、lookback 或 contribution mode。
+- Risk 页 Correlation Matrix 是窗口内 sample correlation 展示层，只受 lookback、calculation frequency、coverage 和 scope 影响；不提供 EWMA、vol shrinkage 或 correlation shrinkage 方法选择。EWMA / shrinkage 是 forward covariance 估计模型，应保留在 Production Risk Model 驱动的 Current Drift risk gap、Research solve 和 Holdings Forward RC 中。
 - Risk 页 instrument-scope planning taxonomy 的 Current Drift 用非现金 Holdings rows 与 Accounts workspace 现金账户值合成当前 NAV；现金 exposure 来自 Accounts 的 cash bucket/account value，Holdings cash rows 不得再作为 instrument leg 参与分母或分组。
-- Risk 页 rolling metrics、correlation matrix 与 point-in-time risk contribution 必须进一步校验 lookback window 覆盖率：按 resolved frequency 使用最小收益样本数、窗口起点最大偏离和至少 80% elapsed-day 覆盖。覆盖不足时结果为 insufficient-history / unavailable，不用更短窗口、pairwise dates、0 return 或前向填充替代。
+- Taxonomy 页 instrument-scope planning taxonomy 的当前覆盖视图使用同一现金口径：当前实体池由非现金 Holdings rows 加 Accounts cash bucket 组成，不把 Holdings 的 `cash:{currency}` 行再作为 instrument 实体展示或计入分母。根行 `Actual Weight` 表示当前实体池整体，必须约等于 100%；各 node 行表示已分类实体，`Without Classification` 只表示未分类残差。
+- Risk 页 rolling metrics 与 correlation matrix 必须进一步校验 lookback window 覆盖率：按 resolved frequency 使用最小收益样本数、窗口起点最大偏离和至少 80% elapsed-day 覆盖。覆盖不足时结果为 insufficient-history / unavailable，不用更短窗口、pairwise dates、0 return 或前向填充替代。
 
 ### 2.7 缺失数据与覆盖率
 
@@ -812,7 +813,7 @@ canonical 规则如下：
 其中：
 
 - 被用于 drift / risk budget gap 的 selected taxonomy 必须是 `planning_enabled = true`；
-- `Risk` 必须把 `SAA Weight` / `SAA Risk` / `TAA Weight` / `TAA Risk` 作为四个显式 comparator 计算；任一来源或维度未配置时，只标记对应 comparator unavailable，不跨 `SAA` / `TAA` 或 `weight` / `risk_budget` 回退；
+- `Risk` 必须分别计算 selected planning taxonomy 下 active `SAA` 与 active `TAA` 的 `weight` / `risk_budget` comparator；UI 合并展示为 `Weight Target Gap` 与 `Risk Target Gap` 两个面板。每个 sleeve 只占一条 row，右侧同图并列展示当前值、`SAA` target 与 `TAA` target。任一来源或维度未配置时，只标记对应 comparator unavailable，不跨 `SAA` / `TAA` 或 `weight` / `risk_budget` 回退；
 - review timeline 仍必须显式携带各段 target source 信息；若区间内来源随时间变化，则标记为 `mixed_timeline`
 - period analytics 必须把上述结果 materialize 为正式 `ResolvedTargetTimeline` / `ResolvedTargetSegment`，而不是匿名 timeline blob；
 - `TargetSet(type = taa)` 在存储层必须已物化为对已启用维度完整的目标集，运行时不做稀疏 overlay 解析；
@@ -969,7 +970,7 @@ $$
 - canonical target 只能在 selected taxonomy 的 `budgeting_level` 上直接录入；父层节点目标必须派生汇总
 - 首版 canonical target weight 固定为 `portfolio_nav` basis
 - drift 计算前必须先校验 selected `TargetSet` 启用了 `weight` 维度，且在 budgeting level 上形成完整节点集；同一 scope 的 direct members 必须加总为 `100% ± epsilon`
-- `Risk` 的 `SAA Weight` 与 `TAA Weight` comparator 独立计算；若某个 target source 未启用 `weight` 维度，只有该 comparator 记为 `unavailable` / `comparator missing`
+- `Risk` 的 `SAA Weight` 与 `TAA Weight` comparator 独立计算，并在 `Weight Target Gap` 面板合并展示；若某个 target source 未启用 `weight` 维度，只有该 comparator 记为 `unavailable` / `comparator missing`
 
 ### 9.2 Total drift
 
@@ -1124,13 +1125,13 @@ $$
 
 其中：
 
-- `TargetRiskShare_i` 来自当前选定的显式 risk comparator（`SAA Risk` 或 `TAA Risk`）对应 `TargetSetLine.target_risk_share`
+- `TargetRiskShare_i` 来自当前 row 中对应的显式 risk comparator（`SAA Risk` 或 `TAA Risk`）的 `TargetSetLine.target_risk_share`
 - canonical target 只能在 selected taxonomy 的 `budgeting_level` 上直接录入；父层节点目标必须派生汇总
 - `RiskShare_i` 与 `TargetRiskShare_i` 必须使用同一风险分母和同一 contribution mode；首版 canonical top-level compare 的分母是 selected taxonomy 下的 portfolio-level forward risk share
 - 层级 sleeve 内部的 `25%` 这类 local risk budget 表示“占父 sleeve 内部风险的 25%”，不是全组合风险的 `25% × 父层预算`
 - 因而禁止通过祖先 `target_risk_share` 乘法把 local sleeve risk budget 铺平成全局 risk-budget target；若需要全局 leaf comparator，必须先由 solver / resolved implementation target 在全组合协方差下显式解出
 - risk budget gap 计算前必须先校验 resolved risk-budget target 可用，且其非现金节点的 `target_risk_share` 加总为 `100% ± epsilon`，现金节点 `target_risk_share = 0`
-- `Risk` 的 `SAA Risk` 与 `TAA Risk` comparator 独立计算；若某个 target source 未启用 `risk_budget` 维度，只有该 comparator 记为 `unavailable` / `comparator missing`
+- `Risk` 的 `SAA Risk` 与 `TAA Risk` comparator 独立计算，并在 `Risk Target Gap` 面板合并展示；若某个 target source 未启用 `risk_budget` 维度，只有该 comparator 记为 `unavailable` / `comparator missing`
 
 说明：
 

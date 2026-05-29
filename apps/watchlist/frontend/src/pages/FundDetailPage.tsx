@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
+import LoadingOverlay from '../components/LoadingOverlay'
 import {
   type FundChartPoint,
   type FundChartResponse,
@@ -3594,6 +3595,14 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const deferredBenchmarkSearch = useDeferredValue(benchmarkSearch)
 
   useEffect(() => {
+    if (!sectionNotice) {
+      return undefined
+    }
+    const timeoutId = window.setTimeout(() => setSectionNotice(null), 2800)
+    return () => window.clearTimeout(timeoutId)
+  }, [sectionNotice])
+
+  useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
       if (!quoteChartMenuRef.current?.contains(event.target as Node)) {
         setOpenQuoteChartMenu(null)
@@ -4393,9 +4402,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   if (loading) {
     return (
       <div className="terminal-page">
-        <section className="panel">
-          <div className="loading-state">Loading instrument detail...</div>
-        </section>
+        <LoadingOverlay label="Loading instrument detail" />
       </div>
     )
   }

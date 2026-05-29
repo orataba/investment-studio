@@ -1,6 +1,7 @@
 import { Suspense, lazy } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { LanguageSelector } from '../../../../packages/ui/src/i18n'
+import CalculationStatus from './components/CalculationStatus'
 
 const AccountsPage = lazy(() => import('./pages/AccountsPage'))
 const OverviewPage = lazy(() => import('./pages/OverviewPage'))
@@ -15,7 +16,7 @@ const TaxonomiesPage = lazy(() => import('./pages/TaxonomiesPage'))
 const TransactionsPage = lazy(() => import('./pages/TransactionsPage'))
 
 function PageFallback() {
-  return <div className="empty-state">Loading</div>
+  return <CalculationStatus />
 }
 
 export default function App() {

@@ -5162,19 +5162,6 @@ def _daily_group_return_from_components(
     return total_pnl / return_denominator
 
 
-def _is_effective_on(
-    *,
-    as_of_date: date,
-    effective_from: date | None,
-    effective_to: date | None,
-) -> bool:
-    if effective_from is not None and as_of_date < effective_from:
-        return False
-    if effective_to is not None and as_of_date > effective_to:
-        return False
-    return True
-
-
 def _merge_group_coverage_state(states: list[str]) -> str:
     normalized_states = [state for state in states if state]
     if not normalized_states:
@@ -5195,22 +5182,10 @@ def _resolve_taxonomy_group_for_date(
     as_of_date: date,
 ) -> tuple[str, str]:
     taxonomy_id = str(taxonomy.get("taxonomy_id") or "")
-    if not _is_effective_on(
-        as_of_date=as_of_date,
-        effective_from=_parse_iso_date(taxonomy.get("effective_from")),
-        effective_to=_parse_iso_date(taxonomy.get("effective_to")),
-    ):
-        return (f"unassigned:{taxonomy_id}", "Unassigned")
-
     active_assignments = [
         assignment
         for assignment in assignments_by_entity.get(target_entity_id, [])
         if str(assignment.get("status") or "active") == "active"
-        and _is_effective_on(
-            as_of_date=as_of_date,
-            effective_from=_parse_iso_date(assignment.get("effective_from")),
-            effective_to=_parse_iso_date(assignment.get("effective_to")),
-        )
     ]
     if len(active_assignments) > 1:
         raise ValueError(
@@ -5312,8 +5287,6 @@ def _group_contribution_slices_by_taxonomy(
     for entity_assignments in assignments_by_entity.values():
         entity_assignments.sort(
             key=lambda item: (
-                str(item.get("effective_from") or ""),
-                str(item.get("effective_to") or ""),
                 str(item.get("assignment_id") or ""),
             )
         )
@@ -6924,8 +6897,6 @@ def _build_taxonomy_calculation_detail_report(
     for entity_assignments in assignments_by_entity.values():
         entity_assignments.sort(
             key=lambda item: (
-                str(item.get("effective_from") or ""),
-                str(item.get("effective_to") or ""),
                 str(item.get("assignment_id") or ""),
             )
         )
@@ -8631,8 +8602,6 @@ def _build_taxonomy_assignment_context(
     for entity_assignments in assignments_by_entity.values():
         entity_assignments.sort(
             key=lambda item: (
-                str(item.get("effective_from") or ""),
-                str(item.get("effective_to") or ""),
                 str(item.get("assignment_id") or ""),
             )
         )

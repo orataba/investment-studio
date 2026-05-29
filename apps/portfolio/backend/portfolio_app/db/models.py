@@ -67,6 +67,10 @@ class PortfolioRecordModel(Base):
         back_populates="portfolio",
         cascade="all, delete-orphan",
     )
+    instrument_universe: Mapped[list["PortfolioInstrumentUniverseRecordModel"]] = relationship(
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
 
 
 class PortfolioDailySnapshotModel(Base):
@@ -181,6 +185,31 @@ class PortfolioTableViewStoreModel(Base):
     portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="table_view_stores")
 
 
+class PortfolioInstrumentUniverseRecordModel(Base):
+    __tablename__ = "portfolio_instrument_universe_record"
+    __table_args__ = (
+        Index("ix_portfolio_instrument_universe_state", "portfolio_id", "holding_state", "status"),
+        Index("ix_portfolio_instrument_universe_source", "portfolio_id", "source"),
+    )
+
+    portfolio_id: Mapped[str] = mapped_column(
+        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    instrument_id: Mapped[str] = mapped_column(String, primary_key=True)
+    instrument_ref_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    source: Mapped[str] = mapped_column(String, nullable=False, default="transaction")
+    holding_state: Mapped[str] = mapped_column(String, nullable=False, default="not_held")
+    first_transaction_date: Mapped[date | None] = mapped_column(Date)
+    last_transaction_date: Mapped[date | None] = mapped_column(Date)
+    transaction_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="instrument_universe")
+
+
 class AccountRecordModel(Base):
     __tablename__ = "account_record"
     __table_args__ = (
@@ -281,8 +310,6 @@ class TaxonomyRecordModel(Base):
     planning_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     budgeting_level: Mapped[str | None] = mapped_column(String)
     root_default_target_dimension: Mapped[str] = mapped_column(String, nullable=False, default="weight")
-    effective_from: Mapped[date | None] = mapped_column(Date)
-    effective_to: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
     source_template_ref: Mapped[str | None] = mapped_column(String)
 
@@ -331,8 +358,6 @@ class TaxonomyAssignmentRecordModel(Base):
     target_scope: Mapped[str] = mapped_column(String, nullable=False)
     target_entity_id: Mapped[str] = mapped_column(String, nullable=False)
     taxonomy_node_id: Mapped[str] = mapped_column(String, nullable=False)
-    effective_from: Mapped[date | None] = mapped_column(Date)
-    effective_to: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
 
     taxonomy: Mapped[TaxonomyRecordModel] = relationship(back_populates="assignments")
@@ -342,11 +367,10 @@ class TargetSetRecordModel(Base):
     __tablename__ = "target_set_record"
     __table_args__ = (
         Index(
-            "ix_target_set_record_taxonomy_scope_type_effective",
+            "ix_target_set_record_taxonomy_scope_type",
             "taxonomy_id",
             "comparator_taxonomy_node_id",
             "target_set_type",
-            "effective_from",
             "target_set_id",
         ),
     )
@@ -359,8 +383,6 @@ class TargetSetRecordModel(Base):
     comparator_taxonomy_node_id: Mapped[str | None] = mapped_column(String)
     target_set_type: Mapped[str] = mapped_column(String, nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
-    effective_from: Mapped[date | None] = mapped_column(Date)
-    effective_to: Mapped[date | None] = mapped_column(Date)
     weight_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     risk_budget_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")

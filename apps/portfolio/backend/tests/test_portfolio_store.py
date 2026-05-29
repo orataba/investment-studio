@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date
 
 from portfolio_app.db.models import (
@@ -20,6 +21,65 @@ def test_reset_store_without_payload_leaves_store_empty() -> None:
     assert portfolio_store.list_portfolios() == []
     assert portfolio_store.list_accounts("yungu") == []
     assert portfolio_store.list_transactions("yungu") == []
+
+
+def test_reset_store_round_trips_manual_instrument_universe() -> None:
+    payload = {
+        "portfolios": [
+            {
+                "portfolio_id": "p1",
+                "portfolio_name": "Portfolio",
+                "base_currency": "USD",
+                "valuation_timezone": "Asia/Shanghai",
+                "valuation_cutoff_policy": "latest_complete_eod",
+                "as_of_date": "2026-05-21",
+                "nav": 0.0,
+                "day_change_value": 0.0,
+                "day_change_pct": 0.0,
+                "securities_count": 0,
+                "sort_order": 0,
+            }
+        ],
+        "instrument_universe": [
+            {
+                "portfolio_id": "p1",
+                "instrument_id": "fund-us-watch",
+                "instrument_ref": {
+                    "instrument_id": "fund-us-watch",
+                    "instrument_name": "Watchlist Fund",
+                    "instrument_type": "fund",
+                    "currency": "USD",
+                    "identifiers": [
+                        {
+                            "identifier_type": "ticker",
+                            "identifier_value": "WATCH",
+                            "is_primary": True,
+                        }
+                    ],
+                },
+                "source": "manual",
+                "holding_state": "not_held",
+                "first_transaction_date": None,
+                "last_transaction_date": None,
+                "transaction_count": 0,
+                "status": "active",
+                "created_at": "2026-05-21T00:00:00Z",
+                "updated_at": "2026-05-21T00:00:00Z",
+            }
+        ],
+    }
+
+    portfolio_store.reset_store(deepcopy(payload))
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        loaded = portfolio_store._load_store_from_db(session)
+    portfolio_store.reset_store(loaded)
+
+    rows = portfolio_store.list_portfolio_instrument_universe("p1")
+    assert [row["instrument_id"] for row in rows] == ["fund-us-watch"]
+    assert rows[0]["source"] == "manual"
+    assert rows[0]["holding_state"] == "not_held"
+    assert rows[0]["instrument_ref"]["instrument_name"] == "Watchlist Fund"
 
 
 def _seed_daily_snapshot(
@@ -241,6 +301,76 @@ def test_live_portfolio_as_of_uses_current_holding_market_date(monkeypatch) -> N
         accounts=[account],
         transactions=transactions,
     ) == date(2026, 4, 28)
+
+
+def test_live_portfolio_as_of_uses_settlement_activity_date(monkeypatch) -> None:
+    portfolio = PortfolioRecordModel(
+        portfolio_id="p1",
+        portfolio_name="Portfolio",
+        base_currency="CNY",
+        valuation_timezone="Asia/Shanghai",
+        valuation_cutoff_policy="latest_complete_eod",
+        as_of_date=date(2026, 5, 21),
+        nav=0.0,
+        day_change_value=0.0,
+        day_change_pct=0.0,
+        securities_count=0,
+        sort_order=0,
+    )
+    account = AccountRecordModel(
+        account_id="cash",
+        portfolio_id="p1",
+        account_name="Cash",
+        account_type="deposit_account",
+        currency="CNY",
+        institution=None,
+        default_settlement_cash_account_id=None,
+        cost_basis_method=None,
+        allowed_instrument_types_json=None,
+        opened_at=None,
+        closed_at=None,
+        status="active",
+    )
+    transactions = [
+        TransactionRecordModel(
+            transaction_id="redeem-proceeds",
+            portfolio_id="p1",
+            transaction_type="deposit",
+            trade_date=date(2026, 5, 21),
+            trade_time="12:00",
+            trade_at="2026-05-21T04:00:00Z",
+            trade_timezone="Asia/Shanghai",
+            trade_time_is_estimated=True,
+            settlement_date=date(2026, 5, 26),
+            account_id="cash",
+            instrument_id=None,
+            instrument_ref_json=None,
+            quantity=None,
+            price=None,
+            gross_amount=100.0,
+            fees=0.0,
+            taxes=0.0,
+            currency="CNY",
+        ),
+    ]
+
+    monkeypatch.setattr(
+        portfolio_store,
+        "_latest_market_data_date_for_instruments",
+        lambda _session, instrument_ids: date(2026, 5, 20) if instrument_ids == {"open"} else None,
+    )
+    monkeypatch.setattr(
+        portfolio_store,
+        "build_position_lots",
+        lambda *args, **kwargs: [{"instrument_id": "open"}],
+    )
+
+    assert portfolio_store._resolve_live_portfolio_as_of_date(
+        object(),
+        portfolio,
+        accounts=[account],
+        transactions=transactions,
+    ) == date(2026, 5, 26)
 
 
 def test_live_portfolio_as_of_ignores_stale_cached_portfolio_date(monkeypatch) -> None:

@@ -426,21 +426,11 @@ def _build_planning_group_snapshot(
         target_scope = str(item.get("target_scope") or "")
         if target_scope not in {"instrument", "cash_bucket"}:
             continue
-        effective_from = item.get("effective_from")
-        effective_to = item.get("effective_to")
-        if effective_from and str(effective_from) > as_of_date.isoformat():
-            continue
-        if effective_to and str(effective_to) < as_of_date.isoformat():
-            continue
         entity_id = str(item.get("target_entity_id") or "")
         if not entity_id:
             continue
         assignment_key = (target_scope, entity_id)
-        current = assignment_by_entity.get(assignment_key)
-        current_effective_from = str(current.get("effective_from") or "") if current else ""
-        next_effective_from = str(item.get("effective_from") or "")
-        if current is None or next_effective_from >= current_effective_from:
-            assignment_by_entity[assignment_key] = item
+        assignment_by_entity.setdefault(assignment_key, item)
 
     visible_cash_accounts = [
         account_row

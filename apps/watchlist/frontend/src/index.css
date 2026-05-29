@@ -225,6 +225,39 @@ select {
   color: #4b5563;
 }
 
+.watchlist-loading-overlay {
+  position: fixed;
+  top: 72px;
+  left: 50%;
+  z-index: 90;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 13px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+  color: var(--ink);
+  font-size: 13px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.watchlist-loading-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #d1d5db;
+  border-top-color: var(--ink);
+  border-radius: 999px;
+  animation: watchlist-loading-spin 700ms linear infinite;
+}
+
+@keyframes watchlist-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .error-state {
   color: #8f1d1d;
 }
@@ -6584,6 +6617,50 @@ input[type='checkbox'] {
 
 .inline-notice {
   padding: 8px 0 0;
+}
+
+.inline-notice:not(.inline-notice-error):not(.inline-notice-warning) {
+  position: fixed;
+  top: 72px;
+  right: 24px;
+  z-index: 2000;
+  box-sizing: border-box;
+  width: min(360px, calc(100vw - 32px));
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 2px solid #64748b;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+  color: #111827;
+  font-size: 13px;
+  line-height: 1.45;
+  pointer-events: none;
+  animation: watchlist-inline-notice-out 2.8s ease forwards;
+}
+
+.inline-notice.inline-notice-success {
+  border-left-color: #18653b;
+  color: #18653b;
+}
+
+@keyframes watchlist-inline-notice-out {
+  0%,
+  72% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+@media (max-width: 640px) {
+  .inline-notice:not(.inline-notice-error):not(.inline-notice-warning) {
+    top: 64px;
+    right: 16px;
+  }
 }
 
 @media (max-width: 960px) {

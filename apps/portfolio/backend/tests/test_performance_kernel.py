@@ -4168,7 +4168,7 @@ def test_taxonomy_catalog_route_returns_taxonomy_tree_and_assignments(client):
     assert payload["taxonomy_assignments"][0]["target_entity_id"] == "equity-us-test"
 
 
-def test_taxonomy_contribution_report_regroups_instrument_slices_by_effective_assignment(client, monkeypatch):
+def test_taxonomy_contribution_report_uses_current_assignment_for_full_period(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
@@ -4323,15 +4323,13 @@ def test_taxonomy_contribution_report_regroups_instrument_slices_by_effective_as
     assert isclose(summary["contribution_residual"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
     lines = {item["group_key"]: item for item in payload["lines"]}
-    assert isclose(lines["tax-sector-value"]["total_pnl"], 10.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(lines["tax-sector-value"]["period_contribution"], 0.1, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(lines["tax-sector-value"]["end_value_base"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(lines["tax-sector-growth"]["total_pnl"], 11.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(lines["tax-sector-growth"]["period_contribution"], 0.1, rel_tol=0.0, abs_tol=1e-12)
+    assert "tax-sector-value" not in lines
+    assert isclose(lines["tax-sector-growth"]["total_pnl"], 21.0, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(lines["tax-sector-growth"]["period_contribution"], 0.2, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(lines["tax-sector-growth"]["end_value_base"], 121.0, rel_tol=0.0, abs_tol=1e-12)
 
     slices = {(item["as_of_date"], item["group_key"]): item for item in payload["daily_slices"]}
-    assert isclose(slices[("2026-01-02", "tax-sector-value")]["daily_contribution"], 0.1, rel_tol=0.0, abs_tol=1e-12)
+    assert isclose(slices[("2026-01-02", "tax-sector-growth")]["daily_contribution"], 0.1, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(
         slices[("2026-01-03", "tax-sector-growth")]["daily_contribution"],
         0.1,
@@ -5241,7 +5239,7 @@ def test_instrument_contribution_calendar_rolls_daily_slices_into_monthly_bucket
     assert isclose(bucket["bucket_contribution"], 0.1, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_taxonomy_contribution_calendar_keeps_reassignment_from_creating_false_bucket_pnl(client, monkeypatch):
+def test_taxonomy_contribution_calendar_uses_current_assignment_for_full_bucket(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
@@ -5396,9 +5394,8 @@ def test_taxonomy_contribution_calendar_keeps_reassignment_from_creating_false_b
     assert isclose(summary["contribution_residual"], 0.0, rel_tol=0.0, abs_tol=1e-12)
 
     buckets = {item["group_key"]: item for item in payload["buckets"]}
-    assert isclose(buckets["tax-sector-value"]["bucket_contribution"], 0.1, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(buckets["tax-sector-value"]["ending_value_base"], 0.0, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(buckets["tax-sector-growth"]["bucket_contribution"], 0.1, rel_tol=0.0, abs_tol=1e-12)
+    assert "tax-sector-value" not in buckets
+    assert isclose(buckets["tax-sector-growth"]["bucket_contribution"], 0.2, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(buckets["tax-sector-growth"]["ending_value_base"], 121.0, rel_tol=0.0, abs_tol=1e-12)
 
 
@@ -6308,7 +6305,7 @@ def test_period_calculation_groups_calendar_can_filter_by_group_key(client, monk
     assert isclose(bucket["bucket_contribution"], 0.05, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_taxonomy_boundary_groups_report_uses_effective_assignment_on_start_and_end_dates(client, monkeypatch):
+def test_taxonomy_boundary_groups_report_uses_current_assignment_on_start_and_end_dates(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
@@ -6457,7 +6454,7 @@ def test_taxonomy_boundary_groups_report_uses_effective_assignment_on_start_and_
     assert payload["summary"]["taxonomy_id"] == "tax-sector"
     assert payload["summary"]["start_group_count"] == 1
     assert payload["summary"]["end_group_count"] == 1
-    assert payload["start_groups"][0]["group_key"] == "tax-sector-value"
+    assert payload["start_groups"][0]["group_key"] == "tax-sector-growth"
     assert payload["end_groups"][0]["group_key"] == "tax-sector-growth"
     assert isclose(payload["start_groups"][0]["market_value_base"], 100.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(payload["end_groups"][0]["market_value_base"], 121.0, rel_tol=0.0, abs_tol=1e-12)

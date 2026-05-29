@@ -14,7 +14,7 @@ type NoticeToastProps = {
   onDismiss: () => void
 }
 
-export default function NoticeToast({ notice, durationMs = 1800, onDismiss }: NoticeToastProps) {
+export default function NoticeToast({ notice, durationMs = 2800, onDismiss }: NoticeToastProps) {
   const onDismissRef = useRef(onDismiss)
 
   useEffect(() => {

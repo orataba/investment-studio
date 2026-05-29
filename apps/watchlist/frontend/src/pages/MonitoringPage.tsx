@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
+import LoadingOverlay from '../components/LoadingOverlay'
 import {
   executeInstrumentRecalc,
   getMonitoringDashboard,
@@ -163,6 +164,14 @@ export default function MonitoringPage() {
   const [notice, setNotice] = useState<{ tone: 'success' | 'error'; message: string } | null>(
     null,
   )
+
+  useEffect(() => {
+    if (!notice) {
+      return undefined
+    }
+    const timeoutId = window.setTimeout(() => setNotice(null), 2800)
+    return () => window.clearTimeout(timeoutId)
+  }, [notice])
 
   async function loadDashboard(isRefresh = false) {
     if (isRefresh) {
@@ -390,9 +399,7 @@ export default function MonitoringPage() {
           </div>
         ) : null}
         {error ? <div className="error-state">{error}</div> : null}
-        {loading && !dashboard ? (
-          <div className="loading-state">Loading monitoring dashboard...</div>
-        ) : null}
+        {loading && !dashboard ? <LoadingOverlay label="Loading monitoring dashboard" /> : null}
         {!loading && dashboard ? (
           <div className="monitoring-overview-grid">
             {overviewRows.map((item) => (

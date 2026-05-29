@@ -29,7 +29,7 @@ import {
   type SharedInstrumentRecord,
   type TaxonomyAssignmentScope,
 } from '../lib/api'
-import { formatCurrency, formatLabel, formatNumber, formatPercent, signedValueClass } from '../lib/format'
+import { formatCurrency, formatLabel, formatNumber, formatPercent } from '../lib/format'
 
 const DAYS_PER_YEAR = 365.25
 const RISK_MIN_WINDOW_COVERAGE_RATIO = 0.8
@@ -41,18 +41,23 @@ type RiskModelId = 'ewma_vol_shrinkage_corr_covariance' | 'ewma_covariance' | 's
 type RiskContributionMode = 'signed' | 'abs'
 type CalculationFrequency = 'daily' | 'weekly' | 'monthly'
 
-type RiskSettingsState = {
+const SAMPLE_RISK_MODEL_ID: RiskModelId = 'sample_covariance'
+
+type RiskWindowSettingsState = {
   lookbackDays: number
+}
+
+type RiskSettingsState = RiskWindowSettingsState & {
   modelId: RiskModelId
   contributionMode: RiskContributionMode
   parameters?: Record<string, unknown>
 }
 
-type RollingRiskSettingsState = RiskSettingsState & {
+type RollingRiskSettingsState = RiskWindowSettingsState & {
   chartStyle: RiskChartDisplayStyle
 }
 
-function hasChartStyle<TSettings extends RiskSettingsState>(
+function hasChartStyle<TSettings extends RiskWindowSettingsState>(
   settings: TSettings,
 ): settings is TSettings & RollingRiskSettingsState {
   return 'chartStyle' in settings && CHART_STYLE_OPTIONS.some((option) => option.value === settings.chartStyle)
@@ -110,6 +115,16 @@ type RiskContributionRow = {
   observationCount: number
 }
 
+type TargetGapComparatorRow = {
+  key: string
+  id: string
+  label: string
+  current: number | null
+  target: number | null
+  gap: number | null
+  detail?: string
+}
+
 type RiskCalculationResult<T> = {
   value: T
   errors: string[]
@@ -138,11 +153,6 @@ const RISK_MODEL_OPTIONS: Array<{ value: RiskModelId; label: string; detail: str
   },
   { value: 'ewma_covariance', label: 'EWMA', detail: 'Exponentially weighted covariance' },
   { value: 'sample_covariance', label: 'Sample', detail: 'Sample covariance, n - 1' },
-]
-
-const CONTRIBUTION_MODE_OPTIONS: Array<{ value: RiskContributionMode; label: string; detail: string }> = [
-  { value: 'signed', label: 'Signed', detail: 'Matches research primary mode' },
-  { value: 'abs', label: 'Absolute', detail: 'Alternate view when signed shares are unstable' },
 ]
 
 const CHART_STYLE_OPTIONS: Array<{ value: RiskChartDisplayStyle; label: string }> = [
@@ -179,8 +189,12 @@ const DEFAULT_RISK_MODEL_PARAMETERS: Record<CalculationFrequency, Record<string,
 }
 
 const DEFAULT_ROLLING_SETTINGS: RollingRiskSettingsState = {
-  ...DEFAULT_RISK_SETTINGS,
+  lookbackDays: DEFAULT_RISK_LOOKBACK_DAYS,
   chartStyle: 'mountain',
+}
+
+const DEFAULT_MATRIX_SETTINGS: RiskWindowSettingsState = {
+  lookbackDays: DEFAULT_RISK_LOOKBACK_DAYS,
 }
 
 const RISK_MAX_START_GAP_DAYS: Record<CalculationFrequency, number> = {
@@ -516,20 +530,6 @@ function assessRiskWindowCoverage(
   }
 }
 
-function signedPercent(value: number | null | undefined, digits = 2) {
-  if (value == null || Number.isNaN(value)) {
-    return '—'
-  }
-  const absolute = formatPercent(Math.abs(value), digits)
-  if (value > 0) {
-    return `+${absolute}`
-  }
-  if (value < 0) {
-    return `-${absolute}`
-  }
-  return absolute
-}
-
 function buildBenchmarkReturnPoints(chart: PortfolioInstrumentPriceChartResponse | null) {
   const points = (chart?.points ?? [])
     .filter((point) => point.date && Number.isFinite(point.value))
@@ -796,11 +796,11 @@ function estimateWindowRisk(
 
 function buildRollingMetricPoints(
   returnPoints: ReturnPoint[],
-  settings: RiskSettingsState,
+  settings: RiskWindowSettingsState,
   metric: 'volatility' | 'sharpe',
   frequency: CalculationFrequency,
 ) {
-  const parameters = riskModelParameters(settings, frequency)
+  const parameters: Record<string, unknown> = {}
   const sortedPoints = returnPoints.slice().sort((left, right) => left.date.localeCompare(right.date))
   const rollingPoints: RollingRiskMetricPoint[] = []
   sortedPoints.forEach((point) => {
@@ -808,7 +808,7 @@ function buildRollingMetricPoints(
       sortedPoints,
       point.date,
       settings.lookbackDays,
-      settings.modelId,
+      SAMPLE_RISK_MODEL_ID,
       parameters,
       frequency,
     )
@@ -1388,19 +1388,6 @@ function buildNodePath(nodeId: string | null | undefined, nodeById: Map<string, 
   return path
 }
 
-function isRecordActive(effectiveFrom?: string | null, effectiveTo?: string | null, referenceDate?: string | null) {
-  if (!referenceDate) {
-    return true
-  }
-  if (effectiveFrom && effectiveFrom > referenceDate) {
-    return false
-  }
-  if (effectiveTo && effectiveTo < referenceDate) {
-    return false
-  }
-  return true
-}
-
 function resolveActiveAssignment(
   catalog: PortfolioTaxonomyCatalogResponse | null,
   taxonomyId: string,
@@ -1414,15 +1401,9 @@ function resolveActiveAssignment(
         assignment.taxonomy_id === taxonomyId &&
         assignment.target_scope === targetScope &&
         assignment.target_entity_id === entityId &&
-        assignment.status === 'active' &&
-        isRecordActive(assignment.effective_from, assignment.effective_to, referenceDate),
+        assignment.status === 'active',
     )
-    .sort(
-      (left, right) =>
-        (right.effective_from ?? '').localeCompare(left.effective_from ?? '') ||
-        (right.effective_to ?? '').localeCompare(left.effective_to ?? '') ||
-        right.assignment_id.localeCompare(left.assignment_id),
-    )
+    .sort((left, right) => right.assignment_id.localeCompare(left.assignment_id))
 
   if (matches.length > 1) {
     return {
@@ -1712,16 +1693,16 @@ function buildTargetGapRows({
   baseCurrency: string
 }) {
   if (!targetSet) {
-    return riskOk([] satisfies RiskTargetGapChartRow[])
+    return riskOk([] satisfies TargetGapComparatorRow[])
   }
   if (dimension === 'weight' && !targetSet.weight_enabled) {
-    return riskOk([] satisfies RiskTargetGapChartRow[])
+    return riskOk([] satisfies TargetGapComparatorRow[])
   }
   if (dimension === 'risk_budget' && !targetSet.risk_budget_enabled) {
-    return riskOk([] satisfies RiskTargetGapChartRow[])
+    return riskOk([] satisfies TargetGapComparatorRow[])
   }
   if (!targetLines.length) {
-    return riskFail(`${targetSet.name} is active but has no target lines.`, [] satisfies RiskTargetGapChartRow[])
+    return riskFail(`${targetSet.name} is active but has no target lines.`, [] satisfies TargetGapComparatorRow[])
   }
   const nonNodeLines = targetLines.filter((line) => line.target_member_type !== 'taxonomy_node')
   if (nonNodeLines.length) {
@@ -1729,27 +1710,27 @@ function buildTargetGapRows({
       `${targetSet.name} root target drift must be defined on taxonomy_node budgeting members; unsupported direct members: ${nonNodeLines
         .map((line) => `${line.target_member_type}:${line.target_member_id}`)
         .join(', ')}.`,
-      [] satisfies RiskTargetGapChartRow[],
+      [] satisfies TargetGapComparatorRow[],
     )
   }
   const missingTargetNodes = targetLines.filter((line) => !nodeById.has(line.target_member_id))
   if (missingTargetNodes.length) {
     return riskFail(
       `${targetSet.name} references missing taxonomy nodes: ${missingTargetNodes.map((line) => line.target_member_id).join(', ')}.`,
-      [] satisfies RiskTargetGapChartRow[],
+      [] satisfies TargetGapComparatorRow[],
     )
   }
   if (dimension === 'risk_budget' && riskShareErrors.length) {
     return riskFail(
       [`${targetSet.name} risk target gap cannot be calculated because current risk share failed.`].concat(riskShareErrors),
-      [] satisfies RiskTargetGapChartRow[],
+      [] satisfies TargetGapComparatorRow[],
     )
   }
   const targetLineErrors = targetLines
     .filter((line) => (dimension === 'weight' ? line.target_weight : line.target_risk_share) == null)
     .map((line) => `${targetSet.name} is missing ${dimension === 'weight' ? 'target_weight' : 'target_risk_share'} for ${lineDisplayLabel(line, nodeById)}.`)
   if (targetLineErrors.length) {
-    return riskFail(targetLineErrors, [] satisfies RiskTargetGapChartRow[])
+    return riskFail(targetLineErrors, [] satisfies TargetGapComparatorRow[])
   }
   const targetTotal = targetLines.reduce(
     (total, line) => total + ((dimension === 'weight' ? line.target_weight : line.target_risk_share) ?? 0),
@@ -1758,7 +1739,7 @@ function buildTargetGapRows({
   if (Math.abs(targetTotal - 1) > 1e-6) {
     return riskFail(
       `${targetSet.name} ${dimension === 'weight' ? 'target weights' : 'risk targets'} must sum to 100%; got ${formatPercent(targetTotal)}.`,
-      [] satisfies RiskTargetGapChartRow[],
+      [] satisfies TargetGapComparatorRow[],
     )
   }
 
@@ -1766,14 +1747,14 @@ function buildTargetGapRows({
   if (!normalizedBaseCurrency && currentGroups.some((group) => group.currentValueBase != null)) {
     return riskFail(
       `${targetSet.name} target drift requires the portfolio base currency before value details can be rendered.`,
-      [] satisfies RiskTargetGapChartRow[],
+      [] satisfies TargetGapComparatorRow[],
     )
   }
 
   const currentGroupByKey = new Map(currentGroups.map((group) => [group.groupKey, group] as const))
   const lineByKey = new Map(targetLines.map((line) => [lineDisplayKey(line), line] as const))
   const allKeys = new Set([...currentGroupByKey.keys(), ...lineByKey.keys()])
-  const rows: RiskTargetGapChartRow[] = []
+  const rows: TargetGapComparatorRow[] = []
   const errors: string[] = []
 
   allKeys.forEach((key) => {
@@ -1798,6 +1779,7 @@ function buildTargetGapRows({
       return
     }
     rows.push({
+      key,
       id: `${targetSet.target_set_id}:${dimension}:${key}`,
       label: currentGroup?.label ?? (line ? lineDisplayLabel(line, nodeById) : key),
       current,
@@ -1808,10 +1790,42 @@ function buildTargetGapRows({
   })
 
   if (errors.length) {
-    return riskFail(errors, [] satisfies RiskTargetGapChartRow[])
+    return riskFail(errors, [] satisfies TargetGapComparatorRow[])
   }
 
   return riskOk(rows.sort((left, right) => Math.abs(right.gap ?? 0) - Math.abs(left.gap ?? 0)))
+}
+
+function combineTargetGapRows(
+  saaRows: TargetGapComparatorRow[],
+  taaRows: TargetGapComparatorRow[],
+): RiskTargetGapChartRow[] {
+  const saaByKey = new Map(saaRows.map((row) => [row.key, row] as const))
+  const taaByKey = new Map(taaRows.map((row) => [row.key, row] as const))
+  const keys = new Set([...saaByKey.keys(), ...taaByKey.keys()])
+  return [...keys]
+    .map((key) => {
+      const saa = saaByKey.get(key) ?? null
+      const taa = taaByKey.get(key) ?? null
+      const current = saa?.current ?? taa?.current ?? null
+      const saaTarget = saa?.target ?? null
+      const taaTarget = taa?.target ?? null
+      return {
+        id: `target-gap:${key}`,
+        label: saa?.label ?? taa?.label ?? key,
+        current,
+        saaTarget,
+        taaTarget,
+        saaGap: current != null && saaTarget != null ? current - saaTarget : null,
+        taaGap: current != null && taaTarget != null ? current - taaTarget : null,
+        detail: saa?.detail ?? taa?.detail,
+      } satisfies RiskTargetGapChartRow
+    })
+    .sort((left, right) => {
+      const leftGap = Math.max(Math.abs(left.saaGap ?? 0), Math.abs(left.taaGap ?? 0))
+      const rightGap = Math.max(Math.abs(right.saaGap ?? 0), Math.abs(right.taaGap ?? 0))
+      return rightGap - leftGap || left.label.localeCompare(right.label)
+    })
 }
 
 function selectUniqueTargetSet(targetSets: PortfolioTargetSetRecord[], targetSetType: 'saa' | 'taa') {
@@ -1882,22 +1896,18 @@ function taxonomyScopeOptions(
   ]
 }
 
-function RiskSettingsMenu<TSettings extends RiskSettingsState>({
+function RiskSettingsMenu<TSettings extends RiskWindowSettingsState>({
   label,
   settings,
   onChange,
   includeWindow = true,
-  includeModel = true,
   includeChartStyle = false,
-  includeContributionMode = false,
 }: {
   label: string
   settings: TSettings
   onChange: (settings: TSettings) => void
   includeWindow?: boolean
-  includeModel?: boolean
   includeChartStyle?: boolean
-  includeContributionMode?: boolean
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const settingsMenuRef = useRef<HTMLDivElement | null>(null)
@@ -1957,56 +1967,6 @@ function RiskSettingsMenu<TSettings extends RiskSettingsState>({
                           : 'portfolio-nav-option'
                       }
                       onClick={() => onChange({ ...settings, lookbackDays: option.value })}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-
-            {includeModel ? (
-              <section className="portfolio-nav-settings-block">
-                <div className="portfolio-nav-settings-block-head">
-                  <span>Method</span>
-                  <strong>{riskModelLabel(settings.modelId)}</strong>
-                </div>
-                <div className="portfolio-nav-settings-option-grid">
-                  {RISK_MODEL_OPTIONS.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={
-                        settings.modelId === option.value
-                          ? 'portfolio-nav-option portfolio-nav-option-active'
-                          : 'portfolio-nav-option'
-                      }
-                      onClick={() => onChange({ ...settings, modelId: option.value })}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-
-            {includeContributionMode ? (
-              <section className="portfolio-nav-settings-block portfolio-nav-settings-block-data">
-                <div className="portfolio-nav-settings-block-head">
-                  <span>Risk Share</span>
-                  <strong>{formatLabel(settings.contributionMode)}</strong>
-                </div>
-                <div className="portfolio-nav-settings-option-grid">
-                  {CONTRIBUTION_MODE_OPTIONS.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={
-                        settings.contributionMode === option.value
-                          ? 'portfolio-nav-option portfolio-nav-option-active'
-                          : 'portfolio-nav-option'
-                      }
-                      onClick={() => onChange({ ...settings, contributionMode: option.value })}
                     >
                       {option.label}
                     </button>
@@ -2109,10 +2069,9 @@ export default function RiskPage() {
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
   const [portfolioStartDate, setPortfolioStartDate] = useState<string | null>(null)
   const [rollingSettings, setRollingSettings] = useState<RollingRiskSettingsState>(DEFAULT_ROLLING_SETTINGS)
-  const [matrixSettings, setMatrixSettings] = useState<RiskSettingsState>(DEFAULT_RISK_SETTINGS)
+  const [matrixSettings, setMatrixSettings] = useState<RiskWindowSettingsState>(DEFAULT_MATRIX_SETTINGS)
   const [matrixScopeNodeId, setMatrixScopeNodeId] = useState(MATRIX_SCOPE_ALL_INSTRUMENTS)
   const [matrixAsOfDate, setMatrixAsOfDate] = useState('')
-  const [contributionAsOfDate, setContributionAsOfDate] = useState('')
 
   const riskWindowEndDate = holdingsWorkspace?.as_of_date ?? ''
 
@@ -2280,10 +2239,9 @@ export default function RiskPage() {
         (targetSet) =>
           targetSet.taxonomy_id === defaultPlanningTaxonomy?.taxonomy_id &&
           !targetSet.comparator_taxonomy_node_id &&
-          targetSet.status === 'active' &&
-          isRecordActive(targetSet.effective_from, targetSet.effective_to, holdingsWorkspace?.as_of_date ?? null),
+          targetSet.status === 'active',
       ),
-    [defaultPlanningTaxonomy?.taxonomy_id, holdingsWorkspace?.as_of_date, taxonomyCatalog?.target_sets],
+    [defaultPlanningTaxonomy?.taxonomy_id, taxonomyCatalog?.target_sets],
   )
   const activeRootSaaTargetSetResult = useMemo(() => selectUniqueTargetSet(activeRootTargetSets, 'saa'), [activeRootTargetSets])
   const activeRootTaaTargetSetResult = useMemo(() => selectUniqueTargetSet(activeRootTargetSets, 'taa'), [activeRootTargetSets])
@@ -2320,7 +2278,6 @@ export default function RiskPage() {
     ],
   )
   const driftSettings = productionRiskSettings
-  const contributionSettings = productionRiskSettings
   const productionRiskDescription = `${windowLabel(productionRiskSettings.lookbackDays)} ${riskModelLabel(
     productionRiskSettings.modelId,
   )}; ${formatLabel(productionRiskSettings.contributionMode)} RC`
@@ -2422,18 +2379,6 @@ export default function RiskPage() {
       setMatrixAsOfDate(riskAsOfSelectionDates[riskAsOfSelectionDates.length - 1])
     }
   }, [matrixAsOfDate, riskAsOfSelectionDates])
-
-  useEffect(() => {
-    if (!riskAsOfSelectionDates.length) {
-      if (contributionAsOfDate) {
-        setContributionAsOfDate('')
-      }
-      return
-    }
-    if (!riskAsOfSelectionDates.includes(contributionAsOfDate)) {
-      setContributionAsOfDate(riskAsOfSelectionDates[riskAsOfSelectionDates.length - 1])
-    }
-  }, [contributionAsOfDate, riskAsOfSelectionDates])
 
   const matrixTaxonomyScopeOptions = useMemo(
     () => taxonomyScopeOptions(defaultPlanningTaxonomy, taxonomyCatalog),
@@ -2675,24 +2620,21 @@ export default function RiskPage() {
     ],
   )
   const taaRiskGapRows = taaRiskGapResult.value
-  const instrumentRiskContributionResult = useMemo(
-    () =>
-      riskInputsReady
-        ? buildRiskContributionRows(
-            instrumentReturnSeries,
-            contributionAsOfDate,
-            contributionSettings,
-            portfolioRiskFrequency.frequency,
-          )
-        : riskFail(currentRiskInputErrors, [] satisfies RiskContributionRow[]),
-    [
-      currentRiskInputErrors,
-      instrumentReturnSeries,
-      contributionAsOfDate,
-      contributionSettings,
-      portfolioRiskFrequency.frequency,
-      riskInputsReady,
-    ],
+  const weightTargetGapRows = useMemo(
+    () => combineTargetGapRows(saaWeightGapRows, taaWeightGapRows),
+    [saaWeightGapRows, taaWeightGapRows],
+  )
+  const riskTargetGapRows = useMemo(
+    () => combineTargetGapRows(saaRiskGapRows, taaRiskGapRows),
+    [saaRiskGapRows, taaRiskGapRows],
+  )
+  const weightTargetGapErrors = useMemo(
+    () => [...saaWeightGapResult.errors, ...taaWeightGapResult.errors],
+    [saaWeightGapResult.errors, taaWeightGapResult.errors],
+  )
+  const riskTargetGapErrors = useMemo(
+    () => [...saaRiskGapResult.errors, ...taaRiskGapResult.errors],
+    [saaRiskGapResult.errors, taaRiskGapResult.errors],
   )
   function renderRiskErrors(errors: string[]) {
     if (!errors.length) {
@@ -2759,56 +2701,31 @@ export default function RiskPage() {
     )
   }
 
-  function renderRiskContributionTable(result: RiskCalculationResult<RiskContributionRow[]>) {
-    if (result.errors.length) {
-      return renderRiskErrors(result.errors)
-    }
-    const rows = result.value
-    const maxAbsRiskShare = Math.max(
-      0,
-      ...rows
-        .map((row) => row.riskShare)
-        .filter((value): value is number => value != null)
-        .map((value) => Math.abs(value)),
-    )
-    if (!rows.length) {
-      return <div className="price-chart-empty">No rows.</div>
-    }
-
+  function renderTargetGapPanel({
+    rows,
+    errors,
+    ariaLabel,
+    emptyLabel,
+    currentLabel,
+  }: {
+    rows: RiskTargetGapChartRow[]
+    errors: string[]
+    ariaLabel: string
+    emptyLabel: string
+    currentLabel?: string
+  }) {
     return (
-      <div className="risk-matrix-scroll">
-        <table className="risk-heatmap-table risk-contribution-table">
-          <thead>
-            <tr>
-              <th>Instrument</th>
-              <th>Risk Weight</th>
-              <th>Annualized Vol</th>
-              <th>Risk Share</th>
-              <th>Ann Var Ctr</th>
-              <th>Obs</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={row.groupKey}>
-                <th>{row.groupLabel}</th>
-                <td>{formatPercent(row.weight)}</td>
-                <td>{formatPercent(row.annualizedVolatility)}</td>
-                <td
-                  className={`risk-heatmap-cell ${signedValueClass(row.riskShare)}`}
-                  style={heatmapCellStyle(row.riskShare, maxAbsRiskShare)}
-                >
-                  {signedPercent(row.riskShare)}
-                </td>
-                <td className={signedValueClass(row.contributionToVariance)}>
-                  {formatPercent(row.contributionToVariance, 3)}
-                </td>
-                <td>{formatNumber(row.observationCount, 0)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <>
+        {renderRiskErrors(errors)}
+        {errors.length && !rows.length ? null : (
+          <RiskTargetGapChart
+            rows={rows}
+            ariaLabel={ariaLabel}
+            emptyLabel={emptyLabel}
+            currentLabel={currentLabel}
+          />
+        )}
+      </>
     )
   }
 
@@ -2829,6 +2746,46 @@ export default function RiskPage() {
 
         {holdingsWorkspace ? (
           <>
+            <section className="performance-section-block">
+              <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar">
+                <div>
+                  <div className="panel-title">Current Drift</div>
+                  <div className="portfolio-detail-meta">
+                    {defaultPlanningTaxonomy
+                      ? `${defaultPlanningTaxonomy.name}; ${holdingsWorkspace.as_of_date}; ${portfolioRiskFrequency.statusLabel}; ${productionRiskMeta}`
+                      : 'No taxonomy'}
+                  </div>
+                </div>
+              </div>
+              {renderRiskErrors([
+                ...activeRootSaaTargetSetResult.errors,
+                ...activeRootTaaTargetSetResult.errors,
+                ...topLevelTaxonomySeriesResult.errors,
+                ...currentPlanningGroupsResult.errors,
+              ])}
+              <div className="risk-target-grid">
+                <div className="risk-target-panel">
+                  <div className="risk-matrix-panel-title">Weight Target Gap</div>
+                  {renderTargetGapPanel({
+                    rows: weightTargetGapRows,
+                    errors: weightTargetGapErrors,
+                    ariaLabel: 'Weight target drift',
+                    emptyLabel: 'No weight target.',
+                  })}
+                </div>
+                <div className="risk-target-panel">
+                  <div className="risk-matrix-panel-title">Risk Target Gap</div>
+                  {renderTargetGapPanel({
+                    rows: riskTargetGapRows,
+                    errors: riskTargetGapErrors,
+                    ariaLabel: 'Risk budget target gap',
+                    emptyLabel: 'No risk target.',
+                    currentLabel: 'Risk Share',
+                  })}
+                </div>
+              </div>
+            </section>
+
             <section className="performance-section-block risk-rolling-section">
               <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar risk-rolling-toolbar">
                 <div className="risk-toolbar-primary risk-rolling-toolbar-primary">
@@ -2855,23 +2812,10 @@ export default function RiskPage() {
                   />
                 </div>
                 <div className="risk-section-actions">
-                  <div className="risk-toggle-group" role="group" aria-label="Rolling risk window">
-                    {RISK_WINDOW_OPTIONS.map((option) => (
-                      <button
-                        key={option.value}
-                        type="button"
-                        className={rollingSettings.lookbackDays === option.value ? 'risk-toggle-active' : undefined}
-                        onClick={() => setRollingSettings({ ...rollingSettings, lookbackDays: option.value })}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
                   <RiskSettingsMenu
                     label="Rolling risk"
                     settings={rollingSettings}
                     onChange={setRollingSettings}
-                    includeWindow={false}
                     includeChartStyle
                   />
                 </div>
@@ -2923,18 +2867,11 @@ export default function RiskPage() {
                   </label>
                 </div>
                 <div className="risk-section-actions">
-                  <div className="risk-toggle-group" role="group" aria-label="Correlation matrix window">
-                    {RISK_WINDOW_OPTIONS.map((option) => (
-                      <button
-                        key={option.value}
-                        type="button"
-                        className={matrixSettings.lookbackDays === option.value ? 'risk-toggle-active' : undefined}
-                        onClick={() => setMatrixSettings({ ...matrixSettings, lookbackDays: option.value })}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
+                  <RiskSettingsMenu
+                    label="Correlation matrix"
+                    settings={matrixSettings}
+                    onChange={setMatrixSettings}
+                  />
                 </div>
               </div>
               <RiskDateTimeline
@@ -2952,98 +2889,6 @@ export default function RiskPage() {
               </div>
             </section>
 
-            <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar">
-                <div>
-                  <div className="panel-title">Current Drift</div>
-                  <div className="portfolio-detail-meta">
-                    {defaultPlanningTaxonomy
-                      ? `${defaultPlanningTaxonomy.name}; ${holdingsWorkspace.as_of_date}; ${portfolioRiskFrequency.statusLabel}; ${productionRiskMeta}`
-                      : 'No taxonomy'}
-                  </div>
-                </div>
-              </div>
-              {renderRiskErrors([
-                ...activeRootSaaTargetSetResult.errors,
-                ...activeRootTaaTargetSetResult.errors,
-                ...topLevelTaxonomySeriesResult.errors,
-                ...currentPlanningGroupsResult.errors,
-              ])}
-              <div className="risk-target-grid">
-                <div className="risk-target-panel">
-                  <div className="risk-matrix-panel-title">SAA Weight Target Gap</div>
-                  {saaWeightGapResult.errors.length ? (
-                    renderRiskErrors(saaWeightGapResult.errors)
-                  ) : (
-                    <RiskTargetGapChart
-                      rows={saaWeightGapRows}
-                      ariaLabel="SAA weight target drift"
-                      emptyLabel="No SAA weight target."
-                    />
-                  )}
-                </div>
-                <div className="risk-target-panel">
-                  <div className="risk-matrix-panel-title">TAA Weight Target Gap</div>
-                  {taaWeightGapResult.errors.length ? (
-                    renderRiskErrors(taaWeightGapResult.errors)
-                  ) : (
-                    <RiskTargetGapChart
-                      rows={taaWeightGapRows}
-                      ariaLabel="TAA weight target drift"
-                      emptyLabel="No TAA weight target."
-                    />
-                  )}
-                </div>
-                <div className="risk-target-panel">
-                  <div className="risk-matrix-panel-title">SAA Risk Target Gap</div>
-                  {saaRiskGapResult.errors.length ? (
-                    renderRiskErrors(saaRiskGapResult.errors)
-                  ) : (
-                    <RiskTargetGapChart
-                      rows={saaRiskGapRows}
-                      ariaLabel="SAA risk budget target gap"
-                      emptyLabel="No SAA risk target."
-                      currentLabel="Risk Share"
-                      targetLabel="Risk Target"
-                    />
-                  )}
-                </div>
-                <div className="risk-target-panel">
-                  <div className="risk-matrix-panel-title">TAA Risk Target Gap</div>
-                  {taaRiskGapResult.errors.length ? (
-                    renderRiskErrors(taaRiskGapResult.errors)
-                  ) : (
-                    <RiskTargetGapChart
-                      rows={taaRiskGapRows}
-                      ariaLabel="TAA risk budget target gap"
-                      emptyLabel="No TAA risk target."
-                      currentLabel="Risk Share"
-                      targetLabel="Risk Target"
-                    />
-                  )}
-                </div>
-              </div>
-            </section>
-
-            <section className="performance-section-block">
-              <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar">
-                <div>
-                  <div className="panel-title">Risk Contribution</div>
-                  <div className="portfolio-detail-meta">
-                    {contributionAsOfDate
-                      ? `${contributionAsOfDate}; ${portfolioRiskFrequency.statusLabel}; ${productionRiskMeta}`
-                      : 'No active risk contribution date'}
-                  </div>
-                </div>
-              </div>
-              <RiskDateTimeline
-                dates={riskAsOfSelectionDates}
-                value={contributionAsOfDate}
-                onChange={setContributionAsOfDate}
-                label="Contribution as of"
-              />
-              {renderRiskContributionTable(instrumentRiskContributionResult)}
-            </section>
           </>
         ) : null}
       </section>

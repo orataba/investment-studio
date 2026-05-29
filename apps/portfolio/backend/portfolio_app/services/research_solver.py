@@ -224,16 +224,6 @@ def _normalized_currency(value: object, *, fallback: str = "USD") -> str:
     return normalized or fallback
 
 
-def _period_active(*, effective_from: object, effective_to: object, as_of_date: date) -> bool:
-    lower = _parse_iso_date(effective_from)
-    upper = _parse_iso_date(effective_to)
-    if lower and as_of_date < lower:
-        return False
-    if upper and as_of_date > upper:
-        return False
-    return True
-
-
 def _build_direct_fx_instrument_map() -> dict[tuple[str, str], str]:
     direct_instruments: dict[tuple[str, str], str] = {}
     payload = performance_service.get_platform_fx_rates()
@@ -1591,25 +1581,10 @@ def _scope_target_sets(
     as_of_date: date,
 ) -> dict[str, object] | None:
     candidates = state.target_sets_by_scope_type.get((scope_node_id, target_set_type), [])
-    configured = [
-        item
-        for item in candidates
-        if str(item.get("status") or "active") == "active"
-        and _period_active(
-            effective_from=item.get("effective_from"),
-            effective_to=item.get("effective_to"),
-            as_of_date=as_of_date,
-        )
-    ]
+    configured = [item for item in candidates if str(item.get("status") or "active") == "active"]
     if not configured:
         return None
-    configured.sort(
-        key=lambda item: (
-            str(item.get("effective_from") or ""),
-            str(item.get("target_set_id") or ""),
-        ),
-        reverse=True,
-    )
+    configured.sort(key=lambda item: str(item.get("target_set_id") or ""), reverse=True)
     return configured[0]
 
 
@@ -2671,11 +2646,6 @@ def _build_taxonomy_state(
         for item in list_taxonomy_assignments(portfolio_id)
         if str(item.get("taxonomy_id") or "") == planning_taxonomy_id
         and str(item.get("status") or "") == "active"
-        and _period_active(
-            effective_from=item.get("effective_from"),
-            effective_to=item.get("effective_to"),
-            as_of_date=as_of_date,
-        )
     ]
     assignments.sort(
         key=lambda item: (

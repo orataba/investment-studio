@@ -5,6 +5,8 @@ from fastapi import APIRouter, HTTPException
 from portfolio_app.api.contracts import (
     DefaultPlanningTaxonomyResponse,
     DefaultPlanningTaxonomyUpdateRequest,
+    PortfolioInstrumentUniverseCreateRequest,
+    PortfolioInstrumentUniverseRecord,
     TargetSetCreateRequest,
     TargetSetLineRecord,
     TargetSetRecord,
@@ -20,11 +22,13 @@ from portfolio_app.api.contracts import (
     TaxonomyRecord,
     TaxonomyUpdateRequest,
 )
+from portfolio_app.services.instrument_registry import InstrumentRegistryError, get_registry_instrument
 from portfolio_app.services.portfolio_store import (
     create_taxonomy,
     create_taxonomy_assignment,
     create_taxonomy_node,
     create_target_set,
+    delete_portfolio_instrument_universe_record,
     delete_taxonomy,
     delete_taxonomy_assignment,
     delete_taxonomy_node,
@@ -33,6 +37,7 @@ from portfolio_app.services.portfolio_store import (
     get_taxonomy,
     list_target_set_lines,
     list_target_sets,
+    list_portfolio_instrument_universe,
     list_taxonomies,
     list_taxonomy_assignments,
     list_taxonomy_nodes,
@@ -41,10 +46,29 @@ from portfolio_app.services.portfolio_store import (
     update_taxonomy_assignment,
     update_taxonomy_node,
     update_target_set,
+    upsert_portfolio_instrument_universe_record,
 )
 
 
 router = APIRouter()
+
+
+def _load_registry_instrument_ref(instrument_id: str) -> dict[str, object]:
+    try:
+        instrument = get_registry_instrument(instrument_id)
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    if instrument is None:
+        raise HTTPException(status_code=400, detail="Instrument not found in shared registry.")
+
+    return {
+        "instrument_id": instrument["instrument_id"],
+        "instrument_name": instrument["instrument_name"],
+        "instrument_type": instrument["instrument_type"],
+        "currency": instrument["currency"],
+        "identifiers": instrument.get("identifiers", []),
+    }
 
 
 @router.get("/{portfolio_id}/taxonomies", response_model=TaxonomyCatalogResponse)
@@ -61,6 +85,10 @@ def get_portfolio_taxonomies(portfolio_id: str) -> TaxonomyCatalogResponse:
         taxonomy_assignments=[
             TaxonomyAssignmentRecord.model_validate(item)
             for item in list_taxonomy_assignments(portfolio_id)
+        ],
+        instrument_universe=[
+            PortfolioInstrumentUniverseRecord.model_validate(item)
+            for item in list_portfolio_instrument_universe(portfolio_id)
         ],
         target_sets=[TargetSetRecord.model_validate(item) for item in list_target_sets(portfolio_id)],
         target_set_lines=[TargetSetLineRecord.model_validate(item) for item in list_target_set_lines(portfolio_id)],
@@ -89,6 +117,46 @@ def update_default_planning_taxonomy(
     )
 
 
+@router.post("/{portfolio_id}/taxonomies/instrument-universe", response_model=PortfolioInstrumentUniverseRecord)
+def add_portfolio_instrument_universe_record(
+    portfolio_id: str,
+    payload: PortfolioInstrumentUniverseCreateRequest,
+) -> PortfolioInstrumentUniverseRecord:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    instrument_ref = _load_registry_instrument_ref(payload.instrument_id)
+    try:
+        record = upsert_portfolio_instrument_universe_record(
+            portfolio_id=portfolio_id,
+            instrument_id=payload.instrument_id,
+            instrument_ref=instrument_ref,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    if record is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return PortfolioInstrumentUniverseRecord.model_validate(record)
+
+
+@router.delete("/{portfolio_id}/taxonomies/instrument-universe/{instrument_id}")
+def delete_portfolio_instrument_universe(
+    portfolio_id: str,
+    instrument_id: str,
+) -> dict[str, object]:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    try:
+        deleted = delete_portfolio_instrument_universe_record(portfolio_id, instrument_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Instrument universe record not found")
+    return {"portfolio_id": portfolio_id, "instrument_id": instrument_id, "deleted": True}
+
+
 @router.post("/{portfolio_id}/taxonomies", response_model=TaxonomyRecord)
 def create_portfolio_taxonomy(
     portfolio_id: str,
@@ -106,8 +174,6 @@ def create_portfolio_taxonomy(
         planning_enabled=payload.planning_enabled,
         budgeting_level=payload.budgeting_level,
         root_default_target_dimension=payload.root_default_target_dimension,
-        effective_from=payload.effective_from,
-        effective_to=payload.effective_to,
         status=payload.status,
         source_template_ref=payload.source_template_ref,
     )
@@ -241,8 +307,6 @@ def create_portfolio_taxonomy_assignment(
             target_scope=payload.target_scope,
             target_entity_id=payload.target_entity_id,
             taxonomy_node_id=payload.taxonomy_node_id,
-            effective_from=payload.effective_from,
-            effective_to=payload.effective_to,
             status=payload.status,
         )
     except ValueError as error:
@@ -313,8 +377,6 @@ def create_portfolio_target_set(
             comparator_taxonomy_node_id=payload.comparator_taxonomy_node_id,
             target_set_type=payload.target_set_type,
             name=payload.name,
-            effective_from=payload.effective_from,
-            effective_to=payload.effective_to,
             weight_enabled=payload.weight_enabled,
             risk_budget_enabled=payload.risk_budget_enabled,
             status=payload.status,

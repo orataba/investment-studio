@@ -153,6 +153,14 @@ export default function AccountsPage() {
     }
   }, [portfolioId, searchParams, setSearchParams])
 
+  useEffect(() => {
+    if (!notice) {
+      return undefined
+    }
+    const timeoutId = window.setTimeout(() => setNotice(null), 2800)
+    return () => window.clearTimeout(timeoutId)
+  }, [notice])
+
   const accountRecords = workspace?.accounts.map((item) => item.account) ?? []
   const depositAccounts = accountRecords.filter((account) => account.account_type === 'deposit_account')
   const compatibleDepositAccounts = depositAccounts.filter(

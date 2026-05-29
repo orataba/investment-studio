@@ -13,9 +13,10 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
-import { downloadCsv } from '../lib/csv'
+import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
 import {
   formatCurrency,
   formatLabel,
@@ -1011,16 +1012,6 @@ function rowsCoverWorkspace(rows: PortfolioHoldingRow[], workspace: HoldingsWork
   return workspace.rows.every((row) => rowIds.has(row.line_id))
 }
 
-function isRecordActive(effectiveFrom: string | null | undefined, effectiveTo: string | null | undefined, referenceDate: string) {
-  if (effectiveFrom && effectiveFrom > referenceDate) {
-    return false
-  }
-  if (effectiveTo && effectiveTo < referenceDate) {
-    return false
-  }
-  return true
-}
-
 function resolveNodePath(taxonomyNodeId: string, nodesById: Map<string, PortfolioTaxonomyNodeRecord>) {
   const path: PortfolioTaxonomyNodeRecord[] = []
   let cursor: PortfolioTaxonomyNodeRecord | undefined = nodesById.get(taxonomyNodeId)
@@ -1089,13 +1080,10 @@ function buildTaxonomyLabelsByInstrumentId(
       (assignment) =>
         assignment.taxonomy_id === taxonomy.taxonomy_id &&
         (assignment.target_scope === 'instrument' || assignment.target_scope === 'cash_bucket') &&
-        assignment.status === 'active' &&
-        isRecordActive(assignment.effective_from, assignment.effective_to, referenceDate),
+        assignment.status === 'active',
     )
     .sort(
       (left, right) =>
-        (right.effective_from ?? '').localeCompare(left.effective_from ?? '') ||
-        (right.effective_to ?? '').localeCompare(left.effective_to ?? '') ||
         right.assignment_id.localeCompare(left.assignment_id),
     )
     .forEach((assignment) => {
@@ -1874,11 +1862,13 @@ const HOLDINGS_COLUMN_DEFINITIONS: Record<HoldingsColumnKey, HoldingsColumnDefin
     key: 'forward_risk_share',
     label: 'Forward RC',
     align: 'right',
-    render: (row) => signedPercent(row.forward_risk_share),
+    render: (row) => (row.forward_risk_status === 'ok' || row.forward_risk_status === 'cash' ? signedPercent(row.forward_risk_share) : '—'),
     sortValue: (row) => row.forward_risk_share,
     className: (row) => signedValueClass(row.forward_risk_share),
-    total: (rows) => signedPercent(sumNumbers(rows, (row) => row.forward_risk_share)),
-    totalClassName: (rows) => signedValueClass(sumNumbers(rows, (row) => row.forward_risk_share)),
+    total: (rows, context) =>
+      context.workspace.forward_risk?.status === 'ok' ? signedPercent(sumNumbers(rows, (row) => row.forward_risk_share)) : '—',
+    totalClassName: (rows, context) =>
+      context.workspace.forward_risk?.status === 'ok' ? signedValueClass(sumNumbers(rows, (row) => row.forward_risk_share)) : '',
   },
   instrument_max_drawdown: {
     key: 'instrument_max_drawdown',
@@ -2444,7 +2434,7 @@ export default function PortfolioHomePage() {
     document.body.style.cursor = 'col-resize'
   }
 
-  function handleDownloadCsv() {
+  function handleDownload(format: TableExportFormat) {
     if (!workspace || !columnContext || !sortedHoldingRows.length) {
       return
     }
@@ -2453,7 +2443,7 @@ export default function PortfolioHomePage() {
       ...(holdingsGroupBy !== 'none' ? ['Group'] : []),
       ...visibleColumns.map((column) => column.label),
     ]
-    const rows: Array<Array<string | number | null>> = [header]
+    const rows: TableCell[][] = [header]
 
     const pushHoldingExportRow = (row: PortfolioHoldingRow, groupLabel: string | null) => {
       rows.push([
@@ -2504,7 +2494,7 @@ export default function PortfolioHomePage() {
       ...visibleColumns.map((column) => holdingColumnTotalExportValue(column.key, sortedHoldingRows, columnContext)),
     ])
 
-    downloadCsv(`holdings-${workspace.portfolio_id}-${workspace.as_of_date}.csv`, rows)
+    downloadTable(`holdings-${workspace.portfolio_id}-${workspace.as_of_date}`, rows, format, 'Holdings')
   }
 
   function renderHoldingsSortHeader(column: HoldingsColumnDefinition) {
@@ -2835,14 +2825,14 @@ export default function PortfolioHomePage() {
               Group By{'\u00A0: '}
               {selectedGroupByOption.label}
             </button>
-            <button
-              type="button"
-              className="holdings-toolbar-button"
-              onClick={handleDownloadCsv}
+            <DownloadFormatMenu
+              wrapperClassName="portfolio-download-menu"
+              buttonClassName="holdings-toolbar-button"
+              menuClassName="portfolio-download-menu-list"
+              itemClassName="portfolio-download-menu-item"
               disabled={!workspace || !sortedHoldingRows.length}
-            >
-              Download
-            </button>
+              onSelect={handleDownload}
+            />
           </div>
         </div>
         {loading ? <CalculationStatus /> : null}

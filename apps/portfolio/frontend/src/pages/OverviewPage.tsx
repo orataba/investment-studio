@@ -504,19 +504,6 @@ function StrategySleeveDonut({
   )
 }
 
-function isRecordActive(effectiveFrom?: string | null, effectiveTo?: string | null, referenceDate?: string | null) {
-  if (!referenceDate) {
-    return true
-  }
-  if (effectiveFrom && effectiveFrom > referenceDate) {
-    return false
-  }
-  if (effectiveTo && effectiveTo < referenceDate) {
-    return false
-  }
-  return true
-}
-
 function TableStatusRow({
   colSpan,
   label,
@@ -805,8 +792,7 @@ export default function OverviewPage() {
       (assignment) =>
         assignment.taxonomy_id === defaultPlanningTaxonomyId &&
         assignment.target_scope === 'instrument' &&
-        assignment.status === 'active' &&
-        isRecordActive(assignment.effective_from, assignment.effective_to, holdingsWorkspace?.as_of_date ?? summary?.as_of_date),
+        assignment.status === 'active',
     )
     const assignmentByInstrumentId = new Map<string, PortfolioTaxonomyAssignmentRecord>(
       activeAssignments.map((assignment) => [assignment.target_entity_id, assignment]),

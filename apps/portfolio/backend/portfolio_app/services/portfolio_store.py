@@ -16,6 +16,7 @@ from portfolio_app.db.models import (
     PortfolioDailyContributionSliceModel,
     PortfolioDailyHoldingSnapshotModel,
     PortfolioDailySnapshotModel,
+    PortfolioInstrumentUniverseRecordModel,
     PortfolioRecordModel,
     TargetSetLineRecordModel,
     TargetSetRecordModel,
@@ -36,6 +37,7 @@ EMPTY_STORE: dict[str, list[dict[str, Any]]] = {
     "taxonomies": [],
     "taxonomy_nodes": [],
     "taxonomy_assignments": [],
+    "instrument_universe": [],
     "target_sets": [],
     "target_set_lines": [],
 }
@@ -130,6 +132,7 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
         "taxonomies",
         "taxonomy_nodes",
         "taxonomy_assignments",
+        "instrument_universe",
         "target_sets",
         "target_set_lines",
     ):
@@ -192,6 +195,17 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
         transaction["trade_at"] = resolved_timing["trade_at"]
         transaction["trade_timezone"] = resolved_timing["trade_timezone"]
         transaction["trade_time_is_estimated"] = resolved_timing["trade_time_is_estimated"]
+    for universe_record in normalized["instrument_universe"]:
+        if not isinstance(universe_record, dict):
+            continue
+        instrument_id = str(universe_record.get("instrument_id") or "").strip()
+        instrument_ref = universe_record.get("instrument_ref")
+        if isinstance(instrument_ref, dict):
+            _validate_instrument_ref_contract(
+                instrument_ref,
+                context=f"Instrument universe '{instrument_id}'",
+                expected_instrument_id=instrument_id or None,
+            )
     return normalized
 
 
@@ -247,7 +261,6 @@ def _load_store_from_db(session) -> dict[str, object]:
             TaxonomyAssignmentRecordModel.taxonomy_id,
             TaxonomyAssignmentRecordModel.target_scope,
             TaxonomyAssignmentRecordModel.target_entity_id,
-            TaxonomyAssignmentRecordModel.effective_from,
             TaxonomyAssignmentRecordModel.assignment_id,
         )
     ).all()
@@ -256,8 +269,13 @@ def _load_store_from_db(session) -> dict[str, object]:
             TargetSetRecordModel.taxonomy_id,
             TargetSetRecordModel.comparator_taxonomy_node_id,
             TargetSetRecordModel.target_set_type,
-            TargetSetRecordModel.effective_from,
             TargetSetRecordModel.target_set_id,
+        )
+    ).all()
+    instrument_universe_records = session.scalars(
+        select(PortfolioInstrumentUniverseRecordModel).order_by(
+            PortfolioInstrumentUniverseRecordModel.portfolio_id,
+            PortfolioInstrumentUniverseRecordModel.instrument_id,
         )
     ).all()
     target_set_lines = session.scalars(
@@ -351,8 +369,6 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "primary_assignment_scope": item.primary_assignment_scope,
                 "planning_enabled": item.planning_enabled,
                 "budgeting_level": item.budgeting_level,
-                "effective_from": item.effective_from.isoformat() if item.effective_from is not None else None,
-                "effective_to": item.effective_to.isoformat() if item.effective_to is not None else None,
                 "status": item.status,
                 "source_template_ref": item.source_template_ref,
             }
@@ -379,11 +395,13 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "target_scope": item.target_scope,
                 "target_entity_id": item.target_entity_id,
                 "taxonomy_node_id": item.taxonomy_node_id,
-                "effective_from": item.effective_from.isoformat() if item.effective_from is not None else None,
-                "effective_to": item.effective_to.isoformat() if item.effective_to is not None else None,
                 "status": item.status,
             }
             for item in taxonomy_assignments
+        ],
+        "instrument_universe": [
+            _serialize_portfolio_instrument_universe_row(item)
+            for item in instrument_universe_records
         ],
         "target_sets": [
             {
@@ -392,8 +410,6 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "comparator_taxonomy_node_id": item.comparator_taxonomy_node_id,
                 "target_set_type": item.target_set_type,
                 "name": item.name,
-                "effective_from": item.effective_from.isoformat() if item.effective_from is not None else None,
-                "effective_to": item.effective_to.isoformat() if item.effective_to is not None else None,
                 "weight_enabled": item.weight_enabled,
                 "risk_budget_enabled": item.risk_budget_enabled,
                 "status": item.status,
@@ -424,6 +440,7 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
     session.execute(delete(PortfolioDailyHoldingSnapshotModel))
     session.execute(delete(PortfolioDailySnapshotModel))
     session.execute(delete(PortfolioCalculationStateModel))
+    session.execute(delete(PortfolioInstrumentUniverseRecordModel))
     session.execute(delete(TargetSetLineRecordModel))
     session.execute(delete(TargetSetRecordModel))
     session.execute(delete(TaxonomyAssignmentRecordModel))
@@ -514,8 +531,6 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
     for raw_taxonomy in list(normalized.get("taxonomies", [])):
         if not isinstance(raw_taxonomy, dict):
             continue
-        effective_from = raw_taxonomy.get("effective_from")
-        effective_to = raw_taxonomy.get("effective_to")
         session.add(
             TaxonomyRecordModel(
                 taxonomy_id=str(raw_taxonomy.get("taxonomy_id") or "").strip(),
@@ -533,8 +548,6 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 root_default_target_dimension=(
                     str(raw_taxonomy.get("root_default_target_dimension") or "weight").strip() or "weight"
                 ),
-                effective_from=date.fromisoformat(str(effective_from)) if effective_from else None,
-                effective_to=date.fromisoformat(str(effective_to)) if effective_to else None,
                 status=str(raw_taxonomy.get("status") or "active").strip() or "active",
                 source_template_ref=(
                     str(raw_taxonomy.get("source_template_ref")).strip()
@@ -566,11 +579,20 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
             )
         )
 
+    assignment_rows_by_key: dict[tuple[str, str, str], dict[str, object]] = {}
     for raw_assignment in list(normalized.get("taxonomy_assignments", [])):
         if not isinstance(raw_assignment, dict):
             continue
-        effective_from = raw_assignment.get("effective_from")
-        effective_to = raw_assignment.get("effective_to")
+        assignment_key = (
+            str(raw_assignment.get("taxonomy_id") or "").strip(),
+            str(raw_assignment.get("target_scope") or "instrument").strip() or "instrument",
+            str(raw_assignment.get("target_entity_id") or "").strip(),
+        )
+        assignment_rows_by_key[assignment_key] = raw_assignment
+
+    for raw_assignment in assignment_rows_by_key.values():
+        if not isinstance(raw_assignment, dict):
+            continue
         session.add(
             TaxonomyAssignmentRecordModel(
                 assignment_id=str(raw_assignment.get("assignment_id") or "").strip(),
@@ -578,8 +600,6 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 target_scope=str(raw_assignment.get("target_scope") or "instrument").strip() or "instrument",
                 target_entity_id=str(raw_assignment.get("target_entity_id") or "").strip(),
                 taxonomy_node_id=str(raw_assignment.get("taxonomy_node_id") or "").strip(),
-                effective_from=date.fromisoformat(str(effective_from)) if effective_from else None,
-                effective_to=date.fromisoformat(str(effective_to)) if effective_to else None,
                 status=str(raw_assignment.get("status") or "active").strip() or "active",
             )
         )
@@ -587,8 +607,6 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
     for raw_target_set in list(normalized.get("target_sets", [])):
         if not isinstance(raw_target_set, dict):
             continue
-        effective_from = raw_target_set.get("effective_from")
-        effective_to = raw_target_set.get("effective_to")
         session.add(
             TargetSetRecordModel(
                 target_set_id=str(raw_target_set.get("target_set_id") or "").strip(),
@@ -600,8 +618,6 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 ),
                 target_set_type=str(raw_target_set.get("target_set_type") or "saa").strip() or "saa",
                 name=str(raw_target_set.get("name") or "").strip(),
-                effective_from=date.fromisoformat(str(effective_from)) if effective_from else None,
-                effective_to=date.fromisoformat(str(effective_to)) if effective_to else None,
                 weight_enabled=bool(raw_target_set.get("weight_enabled")),
                 risk_budget_enabled=bool(raw_target_set.get("risk_budget_enabled")),
                 status=str(raw_target_set.get("status") or "active").strip() or "active",
@@ -638,6 +654,40 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                     else None
                 ),
                 notes=str(raw_target_line.get("notes")).strip() if raw_target_line.get("notes") else None,
+            )
+        )
+
+    for raw_universe_record in list(normalized.get("instrument_universe", [])):
+        if not isinstance(raw_universe_record, dict):
+            continue
+        first_transaction_date = raw_universe_record.get("first_transaction_date")
+        last_transaction_date = raw_universe_record.get("last_transaction_date")
+        now = _current_utc_timestamp()
+        session.add(
+            PortfolioInstrumentUniverseRecordModel(
+                portfolio_id=str(raw_universe_record.get("portfolio_id") or "").strip(),
+                instrument_id=str(raw_universe_record.get("instrument_id") or "").strip(),
+                instrument_ref_json=(
+                    deepcopy(raw_universe_record.get("instrument_ref"))
+                    if isinstance(raw_universe_record.get("instrument_ref"), dict)
+                    else None
+                ),
+                source=str(raw_universe_record.get("source") or "manual").strip() or "manual",
+                holding_state=str(raw_universe_record.get("holding_state") or "not_held").strip() or "not_held",
+                first_transaction_date=(
+                    date.fromisoformat(str(first_transaction_date))
+                    if first_transaction_date
+                    else None
+                ),
+                last_transaction_date=(
+                    date.fromisoformat(str(last_transaction_date))
+                    if last_transaction_date
+                    else None
+                ),
+                transaction_count=int(raw_universe_record.get("transaction_count") or 0),
+                status=str(raw_universe_record.get("status") or "active").strip() or "active",
+                created_at=str(raw_universe_record.get("created_at") or now).strip(),
+                updated_at=str(raw_universe_record.get("updated_at") or now).strip(),
             )
         )
 
@@ -718,6 +768,9 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
             )
         )
 
+    session.flush()
+    _refresh_portfolio_instrument_universe_records(session, None)
+
 
 def _serialize_portfolio_row(item: PortfolioRecordModel) -> dict[str, object]:
     return {
@@ -761,6 +814,20 @@ def _max_transaction_trade_date(transactions: list[TransactionRecordModel]) -> d
     return max((transaction.trade_date for transaction in transactions if transaction.trade_date is not None), default=None)
 
 
+def _max_transaction_activity_date(transactions: list[TransactionRecordModel]) -> date | None:
+    activity_dates = [
+        candidate
+        for transaction in transactions
+        for candidate in (
+            transaction.trade_date,
+            transaction.settlement_date,
+            transaction.entitlement_date,
+        )
+        if candidate is not None
+    ]
+    return max(activity_dates, default=None)
+
+
 def _latest_market_data_date_for_instruments(session, instrument_ids: set[str]) -> date | None:
     normalized_instrument_ids = {instrument_id for instrument_id in instrument_ids if instrument_id}
     if not normalized_instrument_ids:
@@ -790,6 +857,7 @@ def _resolve_live_portfolio_as_of_date(
     transaction_rows = [_serialize_transaction_row(transaction) for transaction in transactions]
     portfolio_as_of_date = item.as_of_date
     latest_trade_date = _max_transaction_trade_date(transactions)
+    latest_activity_date = _max_transaction_activity_date(transactions)
     transacted_instrument_ids = {
         str(transaction.instrument_id or "")
         for transaction in transactions
@@ -800,7 +868,7 @@ def _resolve_live_portfolio_as_of_date(
     source_candidate_dates = [
         candidate
         for candidate in (
-            latest_trade_date,
+            latest_activity_date,
             latest_transacted_market_date,
         )
         if candidate is not None
@@ -828,7 +896,7 @@ def _resolve_live_portfolio_as_of_date(
         resolved_candidate_dates = [
             candidate
             for candidate in (
-                latest_trade_date,
+                latest_activity_date,
                 latest_open_market_date,
             )
             if candidate is not None
@@ -838,7 +906,7 @@ def _resolve_live_portfolio_as_of_date(
     fallback_candidate_dates = [
         candidate
         for candidate in (
-            latest_trade_date,
+            latest_activity_date,
             latest_transacted_market_date,
             portfolio_as_of_date,
         )
@@ -979,6 +1047,201 @@ def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object
     }
 
 
+def _serialize_portfolio_instrument_universe_row(
+    item: PortfolioInstrumentUniverseRecordModel,
+) -> dict[str, object]:
+    return {
+        "portfolio_id": item.portfolio_id,
+        "instrument_id": item.instrument_id,
+        "instrument_ref": deepcopy(item.instrument_ref_json),
+        "source": item.source,
+        "holding_state": item.holding_state,
+        "first_transaction_date": (
+            item.first_transaction_date.isoformat()
+            if item.first_transaction_date is not None
+            else None
+        ),
+        "last_transaction_date": (
+            item.last_transaction_date.isoformat()
+            if item.last_transaction_date is not None
+            else None
+        ),
+        "transaction_count": item.transaction_count,
+        "status": item.status,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    }
+
+
+def _transaction_position_quantity_delta(record: TransactionRecordModel) -> float:
+    quantity = _safe_float(record.quantity) or 0.0
+    if quantity <= 0:
+        return 0.0
+    transaction_type = str(record.transaction_type or "")
+    if transaction_type in {"opening_balance", "buy", "dividend_reinvestment"}:
+        return quantity
+    if transaction_type in {"sell", "maturity_redemption"}:
+        return -quantity
+    if transaction_type == "transfer_in" and record.transfer_object_type == "position":
+        return quantity
+    if transaction_type == "transfer_out" and record.transfer_object_type == "position":
+        return -quantity
+    return 0.0
+
+
+def _transaction_record_order_key(record: TransactionRecordModel) -> tuple[str, str, str, str, str]:
+    return (
+        record.trade_date.isoformat() if record.trade_date is not None else "",
+        record.trade_at or "",
+        record.created_at or "",
+        record.transaction_id or "",
+        record.settlement_date.isoformat() if record.settlement_date is not None else "",
+    )
+
+
+def _refresh_portfolio_instrument_universe_records(
+    session,
+    portfolio_id: str | None,
+    instrument_ids: set[str] | None = None,
+) -> None:
+    normalized_portfolio_id = str(portfolio_id or "").strip()
+    normalized_instrument_ids = {
+        str(instrument_id or "").strip()
+        for instrument_id in (instrument_ids or set())
+        if str(instrument_id or "").strip()
+    }
+    if instrument_ids is not None and not normalized_instrument_ids:
+        return
+
+    existing_statement = select(PortfolioInstrumentUniverseRecordModel)
+    if normalized_portfolio_id:
+        existing_statement = existing_statement.where(
+            PortfolioInstrumentUniverseRecordModel.portfolio_id == normalized_portfolio_id
+        )
+    if normalized_instrument_ids:
+        existing_statement = existing_statement.where(
+            PortfolioInstrumentUniverseRecordModel.instrument_id.in_(normalized_instrument_ids)
+        )
+    existing_records = session.scalars(existing_statement).all()
+    existing_by_key = {
+        (record.portfolio_id, record.instrument_id): record
+        for record in existing_records
+    }
+
+    transaction_statement = select(TransactionRecordModel).where(TransactionRecordModel.instrument_id.is_not(None))
+    if normalized_portfolio_id:
+        transaction_statement = transaction_statement.where(TransactionRecordModel.portfolio_id == normalized_portfolio_id)
+    if normalized_instrument_ids:
+        transaction_statement = transaction_statement.where(TransactionRecordModel.instrument_id.in_(normalized_instrument_ids))
+    transaction_rows = session.scalars(
+        transaction_statement.order_by(
+            TransactionRecordModel.portfolio_id,
+            TransactionRecordModel.instrument_id,
+            TransactionRecordModel.trade_date,
+            TransactionRecordModel.trade_at,
+            TransactionRecordModel.created_at,
+            TransactionRecordModel.transaction_id,
+        )
+    ).all()
+    transactions_by_key: dict[tuple[str, str], list[TransactionRecordModel]] = {}
+    for transaction in transaction_rows:
+        instrument_id = str(transaction.instrument_id or "").strip()
+        if not instrument_id:
+            continue
+        transactions_by_key.setdefault((transaction.portfolio_id, instrument_id), []).append(transaction)
+
+    assignment_statement = (
+        select(TaxonomyRecordModel.portfolio_id, TaxonomyAssignmentRecordModel.target_entity_id)
+        .join(TaxonomyRecordModel, TaxonomyRecordModel.taxonomy_id == TaxonomyAssignmentRecordModel.taxonomy_id)
+        .where(
+            TaxonomyAssignmentRecordModel.target_scope == "instrument",
+            TaxonomyAssignmentRecordModel.status == "active",
+        )
+    )
+    if normalized_portfolio_id:
+        assignment_statement = assignment_statement.where(TaxonomyRecordModel.portfolio_id == normalized_portfolio_id)
+    if normalized_instrument_ids:
+        assignment_statement = assignment_statement.where(
+            TaxonomyAssignmentRecordModel.target_entity_id.in_(normalized_instrument_ids)
+        )
+    assignment_keys = {
+        (str(row[0] or "").strip(), str(row[1] or "").strip())
+        for row in session.execute(assignment_statement)
+        if str(row[0] or "").strip() and str(row[1] or "").strip()
+    }
+
+    target_keys = set(existing_by_key) | set(transactions_by_key) | assignment_keys
+    if normalized_portfolio_id:
+        target_keys = {key for key in target_keys if key[0] == normalized_portfolio_id}
+    if normalized_instrument_ids:
+        target_keys = {key for key in target_keys if key[1] in normalized_instrument_ids}
+
+    now = _current_utc_timestamp()
+    for target_portfolio_id, target_instrument_id in sorted(target_keys):
+        rows = transactions_by_key.get((target_portfolio_id, target_instrument_id), [])
+        existing = existing_by_key.get((target_portfolio_id, target_instrument_id))
+        has_assignment = (target_portfolio_id, target_instrument_id) in assignment_keys
+
+        if rows:
+            quantity = sum(_transaction_position_quantity_delta(row) for row in rows)
+            latest = max(rows, key=_transaction_record_order_key)
+            first_transaction_date = min((row.trade_date for row in rows if row.trade_date is not None), default=None)
+            last_transaction_date = max((row.trade_date for row in rows if row.trade_date is not None), default=None)
+            if existing is None:
+                existing = PortfolioInstrumentUniverseRecordModel(
+                    portfolio_id=target_portfolio_id,
+                    instrument_id=target_instrument_id,
+                    created_at=now,
+                )
+                session.add(existing)
+            existing.instrument_ref_json = deepcopy(latest.instrument_ref_json) if isinstance(latest.instrument_ref_json, dict) else None
+            existing.source = "transaction"
+            existing.holding_state = "held" if quantity > 1e-9 else "not_held"
+            existing.first_transaction_date = first_transaction_date
+            existing.last_transaction_date = last_transaction_date
+            existing.transaction_count = len(rows)
+            existing.status = "active"
+            existing.updated_at = now
+            continue
+
+        if existing is None:
+            if not has_assignment:
+                continue
+            session.add(
+                PortfolioInstrumentUniverseRecordModel(
+                    portfolio_id=target_portfolio_id,
+                    instrument_id=target_instrument_id,
+                    instrument_ref_json=None,
+                    source="taxonomy",
+                    holding_state="not_held",
+                    first_transaction_date=None,
+                    last_transaction_date=None,
+                    transaction_count=0,
+                    status="active",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            continue
+
+        if not has_assignment:
+            existing.holding_state = "not_held"
+            existing.first_transaction_date = None
+            existing.last_transaction_date = None
+            existing.transaction_count = 0
+            existing.status = "active" if existing.source == "manual" else "archived"
+            existing.updated_at = now
+            continue
+
+        existing.source = "manual" if existing.source == "manual" else "taxonomy"
+        existing.holding_state = "not_held"
+        existing.first_transaction_date = None
+        existing.last_transaction_date = None
+        existing.transaction_count = 0
+        existing.status = "active"
+        existing.updated_at = now
+
+
 def _serialize_taxonomy_row(item: TaxonomyRecordModel) -> dict[str, object]:
     return {
         "taxonomy_id": item.taxonomy_id,
@@ -990,8 +1253,6 @@ def _serialize_taxonomy_row(item: TaxonomyRecordModel) -> dict[str, object]:
         "planning_enabled": item.planning_enabled,
         "budgeting_level": item.budgeting_level,
         "root_default_target_dimension": item.root_default_target_dimension,
-        "effective_from": item.effective_from.isoformat() if item.effective_from is not None else None,
-        "effective_to": item.effective_to.isoformat() if item.effective_to is not None else None,
         "status": item.status,
         "source_template_ref": item.source_template_ref,
     }
@@ -1018,8 +1279,6 @@ def _serialize_taxonomy_assignment_row(item: TaxonomyAssignmentRecordModel) -> d
         "target_scope": item.target_scope,
         "target_entity_id": item.target_entity_id,
         "taxonomy_node_id": item.taxonomy_node_id,
-        "effective_from": item.effective_from.isoformat() if item.effective_from is not None else None,
-        "effective_to": item.effective_to.isoformat() if item.effective_to is not None else None,
         "status": item.status,
     }
 
@@ -1031,8 +1290,6 @@ def _serialize_target_set_row(item: TargetSetRecordModel) -> dict[str, object]:
         "comparator_taxonomy_node_id": item.comparator_taxonomy_node_id,
         "target_set_type": item.target_set_type,
         "name": item.name,
-        "effective_from": item.effective_from.isoformat() if item.effective_from is not None else None,
-        "effective_to": item.effective_to.isoformat() if item.effective_to is not None else None,
         "weight_enabled": item.weight_enabled,
         "risk_budget_enabled": item.risk_budget_enabled,
         "status": item.status,
@@ -1225,33 +1482,6 @@ def _taxonomy_allows_assignment_scope(taxonomy: TaxonomyRecordModel, target_scop
     )
 
 
-def _periods_overlap(
-    start_date: date | None,
-    end_date: date | None,
-    other_start_date: date | None,
-    other_end_date: date | None,
-) -> bool:
-    resolved_start = start_date or date.min
-    resolved_end = end_date or date.max
-    resolved_other_start = other_start_date or date.min
-    resolved_other_end = other_end_date or date.max
-    return resolved_start <= resolved_other_end and resolved_other_start <= resolved_end
-
-
-def _assignment_overlaps_target_window(
-    assignment: TaxonomyAssignmentRecordModel,
-    *,
-    effective_from: date | None,
-    effective_to: date | None,
-) -> bool:
-    return _periods_overlap(
-        effective_from,
-        effective_to,
-        assignment.effective_from,
-        assignment.effective_to,
-    )
-
-
 def _active_taxonomy_nodes_by_parent(
     session,
     *,
@@ -1292,8 +1522,6 @@ def _scope_member_is_cash(
     taxonomy_id: str,
     target_member_type: str,
     target_member_id: str,
-    effective_from: date | None,
-    effective_to: date | None,
     nodes_by_parent: dict[str | None, list[TaxonomyNodeRecordModel]] | None = None,
 ) -> bool:
     if target_member_type == "cash_bucket":
@@ -1312,17 +1540,8 @@ def _scope_member_is_cash(
             TaxonomyAssignmentRecordModel.status == "active",
         )
     ).all()
-    effective_assignments = [
-        assignment
-        for assignment in assignments
-        if _assignment_overlaps_target_window(
-            assignment,
-            effective_from=effective_from,
-            effective_to=effective_to,
-        )
-    ]
-    return bool(effective_assignments) and all(
-        str(assignment.target_scope) == "cash_bucket" for assignment in effective_assignments
+    return bool(assignments) and all(
+        str(assignment.target_scope) == "cash_bucket" for assignment in assignments
     )
 
 
@@ -1394,8 +1613,6 @@ def _scope_target_members(
     *,
     taxonomy_id: str,
     comparator_taxonomy_node_id: str | None,
-    effective_from: date | None,
-    effective_to: date | None,
 ) -> tuple[TaxonomyNodeRecordModel | None, list[dict[str, object]]]:
     parent_node, child_nodes = _scope_child_nodes(
         session,
@@ -1425,18 +1642,10 @@ def _scope_target_members(
     ).all()
     visible_direct_assignments: dict[tuple[str, str], TaxonomyAssignmentRecordModel] = {}
     for assignment in direct_assignments:
-        if not _assignment_overlaps_target_window(
-            assignment,
-            effective_from=effective_from,
-            effective_to=effective_to,
-        ):
-            continue
         member_key = (str(assignment.target_scope), str(assignment.target_entity_id))
         visible_direct_assignments.setdefault(member_key, assignment)
     if not direct_assignments:
         raise ValueError("Comparator scope must have active child sleeves or directly assigned instruments.")
-    if not visible_direct_assignments:
-        raise ValueError("Comparator scope must have direct members during the selected effective period.")
 
     return parent_node, [
         {
@@ -1455,8 +1664,6 @@ def _validate_target_set_lines(
     taxonomy: TaxonomyRecordModel,
     comparator_taxonomy_node_id: str | None,
     target_set_type: str,
-    effective_from: date | None,
-    effective_to: date | None,
     weight_enabled: bool,
     risk_budget_enabled: bool,
     status: str,
@@ -1467,8 +1674,6 @@ def _validate_target_set_lines(
         raise ValueError("Target sets require a planning-enabled taxonomy.")
     if taxonomy.primary_assignment_scope != "instrument":
         raise ValueError("Target sets require an instrument-scoped taxonomy.")
-    if effective_from and effective_to and effective_to < effective_from:
-        raise ValueError("effective_to must not be earlier than effective_from.")
     if not weight_enabled and not risk_budget_enabled:
         raise ValueError("At least one target dimension must be enabled.")
 
@@ -1484,8 +1689,6 @@ def _validate_target_set_lines(
         session,
         taxonomy_id=taxonomy.taxonomy_id,
         comparator_taxonomy_node_id=comparator_taxonomy_node_id,
-        effective_from=effective_from,
-        effective_to=effective_to,
     )
     if not lines:
         raise ValueError("Target set lines are required.")
@@ -1529,8 +1732,6 @@ def _validate_target_set_lines(
                 taxonomy_id=taxonomy.taxonomy_id,
                 target_member_type=member_type,
                 target_member_id=member_id,
-                effective_from=effective_from,
-                effective_to=effective_to,
                 nodes_by_parent=nodes_by_parent,
             ):
                 if abs(resolved_risk_share) > TARGET_SET_EPSILON:
@@ -1557,10 +1758,9 @@ def _validate_target_set_lines(
         for existing in overlapping_target_sets:
             if exclude_target_set_id and existing.target_set_id == exclude_target_set_id:
                 continue
-            if _periods_overlap(effective_from, effective_to, existing.effective_from, existing.effective_to):
-                if target_set_type == "saa":
-                    raise ValueError("An active SAA target set already overlaps this scope and effective period.")
-                raise ValueError("An active TAA target set already overlaps this scope and effective period.")
+            if target_set_type == "saa":
+                raise ValueError("An active SAA target set already exists for this scope.")
+            raise ValueError("An active TAA target set already exists for this scope.")
 
     return parent_node, scope_members
 
@@ -1648,8 +1848,6 @@ def create_taxonomy(
     planning_enabled: bool,
     budgeting_level: str | None,
     root_default_target_dimension: str,
-    effective_from: date | None,
-    effective_to: date | None,
     status: str,
     source_template_ref: str | None,
 ) -> dict[str, object]:
@@ -1665,8 +1863,6 @@ def create_taxonomy(
             planning_enabled=planning_enabled,
             budgeting_level=(budgeting_level or "").strip() or None,
             root_default_target_dimension=(root_default_target_dimension or "weight").strip() or "weight",
-            effective_from=effective_from,
-            effective_to=effective_to,
             status=(status or "active").strip() or "active",
             source_template_ref=(source_template_ref or "").strip() or None,
         )
@@ -1685,8 +1881,6 @@ def update_taxonomy(
     planning_enabled: bool | None = UNSET,
     budgeting_level: str | None = UNSET,
     root_default_target_dimension: str | None = UNSET,
-    effective_from: date | None = UNSET,
-    effective_to: date | None = UNSET,
     status: str | None = UNSET,
 ) -> dict[str, object]:
     session_factory = get_session_factory()
@@ -1710,15 +1904,6 @@ def update_taxonomy(
         if resolved_planning_enabled and record.primary_assignment_scope != "instrument":
             raise ValueError("planning_enabled taxonomies must use instrument assignment scope.")
 
-        resolved_effective_from = record.effective_from if effective_from is UNSET else effective_from
-        resolved_effective_to = record.effective_to if effective_to is UNSET else effective_to
-        if (
-            resolved_effective_from is not None
-            and resolved_effective_to is not None
-            and resolved_effective_to < resolved_effective_from
-        ):
-            raise ValueError("effective_to must not be earlier than effective_from.")
-
         if name is not UNSET and name is not None:
             record.name = name.strip()
         if taxonomy_type is not UNSET and taxonomy_type is not None:
@@ -1731,10 +1916,6 @@ def update_taxonomy(
             record.budgeting_level = (resolved_budgeting_level or "").strip() or None
         if root_default_target_dimension is not UNSET and root_default_target_dimension is not None:
             record.root_default_target_dimension = root_default_target_dimension.strip() or "weight"
-        if effective_from is not UNSET:
-            record.effective_from = resolved_effective_from
-        if effective_to is not UNSET:
-            record.effective_to = resolved_effective_to
         if status is not UNSET and status is not None:
             record.status = status.strip() or "active"
 
@@ -1931,11 +2112,135 @@ def list_taxonomy_assignments(
                 TaxonomyAssignmentRecordModel.taxonomy_id,
                 TaxonomyAssignmentRecordModel.target_scope,
                 TaxonomyAssignmentRecordModel.target_entity_id,
-                TaxonomyAssignmentRecordModel.effective_from,
                 TaxonomyAssignmentRecordModel.assignment_id,
             )
         ).all()
-        return [_serialize_taxonomy_assignment_row(item) for item in assignments]
+        current_assignments_by_entity: dict[tuple[str, str, str], TaxonomyAssignmentRecordModel] = {}
+        for item in assignments:
+            assignment_key = (item.taxonomy_id, item.target_scope, item.target_entity_id)
+            current = current_assignments_by_entity.get(assignment_key)
+            if current is None:
+                current_assignments_by_entity[assignment_key] = item
+                continue
+            if item.assignment_id >= current.assignment_id:
+                current_assignments_by_entity[assignment_key] = item
+        return [_serialize_taxonomy_assignment_row(item) for item in current_assignments_by_entity.values()]
+
+
+def list_portfolio_instrument_universe(portfolio_id: str) -> list[dict[str, object]]:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        records = session.scalars(
+            select(PortfolioInstrumentUniverseRecordModel)
+            .where(
+                PortfolioInstrumentUniverseRecordModel.portfolio_id == portfolio_id,
+                PortfolioInstrumentUniverseRecordModel.status == "active",
+            )
+            .order_by(
+                PortfolioInstrumentUniverseRecordModel.holding_state,
+                PortfolioInstrumentUniverseRecordModel.instrument_id,
+            )
+        ).all()
+        return [_serialize_portfolio_instrument_universe_row(item) for item in records]
+
+
+def upsert_portfolio_instrument_universe_record(
+    portfolio_id: str,
+    instrument_id: str,
+    *,
+    instrument_ref: dict[str, object] | None = None,
+) -> dict[str, object] | None:
+    normalized_portfolio_id = str(portfolio_id or "").strip()
+    normalized_instrument_id = str(instrument_id or "").strip()
+    if not normalized_portfolio_id or not normalized_instrument_id:
+        raise ValueError("portfolio_id and instrument_id are required.")
+    if isinstance(instrument_ref, dict):
+        _validate_instrument_ref_contract(
+            instrument_ref,
+            context=f"Instrument universe '{normalized_instrument_id}'",
+            expected_instrument_id=normalized_instrument_id,
+        )
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        if session.get(PortfolioRecordModel, normalized_portfolio_id) is None:
+            return None
+
+        now = _current_utc_timestamp()
+        record = session.get(
+            PortfolioInstrumentUniverseRecordModel,
+            (normalized_portfolio_id, normalized_instrument_id),
+        )
+        if record is None:
+            record = PortfolioInstrumentUniverseRecordModel(
+                portfolio_id=normalized_portfolio_id,
+                instrument_id=normalized_instrument_id,
+                instrument_ref_json=deepcopy(instrument_ref) if isinstance(instrument_ref, dict) else None,
+                source="manual",
+                holding_state="not_held",
+                first_transaction_date=None,
+                last_transaction_date=None,
+                transaction_count=0,
+                status="active",
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(record)
+        else:
+            if isinstance(instrument_ref, dict):
+                record.instrument_ref_json = deepcopy(instrument_ref)
+            if record.source != "transaction":
+                record.source = "manual"
+            if record.transaction_count == 0:
+                record.holding_state = "not_held"
+                record.first_transaction_date = None
+                record.last_transaction_date = None
+            record.status = "active"
+            record.updated_at = now
+
+        session.flush()
+        serialized = _serialize_portfolio_instrument_universe_row(record)
+        session.commit()
+        return serialized
+
+
+def delete_portfolio_instrument_universe_record(
+    portfolio_id: str,
+    instrument_id: str,
+) -> bool:
+    normalized_portfolio_id = str(portfolio_id or "").strip()
+    normalized_instrument_id = str(instrument_id or "").strip()
+    if not normalized_portfolio_id or not normalized_instrument_id:
+        raise ValueError("portfolio_id and instrument_id are required.")
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        record = session.get(
+            PortfolioInstrumentUniverseRecordModel,
+            (normalized_portfolio_id, normalized_instrument_id),
+        )
+        if record is None:
+            return False
+        if record.source != "manual" or record.holding_state == "held" or record.transaction_count > 0:
+            raise ValueError("Only manually watched instruments without holdings can be deleted.")
+
+        active_assignment_count = session.scalar(
+            select(func.count())
+            .select_from(TaxonomyAssignmentRecordModel)
+            .join(TaxonomyRecordModel, TaxonomyRecordModel.taxonomy_id == TaxonomyAssignmentRecordModel.taxonomy_id)
+            .where(
+                TaxonomyRecordModel.portfolio_id == normalized_portfolio_id,
+                TaxonomyAssignmentRecordModel.target_scope == "instrument",
+                TaxonomyAssignmentRecordModel.target_entity_id == normalized_instrument_id,
+                TaxonomyAssignmentRecordModel.status == "active",
+            )
+        )
+        if active_assignment_count:
+            raise ValueError("Remove taxonomy assignments before deleting this watched instrument.")
+
+        session.delete(record)
+        session.commit()
+        return True
 
 
 def list_target_sets(
@@ -1957,7 +2262,6 @@ def list_target_sets(
                 TargetSetRecordModel.taxonomy_id,
                 TargetSetRecordModel.comparator_taxonomy_node_id,
                 TargetSetRecordModel.target_set_type,
-                TargetSetRecordModel.effective_from,
                 TargetSetRecordModel.target_set_id,
             )
         ).all()
@@ -2000,8 +2304,6 @@ def create_taxonomy_assignment(
     target_scope: str,
     target_entity_id: str,
     taxonomy_node_id: str,
-    effective_from: date | None,
-    effective_to: date | None,
     status: str,
 ) -> dict[str, object]:
     session_factory = get_session_factory()
@@ -2033,11 +2335,10 @@ def create_taxonomy_assignment(
                 TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy_id,
                 TaxonomyAssignmentRecordModel.target_scope == target_scope,
                 TaxonomyAssignmentRecordModel.target_entity_id == target_entity_id.strip(),
-                TaxonomyAssignmentRecordModel.effective_from == effective_from,
             )
         )
         if existing is not None:
-            raise ValueError("An assignment for this entity and effective_from already exists.")
+            raise ValueError("An assignment for this entity already exists.")
 
         record = TaxonomyAssignmentRecordModel(
             assignment_id=_next_taxonomy_assignment_id(session),
@@ -2045,11 +2346,16 @@ def create_taxonomy_assignment(
             target_scope=target_scope,
             target_entity_id=target_entity_id.strip(),
             taxonomy_node_id=taxonomy_node_id,
-            effective_from=effective_from,
-            effective_to=effective_to,
             status=(status or "active").strip() or "active",
         )
         session.add(record)
+        session.flush()
+        if target_scope == "instrument":
+            _refresh_portfolio_instrument_universe_records(
+                session,
+                portfolio_id,
+                {target_entity_id.strip()},
+            )
         session.commit()
         return _serialize_taxonomy_assignment_row(record)
 
@@ -2060,8 +2366,6 @@ def update_taxonomy_assignment(
     assignment_id: str,
     *,
     taxonomy_node_id: str | None = UNSET,
-    effective_from: date | None = UNSET,
-    effective_to: date | None = UNSET,
     status: str | None = UNSET,
 ) -> dict[str, object]:
     session_factory = get_session_factory()
@@ -2084,15 +2388,6 @@ def update_taxonomy_assignment(
         if record is None:
             raise ValueError("Taxonomy assignment not found.")
 
-        resolved_effective_from = record.effective_from if effective_from is UNSET else effective_from
-        resolved_effective_to = record.effective_to if effective_to is UNSET else effective_to
-        if (
-            resolved_effective_from is not None
-            and resolved_effective_to is not None
-            and resolved_effective_to < resolved_effective_from
-        ):
-            raise ValueError("effective_to must not be earlier than effective_from.")
-
         if taxonomy_node_id is not UNSET and taxonomy_node_id is not None:
             node = session.scalar(
                 select(TaxonomyNodeRecordModel).where(
@@ -2106,10 +2401,6 @@ def update_taxonomy_assignment(
                 raise ValueError("Assignments must reference a terminal taxonomy node.")
             record.taxonomy_node_id = taxonomy_node_id
 
-        if effective_from is not UNSET:
-            record.effective_from = resolved_effective_from
-        if effective_to is not UNSET:
-            record.effective_to = resolved_effective_to
         if status is not UNSET and status is not None:
             record.status = status.strip() or "active"
 
@@ -2118,13 +2409,19 @@ def update_taxonomy_assignment(
                 TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy_id,
                 TaxonomyAssignmentRecordModel.target_scope == record.target_scope,
                 TaxonomyAssignmentRecordModel.target_entity_id == record.target_entity_id,
-                TaxonomyAssignmentRecordModel.effective_from == record.effective_from,
                 TaxonomyAssignmentRecordModel.assignment_id != assignment_id,
             )
         )
         if existing is not None:
-            raise ValueError("An assignment for this entity and effective_from already exists.")
+            raise ValueError("An assignment for this entity already exists.")
 
+        session.flush()
+        if record.target_scope == "instrument":
+            _refresh_portfolio_instrument_universe_records(
+                session,
+                portfolio_id,
+                {record.target_entity_id},
+            )
         session.commit()
         return _serialize_taxonomy_assignment_row(record)
 
@@ -2136,8 +2433,6 @@ def create_target_set(
     comparator_taxonomy_node_id: str | None,
     target_set_type: str,
     name: str,
-    effective_from: date | None,
-    effective_to: date | None,
     weight_enabled: bool,
     risk_budget_enabled: bool,
     status: str,
@@ -2160,8 +2455,6 @@ def create_target_set(
             taxonomy=taxonomy,
             comparator_taxonomy_node_id=comparator_taxonomy_node_id,
             target_set_type=target_set_type,
-            effective_from=effective_from,
-            effective_to=effective_to,
             weight_enabled=weight_enabled,
             risk_budget_enabled=risk_budget_enabled,
             status=(status or "active").strip() or "active",
@@ -2174,8 +2467,6 @@ def create_target_set(
             comparator_taxonomy_node_id=comparator_taxonomy_node_id,
             target_set_type=target_set_type,
             name=name.strip(),
-            effective_from=effective_from,
-            effective_to=effective_to,
             weight_enabled=weight_enabled,
             risk_budget_enabled=risk_budget_enabled,
             status=(status or "active").strip() or "active",
@@ -2217,8 +2508,6 @@ def update_target_set(
     target_set_id: str,
     *,
     name: str | None = UNSET,
-    effective_from: date | None = UNSET,
-    effective_to: date | None = UNSET,
     weight_enabled: bool | None = UNSET,
     risk_budget_enabled: bool | None = UNSET,
     status: str | None = UNSET,
@@ -2248,8 +2537,6 @@ def update_target_set(
         existing_lines = session.scalars(
             select(TargetSetLineRecordModel).where(TargetSetLineRecordModel.target_set_id == target_set_id)
         ).all()
-        resolved_effective_from = record.effective_from if effective_from is UNSET else effective_from
-        resolved_effective_to = record.effective_to if effective_to is UNSET else effective_to
         resolved_weight_enabled = record.weight_enabled if weight_enabled is UNSET else bool(weight_enabled)
         resolved_risk_budget_enabled = (
             record.risk_budget_enabled if risk_budget_enabled is UNSET else bool(risk_budget_enabled)
@@ -2275,8 +2562,6 @@ def update_target_set(
             taxonomy=taxonomy,
             comparator_taxonomy_node_id=record.comparator_taxonomy_node_id,
             target_set_type=record.target_set_type,
-            effective_from=resolved_effective_from,
-            effective_to=resolved_effective_to,
             weight_enabled=resolved_weight_enabled,
             risk_budget_enabled=resolved_risk_budget_enabled,
             status=(record.status if status is UNSET else ((status or "active").strip() or "active")),
@@ -2286,10 +2571,6 @@ def update_target_set(
 
         if name is not UNSET and name is not None:
             record.name = name.strip()
-        if effective_from is not UNSET:
-            record.effective_from = resolved_effective_from
-        if effective_to is not UNSET:
-            record.effective_to = resolved_effective_to
         if weight_enabled is not UNSET:
             record.weight_enabled = resolved_weight_enabled
         if risk_budget_enabled is not UNSET:
@@ -2374,7 +2655,19 @@ def delete_taxonomy(portfolio_id: str, taxonomy_id: str) -> bool:
         if research_settings is not None and research_settings.planning_taxonomy_id == taxonomy_id:
             research_settings.planning_taxonomy_id = None
             research_settings.comparator_taxonomy_node_id = None
+        affected_instrument_ids = {
+            str(item.target_entity_id or "").strip()
+            for item in session.scalars(
+                select(TaxonomyAssignmentRecordModel).where(
+                    TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy_id,
+                    TaxonomyAssignmentRecordModel.target_scope == "instrument",
+                )
+            ).all()
+            if str(item.target_entity_id or "").strip()
+        }
         session.delete(record)
+        session.flush()
+        _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
         session.commit()
         return True
 
@@ -2484,7 +2777,16 @@ def delete_taxonomy_assignment(portfolio_id: str, taxonomy_id: str, assignment_i
         )
         if record is None:
             return False
+        target_scope = record.target_scope
+        target_entity_id = record.target_entity_id
         session.delete(record)
+        session.flush()
+        if target_scope == "instrument":
+            _refresh_portfolio_instrument_universe_records(
+                session,
+                portfolio_id,
+                {target_entity_id},
+            )
         session.commit()
         return True
 
@@ -2644,8 +2946,6 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     planning_enabled=taxonomy.planning_enabled,
                     budgeting_level=taxonomy.budgeting_level,
                     root_default_target_dimension=taxonomy.root_default_target_dimension,
-                    effective_from=taxonomy.effective_from,
-                    effective_to=taxonomy.effective_to,
                     status=taxonomy.status,
                     source_template_ref=taxonomy.source_template_ref,
                 )
@@ -2695,8 +2995,6 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     target_scope=assignment.target_scope,
                     target_entity_id=assignment.target_entity_id,
                     taxonomy_node_id=taxonomy_node_id_map.get(assignment.taxonomy_node_id, assignment.taxonomy_node_id),
-                    effective_from=assignment.effective_from,
-                    effective_to=assignment.effective_to,
                     status=assignment.status,
                 )
             )
@@ -2720,8 +3018,6 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     ),
                     target_set_type=target_set.target_set_type,
                     name=target_set.name,
-                    effective_from=target_set.effective_from,
-                    effective_to=target_set.effective_to,
                     weight_enabled=target_set.weight_enabled,
                     risk_budget_enabled=target_set.risk_budget_enabled,
                     status=target_set.status,
@@ -2867,6 +3163,8 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
             )
             existing_transactions.append(copied_transaction)
 
+        session.flush()
+        _refresh_portfolio_instrument_universe_records(session, candidate)
         session.commit()
         return _serialize_portfolio_row(copied)
 
@@ -2905,6 +3203,7 @@ def delete_portfolio(portfolio_id: str) -> bool:
         session.execute(delete(PortfolioDailyHoldingSnapshotModel).where(PortfolioDailyHoldingSnapshotModel.portfolio_id == portfolio_id))
         session.execute(delete(PortfolioDailySnapshotModel).where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id))
         session.execute(delete(PortfolioCalculationStateModel).where(PortfolioCalculationStateModel.portfolio_id == portfolio_id))
+        session.execute(delete(PortfolioInstrumentUniverseRecordModel).where(PortfolioInstrumentUniverseRecordModel.portfolio_id == portfolio_id))
         session.execute(delete(TaxonomyRecordModel).where(TaxonomyRecordModel.portfolio_id == portfolio_id))
         session.execute(delete(TransactionRecordModel).where(TransactionRecordModel.portfolio_id == portfolio_id))
         session.execute(delete(AccountRecordModel).where(AccountRecordModel.portfolio_id == portfolio_id))
@@ -3272,6 +3571,12 @@ def create_transactions(
             session.flush()
             created.append(record)
         dirty_from = min((record.trade_date for record in created), default=None)
+        affected_instrument_ids = {
+            str(record.instrument_id or "").strip()
+            for record in created
+            if str(record.instrument_id or "").strip()
+        }
+        _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
         session.commit()
         _mark_daily_snapshots_stale(portfolio_id, dirty_from=dirty_from)
         return [_serialize_transaction_row(record) for record in created]
@@ -3317,6 +3622,7 @@ def update_transaction(
         if record is None:
             return None
         previous_trade_date = record.trade_date
+        previous_instrument_id = str(record.instrument_id or "").strip()
         _apply_transaction_record(
             record,
             transaction_type=transaction_type,
@@ -3348,6 +3654,12 @@ def update_transaction(
             (candidate for candidate in (previous_trade_date, record.trade_date) if candidate is not None),
             default=None,
         )
+        affected_instrument_ids = {
+            instrument_id
+            for instrument_id in {previous_instrument_id, str(record.instrument_id or "").strip()}
+            if instrument_id
+        }
+        _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
         session.commit()
         _mark_daily_snapshots_stale(portfolio_id, dirty_from=dirty_from)
         return _serialize_transaction_row(record)
@@ -3371,8 +3683,15 @@ def delete_transactions(
             )
         ).all()
         serialized = [_serialize_transaction_row(record) for record in records]
+        affected_instrument_ids = {
+            str(record.instrument_id or "").strip()
+            for record in records
+            if str(record.instrument_id or "").strip()
+        }
         for record in records:
             session.delete(record)
+        session.flush()
+        _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
         deleted_dates = [
             parsed_date
             for parsed_date in (_safe_date(record.get("trade_date")) for record in serialized)

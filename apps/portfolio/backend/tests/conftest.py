@@ -88,6 +88,17 @@ REGISTRY_INSTRUMENT_DETAILS = [
         ],
     },
     {
+        "instrument_id": "fund-us-watch",
+        "instrument_name": "Watchlist Fund",
+        "instrument_type": "fund",
+        "currency": "USD",
+        "identifiers": [{"identifier_type": "ticker", "identifier_value": "WATCH", "is_primary": True}],
+        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
+        "market_data": [
+            _market_point("price", "close", "2026-04-15", "100.00", "USD"),
+        ],
+    },
+    {
         "instrument_id": "fx-usd-hkd",
         "instrument_name": "USD/HKD Spot",
         "instrument_type": "fx",

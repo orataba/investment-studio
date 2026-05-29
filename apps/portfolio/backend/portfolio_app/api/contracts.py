@@ -803,8 +803,6 @@ class TaxonomyRecord(BaseModel):
     planning_enabled: bool = False
     budgeting_level: str | None = None
     root_default_target_dimension: DefaultTargetDimension = "weight"
-    effective_from: date | None = None
-    effective_to: date | None = None
     status: str = "active"
     source_template_ref: str | None = None
 
@@ -827,9 +825,30 @@ class TaxonomyAssignmentRecord(BaseModel):
     target_scope: TaxonomyAssignmentScope
     target_entity_id: str
     taxonomy_node_id: str
-    effective_from: date | None = None
-    effective_to: date | None = None
     status: str = "active"
+
+
+class PortfolioInstrumentUniverseRecord(BaseModel):
+    portfolio_id: str
+    instrument_id: str
+    instrument_ref: InstrumentCoreContract | None = None
+    source: str
+    holding_state: str
+    first_transaction_date: date | None = None
+    last_transaction_date: date | None = None
+    transaction_count: int = 0
+    status: str = "active"
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class PortfolioInstrumentUniverseCreateRequest(BaseModel):
+    instrument_id: str = Field(min_length=1)
+
+    @field_validator("instrument_id", mode="before")
+    @classmethod
+    def validate_required_text(cls, value: object) -> object:
+        return _normalize_required_text(value)
 
 
 class TargetSetRecord(BaseModel):
@@ -838,8 +857,6 @@ class TargetSetRecord(BaseModel):
     comparator_taxonomy_node_id: str | None = None
     target_set_type: TargetSetType
     name: str
-    effective_from: date | None = None
-    effective_to: date | None = None
     weight_enabled: bool = False
     risk_budget_enabled: bool = False
     status: str = "active"
@@ -863,6 +880,7 @@ class TaxonomyCatalogResponse(BaseModel):
     taxonomies: list[TaxonomyRecord]
     taxonomy_nodes: list[TaxonomyNodeRecord]
     taxonomy_assignments: list[TaxonomyAssignmentRecord]
+    instrument_universe: list[PortfolioInstrumentUniverseRecord] = Field(default_factory=list)
     target_sets: list[TargetSetRecord] = Field(default_factory=list)
     target_set_lines: list[TargetSetLineRecord] = Field(default_factory=list)
 
@@ -1268,8 +1286,6 @@ class TaxonomyCreateRequest(BaseModel):
     planning_enabled: bool = False
     budgeting_level: str | None = None
     root_default_target_dimension: DefaultTargetDimension = "weight"
-    effective_from: date | None = None
-    effective_to: date | None = None
     status: str = "active"
     source_template_ref: str | None = None
 
@@ -1285,8 +1301,6 @@ class TaxonomyCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_taxonomy_contract(self) -> "TaxonomyCreateRequest":
-        if self.effective_from and self.effective_to and self.effective_to < self.effective_from:
-            raise ValueError("effective_to must not be earlier than effective_from.")
         if self.budgeting_level and not self.planning_enabled:
             raise ValueError("budgeting_level requires planning_enabled.")
         if self.planning_enabled and self.primary_assignment_scope != "instrument":
@@ -1321,8 +1335,6 @@ class TaxonomyUpdateRequest(BaseModel):
     planning_enabled: bool | None = None
     budgeting_level: str | None = None
     root_default_target_dimension: DefaultTargetDimension | None = None
-    effective_from: date | None = None
-    effective_to: date | None = None
     status: str | None = None
 
     @field_validator("name", "taxonomy_type", "status", "root_default_target_dimension", mode="before")
@@ -1339,8 +1351,6 @@ class TaxonomyUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_taxonomy_contract(self) -> "TaxonomyUpdateRequest":
-        if self.effective_from and self.effective_to and self.effective_to < self.effective_from:
-            raise ValueError("effective_to must not be earlier than effective_from.")
         if self.budgeting_level and self.planning_enabled is False:
             raise ValueError("budgeting_level requires planning_enabled.")
         return self
@@ -1371,8 +1381,6 @@ class TaxonomyAssignmentCreateRequest(BaseModel):
     target_scope: TaxonomyAssignmentScope
     target_entity_id: str = Field(min_length=1)
     taxonomy_node_id: str = Field(min_length=1)
-    effective_from: date | None = None
-    effective_to: date | None = None
     status: str = "active"
 
     @field_validator("target_entity_id", "taxonomy_node_id", "status", mode="before")
@@ -1380,17 +1388,9 @@ class TaxonomyAssignmentCreateRequest(BaseModel):
     def validate_required_text(cls, value: object) -> object:
         return _normalize_required_text(value)
 
-    @model_validator(mode="after")
-    def validate_assignment_contract(self) -> "TaxonomyAssignmentCreateRequest":
-        if self.effective_from and self.effective_to and self.effective_to < self.effective_from:
-            raise ValueError("effective_to must not be earlier than effective_from.")
-        return self
-
 
 class TaxonomyAssignmentUpdateRequest(BaseModel):
     taxonomy_node_id: str | None = None
-    effective_from: date | None = None
-    effective_to: date | None = None
     status: str | None = None
 
     @field_validator("taxonomy_node_id", "status", mode="before")
@@ -1399,12 +1399,6 @@ class TaxonomyAssignmentUpdateRequest(BaseModel):
         if value is None:
             return None
         return _normalize_required_text(value)
-
-    @model_validator(mode="after")
-    def validate_assignment_contract(self) -> "TaxonomyAssignmentUpdateRequest":
-        if self.effective_from and self.effective_to and self.effective_to < self.effective_from:
-            raise ValueError("effective_to must not be earlier than effective_from.")
-        return self
 
 
 class TargetSetLineInput(BaseModel):
@@ -1458,8 +1452,6 @@ class TargetSetCreateRequest(BaseModel):
     comparator_taxonomy_node_id: str | None = None
     target_set_type: TargetSetType
     name: str = Field(min_length=1)
-    effective_from: date | None = None
-    effective_to: date | None = None
     weight_enabled: bool = False
     risk_budget_enabled: bool = False
     status: str = "active"
@@ -1478,8 +1470,6 @@ class TargetSetCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_target_set_contract(self) -> "TargetSetCreateRequest":
-        if self.effective_from and self.effective_to and self.effective_to < self.effective_from:
-            raise ValueError("effective_to must not be earlier than effective_from.")
         if not self.weight_enabled and not self.risk_budget_enabled:
             raise ValueError("At least one target dimension must be enabled.")
         if not self.lines:
@@ -1489,8 +1479,6 @@ class TargetSetCreateRequest(BaseModel):
 
 class TargetSetUpdateRequest(BaseModel):
     name: str | None = None
-    effective_from: date | None = None
-    effective_to: date | None = None
     weight_enabled: bool | None = None
     risk_budget_enabled: bool | None = None
     status: str | None = None
@@ -1511,8 +1499,6 @@ class TargetSetUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_target_set_contract(self) -> "TargetSetUpdateRequest":
-        if self.effective_from and self.effective_to and self.effective_to < self.effective_from:
-            raise ValueError("effective_to must not be earlier than effective_from.")
         if self.weight_enabled is False and self.risk_budget_enabled is False:
             raise ValueError("At least one target dimension must be enabled.")
         return self

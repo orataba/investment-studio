@@ -81,21 +81,6 @@ function signedPercent(value: number | null | undefined, digits = 2) {
   return absolute
 }
 
-function isPeriodOverlap(
-  effectiveFrom: string | null | undefined,
-  effectiveTo: string | null | undefined,
-  startDate: string,
-  endDate: string,
-) {
-  if (effectiveFrom && effectiveFrom > endDate) {
-    return false
-  }
-  if (effectiveTo && effectiveTo < startDate) {
-    return false
-  }
-  return true
-}
-
 function buildMonthlyBuckets(dailySeries: PortfolioDailyPerformancePoint[]) {
   const orderedKeys: string[] = []
   const buckets = new Map<
@@ -471,11 +456,9 @@ export default function ReviewPage() {
   const overlappingTargetSets = useMemo(
     () =>
       (taxonomyCatalog?.target_sets ?? []).filter(
-        (targetSet) =>
-          targetSet.taxonomy_id === defaultPlanningTaxonomy?.taxonomy_id &&
-          isPeriodOverlap(targetSet.effective_from, targetSet.effective_to, effectiveStartDate, effectiveEndDate),
+        (targetSet) => targetSet.taxonomy_id === defaultPlanningTaxonomy?.taxonomy_id,
       ),
-    [defaultPlanningTaxonomy?.taxonomy_id, effectiveEndDate, effectiveStartDate, taxonomyCatalog],
+    [defaultPlanningTaxonomy?.taxonomy_id, taxonomyCatalog],
   )
   const rootSaaTargetSets = overlappingTargetSets.filter(
     (targetSet) => !targetSet.comparator_taxonomy_node_id && targetSet.target_set_type === 'saa' && targetSet.status === 'active',

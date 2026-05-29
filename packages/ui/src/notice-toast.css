@@ -1,43 +1,52 @@
 .yungu-notice-toast {
   position: fixed;
-  top: 18px;
-  left: 50%;
+  top: 72px;
+  right: 24px;
   z-index: 2000;
-  max-width: min(420px, calc(100vw - 32px));
-  padding: 9px 14px;
+  box-sizing: border-box;
+  width: min(360px, calc(100vw - 32px));
+  padding: 10px 12px;
   border: 1px solid #d5dbe5;
+  border-left: 2px solid #64748b;
   background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 12px 34px rgba(15, 23, 42, 0.14);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
   color: #111827;
   font-size: 13px;
-  line-height: 1.35;
-  transform: translateX(-50%);
+  line-height: 1.45;
+  pointer-events: none;
   animation: yungu-notice-toast-enter 140ms ease-out;
 }
 
 .yungu-notice-toast-success {
-  border-color: #b9dfc8;
+  border-left-color: #18653b;
   color: #14532d;
 }
 
 .yungu-notice-toast-error {
-  border-color: #efc3c3;
+  border-left-color: #8f1d1d;
   color: #8f1d1d;
 }
 
 .yungu-notice-toast-info {
-  border-color: #cfd8e3;
+  border-left-color: #64748b;
   color: #1f2937;
 }
 
 @keyframes yungu-notice-toast-enter {
   from {
     opacity: 0;
-    transform: translate(-50%, -6px);
+    transform: translateY(-6px);
   }
 
   to {
     opacity: 1;
-    transform: translate(-50%, 0);
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 640px) {
+  .yungu-notice-toast {
+    top: 64px;
+    right: 16px;
   }
 }

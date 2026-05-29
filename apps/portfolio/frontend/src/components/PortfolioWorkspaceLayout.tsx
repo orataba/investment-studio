@@ -139,6 +139,14 @@ export default function PortfolioWorkspaceLayout({
     return () => document.removeEventListener('mousedown', handleClick)
   }, [selectorMenuOpen])
 
+  useEffect(() => {
+    if (!selectorNotice) {
+      return undefined
+    }
+    const timeoutId = window.setTimeout(() => setSelectorNotice(null), 2800)
+    return () => window.clearTimeout(timeoutId)
+  }, [selectorNotice])
+
   const resolvedSummary = summary ?? FALLBACK_SUMMARY
   const resolvedPortfolioId = portfolioId || resolvedSummary.portfolio_id
   const portfolioHomePath = resolvedPortfolioId

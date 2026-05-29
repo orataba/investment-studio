@@ -66,6 +66,14 @@ export default function WatchlistEntryPage() {
     return () => document.removeEventListener('mousedown', handleClick)
   }, [menuOpenId])
 
+  useEffect(() => {
+    if (!notice) {
+      return undefined
+    }
+    const timeoutId = window.setTimeout(() => setNotice(null), 2800)
+    return () => window.clearTimeout(timeoutId)
+  }, [notice])
+
   const allCoverageWatchlist = watchlists.find(isAllCoverageWatchlist)
   const totalProducts =
     allCoverageWatchlist?.item_count ?? watchlists.reduce((sum, item) => sum + item.item_count, 0)
