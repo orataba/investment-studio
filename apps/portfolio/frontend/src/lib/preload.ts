@@ -39,7 +39,6 @@ export function preloadPortfolioRouteModules() {
     import('../pages/PortfolioHomePage'),
     import('../pages/PortfolioSecurityDetailPage'),
     import('../pages/ResearchPage'),
-    import('../pages/ReviewPage'),
     import('../pages/RiskPage'),
     import('../pages/TaxonomiesPage'),
     import('../pages/TransactionsPage'),

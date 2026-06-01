@@ -33,9 +33,8 @@ export const workspacePrimaryNavigation = [
   { label: 'Risk', href: '/risk' },
   { label: 'Transactions', href: '/transactions' },
   { label: 'Accounts', href: '/accounts' },
-  { label: 'Review', href: '/review' },
-  { label: 'Research', href: '/research' },
   { label: 'Taxonomies', href: '/taxonomies' },
+  { label: 'Research', href: '/research' },
 ] as const
 
 export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> = {
@@ -150,7 +149,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
     family: 'Current-State',
     toolbarLabel: 'Page: Risk',
     summary:
-      'Risk is the portfolio risk cockpit. It splits between Current risk and Realized risk so current structure and historical path are visible without collapsing into the Review narrative.',
+      'Risk is the portfolio risk cockpit. It splits between Current risk and Realized risk so current structure and historical path are visible without collapsing into period performance reporting.',
     primaryQuestion: '当前风险在哪里，过去这段时间风险是怎么走出来的，现在哪些风险需要处理？',
     primaryObjects: ['RiskSnapshot', 'explicit SAA/TAA TargetSet comparators'],
     sharedContext: [
@@ -173,7 +172,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
       { source: 'Drift line', target: 'Filtered Holdings' },
       { source: 'Risk budget gap line', target: 'Grouped holdings' },
     ],
-    notThisPage: ['Does not produce the formal Review narrative', 'Does not own the raw transaction ledger'],
+    notThisPage: ['Does not produce a period narrative pack', 'Does not own the raw transaction ledger'],
   },
   transactions: {
     key: 'transactions',
@@ -202,7 +201,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
       { source: 'Transaction instrument', target: 'Portfolio security detail page' },
       { source: 'Transaction account', target: 'Accounts' },
     ],
-    notThisPage: ['Not a FIFO Trades primary page', 'Not a review or analytics summary page'],
+    notThisPage: ['Not a FIFO Trades primary page', 'Not a period or analytics summary page'],
   },
   accounts: {
     key: 'accounts',
@@ -235,42 +234,6 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
     ],
     notThisPage: ['Does not replace portfolio-level Holdings', 'Does not carry planning target configuration'],
   },
-  review: {
-    key: 'review',
-    label: 'Review',
-    href: '/review',
-    family: 'Period',
-    toolbarLabel: 'Page: Review Pack',
-    summary:
-      'Review is the buy-side period review pack. It turns performance, realized risk, planning context, and research handoff into one discussion-ready period surface.',
-    primaryQuestion: '这个周期最重要的结果、解释和动作是什么？',
-    primaryObjects: ['ReviewPack', 'PerformanceSnapshot', 'PeriodRiskSummary', 'action items'],
-    sharedContext: [
-      'portfolio_id: current workspace portfolio',
-      'period: user-selected period_start / period_end',
-      'resolved_target_timeline_id: resolved over selected period',
-      'target_resolution_mode: resolved target timeline over selected period',
-      'benchmark_resolution_mode: resolved benchmark over selected period',
-      'coverage_state: complete / partial / unavailable',
-    ],
-    coreBlocks: [
-      { title: 'Scorecard', owner: 'ReviewPack', role: 'Summarize the period result in one decision-oriented strip' },
-      { title: 'Performance summary', owner: 'PerformanceSnapshot', role: 'Explain return and benchmark-relative outcome for the period' },
-      { title: 'Risk summary', owner: 'PeriodRiskSummary', role: 'Summarize realized risk, breaches, and key exposures over the period' },
-      { title: 'Target summaries', owner: 'ResolvedTargetTimeline', role: 'Summarize drift and target risk budget over the selected period' },
-      { title: 'Research handoff', owner: 'ResearchRun', role: 'Carry the latest relevant research findings and target weight gaps into the period pack' },
-      { title: 'Commentary, actions, export artifacts', owner: 'ReviewPack + ActionItem + ExportArtifact', role: 'Capture narrative, next steps, and archived output' },
-    ],
-    comparator: ['Fixed order: absolute result -> primary benchmark -> resolved target timeline -> alert breaches'],
-    conditionalBlocks: ['Mixed Targets must be explicit when target source changes or dimensions resolve differently', 'When benchmark is return_only, benchmark-relative section degrades to performance-only summary'],
-    drillDowns: [
-      { source: 'Performance summary', target: 'Performance with preserved period and benchmark' },
-      { source: 'Risk summary', target: 'Review-local period risk detail surface' },
-      { source: 'Current-state follow-up item', target: 'Risk with latest complete as_of_date' },
-      { source: 'Action item', target: 'Source alert, review section, or research handoff' },
-    ],
-    notThisPage: ['Not the current-state snapshot page', 'Does not own research configuration'],
-  },
   research: {
     key: 'research',
     label: 'Research',
@@ -287,12 +250,12 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
       { title: 'Current context', owner: 'Portfolio facts + planning context', role: 'Show the snapshot the next run will operate on' },
       { title: 'Run list', owner: 'ResearchRun', role: 'List research runs in portfolio context' },
       { title: 'Artifact viewer', owner: 'Research artifacts', role: 'Display run output without leaving the portfolio workspace' },
-      { title: 'Handoff to portfolio context', owner: 'ResearchRun handoff', role: 'Promote research output into analysis or review context' },
+      { title: 'Handoff to portfolio context', owner: 'ResearchRun handoff', role: 'Promote research output into portfolio analysis context' },
     ],
     comparator: ['No canonical comparator; this page is workflow-oriented'],
     conditionalBlocks: ['Method templates may grow later, but this page should not become a raw backend schema editor'],
-    drillDowns: [{ source: 'Research artifact', target: 'Review or portfolio discussion context' }],
-    notThisPage: ['Does not replace Review narrative ownership', 'Does not expose low-level solver request JSON as the primary UI'],
+    drillDowns: [{ source: 'Research artifact', target: 'Portfolio discussion context' }],
+    notThisPage: ['Does not replace Performance or Risk analysis ownership', 'Does not expose low-level solver request JSON as the primary UI'],
   },
   taxonomies: {
     key: 'taxonomies',
@@ -314,7 +277,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
     ],
     comparator: ['No benchmark comparator; this page owns classification and planning config'],
     conditionalBlocks: ['Planning-enabled taxonomies must be instrument-scoped and may optionally include cash_bucket', 'Account taxonomies can support analysis but not TargetSet ownership'],
-    drillDowns: [{ source: 'Planning target set', target: 'Risk and Review target resolution' }],
+    drillDowns: [{ source: 'Planning target set', target: 'Risk and Research target resolution' }],
     notThisPage: ['Not a high-frequency analysis workspace', 'Does not own independent benchmark analytics'],
   },
 }

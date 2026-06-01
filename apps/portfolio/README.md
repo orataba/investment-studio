@@ -12,7 +12,6 @@
 - `Risk` 已有真实工作台，包含 rolling annualized volatility / Sharpe、sample 相关性矩阵、Current Drift 和 point-in-time Risk Contribution；风险窗口、协方差方法和风险贡献模式与 Research 使用同一组严格口径，相关性矩阵只暴露窗口和 scope，不混入协方差模型选择
 - `Taxonomies` 已有真实配置工作台，支持层级 sleeve tree、assignment、`TargetSet`、`default planning taxonomy` 与 `cash_bucket` 维护
 - `Research` 已有真实工作台，支持基于 planning taxonomy / TargetSet / 当前持仓的递归 target-weight solve、run history、target weights、member targets、scope solver path、风险预算求解诊断和调仓缺口
-- `Review` 已有真实 period review pack 页面
 - `Overview` 已作为组合默认首页发布，主图按 `Portfolio Value / TWR Index` 两种组合管理口径展示，回撤固定基于 TWR；页面同时承载 sleeve 结构和 top holdings 总览，`Snapshot` 不再作为独立工作面保留
 
 ## 当前文档
@@ -70,7 +69,7 @@ npm run dev
 
 说明：
 
-- Vite 默认监听 `http://127.0.0.1:5174`
+- Vite 默认监听 `0.0.0.0:5174`；本机访问 `http://127.0.0.1:5174`
 - `/api` 已代理到 `http://127.0.0.1:8001`
 - Holdings 与 Performance Calculation 的自定义 table view 存在后端 `portfolio_table_view_store` 中，按 `portfolio_id + view_scope` 隔离；浏览器 `localStorage` 只作为首次迁移和后端不可用时的本地 fallback，不在读取失败时回写覆盖后端配置。
 
@@ -100,7 +99,7 @@ npm --prefix apps/portfolio/frontend run build
 - Performance `Calculation` 使用 `Initial Value + Net External Flow + Period P&L = Final Value` 的期间桥接。资本利得拆分使用期初市值重置后的期间成本，而不是账户 book cost。Calculation 默认视图命名为 `Default`，展示 beginning / average / ending weight 与 realized risk attribution；用户可像 Holdings 一样保存自定义表格视图。Group By 默认是 `None`，内部映射到底层 instrument lines；也支持 instrument type / currency / account / taxonomy，TWR 与 contribution 在后端按对应轴计算，表格可导出 CSV。taxonomy group view 使用区间期末 assignment 解释复盘归因；若 instrument 期末已清仓且期末不再有 active assignment，则使用其区间内有效 assignment 承接历史 P&L，不误归入 Unassigned；cash 作为独立组保留。
 - `Holdings` 中的 `Market Value Base` 是 base-currency fair value；现金行使用 settled cash 的 base value。Day change 使用同一 quote basis 的上一可用市场点，非 base cash 使用 FX 变动。Instrument return / volatility / drawdown 基于原始 selected quote series 和 resolved risk frequency，不能基于 sampled price chart；volatility 有窗口起点覆盖和最小样本门槛。Holdings group rows 的 return 使用当前 base-value 权重，volatility / drawdown 基于组 return series 计算，不使用成员风险指标的加权平均。Holdings 主表的 locked `instrument` 首列在横向滚动时保持冻结。
 - `moving_average` 在底层按 `account + instrument` 维护一个 rolling average cost bucket；API 为 UI 和转仓审计输出一个 synthetic position lot。
-- `Overview`、`Performance`、`Review` 的 TWR index、daily series 和 drawdown 均按查询窗口重新复合；不得复用 inception-to-date 的累计 TWR 作为区间曲线。Overview 的组合收益、benchmark 和 1M / 3M VOL 均以组合 fresh complete as-of 截止，不使用浏览器日期或系统日期。Overview 的组合 YTD 必须存在年初锚点，年内成立且缺少年初锚点时显示 unavailable，由 `Since Inception` 承接成立以来收益。Overview 的 1M / 3M VOL 使用组合 eligible daily TWR 的 trailing 年化波动率，并要求完整窗口历史。
+- `Overview`、`Performance` 的 TWR index、daily series 和 drawdown 均按查询窗口重新复合；不得复用 inception-to-date 的累计 TWR 作为区间曲线。Overview 的组合收益、benchmark 和 1M / 3M VOL 均以组合 fresh complete as-of 截止，不使用浏览器日期或系统日期。Overview 的组合 YTD 必须存在年初锚点，年内成立且缺少年初锚点时显示 unavailable，由 `Since Inception` 承接成立以来收益。Overview 的 1M / 3M VOL 使用组合 eligible daily TWR 的 trailing 年化波动率，并要求完整窗口历史。
 - Performance `Calculation` 的 group `period_return` 是 group-level TWR：买入、卖出、分红、兑付和现金转移先识别为组内 capital flow，再用 `total_pnl / (beginning_value + period capital flow in)` 计算收益，避免期内新增仓位或往返交易把资金流误识别为收益。手动 benchmark compare 只在同币种、起点锚点和组合 eligible return date 覆盖完整时展示，不能用 raw-currency 或 stale-filled benchmark 序列兜底。
 - Holdings 的 group / subtotal / total 行对 market value、cost basis、day change、unrealized P&L 等绝对量按组内明细加总；unrealized return 使用非现金 P&L 除以非现金成本，并在同一行包含现金时把现金 market value 纳入分母稀释，纯现金行不显示该比例。
 - `Risk` 的 rolling volatility / Sharpe、相关性矩阵、Current Drift 和 point-in-time Risk Contribution 是当前权重口径：使用当前非现金持仓权重乘以资产自身全历史收益窗口，不被组合成立日或真实持仓起始日截断。它不是 realized attribution；若需要真实持仓期间复盘，归入 Performance `Calculation`。Risk 排除仅由 stale price carry-forward 得到的非市场观察日；`sample_covariance` 使用样本协方差 `n - 1`，不使用总体协方差。混合频率和稀疏序列必须使用 Holdings workspace 的 `risk_basis` 对齐元数据解析 daily / weekly / monthly calculation basis，再按目标 period 的最后有效观测对齐，不跨期前向填充；协方差默认要求 active return matrix 是完整对齐样本，按完整样本的实际观察密度年化，不做 pairwise 拼矩阵或缺失收益补 0。Risk 窗口还必须满足最小收益样本数、窗口起点锚定和至少 80% elapsed-day 覆盖，不满足时显示 insufficient history，不计算替代值。区间风险贡献归入 Performance `Calculation` 的 realized risk attribution columns。
@@ -116,5 +115,5 @@ npm --prefix apps/portfolio/frontend run build
 - 物化读模型的 payload 或计算口径变化必须提升 `calculation_version` 并触发重建；不要在核心读路径长期保留旧 slice schema 的兼容分支。
 - 交易、账户、共享行情或 FX 变化必须先写源事实，再通过 `refresh_request_id` 标记受影响组合 stale，并由后台刷新串行重建。
 - portfolio 存在性校验应保持轻量，不应触发 workspace rollup、行情 profile 或全窗口 performance 重算。
-- `Overview / Risk / Review` 这类组合页面应避免同一窗口内重复拉取 shared instrument detail 或重复重建 performance 中间结果。
+- `Overview / Risk` 这类组合页面应避免同一窗口内重复拉取 shared instrument detail 或重复重建 performance 中间结果。
 - 前端文案保持专业终端口径：loading 统一为 `Loading`，空态压缩为短句，字段/分组选项和 table view 不展示解释性备注。需要保留的诊断只限错误、校验失败和会影响用户判断的不可用状态。

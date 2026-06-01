@@ -85,7 +85,7 @@
 - portfolio holdings
 - transaction ledger
 - risk snapshots
-- review exports
+- portfolio period exports
 
 ## 当前消费方式
 

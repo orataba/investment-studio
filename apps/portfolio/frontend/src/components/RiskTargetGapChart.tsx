@@ -32,7 +32,7 @@ export default function RiskTargetGapChart({
   currentLabel = 'Current',
 }: RiskTargetGapChartProps) {
   if (!rows.length) {
-    return <div className="price-chart-empty">{emptyLabel}</div>
+    return <div className="risk-chart-empty">{emptyLabel}</div>
   }
 
   const maxValue = Math.max(

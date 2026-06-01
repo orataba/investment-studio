@@ -203,7 +203,7 @@ function buildFallbackApps(): PlatformAppCard[] {
       api_url: portfolioApiUrl,
       eyebrow: 'Portfolio management',
       description:
-        'Portfolio, account, transaction, risk, and review workflows built on top of the shared instrument core.',
+        'Portfolio, account, transaction, performance, risk, and research workflows built on top of the shared instrument core.',
       availability: 'ready',
     })
   }

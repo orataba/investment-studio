@@ -34,8 +34,11 @@ import { formatCurrency, formatLabel, formatNumber, formatPercent } from '../lib
 const DAYS_PER_YEAR = 365.25
 const RISK_MIN_WINDOW_COVERAGE_RATIO = 0.8
 const DEFAULT_RISK_LOOKBACK_DAYS = 90
+const DEFAULT_RISK_ANALYTICS_LOOKBACK_DAYS = 30
 const DEFAULT_RISK_MODEL_ID = 'ewma_vol_shrinkage_corr_covariance'
 const MATRIX_SCOPE_ALL_INSTRUMENTS = '__all_instruments__'
+const RISK_PAGE_SETTINGS_STORAGE_KEY = 'yungu.portfolio.risk.settings.v1'
+const INSUFFICIENT_DATA_MESSAGE = 'Insufficient data.'
 
 type RiskModelId = 'ewma_vol_shrinkage_corr_covariance' | 'ewma_covariance' | 'sample_covariance'
 type RiskContributionMode = 'signed' | 'abs'
@@ -189,12 +192,66 @@ const DEFAULT_RISK_MODEL_PARAMETERS: Record<CalculationFrequency, Record<string,
 }
 
 const DEFAULT_ROLLING_SETTINGS: RollingRiskSettingsState = {
-  lookbackDays: DEFAULT_RISK_LOOKBACK_DAYS,
+  lookbackDays: DEFAULT_RISK_ANALYTICS_LOOKBACK_DAYS,
   chartStyle: 'mountain',
 }
 
 const DEFAULT_MATRIX_SETTINGS: RiskWindowSettingsState = {
-  lookbackDays: DEFAULT_RISK_LOOKBACK_DAYS,
+  lookbackDays: DEFAULT_RISK_ANALYTICS_LOOKBACK_DAYS,
+}
+
+type RiskPageStoredSettings = {
+  rolling: RollingRiskSettingsState
+  matrix: RiskWindowSettingsState
+}
+
+function normalizeRiskLookbackDays(value: unknown, fallback: number) {
+  const numericValue = typeof value === 'number' ? value : Number(value)
+  return RISK_WINDOW_OPTIONS.some((option) => option.value === numericValue) ? numericValue : fallback
+}
+
+function normalizeRiskChartStyle(value: unknown, fallback: RiskChartDisplayStyle) {
+  return CHART_STYLE_OPTIONS.some((option) => option.value === value) ? (value as RiskChartDisplayStyle) : fallback
+}
+
+function normalizeRiskPageSettings(value: unknown): RiskPageStoredSettings {
+  const record = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+  const rollingRecord =
+    record.rolling && typeof record.rolling === 'object' ? (record.rolling as Record<string, unknown>) : {}
+  const matrixRecord =
+    record.matrix && typeof record.matrix === 'object' ? (record.matrix as Record<string, unknown>) : {}
+  return {
+    rolling: {
+      lookbackDays: normalizeRiskLookbackDays(rollingRecord.lookbackDays, DEFAULT_ROLLING_SETTINGS.lookbackDays),
+      chartStyle: normalizeRiskChartStyle(rollingRecord.chartStyle, DEFAULT_ROLLING_SETTINGS.chartStyle),
+    },
+    matrix: {
+      lookbackDays: normalizeRiskLookbackDays(matrixRecord.lookbackDays, DEFAULT_MATRIX_SETTINGS.lookbackDays),
+    },
+  }
+}
+
+function loadRiskPageSettings() {
+  if (typeof window === 'undefined') {
+    return normalizeRiskPageSettings(null)
+  }
+  try {
+    const rawValue = window.localStorage.getItem(RISK_PAGE_SETTINGS_STORAGE_KEY)
+    return normalizeRiskPageSettings(rawValue ? JSON.parse(rawValue) : null)
+  } catch {
+    return normalizeRiskPageSettings(null)
+  }
+}
+
+function saveRiskPageSettings(settings: RiskPageStoredSettings) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    window.localStorage.setItem(RISK_PAGE_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+  } catch {
+    return
+  }
 }
 
 const RISK_MAX_START_GAP_DAYS: Record<CalculationFrequency, number> = {
@@ -917,45 +974,29 @@ function covarianceCell(
   }
 }
 
-function correlationCell(
+function correlationCellFromDates(
   left: GroupReturnSeries,
   right: GroupReturnSeries,
-  asOfDate: string,
-  lookbackDays: number,
-  frequency: CalculationFrequency,
+  sampleDates: string[],
 ) {
-  const pairs = pairWindowReturns(left.returnsByDate, right.returnsByDate, asOfDate, lookbackDays)
-  if (pairs.length < 2) {
-    return { value: null, observationCount: pairs.length }
-  }
-  const leftWindowPoints = windowReturnPoints(left, asOfDate, lookbackDays)
-  const rightWindowPoints = windowReturnPoints(right, asOfDate, lookbackDays)
-  if (
-    leftWindowPoints.length !== pairs.length ||
-    rightWindowPoints.length !== pairs.length ||
-    leftWindowPoints.some((point, index) => point.date !== pairs[index]?.date) ||
-    rightWindowPoints.some((point, index) => point.date !== pairs[index]?.date)
-  ) {
-    return { value: null, observationCount: pairs.length }
-  }
-  const coverage = assessRiskWindowCoverage(
-    pairs.map((pair) => pair.date),
-    asOfDate,
-    lookbackDays,
-    frequency,
+  const leftValues = sampleDates.map((dateKey) => left.returnsByDate.get(dateKey))
+  const rightValues = sampleDates.map((dateKey) => right.returnsByDate.get(dateKey))
+  const leftFiniteValues = leftValues.filter(
+    (value): value is number => typeof value === 'number' && Number.isFinite(value),
   )
-  if (!coverage.ok) {
-    return { value: null, observationCount: pairs.length }
+  const rightFiniteValues = rightValues.filter(
+    (value): value is number => typeof value === 'number' && Number.isFinite(value),
+  )
+  if (leftFiniteValues.length !== sampleDates.length || rightFiniteValues.length !== sampleDates.length) {
+    return { value: null, observationCount: sampleDates.length }
   }
-  const leftValues = pairs.map((pair) => pair.left)
-  const rightValues = pairs.map((pair) => pair.right)
-  const correlation = sampleCorrelation(leftValues, rightValues)
+  const correlation = sampleCorrelation(leftFiniteValues, rightFiniteValues)
   if (correlation == null) {
-    return { value: null, observationCount: pairs.length }
+    return { value: null, observationCount: sampleDates.length }
   }
   return {
     value: correlation,
-    observationCount: pairs.length,
+    observationCount: sampleDates.length,
   }
 }
 
@@ -1008,20 +1049,23 @@ function buildCorrelationMatrix(
       const weightDelta = Math.abs(right.weight ?? 0) - Math.abs(left.weight ?? 0)
       return weightDelta || left.item.groupLabel.localeCompare(right.item.groupLabel)
     })
+  const sampleDates = commonReturnDateKeys(
+    activeSeries.map(({ item }) => item),
+    riskWindowStart(asOfDate, lookbackDays),
+    asOfDate,
+  )
+  const sampleCoverage = assessRiskWindowCoverage(sampleDates, asOfDate, lookbackDays, frequency)
+  if (!sampleCoverage.ok) {
+    return { groups: [], cells: [], maxAbs: 0 } satisfies CorrelationMatrix
+  }
 
   let maxAbs = 0
   const cells = activeSeries.map((rowSeries) =>
     activeSeries.map((columnSeries) => {
       const cell =
         rowSeries.item.groupKey === columnSeries.item.groupKey
-          ? { value: 1, observationCount: rowSeries.coverage.observationCount }
-          : correlationCell(
-              rowSeries.item,
-              columnSeries.item,
-              asOfDate,
-              lookbackDays,
-              frequency,
-            )
+          ? { value: 1, observationCount: sampleCoverage.observationCount }
+          : correlationCellFromDates(rowSeries.item, columnSeries.item, sampleDates)
       if (cell.value != null) {
         maxAbs = Math.max(maxAbs, Math.abs(cell.value))
       }
@@ -1033,7 +1077,7 @@ function buildCorrelationMatrix(
     groups: activeSeries.map(({ item, coverage, weight }) => ({
       key: item.groupKey,
       label: item.groupLabel,
-      observationCount: coverage.observationCount,
+      observationCount: sampleCoverage.observationCount || coverage.observationCount,
       weight,
     })),
     cells,
@@ -1721,10 +1765,7 @@ function buildTargetGapRows({
     )
   }
   if (dimension === 'risk_budget' && riskShareErrors.length) {
-    return riskFail(
-      [`${targetSet.name} risk target gap cannot be calculated because current risk share failed.`].concat(riskShareErrors),
-      [] satisfies TargetGapComparatorRow[],
-    )
+    return riskFail(INSUFFICIENT_DATA_MESSAGE, [] satisfies TargetGapComparatorRow[])
   }
   const targetLineErrors = targetLines
     .filter((line) => (dimension === 'weight' ? line.target_weight : line.target_risk_share) == null)
@@ -2068,12 +2109,16 @@ export default function RiskPage() {
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
   const [portfolioStartDate, setPortfolioStartDate] = useState<string | null>(null)
-  const [rollingSettings, setRollingSettings] = useState<RollingRiskSettingsState>(DEFAULT_ROLLING_SETTINGS)
-  const [matrixSettings, setMatrixSettings] = useState<RiskWindowSettingsState>(DEFAULT_MATRIX_SETTINGS)
+  const [rollingSettings, setRollingSettings] = useState<RollingRiskSettingsState>(() => loadRiskPageSettings().rolling)
+  const [matrixSettings, setMatrixSettings] = useState<RiskWindowSettingsState>(() => loadRiskPageSettings().matrix)
   const [matrixScopeNodeId, setMatrixScopeNodeId] = useState(MATRIX_SCOPE_ALL_INSTRUMENTS)
   const [matrixAsOfDate, setMatrixAsOfDate] = useState('')
 
   const riskWindowEndDate = holdingsWorkspace?.as_of_date ?? ''
+
+  useEffect(() => {
+    saveRiskPageSettings({ rolling: rollingSettings, matrix: matrixSettings })
+  }, [matrixSettings, rollingSettings])
 
   useEffect(() => {
     if (!portfolioId) {
@@ -2637,12 +2682,13 @@ export default function RiskPage() {
     [saaRiskGapResult.errors, taaRiskGapResult.errors],
   )
   function renderRiskErrors(errors: string[]) {
-    if (!errors.length) {
+    const uniqueErrors = [...new Set(errors.filter(Boolean))]
+    if (!uniqueErrors.length) {
       return null
     }
     return (
       <div className="inline-notice inline-notice-error">
-        {errors.map((error, index) => (
+        {uniqueErrors.map((error, index) => (
           <div key={`${index}:${error}`}>{error}</div>
         ))}
       </div>
@@ -2714,17 +2760,30 @@ export default function RiskPage() {
     emptyLabel: string
     currentLabel?: string
   }) {
+    const uniqueErrors = [...new Set(errors.filter(Boolean))]
+    if (uniqueErrors.length && !rows.length) {
+      const insufficientDataOnly = uniqueErrors.every((error) => error === INSUFFICIENT_DATA_MESSAGE)
+      return (
+        <div
+          className={
+            insufficientDataOnly ? 'risk-chart-empty' : 'risk-chart-empty risk-chart-empty-error'
+          }
+        >
+          {uniqueErrors.map((error, index) => (
+            <div key={`${index}:${error}`}>{error}</div>
+          ))}
+        </div>
+      )
+    }
     return (
       <>
-        {renderRiskErrors(errors)}
-        {errors.length && !rows.length ? null : (
-          <RiskTargetGapChart
-            rows={rows}
-            ariaLabel={ariaLabel}
-            emptyLabel={emptyLabel}
-            currentLabel={currentLabel}
-          />
-        )}
+        {renderRiskErrors(uniqueErrors)}
+        <RiskTargetGapChart
+          rows={rows}
+          ariaLabel={ariaLabel}
+          emptyLabel={emptyLabel}
+          currentLabel={currentLabel}
+        />
       </>
     )
   }

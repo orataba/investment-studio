@@ -29,7 +29,7 @@
 - account
 - transaction
 - ledger posting
-- risk / review objects
+- risk snapshots
 
 ## 目录
 

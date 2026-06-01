@@ -331,9 +331,8 @@ def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
             {"label": "Risk", "href": "/risk", "status": "workspace-backed"},
             {"label": "Transactions", "href": "/transactions", "status": "api-backed"},
             {"label": "Accounts", "href": "/accounts", "status": "api-backed"},
-            {"label": "Review", "href": "/review", "status": "workspace-backed"},
-            {"label": "Research", "href": "/research", "status": "workspace-backed"},
             {"label": "Taxonomies", "href": "/taxonomies", "status": "workspace-backed"},
+            {"label": "Research", "href": "/research", "status": "workspace-backed"},
         ],
     }
 

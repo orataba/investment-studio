@@ -23,7 +23,7 @@ GIPS 对普通组合绩效呈现默认要求使用 time-weighted returns，只�
 
 本项目采用：
 
-- `TWR` 作为 `Overview / Performance / Review` 的默认组合收益口径；
+- `TWR` 作为 `Overview / Performance` 的默认组合收益口径；
 - `IRR / MWROR` 作为资金使用效率补充指标；
 - UI 不允许用 IRR 替代 TWR 展示“组合收益”。
 

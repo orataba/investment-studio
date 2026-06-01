@@ -42,7 +42,7 @@ def list_apps() -> PlatformAppsResponse:
                 api_url=settings.portfolio_api_url,
                 eyebrow="Portfolio management",
                 description=(
-                    "Portfolio, account, transaction, risk, and review workflows "
+                    "Portfolio, account, transaction, performance, risk, and research workflows "
                     "built on top of the shared instrument core."
                 ),
             ),

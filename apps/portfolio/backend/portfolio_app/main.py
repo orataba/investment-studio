@@ -10,7 +10,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="Portfolio management backend with portfolio, account, risk, and review surfaces.",
+    description="Portfolio management backend with portfolio, account, risk, and research surfaces.",
 )
 
 app.add_middleware(
@@ -97,9 +97,4 @@ def stock_intersection_page() -> RedirectResponse:
 
 @app.get("/risk")
 def risk_page() -> RedirectResponse:
-    return RedirectResponse(url=f"{settings.frontend_url}/portfolios", status_code=307)
-
-
-@app.get("/review")
-def review_page() -> RedirectResponse:
     return RedirectResponse(url=f"{settings.frontend_url}/portfolios", status_code=307)

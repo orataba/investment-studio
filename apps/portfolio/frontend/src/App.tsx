@@ -10,7 +10,6 @@ const PortfolioSecurityDetailPage = lazy(() => import('./pages/PortfolioSecurity
 const PortfoliosPage = lazy(() => import('./pages/PortfoliosPage'))
 const PerformancePage = lazy(() => import('./pages/PerformancePage'))
 const ResearchPage = lazy(() => import('./pages/ResearchPage'))
-const ReviewPage = lazy(() => import('./pages/ReviewPage'))
 const RiskPage = lazy(() => import('./pages/RiskPage'))
 const TaxonomiesPage = lazy(() => import('./pages/TaxonomiesPage'))
 const TransactionsPage = lazy(() => import('./pages/TransactionsPage'))
@@ -39,9 +38,8 @@ export default function App() {
             <Route path="/portfolios/:portfolioId/risk" element={<RiskPage />} />
             <Route path="/portfolios/:portfolioId/transactions" element={<TransactionsPage />} />
             <Route path="/portfolios/:portfolioId/accounts" element={<AccountsPage />} />
-            <Route path="/portfolios/:portfolioId/review" element={<ReviewPage />} />
-            <Route path="/portfolios/:portfolioId/research" element={<ResearchPage />} />
             <Route path="/portfolios/:portfolioId/taxonomies" element={<TaxonomiesPage />} />
+            <Route path="/portfolios/:portfolioId/research" element={<ResearchPage />} />
             <Route path="/snapshot" element={<Navigate replace to="/portfolios" />} />
             <Route path="/overview" element={<Navigate replace to="/portfolios" />} />
             <Route path="/holdings" element={<Navigate replace to="/portfolios" />} />
@@ -49,7 +47,6 @@ export default function App() {
             <Route path="/risk" element={<Navigate replace to="/portfolios" />} />
             <Route path="/transactions" element={<Navigate replace to="/portfolios" />} />
             <Route path="/accounts" element={<Navigate replace to="/portfolios" />} />
-            <Route path="/review" element={<Navigate replace to="/portfolios" />} />
             <Route path="/research" element={<Navigate replace to="/portfolios" />} />
             <Route path="/taxonomies" element={<Navigate replace to="/portfolios" />} />
             <Route path="/x-ray" element={<Navigate replace to="/portfolios" />} />

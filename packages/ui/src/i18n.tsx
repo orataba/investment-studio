@@ -175,8 +175,8 @@ const baseMessages: LanguageMessages = {
       '共享标的、汇率、净值导入、邮件刷新规则以及其他共享市场数据运营。',
     'Fund-only watchlists, fund detail pages, facts ingest, read models, and monitoring workflows.':
       '基金关注列表、基金详情页、事实导入、读模型和监控工作流。',
-    'Portfolio, account, transaction, risk, and review workflows built on top of the shared instrument core.':
-      '基于共享资产核心构建的组合、账户、交易、风险和复盘工作流。',
+    'Portfolio, account, transaction, performance, risk, and research workflows built on top of the shared instrument core.':
+      '基于共享资产核心构建的组合、账户、交易、绩效、风险和研究工作流。',
     'Shared Data Operations': '共享数据运营',
     'Registry Overview': '注册表总览',
     Total: '总计',

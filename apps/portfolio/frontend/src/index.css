@@ -1580,7 +1580,6 @@ input[type='checkbox'] {
 
 .rolling-risk-chart {
   display: grid;
-  gap: 8px;
   min-width: 0;
 }
 
@@ -1590,12 +1589,12 @@ input[type='checkbox'] {
   justify-content: space-between;
   gap: 12px;
   min-height: 34px;
-  padding: 4px 0 0;
+  padding: 10px 0 9px;
+  border-bottom: 1px solid var(--portfolio-line);
 }
 
 .rolling-risk-chart-plot {
   position: relative;
-  border-top: 1px solid #cbd5e1;
 }
 
 .rolling-risk-chart-svg {
@@ -2098,23 +2097,61 @@ input[type='checkbox'] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.risk-matrix-panel,
-.risk-target-panel {
+.risk-matrix-panel {
   min-width: 0;
+}
+
+.risk-chart-panel,
+.risk-target-panel {
+  display: grid;
+  grid-template-rows: auto minmax(84px, 1fr);
+  align-content: start;
+  min-width: 0;
+  min-height: 128px;
+  border-top: 1px solid #94a3b8;
+  border-bottom: 1px solid var(--portfolio-line);
 }
 
 .risk-matrix-panel-title {
   margin: 12px 0 0;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   color: var(--portfolio-ink);
+}
+
+.risk-chart-panel .portfolio-series-label strong {
+  color: var(--portfolio-ink);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.risk-target-panel .risk-matrix-panel-title {
+  margin: 0;
+  padding: 10px 0 9px;
+  border-bottom: 1px solid var(--portfolio-line);
 }
 
 .risk-target-gap-chart {
   display: grid;
   gap: 12px;
-  border-top: 1px solid var(--portfolio-line);
-  padding-top: 12px;
+  padding: 13px 0 14px;
+}
+
+.risk-chart-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 84px;
+  padding: 13px 0 14px;
+  color: var(--portfolio-muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.risk-chart-empty-error {
+  color: #8f1d1d;
 }
 
 .risk-target-gap-legend {
@@ -2353,23 +2390,6 @@ input[type='checkbox'] {
 }
 
 .performance-filter-group span {
-  font-size: 12px;
-  font-weight: 400;
-  letter-spacing: 0.01em;
-  color: var(--portfolio-muted);
-}
-
-.review-filter-grid,
-.review-filter-grid label {
-  display: grid;
-  gap: 6px;
-}
-
-.review-filter-grid {
-  grid-template-columns: repeat(3, minmax(180px, 220px));
-}
-
-.review-filter-grid span {
   font-size: 12px;
   font-weight: 400;
   letter-spacing: 0.01em;
@@ -6189,7 +6209,6 @@ td b {
   .transaction-inspector-grid,
   .transaction-filter-group,
   .performance-filter-group,
-  .review-filter-grid,
   .transaction-form-grid,
   .taxonomy-workbench-grid,
   .taxonomy-detail-grid,
@@ -6362,7 +6381,6 @@ td b {
   .transaction-inspector-grid,
   .transaction-filter-group,
   .performance-filter-group,
-  .review-filter-grid,
   .transaction-form-grid,
   .taxonomy-workbench-grid,
   .taxonomy-detail-grid,

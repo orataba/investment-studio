@@ -4040,6 +4040,28 @@ td:last-child {
   min-width: 0;
 }
 
+.instrument-risk-rolling-header {
+  align-items: center;
+}
+
+.instrument-risk-rolling-header .instrument-performance-title-group {
+  flex: 1 1 auto;
+}
+
+.instrument-risk-rolling-header .instrument-performance-title-row {
+  flex-wrap: nowrap;
+  width: 100%;
+}
+
+.instrument-risk-rolling-header .instrument-section-title {
+  flex: 0 0 auto;
+}
+
+.instrument-risk-rolling-header .instrument-performance-benchmark-select {
+  flex: 1 1 340px;
+  max-width: 420px;
+}
+
 .instrument-performance-section-body,
 .instrument-risk-section-body {
   display: grid;
@@ -4382,8 +4404,179 @@ td:last-child {
 }
 
 .instrument-risk-rolling-grid {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 24px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.instrument-risk-section-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.instrument-risk-settings-menu .instrument-chart-settings-trigger {
+  width: 30px;
+  height: 30px;
+  border: 1px solid #cbd5e1;
+  color: #111827;
+}
+
+.instrument-risk-settings-menu .instrument-chart-settings-trigger:hover,
+.instrument-risk-settings-menu .instrument-chart-settings-trigger-active {
+  border-color: #1f6fbc;
+  color: #1f6fbc;
+}
+
+.instrument-risk-settings-panel {
+  width: min(420px, calc(100vw - 48px));
+  padding: 0;
+}
+
+.instrument-risk-settings-panel .instrument-chart-settings-layout {
+  grid-template-columns: 1fr;
+}
+
+.instrument-risk-settings-panel .instrument-chart-settings-block,
+.instrument-risk-settings-panel .instrument-chart-settings-block-data {
+  grid-template-columns: 1fr;
+  padding: 14px;
+}
+
+.instrument-risk-settings-panel .instrument-chart-settings-block > :not(.instrument-chart-settings-block-head) {
+  grid-column: auto;
+}
+
+.instrument-risk-settings-panel .instrument-chart-settings-block-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.instrument-risk-settings-panel .instrument-chart-settings-block-head strong {
+  text-align: right;
+}
+
+.instrument-risk-settings-panel .instrument-chart-settings-option-grid {
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+}
+
+.instrument-rolling-risk-chart {
+  display: grid;
+  grid-template-rows: auto minmax(84px, 1fr);
+  align-content: start;
+  min-width: 0;
+  min-height: 128px;
+  border-top: 1px solid #94a3b8;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.instrument-rolling-risk-chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding: 10px 0 9px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.instrument-rolling-risk-chart-head .instrument-series-label strong {
+  font-size: 13px;
+}
+
+.instrument-rolling-risk-chart-plot {
+  position: relative;
+}
+
+.instrument-rolling-risk-chart-svg {
+  display: block;
+  width: 100%;
+  height: 230px;
+  background: #ffffff;
+}
+
+.instrument-rolling-risk-guide {
+  stroke: #e5e7eb;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  shape-rendering: crispEdges;
+}
+
+.instrument-rolling-risk-area {
+  fill: rgba(31, 111, 188, 0.14);
+}
+
+.instrument-rolling-risk-line {
+  fill: none;
+  stroke: #1f6fbc;
+  stroke-width: 1.85;
+  vector-effect: non-scaling-stroke;
+}
+
+.instrument-rolling-risk-line-benchmark {
+  stroke: #b91c1c;
+  stroke-width: 1.65;
+}
+
+.instrument-rolling-risk-point,
+.instrument-rolling-risk-endpoint {
+  fill: #ffffff;
+  stroke: #1f6fbc;
+  stroke-width: 1.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.instrument-rolling-risk-guide-line {
+  stroke: #94a3b8;
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.instrument-rolling-risk-axis-label {
+  fill: #111827;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.instrument-rolling-risk-x-label {
+  fill: #4b5563;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.instrument-rolling-risk-tooltip {
+  position: absolute;
+  top: 18px;
+  z-index: 2;
+  display: grid;
+  gap: 3px;
+  min-width: 142px;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 28px rgba(17, 17, 17, 0.12);
+  color: #4b5563;
+  font-size: 12px;
+  pointer-events: none;
+  transform: translateX(10px);
+}
+
+.instrument-rolling-risk-tooltip-left {
+  transform: translateX(calc(-100% - 10px));
+}
+
+.instrument-rolling-risk-tooltip strong {
+  color: #111827;
+  font-size: 13px;
+}
+
+.instrument-risk-chart-empty {
+  display: grid;
+  place-items: center;
+  min-height: 230px;
+  color: #6b7280;
+  font-size: 13px;
 }
 
 .instrument-risk-visual-column,
@@ -5790,6 +5983,14 @@ td:last-child {
     width: 100%;
   }
 
+  .instrument-risk-rolling-header {
+    flex-wrap: wrap;
+  }
+
+  .instrument-risk-rolling-header .instrument-performance-title-row {
+    flex-wrap: wrap;
+  }
+
   .instrument-performance-matrix-controls {
     width: 100%;
     flex-wrap: wrap;
@@ -6015,6 +6216,11 @@ td:last-child {
     left: 0;
     right: auto;
     width: min(420px, calc(100vw - 32px));
+  }
+
+  .instrument-risk-settings-panel {
+    left: auto;
+    right: 0;
   }
 
   .instrument-quote-fact {

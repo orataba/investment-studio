@@ -39,7 +39,7 @@
 换句话说：
 
 - 涉及 `持仓、成本、交易匹配、收益率` 的 canonical 口径，尽量先向 PP 靠拢；
-- 涉及 `风控、风险预算、buy-side review` 的部分，再由本项目扩展。
+- 涉及 `风控、风险预算、buy-side period analysis` 的部分，再由本项目扩展。
 - 涉及绩效呈现政策、外部现金流治理和方法一致性时，采用 GIPS-informed 原则，但不声称本项目或任意组合 GIPS compliant。
 
 ### 1.2 事实底座与派生原则
@@ -68,7 +68,7 @@
 - `Snapshots`
 - `Performance`
 - `Risk`
-- `Review`
+- `Research`
 
 规则：
 
@@ -271,7 +271,7 @@ Risk 与 Research 的 covariance / correlation / risk contribution 必须先确�
 - 价格缺失时，状态型 NAV / holdings 可以使用最近可用价格维持账面连续性，但必须记录 `stale_price_flag`，且该日不得作为正常市场收益观察进入 return/risk 样本；
 - benchmark 缺失时，benchmark-relative 指标只在重叠日期上计算，但不影响绝对口径 snapshot 的 `complete` 状态；
 - 若重叠覆盖率低于配置阈值，结果标记为 `partial` 或 `unavailable`；
-- 风控和 review 页面必须显示 coverage ratio，前端不得把缺失数据伪装成正常结果。
+- 风控和 period analytics 页面必须显示 coverage ratio，前端不得把缺失数据伪装成正常结果。
 
 ## 3. 估值与 NAV
 
@@ -594,7 +594,7 @@ $$
 R_{cum} = \prod_{t=1}^{n}(1+r_t)-1
 $$
 
-这是组合页面、绩效页和 review 中默认的区间收益口径。
+这是组合页面和绩效页中默认的区间收益口径。
 
 组合的 `TWR Index` 是把 `R_cum` 归一到 100 后得到的组合表现曲线。它在语义上类似基金的 total-return NAV / cumulative NAV，但不是组合会计单位净值；它只用于投资表现、回撤、波动和 benchmark comparison，不用于资产规模或账面 NAV 展示。
 
@@ -793,7 +793,7 @@ $$
 规则：
 
 - current-state 页按 `as_of_date` 解析 active primary benchmark assignment；
-- period 页按 `[period_start, period_end]` 解析 primary benchmark assignment；若区间内发生切换，review 必须显式标记 mixed benchmark context 或按分段汇总；
+- period 页按 `[period_start, period_end]` 解析 primary benchmark assignment；若区间内发生切换，period analytics 必须显式标记 mixed benchmark context 或按分段汇总；
 - canonical benchmark resolution 不得读取 `Portfolio` 上的固定 benchmark pointer；唯一真相来源是 `PortfolioBenchmarkAssignment` 的生效区间解析；
 - 若不存在可解析的 primary benchmark assignment，则 benchmark-relative 结果进入 `comparator missing / unavailable` 状态。
 
@@ -808,16 +808,16 @@ canonical 规则如下：
 - target_weight_gap / construction drift / rebalance diagnostics：在 `Risk` 中分别使用 selected planning taxonomy 下 active `SAA` 与 active `TAA` 的 `weight` 维度
 - limit checks / alerts：使用 configured `AlertRule`
 - risk budget gap：在 `Risk` 中分别使用 selected planning taxonomy 下 active `SAA` 与 active `TAA` 的 `risk_budget` 维度
-- review target weight drift / target risk budget summary：使用 selected planning taxonomy 在 `[period_start, period_end]` 上的 resolved target timeline，并按已启用维度分别解释
+- period target weight drift / target risk budget summary：使用 selected planning taxonomy 在 `[period_start, period_end]` 上的 resolved target timeline，并按已启用维度分别解释
 
 其中：
 
 - 被用于 drift / risk budget gap 的 selected taxonomy 必须是 `planning_enabled = true`；
 - `Risk` 必须分别计算 selected planning taxonomy 下 active `SAA` 与 active `TAA` 的 `weight` / `risk_budget` comparator；UI 合并展示为 `Weight Target Gap` 与 `Risk Target Gap` 两个面板。每个 sleeve 只占一条 row，右侧同图并列展示当前值、`SAA` target 与 `TAA` target。任一来源或维度未配置时，只标记对应 comparator unavailable，不跨 `SAA` / `TAA` 或 `weight` / `risk_budget` 回退；
-- review timeline 仍必须显式携带各段 target source 信息；若区间内来源随时间变化，则标记为 `mixed_timeline`
+- period timeline 仍必须显式携带各段 target source 信息；若区间内来源随时间变化，则标记为 `mixed_timeline`
 - period analytics 必须把上述结果 materialize 为正式 `ResolvedTargetTimeline` / `ResolvedTargetSegment`，而不是匿名 timeline blob；
 - `TargetSet(type = taa)` 在存储层必须已物化为对已启用维度完整的目标集，运行时不做稀疏 overlay 解析；
-- review period 内若 target 发生切换，系统必须按生效区间分段汇总，而不是拿单一期初或期末 target 解释整个区间；
+- period 内若 target 发生切换，系统必须按生效区间分段汇总，而不是拿单一期初或期末 target 解释整个区间；
 - 若用户切到纯分析 taxonomy，系统只能展示 `absolute only`，并标记 comparator missing。
 
 若某项分析缺少其 canonical comparator：
@@ -867,7 +867,7 @@ benchmark-relative 指标必须携带：
 - 不允许计算 benchmark-relative exposure
 - 不允许启用 Brinson 类 attribution
 - UI 必须明确标识 `benchmark composition unavailable`
-- `Review` 只能输出 `benchmark-relative performance summary`，不输出 `benchmark-active bets summary`
+- period analytics 只能输出 `benchmark-relative performance summary`，不输出 `benchmark-active bets summary`
 
 ## 7. 归因口径
 

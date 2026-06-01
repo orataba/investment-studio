@@ -264,7 +264,7 @@ type PerformanceMatrixRowKey =
   | 'recovery_days'
   | 'upside_capture'
   | 'downside_capture'
-type RollingRiskWindowMonths = 1 | 3 | 6 | 12 | 24 | 36
+type RollingRiskWindowMonths = 1 | 3 | 6 | 12
 type PerformanceMetricSnapshot = {
   periodReturn: number | null
   annualizedReturn: number | null
@@ -325,10 +325,64 @@ const ROLLING_RISK_WINDOW_OPTIONS: Array<{
   { months: 1, label: '1M' },
   { months: 3, label: '3M' },
   { months: 6, label: '6M' },
-  { months: 12, label: '12M' },
-  { months: 24, label: '24M' },
-  { months: 36, label: '36M' },
+  { months: 12, label: '1Y' },
 ]
+
+type WatchlistRollingRiskSettings = {
+  windowMonths: RollingRiskWindowMonths
+  chartDisplayStyle: ChartDisplayStyle
+}
+
+const WATCHLIST_ROLLING_RISK_SETTINGS_STORAGE_KEY = 'yungu.watchlist.instrument.risk.rolling.settings.v1'
+const DEFAULT_ROLLING_RISK_SETTINGS: WatchlistRollingRiskSettings = {
+  windowMonths: 1,
+  chartDisplayStyle: 'mountain',
+}
+
+function normalizeRollingRiskWindowMonths(value: unknown, fallback: RollingRiskWindowMonths) {
+  return ROLLING_RISK_WINDOW_OPTIONS.some((option) => option.months === value)
+    ? (value as RollingRiskWindowMonths)
+    : fallback
+}
+
+function normalizeChartDisplayStyle(value: unknown, fallback: ChartDisplayStyle) {
+  return value === 'mountain' || value === 'line' || value === 'dot' ? value : fallback
+}
+
+function loadWatchlistRollingRiskSettings(): WatchlistRollingRiskSettings {
+  if (typeof window === 'undefined') {
+    return DEFAULT_ROLLING_RISK_SETTINGS
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(WATCHLIST_ROLLING_RISK_SETTINGS_STORAGE_KEY)
+    const record = rawValue ? (JSON.parse(rawValue) as Record<string, unknown>) : {}
+    return {
+      windowMonths: normalizeRollingRiskWindowMonths(
+        record.windowMonths,
+        DEFAULT_ROLLING_RISK_SETTINGS.windowMonths,
+      ),
+      chartDisplayStyle: normalizeChartDisplayStyle(
+        record.chartDisplayStyle,
+        DEFAULT_ROLLING_RISK_SETTINGS.chartDisplayStyle,
+      ),
+    }
+  } catch {
+    return DEFAULT_ROLLING_RISK_SETTINGS
+  }
+}
+
+function saveWatchlistRollingRiskSettings(settings: WatchlistRollingRiskSettings) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  try {
+    window.localStorage.setItem(WATCHLIST_ROLLING_RISK_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+  } catch {
+    // Ignore storage failures; the UI still works with in-memory state.
+  }
+}
 
 const TAB_ORDER: DetailTab[] = [
   'overview',
@@ -654,6 +708,319 @@ const SECONDARY_SERIES_GEOMETRY: ChartGeometry = {
   paddingRight: 18,
   paddingTop: 18,
   paddingBottom: 40,
+}
+
+const ROLLING_RISK_CHART_WIDTH = 960
+const ROLLING_RISK_CHART_HEIGHT = 260
+const ROLLING_RISK_CHART_PADDING = { top: 18, right: 70, bottom: 30, left: 12 }
+
+type RollingRiskMetricChartProps = {
+  title: string
+  points: FundChartPoint[]
+  benchmarkPoints?: FundChartPoint[]
+  benchmarkLabel?: string | null
+  displayStyle: ChartDisplayStyle
+  formatValue: (value: number | null | undefined) => string
+  emptyLabel: string
+}
+
+function buildRollingRiskLinePath(points: Array<{ x: number; y: number }>) {
+  return points
+    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(' ')
+}
+
+function normalizeRollingRiskPoints(points: FundChartPoint[]) {
+  return points
+    .filter((point) => point.date && Number.isFinite(point.value))
+    .slice()
+    .sort((left, right) => left.date.localeCompare(right.date))
+}
+
+function filterRollingRiskPointsByDateWindow(points: FundChartPoint[], startDate: string, endDate: string) {
+  return points.filter((point) => point.date >= startDate && point.date <= endDate)
+}
+
+function buildRollingRiskCoordinates(
+  points: FundChartPoint[],
+  yMin: number,
+  yMax: number,
+  startDate: string,
+  endDate: string,
+) {
+  const drawableWidth =
+    ROLLING_RISK_CHART_WIDTH - ROLLING_RISK_CHART_PADDING.left - ROLLING_RISK_CHART_PADDING.right
+  const drawableHeight =
+    ROLLING_RISK_CHART_HEIGHT - ROLLING_RISK_CHART_PADDING.top - ROLLING_RISK_CHART_PADDING.bottom
+  const range = yMax - yMin || 1
+  const startTime = Date.parse(`${startDate}T00:00:00`)
+  const endTime = Date.parse(`${endDate}T00:00:00`)
+  const timeRange =
+    Number.isFinite(startTime) && Number.isFinite(endTime) && endTime > startTime
+      ? endTime - startTime
+      : null
+
+  return points.map((point, index) => {
+    const pointTime = Date.parse(`${point.date}T00:00:00`)
+    const xRatio =
+      timeRange != null && Number.isFinite(pointTime)
+        ? (pointTime - startTime) / timeRange
+        : index / Math.max(points.length - 1, 1)
+    const x = ROLLING_RISK_CHART_PADDING.left + Math.min(1, Math.max(0, xRatio)) * drawableWidth
+    const y =
+      ROLLING_RISK_CHART_PADDING.top +
+      drawableHeight -
+      ((point.value - yMin) / range) * drawableHeight
+    return { x, y }
+  })
+}
+
+function getRollingRiskYCoordinate(value: number, yMin: number, yMax: number) {
+  const drawableHeight =
+    ROLLING_RISK_CHART_HEIGHT - ROLLING_RISK_CHART_PADDING.top - ROLLING_RISK_CHART_PADDING.bottom
+  return (
+    ROLLING_RISK_CHART_PADDING.top +
+    drawableHeight -
+    ((value - yMin) / (yMax - yMin || 1)) * drawableHeight
+  )
+}
+
+function getRollingRiskDateLabel(point: FundChartPoint | undefined) {
+  return point?.date ?? '—'
+}
+
+function WatchlistRollingRiskMetricChart({
+  title,
+  points,
+  benchmarkPoints = [],
+  benchmarkLabel = null,
+  displayStyle,
+  formatValue,
+  emptyLabel,
+}: RollingRiskMetricChartProps) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
+  const sortedPoints = useMemo(() => normalizeRollingRiskPoints(points), [points])
+  const sortedBenchmarkPoints = useMemo(
+    () => normalizeRollingRiskPoints(benchmarkPoints),
+    [benchmarkPoints],
+  )
+
+  const chartState = useMemo(() => {
+    if (sortedPoints.length < 2) {
+      return null
+    }
+
+    const firstDate = sortedPoints[0].date
+    const lastDate = sortedPoints[sortedPoints.length - 1].date
+    const visibleBenchmarkPoints = filterRollingRiskPointsByDateWindow(
+      sortedBenchmarkPoints,
+      firstDate,
+      lastDate,
+    )
+    const allValues = [
+      ...sortedPoints.map((point) => point.value),
+      ...visibleBenchmarkPoints.map((point) => point.value),
+      0,
+    ].filter((value) => Number.isFinite(value))
+    const minValue = Math.min(...allValues)
+    const maxValue = Math.max(...allValues)
+    const padding = Math.max((maxValue - minValue) * 0.12, Math.abs(maxValue || minValue || 1) * 0.04, 0.01)
+    const yMin = Math.min(0, minValue - padding)
+    const yMax = maxValue + padding
+    const coordinates = buildRollingRiskCoordinates(sortedPoints, yMin, yMax, firstDate, lastDate)
+    const linePath = buildRollingRiskLinePath(coordinates)
+    const baselineY = getRollingRiskYCoordinate(0, yMin, yMax)
+    const areaPath = `${linePath} L ${coordinates[coordinates.length - 1].x.toFixed(2)} ${baselineY.toFixed(2)} L ${coordinates[0].x.toFixed(2)} ${baselineY.toFixed(2)} Z`
+    const benchmarkCoordinates =
+      visibleBenchmarkPoints.length > 1
+        ? buildRollingRiskCoordinates(visibleBenchmarkPoints, yMin, yMax, firstDate, lastDate)
+        : []
+    const benchmarkLinePath =
+      benchmarkCoordinates.length > 1 ? buildRollingRiskLinePath(benchmarkCoordinates) : null
+    const guideValues = [yMax, yMin + (yMax - yMin) / 2, yMin]
+
+    return {
+      visibleBenchmarkPoints,
+      coordinates,
+      linePath,
+      areaPath,
+      benchmarkLinePath,
+      guideValues,
+      yMin,
+      yMax,
+    }
+  }, [sortedBenchmarkPoints, sortedPoints])
+
+  if (!chartState) {
+    return (
+      <section className="instrument-rolling-risk-chart" aria-label={title}>
+        <div className="instrument-rolling-risk-chart-head">
+          <div className="instrument-series-legend">
+            <div className="instrument-series-label">
+              <strong>{title}</strong>
+            </div>
+          </div>
+        </div>
+        <div className="instrument-risk-chart-empty">{emptyLabel}</div>
+      </section>
+    )
+  }
+
+  const resolvedChartState = chartState
+  const activeIndex = Math.min(hoveredIndex ?? sortedPoints.length - 1, sortedPoints.length - 1)
+  const activePoint = sortedPoints[activeIndex]
+  const activeCoordinate = resolvedChartState.coordinates[activeIndex]
+  const activeBenchmarkPoint =
+    resolvedChartState.visibleBenchmarkPoints.find((point) => point.date === activePoint.date) ??
+    resolvedChartState.visibleBenchmarkPoints
+      .slice()
+      .reverse()
+      .find((point) => point.date <= activePoint.date) ??
+    null
+  const firstPoint = sortedPoints[0]
+  const middlePoint = sortedPoints[Math.floor((sortedPoints.length - 1) / 2)]
+  const lastPoint = sortedPoints[sortedPoints.length - 1]
+  const lastCoordinate = resolvedChartState.coordinates[resolvedChartState.coordinates.length - 1]
+  const hasBenchmark = Boolean(benchmarkLabel && resolvedChartState.benchmarkLinePath)
+
+  function handlePointerMove(event: ReactMouseEvent<SVGSVGElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const chartX = bounds.width > 0 ? ((event.clientX - bounds.left) / bounds.width) * ROLLING_RISK_CHART_WIDTH : 0
+    const nextIndex = resolvedChartState.coordinates.reduce((bestIndex, coordinate, index) => {
+      const bestDistance = Math.abs(resolvedChartState.coordinates[bestIndex].x - chartX)
+      const nextDistance = Math.abs(coordinate.x - chartX)
+      return nextDistance < bestDistance ? index : bestIndex
+    }, 0)
+    setHoveredIndex(nextIndex)
+  }
+
+  return (
+    <section className="instrument-rolling-risk-chart" aria-label={title}>
+      <div className="instrument-rolling-risk-chart-head">
+        <div className="instrument-series-legend">
+          <div className="instrument-series-label">
+            <strong>{title}</strong>
+            <em>{formatValue(activePoint.value)}</em>
+          </div>
+          {hasBenchmark ? (
+            <div className="instrument-series-label instrument-series-label-benchmark-row">
+              <strong>{benchmarkLabel}</strong>
+              <em>{formatValue(activeBenchmarkPoint?.value)}</em>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="instrument-rolling-risk-chart-plot">
+        {hoveredIndex != null ? (
+          <div
+            className={`instrument-rolling-risk-tooltip${
+              activeCoordinate.x > ROLLING_RISK_CHART_WIDTH * 0.72 ? ' instrument-rolling-risk-tooltip-left' : ''
+            }`}
+            style={{ left: `${(activeCoordinate.x / ROLLING_RISK_CHART_WIDTH) * 100}%` }}
+          >
+            <span>{activePoint.date}</span>
+            <strong>{formatValue(activePoint.value)}</strong>
+            {hasBenchmark ? (
+              <span>
+                {benchmarkLabel} {formatValue(activeBenchmarkPoint?.value)}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+        <svg
+          className="instrument-rolling-risk-chart-svg"
+          viewBox={`0 0 ${ROLLING_RISK_CHART_WIDTH} ${ROLLING_RISK_CHART_HEIGHT}`}
+          preserveAspectRatio="none"
+          onMouseMove={handlePointerMove}
+          onMouseLeave={() => setHoveredIndex(null)}
+        >
+          {resolvedChartState.guideValues.map((value, index) => {
+            const y =
+              ROLLING_RISK_CHART_PADDING.top +
+              (ROLLING_RISK_CHART_HEIGHT - ROLLING_RISK_CHART_PADDING.top - ROLLING_RISK_CHART_PADDING.bottom) -
+              ((value - resolvedChartState.yMin) / (resolvedChartState.yMax - resolvedChartState.yMin || 1)) *
+                (ROLLING_RISK_CHART_HEIGHT - ROLLING_RISK_CHART_PADDING.top - ROLLING_RISK_CHART_PADDING.bottom)
+            return (
+              <g key={`${value.toFixed(6)}:${index}`}>
+                <line
+                  x1={ROLLING_RISK_CHART_PADDING.left}
+                  x2={ROLLING_RISK_CHART_WIDTH - ROLLING_RISK_CHART_PADDING.right}
+                  y1={y}
+                  y2={y}
+                  className="instrument-rolling-risk-guide"
+                />
+                <text
+                  x={ROLLING_RISK_CHART_WIDTH - ROLLING_RISK_CHART_PADDING.right + 8}
+                  y={y + 4}
+                  className="instrument-rolling-risk-axis-label"
+                >
+                  {formatValue(value)}
+                </text>
+              </g>
+            )
+          })}
+          {displayStyle === 'mountain' ? (
+            <path d={resolvedChartState.areaPath} className="instrument-rolling-risk-area" />
+          ) : null}
+          {displayStyle !== 'dot' ? (
+            <path d={resolvedChartState.linePath} className="instrument-rolling-risk-line" />
+          ) : null}
+          {displayStyle === 'dot'
+            ? resolvedChartState.coordinates.map((coordinate, index) => (
+                <circle
+                  key={`${sortedPoints[index].date}:dot`}
+                  cx={coordinate.x}
+                  cy={coordinate.y}
+                  r="2.6"
+                  className="instrument-rolling-risk-point"
+                />
+              ))
+            : null}
+          {resolvedChartState.benchmarkLinePath ? (
+            <path
+              d={resolvedChartState.benchmarkLinePath}
+              className="instrument-rolling-risk-line instrument-rolling-risk-line-benchmark"
+            />
+          ) : null}
+          <circle
+            cx={lastCoordinate.x}
+            cy={lastCoordinate.y}
+            r="4"
+            className="instrument-rolling-risk-endpoint"
+          />
+          {hoveredIndex != null ? (
+            <line
+              x1={activeCoordinate.x}
+              x2={activeCoordinate.x}
+              y1={ROLLING_RISK_CHART_PADDING.top}
+              y2={ROLLING_RISK_CHART_HEIGHT - ROLLING_RISK_CHART_PADDING.bottom}
+              className="instrument-rolling-risk-guide-line"
+            />
+          ) : null}
+          {[
+            { point: firstPoint, anchor: 'start' as const, x: ROLLING_RISK_CHART_PADDING.left },
+            { point: middlePoint, anchor: 'middle' as const, x: ROLLING_RISK_CHART_WIDTH / 2 },
+            {
+              point: lastPoint,
+              anchor: 'end' as const,
+              x: ROLLING_RISK_CHART_WIDTH - ROLLING_RISK_CHART_PADDING.right,
+            },
+          ].map((label) => (
+            <text
+              key={`${getRollingRiskDateLabel(label.point)}:${label.anchor}`}
+              x={label.x}
+              y={ROLLING_RISK_CHART_HEIGHT - 9}
+              textAnchor={label.anchor}
+              className="instrument-rolling-risk-axis-label instrument-rolling-risk-x-label"
+            >
+              {getRollingRiskDateLabel(label.point)}
+            </text>
+          ))}
+        </svg>
+      </div>
+    </section>
+  )
 }
 
 function toTitleCase(value: string) {
@@ -1919,6 +2286,17 @@ function getMonthBucket(value: string) {
   return value.slice(0, 7)
 }
 
+function getPreviousMonthBucket(monthBucket: string) {
+  const year = Number(monthBucket.slice(0, 4))
+  const month = Number(monthBucket.slice(5, 7))
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+    return null
+  }
+  const previousYear = month === 1 ? year - 1 : year
+  const previousMonth = month === 1 ? 12 : month - 1
+  return `${previousYear}-${String(previousMonth).padStart(2, '0')}`
+}
+
 function buildMonthlyCloseSeries(points: FundChartPoint[]) {
   const sortedPoints = [...points].sort((left, right) => left.date.localeCompare(right.date))
   const monthlyPoints: FundChartPoint[] = []
@@ -2108,11 +2486,15 @@ function getPointAtOrNearestDate(points: FundChartPoint[], targetDate: string | 
 
 function buildMonthlyReturnSeries(points: FundChartPoint[]) {
   const monthlyCloses = buildMonthlyCloseSeries(points)
+  const monthlyCloseByBucket = new Map(monthlyCloses.map((point) => [getMonthBucket(point.date), point] as const))
   const monthlyReturns: FundChartPoint[] = []
 
-  for (let index = 1; index < monthlyCloses.length; index += 1) {
-    const previousPoint = monthlyCloses[index - 1]
-    const currentPoint = monthlyCloses[index]
+  for (const currentPoint of monthlyCloses) {
+    const previousBucket = getPreviousMonthBucket(getMonthBucket(currentPoint.date))
+    const previousPoint = previousBucket ? monthlyCloseByBucket.get(previousBucket) : null
+    if (!previousPoint) {
+      continue
+    }
     if (previousPoint.value === 0) {
       continue
     }
@@ -2380,12 +2762,9 @@ function buildMonthlyAnnualizedVolatilitySeries(points: FundChartPoint[]) {
 function buildMonthlyReturnMatrix(points: FundChartPoint[]) {
   const monthlyReturns = buildMonthlyReturnSeries(points)
   const monthlyCloses = buildMonthlyCloseSeries(points)
+  const monthlyCloseByBucket = new Map(monthlyCloses.map((point) => [getMonthBucket(point.date), point] as const))
   const rows = new Map<number, { year: string; months: Array<number | null>; ytd: number | null }>()
-  const yearEndCloses = new Map<number, FundChartPoint>()
-
-  monthlyCloses.forEach((point) => {
-    yearEndCloses.set(Number(point.date.slice(0, 4)), point)
-  })
+  const latestCloseByYear = new Map<number, FundChartPoint>()
 
   monthlyReturns.forEach((point) => {
     const year = Number(point.date.slice(0, 4))
@@ -2399,11 +2778,15 @@ function buildMonthlyReturnMatrix(points: FundChartPoint[]) {
     rows.set(year, row)
   })
 
+  monthlyCloses.forEach((point) => {
+    latestCloseByYear.set(Number(point.date.slice(0, 4)), point)
+  })
+
   return Array.from(rows.entries())
     .sort((left, right) => right[0] - left[0])
     .map(([year, row]) => {
-      const previousYearClose = yearEndCloses.get(year - 1)
-      const currentYearClose = yearEndCloses.get(year)
+      const previousYearClose = monthlyCloseByBucket.get(`${year - 1}-12`)
+      const currentYearClose = latestCloseByYear.get(year)
       const ytd =
         previousYearClose && currentYearClose && previousYearClose.value !== 0
           ? ((currentYearClose.value / previousYearClose.value) - 1) * 100
@@ -3538,8 +3921,12 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [benchmarkNavSeries, setBenchmarkNavSeries] = useState<FundNavSeriesResponse | null>(null)
   const [performanceMatrixMode, setPerformanceMatrixMode] =
     useState<PerformanceMatrixMode>('values')
-  const [rollingRiskWindowMonths, setRollingRiskWindowMonths] =
-    useState<RollingRiskWindowMonths>(12)
+  const [rollingRiskSettings, setRollingRiskSettings] = useState<WatchlistRollingRiskSettings>(
+    () => loadWatchlistRollingRiskSettings(),
+  )
+  const rollingRiskWindowMonths = rollingRiskSettings.windowMonths
+  const rollingRiskChartDisplayStyle = rollingRiskSettings.chartDisplayStyle
+  const [riskSettingsOpen, setRiskSettingsOpen] = useState(false)
   const [quoteActionNotice, setQuoteActionNotice] = useState<string | null>(null)
   const [chartStartDate, setChartStartDate] = useState('')
   const [chartEndDate, setChartEndDate] = useState('')
@@ -3585,6 +3972,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const [taxonomyTree, setTaxonomyTree] = useState<FundTaxonomyTreeResponse | null>(null)
   const [taxonomyDraftNodeId, setTaxonomyDraftNodeId] = useState('')
   const quoteChartMenuRef = useRef<HTMLDivElement | null>(null)
+  const riskSettingsMenuRef = useRef<HTMLDivElement | null>(null)
   const productFrameworkPickerRef = useRef<HTMLDivElement | null>(null)
   const timelineNoteContextMenuRef = useRef<HTMLDivElement | null>(null)
   const [productFrameworkAttributes, setProductFrameworkAttributes] =
@@ -3607,6 +3995,9 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       if (!quoteChartMenuRef.current?.contains(event.target as Node)) {
         setOpenQuoteChartMenu(null)
       }
+      if (!riskSettingsMenuRef.current?.contains(event.target as Node)) {
+        setRiskSettingsOpen(false)
+      }
       if (!productFrameworkPickerRef.current?.contains(event.target as Node)) {
         setOpenProductFrameworkPickerKey(null)
       }
@@ -3618,6 +4009,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     document.addEventListener('pointerdown', handlePointerDown)
     return () => document.removeEventListener('pointerdown', handlePointerDown)
   }, [])
+
+  useEffect(() => {
+    saveWatchlistRollingRiskSettings(rollingRiskSettings)
+  }, [rollingRiskSettings])
 
   useEffect(() => {
     let cancelled = false
@@ -3890,6 +4285,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     setBenchmarkNavSeries(null)
     setQuoteActionNotice(null)
     setOpenQuoteChartMenu(null)
+    setRiskSettingsOpen(false)
   }, [fundId])
 
   useEffect(() => {
@@ -5878,104 +6274,6 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           rollingRiskWindowMonths,
         ).slice(-ROLLING_CHART_MAX_POINTS)
       : []
-  const rollingVolatilityBounds = rollingVolatilitySeries.length
-    ? getPaddedAxisBounds(
-        Math.min(0, ...rollingVolatilitySeries.map((point) => point.value)),
-        Math.max(...rollingVolatilitySeries.map((point) => point.value)),
-        0.12,
-        0.5,
-      )
-    : { min: 0, max: 1 }
-  const rollingVolatilityTickValues = getLinearTickValues(
-    rollingVolatilityBounds.min,
-    rollingVolatilityBounds.max,
-    4,
-  )
-  const rollingVolatilityTickDates = getChartTickDates(rollingVolatilitySeries, 6)
-  const rollingVolatilityLinePath = buildChartLinePath(
-    rollingVolatilitySeries,
-    SECONDARY_SERIES_GEOMETRY,
-    rollingVolatilityBounds.min,
-    rollingVolatilityBounds.max,
-  )
-  const rollingVolatilityAreaPath = buildChartAreaPath(
-    rollingVolatilitySeries,
-    SECONDARY_SERIES_GEOMETRY,
-    rollingVolatilityBounds.min,
-    rollingVolatilityBounds.max,
-    0,
-  )
-  const rollingAnnualizedReturnSeries = buildRollingAnnualizedReturnSeries(
-    calculationBasisSeries,
-    rollingRiskWindowMonths,
-  ).slice(-ROLLING_CHART_MAX_POINTS)
-  const benchmarkRollingAnnualizedReturnSeries =
-    selectedBenchmark && benchmarkCalculationSeries.length > 0
-      ? buildRollingAnnualizedReturnSeries(
-          benchmarkCalculationSeries,
-          rollingRiskWindowMonths,
-        ).slice(-ROLLING_CHART_MAX_POINTS)
-      : []
-  const rollingReturnVolSeries = [
-    ...rollingAnnualizedReturnSeries,
-    ...rollingVolatilitySeries,
-    ...benchmarkRollingAnnualizedReturnSeries,
-    ...benchmarkRollingVolatilitySeries,
-  ]
-  const rollingReturnVolBounds = rollingReturnVolSeries.length
-    ? getPaddedAxisBounds(
-        Math.min(0, ...rollingReturnVolSeries.map((point) => point.value)),
-        Math.max(...rollingReturnVolSeries.map((point) => point.value)),
-        0.12,
-        0.5,
-      )
-    : { min: -1, max: 1 }
-  const rollingReturnVolTickValues = getLinearTickValues(
-    rollingReturnVolBounds.min,
-    rollingReturnVolBounds.max,
-    4,
-  )
-  const rollingReturnVolDateSeries = sortSeriesByDate(rollingReturnVolSeries)
-  const rollingReturnVolStartDate = rollingReturnVolDateSeries[0]?.date || null
-  const rollingReturnVolEndDate = rollingReturnVolDateSeries[rollingReturnVolDateSeries.length - 1]?.date || null
-  const rollingReturnVolTickDates = getChartAxisTicks(rollingReturnVolDateSeries, 8)
-  const rollingReturnVolTickSpanDays = getChartDateSpanDays(rollingReturnVolDateSeries)
-  const rollingAnnualizedReturnLinePath = buildDateScaledLinePath(
-    rollingAnnualizedReturnSeries,
-    SECONDARY_SERIES_GEOMETRY,
-    rollingReturnVolBounds.min,
-    rollingReturnVolBounds.max,
-    rollingReturnVolStartDate,
-    rollingReturnVolEndDate,
-    true,
-  )
-  const rollingAnnualizedVolatilityLinePath = buildDateScaledLinePath(
-    rollingVolatilitySeries,
-    SECONDARY_SERIES_GEOMETRY,
-    rollingReturnVolBounds.min,
-    rollingReturnVolBounds.max,
-    rollingReturnVolStartDate,
-    rollingReturnVolEndDate,
-    true,
-  )
-  const benchmarkRollingAnnualizedReturnLinePath = buildDateScaledLinePath(
-    benchmarkRollingAnnualizedReturnSeries,
-    SECONDARY_SERIES_GEOMETRY,
-    rollingReturnVolBounds.min,
-    rollingReturnVolBounds.max,
-    rollingReturnVolStartDate,
-    rollingReturnVolEndDate,
-    true,
-  )
-  const benchmarkRollingAnnualizedVolatilityLinePath = buildDateScaledLinePath(
-    benchmarkRollingVolatilitySeries,
-    SECONDARY_SERIES_GEOMETRY,
-    rollingReturnVolBounds.min,
-    rollingReturnVolBounds.max,
-    rollingReturnVolStartDate,
-    rollingReturnVolEndDate,
-    true,
-  )
   const rollingSharpeSeries = buildRollingSharpeSeries(calculationBasisSeries, rollingRiskWindowMonths).slice(
     -ROLLING_CHART_MAX_POINTS,
   )
@@ -5985,77 +6283,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           -ROLLING_CHART_MAX_POINTS,
         )
       : []
-  const rollingSharpeCombinedSeries = [...rollingSharpeSeries, ...benchmarkRollingSharpeSeries]
-  const rollingSharpeBounds = rollingSharpeCombinedSeries.length
-    ? getPaddedAxisBounds(
-        Math.min(0, ...rollingSharpeCombinedSeries.map((point) => point.value)),
-        Math.max(...rollingSharpeCombinedSeries.map((point) => point.value)),
-        0.15,
-        0.25,
-      )
-    : { min: -1, max: 1 }
-  const rollingSharpeTickValues = getLinearTickValues(
-    rollingSharpeBounds.min,
-    rollingSharpeBounds.max,
-    4,
-  )
-  const rollingSharpeDateSeries = sortSeriesByDate(rollingSharpeCombinedSeries)
-  const rollingSharpeStartDate = rollingSharpeDateSeries[0]?.date || null
-  const rollingSharpeEndDate = rollingSharpeDateSeries[rollingSharpeDateSeries.length - 1]?.date || null
-  const rollingSharpeTickDates = getChartAxisTicks(rollingSharpeDateSeries, 8)
-  const rollingSharpeTickSpanDays = getChartDateSpanDays(rollingSharpeDateSeries)
-  const rollingSharpeLinePath = buildDateScaledLinePath(
-    rollingSharpeSeries,
-    SECONDARY_SERIES_GEOMETRY,
-    rollingSharpeBounds.min,
-    rollingSharpeBounds.max,
-    rollingSharpeStartDate,
-    rollingSharpeEndDate,
-    true,
-  )
-  const benchmarkRollingSharpeLinePath = buildDateScaledLinePath(
-    benchmarkRollingSharpeSeries,
-    SECONDARY_SERIES_GEOMETRY,
-    rollingSharpeBounds.min,
-    rollingSharpeBounds.max,
-    rollingSharpeStartDate,
-    rollingSharpeEndDate,
-    true,
-  )
-  const hasRollingReturnVolChart =
-    rollingAnnualizedReturnSeries.length > 1 ||
-    rollingVolatilitySeries.length > 1 ||
-    benchmarkRollingAnnualizedReturnSeries.length > 1 ||
-    benchmarkRollingVolatilitySeries.length > 1
-  const hasRollingSharpeChart =
-    rollingSharpeSeries.length > 1 || benchmarkRollingSharpeSeries.length > 1
   const rollingBetaSeries =
     selectedBenchmark && benchmarkCalculationSeries.length > 0
       ? buildRollingBetaSeries(calculationBasisSeries, benchmarkCalculationSeries).slice(-60)
       : []
-  const rollingBetaBounds = rollingBetaSeries.length
-    ? getPaddedAxisBounds(
-        Math.min(...rollingBetaSeries.map((point) => point.value)),
-        Math.max(...rollingBetaSeries.map((point) => point.value)),
-        0.15,
-        0.1,
-      )
-    : { min: 0, max: 2 }
-  const rollingBetaTickValues = getLinearTickValues(rollingBetaBounds.min, rollingBetaBounds.max, 4)
-  const rollingBetaTickDates = getChartTickDates(rollingBetaSeries, 6)
-  const rollingBetaLinePath = buildChartLinePath(
-    rollingBetaSeries,
-    SECONDARY_SERIES_GEOMETRY,
-    rollingBetaBounds.min,
-    rollingBetaBounds.max,
-  )
-  const rollingBetaAreaPath = buildChartAreaPath(
-    rollingBetaSeries,
-    SECONDARY_SERIES_GEOMETRY,
-    rollingBetaBounds.min,
-    rollingBetaBounds.max,
-    0,
-  )
   const rollingRiskFactRows = [
     {
       label: 'Latest Rolling Ann. Vol',
@@ -6988,6 +7219,85 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
         </div>
       </div>
     ) : null
+
+  const riskSettingsMenu = (
+    <div className="instrument-chart-menu instrument-chart-settings-menu instrument-risk-settings-menu" ref={riskSettingsMenuRef}>
+      <button
+        type="button"
+        className={
+          riskSettingsOpen
+            ? 'instrument-chart-settings-trigger instrument-chart-settings-trigger-active'
+            : 'instrument-chart-settings-trigger'
+        }
+        aria-label="Rolling risk settings"
+        onClick={() => setRiskSettingsOpen((current) => !current)}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 7h4" />
+          <path d="M14 7h6" />
+          <circle cx="11" cy="7" r="2.25" />
+          <path d="M4 17h7" />
+          <path d="M17 17h3" />
+          <circle cx="14" cy="17" r="2.25" />
+        </svg>
+      </button>
+      {riskSettingsOpen ? (
+        <div className="instrument-chart-menu-panel instrument-chart-settings-panel instrument-risk-settings-panel">
+          <div className="instrument-chart-settings-layout">
+            <section className="instrument-chart-settings-block">
+              <div className="instrument-chart-settings-block-head">
+                <span>Window</span>
+                <strong>{rollingRiskWindowLabel}</strong>
+              </div>
+              <div className="instrument-chart-settings-option-grid">
+                {ROLLING_RISK_WINDOW_OPTIONS.map((option) => (
+                  <button
+                    key={option.months}
+                    type="button"
+                    className={
+                      option.months === rollingRiskWindowMonths
+                        ? 'instrument-chart-option instrument-chart-option-active'
+                        : 'instrument-chart-option'
+                    }
+                    onClick={() =>
+                      setRollingRiskSettings((current) => ({ ...current, windowMonths: option.months }))
+                    }
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="instrument-chart-settings-block instrument-chart-settings-block-data">
+              <div className="instrument-chart-settings-block-head">
+                <span>Display</span>
+                <strong>{toTitleCase(rollingRiskChartDisplayStyle)}</strong>
+              </div>
+              <div className="instrument-chart-settings-option-grid">
+                {(['mountain', 'line', 'dot'] as ChartDisplayStyle[]).map((style) => (
+                  <button
+                    key={style}
+                    type="button"
+                    className={
+                      rollingRiskChartDisplayStyle === style
+                        ? 'instrument-chart-option instrument-chart-option-active'
+                        : 'instrument-chart-option'
+                    }
+                    onClick={() =>
+                      setRollingRiskSettings((current) => ({ ...current, chartDisplayStyle: style }))
+                    }
+                  >
+                    {toTitleCase(style)}
+                  </button>
+                ))}
+              </div>
+            </section>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
 
   return (
     <div className="terminal-page instrument-detail-page">
@@ -8187,14 +8497,14 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
                               className={`instrument-heatmap-cell${value == null ? ' instrument-heatmap-cell-empty' : ''}`}
                               style={getHeatmapCellStyle(value, monthlyReturnMatrixMaxAbs)}
                             >
-                              {value == null ? '—' : formatPercent(value, 1)}
+                              {value == null ? '—' : formatPercent(value, 2)}
                             </td>
                           ))}
                           <td
                             className={`instrument-heatmap-cell${row.ytd == null ? ' instrument-heatmap-cell-empty' : ''}`}
                             style={getHeatmapCellStyle(row.ytd, monthlyReturnMatrixMaxAbs)}
                           >
-                            {row.ytd == null ? '—' : formatPercent(row.ytd, 1)}
+                            {row.ytd == null ? '—' : formatPercent(row.ytd, 2)}
                           </td>
                         </tr>
                       ))}
@@ -8217,296 +8527,38 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
         <section className="panel instrument-risk-shell">
           <div className="instrument-price-topline" />
           <section className="instrument-risk-section instrument-risk-section-rolling">
-            <div className="instrument-risk-section-header">
+            <div className="instrument-risk-section-header instrument-risk-rolling-header">
               <div className="instrument-performance-title-group">
                 <div className="panel-title">Risk</div>
                 <div className="instrument-performance-title-row">
-                  <div className="instrument-section-title">Rolling Ann. Return / Volatility</div>
+                  <div className="instrument-section-title">Rolling Risk</div>
                   {renderBenchmarkSearch('Risk benchmark', 'instrument-performance-benchmark-select')}
                 </div>
               </div>
-              <div className="instrument-performance-matrix-controls">
-                <div className="instrument-performance-view-toggle" role="group" aria-label="Rolling risk window">
-                  {ROLLING_RISK_WINDOW_OPTIONS.map((option) => (
-                    <button
-                      key={option.months}
-                      type="button"
-                      className={option.months === rollingRiskWindowMonths ? 'instrument-performance-toggle-active' : undefined}
-                      onClick={() => setRollingRiskWindowMonths(option.months)}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
+              <div className="instrument-risk-section-actions">
+                {riskSettingsMenu}
               </div>
             </div>
             <div className="instrument-risk-section-body">
               <div className="instrument-risk-visual-grid instrument-risk-rolling-grid">
-                <section className="instrument-risk-series-block">
-                  <div className="instrument-risk-visual-column-header instrument-risk-legend-header">
-                    <div className="instrument-series-legend">
-                      <div className="instrument-series-label">
-                        <strong>Return</strong>
-                        <span>{rollingRiskWindowLabel}</span>
-                        <span>
-                          {rollingAnnualizedReturnSeries.length > 0
-                            ? formatPercent(rollingAnnualizedReturnSeries[rollingAnnualizedReturnSeries.length - 1].value)
-                            : '—'}
-                        </span>
-                      </div>
-                      <div className="instrument-series-label instrument-series-label-secondary-row">
-                        <strong>Volatility</strong>
-                        <span>{rollingRiskWindowLabel}</span>
-                        <span>
-                          {rollingVolatilitySeries.length > 0
-                            ? formatPercent(rollingVolatilitySeries[rollingVolatilitySeries.length - 1].value)
-                            : '—'}
-                        </span>
-                      </div>
-                      {selectedBenchmark ? (
-                        <div className="instrument-series-label instrument-series-label-benchmark-row">
-                          <strong>BM Return</strong>
-                          <span>{selectedBenchmark.ticker_or_isin || 'Benchmark'}</span>
-                          <span>
-                            {benchmarkRollingAnnualizedReturnSeries.length > 0
-                              ? formatPercent(
-                                  benchmarkRollingAnnualizedReturnSeries[
-                                    benchmarkRollingAnnualizedReturnSeries.length - 1
-                                  ].value,
-                                )
-                              : '—'}
-                          </span>
-                        </div>
-                      ) : null}
-                      {selectedBenchmark ? (
-                        <div className="instrument-series-label instrument-series-label-benchmark-muted-row">
-                          <strong>BM Volatility</strong>
-                          <span>{selectedBenchmark.ticker_or_isin || 'Benchmark'}</span>
-                          <span>
-                            {benchmarkRollingVolatilitySeries.length > 0
-                              ? formatPercent(
-                                  benchmarkRollingVolatilitySeries[
-                                    benchmarkRollingVolatilitySeries.length - 1
-                                  ].value,
-                                )
-                              : '—'}
-                          </span>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                  {hasRollingReturnVolChart ? (
-                    <div className="instrument-chart-plot-shell instrument-performance-visual-shell">
-                      <svg
-                        viewBox={`0 0 ${SECONDARY_SERIES_GEOMETRY.width} ${SECONDARY_SERIES_GEOMETRY.height}`}
-                        className="instrument-line-chart"
-                        role="img"
-                        aria-label="Rolling annualized return and volatility chart"
-                      >
-                        {rollingReturnVolTickValues.map((tick, index) => {
-                          const y = projectChartValue(
-                            tick,
-                            rollingReturnVolBounds.min,
-                            rollingReturnVolBounds.max,
-                            SECONDARY_SERIES_GEOMETRY,
-                          )
-                          const isBottomTick = index === 0
-                          return (
-                            <g key={`rolling-return-vol-y-${tick.toFixed(4)}`}>
-                              <line
-                                x1="8"
-                                y1={String(y)}
-                                x2={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
-                                y2={String(y)}
-                                className={
-                                  isBottomTick
-                                    ? 'instrument-gridline instrument-gridline-axis-stub instrument-gridline-emphasis'
-                                    : 'instrument-gridline instrument-gridline-axis-stub'
-                                }
-                              />
-                              <line
-                                x1={String(SECONDARY_SERIES_GEOMETRY.paddingLeft)}
-                                y1={String(y)}
-                                x2={String(SECONDARY_SERIES_GEOMETRY.width - SECONDARY_SERIES_GEOMETRY.paddingRight)}
-                                y2={String(y)}
-                                className={
-                                  isBottomTick
-                                    ? 'instrument-gridline instrument-gridline-emphasis'
-                                    : 'instrument-gridline'
-                                }
-                              />
-                              <text
-                                className="instrument-y-axis-label"
-                                x={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
-                                y={getYAxisLabelTextY(
-                                  y,
-                                  SECONDARY_SERIES_GEOMETRY,
-                                  isBottomTick ? 'above' : 'below',
-                                )}
-                              >
-                                {formatPercent(tick)}
-                              </text>
-                            </g>
-                          )
-                        })}
-                        {rollingReturnVolTickDates.map((tick, index) => {
-                          return renderChartXAxisTick(
-                            tick,
-                            rollingReturnVolTickDates[index - 1] || null,
-                            getPlotXFromRatio(SECONDARY_SERIES_GEOMETRY, tick.xRatio, 0),
-                            SECONDARY_SERIES_GEOMETRY,
-                            rollingReturnVolTickSpanDays,
-                            'rolling-return-vol-x',
-                          )
-                        })}
-                        {rollingAnnualizedReturnSeries.length > 1 ? (
-                          <path d={rollingAnnualizedReturnLinePath} className="instrument-line-path" />
-                        ) : null}
-                        {rollingVolatilitySeries.length > 1 ? (
-                          <path
-                            d={rollingAnnualizedVolatilityLinePath}
-                            className="instrument-line-path instrument-line-path-secondary"
-                          />
-                        ) : null}
-                        {benchmarkRollingAnnualizedReturnSeries.length > 1 ? (
-                          <path
-                            d={benchmarkRollingAnnualizedReturnLinePath}
-                            className="instrument-line-path instrument-line-path-benchmark"
-                          />
-                        ) : null}
-                        {benchmarkRollingVolatilitySeries.length > 1 ? (
-                          <path
-                            d={benchmarkRollingAnnualizedVolatilityLinePath}
-                            className="instrument-line-path instrument-line-path-benchmark-muted"
-                          />
-                        ) : null}
-                      </svg>
-                    </div>
-                  ) : (
-                    <div className="instrument-fallback-block">
-                      <div className="instrument-fallback-copy">
-                        Rolling return and volatility will appear once enough total-return NAV observations are available for {rollingRiskWindowLabel}.
-                      </div>
-                    </div>
-                  )}
-                </section>
-
-                <section className="instrument-risk-series-block">
-                  <div className="instrument-risk-visual-column-header">
-                    <div className="panel-title">Risk</div>
-                    <div className="instrument-section-title">Rolling Sharpe</div>
-                    <div className="instrument-series-legend">
-                      <div className="instrument-series-label">
-                        <strong>Sharpe</strong>
-                        <span>{rollingRiskWindowLabel}</span>
-                        <span>rf=0</span>
-                        <em>
-                          {rollingSharpeSeries.length > 0
-                            ? formatNumber(rollingSharpeSeries[rollingSharpeSeries.length - 1].value, 2)
-                            : '—'}
-                        </em>
-                      </div>
-                      {selectedBenchmark ? (
-                        <div className="instrument-series-label instrument-series-label-benchmark-row">
-                          <strong>BM Sharpe</strong>
-                          <span>{selectedBenchmark.ticker_or_isin || 'Benchmark'}</span>
-                          <em>
-                            {benchmarkRollingSharpeSeries.length > 0
-                              ? formatNumber(
-                                  benchmarkRollingSharpeSeries[
-                                    benchmarkRollingSharpeSeries.length - 1
-                                  ].value,
-                                  2,
-                                )
-                              : '—'}
-                          </em>
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                  {hasRollingSharpeChart ? (
-                    <div className="instrument-chart-plot-shell instrument-performance-visual-shell">
-                      <svg
-                        viewBox={`0 0 ${SECONDARY_SERIES_GEOMETRY.width} ${SECONDARY_SERIES_GEOMETRY.height}`}
-                        className="instrument-line-chart"
-                        role="img"
-                        aria-label="Rolling Sharpe chart"
-                      >
-                        {rollingSharpeTickValues.map((tick, index) => {
-                          const y = projectChartValue(
-                            tick,
-                            rollingSharpeBounds.min,
-                            rollingSharpeBounds.max,
-                            SECONDARY_SERIES_GEOMETRY,
-                          )
-                          const isBottomTick = index === 0
-                          return (
-                            <g key={`rolling-sharpe-y-${tick.toFixed(4)}`}>
-                              <line
-                                x1="8"
-                                y1={String(y)}
-                                x2={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
-                                y2={String(y)}
-                                className={
-                                  isBottomTick
-                                    ? 'instrument-gridline instrument-gridline-axis-stub instrument-gridline-emphasis'
-                                    : 'instrument-gridline instrument-gridline-axis-stub'
-                                }
-                              />
-                              <line
-                                x1={String(SECONDARY_SERIES_GEOMETRY.paddingLeft)}
-                                y1={String(y)}
-                                x2={String(SECONDARY_SERIES_GEOMETRY.width - SECONDARY_SERIES_GEOMETRY.paddingRight)}
-                                y2={String(y)}
-                                className={
-                                  isBottomTick
-                                    ? 'instrument-gridline instrument-gridline-emphasis'
-                                    : 'instrument-gridline'
-                                }
-                              />
-                              <text
-                                className="instrument-y-axis-label"
-                                x={String(getYAxisStubEndX(SECONDARY_SERIES_GEOMETRY))}
-                                y={getYAxisLabelTextY(
-                                  y,
-                                  SECONDARY_SERIES_GEOMETRY,
-                                  isBottomTick ? 'above' : 'below',
-                                )}
-                              >
-                                {formatNumber(tick, 2)}
-                              </text>
-                            </g>
-                          )
-                        })}
-                        {rollingSharpeTickDates.map((tick, index) => {
-                          return renderChartXAxisTick(
-                            tick,
-                            rollingSharpeTickDates[index - 1] || null,
-                            getPlotXFromRatio(SECONDARY_SERIES_GEOMETRY, tick.xRatio, 0),
-                            SECONDARY_SERIES_GEOMETRY,
-                            rollingSharpeTickSpanDays,
-                            'rolling-sharpe-x',
-                          )
-                        })}
-                        {rollingSharpeSeries.length > 1 ? (
-                          <path d={rollingSharpeLinePath} className="instrument-line-path" />
-                        ) : null}
-                        {benchmarkRollingSharpeSeries.length > 1 ? (
-                          <path
-                            d={benchmarkRollingSharpeLinePath}
-                            className="instrument-line-path instrument-line-path-benchmark"
-                          />
-                        ) : null}
-                      </svg>
-                    </div>
-                  ) : (
-                    <div className="instrument-fallback-block">
-                      <div className="instrument-fallback-copy">
-                        Rolling Sharpe will appear once enough total-return NAV observations are available for {rollingRiskWindowLabel}.
-                      </div>
-                    </div>
-                  )}
-                </section>
+                <WatchlistRollingRiskMetricChart
+                  title="Annualized Volatility"
+                  points={rollingVolatilitySeries}
+                  benchmarkPoints={benchmarkRollingVolatilitySeries}
+                  benchmarkLabel={selectedBenchmark ? selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name : null}
+                  displayStyle={rollingRiskChartDisplayStyle}
+                  formatValue={(value) => formatPercent(value)}
+                  emptyLabel={`Insufficient ${rollingRiskWindowLabel} total-return NAV history.`}
+                />
+                <WatchlistRollingRiskMetricChart
+                  title="Sharpe Ratio"
+                  points={rollingSharpeSeries}
+                  benchmarkPoints={benchmarkRollingSharpeSeries}
+                  benchmarkLabel={selectedBenchmark ? selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name : null}
+                  displayStyle={rollingRiskChartDisplayStyle}
+                  formatValue={(value) => formatNumber(value, 2)}
+                  emptyLabel={`Insufficient ${rollingRiskWindowLabel} total-return NAV history.`}
+                />
               </div>
             </div>
           </section>

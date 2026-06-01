@@ -129,7 +129,18 @@ export default function RollingRiskMetricChart({
   }, [sortedBenchmarkPoints, sortedPoints])
 
   if (!chartState) {
-    return <div className="price-chart-empty">{emptyLabel}</div>
+    return (
+      <section className="rolling-risk-chart risk-chart-panel" aria-label={title}>
+        <div className="rolling-risk-chart-head">
+          <div className="portfolio-series-legend">
+            <div className="portfolio-series-label">
+              <strong>{title}</strong>
+            </div>
+          </div>
+        </div>
+        <div className="risk-chart-empty">{emptyLabel}</div>
+      </section>
+    )
   }
 
   const resolvedChartState = chartState
@@ -161,7 +172,7 @@ export default function RollingRiskMetricChart({
   }
 
   return (
-    <section className="rolling-risk-chart" aria-label={title}>
+    <section className="rolling-risk-chart risk-chart-panel" aria-label={title}>
       <div className="rolling-risk-chart-head">
         <div className="portfolio-series-legend">
           <div className="portfolio-series-label">

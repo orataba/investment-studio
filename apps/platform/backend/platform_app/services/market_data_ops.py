@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from email import policy
 from email.parser import BytesParser
 from email.utils import parseaddr
@@ -78,6 +78,22 @@ LABEL_SNAPSHOT_FIELD_ALIASES = {
     "nav_with_dividend": ("累计单位净值",),
 }
 
+REINVESTED_TOTAL_RETURN_INSTRUMENT_IDS = {
+    "anz73a",
+    "bvk42b",
+    "savf63",
+    "sgs754",
+    "yunsheng-shicheng-arbitrage-1-b",
+    "zb945a",
+}
+
+TOTAL_RETURN_NAV_DECIMAL_PLACES = Decimal("0.0000000000000001")
+CASH_DISTRIBUTION_EVENT_THRESHOLD = Decimal("0.0001")
+
+
+def _is_reinvested_total_return_instrument(instrument_id: str) -> bool:
+    return str(instrument_id or "").strip().lower() in REINVESTED_TOTAL_RETURN_INSTRUMENT_IDS
+
 
 def _normalize_nav_header(value: str) -> str:
     return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", value.lower())
@@ -149,6 +165,10 @@ def _parse_nav_decimal(value: object) -> Decimal | None:
         return Decimal(normalized)
     except Exception:
         return None
+
+
+def _format_total_return_nav_decimal(value: Decimal) -> Decimal:
+    return value.quantize(TOTAL_RETURN_NAV_DECIMAL_PLACES, rounding=ROUND_HALF_UP)
 
 
 def _detect_delimiter(line: str) -> str:
@@ -583,6 +603,103 @@ def _merge_rows_by_date(rows: list[dict[str, object]]) -> list[dict[str, object]
     return [merged[key] for key in sorted(merged.keys())]
 
 
+def _existing_nav_history_by_date(instrument_id: str) -> dict[date, dict[str, Decimal]]:
+    instrument = get_instrument(instrument_id)
+    if instrument is None:
+        return {}
+
+    history: dict[date, dict[str, Decimal]] = {}
+    for point in list(instrument.get("market_data", [])):
+        if not isinstance(point, dict):
+            continue
+        if str(point.get("metric_family") or "").strip() != "nav":
+            continue
+        point_date = _parse_nav_date(point.get("as_of_date"))
+        point_value = _parse_nav_decimal(point.get("value"))
+        quote_basis = str(point.get("quote_basis") or "").strip()
+        if point_date is None or point_value is None:
+            continue
+        if quote_basis == "official_nav":
+            history.setdefault(point_date, {})["nav"] = point_value
+        elif quote_basis == "total_return_nav":
+            history.setdefault(point_date, {})["nav_with_dividend"] = point_value
+    return history
+
+
+def _apply_reinvested_total_return_correction(
+    *,
+    instrument_id: str,
+    rows: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], bool]:
+    if not _is_reinvested_total_return_instrument(instrument_id) or not rows:
+        return rows, False
+
+    existing_history = _existing_nav_history_by_date(instrument_id)
+    corrected_rows: list[dict[str, object]] = []
+    recognized_cash_distribution: Decimal | None = None
+    reinvested_factor: Decimal | None = None
+    applied = False
+
+    for row in sorted(rows, key=lambda item: str(item.get("as_of_date") or "")):
+        corrected_row = dict(row)
+        row_date = _parse_nav_date(row.get("as_of_date"))
+        row_nav = _parse_nav_decimal(row.get("nav"))
+        row_cash_total_nav = _parse_nav_decimal(row.get("nav_with_dividend"))
+        if row_date is None or row_nav is None or row_cash_total_nav is None:
+            corrected_rows.append(corrected_row)
+            continue
+
+        existing_same_day = existing_history.get(row_date, {})
+        existing_same_day_total = existing_same_day.get("nav_with_dividend")
+        cash_distribution = row_cash_total_nav - row_nav
+        if reinvested_factor is None:
+            reinvested_total_nav = existing_same_day_total or row_cash_total_nav
+            reinvested_factor = reinvested_total_nav / row_nav if row_nav != 0 else None
+            recognized_cash_distribution = cash_distribution
+        else:
+            cash_dividend = (
+                Decimal("0")
+                if recognized_cash_distribution is None
+                else cash_distribution - recognized_cash_distribution
+            )
+            if abs(cash_dividend) <= CASH_DISTRIBUTION_EVENT_THRESHOLD:
+                cash_dividend = Decimal("0")
+            if row_nav == 0 or reinvested_factor is None:
+                reinvested_total_nav = row_cash_total_nav
+            else:
+                if cash_dividend != 0:
+                    reinvested_factor = reinvested_factor * (
+                        Decimal("1") + cash_dividend / row_nav
+                    )
+                    recognized_cash_distribution = cash_distribution
+                reinvested_total_nav = row_nav * reinvested_factor
+
+        formatted_total_nav = _format_total_return_nav_decimal(reinvested_total_nav)
+        if formatted_total_nav != row_cash_total_nav:
+            applied = True
+        corrected_row["nav_with_dividend"] = formatted_total_nav
+        corrected_rows.append(corrected_row)
+
+    return corrected_rows, applied
+
+
+def _requires_reinvested_incremental_anchor(
+    *,
+    instrument_id: str,
+    rows: list[dict[str, object]],
+    full_history: bool,
+    nav_since_date: date | None,
+) -> bool:
+    if (
+        full_history
+        or nav_since_date is None
+        or not _is_reinvested_total_return_instrument(instrument_id)
+    ):
+        return False
+    row_dates = {_parse_nav_date(row.get("as_of_date")) for row in rows}
+    return nav_since_date not in row_dates
+
+
 def _filter_rows_for_instrument(
     *,
     instrument: dict[str, object],
@@ -731,8 +848,7 @@ def _import_rows_from_email_rules(
     search_criteria: tuple[str, ...] = ("ALL",),
 ) -> dict[str, object] | None:
     matched_rows: list[dict[str, object]] = []
-    matched_provider_refs: list[str] = []
-    matched_attachment_names: list[str] = []
+    matched_batches: list[tuple[str, str, list[dict[str, object]]]] = []
     ordered_uids = pending_uids
 
     for rule in rules:
@@ -778,25 +894,61 @@ def _import_rows_from_email_rules(
                     parser_profile=parser_profile,
                 )
                 rows = _filter_rows_for_rule(rule=rule, rows=rows)
-                rows = _filter_rows_since_nav_date(rows, nav_since_date=nav_since_date)
                 if not rows:
                     continue
                 matched_rows.extend(rows)
-                matched_provider_refs.append(f"{uid}:{attachment_name}")
-                matched_attachment_names.append(attachment_name)
+                matched_batches.append((f"{uid}:{attachment_name}", attachment_name, rows))
                 break
 
     merged_rows = _merge_rows_by_date(matched_rows)
     if not merged_rows:
         return None
+    if _requires_reinvested_incremental_anchor(
+        instrument_id=instrument_id,
+        rows=merged_rows,
+        full_history=full_history,
+        nav_since_date=nav_since_date,
+    ):
+        return update_refresh_status(
+            instrument_id=instrument_id,
+            status="blocked",
+            message=(
+                "Email NAV import needs the latest existing NAV date "
+                f"{nav_since_date.isoformat()} in the matched attachment rows before "
+                "dividend reinvestment can be recalculated."
+            ),
+            updated_by=updated_by,
+            mode="email",
+        )
+    merged_rows, reinvested_correction_applied = _apply_reinvested_total_return_correction(
+        instrument_id=instrument_id,
+        rows=merged_rows,
+    )
+    if not full_history:
+        merged_rows = _filter_rows_since_nav_date(merged_rows, nav_since_date=nav_since_date)
+    if not merged_rows:
+        return None
+    used_provider_refs: list[str] = []
+    used_attachment_names: list[str] = []
+    for provider_ref, attachment_name, batch_rows in matched_batches:
+        used_rows = (
+            batch_rows
+            if full_history
+            else _filter_rows_since_nav_date(batch_rows, nav_since_date=nav_since_date)
+        )
+        if not used_rows:
+            continue
+        used_provider_refs.append(provider_ref)
+        used_attachment_names.append(attachment_name)
+
     if full_history:
         provider = "email:history"
         message = (
-            f"Imported {len(merged_rows)} NAV rows from {len(matched_provider_refs)} "
+            f"Imported {len(merged_rows)} NAV rows from {len(used_provider_refs)} "
             "email attachments."
         )
     else:
-        unique_attachment_names = list(dict.fromkeys(matched_attachment_names))
+        unique_attachment_names = list(dict.fromkeys(used_attachment_names))
         provider = (
             f"email:{unique_attachment_names[0]}"
             if len(unique_attachment_names) == 1
@@ -804,9 +956,11 @@ def _import_rows_from_email_rules(
         )
         since_text = f" since {nav_since_date.isoformat()}" if nav_since_date else ""
         message = (
-            f"Imported {len(merged_rows)} NAV rows from {len(matched_provider_refs)} "
+            f"Imported {len(merged_rows)} NAV rows from {len(used_provider_refs)} "
             f"recent email attachments{since_text}."
         )
+    if reinvested_correction_applied:
+        message = f"{message} Recalculated total_return_nav using dividend reinvestment."
     return replace_nav_history(
         instrument_id=instrument_id,
         rows=merged_rows,

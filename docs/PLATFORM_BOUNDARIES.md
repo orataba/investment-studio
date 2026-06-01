@@ -129,7 +129,7 @@
 - accounts
 - transactions
 - ledger postings / lots
-- target sets / review packs / research runs
+- target sets / research runs
 
 共享的是“资产身份和市场事实”，不是 app 业务语义。
 
