@@ -63,6 +63,13 @@ def update_portfolio_research_settings(
             target_volatility=payload.target_volatility,
             max_gross_exposure=payload.max_gross_exposure,
             frozen_taxonomy_node_ids=payload.frozen_taxonomy_node_ids,
+            top_sleeve_weight_bounds=(
+                [item.model_dump() for item in payload.top_sleeve_weight_bounds]
+                if payload.top_sleeve_weight_bounds is not None
+                else None
+            ),
+            backtest_rebalance_frequency=payload.backtest_rebalance_frequency,
+            backtest_benchmark_instrument_id=payload.backtest_benchmark_instrument_id,
             notes=payload.notes,
         )
     except ValueError as error:

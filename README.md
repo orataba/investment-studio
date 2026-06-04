@@ -7,7 +7,7 @@
 - `apps/platform`
   平台入口与 `Database Dashboard`，维护 `instrument_registry` schema 中的 `Instruments / FX / NAV` 主数据，支持手工录入、CSV/Excel 导入、邮件刷新与历史查看，但不是其他 app 的运行时依赖。
 - `apps/watchlist`
-  已有可运行的前后端、数据库迁移、测试与文档，继续承载 fund-only watchlist / fund detail / facts / recalc 基线；Copilot 当前只保留后端扩展接口，默认 UI 不对外开放。
+  已有可运行的前后端、数据库迁移、测试与文档，继续承载 fund/index watchlist、local detail、facts、recalc 与 read model 基线；Copilot 当前只保留后端扩展接口，默认 UI 不对外开放。
 - `apps/portfolio`
   已有可运行的前后端、数据库迁移、交易、绩效、持仓、风险与研究工作台，以及成体系的领域文档。
 
@@ -48,7 +48,7 @@ yungu/
 ## 当前边界
 
 - `apps/watchlist`
-  承载 fund-only watchlist / fund detail / facts / read model / recalc 语境；Copilot 仅保留后端接口边界，不作为当前已发布 UI 能力。
+  承载 fund/index watchlist / local detail / facts / read model / recalc 语境；Copilot 仅保留后端接口边界，不作为当前已发布 UI 能力。
 - `apps/portfolio`
   承载 portfolio / account / transaction / performance / risk / research 语境。
 - `apps/platform`
@@ -65,7 +65,7 @@ yungu/
 - 两个 app 保持解耦，不做业务模型融合。
 - `Watchlist` 与 `Portfolio` 直接访问同一个 PostgreSQL 中的 `instrument_registry` + 各自私有 schema，不通过 app-to-app HTTP 互相取数。
 - 共享资产身份与 typed market facts / selector policy，不共享上层业务 read model。
-- `Watchlist` 继续 fund/watchlist 语境。
+- `Watchlist` 继续 fund/index watchlist 语境，不承载 portfolio 业务事实。
 - `Portfolio` 继续 portfolio/account/transaction/performance/risk/research 语境。
 - 前端视觉基线统一为白底、冷中性灰线条和表格优先的信息密度；不要再引入米黄、沙色或暖灰页面背景。
 

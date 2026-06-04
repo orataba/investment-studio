@@ -1425,14 +1425,19 @@ class CanonicalRecalcService:
             raise ValueError(f"Instrument not found: {instrument_id}")
 
         shared_instrument = get_shared_instrument(instrument_id)
+        shared_instrument_type = (
+            str(shared_instrument.get("instrument_type") or "").strip().lower()
+            if isinstance(shared_instrument, dict)
+            else ""
+        )
         if (
             shared_instrument is not None
-            and str(shared_instrument.get("instrument_type") or "").strip().lower() == "fund"
+            and shared_instrument_type in {"fund", "index"}
         ):
             instrument = self.instrument_repository.upsert_from_shared_instrument(
                 session,
                 shared_instrument=shared_instrument,
-                detail_view_type=instrument.detail_view_type or "fund",
+                detail_view_type=instrument.detail_view_type or shared_instrument_type,
             )
 
         now = _utcnow()

@@ -68,6 +68,10 @@
   - `trading`: `last -> close`
   - `valuation`: `close -> adjusted_close -> last`
   - `total_return/chart`: `adjusted_close -> close -> last`
+- `index`
+  - `trading`: `close -> last`
+  - `valuation`: `close -> adjusted_close -> last`
+  - `total_return/chart`: `adjusted_close -> close -> last`
 - `bond`
   - `trading`: `clean_price -> dirty_price`
   - `valuation`: `dirty_price -> clean_price`

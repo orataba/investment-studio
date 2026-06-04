@@ -60,9 +60,10 @@ PositionLotCloseReason = Literal["disposed", "transferred"]
 ResearchRunStatus = Literal["running", "completed", "failed"]
 ResearchArtifactPreviewKind = Literal["text", "html", "binary"]
 ResearchTargetDimension = Literal["scope_default", "weight", "risk_budget"]
-ResearchCapitalMode = Literal["unit_notional", "fixed_gross", "target_volatility"]
+ResearchCapitalMode = Literal["unit_notional", "fixed_gross", "target_volatility", "volatility_cap"]
 ResearchCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
 ResearchMissingReturnPolicy = Literal["strict", "complete_case_drop"]
+ResearchBacktestRebalanceFrequency = Literal["1m", "3m"]
 PortfolioCalculationFrequency = Literal["daily", "weekly", "monthly"]
 PortfolioRiskCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
 PortfolioRiskCovarianceModel = Literal["ewma_vol_shrinkage_corr_covariance", "ewma_covariance", "sample_covariance"]
@@ -70,6 +71,7 @@ PortfolioRiskContributionMode = Literal["signed", "abs"]
 TargetSetType = Literal["saa", "taa"]
 
 SUPPORTED_PORTFOLIO_CURRENCIES: tuple[SupportedCurrency, ...] = ("USD", "HKD", "CNY")
+SUPPORTED_RISK_WINDOW_DAYS = {30, 90, 180, 366, 730}
 QUANTITY_DISPLAY_QUANTUM = Decimal("0.01")
 AMOUNT_DISPLAY_QUANTUM = Decimal("0.01")
 PRICE_DISPLAY_QUANTUM = Decimal("0.0001")
@@ -165,6 +167,13 @@ def _normalize_optional_text_list(value: object) -> object:
             resolved.append(normalized)
         return resolved
     return value
+
+
+def _validate_risk_window_days(value: int) -> int:
+    resolved = int(value)
+    if resolved not in SUPPORTED_RISK_WINDOW_DAYS:
+        raise ValueError("risk window must be one of 1M, 3M, 6M, 12M, or 24M.")
+    return resolved
 
 
 class InstrumentOption(BaseModel):
@@ -840,6 +849,9 @@ class PortfolioInstrumentUniverseRecord(BaseModel):
     status: str = "active"
     created_at: str | None = None
     updated_at: str | None = None
+    instrument_trend_basis: str | None = None
+    instrument_risk_frequency: PortfolioCalculationFrequency | None = None
+    instrument_return_series_all: dict[str, object] | None = None
 
 
 class PortfolioInstrumentUniverseCreateRequest(BaseModel):
@@ -877,6 +889,7 @@ class TargetSetLineRecord(BaseModel):
 class TaxonomyCatalogResponse(BaseModel):
     portfolio_id: str
     default_planning_taxonomy_id: str | None = None
+    risk_basis: dict[str, object] | None = None
     taxonomies: list[TaxonomyRecord]
     taxonomy_nodes: list[TaxonomyNodeRecord]
     taxonomy_assignments: list[TaxonomyAssignmentRecord]
@@ -917,6 +930,25 @@ class ResearchCalculationFrequencyProfile(BaseModel):
     status_label: str
 
 
+class ResearchTopSleeveWeightBoundRecord(BaseModel):
+    taxonomy_node_id: str = Field(min_length=1)
+    min_weight: float | None = Field(default=None, ge=0, le=1)
+    max_weight: float | None = Field(default=None, ge=0, le=1)
+
+    @field_validator("taxonomy_node_id", mode="before")
+    @classmethod
+    def validate_taxonomy_node_id(cls, value: object) -> object:
+        return _normalize_optional_text(value) or ""
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "ResearchTopSleeveWeightBoundRecord":
+        if self.min_weight is None and self.max_weight is None:
+            raise ValueError("top sleeve bound must set min_weight or max_weight.")
+        if self.min_weight is not None and self.max_weight is not None and self.min_weight > self.max_weight:
+            raise ValueError("top sleeve min_weight cannot exceed max_weight.")
+        return self
+
+
 class ResearchSettingsRecord(BaseModel):
     portfolio_id: str
     planning_taxonomy_id: str | None = None
@@ -924,7 +956,7 @@ class ResearchSettingsRecord(BaseModel):
     comparator_taxonomy_node_id: str | None = None
     comparator_taxonomy_node_name: str | None = None
     as_of_date: date | None = None
-    lookback_days: int = Field(default=90, ge=7, le=730)
+    lookback_days: int = Field(default=90)
     calculation_frequency: ResearchCalculationFrequency = "auto"
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
     target_dimension: ResearchTargetDimension = "scope_default"
@@ -933,15 +965,23 @@ class ResearchSettingsRecord(BaseModel):
     target_volatility: float | None = Field(default=None, gt=0, le=1)
     max_gross_exposure: float | None = Field(default=None, gt=0)
     frozen_taxonomy_node_ids: list[str] = Field(default_factory=list)
+    top_sleeve_weight_bounds: list[ResearchTopSleeveWeightBoundRecord] = Field(default_factory=list)
+    backtest_rebalance_frequency: ResearchBacktestRebalanceFrequency = "1m"
+    backtest_benchmark_instrument_id: str | None = None
     notes: str | None = None
     updated_at: str | None = None
+
+    @field_validator("lookback_days")
+    @classmethod
+    def validate_lookback_days(cls, value: int) -> int:
+        return _validate_risk_window_days(value)
 
 
 class ResearchSettingsUpdateRequest(BaseModel):
     planning_taxonomy_id: str | None = None
     comparator_taxonomy_node_id: str | None = None
     as_of_date: date | None = None
-    lookback_days: int = Field(default=90, ge=7, le=730)
+    lookback_days: int = Field(default=90)
     calculation_frequency: ResearchCalculationFrequency = "auto"
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
     covariance_model_id: PortfolioRiskCovarianceModel = "ewma_vol_shrinkage_corr_covariance"
@@ -952,9 +992,23 @@ class ResearchSettingsUpdateRequest(BaseModel):
     target_volatility: float | None = Field(default=None, gt=0, le=1)
     max_gross_exposure: float | None = Field(default=None, gt=0)
     frozen_taxonomy_node_ids: list[str] | None = None
+    top_sleeve_weight_bounds: list[ResearchTopSleeveWeightBoundRecord] | None = None
+    backtest_rebalance_frequency: ResearchBacktestRebalanceFrequency = "1m"
+    backtest_benchmark_instrument_id: str | None = None
     notes: str | None = None
 
-    @field_validator("planning_taxonomy_id", "comparator_taxonomy_node_id", "notes", mode="before")
+    @field_validator("lookback_days")
+    @classmethod
+    def validate_lookback_days(cls, value: int) -> int:
+        return _validate_risk_window_days(value)
+
+    @field_validator(
+        "planning_taxonomy_id",
+        "comparator_taxonomy_node_id",
+        "backtest_benchmark_instrument_id",
+        "notes",
+        mode="before",
+    )
     @classmethod
     def validate_optional_text(cls, value: object) -> object:
         return _normalize_optional_text(value)
@@ -969,18 +1023,28 @@ class ResearchSettingsUpdateRequest(BaseModel):
     @model_validator(mode="after")
     def validate_research_settings(self) -> "ResearchSettingsUpdateRequest":
         if self.capital_mode == "unit_notional":
-            if self.gross_exposure is not None or self.target_volatility is not None:
-                raise ValueError("unit_notional capital mode must not set gross_exposure or target_volatility.")
+            if (
+                self.gross_exposure is not None
+                or self.target_volatility is not None
+                or self.max_gross_exposure is not None
+            ):
+                raise ValueError(
+                    "unit_notional capital mode must not set gross_exposure, target_volatility, or max_gross_exposure."
+                )
         elif self.capital_mode == "fixed_gross":
             if self.gross_exposure is None:
                 raise ValueError("fixed_gross capital mode requires gross_exposure.")
             if self.target_volatility is not None:
                 raise ValueError("fixed_gross capital mode must not set target_volatility.")
-        elif self.capital_mode == "target_volatility":
+            if self.max_gross_exposure is not None:
+                raise ValueError("fixed_gross capital mode must not set max_gross_exposure.")
+        elif self.capital_mode in {"target_volatility", "volatility_cap"}:
             if self.target_volatility is None:
-                raise ValueError("target_volatility capital mode requires target_volatility.")
+                raise ValueError(f"{self.capital_mode} capital mode requires target_volatility.")
             if self.gross_exposure is not None:
-                raise ValueError("target_volatility capital mode must not set gross_exposure.")
+                raise ValueError(f"{self.capital_mode} capital mode must not set gross_exposure.")
+            if self.capital_mode == "volatility_cap" and self.max_gross_exposure is not None:
+                raise ValueError("volatility_cap capital mode must not set max_gross_exposure.")
         if (
             self.max_gross_exposure is not None
             and self.gross_exposure is not None
@@ -994,7 +1058,7 @@ class PortfolioRiskPolicyRecord(BaseModel):
     model_name: str = "Production Risk Model"
     model_role: str = "production"
     covariance_model_id: PortfolioRiskCovarianceModel = "ewma_vol_shrinkage_corr_covariance"
-    lookback_days: int = Field(default=90, ge=7, le=730)
+    lookback_days: int = Field(default=90)
     calculation_frequency: PortfolioRiskCalculationFrequency = "auto"
     resolved_calculation_frequency: PortfolioCalculationFrequency = "daily"
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
@@ -1002,13 +1066,23 @@ class PortfolioRiskPolicyRecord(BaseModel):
     parameters: dict[str, object] = Field(default_factory=dict)
     parameters_by_frequency: dict[str, dict[str, object]] = Field(default_factory=dict)
 
+    @field_validator("lookback_days")
+    @classmethod
+    def validate_lookback_days(cls, value: int) -> int:
+        return _validate_risk_window_days(value)
+
 
 class PortfolioRiskPolicyUpdateRequest(BaseModel):
     covariance_model_id: PortfolioRiskCovarianceModel = "ewma_vol_shrinkage_corr_covariance"
-    lookback_days: int = Field(default=90, ge=7, le=730)
+    lookback_days: int = Field(default=90)
     calculation_frequency: PortfolioRiskCalculationFrequency = "auto"
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
     contribution_mode: PortfolioRiskContributionMode = "signed"
+
+    @field_validator("lookback_days")
+    @classmethod
+    def validate_lookback_days(cls, value: int) -> int:
+        return _validate_risk_window_days(value)
 
 
 class ResearchContextSignalRecord(BaseModel):
@@ -1115,6 +1189,29 @@ class ResearchMemberTargetRecord(BaseModel):
     selected_target_value: float | None = None
 
 
+class ResearchSolvedResultRowRecord(BaseModel):
+    member_type: str
+    member_id: str
+    label: str
+    top_sleeve_id: str | None = None
+    top_sleeve_label: str
+    solved_weight: float | None = None
+    target_risk_share: float | None = None
+    forward_risk_contribution: float | None = None
+
+
+class ResearchSolvedResultGroupRecord(BaseModel):
+    top_sleeve_id: str | None = None
+    top_sleeve_label: str
+    solved_weight: float | None = None
+    target_risk_share: float | None = None
+    forward_risk_contribution: float | None = None
+    min_weight: float | None = None
+    max_weight: float | None = None
+    bound_status: str | None = None
+    rows: list[ResearchSolvedResultRowRecord] = Field(default_factory=list)
+
+
 class ResearchSolveEventRecord(BaseModel):
     as_of_date: str
     scope_node_id: str | None = None
@@ -1183,6 +1280,68 @@ class ResearchTargetRowRecord(BaseModel):
     action: str | None = None
 
 
+class ResearchBacktestPointRecord(BaseModel):
+    date: str
+    value: float | None = None
+
+
+class ResearchBacktestSleeveValueRecord(BaseModel):
+    top_sleeve_id: str | None = None
+    top_sleeve_label: str
+    value: float | None = None
+
+
+class ResearchBacktestSleevePointRecord(BaseModel):
+    date: str
+    sleeves: list[ResearchBacktestSleeveValueRecord] = Field(default_factory=list)
+
+
+class ResearchBacktestMetricsRecord(BaseModel):
+    start_date: str | None = None
+    end_date: str | None = None
+    period_return: float | None = None
+    annualized_return: float | None = None
+    annualized_volatility: float | None = None
+    sharpe_ratio: float | None = None
+    max_drawdown: float | None = None
+    max_drawdown_start_date: str | None = None
+    max_drawdown_end_date: str | None = None
+    max_drawdown_recovery_date: str | None = None
+    max_drawdown_recovery_days: int | None = None
+
+
+class ResearchBacktestRecord(BaseModel):
+    rebalance_frequency: ResearchBacktestRebalanceFrequency = "1m"
+    common_history_start_date: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    lookback_days: int = 90
+    points: list[ResearchBacktestPointRecord] = Field(default_factory=list)
+    metrics: ResearchBacktestMetricsRecord | None = None
+    top_sleeve_weight_points: list[ResearchBacktestSleevePointRecord] = Field(default_factory=list)
+    top_sleeve_contribution_points: list[ResearchBacktestSleevePointRecord] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("lookback_days")
+    @classmethod
+    def validate_lookback_days(cls, value: int) -> int:
+        return _validate_risk_window_days(value)
+
+
+class ResearchBacktestBenchmarkRecord(BaseModel):
+    instrument_id: str | None = None
+    label: str | None = None
+    points: list[ResearchBacktestPointRecord] = Field(default_factory=list)
+    metrics: ResearchBacktestMetricsRecord | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ResearchBacktestRelativeMetricsRecord(BaseModel):
+    excess_return: float | None = None
+    tracking_error: float | None = None
+    information_ratio: float | None = None
+
+
 class ResearchRunDetailRecord(BaseModel):
     headline: str | None = None
     coverage_note: str | None = None
@@ -1196,9 +1355,13 @@ class ResearchRunDetailRecord(BaseModel):
     target_rows: list[ResearchTargetRowRecord] = Field(default_factory=list)
     member_targets: list[ResearchMemberTargetRecord] = Field(default_factory=list)
     leaf_targets: list[ResearchMemberTargetRecord] = Field(default_factory=list)
+    solved_result_groups: list[ResearchSolvedResultGroupRecord] = Field(default_factory=list)
     solve_event: ResearchSolveEventRecord | None = None
     scope_solve_events: list[ResearchSolveEventRecord] = Field(default_factory=list)
     target_weight_gaps: list[ResearchTargetWeightGapRecord] = Field(default_factory=list)
+    backtest: ResearchBacktestRecord | None = None
+    backtest_benchmark: ResearchBacktestBenchmarkRecord | None = None
+    backtest_relative_metrics: ResearchBacktestRelativeMetricsRecord | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -1228,6 +1391,11 @@ class ResearchRunRecord(BaseModel):
     artifact_count: int = 0
     artifacts: list[ResearchArtifactRecord] = Field(default_factory=list)
     detail: ResearchRunDetailRecord | None = None
+
+    @field_validator("lookback_days")
+    @classmethod
+    def validate_lookback_days(cls, value: int) -> int:
+        return _validate_risk_window_days(value)
 
 
 class ResearchRunCreateRequest(BaseModel):

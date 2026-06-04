@@ -65,7 +65,7 @@ import {
   formatNumber,
   formatPercent,
 } from '../lib/format'
-import { PLATFORM_HOME_URL } from '../lib/navigation'
+import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
 
 type FundDetailBundle = {
@@ -231,6 +231,7 @@ type DetailTab =
   | 'research'
   | 'monitoring'
 
+type DetailKind = 'fund' | 'index'
 type ChartRange = '1M' | '3M' | '6M' | 'YTD' | '1Y' | '3Y' | '5Y' | '10Y' | 'MAX' | 'CUSTOM'
 type QuoteBasis = 'nav' | 'nav_with_dividend'
 type ChartFrequency = 'daily' | 'weekly' | 'monthly'
@@ -398,6 +399,7 @@ const TAB_ORDER: DetailTab[] = [
 ]
 
 const CORE_TABS: DetailTab[] = ['overview', 'performance', 'risk', 'price', 'exposure', 'people', 'strategy']
+const INDEX_TABS: DetailTab[] = ['overview', 'performance', 'risk']
 
 type LocalizedText = {
   en: string
@@ -489,8 +491,9 @@ const SYSTEM_LABELS: Record<string, LocalizedText> = {
   documentUploaded: { en: 'Document uploaded.', zh: '文档已上传。' },
   downloadPdf: { en: 'Download PDF', zh: '下载 PDF' },
   fileName: { en: 'File Name', zh: '文件名' },
+  fundDetail: { en: 'Fund Detail', zh: '基金详情' },
   indexed: { en: 'Indexed to 1.00', zh: '归一到 1.00' },
-  instrumentDetail: { en: 'Instrument Detail', zh: '标的详情' },
+  indexDetail: { en: 'Index Detail', zh: '指数详情' },
   notes: { en: 'Notes', zh: '备注' },
   noDocuments: { en: 'No documents yet.', zh: '暂无文档。' },
   noNavHistory: {
@@ -625,6 +628,7 @@ const SYSTEM_VALUE_LABELS: Record<string, LocalizedText> = {
   复合策略: { en: 'Composite Strategy', zh: '复合策略' },
   组合基金: { en: 'Fund of Funds', zh: '组合基金' },
   MOM: { en: 'MOM', zh: 'MOM' },
+  指数: { en: 'Index', zh: '指数' },
   其他: { en: 'Other', zh: '其他' },
 }
 
@@ -1581,7 +1585,11 @@ function upsertKeyValueRows(rows: EditableKeyValueRow[], key: string, value: str
   return [...rows, { id: makeRowId('overview'), key, value }]
 }
 
-function normalizeTabs(sourceTabs: string[]): DetailTab[] {
+function normalizeTabs(sourceTabs: string[], detailKind: DetailKind = 'fund'): DetailTab[] {
+  if (detailKind === 'index') {
+    return INDEX_TABS
+  }
+
   const set = new Set<DetailTab>(CORE_TABS)
 
   sourceTabs.forEach((tab) => {
@@ -1592,6 +1600,52 @@ function normalizeTabs(sourceTabs: string[]): DetailTab[] {
   })
 
   return TAB_ORDER.filter((tab) => set.has(tab))
+}
+
+function defaultFundPortfolioResponse(): FundPortfolioResponse {
+  return {
+    allocation_blocks: {},
+    style_box: null,
+    liquidity_leverage: null,
+    valuation_statistics: null,
+    holdings_summary: null,
+    snapshot_metadata: null,
+  }
+}
+
+function defaultFundPortfolioHoldingsResponse(): FundPortfolioHoldingsResponse {
+  return { rows: [], page: 1, page_size: 0, total_rows: 0 }
+}
+
+function defaultFundRatingsResponse(summary: FundSummaryResponse): FundRatingsResponse {
+  return {
+    overall_rating: summary.overall_rating ?? null,
+    overall_score: null,
+    analyst_stance: summary.analyst_stance || 'Unrated',
+    methodology_version: 'instrument-rating/v1',
+    dimension_scores: [],
+    override_info: null,
+  }
+}
+
+function defaultFundPeopleResponse(): FundPeopleResponse {
+  return { overview: {}, team: [], notes: [] }
+}
+
+function defaultFundStrategyResponse(): FundStrategyResponse {
+  return { summary: '', investment_objective: '', process_bullets: [], risk_controls: [], notes: [] }
+}
+
+function defaultFundPriceResponse(): FundPriceResponse {
+  return { overview: {}, distribution_policy: '', policy_text: '', fee_notes: [], notes: [] }
+}
+
+function defaultFundDocumentsResponse(): FundDocumentsResponse {
+  return { current_documents: [], recent_imports: [], extraction_reviews: [], notes: [] }
+}
+
+function defaultFundResearchResponse(): FundResearchResponse {
+  return { overview: {}, manual_rating: null, timeline_notes: [] }
 }
 
 function buildChartLinePath(
@@ -3902,9 +3956,18 @@ function EmptyPanel({ title, note }: { title: string; note: string }) {
 
 type FundDetailPageProps = {
   fundId?: string
+  detailKind?: DetailKind
+  watchlistContext?: {
+    watchlistId: string
+    watchlistName?: string | null
+  } | null
 }
 
-export default function FundDetailPage({ fundId: propFundId }: FundDetailPageProps = {}) {
+export default function FundDetailPage({
+  fundId: propFundId,
+  detailKind = 'fund',
+  watchlistContext = null,
+}: FundDetailPageProps = {}) {
   const { language } = useLanguage()
   const { fundId: routeFundId = 'fax' } = useParams()
   const fundId = propFundId || routeFundId
@@ -4024,6 +4087,44 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       setError(null)
 
       try {
+        if (detailKind === 'index') {
+          const [summary, library, chart, performance, risk, navSeries] = await Promise.all([
+            getInstrumentSummary(fundId),
+            getInstrumentLibrary(),
+            getInstrumentChart(fundId),
+            getInstrumentPerformance(fundId),
+            getInstrumentRisk(fundId),
+            getInstrumentNavSeries(fundId),
+          ])
+
+          if (cancelled) {
+            return
+          }
+
+          const nextTabs = normalizeTabs(summary.tabs || [], detailKind)
+
+          setBundle({
+            summary: { ...summary, tabs: nextTabs },
+            library,
+            chart,
+            performance,
+            risk,
+            portfolio: defaultFundPortfolioResponse(),
+            holdings: defaultFundPortfolioHoldingsResponse(),
+            ratings: defaultFundRatingsResponse(summary),
+            people: defaultFundPeopleResponse(),
+            strategy: defaultFundStrategyResponse(),
+            price: defaultFundPriceResponse(),
+            documents: defaultFundDocumentsResponse(),
+            research: defaultFundResearchResponse(),
+            navSeries,
+          })
+          startTransition(() => {
+            setActiveTab((current) => (nextTabs.includes(current) ? current : nextTabs[0] || 'overview'))
+          })
+          return
+        }
+
         const [summary, library, chart, performance, risk, portfolio, holdings, ratings, people, strategy, price, documents, research, navSeries] =
           await Promise.all([
             getInstrumentSummary(fundId),
@@ -4046,10 +4147,10 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
           return
         }
 
-        const nextTabs = normalizeTabs(summary.tabs || [])
+        const nextTabs = normalizeTabs(summary.tabs || [], detailKind)
 
         setBundle({
-          summary,
+          summary: { ...summary, tabs: nextTabs },
           library,
           chart,
           performance,
@@ -4069,7 +4170,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
         })
       } catch (loadError) {
         if (!cancelled) {
-          setError(loadError instanceof Error ? loadError.message : 'Failed to load instrument detail.')
+          setError(loadError instanceof Error ? loadError.message : 'Failed to load detail.')
         }
       } finally {
         if (!cancelled) {
@@ -4083,7 +4184,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     return () => {
       cancelled = true
     }
-  }, [fundId, refreshToken])
+  }, [detailKind, fundId, refreshToken])
 
   useEffect(() => {
     setTimelineNoteDraft(null)
@@ -4798,7 +4899,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   if (loading) {
     return (
       <div className="terminal-page">
-        <LoadingOverlay label="Loading instrument detail" />
+        <LoadingOverlay label={detailKind === 'index' ? 'Loading index detail' : 'Loading fund detail'} />
       </div>
     )
   }
@@ -4807,7 +4908,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
     return (
       <div className="terminal-page">
         <section className="panel">
-          <div className="error-state">{error || 'Instrument detail unavailable.'}</div>
+          <div className="error-state">{error || 'Detail unavailable.'}</div>
         </section>
       </div>
     )
@@ -4940,7 +5041,11 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
   const quoteLatestStats = getLatestPointChangeStats(navBasisSeries)
   const quoteChange = quoteLatestStats.change
   const quoteChangePct = quoteLatestStats.changePct
-  const availableTabs = normalizeTabs(summary.tabs || [])
+  const availableTabs = normalizeTabs(summary.tabs || [], detailKind)
+  const detailPageLabel = localize(
+    language,
+    detailKind === 'index' ? SYSTEM_LABELS.indexDetail : SYSTEM_LABELS.fundDetail,
+  )
   const navBasisType = navSeries.nav_basis_type || summary.nav_snapshot?.nav_basis_type || 'auto'
   const navBasisLabel = NAV_BASIS_LABELS[navBasisType]
     ? localize(language, NAV_BASIS_LABELS[navBasisType])
@@ -7304,10 +7409,24 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
       <section className="panel instrument-detail-shell">
         <div className="instrument-detail-topbar">
           <div className="instrument-detail-breadcrumbs">
+            <a href={PLATFORM_HOME_URL} className="instrument-detail-backlink">
+              Home
+            </a>
+            <span className="instrument-detail-breadcrumb-separator">/</span>
             <Link to="/watchlists" className="instrument-detail-backlink">
-              <span aria-hidden="true">‹</span>
-              <span>Watchlists</span>
+              Watchlist
             </Link>
+            {watchlistContext?.watchlistId ? (
+              <>
+                <span className="instrument-detail-breadcrumb-separator">/</span>
+                <Link
+                  to={buildWatchlistPath(watchlistContext.watchlistId)}
+                  className="instrument-detail-backlink"
+                >
+                  {watchlistContext.watchlistName || watchlistContext.watchlistId}
+                </Link>
+              </>
+            ) : null}
             <span className="instrument-detail-breadcrumb-separator">/</span>
             <span className="instrument-detail-breadcrumb-current">{summary.ticker_or_isin}</span>
           </div>
@@ -7320,7 +7439,7 @@ export default function FundDetailPage({ fundId: propFundId }: FundDetailPagePro
         </div>
         <div className="instrument-detail-hero">
           <div className="instrument-detail-headline">
-            <div className="instrument-detail-eyebrow">{localize(language, SYSTEM_LABELS.instrumentDetail)}</div>
+            <div className="instrument-detail-eyebrow">{detailPageLabel}</div>
             <h1 className="instrument-detail-title">
               {summary.fund_name} <span>{summary.ticker_or_isin}</span>
             </h1>

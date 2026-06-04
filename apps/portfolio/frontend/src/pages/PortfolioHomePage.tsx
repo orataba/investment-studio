@@ -2005,6 +2005,7 @@ export default function PortfolioHomePage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [taxonomyError, setTaxonomyError] = useState<string | null>(null)
+  const [riskPolicyRevision, setRiskPolicyRevision] = useState(0)
   const initialHoldingsViewStore = useMemo(() => loadHoldingsViewStore(), [])
   const initialHoldingsViewState = useMemo(
     () => resolveHoldingsViewState(initialHoldingsViewStore, initialHoldingsViewStore.activeViewId),
@@ -2701,6 +2702,18 @@ export default function PortfolioHomePage() {
   }, [])
 
   useEffect(() => {
+    function handleRiskPolicyUpdated(event: Event) {
+      const detail = (event as CustomEvent<{ portfolioId?: string }>).detail
+      if (detail?.portfolioId === portfolioId) {
+        setRiskPolicyRevision((current) => current + 1)
+      }
+    }
+
+    window.addEventListener('portfolio-risk-policy-updated', handleRiskPolicyUpdated)
+    return () => window.removeEventListener('portfolio-risk-policy-updated', handleRiskPolicyUpdated)
+  }, [portfolioId])
+
+  useEffect(() => {
     if (!portfolioId) {
       setWorkspace(null)
       setTaxonomyCatalog(null)
@@ -2757,7 +2770,7 @@ export default function PortfolioHomePage() {
     return () => {
       cancelled = true
     }
-  }, [portfolioId, requestedAsOfDate])
+  }, [portfolioId, requestedAsOfDate, riskPolicyRevision])
 
   useEffect(() => {
     if (!workspace || !selectedInstrumentId) {

@@ -171,6 +171,7 @@ export type FundTaxonomyTreeNode = {
 export type FundTaxonomyTreeResponse = {
   taxonomy_code: string
   instrument_type: string
+  instrument_types: string[]
   max_depth: number
   nodes: FundTaxonomyTreeNode[]
 }

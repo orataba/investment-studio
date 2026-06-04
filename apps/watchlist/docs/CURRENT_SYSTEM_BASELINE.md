@@ -113,14 +113,14 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 
 下面这些现在不应被文档假装成“已经落地”：
 
-- non-fund instrument detail overlay
+- fund/index 之外的 instrument detail overlay
 - Documents workspace 的完整工作面
 - Database Dashboard 侧 Email sync / OCR / extraction pipeline 的完整闭环
 - 真实 OpenAI provider 已启用且对用户开放的 Copilot
 
 ## 8. 继续推进时建议按什么顺序做
 
-1. 如果要扩展产品范围，再补 non-fund instrument detail overlay；否则继续把 fund-only 路径打磨完整
+1. 如果要继续扩展产品范围，再补 fund/index 之外的 instrument detail overlay；否则继续把当前 fund/index 路径打磨完整
 2. 继续补强 monitoring 和 recalc worker 的观测/告警
 3. 扩展 fund taxonomy 与 taxonomy-aware research packs
 4. 把导入链路从“手工写入 facts”补到更完整的 source / document 流

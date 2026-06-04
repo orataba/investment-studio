@@ -83,6 +83,7 @@ type PlatformRegistrySummary = {
   active_count: number
   archived_count: number
   fund_count: number
+  index_count: number
   fund_with_nav_count: number
 }
 
@@ -189,9 +190,9 @@ function buildFallbackApps(): PlatformAppCard[] {
       name: 'Watchlist',
       url: watchlistUrl,
       api_url: watchlistApiUrl,
-      eyebrow: 'Fund research and monitoring',
+      eyebrow: 'Fund and index research',
       description:
-        'Fund-only watchlists, fund detail pages, facts ingest, read models, and monitoring workflows.',
+        'Fund and index watchlists, local detail pages, facts ingest, read models, and monitoring workflows.',
       availability: 'ready',
     })
   }
@@ -230,7 +231,7 @@ function allowedFamiliesForInstrument(instrumentType: InstrumentType): MetricFam
   if (instrumentType === 'fx') {
     return ['fx']
   }
-  if (instrumentType === 'cash' || instrumentType === 'bond' || instrumentType === 'equity') {
+  if (instrumentType === 'cash' || instrumentType === 'bond' || instrumentType === 'equity' || instrumentType === 'index') {
     return ['price']
   }
   if (instrumentType === 'fund') {
@@ -251,6 +252,9 @@ function defaultQuoteInput(instrumentType: InstrumentType): { metric_family: Met
   }
   if (instrumentType === 'fund') {
     return { metric_family: 'nav', quote_basis: 'official_nav' }
+  }
+  if (instrumentType === 'index') {
+    return { metric_family: 'price', quote_basis: 'close' }
   }
   return { metric_family: 'price', quote_basis: 'close' }
 }
@@ -1175,6 +1179,7 @@ function InstrumentsPage({
           <span role="listitem">Active {registrySummary.active_count}</span>
           <span role="listitem">Archived {registrySummary.archived_count}</span>
           <span role="listitem">Funds {registrySummary.fund_count}</span>
+          <span role="listitem">Indexes {registrySummary.index_count}</span>
           <span role="listitem">Funds With NAV {registrySummary.fund_with_nav_count}</span>
         </div>
       </section>
@@ -1202,6 +1207,7 @@ function InstrumentsPage({
                 <select value={instrumentTypeFilter} onChange={(event) => setInstrumentTypeFilter(event.target.value as 'all' | InstrumentType)}>
                   <option value="all">All Types</option>
                   <option value="equity">Equity</option>
+                  <option value="index">Index</option>
                   <option value="fund">Fund</option>
                   <option value="bond">Bond</option>
                   <option value="cash">Cash</option>
@@ -1436,6 +1442,7 @@ function InstrumentsPage({
                     <span>Type</span>
                     <select value={instrumentType} onChange={(event) => setInstrumentType(event.target.value as InstrumentType)}>
                       <option value="equity">Equity</option>
+                      <option value="index">Index</option>
                       <option value="fund">Fund</option>
                       <option value="bond">Bond</option>
                       <option value="cash">Cash</option>
@@ -2256,12 +2263,14 @@ export default function App() {
     const base = allInstruments.length ? allInstruments : instruments
     const activeCount = base.filter((item) => item.lifecycle_state.status === 'active').length
     const fundInstruments = base.filter((item) => item.instrument_type === 'fund')
+    const indexInstruments = base.filter((item) => item.instrument_type === 'index')
     const fundsWithNavCount = fundInstruments.filter((item) => latestNavSnapshot(item).latestNavDate).length
     return {
       total_count: base.length,
       active_count: activeCount,
       archived_count: base.length - activeCount,
       fund_count: fundInstruments.length,
+      index_count: indexInstruments.length,
       fund_with_nav_count: fundsWithNavCount,
     }
   }, [allInstruments, instruments])

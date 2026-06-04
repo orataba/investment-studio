@@ -7,7 +7,7 @@
 - `apps/platform`
   平台入口和 Database Dashboard。
 - `apps/watchlist`
-  fund-only Watchlist / Fund Detail / monitoring / recalc；Copilot 当前只保留后端扩展接口，不作为已发布 UI。
+  fund/index Watchlist / local detail / monitoring / recalc；Copilot 当前只保留后端扩展接口，不作为已发布 UI。
 - `apps/portfolio`
   Portfolio / account / transaction / performance / risk / research / taxonomy。
 
@@ -35,7 +35,7 @@
 
 - 直接读写 `watchlist`
 - 直接读取 `instrument_registry`
-- 当前已发布范围收口为 `fund` 资产类型
+- 当前已发布范围收口为 `fund` 与 `index` 资产类型；其他共享资产可以存在于 registry，但不进入 Watchlist 主工作面
 - 在本地维护自己的 read models、recalc jobs、manual profile 和产品框架；Copilot 仅保留 backend extension boundary
 
 ### Portfolio

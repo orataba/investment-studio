@@ -12,6 +12,12 @@ from watchlist_app.services.shared_instrument_registry import (
 
 instrument_repository = SQLAlchemyInstrumentRepository()
 read_model_repository = SQLAlchemyReadModelRepository()
+LOCAL_DETAIL_VIEW_TYPES = {"fund", "index"}
+
+
+def _local_detail_view_type(instrument_type: str) -> str | None:
+    normalized = instrument_type.strip().lower()
+    return normalized if normalized in LOCAL_DETAIL_VIEW_TYPES else None
 
 
 def _primary_identifier(shared_record: dict[str, object] | None) -> str | None:
@@ -123,14 +129,15 @@ def resolve_watchlist_instrument(
     if shared_record is not None:
         instrument_type = str(shared_record.get("instrument_type") or "other")
         canonical_instrument_id = str(shared_record.get("instrument_id") or requested_instrument_id)
-        if instrument_type == "fund":
+        detail_view_type = _local_detail_view_type(instrument_type)
+        if detail_view_type is not None:
             local_asset = instrument_repository.upsert_from_shared_instrument(
                 session,
                 shared_instrument=shared_record,
                 detail_view_type=(
                     local_asset.detail_view_type
                     if local_asset is not None and local_asset.detail_view_type
-                    else "fund"
+                    else detail_view_type
                 ),
             )
         else:

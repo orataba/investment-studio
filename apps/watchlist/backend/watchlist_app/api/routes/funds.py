@@ -248,11 +248,15 @@ def get_fund_summary(
     attributes = collapse_latest_attribute_values(
         attribute_repository.get_values_for_asset(session, instrument_id)
     )
+    instrument = instrument_repository.get(session, instrument_id)
     payload = (
         serialize_payload(record.payload_json)
         if record is not None
         else default_fund_summary_payload(instrument_id, instrument_attributes=attributes)
     )
+    if record is None and instrument is not None:
+        payload["fund_name"] = instrument.instrument_name
+        payload["ticker_or_isin"] = instrument.primary_identifier_value or instrument.instrument_id
     assignment = taxonomy_repository.get_assignment(session, instrument_id=instrument_id)
     node = (
         taxonomy_repository.get_node(session, node_id=str(assignment.node_id))
@@ -261,7 +265,6 @@ def get_fund_summary(
     )
     taxonomy_context = build_taxonomy_context(node)
     merged = merge_summary_attributes(payload, attributes)
-    instrument = instrument_repository.get(session, instrument_id)
     if merged.get("management_firm_name") is None and instrument is not None:
         merged["management_firm_name"] = (
             str(instrument.metadata_json.get("management_firm_name") or "").strip() or None

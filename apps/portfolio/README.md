@@ -9,9 +9,9 @@
 - 持仓、lots、ledger、performance 由内核服务按需推导
 - `Holdings / Accounts / Transactions / Performance` 已有真实 API 与页面支撑
   `Transactions` 当前支持 create / update / delete 原始事实；内部转仓仍按成对事实管理
-- `Risk` 已有真实工作台，包含 rolling annualized volatility / Sharpe、sample 相关性矩阵、Current Drift 和 point-in-time Risk Contribution；风险窗口、协方差方法和风险贡献模式与 Research 使用同一组严格口径，相关性矩阵只暴露窗口和 scope，不混入协方差模型选择
+- `Risk` 已有真实工作台，包含 rolling annualized volatility / Sharpe、sample 相关性矩阵和 Current Drift；Production Risk Model 的风险窗口固定为 `1M / 3M / 6M / 12M / 24M`，协方差方法和风险贡献模式与 Research 使用同一组严格口径，相关性矩阵只暴露窗口和 scope，不混入协方差模型选择
 - `Taxonomies` 已有真实配置工作台，支持层级 sleeve tree、assignment、`TargetSet`、`default planning taxonomy` 与 `cash_bucket` 维护
-- `Research` 已有真实工作台，支持基于 planning taxonomy / TargetSet / 当前持仓的递归 target-weight solve、run history、target weights、member targets、scope solver path、风险预算求解诊断和调仓缺口
+- `Research` 已有真实工作台，支持基于 planning taxonomy / TargetSet / 当前持仓的递归 target-weight solve、top sleeve bounds、vol target/cap、1M/3M rebalance backtest、benchmark 对比、latest run 结果、风险预算求解诊断和调仓缺口。新 run 只有成功完成后才替换上一轮成功结果；失败 run 会保留上一轮 completed run 供继续查看。
 - `Overview` 已作为组合默认首页发布，主图按 `Portfolio Value / TWR Index` 两种组合管理口径展示，回撤固定基于 TWR；页面同时承载 sleeve 结构和 top holdings 总览，`Snapshot` 不再作为独立工作面保留
 
 ## 当前文档
@@ -53,7 +53,7 @@ uvicorn portfolio_app.main:app --reload --host 127.0.0.1 --port 8001
 - 数据库连接通过 `YUNGU_PORTFOLIO_DATABASE_URL` 配置；本机账号和密码只应放在未提交的 `.env` 或 shell 环境里
 - `portfolio` 使用 `portfolio` schema
 - 测试使用临时 SQLite，不会污染默认运行库
-- research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理；当前产物以 target weights、member targets、leaf targets、solve event、scope solve events 和 target weight gaps 为主
+- research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理；当前产物以 request、context、target rows、member/leaf targets、solved result groups、solve event、scope solve events、target weight gaps 和 backtest payload 为主
 - backend 顶层包名现在是 `portfolio_app`
 - 交易、账户和研究快照使用 canonical `instrument_id` / `instrument_name` / `instrument_type`；迁移会规范历史 JSON，运行时不再接受 `asset_id` / `asset_name` / `asset_type` 或 `allowed_asset_types`
 - daily snapshots 已物化到数据库，并显式保存每日 `beginning_nav` / `ending_nav`；`Performance`、`Holdings`、instrument/account contribution 读路径默认复用物化结果。交易、账户或行情变更会用 `refresh_request_id` 把相关组合标记为 stale 并触发刷新。若刷新中又收到新数据，当前计算不会清掉新的 stale 标记，而是串行再跑一轮后才置为 current。组合 summary、Overview 和未显式指定日期的 Holdings 默认使用最新的 fresh complete snapshot：`coverage_state = complete`、`nav` 存在且 `stale_price_flag = false`，避免部分持仓价格/NAV 尚未更新时把组合 as-of 推到更晚日期；FX staleness 保留为质量标记，不单独决定组合资产新鲜度，也不作为资产新鲜度兜底。查询窗口早于组合首个物化日期时，只允许在组合成立前的自然空窗上裁剪；若物化快照缺少交易后历史或 as-of 之前尾部日期，读路径不得返回空结果掩盖缺口。
@@ -102,10 +102,10 @@ npm --prefix apps/portfolio/frontend run build
 - `Overview`、`Performance` 的 TWR index、daily series 和 drawdown 均按查询窗口重新复合；不得复用 inception-to-date 的累计 TWR 作为区间曲线。Overview 的组合收益、benchmark 和 1M / 3M VOL 均以组合 fresh complete as-of 截止，不使用浏览器日期或系统日期。Overview 的组合 YTD 必须存在年初锚点，年内成立且缺少年初锚点时显示 unavailable，由 `Since Inception` 承接成立以来收益。Overview 的 1M / 3M VOL 使用组合 eligible daily TWR 的 trailing 年化波动率，并要求完整窗口历史。
 - Performance `Calculation` 的 group `period_return` 是 group-level TWR：买入、卖出、分红、兑付和现金转移先识别为组内 capital flow，再用 `total_pnl / (beginning_value + period capital flow in)` 计算收益，避免期内新增仓位或往返交易把资金流误识别为收益。手动 benchmark compare 只在同币种、起点锚点和组合 eligible return date 覆盖完整时展示，不能用 raw-currency 或 stale-filled benchmark 序列兜底。
 - Holdings 的 group / subtotal / total 行对 market value、cost basis、day change、unrealized P&L 等绝对量按组内明细加总；unrealized return 使用非现金 P&L 除以非现金成本，并在同一行包含现金时把现金 market value 纳入分母稀释，纯现金行不显示该比例。
-- `Risk` 的 rolling volatility / Sharpe、相关性矩阵、Current Drift 和 point-in-time Risk Contribution 是当前权重口径：使用当前非现金持仓权重乘以资产自身全历史收益窗口，不被组合成立日或真实持仓起始日截断。它不是 realized attribution；若需要真实持仓期间复盘，归入 Performance `Calculation`。Risk 排除仅由 stale price carry-forward 得到的非市场观察日；`sample_covariance` 使用样本协方差 `n - 1`，不使用总体协方差。混合频率和稀疏序列必须使用 Holdings workspace 的 `risk_basis` 对齐元数据解析 daily / weekly / monthly calculation basis，再按目标 period 的最后有效观测对齐，不跨期前向填充；协方差默认要求 active return matrix 是完整对齐样本，按完整样本的实际观察密度年化，不做 pairwise 拼矩阵或缺失收益补 0。Risk 窗口还必须满足最小收益样本数、窗口起点锚定和至少 80% elapsed-day 覆盖，不满足时显示 insufficient history，不计算替代值。区间风险贡献归入 Performance `Calculation` 的 realized risk attribution columns。
+- `Risk` 的 rolling volatility / Sharpe、相关性矩阵和 Current Drift 是当前权重口径：使用当前非现金持仓权重乘以资产自身全历史收益窗口，不被组合成立日或真实持仓起始日截断。它不是 realized attribution；若需要真实持仓期间复盘，归入 Performance `Calculation`。Risk 排除仅由 stale price carry-forward 得到的非市场观察日；`sample_covariance` 使用样本协方差 `n - 1`，不使用总体协方差。混合频率和稀疏序列必须使用 Holdings workspace 的 `risk_basis` 对齐元数据解析 daily / weekly / monthly calculation basis，再按目标 period 的最后有效观测对齐，不跨期前向填充；协方差默认要求 active return matrix 是完整对齐样本，按完整样本的实际观察密度年化，不做 pairwise 拼矩阵或缺失收益补 0。Risk 窗口还必须满足最小收益样本数、窗口起点锚定和至少 80% elapsed-day 覆盖，不满足时显示 insufficient history，不计算替代值。区间风险贡献归入 Performance `Calculation` 的 realized risk attribution columns。
 - `Risk` Correlation Matrix 展示当前 scope 内完整覆盖窗口的 sample correlation；EWMA、vol shrinkage 和相关性收缩属于协方差估计模型，只用于 rolling risk、Current Drift risk gap 和 Risk Contribution，不作为相关性矩阵的用户选项。
 - `Risk` Current Drift 在 instrument-scope taxonomy 下把非现金 Holdings rows 与 Accounts workspace 现金账户合成当前 NAV；Holdings cash rows 只服务 Holdings 展示，不再作为 instrument exposure 参与 Risk 分母或分组，避免现金重复计入。
-- `Research` 的当前 target solve 从最末端 sleeve 递归向上求解；scope default 只使用该 scope 自身的默认目标维度，不静默切到另一个维度。多成员 scope 必须存在 active complete `SAA` 或 `TAA` target set；缺失目标、目标加总错误、strict missing-return policy 下出现单成员缺失、`complete_case_drop` 超过覆盖率/尾部新鲜度上限、risk-budget 求解不能满足 `1e-4` risk-share gap 阈值时，run 明确失败或标记 unavailable，不回退到目标权重、等权或旧算法。单成员 scope 只保留数学上唯一确定的 100% 权重，现金 risk budget 为 0。顶层 capital overlay 在风险 sleeve 权重求出后再按目标波动率或总敞口缩放，并把剩余权重放到现金；若没有 cash-like member 或无法估计正的组合波动率，则只输出显式不可用诊断。
+- `Research` 的当前 target solve 从最末端 sleeve 递归向上求解；scope default 只使用该 scope 自身的默认目标维度，不静默切到另一个维度。多成员 scope 必须存在 active complete `SAA` 或 `TAA` target set；缺失目标、目标加总错误、strict missing-return policy 下出现单成员缺失、`complete_case_drop` 超过覆盖率/尾部新鲜度上限、risk-budget 求解不能满足 `1e-4` risk-share gap 阈值时，run 明确失败或标记 unavailable，不回退到目标权重、等权或旧算法。单成员 scope 只保留数学上唯一确定的 100% 权重，现金 risk budget 为 0。顶层 capital overlay 在风险 sleeve 权重求出后再按目标波动率、波动率上限或总敞口缩放，并把剩余权重放到系统 cash；top sleeve bounds 只作用于 root 直接 sleeve，违反上下限时 run 必须失败。Research backtest 使用同一 Production Risk Model 与 target solve 逻辑逐期重算；组合成员共同历史不足一个风险窗口时返回空 backtest warning，不生成越界日期或短窗口替代结果。
 - `IRR / MWROR` 是资金效率补充指标；若数学上不可解，不应降低 TWR 口径的 coverage。
 - 绩效方法参考 Portfolio Performance 的账本模型，并吸收 GIPS 的 TWR 优先、外部现金流政策、估值频率和方法一致性原则；本项目不声称 GIPS compliance，详见 [docs/02_GIPS_ALIGNMENT.md](./docs/02_GIPS_ALIGNMENT.md)。
 

@@ -195,10 +195,10 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
         for item in detail_payload["views"]
         if item["view_id"] == "fund-screening"
     )
-    assert fund_screening_view["name"] == "基金分类筛选"
+    assert fund_screening_view["name"] == "产品分类筛选"
     assert fund_screening_view["default_group_by"] == "attr.fund_taxonomy_level_1"
     assert fund_screening_view["default_filters"] == {
-        "instrument_type": ["fund"],
+        "instrument_type": ["fund", "index"],
     }
     assert fund_screening_view["columns"] == [
         "instrument_name",
@@ -266,7 +266,94 @@ def test_adding_shared_registry_instrument_to_created_watchlist_materializes_row
     assert payload["rows"][0]["ticker_or_isin"] == "AGG"
 
 
-def test_adding_non_fund_shared_registry_instrument_is_rejected(
+def test_adding_index_shared_registry_instrument_is_supported(
+    client: TestClient,
+) -> None:
+    seed_shared_instrument(
+        {
+            "instrument_id": "index-csi-300",
+            "instrument_name": "CSI 300 Index",
+            "instrument_type": "index",
+            "currency": "CNY",
+            "identifiers": [
+                {"identifier_type": "ticker", "identifier_value": "000300", "is_primary": True},
+            ],
+            "market_data": [
+                {
+                    "metric_family": "price",
+                    "quote_basis": "close",
+                    "as_of_date": "2026-04-15",
+                    "value": "3600.1200",
+                    "currency": "CNY",
+                    "status": "complete",
+                }
+            ],
+            "lifecycle_state": {"status": "active"},
+        }
+    )
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Index Watch", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["index-csi-300"]},
+    )
+    assert add_response.status_code == 200
+
+    resolve_response = client.get("/api/instruments/index-csi-300/resolve")
+    assert resolve_response.status_code == 200
+    payload = resolve_response.json()
+    assert payload["detail_supported"] is True
+    assert payload["detail_view_type"] == "index"
+    assert payload["detail_subject_id"] == "index-csi-300"
+
+    tree_response = client.get("/api/taxonomies/fund-taxonomy")
+    assert tree_response.status_code == 200
+    tree_payload = tree_response.json()
+    assert tree_payload["instrument_types"] == ["fund", "index"]
+    assert "index" in {node["node_id"] for node in tree_payload["nodes"]}
+
+    taxonomy_response = client.get("/api/taxonomies/fund-taxonomy/instruments/index-csi-300")
+    assert taxonomy_response.status_code == 200
+    taxonomy_payload = taxonomy_response.json()
+    assert taxonomy_payload["taxonomy_code"] == "fund_taxonomy"
+    assert taxonomy_payload["assigned_node_id"] is None
+    assert taxonomy_payload["derived_values"] == {}
+
+    screener = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "view_id": "overview",
+            "selected_fields": ["instrument_name", "instrument_type"],
+            "sort": [],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert screener.status_code == 200
+    screener_payload = screener.json()
+    assert screener_payload["rows"][0]["instrument_type"] == "index"
+
+    screening_screener = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "view_id": "fund-screening",
+            "selected_fields": ["instrument_name", "instrument_type"],
+            "sort": [],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert screening_screener.status_code == 200
+    assert screening_screener.json()["rows"][0]["instrument_type"] == "index"
+
+
+def test_adding_unsupported_shared_registry_instrument_is_rejected(
     client: TestClient,
 ) -> None:
     seed_shared_instrument(
@@ -293,7 +380,7 @@ def test_adding_non_fund_shared_registry_instrument_is_rejected(
     )
     created_watchlist = client.post(
         "/api/watchlists",
-        json={"name": "Fund Only", "description": None},
+        json={"name": "Unsupported Type", "description": None},
     )
     watchlist_id = created_watchlist.json()["watchlist_id"]
 
@@ -303,7 +390,7 @@ def test_adding_non_fund_shared_registry_instrument_is_rejected(
     )
 
     assert add_response.status_code == 400
-    assert "fund instruments only" in add_response.json()["detail"]
+    assert "fund and index instruments only" in add_response.json()["detail"]
 
 
 def test_move_watchlist_items_transfers_membership_to_target_watchlist(
@@ -1794,6 +1881,7 @@ def test_local_detail_support_is_explicit_by_instrument_type(
     from watchlist_app.api.routes import watchlists as watchlists_route
 
     assert watchlists_route._supports_local_detail({"instrument_type": "fund"}) is True
+    assert watchlists_route._supports_local_detail({"instrument_type": "index"}) is True
     assert watchlists_route._supports_local_detail({"instrument_type": "equity"}) is False
 
 
@@ -1894,6 +1982,71 @@ def test_default_all_coverage_watchlist_resyncs_when_registry_grows(
     )
     assert screener.status_code == 200
     assert "fund-new-income" in {row["instrument_id"] for row in screener.json()["rows"]}
+
+
+def test_default_all_coverage_watchlist_syncs_active_shared_indexes(
+    client: TestClient,
+) -> None:
+    initial = client.get("/api/watchlists")
+    assert initial.status_code == 200
+    assert initial.json()[0]["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+
+    seed_shared_instrument(
+        {
+            "instrument_id": "index-csi-300",
+            "instrument_name": "CSI 300 Index",
+            "instrument_type": "index",
+            "currency": "CNY",
+            "identifiers": [
+                {"identifier_type": "ticker", "identifier_value": "000300.SH", "is_primary": True},
+            ],
+            "market_data": [
+                {
+                    "metric_family": "price",
+                    "quote_basis": "close",
+                    "as_of_date": "2026-04-15",
+                    "value": "3600.1200",
+                    "currency": "CNY",
+                    "status": "complete",
+                }
+            ],
+            "lifecycle_state": {"status": "active"},
+        }
+    )
+
+    detail = client.get("/api/watchlists/all-coverage")
+    assert detail.status_code == 200
+    assert detail.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS) + 1
+
+    screener = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": "all-coverage",
+            "view_id": "overview",
+            "selected_fields": ["instrument_name", "instrument_type"],
+            "sort": [],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert screener.status_code == 200
+    screener_payload = screener.json()
+    index_row = next(row for row in screener_payload["rows"] if row["instrument_id"] == "index-csi-300")
+    assert index_row["instrument_type"] == "index"
+
+    screening_screener = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": "all-coverage",
+            "view_id": "fund-screening",
+            "selected_fields": ["instrument_name", "instrument_type"],
+            "sort": [],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert screening_screener.status_code == 200
+    assert "index-csi-300" in {row["instrument_id"] for row in screening_screener.json()["rows"]}
 
 
 def test_default_all_coverage_watchlist_cannot_be_reduced_manually(

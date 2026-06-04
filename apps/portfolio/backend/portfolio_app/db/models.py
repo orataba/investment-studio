@@ -447,6 +447,9 @@ class ResearchSettingsRecordModel(Base):
     target_volatility: Mapped[float | None]
     max_gross_exposure: Mapped[float | None]
     frozen_taxonomy_node_ids_json: Mapped[list[str] | None] = mapped_column(JSON)
+    top_sleeve_weight_bounds_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
+    backtest_rebalance_frequency: Mapped[str] = mapped_column(String, nullable=False, default="1m")
+    backtest_benchmark_instrument_id: Mapped[str | None] = mapped_column(String)
     notes: Mapped[str | None] = mapped_column(String)
     updated_at: Mapped[str | None] = mapped_column(String)
 

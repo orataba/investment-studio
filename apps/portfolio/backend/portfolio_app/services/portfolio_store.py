@@ -45,6 +45,9 @@ EMPTY_STORE: dict[str, list[dict[str, Any]]] = {
 UNSET = object()
 TARGET_SET_EPSILON = 0.0005
 TARGET_MEMBER_NODE = "taxonomy_node"
+TARGET_MEMBER_CASH = "cash_bucket"
+SYSTEM_CASH_TARGET_MEMBER_ID = "__cash__"
+SYSTEM_CASH_TARGET_LABEL = "Cash"
 LEGACY_ASSET_REFERENCE_KEYS = {"asset_id", "asset_name", "asset_type"}
 INSTRUMENT_REF_REQUIRED_KEYS = {"instrument_id", "instrument_name", "instrument_type", "currency"}
 
@@ -1478,7 +1481,7 @@ def _taxonomy_allows_assignment_scope(taxonomy: TaxonomyRecordModel, target_scop
     return bool(
         taxonomy.planning_enabled
         and taxonomy.primary_assignment_scope == "instrument"
-        and target_scope == "cash_bucket"
+        and target_scope == TARGET_MEMBER_CASH
     )
 
 
@@ -1514,6 +1517,16 @@ def _taxonomy_node_subtree_ids(
         for child in nodes_by_parent.get(node_id, []):
             pending.append(child.taxonomy_node_id)
     return seen
+
+
+def _is_system_cash_like_taxonomy_label(node_name: str | None, node_code: str | None) -> bool:
+    normalized_name = (node_name or "").strip().lower()
+    normalized_code = (node_code or "").strip().lower()
+    return normalized_code == "cash" or normalized_name in {"cash", "现金"}
+
+
+def _taxonomy_node_is_system_cash_like(node: TaxonomyNodeRecordModel) -> bool:
+    return _is_system_cash_like_taxonomy_label(node.node_name, node.node_code)
 
 
 def _scope_member_is_cash(
@@ -1611,16 +1624,19 @@ def _scope_child_nodes(
 def _scope_target_members(
     session,
     *,
-    taxonomy_id: str,
+    taxonomy: TaxonomyRecordModel,
     comparator_taxonomy_node_id: str | None,
 ) -> tuple[TaxonomyNodeRecordModel | None, list[dict[str, object]]]:
     parent_node, child_nodes = _scope_child_nodes(
         session,
-        taxonomy_id=taxonomy_id,
+        taxonomy_id=taxonomy.taxonomy_id,
         comparator_taxonomy_node_id=comparator_taxonomy_node_id,
     )
+    if taxonomy.primary_assignment_scope == "instrument":
+        child_nodes = [node for node in child_nodes if not _taxonomy_node_is_system_cash_like(node)]
+    members: list[dict[str, object]] = []
     if child_nodes:
-        return parent_node, [
+        members.extend(
             {
                 "target_member_type": TARGET_MEMBER_NODE,
                 "target_member_id": node.taxonomy_node_id,
@@ -1628,14 +1644,17 @@ def _scope_target_members(
                 "label": node.node_name,
             }
             for node in child_nodes
-        ]
+        )
+
+    if members:
+        return parent_node, members
 
     if comparator_taxonomy_node_id is None:
         raise ValueError("Comparator scope must have active child sleeves.")
 
     direct_assignments = session.scalars(
         select(TaxonomyAssignmentRecordModel).where(
-            TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy_id,
+            TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy.taxonomy_id,
             TaxonomyAssignmentRecordModel.taxonomy_node_id == comparator_taxonomy_node_id,
             TaxonomyAssignmentRecordModel.status == "active",
         )
@@ -1644,7 +1663,7 @@ def _scope_target_members(
     for assignment in direct_assignments:
         member_key = (str(assignment.target_scope), str(assignment.target_entity_id))
         visible_direct_assignments.setdefault(member_key, assignment)
-    if not direct_assignments:
+    if not visible_direct_assignments:
         raise ValueError("Comparator scope must have active child sleeves or directly assigned instruments.")
 
     return parent_node, [
@@ -1687,7 +1706,7 @@ def _validate_target_set_lines(
 
     parent_node, scope_members = _scope_target_members(
         session,
-        taxonomy_id=taxonomy.taxonomy_id,
+        taxonomy=taxonomy,
         comparator_taxonomy_node_id=comparator_taxonomy_node_id,
     )
     if not lines:
@@ -1697,6 +1716,9 @@ def _validate_target_set_lines(
         (str(item["target_member_type"]), str(item["target_member_id"]))
         for item in scope_members
     }
+    optional_member_keys: set[tuple[str, str]] = set()
+    if comparator_taxonomy_node_id is None and taxonomy.primary_assignment_scope == "instrument":
+        optional_member_keys.add((TARGET_MEMBER_CASH, SYSTEM_CASH_TARGET_MEMBER_ID))
     seen_member_keys: set[tuple[str, str]] = set()
     nodes_by_parent = _active_taxonomy_nodes_by_parent(session, taxonomy_id=taxonomy.taxonomy_id)
     non_cash_risk_share_total = 0.0
@@ -1704,7 +1726,7 @@ def _validate_target_set_lines(
     for raw_line in lines:
         member_type, member_id, _ = _normalize_target_line_member(raw_line)
         member_key = (member_type, member_id)
-        if member_key not in expected_member_keys:
+        if member_key not in expected_member_keys and member_key not in optional_member_keys:
             raise ValueError("Target set lines must match the direct members of the selected scope.")
         if member_key in seen_member_keys:
             raise ValueError("Duplicate scope member in target set lines.")
@@ -1741,7 +1763,7 @@ def _validate_target_set_lines(
         elif target_risk_share is not None:
             raise ValueError("target_risk_share must be empty when risk_budget is disabled.")
 
-    if seen_member_keys != expected_member_keys:
+    if not expected_member_keys.issubset(seen_member_keys):
         raise ValueError("Target set lines must cover every direct member in the selected scope.")
     if risk_budget_enabled and abs(non_cash_risk_share_total - 1.0) > TARGET_SET_EPSILON:
         raise ValueError("Non-cash target_risk_share values must sum to 100%.")
@@ -1978,6 +2000,8 @@ def create_taxonomy_node(
         )
         if taxonomy is None:
             raise ValueError("Taxonomy not found.")
+        if taxonomy.primary_assignment_scope == "instrument" and _is_system_cash_like_taxonomy_label(node_name, node_code):
+            raise ValueError("Cash is system-managed for instrument taxonomies.")
 
         parent_node = None
         if parent_taxonomy_node_id:
@@ -2035,6 +2059,13 @@ def update_taxonomy_node(
         )
         if record is None:
             raise ValueError("Taxonomy node not found.")
+        resolved_node_name = record.node_name if node_name is UNSET or node_name is None else node_name
+        resolved_node_code = record.node_code if node_code is UNSET else node_code
+        if taxonomy.primary_assignment_scope == "instrument" and _is_system_cash_like_taxonomy_label(
+            resolved_node_name,
+            resolved_node_code,
+        ):
+            raise ValueError("Cash is system-managed for instrument taxonomies.")
 
         if node_name is not UNSET and node_name is not None:
             record.node_name = node_name.strip()
@@ -2387,6 +2418,8 @@ def update_taxonomy_assignment(
         )
         if record is None:
             raise ValueError("Taxonomy assignment not found.")
+        if not _taxonomy_allows_assignment_scope(taxonomy, record.target_scope):
+            raise ValueError("Assignment target_scope is not allowed for this taxonomy.")
 
         if taxonomy_node_id is not UNSET and taxonomy_node_id is not None:
             node = session.scalar(

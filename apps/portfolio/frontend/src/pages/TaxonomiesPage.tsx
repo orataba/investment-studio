@@ -53,7 +53,7 @@ type CoverageEntity = {
   current_assignment: PortfolioTaxonomyAssignmentRecord | null
   current_node: PortfolioTaxonomyNodeRecord | null
   holding_state: 'held' | 'not_held'
-  instrument_state: 'held' | 'former' | 'watch' | null
+  instrument_state: 'held' | 'former' | 'observe' | null
   instrument_state_label: string | null
   coverage_state: 'unassigned' | 'ambiguous' | 'selected' | 'other'
 }
@@ -81,6 +81,7 @@ type TargetScopeMember = {
   node: PortfolioTaxonomyNodeRecord | null
   entity: CoverageEntity | null
   label: string
+  system_role?: 'cash'
 }
 
 type TargetSetDraft = {
@@ -99,6 +100,8 @@ type TargetSetValidation = {
   weight_sum_pct: number | null
   risk_sum_pct: number | null
 }
+
+type DefaultTargetDimension = 'weight' | 'risk_budget'
 
 type NodeCreateMode = 'root' | 'sibling' | 'child'
 
@@ -132,8 +135,11 @@ type WorkspaceFetchResult = {
 }
 
 const TAXONOMY_ROOT_ROW_ID = '__taxonomy_root__'
+const TAXONOMY_CASH_ROW_ID = '__taxonomy_cash__'
 const TAXONOMY_UNASSIGNED_ROW_ID = '__taxonomy_unassigned__'
 const ROOT_TARGET_SCOPE_KEY = '__target_scope_root__'
+const CASH_TARGET_MEMBER_ID = '__cash__'
+const CASH_TARGET_LABEL = 'Cash'
 const EMPTY_TARGET_SET_DRAFT: TargetSetDraft = {
   name: '',
   weight_enabled: false,
@@ -170,12 +176,12 @@ function instrumentStateForEntity(
   universeRecord?: PortfolioInstrumentUniverseRecord | null,
 ): Pick<CoverageEntity, 'instrument_state' | 'instrument_state_label'> {
   if (holdingState === 'held') {
-    return { instrument_state: 'held', instrument_state_label: 'Current Holding' }
+    return { instrument_state: 'held', instrument_state_label: 'Held' }
   }
   if ((universeRecord?.transaction_count ?? 0) > 0 || universeRecord?.source === 'transaction') {
-    return { instrument_state: 'former', instrument_state_label: 'Former Holding' }
+    return { instrument_state: 'former', instrument_state_label: 'Former' }
   }
-  return { instrument_state: 'watch', instrument_state_label: 'Watchlist' }
+  return { instrument_state: 'observe', instrument_state_label: 'Observed' }
 }
 
 function isCashHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
@@ -205,10 +211,43 @@ function renderInstrumentStatusCell(entity: CoverageEntity) {
     return null
   }
   return (
-    <span className={`taxonomy-instrument-status taxonomy-instrument-status-${entity.instrument_state}`}>
-      {entity.instrument_state_label}
+    <span
+      className={`taxonomy-instrument-status taxonomy-instrument-status-${entity.instrument_state}`}
+      aria-label={entity.instrument_state_label}
+      title={entity.instrument_state_label}
+    >
+      <span className="taxonomy-instrument-status-icon" aria-hidden="true" />
     </span>
   )
+}
+
+function renderInstrumentStatusLegendItem(kind: NonNullable<CoverageEntity['instrument_state']>, label: string, count: number) {
+  return (
+    <span className={`taxonomy-status-legend-item taxonomy-status-legend-item-${kind}`} aria-label={`${label} ${count}`} title={`${label} ${count}`}>
+      <span className="taxonomy-instrument-status-icon" aria-hidden="true" />
+      <span className="taxonomy-status-legend-label">{label}</span>
+      <span className="taxonomy-status-legend-count">{count}</span>
+    </span>
+  )
+}
+
+function defaultTargetDraftsFromNodes(nodes: PortfolioTaxonomyNodeRecord[]) {
+  return nodes.reduce<Record<string, DefaultTargetDimension>>((drafts, node) => {
+    drafts[node.taxonomy_node_id] = node.default_target_dimension as DefaultTargetDimension
+    return drafts
+  }, {})
+}
+
+function defaultTargetDraftsEqual(
+  left: Record<string, DefaultTargetDimension>,
+  right: Record<string, DefaultTargetDimension>,
+) {
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(right)
+  if (leftKeys.length !== rightKeys.length) {
+    return false
+  }
+  return leftKeys.every((key) => left[key] === right[key])
 }
 
 function TaxonomyModal({
@@ -284,6 +323,23 @@ function targetMemberKey(targetMemberType: TargetMemberType, targetMemberId: str
   return `${targetMemberType}:${targetMemberId}`
 }
 
+function isSyntheticCashTargetMember(member: Pick<TargetScopeMember, 'target_member_type' | 'target_member_id' | 'system_role'>) {
+  return member.system_role === 'cash' || (member.target_member_type === 'cash_bucket' && member.target_member_id === CASH_TARGET_MEMBER_ID)
+}
+
+function isSystemCashEntity(entity: CoverageEntity, taxonomy: PortfolioTaxonomyRecord | null | undefined) {
+  return taxonomy?.primary_assignment_scope === 'instrument' && entity.target_scope === 'cash_bucket'
+}
+
+function isCashTaxonomyNode(node: PortfolioTaxonomyNodeRecord | null | undefined) {
+  if (!node) {
+    return false
+  }
+  const normalizedName = node.node_name.trim().toLowerCase()
+  const normalizedCode = (node.node_code ?? '').trim().toLowerCase()
+  return normalizedCode === 'cash' || normalizedName === 'cash' || normalizedName === '现金'
+}
+
 function buildTargetSetDraft(args: {
   targetSet: PortfolioTargetSetRecord | null
   targetSetLines: PortfolioTargetSetLineRecord[]
@@ -303,8 +359,8 @@ function buildTargetSetDraft(args: {
       return [
         member.member_key,
         {
-          target_weight: percentInputFromDecimal(targetLine?.target_weight),
-          target_risk_share: percentInputFromDecimal(targetLine?.target_risk_share),
+          target_weight: isSyntheticCashTargetMember(member) && targetLine?.target_weight == null ? '0' : percentInputFromDecimal(targetLine?.target_weight),
+          target_risk_share: isSyntheticCashTargetMember(member) ? '0' : percentInputFromDecimal(targetLine?.target_risk_share),
           notes: targetLine?.notes ?? '',
         },
       ]
@@ -408,6 +464,10 @@ function validateTargetSetDraft(
         errors.push(`Missing target risk budget for ${member.label}.`)
       } else if (Number.isNaN(parsedRisk) || parsedRisk < 0) {
         errors.push(`Invalid target risk budget for ${member.label}.`)
+      } else if (isSyntheticCashTargetMember(member)) {
+        if (Math.abs(parsedRisk) > 0.0005) {
+          errors.push('Cash risk budget must be 0%.')
+        }
       } else {
         riskSum += parsedRisk
         riskSeen = true
@@ -419,7 +479,7 @@ function validateTargetSetDraft(
     warnings.push('Target weight total is not 100% within the selected scope.')
   }
   if (draft.risk_budget_enabled && riskSeen && Math.abs(riskSum - 1) > 0.0005) {
-    warnings.push('Target risk budget total is not 100% within the selected scope.')
+    warnings.push('Non-cash target risk budget total is not 100% within the selected scope.')
   }
 
   return {
@@ -517,6 +577,7 @@ export default function TaxonomiesPage() {
   const [targetDraftsByScope, setTargetDraftsByScope] = useState<
     Record<string, { saa: TargetSetDraft; taa: TargetSetDraft }>
   >({})
+  const [defaultTargetDraftsByNodeId, setDefaultTargetDraftsByNodeId] = useState<Record<string, DefaultTargetDimension>>({})
   const [activeTargetScopeKey, setActiveTargetScopeKey] = useState(ROOT_TARGET_SCOPE_KEY)
   const [targetEditMode, setTargetEditMode] = useState(false)
   const [showTaxonomyCreate, setShowTaxonomyCreate] = useState(false)
@@ -622,8 +683,13 @@ export default function TaxonomiesPage() {
     ''
   const selectedTaxonomy = taxonomies.find((taxonomy) => taxonomy.taxonomy_id === resolvedSelectedTaxonomyId) ?? null
   const selectedTaxonomyNodes = useMemo(
-    () => taxonomyNodes.filter((node) => node.taxonomy_id === resolvedSelectedTaxonomyId),
-    [resolvedSelectedTaxonomyId, taxonomyNodes],
+    () =>
+      taxonomyNodes.filter(
+        (node) =>
+          node.taxonomy_id === resolvedSelectedTaxonomyId &&
+          !(selectedTaxonomy?.primary_assignment_scope === 'instrument' && isCashTaxonomyNode(node)),
+      ),
+    [resolvedSelectedTaxonomyId, selectedTaxonomy?.primary_assignment_scope, taxonomyNodes],
   )
   const selectedTaxonomyAssignments = useMemo(
     () => taxonomyAssignments.filter((assignment) => assignment.taxonomy_id === resolvedSelectedTaxonomyId),
@@ -634,6 +700,21 @@ export default function TaxonomiesPage() {
   const instrumentUniverseRows = catalog?.instrument_universe ?? []
   const baseCurrency = holdingsWorkspace?.base_currency ?? 'CNY'
   const accountRows = accountsResponse?.accounts ?? []
+
+  useEffect(() => {
+    const nextDrafts = defaultTargetDraftsFromNodes(selectedTaxonomyNodes)
+    setDefaultTargetDraftsByNodeId((current) => {
+      if (!targetEditMode) {
+        return defaultTargetDraftsEqual(current, nextDrafts) ? current : nextDrafts
+      }
+      const mergedDrafts = selectedTaxonomyNodes.reduce<Record<string, DefaultTargetDimension>>((drafts, node) => {
+        drafts[node.taxonomy_node_id] =
+          current[node.taxonomy_node_id] ?? (node.default_target_dimension as DefaultTargetDimension)
+        return drafts
+      }, {})
+      return defaultTargetDraftsEqual(current, mergedDrafts) ? current : mergedDrafts
+    })
+  }, [selectedTaxonomyNodes, targetEditMode])
 
   useEffect(() => {
     if (!taxonomies.length) {
@@ -768,9 +849,9 @@ export default function TaxonomiesPage() {
   const activeAssignments = useMemo(
     () =>
       selectedTaxonomyAssignments.filter(
-        (assignment) => assignment.status === 'active',
+        (assignment) => assignment.status === 'active' && nodeById.has(assignment.taxonomy_node_id),
       ),
-    [selectedTaxonomyAssignments],
+    [nodeById, selectedTaxonomyAssignments],
   )
 
   const activeAssignmentsByEntityKey = useMemo(() => {
@@ -828,13 +909,9 @@ export default function TaxonomiesPage() {
     }
 
     if (selectedTaxonomy.primary_assignment_scope === 'instrument') {
-      const includeCashBuckets = selectedTaxonomy.planning_enabled
+      const includeCashBuckets = true
       const visibleCashAccounts = accountRows.filter((accountRow) => {
-        if (accountRow.account.account_type !== 'deposit_account') {
-          return false
-        }
-        const assignmentKey = coverageEntityKey('cash_bucket', accountRow.account.account_id)
-        return (accountRow.derived_cash_balance_base ?? 0) !== 0 || activeAssignmentsByEntityKey.has(assignmentKey)
+        return accountRow.account.account_type === 'deposit_account'
       })
       const holdingRowsForEntities = includeCashBuckets
         ? holdingsRows.filter((row) => !isCashHoldingRow(row))
@@ -945,35 +1022,22 @@ export default function TaxonomiesPage() {
       }
 
       const cashEntities = visibleCashAccounts.map((accountRow) => {
-        const assignments =
-          activeAssignmentsByEntityKey.get(coverageEntityKey('cash_bucket', accountRow.account.account_id)) ?? []
-        const assignment = assignments.length === 1 ? assignments[0] : null
-        const currentNode = assignment ? nodeById.get(assignment.taxonomy_node_id) ?? null : null
-        let coverageState: CoverageEntity['coverage_state'] = 'unassigned'
-        if (assignments.length > 1) {
-          coverageState = 'ambiguous'
-        } else if (assignment && selectedNodeScopeIds?.has(assignment.taxonomy_node_id)) {
-          coverageState = 'selected'
-        } else if (assignment) {
-          coverageState = 'other'
-        }
-
         return {
           entity_id: accountRow.account.account_id,
           target_scope: 'cash_bucket' as const,
-          label: `${accountRow.account.account_name} · Cash`,
+          label: accountRow.account.account_name,
           supporting_label: accountRow.account.currency,
           allocation:
             accountRow.derived_cash_balance_base != null && totalEntityValueBase > 1e-9
               ? accountRow.derived_cash_balance_base / totalEntityValueBase
               : null,
           market_value_base: accountRow.derived_cash_balance_base ?? null,
-          current_assignment: assignment,
-          current_node: currentNode,
+          current_assignment: null,
+          current_node: null,
           holding_state: 'held',
           instrument_state: null,
           instrument_state_label: null,
-          coverage_state: coverageState,
+          coverage_state: 'other',
         } satisfies CoverageEntity
       })
 
@@ -1064,14 +1128,14 @@ export default function TaxonomiesPage() {
     const ambiguousEntities = currentEntities.filter((entity) => entity.coverage_state === 'ambiguous')
     const heldEntityCount = currentEntities.filter((entity) => entity.holding_state === 'held').length
     const formerEntityCount = currentEntities.filter((entity) => entity.instrument_state === 'former').length
-    const watchEntityCount = currentEntities.filter((entity) => entity.instrument_state === 'watch').length
+    const observeEntityCount = currentEntities.filter((entity) => entity.instrument_state === 'observe').length
     const assignedCount = currentEntityCount - unassignedEntities.length - ambiguousEntities.length
     return {
       currentEntityCount,
       assignedCount,
       heldEntityCount,
       formerEntityCount,
-      watchEntityCount,
+      observeEntityCount,
       unassignedEntities,
       ambiguousEntities,
       coveragePct: currentEntityCount ? assignedCount / currentEntityCount : null,
@@ -1166,6 +1230,36 @@ export default function TaxonomiesPage() {
     })
     return lookup
   }, [currentEntities])
+
+  const showSystemCashNode = selectedTaxonomy?.primary_assignment_scope === 'instrument'
+  const cashBucketEntities = useMemo(
+    () => currentEntities.filter((entity) => entity.target_scope === 'cash_bucket'),
+    [currentEntities],
+  )
+  const cashAggregate = useMemo(() => {
+    let currentWeightTotal = 0
+    let currentWeightSeen = false
+    let currentValueBaseTotal = 0
+    let currentValueSeen = false
+
+    cashBucketEntities.forEach((entity) => {
+      if (entity.allocation != null) {
+        currentWeightTotal += entity.allocation
+        currentWeightSeen = true
+      }
+      if (entity.market_value_base != null) {
+        currentValueBaseTotal += entity.market_value_base
+        currentValueSeen = true
+      }
+    })
+
+    return {
+      current_entity_count: cashBucketEntities.length,
+      current_weight: currentWeightSeen ? currentWeightTotal : null,
+      current_value_base: currentValueSeen ? currentValueBaseTotal : null,
+      direct_assignment_count: cashBucketEntities.length,
+    } satisfies NodeAggregate
+  }, [cashBucketEntities])
 
   const taxonomyCurrentSummary = useMemo(() => {
     let weightTotal = 0
@@ -1367,19 +1461,31 @@ export default function TaxonomiesPage() {
     const lookup = new Map<string, TargetScopeMember[]>()
 
     const rootChildren = sortNodes(childrenByParent.get(null) ?? [])
-    if (rootChildren.length) {
-      lookup.set(
-        ROOT_TARGET_SCOPE_KEY,
-        rootChildren.map((node) => ({
+    const rootMembers: TargetScopeMember[] = [
+      ...rootChildren.map((node) => ({
           member_key: targetMemberKey('taxonomy_node', node.taxonomy_node_id),
-          target_member_type: 'taxonomy_node',
+          target_member_type: 'taxonomy_node' as const,
           target_member_id: node.taxonomy_node_id,
           taxonomy_node_id: node.taxonomy_node_id,
           node,
           entity: null,
           label: node.node_name,
         })),
-      )
+    ]
+    if (showSystemCashNode) {
+      rootMembers.push({
+        member_key: targetMemberKey('cash_bucket', CASH_TARGET_MEMBER_ID),
+        target_member_type: 'cash_bucket' as const,
+        target_member_id: CASH_TARGET_MEMBER_ID,
+        taxonomy_node_id: null,
+        node: null,
+        entity: null,
+        label: CASH_TARGET_LABEL,
+        system_role: 'cash',
+      })
+    }
+    if (rootMembers.length) {
+      lookup.set(ROOT_TARGET_SCOPE_KEY, rootMembers)
     }
 
     selectedTaxonomyNodes.forEach((node) => {
@@ -1419,7 +1525,7 @@ export default function TaxonomiesPage() {
     })
 
     return lookup
-  }, [childrenByParent, directEntitiesByNodeId, selectedTaxonomyNodes])
+  }, [childrenByParent, directEntitiesByNodeId, selectedTaxonomyNodes, showSystemCashNode])
   const selectedComparatorScopeNode =
     selectedNode && scopeMembersByScopeKey.has(targetScopeKey(selectedNode.taxonomy_node_id))
       ? selectedNode
@@ -1549,6 +1655,41 @@ export default function TaxonomiesPage() {
   const saaDraft = currentScopeDrafts.saa
   const taaDraft = currentScopeDrafts.taa
   const hasTargetScope = currentScopeMembers.length > 0
+  const activeScopePathLabel = activeComparatorScopeNode
+    ? (nodePathByNodeId.get(activeComparatorScopeNode.taxonomy_node_id) ?? []).map((node) => node.node_name).join(' / ')
+    : 'Top Level'
+  const activeBaselineDrafts = useMemo(
+    () => ({
+      saa: buildTargetSetDraft({
+        targetSet: activeSaaTargetSet,
+        targetSetLines: targetSetLinesByTargetSetId.get(activeSaaTargetSet?.target_set_id ?? '') ?? [],
+        targetMembers: currentScopeMembers,
+        defaultName: `${selectedTaxonomy?.name ?? 'Planning'} ${activeScopePathLabel} SAA`,
+        defaultWeightEnabled: allowedTargetDimensions.weight,
+        defaultRiskBudgetEnabled: allowedTargetDimensions.risk_budget,
+      }),
+      taa: buildTargetSetDraft({
+        targetSet: activeTaaTargetSet,
+        targetSetLines: targetSetLinesByTargetSetId.get(activeTaaTargetSet?.target_set_id ?? '') ?? [],
+        targetMembers: currentScopeMembers,
+        defaultName: `${selectedTaxonomy?.name ?? 'Planning'} ${activeScopePathLabel} TAA`,
+        defaultWeightEnabled: allowedTargetDimensions.weight,
+        defaultRiskBudgetEnabled: allowedTargetDimensions.risk_budget,
+      }),
+    }),
+    [
+      activeSaaTargetSet,
+      activeScopePathLabel,
+      activeTaaTargetSet,
+      allowedTargetDimensions.risk_budget,
+      allowedTargetDimensions.weight,
+      currentScopeMembers,
+      selectedTaxonomy?.name,
+      targetSetLinesByTargetSetId,
+    ],
+  )
+  const saaDraftChanged = !targetSetDraftsEqual(saaDraft, activeBaselineDrafts.saa)
+  const taaDraftChanged = !targetSetDraftsEqual(taaDraft, activeBaselineDrafts.taa)
   const saaValidation = useMemo(
     () => validateTargetSetDraft(saaDraft, currentScopeMembers, allowedTargetDimensions),
     [allowedTargetDimensions, currentScopeMembers, saaDraft],
@@ -1561,23 +1702,49 @@ export default function TaxonomiesPage() {
     () => new Set(currentScopeMembers.map((member) => member.member_key)),
     [currentScopeMembers],
   )
-
-  function formatDraftSum(value: number | null) {
-    return value != null ? `${value.toFixed(2)}%` : '—'
-  }
+  const changedDefaultTargetNodes = useMemo(
+    () =>
+      selectedTaxonomyNodes.filter((node) => {
+        const draftValue = defaultTargetDraftsByNodeId[node.taxonomy_node_id]
+        return Boolean(draftValue) && draftValue !== node.default_target_dimension
+      }),
+    [defaultTargetDraftsByNodeId, selectedTaxonomyNodes],
+  )
+  const hasDefaultTargetChanges = changedDefaultTargetNodes.length > 0
+  const targetSaveBlockedReason = [
+    hasTargetScope && saaDraftChanged ? targetValidationMessage('saa', saaValidation) : '',
+    hasTargetScope && taaDraftChanged ? targetValidationMessage('taa', taaValidation) : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+  const hasTargetsConfigurationChanges = hasDefaultTargetChanges || (hasTargetScope && (saaDraftChanged || taaDraftChanged))
+  const canSaveTargetsConfiguration = hasTargetsConfigurationChanges && !targetSaveBlockedReason
 
   function renderDefaultTargetCell(node: PortfolioTaxonomyNodeRecord) {
+    const draftValue = defaultTargetDraftsByNodeId[node.taxonomy_node_id] ?? (node.default_target_dimension as DefaultTargetDimension)
+    if (!targetEditMode || !selectedTaxonomy?.planning_enabled) {
+      return <span className="taxonomy-default-target-label">{draftValue === 'risk_budget' ? 'Risk Budget' : 'Weight'}</span>
+    }
     return (
       <select
         className="taxonomy-default-target-select"
-        value={node.default_target_dimension}
-        onChange={(event) => void handleUpdateNodeDefaultTarget(node, event.target.value as 'weight' | 'risk_budget')}
-        disabled={actionPending === `node-default-target-${node.taxonomy_node_id}`}
+        value={draftValue}
+        onChange={(event) =>
+          setDefaultTargetDraftsByNodeId((current) => ({
+            ...current,
+            [node.taxonomy_node_id]: event.target.value as DefaultTargetDimension,
+          }))
+        }
+        disabled={Boolean(actionPending)}
       >
-        <option value="weight">Target: Weight</option>
-        <option value="risk_budget">Target: Risk Budget</option>
+        <option value="weight">Weight</option>
+        <option value="risk_budget">Risk Budget</option>
       </select>
     )
+  }
+
+  function renderFixedWeightDefaultTargetCell() {
+    return <span className="taxonomy-default-target-label">Weight</span>
   }
 
   function renderTargetCell(
@@ -1591,6 +1758,9 @@ export default function TaxonomiesPage() {
         ? targetScopeKey(targetMember.node?.parent_taxonomy_node_id ?? null)
         : targetScopeKey(targetMember.entity?.current_assignment?.taxonomy_node_id ?? null)
     const draft = targetDraftsByScope[scopeKey]?.[kind] ?? EMPTY_TARGET_SET_DRAFT
+    if (isSyntheticCashTargetMember(targetMember) && dimension === 'risk_budget') {
+      return <span className="taxonomy-fixed-target-value">0.00%</span>
+    }
     const lineDraft = draft.lines_by_member_key[targetMember.member_key] ?? {
       target_weight: '',
       target_risk_share: '',
@@ -1735,6 +1905,9 @@ export default function TaxonomiesPage() {
 
   function handleEntityContextMenu(event: ReactMouseEvent, entity: CoverageEntity) {
     event.preventDefault()
+    if (isSystemCashEntity(entity, selectedTaxonomy)) {
+      return
+    }
     if (!selectedEntityIds.has(entity.entity_id)) {
       setSelectedEntityIds(new Set([entity.entity_id]))
     }
@@ -1747,6 +1920,10 @@ export default function TaxonomiesPage() {
   }
 
   function toggleEntitySelection(entityId: string) {
+    const entity = currentEntities.find((candidate) => candidate.entity_id === entityId)
+    if (entity && isSystemCashEntity(entity, selectedTaxonomy)) {
+      return
+    }
     setSelectedEntityIds((current) => {
       const next = new Set(current)
       if (next.has(entityId)) {
@@ -1759,7 +1936,7 @@ export default function TaxonomiesPage() {
   }
 
   function handleEntityDragStart(event: ReactDragEvent, entity: CoverageEntity) {
-    if (entity.coverage_state === 'ambiguous') {
+    if (entity.coverage_state === 'ambiguous' || isSystemCashEntity(entity, selectedTaxonomy)) {
       event.preventDefault()
       return
     }
@@ -1829,17 +2006,17 @@ export default function TaxonomiesPage() {
     })
   }
 
-  function buildTargetSetPayload(draft: TargetSetDraft) {
+  function buildTargetSetPayload(draft: TargetSetDraft, targetMembers: TargetScopeMember[] = currentScopeMembers) {
     return {
       name: draft.name.trim(),
       weight_enabled: draft.weight_enabled,
       risk_budget_enabled: draft.risk_budget_enabled,
       status: draft.status,
       notes: draft.notes || null,
-      lines: currentScopeMembers.map((member) => {
+      lines: targetMembers.map((member) => {
         const lineDraft = draft.lines_by_member_key[member.member_key] ?? {
           target_weight: '',
-          target_risk_share: '',
+          target_risk_share: isSyntheticCashTargetMember(member) ? '0' : '',
           notes: '',
         }
         const targetWeight = parsePercentInput(lineDraft.target_weight)
@@ -1856,39 +2033,88 @@ export default function TaxonomiesPage() {
     }
   }
 
-  async function handleSaveTargetSet(kind: 'saa' | 'taa') {
-    if (!portfolioId || !selectedTaxonomy || !hasTargetScope) {
+  function targetValidationMessage(kind: 'saa' | 'taa', validation: TargetSetValidation) {
+    return [...validation.errors, ...validation.warnings]
+      .map((message) => `${kind.toUpperCase()} ${currentScopeLabel}: ${message}`)
+      .join(' ')
+  }
+
+  async function handleSaveTargetsConfiguration() {
+    if (!portfolioId || !selectedTaxonomy) {
       return
     }
-    const draft = kind === 'saa' ? saaDraft : taaDraft
-    const validation = kind === 'saa' ? saaValidation : taaValidation
-    const existingTargetSet = kind === 'saa' ? activeSaaTargetSet : activeTaaTargetSet
-    if (!validation.savable) {
-      setActionError(validation.errors[0] ?? 'Current scope target set is invalid.')
-      setNotice(null)
+
+    const targetKindsToSave: Array<'saa' | 'taa'> = []
+    if (hasTargetScope && saaDraftChanged) {
+      const message = targetValidationMessage('saa', saaValidation)
+      if (message) {
+        setActionError(null)
+        setNotice(null)
+        return
+      }
+      targetKindsToSave.push('saa')
+    }
+    if (hasTargetScope && taaDraftChanged) {
+      const message = targetValidationMessage('taa', taaValidation)
+      if (message) {
+        setActionError(null)
+        setNotice(null)
+        return
+      }
+      targetKindsToSave.push('taa')
+    }
+
+    if (!hasDefaultTargetChanges && !targetKindsToSave.length) {
+      setActionError(null)
+      setNotice('No changes.')
       return
     }
-    setActionPending(`target-${kind}-save`)
+
+    setActionPending('targets-save')
     setActionError(null)
     setNotice(null)
     try {
-      if (selectedTaxonomy.planning_enabled && selectedTaxonomy.budgeting_level !== PLANNING_BUDGETING_LEVEL) {
+      if (
+        targetKindsToSave.length &&
+        selectedTaxonomy.planning_enabled &&
+        selectedTaxonomy.budgeting_level !== PLANNING_BUDGETING_LEVEL
+      ) {
         await updatePortfolioTaxonomy(portfolioId, selectedTaxonomy.taxonomy_id, {
           budgeting_level: PLANNING_BUDGETING_LEVEL,
         })
       }
-      const payload = buildTargetSetPayload(draft)
-      if (existingTargetSet) {
-        await updatePortfolioTargetSet(portfolioId, selectedTaxonomy.taxonomy_id, existingTargetSet.target_set_id, payload)
-        setNotice(`Saved ${kind.toUpperCase()} targets for ${currentScopeLabel}.`)
-      } else {
-        await createPortfolioTargetSet(portfolioId, selectedTaxonomy.taxonomy_id, {
-          comparator_taxonomy_node_id: activeComparatorScopeNodeId,
-          target_set_type: kind,
-          ...payload,
+
+      for (const node of changedDefaultTargetNodes) {
+        const draftValue = defaultTargetDraftsByNodeId[node.taxonomy_node_id]
+        if (!draftValue) {
+          continue
+        }
+        await updatePortfolioTaxonomyNode(portfolioId, selectedTaxonomy.taxonomy_id, node.taxonomy_node_id, {
+          default_target_dimension: draftValue,
         })
-        setNotice(`Created ${kind.toUpperCase()} targets for ${currentScopeLabel}.`)
       }
+
+      for (const kind of targetKindsToSave) {
+        const draft = kind === 'saa' ? saaDraft : taaDraft
+        const existingTargetSet = kind === 'saa' ? activeSaaTargetSet : activeTaaTargetSet
+        const payload = buildTargetSetPayload(draft)
+        if (existingTargetSet) {
+          await updatePortfolioTargetSet(portfolioId, selectedTaxonomy.taxonomy_id, existingTargetSet.target_set_id, payload)
+        } else {
+          await createPortfolioTargetSet(portfolioId, selectedTaxonomy.taxonomy_id, {
+            comparator_taxonomy_node_id: activeComparatorScopeNodeId,
+            target_set_type: kind,
+            ...payload,
+          })
+        }
+      }
+
+      const savedParts = [
+        changedDefaultTargetNodes.length ? `default targets (${changedDefaultTargetNodes.length})` : '',
+        ...targetKindsToSave.map((kind) => `${kind.toUpperCase()} ${currentScopeLabel}`),
+      ].filter(Boolean)
+      setTargetEditMode(false)
+      setNotice(`Saved ${savedParts.join(', ')}.`)
       await reloadWorkspace()
     } catch (error) {
       setActionError(extractErrorMessage(error))
@@ -2090,29 +2316,6 @@ export default function TaxonomiesPage() {
     }
   }
 
-  async function handleUpdateNodeDefaultTarget(
-    node: PortfolioTaxonomyNodeRecord,
-    defaultTargetDimension: 'weight' | 'risk_budget',
-  ) {
-    if (!portfolioId || !selectedTaxonomy || node.default_target_dimension === defaultTargetDimension) {
-      return
-    }
-    setActionPending(`node-default-target-${node.taxonomy_node_id}`)
-    setActionError(null)
-    setNotice(null)
-    try {
-      await updatePortfolioTaxonomyNode(portfolioId, selectedTaxonomy.taxonomy_id, node.taxonomy_node_id, {
-        default_target_dimension: defaultTargetDimension,
-      })
-      setNotice(`Updated default target for "${node.node_name}".`)
-      await reloadWorkspace()
-    } catch (error) {
-      setActionError(extractErrorMessage(error))
-    } finally {
-      setActionPending(null)
-    }
-  }
-
   async function handleDeleteNode(node: PortfolioTaxonomyNodeRecord) {
     if (!portfolioId || !selectedTaxonomy) {
       return
@@ -2151,6 +2354,10 @@ export default function TaxonomiesPage() {
       for (const entityId of entityIds) {
         const entity = currentEntities.find((candidate) => candidate.entity_id === entityId)
         if (!entity) {
+          continue
+        }
+        if (isSystemCashEntity(entity, selectedTaxonomy)) {
+          unchangedCount += 1
           continue
         }
         if (entity.coverage_state === 'ambiguous') {
@@ -2226,19 +2433,19 @@ export default function TaxonomiesPage() {
     }
   }
 
-  async function handleDeleteWatchInstrument(entity: CoverageEntity) {
-    if (!portfolioId || entity.target_scope !== 'instrument' || entity.instrument_state !== 'watch') {
+  async function handleDeleteObservedInstrument(entity: CoverageEntity) {
+    if (!portfolioId || entity.target_scope !== 'instrument' || entity.instrument_state !== 'observe') {
       return
     }
     if (entity.current_assignment) {
-      setActionError('Remove taxonomy assignment before removing this watchlist instrument.')
+      setActionError('Remove taxonomy assignment before removing this observed instrument.')
       setNotice(null)
       return
     }
-    if (!window.confirm(`Remove watchlist instrument "${entity.label}"?`)) {
+    if (!window.confirm(`Remove observed instrument "${entity.label}"?`)) {
       return
     }
-    setActionPending(`instrument-watch-delete-${entity.entity_id}`)
+    setActionPending(`instrument-observe-delete-${entity.entity_id}`)
     setActionError(null)
     setNotice(null)
     try {
@@ -2249,7 +2456,7 @@ export default function TaxonomiesPage() {
         next.delete(entity.entity_id)
         return next
       })
-      setNotice(`Removed watchlist instrument "${entity.label}".`)
+      setNotice(`Removed observed instrument "${entity.label}".`)
       await reloadWorkspace()
     } catch (error) {
       setActionError(extractErrorMessage(error))
@@ -2259,7 +2466,8 @@ export default function TaxonomiesPage() {
   }
 
   function renderEntityTreeRow(entity: CoverageEntity, depth: number) {
-    const selected = selectedEntityIds.has(entity.entity_id)
+    const lockedCashEntity = isSystemCashEntity(entity, selectedTaxonomy)
+    const selected = !lockedCashEntity && selectedEntityIds.has(entity.entity_id)
     const targetMember: TargetScopeMember = {
       member_key: targetMemberKey(entity.target_scope, entity.entity_id),
       target_member_type: entity.target_scope,
@@ -2279,25 +2487,30 @@ export default function TaxonomiesPage() {
     return (
       <tr
         key={entity.entity_id}
-        className={[selected ? 'taxonomy-entity-row-active' : '', isTargetScopeMember ? 'taxonomy-scope-row' : '']
+        className={['taxonomy-entity-row', selected ? 'taxonomy-entity-row-active' : '', isTargetScopeMember ? 'taxonomy-scope-row' : '']
           .filter(Boolean)
           .join(' ') || undefined}
-        draggable={entity.coverage_state !== 'ambiguous'}
-        onDragStart={(event) => handleEntityDragStart(event, entity)}
-        onContextMenu={(event) => handleEntityContextMenu(event, entity)}
+        draggable={!lockedCashEntity && entity.coverage_state !== 'ambiguous'}
+        onDragStart={lockedCashEntity ? undefined : (event) => handleEntityDragStart(event, entity)}
+        onContextMenu={lockedCashEntity ? undefined : (event) => handleEntityContextMenu(event, entity)}
       >
         <td className="holding-name-cell">
           <div className="taxonomy-node-row taxonomy-hierarchy-row">
             <span style={{ width: `${depth * 18}px`, flex: '0 0 auto' }} />
             <span className="taxonomy-tree-toggle taxonomy-tree-toggle-empty" />
-            <label className="taxonomy-tree-check-slot" aria-label={`Select ${entity.label}`}>
-              <input type="checkbox" checked={selected} onChange={() => toggleEntitySelection(entity.entity_id)} />
-            </label>
+            {lockedCashEntity ? (
+              <span className="taxonomy-tree-check-slot" />
+            ) : (
+              <label className="taxonomy-tree-check-slot" aria-label={`Select ${entity.label}`}>
+                <input type="checkbox" checked={selected} onChange={() => toggleEntitySelection(entity.entity_id)} />
+              </label>
+            )}
             <span className="taxonomy-level-label">{entity.label}</span>
+            {renderInstrumentStatusCell(entity)}
             {entity.supporting_label ? <span className="taxonomy-entity-supporting-label">{entity.supporting_label}</span> : null}
           </div>
         </td>
-        <td>{renderInstrumentStatusCell(entity)}</td>
+        <td />
         <td>{renderTargetCell('saa', 'weight', targetMember, editable)}</td>
         <td>{renderTargetCell('saa', 'risk_budget', targetMember, editable)}</td>
         <td>{renderTargetCell('taa', 'weight', targetMember, editable)}</td>
@@ -2306,6 +2519,66 @@ export default function TaxonomiesPage() {
         <td>{entity.market_value_base != null ? formatCurrency(entity.market_value_base, baseCurrency) : '—'}</td>
       </tr>
     )
+  }
+
+  function renderCashTreeRows(depth: number): Array<JSX.Element> {
+    if (!showSystemCashNode) {
+      return []
+    }
+    const cashTargetMember: TargetScopeMember = {
+      member_key: targetMemberKey('cash_bucket', CASH_TARGET_MEMBER_ID),
+      target_member_type: 'cash_bucket',
+      target_member_id: CASH_TARGET_MEMBER_ID,
+      taxonomy_node_id: null,
+      node: null,
+      entity: null,
+      label: CASH_TARGET_LABEL,
+      system_role: 'cash',
+    }
+    const editable = targetEditMode && Boolean(selectedTaxonomy?.planning_enabled) && Boolean(targetDraftsByScope[ROOT_TARGET_SCOPE_KEY])
+    const isTargetScopeMember = currentScopeMemberKeySet.has(cashTargetMember.member_key)
+    const isCollapsed = collapsedNodeIds.has(TAXONOMY_CASH_ROW_ID)
+    const rows: Array<JSX.Element> = [
+      <tr
+        key={TAXONOMY_CASH_ROW_ID}
+        className={['taxonomy-node-table-row', 'taxonomy-system-cash-row', 'taxonomy-node-depth-1', isTargetScopeMember ? 'taxonomy-scope-row' : '']
+          .filter(Boolean)
+          .join(' ')}
+      >
+        <td className="holding-name-cell">
+          <div className="taxonomy-node-row taxonomy-hierarchy-row">
+            <span style={{ width: `${depth * 18}px`, flex: '0 0 auto' }} />
+            <button
+              type="button"
+              className="taxonomy-tree-toggle"
+              onClick={() => toggleNodeCollapse(TAXONOMY_CASH_ROW_ID)}
+            >
+              <span className={`taxonomy-tree-arrow ${isCollapsed ? 'taxonomy-tree-arrow-collapsed' : 'taxonomy-tree-arrow-expanded'}`} />
+            </button>
+            <span className="taxonomy-level-label">{CASH_TARGET_LABEL}</span>
+          </div>
+        </td>
+        <td>{renderFixedWeightDefaultTargetCell()}</td>
+        <td>{renderTargetCell('saa', 'weight', cashTargetMember, editable)}</td>
+        <td>{renderTargetCell('saa', 'risk_budget', cashTargetMember, editable)}</td>
+        <td>{renderTargetCell('taa', 'weight', cashTargetMember, editable)}</td>
+        <td>{renderTargetCell('taa', 'risk_budget', cashTargetMember, editable)}</td>
+        <td>{cashAggregate.current_weight != null ? formatPercent(cashAggregate.current_weight) : '—'}</td>
+        <td>{cashAggregate.current_value_base != null ? formatCurrency(cashAggregate.current_value_base, baseCurrency) : '—'}</td>
+      </tr>,
+    ]
+
+    if (!isCollapsed) {
+      if (cashBucketEntities.length) {
+        cashBucketEntities
+          .slice()
+          .sort((left, right) => left.label.localeCompare(right.label))
+          .forEach((entity) => rows.push(renderEntityTreeRow(entity, depth + 1)))
+      } else {
+        rows.push(<TableStatusRow key={`${TAXONOMY_CASH_ROW_ID}-empty`} colSpan={8} label="No cash accounts." />)
+      }
+    }
+    return rows
   }
 
   function renderNodeTreeRows(parentId: string | null, depth: number): Array<JSX.Element> {
@@ -2336,6 +2609,9 @@ export default function TaxonomiesPage() {
       const isDropTarget = dragTargetNodeId === node.taxonomy_node_id
       const isCollapsed = collapsedNodeIds.has(node.taxonomy_node_id)
       const rowClassName = [
+        'taxonomy-node-table-row',
+        `taxonomy-node-depth-${Math.min(depth, 3)}`,
+        treeRow.has_children ? 'taxonomy-node-branch-row' : '',
         selected ? 'taxonomy-node-row-active' : '',
         isTargetScopeChild ? 'taxonomy-scope-row' : '',
         isDropTarget ? 'taxonomy-drop-target-row' : '',
@@ -2502,9 +2778,13 @@ export default function TaxonomiesPage() {
                     {selectedTaxonomy.primary_assignment_scope === 'instrument' ? 'Instruments' : 'Items'} {coverageSummary.currentEntityCount}
                   </span>
                   <span>Assigned {coverageSummary.assignedCount}</span>
-                  <span>Held {coverageSummary.heldEntityCount}</span>
-                  {coverageSummary.formerEntityCount ? <span>Former {coverageSummary.formerEntityCount}</span> : null}
-                  {coverageSummary.watchEntityCount ? <span>Watchlist {coverageSummary.watchEntityCount}</span> : null}
+                  {selectedTaxonomy.primary_assignment_scope === 'instrument' ? (
+                    <span className="taxonomy-status-legend" aria-label="Instrument status legend">
+                      {renderInstrumentStatusLegendItem('held', 'Held', coverageSummary.heldEntityCount)}
+                      {renderInstrumentStatusLegendItem('observe', 'Observed', coverageSummary.observeEntityCount)}
+                      {renderInstrumentStatusLegendItem('former', 'Former', coverageSummary.formerEntityCount)}
+                    </span>
+                  ) : null}
                   {coverageSummary.ambiguousEntities.length ? <span>Ambiguous {coverageSummary.ambiguousEntities.length}</span> : null}
                 </div>
                 <div className="taxonomy-header-actions">
@@ -2512,8 +2792,11 @@ export default function TaxonomiesPage() {
                     <button
                       type="button"
                       className="table-inline-button"
-                      onClick={() => setTargetEditMode(true)}
-                      disabled={!hasTargetScope}
+                      onClick={() => {
+                        setDefaultTargetDraftsByNodeId(defaultTargetDraftsFromNodes(selectedTaxonomyNodes))
+                        setTargetEditMode(true)
+                      }}
+                      disabled={!hasTargetScope && !selectedTaxonomyNodes.length}
                     >
                       Edit
                     </button>
@@ -2523,28 +2806,17 @@ export default function TaxonomiesPage() {
                       <button
                         type="button"
                         className="table-inline-button"
-                        onClick={() => void handleSaveTargetSet('saa')}
-                        disabled={!hasTargetScope || !saaValidation.savable || actionPending === 'target-saa-save'}
+                        onClick={() => void handleSaveTargetsConfiguration()}
+                        disabled={!canSaveTargetsConfiguration || Boolean(actionPending)}
                       >
-                        {actionPending === 'target-saa-save'
-                          ? 'Saving SAA…'
-                          : `Save SAA · W ${formatDraftSum(saaValidation.weight_sum_pct)} · R ${formatDraftSum(saaValidation.risk_sum_pct)}`}
-                      </button>
-                      <button
-                        type="button"
-                        className="table-inline-button"
-                        onClick={() => void handleSaveTargetSet('taa')}
-                        disabled={!hasTargetScope || !taaValidation.savable || actionPending === 'target-taa-save'}
-                      >
-                        {actionPending === 'target-taa-save'
-                          ? 'Saving TAA…'
-                          : `Save TAA · W ${formatDraftSum(taaValidation.weight_sum_pct)} · R ${formatDraftSum(taaValidation.risk_sum_pct)}`}
+                        {actionPending === 'targets-save' ? 'Saving...' : 'Save'}
                       </button>
                       <button
                         type="button"
                         className="table-inline-button"
                         onClick={() => {
                           setTargetEditMode(false)
+                          setDefaultTargetDraftsByNodeId(defaultTargetDraftsFromNodes(selectedTaxonomyNodes))
                           void reloadWorkspace()
                         }}
                         disabled={Boolean(actionPending)}
@@ -2561,7 +2833,7 @@ export default function TaxonomiesPage() {
                   <thead>
                     <tr>
                       <th>Levels</th>
-                      <th>Attributes</th>
+                      <th>Default Target</th>
                       <th>SAA Weight</th>
                       <th>SAA Risk</th>
                       <th>TAA Weight</th>
@@ -2602,16 +2874,22 @@ export default function TaxonomiesPage() {
                     {!collapsedNodeIds.has(TAXONOMY_ROOT_ROW_ID) ? (
                       <>
                         {selectedTaxonomyNodes.length ? (
-                          renderNodeTreeRows(null, 1)
+                          <>
+                            {renderNodeTreeRows(null, 1)}
+                            {renderCashTreeRows(1)}
+                          </>
                         ) : (
-                          <tr className="table-status-row">
-                            <td colSpan={8} className="empty-state-cell">
-                              <span>No nodes.</span>{' '}
-                              <button type="button" className="table-inline-button" onClick={() => startNodeCreate('root')}>
-                                Add Root
-                              </button>
-                            </td>
-                          </tr>
+                          <>
+                            <tr className="table-status-row">
+                              <td colSpan={8} className="empty-state-cell">
+                                <span>No nodes.</span>{' '}
+                                <button type="button" className="table-inline-button" onClick={() => startNodeCreate('root')}>
+                                  Add Root
+                                </button>
+                              </td>
+                            </tr>
+                            {renderCashTreeRows(1)}
+                          </>
                         )}
                         <tr className="taxonomy-subsection-row">
                           <td className="holding-name-cell">
@@ -2953,14 +3231,14 @@ export default function TaxonomiesPage() {
                   >
                     Assign To Selected Leaf
                   </button>
-                  {contextMenuEntity.instrument_state === 'watch' ? (
+                  {contextMenuEntity.instrument_state === 'observe' ? (
                     <button
                       type="button"
                       className="taxonomy-context-menu-item taxonomy-context-menu-item-danger"
                       disabled={Boolean(contextMenuEntity.current_assignment)}
-                      onClick={() => void handleDeleteWatchInstrument(contextMenuEntity)}
+                      onClick={() => void handleDeleteObservedInstrument(contextMenuEntity)}
                     >
-                      Remove Watchlist Instrument
+                      Remove Observed Instrument
                     </button>
                   ) : null}
                 </>

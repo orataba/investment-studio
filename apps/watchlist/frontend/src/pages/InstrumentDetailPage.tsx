@@ -4,16 +4,24 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import FundDetailPage from './FundDetailPage'
 import LoadingOverlay from '../components/LoadingOverlay'
 import {
+  getWatchlistDetail,
   resolveInstrumentDetail,
   type InstrumentResolveResponse,
+  type WatchlistDetail,
 } from '../lib/api'
 import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
+
+type WatchlistBreadcrumbContext = {
+  watchlistId: string
+  watchlistName: string
+}
 
 export default function InstrumentDetailPage() {
   const { instrumentId = '' } = useParams()
   const [searchParams] = useSearchParams()
   const watchlistId = (searchParams.get('watchlist') || '').trim()
   const [instrument, setInstrument] = useState<InstrumentResolveResponse | null>(null)
+  const [watchlistContext, setWatchlistContext] = useState<WatchlistBreadcrumbContext | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -25,16 +33,29 @@ export default function InstrumentDetailPage() {
       setError(null)
 
       try {
-        const response = await resolveInstrumentDetail(instrumentId)
+        const [response, watchlist] = await Promise.all([
+          resolveInstrumentDetail(instrumentId),
+          watchlistId
+            ? getWatchlistDetail(watchlistId).catch(() => null as WatchlistDetail | null)
+            : Promise.resolve(null),
+        ])
         if (!cancelled) {
           setInstrument(response)
+          setWatchlistContext(
+            watchlistId
+              ? {
+                  watchlistId,
+                  watchlistName: watchlist?.name || watchlistId,
+                }
+              : null,
+          )
         }
       } catch (resolveError) {
         if (!cancelled) {
           setError(
             resolveError instanceof Error
               ? resolveError.message
-              : 'Failed to resolve instrument detail.',
+              : 'Failed to resolve detail.',
           )
         }
       } finally {
@@ -48,16 +69,16 @@ export default function InstrumentDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [instrumentId])
+  }, [instrumentId, watchlistId])
 
   if (loading) {
-    return <LoadingOverlay label="Loading instrument detail" />
+    return <LoadingOverlay label="Loading detail" />
   }
 
   if (error || !instrument) {
     return (
       <section className="panel">
-        <div className="error-state">{error || 'Instrument detail unavailable.'}</div>
+        <div className="error-state">{error || 'Detail unavailable.'}</div>
       </section>
     )
   }
@@ -67,7 +88,21 @@ export default function InstrumentDetailPage() {
     instrument.detail_view_type === 'fund' &&
     instrument.detail_subject_id
   ) {
-    return <FundDetailPage fundId={instrument.detail_subject_id} />
+    return <FundDetailPage fundId={instrument.detail_subject_id} watchlistContext={watchlistContext} />
+  }
+
+  if (
+    instrument.detail_supported &&
+    instrument.detail_view_type === 'index' &&
+    instrument.detail_subject_id
+  ) {
+    return (
+      <FundDetailPage
+        fundId={instrument.detail_subject_id}
+        detailKind="index"
+        watchlistContext={watchlistContext}
+      />
+    )
   }
 
   return (
@@ -84,7 +119,7 @@ export default function InstrumentDetailPage() {
           <>
             <span className="watchlist-breadcrumb-separator">/</span>
             <Link to={buildWatchlistPath(watchlistId)} className="watchlist-breadcrumb-link">
-              {watchlistId}
+              {watchlistContext?.watchlistName || watchlistId}
             </Link>
           </>
         ) : null}
@@ -93,14 +128,15 @@ export default function InstrumentDetailPage() {
       </div>
       <div className="panel-header">
         <div>
-          <div className="panel-title">Instrument Detail</div>
+          <div className="panel-title">Unsupported Detail</div>
           <h1 className="page-title">{instrument.instrument_name}</h1>
         </div>
       </div>
       <div className="stub-body">
         <p>
-          This watchlist release is fund-only. <strong>{instrument.instrument_type}</strong> instruments can exist in the
-          shared registry, but they do not have a local watchlist detail workspace yet.
+          This watchlist release supports fund and index detail workspaces.{' '}
+          <strong>{instrument.instrument_type}</strong> instruments can exist in the shared registry, but they do not
+          have a local watchlist detail workspace yet.
         </p>
         <p className="muted">
           Instrument ID: {instrument.requested_instrument_id}

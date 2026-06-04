@@ -662,11 +662,21 @@ export type PortfolioInstrumentUniverseRecord = {
   status: string
   created_at?: string | null
   updated_at?: string | null
+  instrument_trend_basis?: string | null
+  instrument_risk_frequency?: PortfolioCalculationFrequency | null
+  instrument_return_series_all?: HoldingReturnSeries | null
 }
 
 export type PortfolioTaxonomyCatalogResponse = {
   portfolio_id: string
   default_planning_taxonomy_id?: string | null
+  risk_basis?: {
+    requested_frequency: 'auto' | PortfolioCalculationFrequency
+    resolved_frequency: PortfolioCalculationFrequency
+    default_frequency: PortfolioCalculationFrequency
+    source_frequency_counts: Record<string, number>
+    status_label: string
+  } | null
   taxonomies: PortfolioTaxonomyRecord[]
   taxonomy_nodes: PortfolioTaxonomyNodeRecord[]
   taxonomy_assignments: PortfolioTaxonomyAssignmentRecord[]
@@ -690,9 +700,10 @@ export type PortfolioInstrumentUniverseCreatePayload = {
 
 export type PortfolioResearchRunStatus = 'running' | 'completed' | 'failed'
 export type PortfolioResearchTargetDimension = 'scope_default' | 'weight' | 'risk_budget'
-export type PortfolioResearchCapitalMode = 'unit_notional' | 'fixed_gross' | 'target_volatility'
+export type PortfolioResearchCapitalMode = 'unit_notional' | 'fixed_gross' | 'target_volatility' | 'volatility_cap'
 export type PortfolioResearchCalculationFrequency = 'auto' | 'daily' | 'weekly' | 'monthly'
 export type PortfolioResearchMissingReturnPolicy = 'strict' | 'complete_case_drop'
+export type PortfolioResearchBacktestRebalanceFrequency = '1m' | '3m'
 export type PortfolioResearchArtifactPreviewKind = 'text' | 'html' | 'binary'
 
 export type PortfolioResearchPlanningTaxonomyOption = {
@@ -727,6 +738,9 @@ export type PortfolioResearchSettingsRecord = {
   target_volatility?: number | null
   max_gross_exposure?: number | null
   frozen_taxonomy_node_ids: string[]
+  top_sleeve_weight_bounds: PortfolioResearchTopSleeveWeightBoundRecord[]
+  backtest_rebalance_frequency: PortfolioResearchBacktestRebalanceFrequency
+  backtest_benchmark_instrument_id?: string | null
   notes?: string | null
   updated_at?: string | null
 }
@@ -746,7 +760,16 @@ export type PortfolioResearchSettingsUpdatePayload = {
   target_volatility?: number | null
   max_gross_exposure?: number | null
   frozen_taxonomy_node_ids?: string[] | null
+  top_sleeve_weight_bounds?: PortfolioResearchTopSleeveWeightBoundRecord[] | null
+  backtest_rebalance_frequency?: PortfolioResearchBacktestRebalanceFrequency
+  backtest_benchmark_instrument_id?: string | null
   notes?: string | null
+}
+
+export type PortfolioResearchTopSleeveWeightBoundRecord = {
+  taxonomy_node_id: string
+  min_weight?: number | null
+  max_weight?: number | null
 }
 
 export type PortfolioResearchContextSignalRecord = {
@@ -867,6 +890,29 @@ export type PortfolioResearchMemberTargetRecord = {
   selected_target_value?: number | null
 }
 
+export type PortfolioResearchSolvedResultRowRecord = {
+  member_type: string
+  member_id: string
+  label: string
+  top_sleeve_id?: string | null
+  top_sleeve_label: string
+  solved_weight?: number | null
+  target_risk_share?: number | null
+  forward_risk_contribution?: number | null
+}
+
+export type PortfolioResearchSolvedResultGroupRecord = {
+  top_sleeve_id?: string | null
+  top_sleeve_label: string
+  solved_weight?: number | null
+  target_risk_share?: number | null
+  forward_risk_contribution?: number | null
+  min_weight?: number | null
+  max_weight?: number | null
+  bound_status?: string | null
+  rows: PortfolioResearchSolvedResultRowRecord[]
+}
+
 export type PortfolioResearchSolveEventRecord = {
   as_of_date: string
   scope_node_id?: string | null
@@ -935,6 +981,63 @@ export type PortfolioResearchTargetRowRecord = {
   action?: string | null
 }
 
+export type PortfolioResearchBacktestPointRecord = {
+  date: string
+  value?: number | null
+}
+
+export type PortfolioResearchBacktestSleeveValueRecord = {
+  top_sleeve_id?: string | null
+  top_sleeve_label: string
+  value?: number | null
+}
+
+export type PortfolioResearchBacktestSleevePointRecord = {
+  date: string
+  sleeves: PortfolioResearchBacktestSleeveValueRecord[]
+}
+
+export type PortfolioResearchBacktestMetricsRecord = {
+  start_date?: string | null
+  end_date?: string | null
+  period_return?: number | null
+  annualized_return?: number | null
+  annualized_volatility?: number | null
+  sharpe_ratio?: number | null
+  max_drawdown?: number | null
+  max_drawdown_start_date?: string | null
+  max_drawdown_end_date?: string | null
+  max_drawdown_recovery_date?: string | null
+  max_drawdown_recovery_days?: number | null
+}
+
+export type PortfolioResearchBacktestRecord = {
+  rebalance_frequency: PortfolioResearchBacktestRebalanceFrequency
+  common_history_start_date?: string | null
+  start_date?: string | null
+  end_date?: string | null
+  lookback_days: number
+  points: PortfolioResearchBacktestPointRecord[]
+  metrics?: PortfolioResearchBacktestMetricsRecord | null
+  top_sleeve_weight_points: PortfolioResearchBacktestSleevePointRecord[]
+  top_sleeve_contribution_points: PortfolioResearchBacktestSleevePointRecord[]
+  warnings: string[]
+}
+
+export type PortfolioResearchBacktestBenchmarkRecord = {
+  instrument_id?: string | null
+  label?: string | null
+  points: PortfolioResearchBacktestPointRecord[]
+  metrics?: PortfolioResearchBacktestMetricsRecord | null
+  warnings: string[]
+}
+
+export type PortfolioResearchBacktestRelativeMetricsRecord = {
+  excess_return?: number | null
+  tracking_error?: number | null
+  information_ratio?: number | null
+}
+
 export type PortfolioResearchRunDetailRecord = {
   headline?: string | null
   coverage_note?: string | null
@@ -948,9 +1051,13 @@ export type PortfolioResearchRunDetailRecord = {
   target_rows: PortfolioResearchTargetRowRecord[]
   member_targets: PortfolioResearchMemberTargetRecord[]
   leaf_targets: PortfolioResearchMemberTargetRecord[]
+  solved_result_groups: PortfolioResearchSolvedResultGroupRecord[]
   solve_event?: PortfolioResearchSolveEventRecord | null
   scope_solve_events: PortfolioResearchSolveEventRecord[]
   target_weight_gaps: PortfolioResearchTargetWeightGapRecord[]
+  backtest?: PortfolioResearchBacktestRecord | null
+  backtest_benchmark?: PortfolioResearchBacktestBenchmarkRecord | null
+  backtest_relative_metrics?: PortfolioResearchBacktestRelativeMetricsRecord | null
   warnings: string[]
 }
 
@@ -1866,8 +1973,18 @@ export function getPortfolioPerformanceBoundaryHoldings(
   )
 }
 
-export function getPortfolioTaxonomyCatalog(portfolioId: string) {
-  return fetchJson<PortfolioTaxonomyCatalogResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/taxonomies`)
+export function getPortfolioTaxonomyCatalog(
+  portfolioId: string,
+  filters: {
+    include_market_profile?: boolean
+    as_of_date?: string
+  } = {},
+) {
+  const query = buildQuery({
+    include_market_profile: filters.include_market_profile ? 'true' : undefined,
+    as_of_date: filters.as_of_date,
+  })
+  return fetchJson<PortfolioTaxonomyCatalogResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/taxonomies${query}`)
 }
 
 export function updatePortfolioDefaultPlanningTaxonomy(

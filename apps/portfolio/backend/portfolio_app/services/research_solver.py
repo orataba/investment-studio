@@ -4,7 +4,8 @@ from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date
-from math import sqrt
+from itertools import combinations
+from math import ceil, sqrt
 
 import numpy as np
 import pandas as pd
@@ -39,32 +40,48 @@ TARGET_DIMENSION_RISK_BUDGET = "risk_budget"
 TARGET_MEMBER_NODE = "taxonomy_node"
 TARGET_MEMBER_INSTRUMENT = "instrument"
 TARGET_MEMBER_CASH = "cash_bucket"
+SYSTEM_CASH_TARGET_MEMBER_ID = "__cash__"
+SYSTEM_CASH_TARGET_LABEL = "Cash"
 CAPITAL_MODE_UNIT_NOTIONAL = "unit_notional"
 CAPITAL_MODE_FIXED_GROSS = "fixed_gross"
 CAPITAL_MODE_TARGET_VOLATILITY = "target_volatility"
+CAPITAL_MODE_VOLATILITY_CAP = "volatility_cap"
 RESEARCH_COVARIANCE_MODEL_ID = "ewma_vol_shrinkage_corr_covariance"
 RESEARCH_COVARIANCE_FREQUENCY_PARAMETERS: dict[CalculationFrequency, dict[str, object]] = {
     "daily": {
-        "min_observations": 52,
+        "min_observations": 45,
         "vol_decay": 0.9945,
-        "corr_min_observations": 52,
+        "corr_min_observations": 45,
         "corr_shrinkage": 0.15,
         "max_period_staleness_days": 0,
     },
     "weekly": {
-        "min_observations": 26,
+        "min_observations": 9,
         "vol_decay": 0.9737,
-        "corr_min_observations": 26,
+        "corr_min_observations": 9,
         "corr_shrinkage": 0.15,
         "max_period_staleness_days": 3,
     },
     "monthly": {
-        "min_observations": 12,
+        "min_observations": 3,
         "vol_decay": 0.8909,
-        "corr_min_observations": 12,
+        "corr_min_observations": 3,
         "corr_shrinkage": 0.15,
         "max_period_staleness_days": 7,
     },
+}
+RESEARCH_MIN_OBSERVATION_COVERAGE_RATIO = 0.75
+RESEARCH_WINDOW_MONTHS_BY_LOOKBACK_DAYS = {
+    30: 1.0,
+    90: 3.0,
+    180: 6.0,
+    366: 12.0,
+    730: 24.0,
+}
+RESEARCH_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: dict[CalculationFrequency, float] = {
+    "daily": 20.0,
+    "weekly": 4.0,
+    "monthly": 1.0,
 }
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
 RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
@@ -79,6 +96,7 @@ RESEARCH_COMPLETE_CASE_DROP_MAX_TRAILING_STALENESS_DAYS: dict[CalculationFrequen
     "weekly": 14,
     "monthly": 62,
 }
+SUPPORTED_RESEARCH_LOOKBACK_DAYS = frozenset(RESEARCH_WINDOW_MONTHS_BY_LOOKBACK_DAYS)
 
 
 @dataclass(frozen=True)
@@ -194,6 +212,7 @@ class TaxonomyResearchState:
     instrument_detail_cache: dict[str, dict[str, object] | None]
     direct_fx_instruments: dict[tuple[str, str], str]
     frozen_taxonomy_node_ids: frozenset[str]
+    top_sleeve_weight_bounds: dict[str, dict[str, float | None]]
 
 
 def _safe_float(value: object) -> float | None:
@@ -203,6 +222,42 @@ def _safe_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _research_window_months(lookback_days: int) -> int:
+    try:
+        months = RESEARCH_WINDOW_MONTHS_BY_LOOKBACK_DAYS[int(lookback_days)]
+    except (KeyError, TypeError, ValueError) as error:
+        labels = ", ".join(f"{int(months)}M" for months in RESEARCH_WINDOW_MONTHS_BY_LOOKBACK_DAYS.values())
+        raise ValueError(f"Risk window must be one of {labels}.") from error
+    return int(months)
+
+
+def research_window_start_date(end_date: date, lookback_days: int) -> date:
+    months = _research_window_months(lookback_days)
+    return (pd.Timestamp(end_date) - pd.DateOffset(months=months)).date()
+
+
+def _normalize_top_sleeve_weight_bounds(
+    bounds: list[dict[str, object]] | None,
+) -> dict[str, dict[str, float | None]]:
+    normalized: dict[str, dict[str, float | None]] = {}
+    for item in bounds or []:
+        node_id = str((item or {}).get("taxonomy_node_id") or "").strip()
+        if not node_id:
+            continue
+        min_weight = _safe_float((item or {}).get("min_weight"))
+        max_weight = _safe_float((item or {}).get("max_weight"))
+        if min_weight is None and max_weight is None:
+            continue
+        if min_weight is not None and not 0.0 <= min_weight <= 1.0:
+            raise ValueError("Top sleeve min_weight must be between 0 and 1.")
+        if max_weight is not None and not 0.0 <= max_weight <= 1.0:
+            raise ValueError("Top sleeve max_weight must be between 0 and 1.")
+        if min_weight is not None and max_weight is not None and min_weight > max_weight:
+            raise ValueError("Top sleeve min_weight cannot exceed max_weight.")
+        normalized[node_id] = {"min_weight": min_weight, "max_weight": max_weight}
+    return normalized
 
 
 def _parse_iso_date(value: object) -> date | None:
@@ -407,6 +462,12 @@ def _member_is_cash_like(state: TaxonomyResearchState, member: ScopeMemberRecord
     return _node_is_cash_subtree(state, member.member_id)
 
 
+def _taxonomy_node_row_is_system_cash_like(node: dict[str, object]) -> bool:
+    normalized_name = str(node.get("node_name") or "").strip().lower()
+    normalized_code = str(node.get("node_code") or "").strip().lower()
+    return normalized_code == "cash" or normalized_name in {"cash", "现金"}
+
+
 def _scope_is_frozen(state: TaxonomyResearchState, scope_node_id: str | None) -> bool:
     if scope_node_id is None:
         return False
@@ -451,7 +512,7 @@ def _annualized_portfolio_volatility(
         aligned,
         model_id=_risk_model_covariance_model_id(risk_model_config),
         lookback_days=lookback_days,
-        parameters=_risk_model_covariance_parameters(risk_model_config, calculation_frequency),
+        parameters=_risk_model_covariance_parameters(risk_model_config, calculation_frequency, lookback_days),
         missing_return_policy=missing_return_policy,
         calculation_frequency=calculation_frequency,
         as_of_date=as_of_date,
@@ -494,6 +555,27 @@ def research_covariance_parameters(calculation_frequency: CalculationFrequency) 
     return _research_covariance_parameters(calculation_frequency)
 
 
+def research_min_observations_for_window(
+    calculation_frequency: CalculationFrequency,
+    lookback_days: int,
+) -> int:
+    months = _research_window_months(lookback_days)
+    observations_per_month = RESEARCH_OBSERVATIONS_PER_MONTH_BY_FREQUENCY[calculation_frequency]
+    expected_observations = months * observations_per_month
+    return max(2, int(ceil(expected_observations * RESEARCH_MIN_OBSERVATION_COVERAGE_RATIO)))
+
+
+def research_covariance_parameters_for_window(
+    calculation_frequency: CalculationFrequency,
+    lookback_days: int,
+) -> dict[str, object]:
+    parameters = _research_covariance_parameters(calculation_frequency)
+    min_observations = research_min_observations_for_window(calculation_frequency, lookback_days)
+    parameters["min_observations"] = min_observations
+    parameters["corr_min_observations"] = min_observations
+    return parameters
+
+
 def _risk_model_covariance_model_id(risk_model_config: dict[str, object] | None) -> str:
     if not isinstance(risk_model_config, dict):
         return RESEARCH_COVARIANCE_MODEL_ID
@@ -509,6 +591,7 @@ def _risk_model_contribution_mode(risk_model_config: dict[str, object] | None) -
 def _risk_model_covariance_parameters(
     risk_model_config: dict[str, object] | None,
     calculation_frequency: CalculationFrequency,
+    lookback_days: int,
 ) -> dict[str, object]:
     if isinstance(risk_model_config, dict):
         parameters_by_frequency = risk_model_config.get("parameters_by_frequency")
@@ -519,7 +602,7 @@ def _risk_model_covariance_parameters(
         parameters = risk_model_config.get("parameters")
         if isinstance(parameters, dict):
             return dict(parameters)
-    return _research_covariance_parameters(calculation_frequency)
+    return research_covariance_parameters_for_window(calculation_frequency, lookback_days)
 
 
 def _normalize_missing_return_policy(value: object) -> str:
@@ -630,8 +713,7 @@ def _return_window_for_lookback(
     if cleaned.empty:
         raise ValueError("Covariance estimation requires non-empty returns.")
     end_date = max(cleaned.index)
-    start_date = end_date - pd.Timedelta(days=max(int(lookback_days), 1))
-    start_day = start_date.date() if hasattr(start_date, "date") else start_date
+    start_day = research_window_start_date(pd.Timestamp(end_date).date(), lookback_days)
     return cleaned.loc[cleaned.index >= start_day].copy()
 
 
@@ -1113,6 +1195,7 @@ def _build_risk_budget_initial_guesses(
         problem.target_risk_shares / np.maximum(diagonal, 1e-12),
         0.5 * reference_weights + 0.5 * (problem.target_risk_shares / vol),
     ]
+    candidates.extend(_build_risk_budget_boundary_seed_candidates(problem, reference_weights))
     rng = np.random.default_rng(0)
     for _ in range(8):
         candidates.append(rng.dirichlet(np.ones(len(problem.bucket_ids), dtype="float64")))
@@ -1133,6 +1216,109 @@ def _build_risk_budget_initial_guesses(
         seen.add(key)
         guesses.append(projected)
     return guesses
+
+
+def _allocate_bounded_mass(
+    *,
+    total_mass: float,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    preferred: np.ndarray,
+) -> np.ndarray:
+    weights = np.asarray(lower, dtype="float64").copy()
+    lower_total = float(weights.sum())
+    upper_total = float(np.asarray(upper, dtype="float64").sum())
+    if total_mass < lower_total - 1e-10 or total_mass > upper_total + 1e-10:
+        raise ValueError("Risk budget fixed-bound seed is infeasible.")
+    remaining = float(total_mass - lower_total)
+    free_indices = list(range(len(weights)))
+    preferred = np.clip(np.asarray(preferred, dtype="float64"), 0.0, None)
+    while remaining > 1e-12 and free_indices:
+        active_indices = np.asarray(free_indices, dtype=int)
+        active_preferred = preferred[active_indices]
+        preferred_total = float(active_preferred.sum())
+        if preferred_total <= 1e-12:
+            active_preferred = np.ones(len(active_indices), dtype="float64")
+            preferred_total = float(active_preferred.sum())
+        proposal = weights[active_indices] + remaining * active_preferred / preferred_total
+        active_upper = np.asarray(upper, dtype="float64")[active_indices]
+        over_mask = proposal > active_upper + 1e-12
+        if not np.any(over_mask):
+            weights[active_indices] = proposal
+            remaining = float(total_mass - float(weights.sum()))
+            break
+        for index in active_indices[over_mask]:
+            weights[index] = float(np.asarray(upper, dtype="float64")[index])
+            free_indices.remove(int(index))
+        remaining = float(total_mass - float(weights.sum()))
+    if abs(float(weights.sum()) - total_mass) > 1e-8:
+        raise ValueError("Risk budget fixed-bound seed failed to allocate remaining mass.")
+    return weights
+
+
+def _build_fixed_upper_seed(
+    problem: RiskBudgetProblem,
+    reference_weights: np.ndarray,
+    active_indices: list[int],
+) -> np.ndarray | None:
+    weights = np.asarray(problem.lower_bounds, dtype="float64").copy()
+    active_mask = np.zeros(len(weights), dtype=bool)
+    active_mask[active_indices] = True
+    weights[active_mask] = problem.upper_bounds[active_mask]
+    remaining_mass = float(1.0 - float(weights.sum()))
+    if remaining_mass < -1e-10:
+        return None
+    free_mask = ~active_mask
+    if not np.any(free_mask):
+        return weights if abs(remaining_mass) <= 1e-8 else None
+    try:
+        weights[free_mask] = _allocate_bounded_mass(
+            total_mass=remaining_mass,
+            lower=problem.lower_bounds[free_mask],
+            upper=problem.upper_bounds[free_mask],
+            preferred=reference_weights[free_mask],
+        )
+    except ValueError:
+        return None
+    return weights
+
+
+def _build_risk_budget_boundary_seed_candidates(
+    problem: RiskBudgetProblem,
+    reference_weights: np.ndarray,
+) -> list[np.ndarray]:
+    bounded_indices = [
+        index
+        for index, (lower, upper) in enumerate(zip(problem.lower_bounds, problem.upper_bounds, strict=True))
+        if lower > 1e-12 or upper < 1.0 - 1e-12
+    ]
+    if not bounded_indices:
+        return []
+    candidates: list[np.ndarray] = []
+    for size in (1, 2):
+        for active_indices in combinations(bounded_indices, size):
+            candidate = _build_fixed_upper_seed(problem, reference_weights, list(active_indices))
+            if candidate is not None:
+                candidates.append(candidate)
+    return candidates
+
+
+def _risk_budget_problem_has_binding_bounds(problem: RiskBudgetProblem) -> bool:
+    return bool(np.any(problem.lower_bounds > 1e-12) or np.any(problem.upper_bounds < 1.0 - 1e-12))
+
+
+def _is_better_risk_budget_solution(
+    problem: RiskBudgetProblem,
+    candidate: RiskBudgetSolution,
+    incumbent: RiskBudgetSolution,
+) -> bool:
+    if candidate.max_abs_share_gap < incumbent.max_abs_share_gap - 1e-9:
+        return True
+    if abs(candidate.max_abs_share_gap - incumbent.max_abs_share_gap) > 1e-9:
+        return False
+    candidate_gap = candidate.achieved_risk_shares - problem.target_risk_shares
+    incumbent_gap = incumbent.achieved_risk_shares - problem.target_risk_shares
+    return float(candidate_gap @ candidate_gap) < float(incumbent_gap @ incumbent_gap) - 1e-12
 
 
 def _solve_regularized_risk_budget_slsqp(
@@ -1283,7 +1469,7 @@ def _solve_minimax_risk_budget_slsqp(
         return None
 
     weights, shares, max_abs_share_gap, objective_value, iterations, message = best_solution
-    return RiskBudgetSolution(
+    solution = RiskBudgetSolution(
         bucket_ids=problem.bucket_ids,
         weights=weights,
         achieved_risk_shares=shares,
@@ -1294,12 +1480,111 @@ def _solve_minimax_risk_budget_slsqp(
         solver_kind="slsqp_minimax",
         contribution_mode=problem.contribution_mode,
     )
+    refined = _refine_balanced_risk_budget_solution(
+        problem,
+        reference_weights=reference_weights,
+        initial_guesses=[*initial_guesses, solution.weights],
+        max_gap_ceiling=max_abs_share_gap,
+        max_iterations=max_iterations,
+    )
+    if refined is not None and _is_better_risk_budget_solution(problem, refined, solution):
+        return refined
+    return solution
+
+
+def _refine_balanced_risk_budget_solution(
+    problem: RiskBudgetProblem,
+    *,
+    reference_weights: np.ndarray,
+    initial_guesses: list[np.ndarray],
+    max_gap_ceiling: float,
+    max_iterations: int,
+) -> RiskBudgetSolution | None:
+    tolerance = max(1e-6, max_gap_ceiling * 1e-6)
+
+    def share_gap(weights: np.ndarray) -> np.ndarray:
+        return (
+            _risk_contribution_shares(
+                problem.covariance,
+                weights,
+                contribution_mode=problem.contribution_mode,
+            )
+            - problem.target_risk_shares
+        )
+
+    def objective(weights: np.ndarray) -> float:
+        gap = share_gap(weights)
+        reference_gap = weights - reference_weights
+        return float(gap @ gap) + 1e-4 * float(reference_gap @ reference_gap)
+
+    constraints = [{"type": "eq", "fun": lambda weights: float(np.sum(weights) - 1.0)}]
+    for index in range(len(problem.bucket_ids)):
+        constraints.append(
+            {
+                "type": "ineq",
+                "fun": lambda weights, index=index: float((max_gap_ceiling + tolerance) - share_gap(weights)[index]),
+            }
+        )
+        constraints.append(
+            {
+                "type": "ineq",
+                "fun": lambda weights, index=index: float((max_gap_ceiling + tolerance) + share_gap(weights)[index]),
+            }
+        )
+    bounds = list(zip(problem.lower_bounds.tolist(), problem.upper_bounds.tolist()))
+    best_solution: tuple[np.ndarray, np.ndarray, float, float, int, str] | None = None
+    for guess in initial_guesses:
+        result = minimize(
+            objective,
+            x0=guess,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
+            options={"ftol": 1e-15, "maxiter": max_iterations, "disp": False},
+        )
+        if not result.success:
+            continue
+        weights = np.asarray(result.x, dtype="float64")
+        shares = _risk_contribution_shares(
+            problem.covariance,
+            weights,
+            contribution_mode=problem.contribution_mode,
+        )
+        gap = shares - problem.target_risk_shares
+        candidate = (
+            weights,
+            shares,
+            float(np.max(np.abs(gap))),
+            float(gap @ gap),
+            int(getattr(result, "nit", 0)),
+            str(result.message),
+        )
+        if best_solution is None or candidate[2] < best_solution[2] - 1e-9:
+            best_solution = candidate
+        elif best_solution is not None and abs(candidate[2] - best_solution[2]) <= 1e-9:
+            if candidate[3] < best_solution[3] - 1e-12:
+                best_solution = candidate
+    if best_solution is None:
+        return None
+    weights, shares, max_abs_share_gap, l2_gap, iterations, message = best_solution
+    return RiskBudgetSolution(
+        bucket_ids=problem.bucket_ids,
+        weights=weights,
+        achieved_risk_shares=shares,
+        objective_value=l2_gap,
+        max_abs_share_gap=max_abs_share_gap,
+        iterations=iterations,
+        message=f"{message} (balanced minimax refinement)",
+        solver_kind="slsqp_minimax_balanced",
+        contribution_mode=problem.contribution_mode,
+    )
 
 
 def _solve_risk_budget_problem(
     problem: RiskBudgetProblem,
     *,
     max_iterations: int = 500,
+    enforce_tolerance: bool = True,
 ) -> RiskBudgetSolution:
     _validate_risk_budget_problem(problem)
     reference_weights = _project_to_bounded_simplex(
@@ -1308,33 +1593,48 @@ def _solve_risk_budget_problem(
         problem.upper_bounds,
     )
     initial_guesses = _build_risk_budget_initial_guesses(problem, reference_weights)
-    primary = _solve_regularized_risk_budget_slsqp(
-        problem,
-        reference_weights=reference_weights,
-        initial_guesses=initial_guesses,
-        max_iterations=max_iterations,
-    )
-    if primary.max_abs_share_gap <= RESEARCH_MAX_RISK_BUDGET_SHARE_GAP:
-        best = primary
-    else:
+    if _risk_budget_problem_has_binding_bounds(problem):
         minimax = _solve_minimax_risk_budget_slsqp(
             problem,
             reference_weights=reference_weights,
-            initial_guesses=[*initial_guesses, primary.weights],
+            initial_guesses=initial_guesses,
             max_iterations=max(max_iterations * 4, 1500),
         )
-        best = (
-            minimax
-            if minimax is not None and minimax.max_abs_share_gap < primary.max_abs_share_gap - 1e-9
-            else primary
+        if minimax is None:
+            raise ValueError("Risk budget bounded minimax solver failed.")
+        best = minimax
+    else:
+        primary = _solve_regularized_risk_budget_slsqp(
+            problem,
+            reference_weights=reference_weights,
+            initial_guesses=initial_guesses,
+            max_iterations=max_iterations,
         )
-    if best.max_abs_share_gap > RESEARCH_MAX_RISK_BUDGET_SHARE_GAP + 1e-12:
+        if primary.max_abs_share_gap <= RESEARCH_MAX_RISK_BUDGET_SHARE_GAP:
+            best = primary
+        else:
+            minimax = _solve_minimax_risk_budget_slsqp(
+                problem,
+                reference_weights=reference_weights,
+                initial_guesses=[*initial_guesses, primary.weights],
+                max_iterations=max(max_iterations * 4, 1500),
+            )
+            best = (
+                minimax
+                if minimax is not None and minimax.max_abs_share_gap < primary.max_abs_share_gap - 1e-9
+                else primary
+            )
+    if enforce_tolerance and best.max_abs_share_gap > RESEARCH_MAX_RISK_BUDGET_SHARE_GAP + 1e-12:
         raise ValueError(
             "Risk budget solver could not satisfy target risk shares within "
             f"{RESEARCH_MAX_RISK_BUDGET_SHARE_GAP:.2%}; achieved max gap {best.max_abs_share_gap:.2%}."
         )
     achieved = np.asarray(best.achieved_risk_shares, dtype="float64")
-    if best.contribution_mode == "signed" and float(achieved.min()) < -1e-12:
+    if (
+        best.contribution_mode == "signed"
+        and not _risk_budget_problem_has_binding_bounds(problem)
+        and float(achieved.min()) < -1e-12
+    ):
         raise ValueError("Risk budget solver produced a negative signed risk share.")
     return best
 
@@ -1349,14 +1649,31 @@ def _solve_risk_budget_weights(
     calculation_frequency: CalculationFrequency,
     missing_return_policy: str,
     risk_model_config: dict[str, object] | None = None,
+    lower_bounds: np.ndarray | None = None,
+    upper_bounds: np.ndarray | None = None,
 ) -> LocalRiskBudgetSolve:
     count = len(target_shares)
     normalized_missing_return_policy = _normalize_missing_return_policy(missing_return_policy)
+    resolved_lower_bounds = (
+        np.asarray(lower_bounds, dtype="float64")
+        if lower_bounds is not None and len(lower_bounds) == count
+        else np.zeros(count, dtype="float64")
+    )
+    resolved_upper_bounds = (
+        np.asarray(upper_bounds, dtype="float64")
+        if upper_bounds is not None and len(upper_bounds) == count
+        else np.ones(count, dtype="float64")
+    )
+    has_binding_bounds = bool(
+        np.any(resolved_lower_bounds > 1e-12) or np.any(resolved_upper_bounds < 1.0 - 1e-12)
+    )
     if count == 1:
+        if resolved_lower_bounds[0] > 1.0 + 1e-12 or resolved_upper_bounds[0] < 1.0 - 1e-12:
+            raise ValueError("Single-member risk budget bounds are infeasible.")
         return LocalRiskBudgetSolve(
             weights=np.asarray([1.0], dtype="float64"),
             max_abs_share_gap=0.0,
-            solver_kind="single-member",
+            solver_kind="bounded-single-member" if has_binding_bounds else "single-member",
             solver_detail=None,
             covariance_model=None,
             covariance_observations=0,
@@ -1371,7 +1688,7 @@ def _solve_risk_budget_weights(
             "Risk budget solve requires at least two aligned return observations; "
             f"got {complete_observation_count}."
         )
-    covariance_parameters = _risk_model_covariance_parameters(risk_model_config, calculation_frequency)
+    covariance_parameters = _risk_model_covariance_parameters(risk_model_config, calculation_frequency, lookback_days)
     covariance_model_id = _risk_model_covariance_model_id(risk_model_config)
     contribution_mode = _risk_model_contribution_mode(risk_model_config)
     coverage = _prepare_return_window_for_covariance(
@@ -1385,13 +1702,15 @@ def _solve_risk_budget_weights(
     )
     covariance_window = coverage.returns
 
+    target = _normalize_positive_vector(np.asarray(target_shares, dtype="float64"))
     reference = (
         np.asarray(reference_weights, dtype="float64")
         if reference_weights is not None and len(reference_weights) == count
-        else np.asarray(target_shares, dtype="float64")
+        else target
     )
+    if not np.isfinite(reference).all() or float(np.clip(reference, 0.0, None).sum()) <= 1e-12:
+        reference = target
     reference = _normalize_positive_vector(reference)
-    target = _normalize_positive_vector(np.asarray(target_shares, dtype="float64"))
     covariance = _estimate_covariance(
         covariance_window,
         model_id=covariance_model_id,
@@ -1407,12 +1726,12 @@ def _solve_risk_budget_weights(
         bucket_ids=list(return_window.columns),
         covariance=covariance.to_numpy(dtype="float64"),
         target_risk_shares=target,
-        lower_bounds=np.zeros(count, dtype="float64"),
-        upper_bounds=np.ones(count, dtype="float64"),
+        lower_bounds=resolved_lower_bounds,
+        upper_bounds=resolved_upper_bounds,
         reference_weights=reference,
         contribution_mode=contribution_mode,
     )
-    solution = _solve_risk_budget_problem(primary_problem)
+    solution = _solve_risk_budget_problem(primary_problem, enforce_tolerance=not has_binding_bounds)
 
     return LocalRiskBudgetSolve(
         weights=_normalize_positive_vector(solution.weights),
@@ -1432,6 +1751,24 @@ def _solve_risk_budget_weights(
         latest_complete_return_date=coverage.latest_complete_date.isoformat() if coverage.latest_complete_date else None,
         trailing_complete_return_staleness_days=coverage.trailing_staleness_days,
     )
+
+
+def _resolve_volatility_overlay_gross_exposure(
+    *,
+    capital_mode: str,
+    estimated_volatility: float | None,
+    target_volatility: float | None,
+    max_gross_exposure: float | None,
+) -> float:
+    if target_volatility is None or target_volatility <= 0:
+        raise ValueError("Volatility overlay requires positive target volatility.")
+    if estimated_volatility is None or estimated_volatility <= 0:
+        raise ValueError("Volatility overlay requires positive estimated risky-sleeve volatility.")
+    target_gross = float(target_volatility) / float(estimated_volatility)
+    if capital_mode == CAPITAL_MODE_VOLATILITY_CAP:
+        return min(target_gross, 1.0)
+    max_gross = 1.0 if max_gross_exposure is None else float(max_gross_exposure)
+    return min(target_gross, max_gross)
 
 
 def _series_observation_frequency(series: pd.Series) -> CalculationFrequency:
@@ -1609,6 +1946,8 @@ def _resolve_dimension_target_rows(
 
     enabled_field = "weight_enabled" if resolved_dimension == TARGET_DIMENSION_WEIGHT else "risk_budget_enabled"
     value_field = "target_weight" if resolved_dimension == TARGET_DIMENSION_WEIGHT else "target_risk_share"
+    saw_enabled_target_set = False
+    incomplete_target_sets: list[tuple[dict[str, object], list[str]]] = []
     for target_set_type in candidate_types:
         target_set = _scope_target_sets(
             state,
@@ -1618,14 +1957,29 @@ def _resolve_dimension_target_rows(
         )
         if target_set is None or not bool(target_set.get(enabled_field)):
             continue
+        saw_enabled_target_set = True
         line_map = state.target_lines_by_set_id.get(str(target_set.get("target_set_id") or ""), {})
         rendered_rows: list[dict[str, object]] = []
         complete = True
+        missing_member_labels: list[str] = []
         for member in scope_members:
             line = line_map.get((member.member_type, member.member_id))
             if line is None or line.get(value_field) is None:
-                complete = False
-                break
+                if member.member_type != TARGET_MEMBER_CASH:
+                    missing_member_labels.append(member.label)
+                    complete = False
+                    break
+                selected_value = 0.0
+                target_weight = 0.0 if resolved_dimension == TARGET_DIMENSION_WEIGHT else _safe_float((line or {}).get("target_weight"))
+                target_risk_share = (
+                    0.0
+                    if resolved_dimension == TARGET_DIMENSION_RISK_BUDGET
+                    else _safe_float((line or {}).get("target_risk_share"))
+                )
+            else:
+                selected_value = float(line.get(value_field))
+                target_weight = _safe_float(line.get("target_weight"))
+                target_risk_share = _safe_float(line.get("target_risk_share"))
             rendered_rows.append(
                 {
                     "member_type": member.member_type,
@@ -1634,9 +1988,9 @@ def _resolve_dimension_target_rows(
                     "taxonomy_node_id": member.taxonomy_node_id,
                     "default_target_dimension": member.default_target_dimension,
                     "selected_dimension": resolved_dimension,
-                    "selected_value": float(line.get(value_field)),
-                    "target_weight": _safe_float(line.get("target_weight")),
-                    "target_risk_share": _safe_float(line.get("target_risk_share")),
+                    "selected_value": selected_value,
+                    "target_weight": target_weight,
+                    "target_risk_share": target_risk_share,
                     "source_target_set_id": target_set.get("target_set_id"),
                     "source_target_set_type": target_set_type,
                 }
@@ -1657,6 +2011,8 @@ def _resolve_dimension_target_rows(
                     f"{expected_total:.6f}; got {selected_total:.6f}."
                 )
             return rendered_rows, warnings
+        if not complete:
+            incomplete_target_sets.append((target_set, missing_member_labels))
 
     if len(scope_members) == 1:
         member = scope_members[0]
@@ -1683,6 +2039,15 @@ def _resolve_dimension_target_rows(
         ], warnings
 
     scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
+    if saw_enabled_target_set and incomplete_target_sets:
+        target_set, missing_member_labels = incomplete_target_sets[0]
+        missing_label = ", ".join(missing_member_labels[:8]) or "one or more active taxonomy members"
+        if len(missing_member_labels) > 8:
+            missing_label += f", +{len(missing_member_labels) - 8} more"
+        raise ValueError(
+            f"{scope_label} {resolved_dimension} target set is incomplete; "
+            f"missing target lines for active members: {missing_label}."
+        )
     raise ValueError(
         f"{scope_label} has no active complete {resolved_dimension} target set for the requested scope members."
     )
@@ -1695,22 +2060,41 @@ def _scope_members(
 ) -> tuple[list[ScopeMemberRecord], str]:
     child_node_ids = state.children_by_parent.get(scope_node_id, [])
     if child_node_ids:
+        members = [
+            ScopeMemberRecord(
+                member_type=TARGET_MEMBER_NODE,
+                member_id=node_id,
+                label=str(state.node_by_id[node_id]["node_name"]),
+                taxonomy_node_id=node_id,
+                default_target_dimension=str(state.node_by_id[node_id].get("default_target_dimension") or TARGET_DIMENSION_WEIGHT),
+            )
+            for node_id in child_node_ids
+        ]
+        if scope_node_id is None:
+            members.append(
+                ScopeMemberRecord(
+                    member_type=TARGET_MEMBER_CASH,
+                    member_id=SYSTEM_CASH_TARGET_MEMBER_ID,
+                    label=SYSTEM_CASH_TARGET_LABEL,
+                    taxonomy_node_id=None,
+                    default_target_dimension=TARGET_DIMENSION_WEIGHT,
+                )
+            )
+        return members, "child_sleeves"
+
+    if scope_node_id is None:
         return (
             [
                 ScopeMemberRecord(
-                    member_type=TARGET_MEMBER_NODE,
-                    member_id=node_id,
-                    label=str(state.node_by_id[node_id]["node_name"]),
-                    taxonomy_node_id=node_id,
-                    default_target_dimension=str(state.node_by_id[node_id].get("default_target_dimension") or TARGET_DIMENSION_WEIGHT),
+                    member_type=TARGET_MEMBER_CASH,
+                    member_id=SYSTEM_CASH_TARGET_MEMBER_ID,
+                    label=SYSTEM_CASH_TARGET_LABEL,
+                    taxonomy_node_id=None,
+                    default_target_dimension=TARGET_DIMENSION_WEIGHT,
                 )
-                for node_id in child_node_ids
             ],
             "child_sleeves",
         )
-
-    if scope_node_id is None:
-        raise ValueError("Portfolio root scope requires at least one top-level sleeve.")
 
     direct_assignments = state.direct_assignments_by_node.get(scope_node_id, [])
     if not direct_assignments:
@@ -1792,8 +2176,7 @@ def _solver_return_window(
 ) -> pd.DataFrame:
     if not members:
         return pd.DataFrame()
-    start_date = as_of_date - pd.Timedelta(days=max(int(lookback_days), 1))
-    start_day = start_date.date() if hasattr(start_date, "date") else start_date
+    start_day = research_window_start_date(as_of_date, lookback_days)
     aligned_members, _calendar, _warnings = _align_member_series(
         members,
         nav_series_by_member,
@@ -1881,7 +2264,7 @@ def _estimate_scope_risk_share_map(
             return_window.reindex(columns=risk_keys),
             model_id=_risk_model_covariance_model_id(risk_model_config),
             lookback_days=lookback_days,
-            parameters=_risk_model_covariance_parameters(risk_model_config, calculation_frequency),
+            parameters=_risk_model_covariance_parameters(risk_model_config, calculation_frequency, lookback_days),
             missing_return_policy=missing_return_policy,
             calculation_frequency=calculation_frequency,
             as_of_date=as_of_date,
@@ -1894,6 +2277,127 @@ def _estimate_scope_risk_share_map(
     except ValueError as error:
         return {}, [f"Current risk-share estimate skipped: {error}"]
     return {key: float(shares[index]) for index, key in enumerate(risk_keys)}, []
+
+
+def _root_top_sleeve_bounds_by_key(
+    state: TaxonomyResearchState,
+    *,
+    scope_node_id: str | None,
+    member_by_key: dict[str, ScopeMemberRecord],
+    member_keys: list[str],
+) -> dict[str, dict[str, float | None]]:
+    if scope_node_id is not None or not state.top_sleeve_weight_bounds:
+        return {}
+    bounds_by_key: dict[str, dict[str, float | None]] = {}
+    for key in member_keys:
+        member = member_by_key.get(key)
+        if member is None or member.member_type != TARGET_MEMBER_NODE:
+            continue
+        bounds = state.top_sleeve_weight_bounds.get(member.member_id)
+        if bounds:
+            bounds_by_key[key] = bounds
+    return bounds_by_key
+
+
+def _validate_fixed_top_sleeve_bounds(
+    *,
+    scope_label: str,
+    fixed_weight_targets: pd.Series,
+    bounds_by_key: dict[str, dict[str, float | None]],
+    member_by_key: dict[str, ScopeMemberRecord],
+) -> None:
+    for key, bounds in bounds_by_key.items():
+        if key not in fixed_weight_targets.index:
+            continue
+        weight = float(fixed_weight_targets.get(key, 0.0))
+        member_label = member_by_key[key].label
+        min_weight = _safe_float(bounds.get("min_weight"))
+        max_weight = _safe_float(bounds.get("max_weight"))
+        if min_weight is not None and weight < min_weight - 1e-8:
+            raise ValueError(
+                f"{scope_label} frozen sleeve {member_label} weight {weight:.2%} is below its minimum {min_weight:.2%}."
+            )
+        if max_weight is not None and weight > max_weight + 1e-8:
+            raise ValueError(
+                f"{scope_label} frozen sleeve {member_label} weight {weight:.2%} exceeds its maximum {max_weight:.2%}."
+            )
+
+
+def _validate_final_top_sleeve_bounds(
+    *,
+    scope_label: str,
+    implementation_weights: pd.Series,
+    bounds_by_key: dict[str, dict[str, float | None]],
+    member_by_key: dict[str, ScopeMemberRecord],
+) -> None:
+    for key, bounds in bounds_by_key.items():
+        weight = float(implementation_weights.get(key, 0.0))
+        member_label = member_by_key[key].label
+        min_weight = _safe_float(bounds.get("min_weight"))
+        max_weight = _safe_float(bounds.get("max_weight"))
+        if min_weight is not None and weight < min_weight - 1e-8:
+            raise ValueError(
+                f"{scope_label} top sleeve {member_label} final weight {weight:.2%} is below its minimum {min_weight:.2%}."
+            )
+        if max_weight is not None and weight > max_weight + 1e-8:
+            raise ValueError(
+                f"{scope_label} top sleeve {member_label} final weight {weight:.2%} exceeds its maximum {max_weight:.2%}."
+            )
+
+
+def _resolve_active_top_sleeve_bound_vectors(
+    *,
+    scope_label: str,
+    active_keys: list[str],
+    active_budget: float,
+    bounds_by_key: dict[str, dict[str, float | None]],
+    member_by_key: dict[str, ScopeMemberRecord],
+    allow_upper_shortfall: bool = True,
+) -> tuple[float, np.ndarray | None, np.ndarray | None]:
+    if not active_keys or not bounds_by_key:
+        return active_budget, None, None
+    lower_final = []
+    upper_final = []
+    for key in active_keys:
+        bounds = bounds_by_key.get(key) or {}
+        min_weight = _safe_float(bounds.get("min_weight")) or 0.0
+        max_weight = _safe_float(bounds.get("max_weight"))
+        lower_final.append(float(min_weight))
+        upper_final.append(float(active_budget if max_weight is None else max_weight))
+    lower = np.asarray(lower_final, dtype="float64")
+    upper = np.asarray(upper_final, dtype="float64")
+    if np.any(upper < lower - 1e-12):
+        offenders = [
+            member_by_key[key].label
+            for index, key in enumerate(active_keys)
+            if upper[index] < lower[index] - 1e-12
+        ]
+        raise ValueError(f"{scope_label} top sleeve bounds are infeasible for {', '.join(offenders)}.")
+    lower_total = float(lower.sum())
+    upper_total = float(upper.sum())
+    if active_budget < lower_total - 1e-12:
+        raise ValueError(
+            f"{scope_label} top sleeve minimum weights require {lower_total:.2%}, "
+            f"but only {active_budget:.2%} active risky budget is available."
+        )
+    if active_budget > upper_total + 1e-12 and not allow_upper_shortfall:
+        raise ValueError(
+            f"{scope_label} top sleeve maximum weights allow only {upper_total:.2%}, "
+            f"below the requested {active_budget:.2%} active risky budget."
+        )
+    constrained_active_budget = min(float(active_budget), upper_total)
+    if constrained_active_budget < lower_total - 1e-12:
+        raise ValueError(
+            f"{scope_label} top sleeve bounds leave only {constrained_active_budget:.2%} active risky budget, "
+            f"below the required minimum {lower_total:.2%}."
+        )
+    if constrained_active_budget <= 1e-12:
+        raise ValueError(f"{scope_label} top sleeve bounds leave no active risky allocation.")
+    lower_local = np.clip(lower / constrained_active_budget, 0.0, 1.0)
+    upper_local = np.clip(upper / constrained_active_budget, 0.0, 1.0)
+    if float(lower_local.sum()) > 1.0 + 1e-10 or float(upper_local.sum()) < 1.0 - 1e-10:
+        raise ValueError(f"{scope_label} top sleeve bounds are infeasible for the active risky allocation.")
+    return constrained_active_budget, lower_local, upper_local
 
 
 def _solve_current_scope(
@@ -1916,8 +2420,7 @@ def _solve_current_scope(
     scope_path = state.node_path_by_id.get(scope_node_id or ROOT_SCOPE_MEMBER_ID, ROOT_SCOPE_LABEL)
     scope_depth = int(state.node_depth_by_id.get(scope_node_id, 0))
     default_target_dimension = _scope_default_target_dimension(state, scope_node_id)
-    start_date = as_of_date - pd.Timedelta(days=max(int(lookback_days), 1))
-    start_day = start_date.date() if hasattr(start_date, "date") else start_date
+    start_day = research_window_start_date(as_of_date, lookback_days)
 
     members, member_source = _scope_members(state, scope_node_id=scope_node_id)
     nav_series_by_member: dict[tuple[str, str], pd.Series] = {}
@@ -2030,6 +2533,12 @@ def _solve_current_scope(
     ).clip(lower=0.0)
     risk_keys = [key for key in member_keys if key not in cash_like_keys and key not in frozen_keys]
     non_cash_keys = [key for key in member_keys if key not in cash_like_keys]
+    top_sleeve_bounds_by_key = _root_top_sleeve_bounds_by_key(
+        state,
+        scope_node_id=scope_node_id,
+        member_by_key=member_by_key,
+        member_keys=member_keys,
+    )
     preferred_cash_weights = pd.Series(
         {
             f"{row['member_type']}::{row['member_id']}": float(_safe_float(row.get("target_weight")) or 0.0)
@@ -2038,11 +2547,42 @@ def _solve_current_scope(
         },
         dtype="float64",
     ).reindex(cash_like_keys, fill_value=0.0)
-    fixed_total = min(max(float(fixed_weight_targets.sum()), 0.0), 1.0)
+    fixed_total = max(float(fixed_weight_targets.sum()), 0.0)
+    overlay_applies_to_risk_sleeves = apply_capital_overlay and capital_mode in {
+        CAPITAL_MODE_FIXED_GROSS,
+        CAPITAL_MODE_TARGET_VOLATILITY,
+        CAPITAL_MODE_VOLATILITY_CAP,
+    }
+    fixed_gross_overlay = overlay_applies_to_risk_sleeves and capital_mode == CAPITAL_MODE_FIXED_GROSS
+    target_non_cash_total = float(gross_exposure or 1.0) if fixed_gross_overlay else None
 
     if target_dimension_used == TARGET_DIMENSION_RISK_BUDGET:
-        base_cash_total = min(max(float(preferred_cash_weights.sum()), 0.0), 1.0)
-        fixed_total = min(fixed_total, max(1.0 - base_cash_total, 0.0))
+        base_cash_total = 0.0 if fixed_gross_overlay else min(max(float(preferred_cash_weights.sum()), 0.0), 1.0)
+        available_non_cash_total = (
+            float(target_non_cash_total)
+            if target_non_cash_total is not None
+            else max(1.0 - base_cash_total, 0.0)
+        )
+        if fixed_total > available_non_cash_total + 1e-12:
+            raise ValueError(
+                f"{scope_label} frozen sleeve weights require {fixed_total:.2%}, "
+                f"above the available {available_non_cash_total:.2%} non-cash budget."
+            )
+        fixed_total = min(fixed_total, available_non_cash_total)
+        _validate_fixed_top_sleeve_bounds(
+            scope_label=scope_label,
+            fixed_weight_targets=fixed_weight_targets,
+            bounds_by_key=top_sleeve_bounds_by_key,
+            member_by_key=member_by_key,
+        )
+        active_budget, lower_bounds, upper_bounds = _resolve_active_top_sleeve_bound_vectors(
+            scope_label=scope_label,
+            active_keys=risk_keys,
+            active_budget=max(available_non_cash_total - fixed_total, 0.0),
+            bounds_by_key=top_sleeve_bounds_by_key,
+            member_by_key=member_by_key,
+            allow_upper_shortfall=not fixed_gross_overlay,
+        )
         if risk_keys:
             if len(risk_keys) > 1:
                 solver_members = [member_by_key[key] for key in risk_keys]
@@ -2055,23 +2595,24 @@ def _solve_current_scope(
                 )
             else:
                 return_window = pd.DataFrame()
-            reference = pd.Series(current_actual_weight_by_key, dtype="float64").reindex(risk_keys, fill_value=0.0)
             risk_solve = _solve_risk_budget_weights(
                 target_shares=target_values.reindex(risk_keys, fill_value=0.0).to_numpy(dtype="float64"),
                 return_window=return_window,
-                reference_weights=reference.to_numpy(dtype="float64"),
+                reference_weights=None,
                 as_of_date=as_of_date,
                 lookback_days=lookback_days,
                 calculation_frequency=calculation_frequency,
                 missing_return_policy=missing_return_policy,
                 risk_model_config=risk_model_config,
+                lower_bounds=lower_bounds,
+                upper_bounds=upper_bounds,
             )
             solved_weights = risk_solve.weights
             risk_gap = risk_solve.max_abs_share_gap
             solver_kind = risk_solve.solver_kind
             implementation_weights = pd.Series(0.0, index=member_keys, dtype="float64")
             implementation_weights.loc[frozen_keys] = fixed_weight_targets.reindex(frozen_keys, fill_value=0.0)
-            implementation_weights.loc[risk_keys] = solved_weights * max(1.0 - base_cash_total - fixed_total, 0.0)
+            implementation_weights.loc[risk_keys] = solved_weights * active_budget
             implementation_weights.loc[cash_like_keys] = _allocate_cash_weights(
                 cash_index=cash_like_keys,
                 preferred_weights=preferred_cash_weights,
@@ -2113,12 +2654,48 @@ def _solve_current_scope(
         active_weight_keys = [key for key in member_keys if key not in cash_like_keys and key not in frozen_keys]
         active_weight_targets = target_values.reindex(active_weight_keys, fill_value=0.0)
         active_weight_total = float(active_weight_targets.sum())
-        active_budget = max(
-            1.0 - float(implementation_weights.loc[frozen_keys].sum()) - float(preferred_cash_weights.sum()),
+        available_non_cash_total = (
+            float(target_non_cash_total)
+            if target_non_cash_total is not None
+            else max(1.0 - float(preferred_cash_weights.sum()), 0.0)
+        )
+        if float(implementation_weights.loc[frozen_keys].sum()) > available_non_cash_total + 1e-12:
+            raise ValueError(
+                f"{scope_label} frozen sleeve weights require {float(implementation_weights.loc[frozen_keys].sum()):.2%}, "
+                f"above the available {available_non_cash_total:.2%} non-cash budget."
+            )
+        requested_active_budget = max(
+            available_non_cash_total - float(implementation_weights.loc[frozen_keys].sum()),
             0.0,
         )
+        _validate_fixed_top_sleeve_bounds(
+            scope_label=scope_label,
+            fixed_weight_targets=fixed_weight_targets,
+            bounds_by_key=top_sleeve_bounds_by_key,
+            member_by_key=member_by_key,
+        )
+        active_budget, lower_bounds, upper_bounds = _resolve_active_top_sleeve_bound_vectors(
+            scope_label=scope_label,
+            active_keys=active_weight_keys,
+            active_budget=requested_active_budget,
+            bounds_by_key=top_sleeve_bounds_by_key,
+            member_by_key=member_by_key,
+            allow_upper_shortfall=not fixed_gross_overlay,
+        )
         if active_weight_keys:
-            if active_weight_total > 1e-12:
+            if lower_bounds is not None and upper_bounds is not None:
+                preferred = (
+                    active_weight_targets.to_numpy(dtype="float64")
+                    if active_weight_total > 1e-12
+                    else np.ones(len(active_weight_keys), dtype="float64")
+                )
+                implementation_weights.loc[active_weight_keys] = _allocate_bounded_mass(
+                    total_mass=active_budget,
+                    lower=lower_bounds * active_budget,
+                    upper=upper_bounds * active_budget,
+                    preferred=preferred,
+                )
+            elif active_weight_total > 1e-12:
                 implementation_weights.loc[active_weight_keys] = active_weight_targets / active_weight_total * active_budget
             else:
                 implementation_weights.loc[active_weight_keys] = active_budget / float(len(active_weight_keys))
@@ -2132,11 +2709,7 @@ def _solve_current_scope(
         risk_gap = None
         solver_kind = "weight-fixed-members" if frozen_keys else "weight"
 
-    overlay_applies_to_risk_sleeves = apply_capital_overlay and capital_mode in {
-        CAPITAL_MODE_FIXED_GROSS,
-        CAPITAL_MODE_TARGET_VOLATILITY,
-    }
-    if overlay_applies_to_risk_sleeves and non_cash_keys:
+    if overlay_applies_to_risk_sleeves and not fixed_gross_overlay and non_cash_keys:
         non_cash_total = float(implementation_weights.reindex(non_cash_keys, fill_value=0.0).sum())
         if non_cash_total > 1e-12:
             implementation_weights.loc[non_cash_keys] = (
@@ -2156,12 +2729,13 @@ def _solve_current_scope(
     if overlay_applies_to_risk_sleeves and non_cash_keys:
         risky_weights = implementation_weights.reindex(non_cash_keys, fill_value=0.0)
         if capital_mode == CAPITAL_MODE_FIXED_GROSS:
-            effective_gross_exposure = float(gross_exposure or 1.0)
-        elif capital_mode == CAPITAL_MODE_TARGET_VOLATILITY:
+            effective_gross_exposure = float(risky_weights.sum())
+            risky_allocation_scaling_factor = 1.0
+        elif capital_mode in {CAPITAL_MODE_TARGET_VOLATILITY, CAPITAL_MODE_VOLATILITY_CAP}:
             active_risky_weights = risky_weights.loc[risky_weights.abs() > 1e-12]
             if active_risky_weights.empty:
                 raise ValueError(
-                    f"{scope_label} target-volatility overlay requires at least one non-zero risky-sleeve weight."
+                    f"{scope_label} volatility overlay requires at least one non-zero risky-sleeve weight."
                 )
             solver_members = [member_by_key[key] for key in active_risky_weights.index]
             return_window = _solver_return_window(
@@ -2180,15 +2754,18 @@ def _solve_current_scope(
                 missing_return_policy=missing_return_policy,
                 risk_model_config=risk_model_config,
             )
-            if estimated_risk_sleeve_volatility and estimated_risk_sleeve_volatility > 0 and target_volatility:
-                effective_gross_exposure = float(target_volatility) / float(estimated_risk_sleeve_volatility)
-            else:
-                raise ValueError(
-                    f"{scope_label} target-volatility overlay requires positive estimated risky-sleeve volatility."
+            try:
+                effective_gross_exposure = _resolve_volatility_overlay_gross_exposure(
+                    capital_mode=capital_mode,
+                    estimated_volatility=estimated_risk_sleeve_volatility,
+                    target_volatility=target_volatility,
+                    max_gross_exposure=max_gross_exposure,
                 )
-            if max_gross_exposure is not None:
-                effective_gross_exposure = min(float(effective_gross_exposure), float(max_gross_exposure))
-        if effective_gross_exposure is not None:
+            except ValueError as error:
+                raise ValueError(
+                    f"{scope_label} {str(error).removeprefix('Volatility overlay ')}"
+                ) from error
+        if effective_gross_exposure is not None and not fixed_gross_overlay:
             risky_allocation_scaling_factor = float(effective_gross_exposure)
             implementation_weights.loc[non_cash_keys] = risky_weights * risky_allocation_scaling_factor
             if cash_like_keys:
@@ -2204,6 +2781,19 @@ def _solve_current_scope(
                     raise ValueError(
                         f"{scope_label} capital overlay leaves a {residual_cash:.2%} residual but the scope has no cash-like member."
                     )
+
+    _validate_final_top_sleeve_bounds(
+        scope_label=scope_label,
+        implementation_weights=implementation_weights,
+        bounds_by_key=top_sleeve_bounds_by_key,
+        member_by_key=member_by_key,
+    )
+    if fixed_gross_overlay and not cash_like_keys:
+        residual_cash = 1.0 - float(implementation_weights.reindex(non_cash_keys, fill_value=0.0).sum())
+        if abs(residual_cash) > 1e-9:
+            raise ValueError(
+                f"{scope_label} fixed gross leaves a {residual_cash:.2%} residual but the scope has no cash-like member."
+            )
 
     for row in resolved_rows:
         member_key = f"{row['member_type']}::{row['member_id']}"
@@ -2459,16 +3049,14 @@ def _current_scope_actuals(
         if str((account_row.get("account") or {}).get("account_id") or "")
     }
 
+    cash_total_value = float(sum(cash_value_by_account.values()))
     direct_position_membership: dict[str, str] = {}
-    direct_cash_membership: dict[str, str] = {}
     for node_id, assignments in state.direct_assignments_by_node.items():
         for assignment in assignments:
             target_scope = str(assignment.get("target_scope") or "")
             target_entity_id = str(assignment.get("target_entity_id") or "")
             if target_scope == TARGET_MEMBER_INSTRUMENT:
                 direct_position_membership[target_entity_id] = node_id
-            elif target_scope == TARGET_MEMBER_CASH:
-                direct_cash_membership[target_entity_id] = node_id
 
     node_value_map: dict[str, float] = {node_id: 0.0 for node_id in state.node_by_id}
     unassigned_value = 0.0
@@ -2483,19 +3071,9 @@ def _current_scope_actuals(
             node_value_map[current_node_id] = float(node_value_map.get(current_node_id, 0.0) + market_value_base)
             current_node_id = str(state.node_by_id.get(current_node_id, {}).get("parent_taxonomy_node_id") or "") or None
 
-    for account_id, cash_value_base in cash_value_by_account.items():
-        node_id = direct_cash_membership.get(account_id)
-        if not node_id:
-            unassigned_value += cash_value_base
-            continue
-        current_node_id = node_id
-        while current_node_id:
-            node_value_map[current_node_id] = float(node_value_map.get(current_node_id, 0.0) + cash_value_base)
-            current_node_id = str(state.node_by_id.get(current_node_id, {}).get("parent_taxonomy_node_id") or "") or None
-
     scope_members, member_source = _scope_members(state, scope_node_id=scope_node_id)
     scope_total_value = (
-        sum(node_value_map.get(node_id, 0.0) for node_id in state.children_by_parent.get(None, [])) + unassigned_value
+        sum(node_value_map.get(node_id, 0.0) for node_id in state.children_by_parent.get(None, [])) + cash_total_value + unassigned_value
         if scope_node_id is None
         else node_value_map.get(scope_node_id, 0.0)
     )
@@ -2509,6 +3087,8 @@ def _current_scope_actuals(
             actual_value = node_value_map.get(member.member_id, 0.0)
         elif member.member_type == TARGET_MEMBER_INSTRUMENT:
             actual_value = position_value_by_instrument.get(member.member_id, 0.0)
+        elif member.member_type == TARGET_MEMBER_CASH and member.member_id == SYSTEM_CASH_TARGET_MEMBER_ID:
+            actual_value = cash_total_value
         else:
             actual_value = cash_value_by_account.get(member.member_id, 0.0)
         actual_weight = actual_value / scope_total_value if abs(scope_total_value) > 1e-9 else None
@@ -2523,7 +3103,7 @@ def _current_scope_actuals(
         )
 
     if scope_node_id is None and abs(unassigned_value) > 1e-9:
-        warnings.append("Current portfolio still has unassigned holdings or cash outside the selected planning taxonomy.")
+        warnings.append("Current portfolio still has unassigned holdings outside the selected planning taxonomy.")
         rendered_rows.append(
             {
                 "member_type": "unassigned",
@@ -2582,6 +3162,7 @@ def _build_taxonomy_state(
     planning_taxonomy_id: str,
     as_of_date: date,
     frozen_taxonomy_node_ids: list[str] | None = None,
+    top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
 ) -> TaxonomyResearchState:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -2598,10 +3179,13 @@ def _build_taxonomy_state(
     if taxonomy is None:
         raise ValueError("Planning taxonomy not found.")
 
+    taxonomy_scope = str(taxonomy.get("primary_assignment_scope") or "")
     node_rows = [
         item
         for item in list_taxonomy_nodes(portfolio_id)
-        if str(item.get("taxonomy_id") or "") == planning_taxonomy_id and str(item.get("status") or "") == "active"
+        if str(item.get("taxonomy_id") or "") == planning_taxonomy_id
+        and str(item.get("status") or "") == "active"
+        and not (taxonomy_scope == TARGET_MEMBER_INSTRUMENT and _taxonomy_node_row_is_system_cash_like(item))
     ]
     node_rows.sort(
         key=lambda item: (
@@ -2656,7 +3240,10 @@ def _build_taxonomy_state(
     )
     direct_assignments_by_node: dict[str, list[dict[str, object]]] = defaultdict(list)
     for assignment in assignments:
-        direct_assignments_by_node[str(assignment["taxonomy_node_id"])].append(assignment)
+        node_id = str(assignment.get("taxonomy_node_id") or "")
+        if node_id not in node_by_id:
+            continue
+        direct_assignments_by_node[node_id].append(assignment)
 
     target_sets = [
         item
@@ -2703,6 +3290,7 @@ def _build_taxonomy_state(
         frozen_taxonomy_node_ids=frozenset(
             str(item).strip() for item in (frozen_taxonomy_node_ids or []) if str(item).strip()
         ),
+        top_sleeve_weight_bounds=_normalize_top_sleeve_weight_bounds(top_sleeve_weight_bounds),
     )
 
 
@@ -2765,8 +3353,7 @@ def build_research_calculation_frequency_profile(
     )
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
         raise ValueError("Selected research scope was not found in the planning taxonomy.")
-    start_date = as_of_date - pd.Timedelta(days=max(int(lookback_days), 1))
-    start_day = start_date.date() if hasattr(start_date, "date") else start_date
+    start_day = research_window_start_date(as_of_date, lookback_days)
     source_frequencies = _scope_source_frequencies(
         state,
         scope_node_id=comparator_taxonomy_node_id,
@@ -2777,6 +3364,705 @@ def build_research_calculation_frequency_profile(
         requested_frequency=requested_frequency,
         source_frequencies=source_frequencies,
     )
+
+
+def _top_sleeve_for_member(
+    state: TaxonomyResearchState,
+    *,
+    member_type: str,
+    member_id: str,
+) -> tuple[str | None, str, str]:
+    node_id: str | None = None
+    if member_type == TARGET_MEMBER_NODE and member_id in state.node_by_id:
+        node_id = member_id
+    else:
+        for candidate_node_id, assignments in state.direct_assignments_by_node.items():
+            if any(
+                str(assignment.get("target_scope") or "") == member_type
+                and str(assignment.get("target_entity_id") or "") == member_id
+                for assignment in assignments
+            ):
+                node_id = candidate_node_id
+                break
+    if not node_id or node_id not in state.node_by_id:
+        return None, "Unassigned", "Unassigned"
+    current_id = node_id
+    while True:
+        parent_id = str(state.node_by_id.get(current_id, {}).get("parent_taxonomy_node_id") or "") or None
+        if parent_id is None or parent_id not in state.node_by_id:
+            break
+        current_id = parent_id
+    node = state.node_by_id[current_id]
+    label = str(node.get("node_name") or current_id)
+    return current_id, label, state.node_path_by_id.get(current_id, label)
+
+
+def _target_key(row: dict[str, object]) -> str:
+    return f"{row.get('member_type')}::{row.get('member_id')}"
+
+
+def _top_sleeve_bound_status(
+    *,
+    solved_weight: float | None,
+    min_weight: float | None,
+    max_weight: float | None,
+) -> str | None:
+    if min_weight is None and max_weight is None:
+        return None
+    if solved_weight is None:
+        return "missing"
+    tolerance = 1e-6
+    if min_weight is not None and solved_weight < min_weight - tolerance:
+        return "violated"
+    if max_weight is not None and solved_weight > max_weight + tolerance:
+        return "violated"
+    if min_weight is not None and abs(solved_weight - min_weight) <= tolerance:
+        return "min"
+    if max_weight is not None and abs(solved_weight - max_weight) <= tolerance:
+        return "max"
+    return "within"
+
+
+def _estimate_forward_risk_contribution_by_key(
+    state: TaxonomyResearchState,
+    *,
+    leaf_rows: list[dict[str, object]],
+    as_of_date: date,
+    lookback_days: int,
+    calculation_frequency: CalculationFrequency,
+    missing_return_policy: str,
+    risk_model_config: dict[str, object] | None,
+) -> tuple[dict[str, float | None], list[str]]:
+    risk_rows = [
+        row
+        for row in leaf_rows
+        if str(row.get("member_type") or "") == TARGET_MEMBER_INSTRUMENT
+        and abs(_safe_float(row.get("target_weight")) or 0.0) > 1e-12
+    ]
+    if len(risk_rows) == 1:
+        return ({_target_key(risk_rows[0]): 1.0}, [])
+
+    start_day = research_window_start_date(as_of_date, lookback_days)
+    members: list[ScopeMemberRecord] = []
+    nav_series_by_member: dict[tuple[str, str], pd.Series] = {}
+    usable_rows: list[dict[str, object]] = []
+    warnings: list[str] = []
+    for row in risk_rows:
+        instrument_id = str(row.get("member_id") or "")
+        try:
+            nav_series, row_warnings = _build_instrument_nav_series(
+                state,
+                instrument_id=instrument_id,
+                start_date=start_day,
+                end_date=as_of_date,
+            )
+        except ValueError as error:
+            warnings.append(f"{row.get('label') or instrument_id} forward RC unavailable: {error}")
+            continue
+        member = ScopeMemberRecord(
+            member_type=TARGET_MEMBER_INSTRUMENT,
+            member_id=instrument_id,
+            label=str(row.get("label") or instrument_id),
+        )
+        members.append(member)
+        nav_series_by_member[(member.member_type, member.member_id)] = nav_series
+        usable_rows.append(row)
+        warnings.extend(row_warnings)
+
+    if len(usable_rows) == 1:
+        return ({_target_key(usable_rows[0]): 1.0}, list(dict.fromkeys(warnings)))
+    if not usable_rows:
+        return {}, list(dict.fromkeys(warnings))
+
+    try:
+        return_window = _solver_return_window(
+            members=members,
+            nav_series_by_member=nav_series_by_member,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+            calculation_frequency=calculation_frequency,
+        )
+        covariance_parameters = _risk_model_covariance_parameters(risk_model_config, calculation_frequency, lookback_days)
+        covariance = _estimate_covariance(
+            return_window,
+            model_id=_risk_model_covariance_model_id(risk_model_config),
+            lookback_days=lookback_days,
+            parameters=covariance_parameters,
+            missing_return_policy=_normalize_missing_return_policy(missing_return_policy),
+            calculation_frequency=calculation_frequency,
+            as_of_date=as_of_date,
+        )
+        weights = np.asarray([_safe_float(row.get("target_weight")) or 0.0 for row in usable_rows], dtype="float64")
+        shares = _risk_contribution_shares(
+            covariance.to_numpy(dtype="float64"),
+            weights,
+            contribution_mode=_risk_model_contribution_mode(risk_model_config),
+        )
+    except ValueError as error:
+        warnings.append(f"Forward RC unavailable: {error}")
+        return ({_target_key(row): None for row in usable_rows}, list(dict.fromkeys(warnings)))
+
+    return (
+        {_target_key(row): float(shares[index]) for index, row in enumerate(usable_rows)},
+        list(dict.fromkeys(warnings)),
+    )
+
+
+def _build_solved_result_groups(
+    state: TaxonomyResearchState,
+    *,
+    leaf_rows: list[dict[str, object]],
+    member_rows: list[dict[str, object]],
+    as_of_date: date,
+    lookback_days: int,
+    calculation_frequency: CalculationFrequency,
+    missing_return_policy: str,
+    risk_model_config: dict[str, object] | None,
+) -> tuple[list[dict[str, object]], list[str]]:
+    forward_rc_by_key, warnings = _estimate_forward_risk_contribution_by_key(
+        state,
+        leaf_rows=leaf_rows,
+        as_of_date=as_of_date,
+        lookback_days=lookback_days,
+        calculation_frequency=calculation_frequency,
+        missing_return_policy=missing_return_policy,
+        risk_model_config=risk_model_config,
+    )
+    group_target_risk_by_id = {
+        str(row.get("member_id") or ""): _safe_float(row.get("configured_risk_share"))
+        for row in member_rows
+        if str(row.get("member_type") or "") == TARGET_MEMBER_NODE
+    }
+    groups: dict[str, dict[str, object]] = {}
+    for leaf in leaf_rows:
+        member_type = str(leaf.get("member_type") or "")
+        member_id = str(leaf.get("member_id") or "")
+        top_sleeve_id, top_sleeve_label, _path = _top_sleeve_for_member(
+            state,
+            member_type=member_type,
+            member_id=member_id,
+        )
+        group_key = top_sleeve_id or "__unassigned__"
+        group_bounds = state.top_sleeve_weight_bounds.get(top_sleeve_id or "")
+        group = groups.setdefault(
+            group_key,
+            {
+                "top_sleeve_id": top_sleeve_id,
+                "top_sleeve_label": top_sleeve_label,
+                "solved_weight": 0.0,
+                "target_risk_share": group_target_risk_by_id.get(top_sleeve_id or ""),
+                "forward_risk_contribution": 0.0,
+                "min_weight": _safe_float((group_bounds or {}).get("min_weight")),
+                "max_weight": _safe_float((group_bounds or {}).get("max_weight")),
+                "bound_status": None,
+                "rows": [],
+            },
+        )
+        solved_weight = _safe_float(leaf.get("target_weight"))
+        forward_rc = forward_rc_by_key.get(_target_key(leaf))
+        row = {
+            "member_type": member_type,
+            "member_id": member_id,
+            "label": str(leaf.get("label") or member_id),
+            "top_sleeve_id": top_sleeve_id,
+            "top_sleeve_label": top_sleeve_label,
+            "solved_weight": solved_weight,
+            "target_risk_share": _safe_float(leaf.get("configured_risk_share")),
+            "forward_risk_contribution": forward_rc,
+        }
+        group["rows"].append(row)
+        group["solved_weight"] = float(group["solved_weight"] or 0.0) + float(solved_weight or 0.0)
+        if forward_rc is not None:
+            group["forward_risk_contribution"] = float(group["forward_risk_contribution"] or 0.0) + float(forward_rc)
+
+    rendered = list(groups.values())
+    for group in rendered:
+        rows = list(group.get("rows") or [])
+        rows.sort(key=lambda item: abs(_safe_float(item.get("solved_weight")) or 0.0), reverse=True)
+        group["rows"] = rows
+        if abs(float(group.get("forward_risk_contribution") or 0.0)) <= 1e-12:
+            group["forward_risk_contribution"] = None
+        group["bound_status"] = _top_sleeve_bound_status(
+            solved_weight=_safe_float(group.get("solved_weight")),
+            min_weight=_safe_float(group.get("min_weight")),
+            max_weight=_safe_float(group.get("max_weight")),
+        )
+    rendered.sort(key=lambda item: abs(_safe_float(item.get("solved_weight")) or 0.0), reverse=True)
+    return rendered, warnings
+
+
+def _normalize_backtest_rebalance_frequency(value: str | None) -> str:
+    return "3m" if str(value or "").strip().lower() == "3m" else "1m"
+
+
+def _rebalance_schedule(*, start_date: date, end_date: date, frequency: str) -> list[date]:
+    month_step = 3 if _normalize_backtest_rebalance_frequency(frequency) == "3m" else 1
+    first_month = date(start_date.year, start_date.month, 1)
+    if first_month < start_date:
+        first_month = (pd.Timestamp(first_month) + pd.DateOffset(months=1)).date()
+    dates: list[date] = []
+    current = first_month
+    while current <= end_date:
+        dates.append(current)
+        current = (pd.Timestamp(current) + pd.DateOffset(months=month_step)).date()
+    if not dates and start_date <= end_date:
+        return [start_date]
+    return dates
+
+
+def _nav_returns(series: pd.Series) -> pd.Series:
+    if series.empty:
+        return pd.Series(dtype="float64")
+    cleaned = series.sort_index().astype("float64")
+    return cleaned.pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+
+
+def _compound_return(values: list[float]) -> float | None:
+    if not values:
+        return None
+    total = 1.0
+    for value in values:
+        total *= 1.0 + float(value)
+    return total - 1.0
+
+
+def _build_backtest_metrics(points: list[dict[str, object]], returns: dict[str, float]) -> dict[str, object]:
+    if len(points) < 2 or not returns:
+        return {
+            "start_date": points[0]["date"] if points else None,
+            "end_date": points[-1]["date"] if points else None,
+            "period_return": None,
+            "annualized_return": None,
+            "annualized_volatility": None,
+            "sharpe_ratio": None,
+            "max_drawdown": None,
+            "max_drawdown_start_date": None,
+            "max_drawdown_end_date": None,
+            "max_drawdown_recovery_date": None,
+            "max_drawdown_recovery_days": None,
+        }
+    start_value = _safe_float(points[0].get("value")) or 1.0
+    end_value = _safe_float(points[-1].get("value")) or start_value
+    dates = [_parse_iso_date(item.get("date")) for item in points if _parse_iso_date(item.get("date"))]
+    return_dates = [_parse_iso_date(date_key) for date_key in returns.keys()]
+    periods_per_year = _infer_periods_per_year([item for item in return_dates if item is not None])
+    period_count = max(len(returns), 1)
+    period_return = end_value / start_value - 1.0 if abs(start_value) > 1e-12 else None
+    annualized_return = (
+        (end_value / start_value) ** (periods_per_year / period_count) - 1.0
+        if period_return is not None and end_value > 0 and start_value > 0
+        else None
+    )
+    return_values = np.asarray(list(returns.values()), dtype="float64")
+    annualized_volatility = (
+        float(np.nanstd(return_values, ddof=1) * sqrt(periods_per_year)) if len(return_values) > 1 else None
+    )
+    sharpe_ratio = (
+        float(annualized_return / annualized_volatility)
+        if annualized_return is not None and annualized_volatility is not None and annualized_volatility > 1e-12
+        else None
+    )
+
+    high_value = -np.inf
+    high_date: date | None = None
+    max_drawdown = 0.0
+    max_start: date | None = None
+    max_end: date | None = None
+    recovery_date: date | None = None
+    target_recovery_value: float | None = None
+    for point in points:
+        point_date = _parse_iso_date(point.get("date"))
+        point_value = _safe_float(point.get("value"))
+        if point_date is None or point_value is None:
+            continue
+        if point_value > high_value:
+            high_value = point_value
+            high_date = point_date
+        drawdown = point_value / high_value - 1.0 if high_value > 0 else 0.0
+        if drawdown < max_drawdown:
+            max_drawdown = drawdown
+            max_start = high_date
+            max_end = point_date
+            recovery_date = None
+            target_recovery_value = high_value
+        if recovery_date is None and max_end is not None and point_date > max_end and target_recovery_value is not None:
+            if point_value >= target_recovery_value:
+                recovery_date = point_date
+    recovery_days = (recovery_date - max_end).days if recovery_date is not None and max_end is not None else None
+    return {
+        "start_date": dates[0].isoformat() if dates else None,
+        "end_date": dates[-1].isoformat() if dates else None,
+        "period_return": period_return,
+        "annualized_return": annualized_return,
+        "annualized_volatility": annualized_volatility,
+        "sharpe_ratio": sharpe_ratio,
+        "max_drawdown": max_drawdown,
+        "max_drawdown_start_date": max_start.isoformat() if max_start else None,
+        "max_drawdown_end_date": max_end.isoformat() if max_end else None,
+        "max_drawdown_recovery_date": recovery_date.isoformat() if recovery_date else None,
+        "max_drawdown_recovery_days": recovery_days,
+    }
+
+
+def _instrument_label(state: TaxonomyResearchState, instrument_id: str) -> str:
+    detail = _instrument_detail(state, instrument_id)
+    if isinstance(detail, dict):
+        return str(detail.get("instrument_name") or instrument_id)
+    return instrument_id
+
+
+def build_current_target_backtest(
+    portfolio_id: str,
+    *,
+    planning_taxonomy_id: str,
+    comparator_taxonomy_node_id: str | None,
+    as_of_date: date,
+    lookback_days: int,
+    calculation_frequency: str = "auto",
+    target_dimension: str,
+    capital_mode: str,
+    gross_exposure: float | None,
+    target_volatility: float | None,
+    max_gross_exposure: float | None,
+    missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+    frozen_taxonomy_node_ids: list[str] | None = None,
+    top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
+    risk_model_config: dict[str, object] | None = None,
+    rebalance_frequency: str = "1m",
+    benchmark_instrument_id: str | None = None,
+    current_solution: dict[str, object] | None = None,
+) -> dict[str, object]:
+    frequency = _normalize_backtest_rebalance_frequency(rebalance_frequency)
+    state = _build_taxonomy_state(
+        portfolio_id,
+        planning_taxonomy_id=planning_taxonomy_id,
+        as_of_date=as_of_date,
+        frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
+        top_sleeve_weight_bounds=top_sleeve_weight_bounds,
+    )
+    solution = current_solution or solve_current_target_weights(
+        portfolio_id,
+        planning_taxonomy_id=planning_taxonomy_id,
+        comparator_taxonomy_node_id=comparator_taxonomy_node_id,
+        as_of_date=as_of_date,
+        lookback_days=lookback_days,
+        calculation_frequency=calculation_frequency,
+        target_dimension=target_dimension,
+        capital_mode=capital_mode,
+        gross_exposure=gross_exposure,
+        target_volatility=target_volatility,
+        max_gross_exposure=max_gross_exposure,
+        missing_return_policy=missing_return_policy,
+        frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
+        top_sleeve_weight_bounds=top_sleeve_weight_bounds,
+        risk_model_config=risk_model_config,
+    )
+    active_leaf_ids = [
+        str(row.get("member_id") or "")
+        for row in list(solution.get("leaf_targets") or [])
+        if str(row.get("member_type") or "") == TARGET_MEMBER_INSTRUMENT
+    ]
+    active_leaf_ids = list(dict.fromkeys(item for item in active_leaf_ids if item))
+    warnings: list[str] = []
+    if not active_leaf_ids:
+        empty_backtest = {
+            "rebalance_frequency": frequency,
+            "common_history_start_date": None,
+            "start_date": None,
+            "end_date": as_of_date.isoformat(),
+            "lookback_days": lookback_days,
+            "points": [],
+            "metrics": _build_backtest_metrics([], {}),
+            "top_sleeve_weight_points": [],
+            "top_sleeve_contribution_points": [],
+            "warnings": ["Backtest requires at least one solved instrument with non-zero weight."],
+        }
+        return {"backtest": empty_backtest, "backtest_benchmark": None, "backtest_relative_metrics": None}
+
+    nav_by_instrument: dict[str, pd.Series] = {}
+    portfolio_first_dates: list[date] = []
+    for instrument_id in active_leaf_ids:
+        try:
+            nav_series, instrument_warnings = _build_instrument_nav_series(
+                state,
+                instrument_id=instrument_id,
+                start_date=date(1900, 1, 1),
+                end_date=as_of_date,
+            )
+        except ValueError as error:
+            warnings.append(f"{instrument_id} excluded from backtest: {error}")
+            continue
+        if nav_series.empty:
+            continue
+        nav_by_instrument[instrument_id] = nav_series
+        portfolio_first_dates.append(nav_series.index[0])
+        warnings.extend(instrument_warnings)
+
+    benchmark_nav = pd.Series(dtype="float64")
+    benchmark_label = None
+    benchmark_warnings: list[str] = []
+    if benchmark_instrument_id:
+        benchmark_label = _instrument_label(state, benchmark_instrument_id)
+        try:
+            benchmark_nav, benchmark_warnings = _build_instrument_nav_series(
+                state,
+                instrument_id=benchmark_instrument_id,
+                start_date=date(1900, 1, 1),
+                end_date=as_of_date,
+            )
+        except ValueError as error:
+            benchmark_warnings.append(str(error))
+            benchmark_nav = pd.Series(dtype="float64")
+
+    if not nav_by_instrument or not portfolio_first_dates:
+        empty_backtest = {
+            "rebalance_frequency": frequency,
+            "common_history_start_date": None,
+            "start_date": None,
+            "end_date": as_of_date.isoformat(),
+            "lookback_days": lookback_days,
+            "points": [],
+            "metrics": _build_backtest_metrics([], {}),
+            "top_sleeve_weight_points": [],
+            "top_sleeve_contribution_points": [],
+            "warnings": list(dict.fromkeys(warnings or ["Backtest has no usable instrument history."])),
+        }
+        return {"backtest": empty_backtest, "backtest_benchmark": None, "backtest_relative_metrics": None}
+
+    common_start = max(portfolio_first_dates)
+    earliest_start_date = (
+        pd.Timestamp(common_start) + pd.DateOffset(months=_research_window_months(lookback_days))
+    ).date()
+    if earliest_start_date > as_of_date:
+        empty_backtest = {
+            "rebalance_frequency": frequency,
+            "common_history_start_date": common_start.isoformat(),
+            "start_date": None,
+            "end_date": as_of_date.isoformat(),
+            "lookback_days": lookback_days,
+            "points": [],
+            "metrics": _build_backtest_metrics([], {}),
+            "top_sleeve_weight_points": [],
+            "top_sleeve_contribution_points": [],
+            "warnings": list(
+                dict.fromkeys(
+                    [
+                        *warnings,
+                        "Backtest requires portfolio member common history at least as long as the selected risk window.",
+                    ]
+                )
+            ),
+        }
+        return {"backtest": empty_backtest, "backtest_benchmark": None, "backtest_relative_metrics": None}
+    rebal_dates = _rebalance_schedule(start_date=earliest_start_date, end_date=as_of_date, frequency=frequency)
+    if not rebal_dates:
+        rebal_dates = [earliest_start_date]
+
+    returns_by_instrument = {instrument_id: _nav_returns(nav) for instrument_id, nav in nav_by_instrument.items()}
+    benchmark_returns = _nav_returns(benchmark_nav) if not benchmark_nav.empty else pd.Series(dtype="float64")
+    portfolio_nav = 1.0
+    points: list[dict[str, object]] = []
+    portfolio_returns: dict[str, float] = {}
+    contribution_accumulator: dict[str, float] = defaultdict(float)
+    weight_points: list[dict[str, object]] = []
+    contribution_points: list[dict[str, object]] = []
+
+    for index, rebalance_date in enumerate(rebal_dates):
+        period_end = rebal_dates[index + 1] if index + 1 < len(rebal_dates) else as_of_date
+        try:
+            period_solution = solve_current_target_weights(
+                portfolio_id,
+                planning_taxonomy_id=planning_taxonomy_id,
+                comparator_taxonomy_node_id=comparator_taxonomy_node_id,
+                as_of_date=rebalance_date,
+                lookback_days=lookback_days,
+                calculation_frequency=calculation_frequency,
+                target_dimension=target_dimension,
+                capital_mode=capital_mode,
+                gross_exposure=gross_exposure,
+                target_volatility=target_volatility,
+                max_gross_exposure=max_gross_exposure,
+                missing_return_policy=missing_return_policy,
+                frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
+                top_sleeve_weight_bounds=top_sleeve_weight_bounds,
+                risk_model_config=risk_model_config,
+            )
+        except ValueError as error:
+            raise ValueError(f"{rebalance_date.isoformat()} rebalance failed: {error}") from error
+
+        if not points:
+            points.append({"date": rebalance_date.isoformat(), "value": portfolio_nav})
+
+        leaf_weights = {
+            str(row.get("member_id") or ""): _safe_float(row.get("target_weight")) or 0.0
+            for row in list(period_solution.get("leaf_targets") or [])
+            if str(row.get("member_type") or "") == TARGET_MEMBER_INSTRUMENT
+        }
+        top_by_instrument: dict[str, tuple[str | None, str]] = {}
+        for row in list(period_solution.get("leaf_targets") or []):
+            if str(row.get("member_type") or "") != TARGET_MEMBER_INSTRUMENT:
+                continue
+            instrument_id = str(row.get("member_id") or "")
+            top_id, top_label, _path = _top_sleeve_for_member(
+                state,
+                member_type=TARGET_MEMBER_INSTRUMENT,
+                member_id=instrument_id,
+            )
+            top_key = top_id or "__unassigned__"
+            top_by_instrument[instrument_id] = (top_id, top_label)
+        def sleeve_weight_point(date_key: str, weights_by_instrument: dict[str, float]) -> dict[str, object]:
+            top_weight_by_key: dict[str, dict[str, object]] = {}
+            for instrument_id, weight in weights_by_instrument.items():
+                if abs(weight) <= 1e-12:
+                    continue
+                top_id, top_label = top_by_instrument.get(instrument_id, (None, "Unassigned"))
+                top_key = top_id or "__unassigned__"
+                sleeve = top_weight_by_key.setdefault(
+                    top_key,
+                    {"top_sleeve_id": top_id, "top_sleeve_label": top_label, "value": 0.0},
+                )
+                sleeve["value"] = float(sleeve["value"] or 0.0) + float(weight)
+            return {
+                "date": date_key,
+                "sleeves": sorted(
+                    top_weight_by_key.values(),
+                    key=lambda item: abs(_safe_float(item.get("value")) or 0.0),
+                    reverse=True,
+                ),
+            }
+        period_weights = {
+            instrument_id: float(weight)
+            for instrument_id, weight in leaf_weights.items()
+            if instrument_id in returns_by_instrument
+        }
+        weight_points.append(sleeve_weight_point(rebalance_date.isoformat(), period_weights))
+
+        active_instruments = [
+            instrument_id
+            for instrument_id, weight in period_weights.items()
+            if abs(weight) > 1e-12 and instrument_id in returns_by_instrument
+        ]
+        candidate_dates = sorted(
+            {
+                return_date
+                for instrument_id in active_instruments
+                for return_date in returns_by_instrument.get(instrument_id, pd.Series(dtype="float64")).index
+                if rebalance_date < return_date <= period_end
+            }
+        )
+        for return_date in candidate_dates:
+            if any(return_date not in returns_by_instrument[instrument_id].index for instrument_id in active_instruments):
+                continue
+            sleeve_contribution: dict[str, dict[str, object]] = {}
+            portfolio_return = 0.0
+            for instrument_id in active_instruments:
+                instrument_return = _safe_float(returns_by_instrument[instrument_id].get(return_date))
+                if instrument_return is None:
+                    portfolio_return = np.nan
+                    break
+                weighted_return = float(period_weights[instrument_id]) * instrument_return
+                portfolio_return += weighted_return
+                top_id, top_label = top_by_instrument.get(instrument_id, (None, "Unassigned"))
+                top_key = top_id or "__unassigned__"
+                sleeve = sleeve_contribution.setdefault(
+                    top_key,
+                    {"top_sleeve_id": top_id, "top_sleeve_label": top_label, "value": 0.0},
+                )
+                sleeve["value"] = float(sleeve["value"] or 0.0) + weighted_return
+            if not np.isfinite(portfolio_return):
+                continue
+            date_key = return_date.isoformat()
+            portfolio_returns[date_key] = float(portfolio_return)
+            period_growth = 1.0 + float(portfolio_return)
+            if period_growth <= 0.0:
+                raise ValueError(f"{return_date.isoformat()} backtest portfolio NAV became non-positive.")
+            for instrument_id in active_instruments:
+                instrument_return = _safe_float(returns_by_instrument[instrument_id].get(return_date)) or 0.0
+                period_weights[instrument_id] = (
+                    float(period_weights[instrument_id]) * (1.0 + instrument_return) / period_growth
+                )
+            portfolio_nav *= period_growth
+            points.append({"date": date_key, "value": portfolio_nav})
+            weight_points.append(sleeve_weight_point(date_key, period_weights))
+            sleeves_for_date = []
+            for top_key, sleeve in sleeve_contribution.items():
+                contribution_accumulator[top_key] += float(sleeve.get("value") or 0.0)
+                sleeves_for_date.append(
+                    {
+                        "top_sleeve_id": sleeve.get("top_sleeve_id"),
+                        "top_sleeve_label": sleeve.get("top_sleeve_label"),
+                        "value": contribution_accumulator[top_key],
+                    }
+                )
+            contribution_points.append({"date": date_key, "sleeves": sleeves_for_date})
+
+    benchmark_payload = None
+    relative_metrics = None
+    if benchmark_instrument_id:
+        benchmark_points: list[dict[str, object]] = []
+        benchmark_return_map: dict[str, float] = {}
+        if points and not benchmark_returns.empty:
+            benchmark_nav_value = 1.0
+            benchmark_points.append({"date": points[0]["date"], "value": benchmark_nav_value})
+            for point in points[1:]:
+                date_key = str(point.get("date") or "")
+                point_date = _parse_iso_date(date_key)
+                if point_date is None or point_date not in benchmark_returns.index:
+                    continue
+                benchmark_return = _safe_float(benchmark_returns.get(point_date))
+                if benchmark_return is None:
+                    continue
+                benchmark_return_map[date_key] = benchmark_return
+                benchmark_nav_value *= 1.0 + benchmark_return
+                benchmark_points.append({"date": date_key, "value": benchmark_nav_value})
+        benchmark_payload = {
+            "instrument_id": benchmark_instrument_id,
+            "label": benchmark_label or benchmark_instrument_id,
+            "points": benchmark_points,
+            "metrics": _build_backtest_metrics(benchmark_points, benchmark_return_map),
+            "warnings": benchmark_warnings,
+        }
+        common_return_dates = sorted(set(portfolio_returns).intersection(benchmark_return_map))
+        if common_return_dates:
+            portfolio_common = [portfolio_returns[date_key] for date_key in common_return_dates]
+            benchmark_common = [benchmark_return_map[date_key] for date_key in common_return_dates]
+            active_returns = [left - right for left, right in zip(portfolio_common, benchmark_common)]
+            parsed_dates = [_parse_iso_date(item) for item in common_return_dates]
+            periods_per_year = _infer_periods_per_year([item for item in parsed_dates if item is not None])
+            tracking_error = (
+                float(np.std(np.asarray(active_returns, dtype="float64"), ddof=1) * sqrt(periods_per_year))
+                if len(active_returns) > 1
+                else None
+            )
+            active_return = (_compound_return(portfolio_common) or 0.0) - (_compound_return(benchmark_common) or 0.0)
+            information_ratio = (
+                float((np.mean(active_returns) * periods_per_year) / tracking_error)
+                if tracking_error is not None and tracking_error > 1e-12
+                else None
+            )
+            relative_metrics = {
+                "excess_return": active_return,
+                "tracking_error": tracking_error,
+                "information_ratio": information_ratio,
+            }
+
+    backtest = {
+        "rebalance_frequency": frequency,
+        "common_history_start_date": common_start.isoformat(),
+        "start_date": points[0]["date"] if points else None,
+        "end_date": points[-1]["date"] if points else as_of_date.isoformat(),
+        "lookback_days": lookback_days,
+        "points": points,
+        "metrics": _build_backtest_metrics(points, portfolio_returns),
+        "top_sleeve_weight_points": weight_points,
+        "top_sleeve_contribution_points": contribution_points,
+        "warnings": list(dict.fromkeys(warnings)),
+    }
+    return {
+        "backtest": backtest,
+        "backtest_benchmark": benchmark_payload,
+        "backtest_relative_metrics": relative_metrics,
+    }
 
 
 def solve_current_target_weights(
@@ -2794,6 +4080,7 @@ def solve_current_target_weights(
     max_gross_exposure: float | None,
     missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
     frozen_taxonomy_node_ids: list[str] | None = None,
+    top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
     risk_model_config: dict[str, object] | None = None,
 ) -> dict[str, object]:
     state = _build_taxonomy_state(
@@ -2801,11 +4088,11 @@ def solve_current_target_weights(
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=as_of_date,
         frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
+        top_sleeve_weight_bounds=top_sleeve_weight_bounds,
     )
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
         raise ValueError("Selected research scope was not found in the planning taxonomy.")
-    start_date = as_of_date - pd.Timedelta(days=max(int(lookback_days), 1))
-    start_day = start_date.date() if hasattr(start_date, "date") else start_date
+    start_day = research_window_start_date(as_of_date, lookback_days)
     source_frequencies = _scope_source_frequencies(
         state,
         scope_node_id=comparator_taxonomy_node_id,
@@ -2839,6 +4126,17 @@ def solve_current_target_weights(
         as_of_date=as_of_date,
     )
     warnings = list(dict.fromkeys([*scope_result.warnings, *actual_warnings]))
+    solved_result_groups, solved_result_warnings = _build_solved_result_groups(
+        state,
+        leaf_rows=scope_result.leaf_target_rows,
+        member_rows=scope_result.member_target_rows,
+        as_of_date=as_of_date,
+        lookback_days=lookback_days,
+        calculation_frequency=resolved_calculation_frequency,  # type: ignore[arg-type]
+        missing_return_policy=_normalize_missing_return_policy(missing_return_policy),
+        risk_model_config=risk_model_config,
+    )
+    warnings = list(dict.fromkeys([*warnings, *solved_result_warnings]))
     target_weight_gaps = _build_leaf_target_weight_gaps(
         leaf_target_rows=scope_result.leaf_target_rows,
         base_currency=state.base_currency,
@@ -2857,6 +4155,7 @@ def solve_current_target_weights(
         },
         "member_targets": deepcopy(scope_result.member_target_rows),
         "leaf_targets": deepcopy(scope_result.leaf_target_rows),
+        "solved_result_groups": solved_result_groups,
         "actual_rows": deepcopy(actual_rows),
         "resolved_target_rows": deepcopy(scope_result.resolved_target_rows),
         "solve_event": deepcopy(scope_result.solve_event),

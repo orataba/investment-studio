@@ -23,6 +23,7 @@ from platform_app.services.instrument_store import (
     upsert_market_data,
 )
 from platform_app.services.market_data_ops import import_nav_file, preview_nav_import
+from scripts.import_coverage_nav_from_folder import _ensure_instrument as ensure_coverage_nav_instrument
 
 TEST_SHARED_STORE = {
     "registry_name": DEFAULT_REGISTRY_NAME,
@@ -269,6 +270,42 @@ def test_create_rejects_same_identifier_type_value_in_request(
                 },
             ],
         )
+
+
+def test_coverage_nav_import_ensure_instrument_upserts_shared_record(
+    isolated_store: Path,
+) -> None:
+    ensure_coverage_nav_instrument(
+        {
+            "instrument_id": "fund-sbmm07",
+            "instrument_name": "CTA Factor Composite 3",
+            "instrument_type": "fund",
+            "identifier_value": "SBMM07",
+            "currency": "CNY",
+        }
+    )
+
+    created = get_instrument("fund-sbmm07")
+    assert created is not None
+    assert created["instrument_name"] == "CTA Factor Composite 3"
+    assert created["instrument_type"] == "fund"
+    assert created["currency"] == "CNY"
+    assert created["quote_selection_policy"]["valuation"][0] == "official_nav"
+    assert find_instrument_by_identifier(identifier_value="SBMM07", identifier_type="ticker")["instrument_id"] == "fund-sbmm07"
+
+    ensure_coverage_nav_instrument(
+        {
+            "instrument_id": "fund-sbmm07",
+            "instrument_name": "CTA Factor Composite 3 Updated",
+            "instrument_type": "fund",
+            "identifier_value": "SBMM07",
+            "currency": "CNY",
+        }
+    )
+
+    updated = get_instrument("fund-sbmm07")
+    assert updated is not None
+    assert updated["instrument_name"] == "CTA Factor Composite 3 Updated"
 
 
 def test_upsert_market_data_updates_shared_store_without_app_callbacks(

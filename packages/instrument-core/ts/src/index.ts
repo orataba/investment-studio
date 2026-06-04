@@ -1,4 +1,4 @@
-export type InstrumentType = 'fund' | 'bond' | 'equity' | 'cash' | 'fx' | 'other'
+export type InstrumentType = 'fund' | 'index' | 'bond' | 'equity' | 'cash' | 'fx' | 'other'
 export type IdentifierType = 'ticker' | 'isin' | 'cusip' | 'sedol' | 'internal' | 'fund_name' | 'other'
 export type MetricFamily = 'price' | 'nav' | 'fx'
 export type QuoteBasis =

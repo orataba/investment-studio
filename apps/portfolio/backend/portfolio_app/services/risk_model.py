@@ -15,15 +15,24 @@ from portfolio_app.services.research_solver import (
     RESEARCH_COVARIANCE_MODEL_ID,
     RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
     RESEARCH_RISK_CONTRIBUTION_MODE,
+    SUPPORTED_RESEARCH_LOOKBACK_DAYS,
     estimate_covariance,
     normalize_missing_return_policy,
     prepare_return_window_for_covariance,
-    research_covariance_parameters,
+    research_covariance_parameters_for_window,
+    research_min_observations_for_window,
     risk_contribution_shares,
 )
 
 PORTFOLIO_RISK_POLICY_MODEL_NAME = "Production Risk Model"
 DEFAULT_PORTFOLIO_RISK_LOOKBACK_DAYS = 90
+PORTFOLIO_RISK_WINDOW_LABELS = {
+    30: "1M",
+    90: "3M",
+    180: "6M",
+    366: "12M",
+    730: "24M",
+}
 SUPPORTED_COVARIANCE_MODELS = {
     "ewma_vol_shrinkage_corr_covariance",
     "ewma_covariance",
@@ -47,6 +56,14 @@ def _safe_int(value: object, fallback: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def _normalize_risk_window(value: object) -> int:
+    lookback_days = _safe_int(value, DEFAULT_PORTFOLIO_RISK_LOOKBACK_DAYS)
+    if lookback_days not in SUPPORTED_RESEARCH_LOOKBACK_DAYS:
+        labels = ", ".join(PORTFOLIO_RISK_WINDOW_LABELS[days] for days in sorted(SUPPORTED_RESEARCH_LOOKBACK_DAYS))
+        raise ValueError(f"Risk window must be one of {labels}.")
+    return lookback_days
 
 
 def _normalized_calculation_frequency(value: object) -> str:
@@ -77,7 +94,7 @@ def normalize_portfolio_risk_policy(
     if isinstance(raw_policy, dict):
         source.update({key: value for key, value in raw_policy.items() if value is not None})
 
-    lookback_days = max(7, min(_safe_int(source.get("lookback_days"), DEFAULT_PORTFOLIO_RISK_LOOKBACK_DAYS), 730))
+    lookback_days = _normalize_risk_window(source.get("lookback_days"))
     missing_return_policy = normalize_missing_return_policy(
         source.get("missing_return_policy") or RESEARCH_DEFAULT_MISSING_RETURN_POLICY
     )
@@ -98,6 +115,24 @@ def _resolved_frequency(policy: dict[str, object], calculation_frequency: Calcul
     return calculation_frequency or "daily"
 
 
+def risk_min_observations_for_window(
+    calculation_frequency: CalculationFrequency,
+    lookback_days: int,
+) -> int:
+    return research_min_observations_for_window(calculation_frequency, lookback_days)
+
+
+def risk_window_label(lookback_days: int) -> str:
+    return PORTFOLIO_RISK_WINDOW_LABELS[_normalize_risk_window(lookback_days)]
+
+
+def risk_policy_covariance_parameters(
+    calculation_frequency: CalculationFrequency,
+    lookback_days: int,
+) -> dict[str, object]:
+    return research_covariance_parameters_for_window(calculation_frequency, lookback_days)
+
+
 def portfolio_risk_model_snapshot(
     policy: dict[str, object],
     *,
@@ -105,14 +140,16 @@ def portfolio_risk_model_snapshot(
 ) -> dict[str, object]:
     normalized_policy = normalize_portfolio_risk_policy(policy if isinstance(policy, dict) else None)
     resolved_frequency = _resolved_frequency(normalized_policy, calculation_frequency)
-    parameters = research_covariance_parameters(resolved_frequency)
+    lookback_days = int(normalized_policy["lookback_days"])
+    parameters = risk_policy_covariance_parameters(resolved_frequency, lookback_days)
     return {
         **deepcopy(normalized_policy),
         "model_role": "production",
         "resolved_calculation_frequency": resolved_frequency,
         "parameters": parameters,
         "parameters_by_frequency": {
-            frequency: research_covariance_parameters(frequency) for frequency in ("daily", "weekly", "monthly")
+            frequency: risk_policy_covariance_parameters(frequency, lookback_days)
+            for frequency in ("daily", "weekly", "monthly")
         },
     }
 

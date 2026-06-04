@@ -1,64 +1,70 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
-import { useParams, useSearchParams } from 'react-router-dom'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { useParams } from 'react-router-dom'
 
+import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
   createPortfolioResearchRun,
+  getPortfolioInstruments,
+  getPortfolioRiskPolicy,
   getPortfolioTaxonomyCatalog,
   getPortfolioResearchWorkbench,
   updatePortfolioResearchSettings,
-  type PortfolioRiskContributionMode,
-  type PortfolioRiskCovarianceModel,
+  type PortfolioResearchBacktestPointRecord,
+  type PortfolioResearchBacktestRebalanceFrequency,
+  type PortfolioResearchBacktestSleevePointRecord,
   type PortfolioResearchCapitalMode,
-  type PortfolioResearchCalculationFrequency,
-  type PortfolioResearchMissingReturnPolicy,
   type PortfolioResearchPlanningScopeOption,
   type PortfolioResearchRunRecord,
-  type PortfolioResearchTargetDimension,
+  type PortfolioResearchTopSleeveWeightBoundRecord,
   type PortfolioResearchWorkbenchResponse,
   type PortfolioTaxonomyNodeRecord,
   type PortfolioTaxonomyRecord,
+  type SharedInstrumentRecord,
 } from '../lib/api'
 import {
   formatLabel,
+  formatNumber,
   formatPercent,
 } from '../lib/format'
 
-const LOOKBACK_OPTIONS = [90, 180, 366, 730] as const
-const TARGET_DIMENSION_OPTIONS = [
-  { value: 'scope_default', label: 'Scope Defaults' },
-  { value: 'weight', label: 'Selected Scope: Weight' },
-  { value: 'risk_budget', label: 'Selected Scope: RC Share' },
-] as const
 const CAPITAL_MODE_OPTIONS = [
-  { value: 'unit_notional', label: 'Unit Notional' },
+  { value: 'unit_notional', label: 'Unit' },
   { value: 'fixed_gross', label: 'Fixed Gross' },
-  { value: 'target_volatility', label: 'Target Volatility' },
+  { value: 'target_volatility', label: 'Vol Target' },
+  { value: 'volatility_cap', label: 'Vol Cap' },
 ] as const
 
-const CALCULATION_FREQUENCY_OPTIONS: Array<{ value: PortfolioResearchCalculationFrequency; label: string }> = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'daily', label: 'Daily' },
-  { value: 'weekly', label: 'Weekly' },
-  { value: 'monthly', label: 'Monthly' },
+const REBALANCE_OPTIONS: Array<{ value: PortfolioResearchBacktestRebalanceFrequency; label: string }> = [
+  { value: '1m', label: '1M' },
+  { value: '3m', label: '3M' },
 ]
 
-const MISSING_RETURN_POLICY_OPTIONS: Array<{ value: PortfolioResearchMissingReturnPolicy; label: string }> = [
-  { value: 'strict', label: 'Strict' },
-  { value: 'complete_case_drop', label: 'Complete Case Drop' },
-]
+type ResearchRunSetupDraft = {
+  capitalMode: PortfolioResearchCapitalMode
+  grossExposure: string
+  targetVolatilityPct: string
+  maxGrossExposure: string
+  frozenNodeIds: string[]
+  topSleeveBounds: ResearchTopSleeveBoundDraft[]
+  backtestRebalanceFrequency: PortfolioResearchBacktestRebalanceFrequency
+  benchmarkInstrumentId: string
+}
 
-const RISK_MODEL_OPTIONS: Array<{ value: PortfolioRiskCovarianceModel; label: string }> = [
-  { value: 'ewma_vol_shrinkage_corr_covariance', label: 'Research EWMA' },
-  { value: 'ewma_covariance', label: 'EWMA' },
-  { value: 'sample_covariance', label: 'Sample' },
-]
+type ResearchTopSleeveBoundDraft = {
+  taxonomyNodeId: string
+  minWeightPct: string
+  maxWeightPct: string
+}
 
-const RISK_CONTRIBUTION_MODE_OPTIONS: Array<{ value: PortfolioRiskContributionMode; label: string }> = [
-  { value: 'signed', label: 'Signed' },
-  { value: 'abs', label: 'Absolute' },
-]
+type ChartSeries = {
+  key: string
+  label: string
+  color: string
+}
+
+const CHART_COLORS = ['#2563eb', '#16a34a', '#dc2626', '#7c3aed', '#ea580c', '#0891b2', '#4b5563', '#be123c']
 
 function TableStatusRow({
   colSpan,
@@ -79,12 +85,18 @@ function TableStatusRow({
 }
 
 function extractErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Request failed.'
+  if (error instanceof Error) {
+    return error.message && error.message !== '[object Object]' ? error.message : 'Request failed.'
+  }
+  if (typeof error === 'object' && error && 'message' in error && typeof error.message === 'string') {
+    return error.message && error.message !== '[object Object]' ? error.message : 'Request failed.'
+  }
+  return 'Request failed.'
 }
 
 function formatTimestamp(value: string | null | undefined) {
   if (!value) {
-    return '—'
+    return '-'
   }
   return value.replace('T', ' ').replace('Z', ' UTC')
 }
@@ -102,50 +114,51 @@ function resolveStatusLabel(status: string) {
   return formatLabel(status)
 }
 
-function formatResearchDimension(value: string | null | undefined) {
+function formatMaybePercent(value: number | null | undefined, digits = 2) {
+  return value == null ? '-' : formatPercent(value, digits)
+}
+
+function formatMaybeNumber(value: number | null | undefined, digits = 2) {
+  return value == null ? '-' : formatNumber(value, digits)
+}
+
+function formatBoundInput(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) {
+    return ''
+  }
+  return String(Number((value * 100).toFixed(4)))
+}
+
+function formatSolvedBounds(minWeight: number | null | undefined, maxWeight: number | null | undefined) {
+  if (minWeight == null && maxWeight == null) {
+    return '-'
+  }
+  const minLabel = minWeight == null ? '-' : formatPercent(minWeight, 2)
+  const maxLabel = maxWeight == null ? '-' : formatPercent(maxWeight, 2)
+  return `${minLabel} / ${maxLabel}`
+}
+
+function formatBoundStatus(value: string | null | undefined) {
   if (!value) {
-    return '—'
+    return '-'
+  }
+  if (value === 'min') {
+    return 'Min'
+  }
+  if (value === 'max') {
+    return 'Max'
+  }
+  if (value === 'within') {
+    return 'Within'
+  }
+  if (value === 'violated') {
+    return 'Violated'
   }
   return formatLabel(value)
 }
 
-function formatCalculationFrequency(value: string | null | undefined) {
-  if (!value) {
-    return '—'
-  }
-  if (value === 'auto') {
-    return 'Auto'
-  }
-  return formatLabel(value)
-}
-
-function formatRiskModel(value: string | null | undefined) {
-  if (!value) {
-    return '—'
-  }
-  return RISK_MODEL_OPTIONS.find((option) => option.value === value)?.label ?? formatLabel(value)
-}
-
-function formatSolverKind(value: string | null | undefined) {
-  if (!value) {
-    return '—'
-  }
-  if (value === 'weight') {
-    return 'Weight'
-  }
-  if (value === 'risk-budget') {
-    return 'Risk Budget'
-  }
-  if (value === 'weight-fixed-members') {
-    return 'Weight + Frozen'
-  }
-  if (value === 'fixed-members') {
-    return 'Frozen Members'
-  }
-  if (value === 'single-member') {
-    return 'Single Member'
-  }
-  return formatLabel(value.replace(/-/g, '_'))
+function isVolatilityCapitalMode(value: PortfolioResearchCapitalMode) {
+  return value === 'target_volatility' || value === 'volatility_cap'
 }
 
 function sortTaxonomyNodes(nodes: PortfolioTaxonomyNodeRecord[]) {
@@ -206,69 +219,284 @@ function buildPlanningScopeOptions(
   return options
 }
 
+function chartCoordinate(
+  point: { date: string; value?: number | null },
+  args: {
+    minTime: number
+    maxTime: number
+    minValue: number
+    maxValue: number
+    width: number
+    height: number
+    padding: number
+  },
+) {
+  const time = new Date(point.date).getTime()
+  const value = point.value ?? 0
+  const xRange = Math.max(args.maxTime - args.minTime, 1)
+  const yRange = Math.max(args.maxValue - args.minValue, 0.000001)
+  return {
+    x: args.padding + ((time - args.minTime) / xRange) * (args.width - args.padding * 2),
+    y: args.height - args.padding - ((value - args.minValue) / yRange) * (args.height - args.padding * 2),
+  }
+}
+
+function buildPath(points: Array<{ date: string; value?: number | null }>, args: Parameters<typeof chartCoordinate>[1]) {
+  const coordinates = points
+    .filter((point) => point.value != null)
+    .map((point) => chartCoordinate(point, args))
+  if (!coordinates.length) {
+    return ''
+  }
+  return coordinates.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ')
+}
+
+function ResearchLineChart({
+  points,
+  benchmarkPoints = [],
+  benchmarkLabel = null,
+}: {
+  points: PortfolioResearchBacktestPointRecord[]
+  benchmarkPoints?: PortfolioResearchBacktestPointRecord[]
+  benchmarkLabel?: string | null
+}) {
+  const visiblePoints = points.filter((point) => point.value != null)
+  const visibleBenchmark = benchmarkPoints.filter((point) => point.value != null)
+  const allPoints = [...visiblePoints, ...visibleBenchmark]
+  if (visiblePoints.length < 2) {
+    return <div className="empty-state">No backtest series.</div>
+  }
+  const width = 720
+  const height = 260
+  const padding = 28
+  const times = allPoints.map((point) => new Date(point.date).getTime())
+  const values = allPoints.map((point) => point.value ?? 0)
+  const minTime = Math.min(...times)
+  const maxTime = Math.max(...times)
+  const minValue = Math.min(...values)
+  const maxValue = Math.max(...values)
+  const yPad = Math.max((maxValue - minValue) * 0.08, 0.01)
+  const args = { minTime, maxTime, minValue: minValue - yPad, maxValue: maxValue + yPad, width, height, padding }
+  return (
+    <div className="research-chart">
+      <div className="research-chart-legend">
+        <span><i style={{ background: CHART_COLORS[0] }} />Solved</span>
+        {visibleBenchmark.length > 1 ? <span><i style={{ background: CHART_COLORS[2] }} />{benchmarkLabel ?? 'Benchmark'}</span> : null}
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="research-chart-svg" role="img" aria-label="Backtest curve">
+        <line x1={padding} x2={width - padding} y1={height - padding} y2={height - padding} className="research-chart-axis" />
+        <path d={buildPath(visiblePoints, args)} className="research-chart-line" style={{ stroke: CHART_COLORS[0] }} />
+        {visibleBenchmark.length > 1 ? (
+          <path d={buildPath(visibleBenchmark, args)} className="research-chart-line research-chart-line-muted" style={{ stroke: CHART_COLORS[2] }} />
+        ) : null}
+      </svg>
+    </div>
+  )
+}
+
+function sleeveSeries(points: PortfolioResearchBacktestSleevePointRecord[]) {
+  const labels = new Map<string, ChartSeries>()
+  points.forEach((point) => {
+    point.sleeves.forEach((sleeve) => {
+      const key = sleeve.top_sleeve_id ?? sleeve.top_sleeve_label
+      if (!labels.has(key)) {
+        labels.set(key, {
+          key,
+          label: sleeve.top_sleeve_label,
+          color: CHART_COLORS[labels.size % CHART_COLORS.length],
+        })
+      }
+    })
+  })
+  return [...labels.values()]
+}
+
+function ResearchSleeveLineChart({
+  points,
+  ariaLabel,
+}: {
+  points: PortfolioResearchBacktestSleevePointRecord[]
+  ariaLabel: string
+}) {
+  const series = sleeveSeries(points)
+  if (points.length < 2 || !series.length) {
+    return <div className="empty-state">No chart data.</div>
+  }
+  const width = 720
+  const height = 240
+  const padding = 28
+  const pointByDate = points.map((point) => {
+    const valueByKey = new Map(point.sleeves.map((sleeve) => [sleeve.top_sleeve_id ?? sleeve.top_sleeve_label, sleeve.value ?? 0]))
+    return { date: point.date, valueByKey }
+  })
+  const allValues = pointByDate.flatMap((point) => series.map((item) => point.valueByKey.get(item.key) ?? 0))
+  const times = points.map((point) => new Date(point.date).getTime())
+  const minTime = Math.min(...times)
+  const maxTime = Math.max(...times)
+  const minValue = Math.min(...allValues, 0)
+  const maxValue = Math.max(...allValues, 0.01)
+  const yPad = Math.max((maxValue - minValue) * 0.08, 0.01)
+  const args = { minTime, maxTime, minValue: minValue - yPad, maxValue: maxValue + yPad, width, height, padding }
+  return (
+    <div className="research-chart">
+      <div className="research-chart-legend">
+        {series.slice(0, 6).map((item) => (
+          <span key={item.key}><i style={{ background: item.color }} />{item.label}</span>
+        ))}
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="research-chart-svg" role="img" aria-label={ariaLabel}>
+        <line x1={padding} x2={width - padding} y1={height - padding} y2={height - padding} className="research-chart-axis" />
+        {series.map((item) => {
+          const linePoints = pointByDate.map((point) => ({
+            date: point.date,
+            value: point.valueByKey.get(item.key) ?? 0,
+          }))
+          return <path key={item.key} d={buildPath(linePoints, args)} className="research-chart-line" style={{ stroke: item.color }} />
+        })}
+      </svg>
+    </div>
+  )
+}
+
+function ResearchSleeveStackedAreaChart({
+  points,
+}: {
+  points: PortfolioResearchBacktestSleevePointRecord[]
+}) {
+  const series = sleeveSeries(points)
+  if (points.length < 2 || !series.length) {
+    return <div className="empty-state">No chart data.</div>
+  }
+  const width = 720
+  const height = 240
+  const padding = 28
+  const times = points.map((point) => new Date(point.date).getTime())
+  const minTime = Math.min(...times)
+  const maxTime = Math.max(...times)
+  const totals = points.map((point) => point.sleeves.reduce((total, sleeve) => total + Math.max(sleeve.value ?? 0, 0), 0))
+  const maxValue = Math.max(...totals, 1)
+  const args = { minTime, maxTime, minValue: 0, maxValue, width, height, padding }
+
+  const valueByDate = points.map((point) => {
+    const valueByKey = new Map(point.sleeves.map((sleeve) => [sleeve.top_sleeve_id ?? sleeve.top_sleeve_label, Math.max(sleeve.value ?? 0, 0)]))
+    return { date: point.date, valueByKey }
+  })
+
+  return (
+    <div className="research-chart">
+      <div className="research-chart-legend">
+        {series.slice(0, 6).map((item) => (
+          <span key={item.key}><i style={{ background: item.color }} />{item.label}</span>
+        ))}
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="research-chart-svg" role="img" aria-label="Top sleeve weights">
+        <line x1={padding} x2={width - padding} y1={height - padding} y2={height - padding} className="research-chart-axis" />
+        {series.map((item, seriesIndex) => {
+          const upper = valueByDate.map((point) => ({
+            date: point.date,
+            value: series.slice(0, seriesIndex + 1).reduce((total, current) => total + (point.valueByKey.get(current.key) ?? 0), 0),
+          }))
+          const lower = valueByDate.map((point) => ({
+            date: point.date,
+            value: series.slice(0, seriesIndex).reduce((total, current) => total + (point.valueByKey.get(current.key) ?? 0), 0),
+          }))
+          const upperCoordinates = upper.map((point) => chartCoordinate(point, args))
+          const lowerCoordinates = lower.map((point) => chartCoordinate(point, args)).reverse()
+          const path = [
+            ...upperCoordinates.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`),
+            ...lowerCoordinates.map((point) => `L ${point.x.toFixed(2)} ${point.y.toFixed(2)}`),
+            'Z',
+          ].join(' ')
+          return <path key={item.key} d={path} className="research-chart-area" style={{ fill: item.color }} />
+        })}
+      </svg>
+    </div>
+  )
+}
+
+function MetricTable({
+  run,
+}: {
+  run: PortfolioResearchRunRecord
+}) {
+  const metrics = run.detail?.backtest?.metrics ?? null
+  const relative = run.detail?.backtest_relative_metrics ?? null
+  const periodLabel =
+    metrics?.start_date && metrics?.end_date
+      ? `${metrics.start_date} to ${metrics.end_date}`
+      : '-'
+  const mddPeriod =
+    metrics?.max_drawdown_start_date && metrics?.max_drawdown_end_date
+      ? `${metrics.max_drawdown_start_date} to ${metrics.max_drawdown_end_date}`
+      : '-'
+  return (
+    <table className="performance-summary-table research-metric-table">
+      <tbody>
+        <tr><th>Period</th><td>{periodLabel}</td></tr>
+        <tr><th>Annual Return</th><td>{formatMaybePercent(metrics?.annualized_return)}</td></tr>
+        <tr><th>Annual Volatility</th><td>{formatMaybePercent(metrics?.annualized_volatility)}</td></tr>
+        <tr><th>Sharpe</th><td>{formatMaybeNumber(metrics?.sharpe_ratio)}</td></tr>
+        <tr><th>Max Drawdown</th><td>{formatMaybePercent(metrics?.max_drawdown)}</td></tr>
+        <tr><th>MDD Period</th><td>{mddPeriod}</td></tr>
+        <tr><th>Recovery Time</th><td>{metrics?.max_drawdown_recovery_days != null ? `${metrics.max_drawdown_recovery_days}D` : '-'}</td></tr>
+        <tr><th>Excess Return</th><td>{formatMaybePercent(relative?.excess_return)}</td></tr>
+        <tr><th>Tracking Error</th><td>{formatMaybePercent(relative?.tracking_error)}</td></tr>
+        <tr><th>Information Ratio</th><td>{formatMaybeNumber(relative?.information_ratio)}</td></tr>
+      </tbody>
+    </table>
+  )
+}
+
 export default function ResearchPage() {
   const { portfolioId = '' } = useParams()
-  const [searchParams, setSearchParams] = useSearchParams()
   const [workbench, setWorkbench] = useState<PortfolioResearchWorkbenchResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [actionPending, setActionPending] = useState<'save' | 'run' | null>(null)
+  const [actionPending, setActionPending] = useState<'run' | null>(null)
+  const [frozenMenuOpen, setFrozenMenuOpen] = useState(false)
+  const [boundsMenuOpen, setBoundsMenuOpen] = useState(false)
   const [dynamicScopeOptions, setDynamicScopeOptions] = useState<PortfolioResearchPlanningScopeOption[] | null>(null)
   const [scopeOptionsLoading, setScopeOptionsLoading] = useState(false)
   const [scopeOptionsError, setScopeOptionsError] = useState<string | null>(null)
-
-  const selectedRunId = searchParams.get('run_id') ?? ''
+  const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
+  const [benchmarkSearch, setBenchmarkSearch] = useState('')
+  const frozenMenuRef = useRef<HTMLDivElement | null>(null)
+  const boundsMenuRef = useRef<HTMLDivElement | null>(null)
+  const autoSaveTimeoutRef = useRef<number | null>(null)
+  const runSetupDraftRef = useRef<ResearchRunSetupDraft>({
+    capitalMode: 'unit_notional',
+    grossExposure: '',
+    targetVolatilityPct: '',
+    maxGrossExposure: '',
+    frozenNodeIds: [],
+    topSleeveBounds: [],
+    backtestRebalanceFrequency: '1m',
+    benchmarkInstrumentId: '',
+  })
 
   const [planningTaxonomyId, setPlanningTaxonomyId] = useState('')
-  const [comparatorScopeId, setComparatorScopeId] = useState('')
   const [asOfDate, setAsOfDate] = useState('')
-  const [lookbackDays, setLookbackDays] = useState(String(LOOKBACK_OPTIONS[2]))
-  const [calculationFrequency, setCalculationFrequency] = useState<PortfolioResearchCalculationFrequency>('auto')
-  const [missingReturnPolicy, setMissingReturnPolicy] = useState<PortfolioResearchMissingReturnPolicy>('strict')
-  const [riskModelId, setRiskModelId] = useState<PortfolioRiskCovarianceModel>('ewma_vol_shrinkage_corr_covariance')
-  const [riskContributionMode, setRiskContributionMode] = useState<PortfolioRiskContributionMode>('signed')
-  const [targetDimension, setTargetDimension] = useState<PortfolioResearchTargetDimension>('scope_default')
   const [capitalMode, setCapitalMode] = useState<PortfolioResearchCapitalMode>('unit_notional')
   const [grossExposure, setGrossExposure] = useState('')
   const [targetVolatilityPct, setTargetVolatilityPct] = useState('')
   const [maxGrossExposure, setMaxGrossExposure] = useState('')
   const [frozenNodeIds, setFrozenNodeIds] = useState<string[]>([])
-  const [notes, setNotes] = useState('')
+  const [topSleeveBounds, setTopSleeveBounds] = useState<ResearchTopSleeveBoundDraft[]>([])
+  const [backtestRebalanceFrequency, setBacktestRebalanceFrequency] = useState<PortfolioResearchBacktestRebalanceFrequency>('1m')
+  const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
 
-  function updateSearchParams(updates: Record<string, string | null>) {
-    setSearchParams((current) => {
-      const next = new URLSearchParams(current)
-      let changed = false
-      Object.entries(updates).forEach(([key, value]) => {
-        const normalized = value && value.trim() ? value : null
-        const currentValue = current.get(key)
-        if (normalized === currentValue || (!normalized && !currentValue)) {
-          return
-        }
-        changed = true
-        if (normalized) {
-          next.set(key, normalized)
-        } else {
-          next.delete(key)
-        }
-      })
-      return changed ? next : current
-    })
-  }
-
-  async function reloadWorkbench(nextRunId?: string | null) {
+  async function reloadWorkbench() {
     if (!portfolioId) {
       setWorkbench(null)
       setLoading(false)
       setWorkspaceError(null)
       return
     }
-
     setLoading(true)
     try {
-      const response = await getPortfolioResearchWorkbench(portfolioId, nextRunId || undefined)
+      const response = await getPortfolioResearchWorkbench(portfolioId)
       setWorkbench(response)
       setWorkspaceError(null)
     } catch (error) {
@@ -280,8 +508,41 @@ export default function ResearchPage() {
   }
 
   useEffect(() => {
-    void reloadWorkbench(selectedRunId || null)
-  }, [portfolioId, selectedRunId])
+    void reloadWorkbench()
+  }, [portfolioId])
+
+  useEffect(() => {
+    if (!portfolioId) {
+      setBenchmarkInstruments([])
+      return
+    }
+    let cancelled = false
+    getPortfolioInstruments(portfolioId)
+      .then((response) => {
+        if (!cancelled) {
+          setBenchmarkInstruments(response.instruments)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setBenchmarkInstruments([])
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [portfolioId])
+
+  useEffect(() => {
+    function handleRiskPolicyUpdated(event: Event) {
+      const detail = (event as CustomEvent<{ portfolioId?: string }>).detail
+      if (detail?.portfolioId === portfolioId) {
+        void reloadWorkbench()
+      }
+    }
+    window.addEventListener('portfolio-risk-policy-updated', handleRiskPolicyUpdated)
+    return () => window.removeEventListener('portfolio-risk-policy-updated', handleRiskPolicyUpdated)
+  }, [portfolioId])
 
   useEffect(() => {
     if (!notice) {
@@ -292,39 +553,90 @@ export default function ResearchPage() {
   }, [notice])
 
   useEffect(() => {
+    return () => {
+      if (autoSaveTimeoutRef.current != null) {
+        window.clearTimeout(autoSaveTimeoutRef.current)
+      }
+    }
+  }, [])
+
+	  useEffect(() => {
+	    function handleClick(event: MouseEvent) {
+	      const target = event.target as Node | null
+	      if (frozenMenuOpen && frozenMenuRef.current && target && !frozenMenuRef.current.contains(target)) {
+	        setFrozenMenuOpen(false)
+	      }
+	      if (boundsMenuOpen && boundsMenuRef.current && target && !boundsMenuRef.current.contains(target)) {
+	        setBoundsMenuOpen(false)
+	      }
+	    }
+	    document.addEventListener('mousedown', handleClick)
+	    return () => document.removeEventListener('mousedown', handleClick)
+	  }, [boundsMenuOpen, frozenMenuOpen])
+
+  useEffect(() => {
     if (!workbench) {
       return
     }
-    setPlanningTaxonomyId(workbench.settings.planning_taxonomy_id ?? '')
-    setComparatorScopeId(workbench.settings.comparator_taxonomy_node_id ?? '')
-    setAsOfDate(workbench.settings.as_of_date ?? workbench.as_of_date)
-    setLookbackDays(String(workbench.risk_policy.lookback_days ?? workbench.settings.lookback_days))
-    setCalculationFrequency(workbench.risk_policy.calculation_frequency ?? workbench.settings.calculation_frequency ?? 'auto')
-    setMissingReturnPolicy(workbench.risk_policy.missing_return_policy ?? workbench.settings.missing_return_policy ?? 'strict')
-    setRiskModelId(workbench.risk_policy.covariance_model_id ?? 'ewma_vol_shrinkage_corr_covariance')
-    setRiskContributionMode(workbench.risk_policy.contribution_mode ?? 'signed')
-    setTargetDimension(workbench.settings.target_dimension)
-    setCapitalMode(workbench.settings.capital_mode)
-    setGrossExposure(workbench.settings.gross_exposure != null ? String(workbench.settings.gross_exposure) : '')
-    setTargetVolatilityPct(
-      workbench.settings.target_volatility != null ? String(workbench.settings.target_volatility * 100) : '',
-    )
-    setMaxGrossExposure(
-      workbench.settings.max_gross_exposure != null ? String(workbench.settings.max_gross_exposure) : '',
-    )
-    setFrozenNodeIds(workbench.settings.frozen_taxonomy_node_ids ?? [])
-    setNotes(workbench.settings.notes ?? '')
+	    const nextBenchmarkInstrumentId = workbench.settings.backtest_benchmark_instrument_id ?? ''
+	    const nextCapitalMode = workbench.settings.capital_mode
+	    const nextTopSleeveBounds = (workbench.settings.top_sleeve_weight_bounds ?? []).map((item) => ({
+	      taxonomyNodeId: item.taxonomy_node_id,
+	      minWeightPct: formatBoundInput(item.min_weight),
+	      maxWeightPct: formatBoundInput(item.max_weight),
+	    }))
+	    const nextDraft: ResearchRunSetupDraft = {
+	      capitalMode: nextCapitalMode,
+      grossExposure: workbench.settings.gross_exposure != null ? String(workbench.settings.gross_exposure) : '',
+      targetVolatilityPct:
+        workbench.settings.target_volatility != null ? String(workbench.settings.target_volatility * 100) : '',
+      maxGrossExposure:
+        workbench.settings.max_gross_exposure != null
+          ? String(workbench.settings.max_gross_exposure)
+          : nextCapitalMode === 'target_volatility'
+            ? '1'
+            : '',
+	      frozenNodeIds: workbench.settings.frozen_taxonomy_node_ids ?? [],
+	      topSleeveBounds: nextTopSleeveBounds,
+	      backtestRebalanceFrequency: workbench.settings.backtest_rebalance_frequency ?? '1m',
+      benchmarkInstrumentId: nextBenchmarkInstrumentId,
+    }
+    setPlanningTaxonomyId(workbench.default_planning_taxonomy_id ?? workbench.settings.planning_taxonomy_id ?? '')
+    setAsOfDate(workbench.as_of_date)
+    setCapitalMode(nextDraft.capitalMode)
+    setGrossExposure(nextDraft.grossExposure)
+    setTargetVolatilityPct(nextDraft.targetVolatilityPct)
+	    setMaxGrossExposure(nextDraft.maxGrossExposure)
+	    setFrozenNodeIds(nextDraft.frozenNodeIds)
+	    setTopSleeveBounds(nextTopSleeveBounds)
+	    setBacktestRebalanceFrequency(nextDraft.backtestRebalanceFrequency)
+    setBenchmarkInstrumentId(nextBenchmarkInstrumentId)
+    runSetupDraftRef.current = nextDraft
   }, [workbench])
+
+  useEffect(() => {
+    const selectedBenchmark = benchmarkInstruments.find((instrument) => instrument.instrument_id === benchmarkInstrumentId)
+    if (selectedBenchmark) {
+      setBenchmarkSearch(benchmarkInstrumentLabel(selectedBenchmark))
+    } else if (!benchmarkInstrumentId) {
+      setBenchmarkSearch('')
+    }
+  }, [benchmarkInstrumentId, benchmarkInstruments])
 
   useEffect(() => {
     if (!workbench) {
       return
     }
     if (planningTaxonomyId !== (workbench.settings.planning_taxonomy_id ?? '')) {
-      setComparatorScopeId('')
-      setFrozenNodeIds([])
-    }
-  }, [planningTaxonomyId, workbench])
+	      runSetupDraftRef.current = {
+	        ...runSetupDraftRef.current,
+	        frozenNodeIds: [],
+	        topSleeveBounds: [],
+	      }
+	      setFrozenNodeIds([])
+	      setTopSleeveBounds([])
+	    }
+	  }, [planningTaxonomyId, workbench])
 
   useEffect(() => {
     const savedPlanningTaxonomyId = workbench?.settings.planning_taxonomy_id ?? ''
@@ -334,11 +646,9 @@ export default function ResearchPage() {
       setScopeOptionsError(null)
       return
     }
-
     let cancelled = false
     setScopeOptionsLoading(true)
     setScopeOptionsError(null)
-
     getPortfolioTaxonomyCatalog(portfolioId)
       .then((catalog) => {
         if (cancelled) {
@@ -363,19 +673,14 @@ export default function ResearchPage() {
           setScopeOptionsLoading(false)
         }
       })
-
     return () => {
       cancelled = true
     }
   }, [planningTaxonomyId, portfolioId, workbench])
 
-  const selectedRun = workbench?.selected_run ?? null
-
+  const latestRun = workbench?.selected_run ?? workbench?.runs[0] ?? null
   const selectedScopeOptions = useMemo<PortfolioResearchPlanningScopeOption[]>(() => {
-    if (!workbench) {
-      return []
-    }
-    if (!planningTaxonomyId) {
+    if (!workbench || !planningTaxonomyId) {
       return []
     }
     if (planningTaxonomyId === (workbench.settings.planning_taxonomy_id ?? '')) {
@@ -383,727 +688,513 @@ export default function ResearchPage() {
     }
     return dynamicScopeOptions ?? []
   }, [dynamicScopeOptions, planningTaxonomyId, workbench])
-
-  const selectedRunSignalMap = useMemo(() => {
-    const entries = (selectedRun?.detail?.signals ?? []).map((signal) => [signal.label, signal.value] as const)
-    return new Map(entries)
-  }, [selectedRun])
-  const memberTargets = selectedRun?.detail?.member_targets ?? []
-  const leafTargets = selectedRun?.detail?.leaf_targets ?? []
-  const solvedTargets = leafTargets.length ? leafTargets : memberTargets
-  const solveEvent = selectedRun?.detail?.solve_event ?? null
-  const scopeSolveEvents = selectedRun?.detail?.scope_solve_events ?? []
   const savedPlanningTaxonomyId = workbench?.settings.planning_taxonomy_id ?? ''
   const scopeOptionsPending = Boolean(
     planningTaxonomyId && planningTaxonomyId !== savedPlanningTaxonomyId && !dynamicScopeOptions && !scopeOptionsError,
   )
   const scopeActionBlocked = scopeOptionsLoading || scopeOptionsPending || Boolean(scopeOptionsError)
-  const selectableFrozenScopes = useMemo(
-    () => selectedScopeOptions.filter((option) => Boolean(option.taxonomy_node_id)),
-    [selectedScopeOptions],
-  )
+	  const selectableFrozenScopes = useMemo(
+	    () => selectedScopeOptions.filter((option) => Boolean(option.taxonomy_node_id)),
+	    [selectedScopeOptions],
+	  )
+	  const topSleeveOptions = useMemo(
+	    () => selectedScopeOptions.filter((option) => option.depth === 1 && Boolean(option.taxonomy_node_id)),
+	    [selectedScopeOptions],
+	  )
+	  const selectedFrozenLabels = useMemo(() => {
+	    const labelByNodeId = new Map(selectableFrozenScopes.map((option) => [option.taxonomy_node_id ?? '', option.label]))
+	    return frozenNodeIds.map((nodeId) => labelByNodeId.get(nodeId)).filter(Boolean) as string[]
+	  }, [frozenNodeIds, selectableFrozenScopes])
+	  const frozenMenuLabel = selectedFrozenLabels.length ? `${selectedFrozenLabels.length} selected` : 'None'
+	  const configuredBoundCount = topSleeveBounds.filter(
+	    (item) => item.minWeightPct.trim() || item.maxWeightPct.trim(),
+	  ).length
+	  const boundsMenuLabel = configuredBoundCount ? `${configuredBoundCount} set` : 'None'
+	  const topSleeveBoundByNodeId = useMemo(
+	    () => new Map(topSleeveBounds.map((item) => [item.taxonomyNodeId, item])),
+	    [topSleeveBounds],
+	  )
 
-  const summaryPlanningName =
-    workbench?.planning_taxonomy_options.find((item) => item.taxonomy_id === planningTaxonomyId)?.name ??
-    workbench?.settings.planning_taxonomy_name ??
-    'Not configured'
-
-  const summaryScopeName =
-    selectedScopeOptions.find((item) => (item.taxonomy_node_id ?? '') === comparatorScopeId)?.label ??
-    workbench?.settings.comparator_taxonomy_node_name ??
-    'Top Level'
-
-  const selectedScopeDefaultDimension =
-    selectedScopeOptions.find((item) => (item.taxonomy_node_id ?? '') === comparatorScopeId)?.default_target_dimension ??
-    'weight'
-  const frequencyProfile = workbench?.calculation_frequency ?? null
-  const availableFrequencyOptions = useMemo(() => {
-    const optionByFrequency = new Map((frequencyProfile?.options ?? []).map((option) => [option.frequency, option]))
-    return CALCULATION_FREQUENCY_OPTIONS.map((option) => {
-      if (option.value === 'auto') {
-        return { ...option, available: true, reason: null }
-      }
-      const profileOption = optionByFrequency.get(option.value)
-      return {
-        ...option,
-        available: profileOption?.available ?? true,
-        reason: profileOption?.reason ?? null,
-      }
-    })
-  }, [frequencyProfile])
-
-  function toggleFrozenNode(nodeId: string) {
-    setFrozenNodeIds((current) => {
-      if (current.includes(nodeId)) {
-        return current.filter((item) => item !== nodeId)
-      }
-      return [...current, nodeId]
-    })
+  function scheduleAutoSave(nextDraft: ResearchRunSetupDraft) {
+    runSetupDraftRef.current = nextDraft
+    if (autoSaveTimeoutRef.current != null) {
+      window.clearTimeout(autoSaveTimeoutRef.current)
+    }
+    autoSaveTimeoutRef.current = window.setTimeout(() => {
+      autoSaveTimeoutRef.current = null
+      void persistSettings({
+        draft: nextDraft,
+        analysisDate: workbench?.as_of_date ?? null,
+      }).catch(() => undefined)
+    }, 450)
   }
 
-  async function persistSettings() {
+  function updateRunSetupDraft(updates: Partial<ResearchRunSetupDraft>) {
+    const nextDraft = {
+      ...runSetupDraftRef.current,
+      ...updates,
+    }
+    setActionError(null)
+    scheduleAutoSave(nextDraft)
+    return nextDraft
+  }
+
+	  function toggleFrozenNode(nodeId: string) {
+	    setFrozenNodeIds((current) => {
+      if (current.includes(nodeId)) {
+        const nextFrozenNodeIds = current.filter((item) => item !== nodeId)
+        updateRunSetupDraft({ frozenNodeIds: nextFrozenNodeIds })
+        return nextFrozenNodeIds
+      }
+      const nextFrozenNodeIds = [...current, nodeId]
+      updateRunSetupDraft({ frozenNodeIds: nextFrozenNodeIds })
+      return nextFrozenNodeIds
+	    })
+	  }
+
+	  function updateTopSleeveBound(nodeId: string, field: 'minWeightPct' | 'maxWeightPct', value: string) {
+	    setTopSleeveBounds((current) => {
+	      const existing = current.find((item) => item.taxonomyNodeId === nodeId)
+	      const nextItem: ResearchTopSleeveBoundDraft = {
+	        taxonomyNodeId: nodeId,
+	        minWeightPct: existing?.minWeightPct ?? '',
+	        maxWeightPct: existing?.maxWeightPct ?? '',
+	        [field]: value,
+	      }
+	      const nextBounds = [
+	        ...current.filter((item) => item.taxonomyNodeId !== nodeId),
+	        nextItem,
+	      ].filter((item) => item.minWeightPct.trim() || item.maxWeightPct.trim())
+	      updateRunSetupDraft({ topSleeveBounds: nextBounds })
+	      return nextBounds
+	    })
+	  }
+
+	  function serializeTopSleeveBounds(
+	    draftBounds: ResearchTopSleeveBoundDraft[],
+	  ): PortfolioResearchTopSleeveWeightBoundRecord[] {
+	    const validTopSleeveIds = new Set(topSleeveOptions.map((item) => item.taxonomy_node_id ?? ''))
+	    return draftBounds
+	      .filter((item) => validTopSleeveIds.has(item.taxonomyNodeId))
+	      .map((item) => {
+	        const minWeight = item.minWeightPct.trim() ? Number(item.minWeightPct) / 100 : null
+	        const maxWeight = item.maxWeightPct.trim() ? Number(item.maxWeightPct) / 100 : null
+	        return {
+	          taxonomy_node_id: item.taxonomyNodeId,
+	          min_weight: minWeight,
+	          max_weight: maxWeight,
+	        }
+	      })
+	      .filter((item) => item.min_weight != null || item.max_weight != null)
+	  }
+
+	  async function persistSettings({
+    draft = runSetupDraftRef.current,
+    analysisDate = asOfDate,
+  }: {
+    draft?: ResearchRunSetupDraft
+    analysisDate?: string | null
+  } = {}) {
     if (!portfolioId) {
       return null
     }
-    const parsedGrossExposure = grossExposure.trim() ? Number(grossExposure) : null
-    const parsedTargetVolatility = targetVolatilityPct.trim() ? Number(targetVolatilityPct) / 100 : null
-    const parsedMaxGrossExposure = maxGrossExposure.trim() ? Number(maxGrossExposure) : null
-    const validFrozenNodeIds = new Set(selectableFrozenScopes.map((item) => item.taxonomy_node_id ?? ''))
-    const frozenTaxonomyNodeIds = frozenNodeIds.filter((nodeId) => validFrozenNodeIds.has(nodeId))
-    const resolvedLookbackDays = Number(lookbackDays) || 90
-    return updatePortfolioResearchSettings(portfolioId, {
+    const parsedGrossExposure = draft.grossExposure.trim() ? Number(draft.grossExposure) : null
+    const parsedTargetVolatility = draft.targetVolatilityPct.trim() ? Number(draft.targetVolatilityPct) / 100 : null
+    const parsedMaxGrossExposure = draft.maxGrossExposure.trim() ? Number(draft.maxGrossExposure) : null
+    const volatilityMode = isVolatilityCapitalMode(draft.capitalMode)
+	    const riskPolicy = await getPortfolioRiskPolicy(portfolioId)
+	    const validFrozenNodeIds = new Set(selectableFrozenScopes.map((item) => item.taxonomy_node_id ?? ''))
+	    const frozenTaxonomyNodeIds = draft.frozenNodeIds.filter((nodeId) => validFrozenNodeIds.has(nodeId))
+	    const topSleeveWeightBounds = serializeTopSleeveBounds(draft.topSleeveBounds)
+	    return updatePortfolioResearchSettings(portfolioId, {
       planning_taxonomy_id: planningTaxonomyId || null,
-      comparator_taxonomy_node_id: comparatorScopeId || null,
-      as_of_date: asOfDate || null,
-      lookback_days: resolvedLookbackDays,
-      calculation_frequency: calculationFrequency,
-      missing_return_policy: missingReturnPolicy,
-      covariance_model_id: riskModelId,
-      contribution_mode: riskContributionMode,
-      target_dimension: targetDimension,
-      capital_mode: capitalMode,
-      gross_exposure: capitalMode === 'fixed_gross' ? parsedGrossExposure : null,
-      target_volatility: capitalMode === 'target_volatility' ? parsedTargetVolatility : null,
-      max_gross_exposure: capitalMode === 'target_volatility' ? parsedMaxGrossExposure : null,
-      frozen_taxonomy_node_ids: frozenTaxonomyNodeIds,
-      notes: notes || null,
+      comparator_taxonomy_node_id: null,
+      as_of_date: analysisDate || null,
+      lookback_days: riskPolicy.lookback_days,
+      calculation_frequency: riskPolicy.calculation_frequency,
+      missing_return_policy: riskPolicy.missing_return_policy,
+      covariance_model_id: riskPolicy.covariance_model_id,
+      contribution_mode: riskPolicy.contribution_mode,
+      target_dimension: 'scope_default',
+      capital_mode: draft.capitalMode,
+      gross_exposure: draft.capitalMode === 'fixed_gross' ? parsedGrossExposure : null,
+      target_volatility: volatilityMode ? parsedTargetVolatility : null,
+	      max_gross_exposure:
+	        draft.capitalMode === 'target_volatility'
+	          ? parsedMaxGrossExposure ?? 1
+	          : null,
+	      frozen_taxonomy_node_ids: frozenTaxonomyNodeIds,
+	      top_sleeve_weight_bounds: topSleeveWeightBounds,
+	      backtest_rebalance_frequency: draft.backtestRebalanceFrequency,
+      backtest_benchmark_instrument_id: draft.benchmarkInstrumentId || null,
+      notes: null,
     })
-  }
-
-  async function handleSaveSettings(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!portfolioId) {
-      return
-    }
-
-    setActionPending('save')
-    setActionError(null)
-    setNotice(null)
-    try {
-      await persistSettings()
-      setNotice('Research settings updated.')
-      await reloadWorkbench(selectedRunId || null)
-    } catch (error) {
-      setActionError(extractErrorMessage(error))
-    } finally {
-      setActionPending(null)
-    }
   }
 
   async function handleRunResearch() {
     if (!portfolioId) {
       return
     }
-
+    if (autoSaveTimeoutRef.current != null) {
+      window.clearTimeout(autoSaveTimeoutRef.current)
+      autoSaveTimeoutRef.current = null
+    }
     setActionPending('run')
     setActionError(null)
     setNotice(null)
     try {
-      await persistSettings()
-      const run = await createPortfolioResearchRun(portfolioId, { requested_by: 'workspace-ui' })
-      updateSearchParams({
-        run_id: run.research_run_id,
+      await persistSettings({
+        draft: runSetupDraftRef.current,
+        analysisDate: asOfDate,
       })
+      await createPortfolioResearchRun(portfolioId, { requested_by: 'workspace-ui' })
       setNotice('Research run completed.')
-      await reloadWorkbench(run.research_run_id)
+      await reloadWorkbench()
     } catch (error) {
       setActionError(extractErrorMessage(error))
+      try {
+        await reloadWorkbench()
+      } catch {
+        // Keep the original run error visible if the follow-up refresh also fails.
+      }
     } finally {
       setActionPending(null)
     }
   }
 
-  function handleSelectRun(run: PortfolioResearchRunRecord) {
-    updateSearchParams({
-      run_id: run.research_run_id,
-    })
-  }
+  const solvedGroups = latestRun?.detail?.solved_result_groups ?? []
+  const backtest = latestRun?.detail?.backtest ?? null
+  const benchmark = latestRun?.detail?.backtest_benchmark ?? null
 
   return (
     <PortfolioWorkspaceLayout activeSection="Research" toolbarLabel="View: Research Workbench">
       {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}
       {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
       {actionError ? <div className="inline-notice inline-notice-error">{actionError}</div> : null}
-      {loading && !workbench ? (
-        <CalculationStatus />
-      ) : null}
+      {loading && !workbench ? <CalculationStatus /> : null}
 
-      {!loading && !workbench && !workspaceError ? (
-        <div className="empty-state">No data.</div>
-      ) : null}
+      {!loading && !workbench && !workspaceError ? <div className="empty-state">No data.</div> : null}
 
       {workbench ? (
         <>
           <section className="panel">
-            <div className="panel-header">
-              <div>
-                <div className="panel-title">Research</div>
-              </div>
-              <div className="portfolio-detail-meta">
-                {workbench.portfolio_name} · target weights as of {workbench.settings.as_of_date ?? workbench.as_of_date}
-              </div>
-            </div>
-            <div className="performance-summary-grid research-context-grid">
-              <div className="table-shell">
-                <table className="performance-summary-table">
-                  <tbody>
-                    <tr>
-                      <th>Planning Axis</th>
-                      <td>{summaryPlanningName}</td>
-                    </tr>
-                    <tr>
-                      <th>Scope</th>
-                      <td>{summaryScopeName}</td>
-                    </tr>
-                    <tr>
-                      <th>Target Layer</th>
-                      <td>Active TAA</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              <div className="table-shell">
-                <table className="performance-summary-table">
-                  <tbody>
-                    <tr>
-                      <th>Scope Policy</th>
-                      <td>{TARGET_DIMENSION_OPTIONS.find((option) => option.value === targetDimension)?.label ?? formatLabel(targetDimension)}</td>
-                    </tr>
-                    <tr>
-                      <th>Selected Default</th>
-                      <td>{formatResearchDimension(selectedScopeDefaultDimension)}</td>
-                    </tr>
-                    <tr>
-                      <th>Lookback</th>
-                      <td>{lookbackDays}D</td>
-                    </tr>
-                    <tr>
-                      <th>Frequency</th>
-                      <td>{frequencyProfile?.status_label ?? formatCalculationFrequency(calculationFrequency)}</td>
-                    </tr>
-                    <tr>
-                      <th>Risk Model</th>
-                      <td>{formatRiskModel(riskModelId)}</td>
-                    </tr>
-                    <tr>
-                      <th>RC Mode</th>
-                      <td>{formatLabel(riskContributionMode)}</td>
-                    </tr>
-                    <tr>
-                      <th>Runs</th>
-                      <td>{workbench.runs.length}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
-
-          <section className="panel">
-            <div className="panel-header">
-              <div>
-                <div className="panel-title">Run Setup</div>
-              </div>
-            </div>
-            <form className="transaction-form taxonomy-form-compact" onSubmit={(event) => void handleSaveSettings(event)}>
-              <div className="taxonomy-form-grid taxonomy-form-grid-wide research-settings-grid">
-                <label>
-                  <span>Planning Taxonomy</span>
-                  <select
-                    value={planningTaxonomyId}
-                    onChange={(event) => {
-                      setDynamicScopeOptions(null)
-                      setScopeOptionsError(null)
-                      setPlanningTaxonomyId(event.target.value)
-                    }}
-                  >
-                    <option value="">None</option>
-                    {workbench.planning_taxonomy_options.map((taxonomy) => (
-                      <option key={taxonomy.taxonomy_id} value={taxonomy.taxonomy_id}>
-                        {taxonomy.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Scope</span>
-                  <select
-                    value={comparatorScopeId}
-                    onChange={(event) => setComparatorScopeId(event.target.value)}
-                    disabled={!planningTaxonomyId || scopeOptionsLoading}
-                  >
-                    <option value="">Top Level</option>
-                    {selectedScopeOptions
-                      .filter((option) => option.taxonomy_node_id)
-                      .map((option) => (
-                        <option key={option.taxonomy_node_id ?? option.path} value={option.taxonomy_node_id ?? ''}>
-                          {option.path}
+            <form
+              className="transaction-form taxonomy-form-compact research-run-form"
+              onSubmit={(event) => event.preventDefault()}
+            >
+              <div className="research-settings-bar">
+                <div className="taxonomy-form-grid taxonomy-form-grid-wide research-settings-grid">
+                  <label>
+                    <span>Analysis Date</span>
+                    <input type="date" value={asOfDate} onChange={(event) => setAsOfDate(event.target.value)} />
+                  </label>
+                  <label>
+                    <span>Capital Mode</span>
+                    <select
+                      value={capitalMode}
+                      onChange={(event) => {
+                        const nextCapitalMode = event.target.value as PortfolioResearchCapitalMode
+                        const nextDraftUpdates: Partial<ResearchRunSetupDraft> = { capitalMode: nextCapitalMode }
+                        if (nextCapitalMode === 'target_volatility' && !runSetupDraftRef.current.maxGrossExposure.trim()) {
+                          nextDraftUpdates.maxGrossExposure = '1'
+                          setMaxGrossExposure('1')
+                        }
+                        if (nextCapitalMode === 'volatility_cap') {
+                          nextDraftUpdates.maxGrossExposure = ''
+                          setMaxGrossExposure('')
+                        }
+                        setCapitalMode(nextCapitalMode)
+                        updateRunSetupDraft(nextDraftUpdates)
+                      }}
+                    >
+                      {CAPITAL_MODE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
                         </option>
                       ))}
-                  </select>
-                </label>
-                <label>
-                  <span>As Of Date</span>
-                  <input type="date" value={asOfDate} onChange={(event) => setAsOfDate(event.target.value)} />
-                </label>
-                <label>
-                  <span>Lookback</span>
-                  <select value={lookbackDays} onChange={(event) => setLookbackDays(event.target.value)}>
-                    {LOOKBACK_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {option}D
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Frequency</span>
-                  <select
-                    value={calculationFrequency}
-                    onChange={(event) => setCalculationFrequency(event.target.value as PortfolioResearchCalculationFrequency)}
-                  >
-                    {availableFrequencyOptions.map((option) => (
-                      <option
-                        key={option.value}
-                        value={option.value}
-                        disabled={!option.available}
-                      >
-                        {option.label}
-                        {option.available ? '' : ' unavailable'}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Missing Returns</span>
-                  <select
-                    value={missingReturnPolicy}
-                    onChange={(event) => setMissingReturnPolicy(event.target.value as PortfolioResearchMissingReturnPolicy)}
-                  >
-                    {MISSING_RETURN_POLICY_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Risk Model</span>
-                  <select
-                    value={riskModelId}
-                    onChange={(event) => setRiskModelId(event.target.value as PortfolioRiskCovarianceModel)}
-                  >
-                    {RISK_MODEL_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>RC Mode</span>
-                  <select
-                    value={riskContributionMode}
-                    onChange={(event) => setRiskContributionMode(event.target.value as PortfolioRiskContributionMode)}
-                  >
-                    {RISK_CONTRIBUTION_MODE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Target Dimension</span>
-                  <select
-                    value={targetDimension}
-                    onChange={(event) => setTargetDimension(event.target.value as PortfolioResearchTargetDimension)}
-                  >
-                    {TARGET_DIMENSION_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Capital Mode</span>
-                  <select
-                    value={capitalMode}
-                    onChange={(event) => setCapitalMode(event.target.value as PortfolioResearchCapitalMode)}
-                  >
-                    {CAPITAL_MODE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Target Vol (%)</span>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    value={targetVolatilityPct}
-                    onChange={(event) => setTargetVolatilityPct(event.target.value)}
-                    disabled={capitalMode !== 'target_volatility'}
-                    placeholder="7.0"
-                  />
-                </label>
-                <label>
-                  <span>Gross Exposure</span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={grossExposure}
-                    onChange={(event) => setGrossExposure(event.target.value)}
-                    disabled={capitalMode !== 'fixed_gross'}
-                    placeholder="1.00"
-                  />
-                </label>
-                <label>
-                  <span>Max Gross</span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={maxGrossExposure}
-                    onChange={(event) => setMaxGrossExposure(event.target.value)}
-                    disabled={capitalMode !== 'target_volatility'}
-                    placeholder="1.00"
-                  />
-                </label>
-                <label className="taxonomy-form-span-2 transaction-notes-field">
-                  <span>Notes</span>
-                  <textarea
-                    value={notes}
-                    onChange={(event) => setNotes(event.target.value)}
-                    placeholder=""
-                  />
-                </label>
-              </div>
-              {planningTaxonomyId && selectableFrozenScopes.length ? (
-                <div className="research-freeze-panel">
-                  <div className="research-freeze-panel-header">
+                    </select>
+                  </label>
+                  {isVolatilityCapitalMode(capitalMode) ? (
+                    <>
+                      <label>
+                        <span>{capitalMode === 'volatility_cap' ? 'Vol Cap (%)' : 'Target Vol (%)'}</span>
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          value={targetVolatilityPct}
+                          onChange={(event) => {
+                            setTargetVolatilityPct(event.target.value)
+                            updateRunSetupDraft({ targetVolatilityPct: event.target.value })
+                          }}
+                          placeholder="7.0"
+                        />
+                      </label>
+                    </>
+                  ) : null}
+                  {capitalMode === 'target_volatility' ? (
+                    <>
+                      <label>
+                        <span>Max Gross</span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={maxGrossExposure}
+                          onChange={(event) => {
+                            setMaxGrossExposure(event.target.value)
+                            updateRunSetupDraft({ maxGrossExposure: event.target.value })
+                          }}
+                          placeholder="1.00"
+                        />
+                      </label>
+                    </>
+                  ) : null}
+                  {capitalMode === 'fixed_gross' ? (
+                    <label>
+                      <span>Gross Exposure</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={grossExposure}
+                        onChange={(event) => {
+                          setGrossExposure(event.target.value)
+                          updateRunSetupDraft({ grossExposure: event.target.value })
+                        }}
+                        placeholder="1.00"
+                      />
+                    </label>
+                  ) : null}
+                  <div className="research-freeze-field" ref={frozenMenuRef}>
                     <span>Frozen Sleeves</span>
-                    <strong>{frozenNodeIds.length ? frozenNodeIds.length : '—'}</strong>
-                  </div>
-                  <div className="research-freeze-grid">
-                    {selectableFrozenScopes.map((option) => {
-                      const nodeId = option.taxonomy_node_id ?? ''
-                      return (
-                        <label key={nodeId} className="research-freeze-option">
-                          <input
-                            type="checkbox"
-                            checked={frozenNodeIds.includes(nodeId)}
-                            onChange={() => toggleFrozenNode(nodeId)}
-                          />
-                          <span>{option.path}</span>
-                        </label>
-                      )
-                    })}
+                    <button
+                      type="button"
+                      className="research-freeze-trigger"
+                      onClick={() => setFrozenMenuOpen((current) => !current)}
+                      disabled={!planningTaxonomyId || !selectableFrozenScopes.length || scopeOptionsLoading}
+                      aria-haspopup="menu"
+                      aria-expanded={frozenMenuOpen}
+                    >
+                      <span>{frozenMenuLabel}</span>
+                      <span aria-hidden="true">v</span>
+                    </button>
+                    {frozenMenuOpen ? (
+                      <div className="research-freeze-menu" role="menu">
+                        {selectableFrozenScopes.map((option) => {
+                          const nodeId = option.taxonomy_node_id ?? ''
+                          return (
+                            <label key={nodeId} className="research-freeze-option">
+                              <input
+                                type="checkbox"
+                                checked={frozenNodeIds.includes(nodeId)}
+                                onChange={() => toggleFrozenNode(nodeId)}
+                              />
+                              <span>{option.label}</span>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    ) : null}
+	                  </div>
+	                  <div className="research-bounds-field" ref={boundsMenuRef}>
+	                    <span>Bounds</span>
+	                    <button
+	                      type="button"
+	                      className="research-freeze-trigger research-bounds-trigger"
+	                      onClick={() => setBoundsMenuOpen((current) => !current)}
+	                      disabled={!planningTaxonomyId || !topSleeveOptions.length || scopeOptionsLoading}
+	                      aria-haspopup="menu"
+	                      aria-expanded={boundsMenuOpen}
+	                    >
+	                      <span>{boundsMenuLabel}</span>
+	                      <span aria-hidden="true">v</span>
+	                    </button>
+	                    {boundsMenuOpen ? (
+	                      <div className="research-bounds-menu" role="menu">
+	                        {topSleeveOptions.map((option) => {
+	                          const nodeId = option.taxonomy_node_id ?? ''
+	                          const bound = topSleeveBoundByNodeId.get(nodeId)
+	                          return (
+	                            <div key={nodeId} className="research-bounds-row">
+	                              <span>{option.label}</span>
+	                              <input
+	                                type="number"
+	                                step="0.1"
+	                                min="0"
+	                                max="100"
+	                                value={bound?.minWeightPct ?? ''}
+	                                onChange={(event) => updateTopSleeveBound(nodeId, 'minWeightPct', event.target.value)}
+	                                placeholder="Min %"
+	                              />
+	                              <input
+	                                type="number"
+	                                step="0.1"
+	                                min="0"
+	                                max="100"
+	                                value={bound?.maxWeightPct ?? ''}
+	                                onChange={(event) => updateTopSleeveBound(nodeId, 'maxWeightPct', event.target.value)}
+	                                placeholder="Max %"
+	                              />
+	                            </div>
+	                          )
+	                        })}
+	                      </div>
+	                    ) : null}
+	                  </div>
+	                  <label>
+	                    <span>Rebalance</span>
+                    <select
+                      value={backtestRebalanceFrequency}
+                      onChange={(event) => {
+                        const nextFrequency = event.target.value as PortfolioResearchBacktestRebalanceFrequency
+                        setBacktestRebalanceFrequency(nextFrequency)
+                        updateRunSetupDraft({ backtestRebalanceFrequency: nextFrequency })
+                      }}
+                    >
+                      {REBALANCE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="research-benchmark-field">
+                    <span>Benchmark</span>
+                    <BenchmarkSearchBox
+                      className="research-benchmark-search"
+                      instruments={benchmarkInstruments}
+                      selectedInstrumentId={benchmarkInstrumentId}
+                      searchValue={benchmarkSearch}
+                      onSearchChange={setBenchmarkSearch}
+                      onSelectInstrument={(instrument) => {
+                        setBenchmarkInstrumentId(instrument.instrument_id)
+                        setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
+                        updateRunSetupDraft({ benchmarkInstrumentId: instrument.instrument_id })
+                      }}
+                      onClear={() => {
+                        setBenchmarkInstrumentId('')
+                        setBenchmarkSearch('')
+                        updateRunSetupDraft({ benchmarkInstrumentId: '' })
+                      }}
+                      placeholder="Benchmark..."
+                    />
                   </div>
                 </div>
-              ) : null}
-              {scopeOptionsError ? <div className="inline-notice inline-notice-error">{scopeOptionsError}</div> : null}
-              <div className="transaction-form-footer">
-                <span className="portfolio-detail-meta">
-                  {scopeOptionsLoading ? 'Loading' : ''}
-                </span>
-                <div className="toolbar">
-                  <button type="submit" className="toolbar-link" disabled={actionPending === 'save' || scopeActionBlocked}>
-                    {actionPending === 'save' ? 'Saving…' : 'Save Settings'}
-                  </button>
+                <div className="research-run-action-field">
                   <button
                     type="button"
                     className="toolbar-link button-primary"
                     onClick={() => void handleRunResearch()}
                     disabled={actionPending === 'run' || scopeActionBlocked}
                   >
-                    {actionPending === 'run' ? 'Running…' : 'Run Research'}
+                    {actionPending === 'run' ? 'Running...' : 'Run'}
                   </button>
                 </div>
               </div>
+              {scopeOptionsError ? <div className="inline-notice inline-notice-error">{scopeOptionsError}</div> : null}
             </form>
           </section>
 
-          <section className="panel">
-            <div className="panel-header">
-              <div>
-                <div className="panel-title">Run History</div>
-              </div>
-            </div>
-            <div className="table-shell">
-              <table className="transactions-table">
-                <thead>
-                  <tr>
-                    <th>Requested</th>
-                    <th>Status</th>
-                    <th>Scope</th>
-                    <th>Window</th>
-                    <th>Mode</th>
-                    <th>Headline</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!workbench.runs.length ? (
-                    <TableStatusRow colSpan={6} label="No runs." />
-                  ) : (
-                    workbench.runs.map((run) => (
-                      <tr
-                        key={run.research_run_id}
-                        className={selectedRun?.research_run_id === run.research_run_id ? 'research-run-row-active' : ''}
-                        onClick={() => handleSelectRun(run)}
-                      >
-                        <td>{formatTimestamp(run.requested_at)}</td>
-                        <td>{resolveStatusLabel(run.status)}</td>
-                        <td>{run.detail?.selected_scope?.label ?? 'Top Level'}</td>
-                        <td>
-                          {run.as_of_date ?? '—'} · {run.lookback_days}D
-                          {run.detail?.solve_event?.calculation_frequency
-                            ? ` · ${formatCalculationFrequency(run.detail.solve_event.calculation_frequency)}`
-                            : ''}
-                        </td>
-                        <td>{run.detail?.signals.find((signal) => signal.label === 'Target Layer')?.value ?? '—'}</td>
-                        <td className="transaction-note-cell">{run.headline ?? '—'}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <section className="panel">
-            <div className="panel-header">
-              <div>
-                <div className="panel-title">Selected Run</div>
-              </div>
-              <div className="portfolio-detail-meta">
-                {selectedRun ? `${selectedRun.research_run_id} · ${resolveStatusLabel(selectedRun.status)}` : 'No run selected'}
-              </div>
-            </div>
-            {!selectedRun ? (
-              <div className="empty-state">Run Research above, then inspect the selected run here.</div>
-            ) : (
-              <>
-                <div className="research-run-headline-band">
-                  <strong>{selectedRun.detail?.headline ?? selectedRun.headline ?? 'Research run detail'}</strong>
-                  <span>{selectedRun.detail?.coverage_note ?? 'Current target weight solve.'}</span>
-                </div>
-                {selectedRun.error_message ? (
-                  <div className="inline-notice inline-notice-error">{selectedRun.error_message}</div>
-                ) : null}
-
-                <div className="performance-summary-grid research-detail-grid">
-                  <div className="table-shell">
-                    <table className="performance-summary-table">
-                      <tbody>
-                        <tr>
-                          <th>Requested</th>
-                          <td>{formatTimestamp(selectedRun.requested_at)}</td>
-                        </tr>
-                        <tr>
-                          <th>As Of Date</th>
-                          <td>{selectedRun.as_of_date ?? '—'}</td>
-                        </tr>
-                        <tr>
-                          <th>Scope</th>
-                          <td>{selectedRun.detail?.selected_scope?.path ?? 'Top Level'}</td>
-                        </tr>
-                        <tr>
-                          <th>Scope Policy</th>
-                          <td>{selectedRunSignalMap.get('Target Dimension') ?? formatResearchDimension(solveEvent?.target_dimension)}</td>
-                        </tr>
-                        <tr>
-                          <th>Solver</th>
-                          <td>{selectedRunSignalMap.get('Solver') ?? formatSolverKind(solveEvent?.solver_detail ?? solveEvent?.solver_kind)}</td>
-                        </tr>
-                        <tr>
-                          <th>Covariance</th>
-                          <td>
-                            {solveEvent?.covariance_model
-                              ? `${formatLabel(solveEvent.covariance_model)} · ${solveEvent.covariance_observations ?? 0}`
-                              : '—'}
-                          </td>
-                        </tr>
-                        <tr>
-                          <th>Frequency</th>
-                          <td>{selectedRunSignalMap.get('Frequency') ?? formatCalculationFrequency(solveEvent?.calculation_frequency)}</td>
-                        </tr>
-                        <tr>
-                          <th>RC Mode</th>
-                          <td>{solveEvent?.risk_contribution_mode ? formatLabel(solveEvent.risk_contribution_mode) : '—'}</td>
-                        </tr>
-                        <tr>
-                          <th>Missing Returns</th>
-                          <td>{selectedRunSignalMap.get('Missing Returns') ?? (solveEvent?.missing_return_policy ? formatLabel(solveEvent.missing_return_policy) : '—')}</td>
-                        </tr>
-                      </tbody>
-                    </table>
+          {!latestRun ? (
+            <section className="panel">
+              <div className="empty-state">Run to generate the latest solved result.</div>
+            </section>
+          ) : latestRun.status === 'failed' ? (
+            <section className="panel">
+              <div className="inline-notice inline-notice-error">{latestRun.error_message ?? 'Research run failed.'}</div>
+            </section>
+          ) : (
+            <>
+              <section className="panel">
+                <div className="panel-header">
+                  <div>
+                    <div className="panel-title">Solved Result</div>
                   </div>
-                  <div className="table-shell">
-                    <table className="performance-summary-table">
-                      <tbody>
-                        <tr>
-                          <th>Target Volatility</th>
-                          <td>{selectedRunSignalMap.get('Target Volatility') ?? '—'}</td>
-                        </tr>
-                        <tr>
-                          <th>Estimated Volatility</th>
-                          <td>{selectedRunSignalMap.get('Estimated Volatility') ?? '—'}</td>
-                        </tr>
-                        <tr>
-                          <th>Gross Exposure</th>
-                          <td>{selectedRunSignalMap.get('Gross Exposure') ?? '—'}</td>
-                        </tr>
-                        <tr>
-                          <th>Largest Weight Gap</th>
-                          <td>{selectedRunSignalMap.get('Largest Weight Gap') ?? '—'}</td>
-                        </tr>
-                        <tr>
-                          <th>Largest Risk Gap</th>
-                          <td>{selectedRunSignalMap.get('Largest Risk Gap') ?? '—'}</td>
-                        </tr>
-                        <tr>
-                          <th>Rows</th>
-                          <td>{solvedTargets.length}</td>
-                        </tr>
-                        <tr>
-                          <th>Warnings</th>
-                          <td>{selectedRun.detail?.warnings.length ?? 0}</td>
-                        </tr>
-                        <tr>
-                          <th>Dropped Rows</th>
-                          <td>
-                            {solveEvent?.missing_return_row_count != null
-                              ? `${solveEvent.missing_return_row_count}/${solveEvent.return_rows_before_policy ?? '—'}`
-                              : '—'}
-                          </td>
-                        </tr>
-                        <tr>
-                          <th>Lookback</th>
-                          <td>{selectedRunSignalMap.get('Lookback') ?? '—'}</td>
-                        </tr>
-                      </tbody>
-                    </table>
+                  <div className="portfolio-detail-meta">
+                    {latestRun.as_of_date ?? '-'} · {resolveStatusLabel(latestRun.status)} · {formatTimestamp(latestRun.finished_at)}
                   </div>
                 </div>
+                <div className="table-shell">
+                  <table className="transactions-table research-solved-table">
+                    <thead>
+                      <tr>
+                        <th>Instrument</th>
+	                        <th>Solved Weight</th>
+	                        <th>Target Risk</th>
+	                        <th>Forward RC</th>
+	                        <th>Bounds</th>
+	                        <th>Bound</th>
+	                      </tr>
+	                    </thead>
+	                    <tbody>
+	                      {!solvedGroups.length ? (
+	                        <TableStatusRow colSpan={6} label="No solved result was recorded for the latest run." />
+	                      ) : (
+                        solvedGroups.map((group) => (
+                          <Fragment key={group.top_sleeve_id ?? group.top_sleeve_label}>
+                            <tr className="research-result-group-row">
+                              <td>{group.top_sleeve_label}</td>
+	                              <td>{formatMaybePercent(group.solved_weight)}</td>
+	                              <td>{formatMaybePercent(group.target_risk_share)}</td>
+	                              <td>{formatMaybePercent(group.forward_risk_contribution)}</td>
+	                              <td>{formatSolvedBounds(group.min_weight, group.max_weight)}</td>
+	                              <td>{formatBoundStatus(group.bound_status)}</td>
+	                            </tr>
+                            {group.rows.map((row) => (
+                              <tr key={`${row.member_type}:${row.member_id}`}>
+                                <td className="research-result-member-cell">{row.label}</td>
+	                                <td>{formatMaybePercent(row.solved_weight)}</td>
+	                                <td>{formatMaybePercent(row.target_risk_share)}</td>
+	                                <td>{formatMaybePercent(row.forward_risk_contribution)}</td>
+	                                <td>-</td>
+	                                <td>-</td>
+	                              </tr>
+                            ))}
+                          </Fragment>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
 
-                <div className="performance-section-block">
+              <section className="performance-block-grid research-backtest-grid">
+                <div className="performance-section-block research-chart-panel">
                   <div className="panel-header panel-header-inline">
-                    <div>
-                      <div className="panel-title">Scope Solver Path</div>
-                    </div>
+                    <div><div className="panel-title">Backtest</div></div>
                   </div>
-                  <div className="table-shell">
-                    <table className="transactions-table research-scope-solver-table">
-                      <thead>
-                        <tr>
-                          <th>Scope</th>
-                          <th>Default</th>
-                          <th>Used</th>
-                          <th>Solver</th>
-                          <th>RC Mode</th>
-                          <th>Risk Gap</th>
-                          <th>Members</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {!scopeSolveEvents.length ? (
-                          <TableStatusRow colSpan={7} label="No scope solver events were recorded for the selected run." />
-                        ) : (
-                          scopeSolveEvents.map((event) => (
-                            <tr key={`${event.scope_path ?? event.scope_label}:${event.scope_depth ?? 0}`}>
-                              <td>{event.scope_path ?? event.scope_label}</td>
-                              <td>{formatResearchDimension(event.taxonomy_default_target_dimension)}</td>
-                              <td>{formatResearchDimension(event.target_dimension)}</td>
-                              <td>{formatSolverKind(event.solver_detail ?? event.solver_kind)}</td>
-                              <td>{event.risk_contribution_mode ? formatLabel(event.risk_contribution_mode) : '—'}</td>
-                              <td>{formatPercent(event.max_risk_share_gap, 3)}</td>
-                              <td>{event.member_count}</td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
+                  <ResearchLineChart
+                    points={backtest?.points ?? []}
+                    benchmarkPoints={benchmark?.points ?? []}
+                    benchmarkLabel={benchmark?.label}
+                  />
                 </div>
-
-                <div className="performance-section-block">
+                <div className="performance-section-block research-metrics-panel">
                   <div className="panel-header panel-header-inline">
-                    <div>
-                      <div className="panel-title">Solved Target Weights</div>
-                    </div>
+                    <div><div className="panel-title">Metrics</div></div>
                   </div>
-                  <div className="table-shell">
-                    <table className="transactions-table">
-                      <thead>
-                        <tr>
-                          <th>Member</th>
-                          <th>Scope</th>
-                          <th>Current Weight</th>
-                          <th>Target Weight</th>
-                          <th>Gap</th>
-                          <th>Local RC</th>
-                          <th>Local Risk Target</th>
-                          <th>Target Dim</th>
-                          <th>Source</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {!solvedTargets.length ? (
-                          <TableStatusRow colSpan={9} label="No solved target weights were recorded for the selected run." />
-                        ) : (
-                          solvedTargets.map((member) => (
-                            <tr key={`${member.scope_path ?? 'Top Level'}:${member.member_type}:${member.member_id}`}>
-                              <td>{member.label}</td>
-                              <td>{member.scope_path ?? 'Top Level'}</td>
-                              <td>{formatPercent(member.current_weight)}</td>
-                              <td>{formatPercent(member.target_weight)}</td>
-                              <td>{formatPercent(member.weight_change, 3)}</td>
-                              <td>{formatPercent(member.current_risk_share)}</td>
-                              <td>{formatPercent(member.configured_risk_share)}</td>
-                              <td>{formatResearchDimension(member.selected_target_dimension ?? member.default_target_dimension)}</td>
-                              <td>{member.source_target_set_type ? formatLabel(member.source_target_set_type) : '—'}</td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
+                  <MetricTable run={latestRun} />
                 </div>
+              </section>
 
-                {selectedRun.detail?.warnings.length ? (
-                  <div className="performance-section-block">
-                    <div className="panel-header panel-header-inline">
-                      <div>
-                        <div className="panel-title">Warnings</div>
-                      </div>
-                    </div>
-                    <div className="table-shell">
-                      <table className="transactions-table">
-                        <thead>
-                          <tr>
-                            <th>Message</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {selectedRun.detail.warnings.map((warning) => (
-                            <tr key={warning}>
-                              <td className="transaction-note-cell">{warning}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+              <section className="performance-block-grid research-backtest-grid">
+                <div className="performance-section-block research-chart-panel">
+                  <div className="panel-header panel-header-inline">
+                    <div><div className="panel-title">Top Sleeve Weights</div></div>
                   </div>
-                ) : null}
-              </>
-            )}
-          </section>
+                  <ResearchSleeveStackedAreaChart points={backtest?.top_sleeve_weight_points ?? []} />
+                </div>
+                <div className="performance-section-block research-chart-panel">
+                  <div className="panel-header panel-header-inline">
+                    <div><div className="panel-title">Top Sleeve Contribution</div></div>
+                  </div>
+                  <ResearchSleeveLineChart
+                    points={backtest?.top_sleeve_contribution_points ?? []}
+                    ariaLabel="Top sleeve contribution"
+                  />
+                </div>
+              </section>
+            </>
+          )}
         </>
       ) : null}
     </PortfolioWorkspaceLayout>

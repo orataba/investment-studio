@@ -17,12 +17,12 @@ sys.path.insert(0, str(BACKEND_ROOT))
 from platform_app.db.models import Instrument, InstrumentIdentifier  # noqa: E402
 from platform_app.db.session import get_session_factory  # noqa: E402
 from platform_app.services import market_data_ops  # noqa: E402
-from platform_app.services.instrument_store import (  # noqa: E402
+from platform_app.services.instrument_store import replace_nav_history  # noqa: E402
+from yungu_instrument_core.instrument_store import (  # noqa: E402
     _default_lifecycle_state,
     _default_quote_selection_policy,
     _default_refresh_status,
     _default_source_settings,
-    replace_nav_history,
 )
 from platform_app.services.downstream_notifications import notify_market_data_downstream_refresh  # noqa: E402
 
@@ -48,6 +48,7 @@ def _load_coverage_instruments() -> dict[str, dict[str, str]]:
                     row.instrument_type,
                     COALESCE(
                         NULLIF(detail.primary_identifier_value, ''),
+                        NULLIF(row.ticker_or_isin, ''),
                         summary.payload_json ->> 'ticker_or_isin',
                         row.instrument_id
                     ) AS identifier_value
@@ -56,7 +57,7 @@ def _load_coverage_instruments() -> dict[str, dict[str, str]]:
                   ON detail.instrument_id = row.instrument_id
                 LEFT JOIN watchlist.instrument_summary_read_model AS summary
                   ON summary.instrument_id = row.instrument_id
-                WHERE row.watchlist_id = 'coverage'
+                WHERE row.watchlist_id IN ('coverage', 'all-coverage')
                   AND row.instrument_type = 'fund'
                 ORDER BY row.instrument_name
                 """
@@ -120,55 +121,55 @@ def _resolve_instrument_id(
     return None
 
 
-def _ensure_instrument(instrument: dict[str, str]) -> None:
+def _ensure_instrument(instrument_data: dict[str, str]) -> None:
     session_factory = get_session_factory()
     with session_factory() as session:
-        instrument = session.get(Instrument, instrument["instrument_id"])
-        if instrument is None:
-            instrument = Instrument(
-                instrument_id=instrument["instrument_id"],
-                instrument_name=instrument["instrument_name"],
-                instrument_type=instrument["instrument_type"],
-                currency=instrument["currency"],
-                quote_selection_policy_json=_default_quote_selection_policy(instrument["instrument_type"]),
+        record = session.get(Instrument, instrument_data["instrument_id"])
+        if record is None:
+            record = Instrument(
+                instrument_id=instrument_data["instrument_id"],
+                instrument_name=instrument_data["instrument_name"],
+                instrument_type=instrument_data["instrument_type"],
+                currency=instrument_data["currency"],
+                quote_selection_policy_json=_default_quote_selection_policy(instrument_data["instrument_type"]),
                 source_settings_json=_default_source_settings(),
                 refresh_status_json=_default_refresh_status(),
                 lifecycle_state_json=_default_lifecycle_state(),
             )
-            session.add(instrument)
+            session.add(record)
             session.flush()
         else:
-            instrument.instrument_name = instrument["instrument_name"]
-            instrument.instrument_type = instrument["instrument_type"]
-            instrument.currency = instrument["currency"]
+            record.instrument_name = instrument_data["instrument_name"]
+            record.instrument_type = instrument_data["instrument_type"]
+            record.currency = instrument_data["currency"]
 
         existing_identifier = session.scalar(
             select(InstrumentIdentifier).where(
-                InstrumentIdentifier.identifier_value == instrument["identifier_value"],
-                InstrumentIdentifier.instrument_id != instrument["instrument_id"],
+                InstrumentIdentifier.identifier_value == instrument_data["identifier_value"],
+                InstrumentIdentifier.instrument_id != instrument_data["instrument_id"],
             )
         )
         if existing_identifier is not None:
             raise RuntimeError(
-                f'Identifier {instrument["identifier_value"]} already belongs to {existing_identifier.instrument_id}.'
+                f'Identifier {instrument_data["identifier_value"]} already belongs to {existing_identifier.instrument_id}.'
             )
 
         identifiers = session.scalars(
-            select(InstrumentIdentifier).where(InstrumentIdentifier.instrument_id == instrument["instrument_id"])
+            select(InstrumentIdentifier).where(InstrumentIdentifier.instrument_id == instrument_data["instrument_id"])
         ).all()
         matched = next(
             (
                 item
                 for item in identifiers
-                if item.identifier_value == instrument["identifier_value"] and item.identifier_type == "ticker"
+                if item.identifier_value == instrument_data["identifier_value"] and item.identifier_type == "ticker"
             ),
             None,
         )
         if matched is None:
             matched = InstrumentIdentifier(
-                instrument_id=instrument["instrument_id"],
+                instrument_id=instrument_data["instrument_id"],
                 identifier_type="ticker",
-                identifier_value=instrument["identifier_value"],
+                identifier_value=instrument_data["identifier_value"],
                 is_primary=True,
             )
             session.add(matched)

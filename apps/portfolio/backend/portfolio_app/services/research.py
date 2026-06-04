@@ -3,8 +3,9 @@ from __future__ import annotations
 import csv
 import json
 import mimetypes
+import shutil
 from copy import deepcopy
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -27,6 +28,8 @@ from portfolio_app.services.research_solver import (
     RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
     build_research_calculation_frequency_profile,
     build_research_scope_options,
+    build_current_target_backtest,
+    research_window_start_date,
     solve_current_target_weights,
 )
 from portfolio_app.services.portfolio_store import (
@@ -38,7 +41,7 @@ from portfolio_app.services.portfolio_store import (
     list_accounts,
     list_transactions,
 )
-from portfolio_app.services.risk_model import get_portfolio_risk_policy, normalize_portfolio_risk_policy
+from portfolio_app.services.risk_model import get_portfolio_risk_policy, normalize_portfolio_risk_policy, risk_window_label
 
 TEXT_SUFFIXES = {".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
 HTML_SUFFIXES = {".html"}
@@ -66,6 +69,12 @@ def _safe_float(value: object) -> float | None:
         return None
 
 
+def _normalize_research_max_gross_exposure(capital_mode: object, value: object) -> float | None:
+    if str(capital_mode or "unit_notional").strip() == "target_volatility":
+        return _safe_float(value) or 1.0
+    return None
+
+
 def _format_pct(value: float | None, digits: int = 2) -> str:
     if value is None:
         return "—"
@@ -83,6 +92,17 @@ def _format_dimension(value: object) -> str:
     if not normalized:
         return "—"
     return normalized.title()
+
+
+def _format_capital_mode(value: object) -> str:
+    normalized = str(value or "unit_notional").strip()
+    labels = {
+        "unit_notional": "Unit Notional",
+        "fixed_gross": "Fixed Gross",
+        "target_volatility": "Target Vol",
+        "volatility_cap": "Vol Cap",
+    }
+    return labels.get(normalized, normalized.replace("_", " ").title())
 
 
 def _format_solver_kind(value: object) -> str:
@@ -149,6 +169,26 @@ def _next_research_run_id(portfolio_id: str) -> str:
     return f"{portfolio_id}__research__{timestamp}__{uuid4().hex[:8]}"
 
 
+def _prune_portfolio_research_runs(session, portfolio_id: str, *, keep_run_id: str) -> None:
+    rows = session.scalars(
+        select(ResearchRunRecordModel).where(
+            ResearchRunRecordModel.portfolio_id == portfolio_id,
+            ResearchRunRecordModel.research_run_id != keep_run_id,
+        )
+    ).all()
+    for row in rows:
+        session.delete(row)
+    portfolio_output_root = _research_outputs_root() / portfolio_id
+    if portfolio_output_root.exists():
+        for child in portfolio_output_root.iterdir():
+            if child.name == keep_run_id:
+                continue
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+
+
 def _default_as_of_date(portfolio: dict[str, object]) -> date:
     if portfolio.get("as_of_date"):
         return date.fromisoformat(str(portfolio["as_of_date"]))
@@ -180,6 +220,12 @@ def _ensure_research_settings_record(
         if record.frozen_taxonomy_node_ids_json is None:
             record.frozen_taxonomy_node_ids_json = []
             changed = True
+        if record.top_sleeve_weight_bounds_json is None:
+            record.top_sleeve_weight_bounds_json = []
+            changed = True
+        if not str(getattr(record, "backtest_rebalance_frequency", "") or "").strip():
+            record.backtest_rebalance_frequency = "1m"
+            changed = True
         if changed:
             record.updated_at = _utc_now_iso()
             session.commit()
@@ -199,6 +245,9 @@ def _ensure_research_settings_record(
         target_volatility=None,
         max_gross_exposure=None,
         frozen_taxonomy_node_ids_json=[],
+        top_sleeve_weight_bounds_json=[],
+        backtest_rebalance_frequency="1m",
+        backtest_benchmark_instrument_id=None,
         notes=None,
         updated_at=_utc_now_iso(),
     )
@@ -252,6 +301,66 @@ def _validate_research_scope(
     if node is None:
         raise ValueError("Research scope node not found in the selected planning taxonomy.")
     return resolved_node_id
+
+
+def _normalize_top_sleeve_weight_bounds(
+    bounds: list[dict[str, object]] | None,
+) -> list[dict[str, object]] | None:
+    if bounds is None:
+        return None
+    normalized: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for item in bounds:
+        node_id = str((item or {}).get("taxonomy_node_id") or "").strip()
+        if not node_id:
+            raise ValueError("Top sleeve weight bounds require taxonomy_node_id.")
+        if node_id in seen:
+            raise ValueError("Top sleeve weight bounds must not contain duplicate taxonomy nodes.")
+        seen.add(node_id)
+        min_weight = _safe_float((item or {}).get("min_weight"))
+        max_weight = _safe_float((item or {}).get("max_weight"))
+        if min_weight is None and max_weight is None:
+            raise ValueError("Top sleeve weight bound must set min_weight or max_weight.")
+        if min_weight is not None and not 0.0 <= min_weight <= 1.0:
+            raise ValueError("Top sleeve min_weight must be between 0 and 1.")
+        if max_weight is not None and not 0.0 <= max_weight <= 1.0:
+            raise ValueError("Top sleeve max_weight must be between 0 and 1.")
+        if min_weight is not None and max_weight is not None and min_weight > max_weight:
+            raise ValueError("Top sleeve min_weight cannot exceed max_weight.")
+        normalized.append(
+            {
+                "taxonomy_node_id": node_id,
+                "min_weight": min_weight,
+                "max_weight": max_weight,
+            }
+        )
+    return normalized
+
+
+def _validate_top_sleeve_weight_bounds(
+    portfolio_id: str,
+    *,
+    taxonomy: TaxonomyRecordModel | None,
+    bounds: list[dict[str, object]] | None,
+) -> list[dict[str, object]] | None:
+    normalized = _normalize_top_sleeve_weight_bounds(bounds)
+    if normalized is None:
+        return None
+    if not normalized:
+        return []
+    if taxonomy is None:
+        raise ValueError("Top sleeve weight bounds require a selected planning taxonomy.")
+    top_node_ids = {
+        str(item.get("taxonomy_node_id") or "")
+        for item in list_taxonomy_nodes(portfolio_id)
+        if str(item.get("taxonomy_id") or "") == taxonomy.taxonomy_id
+        and str(item.get("status") or "active") == "active"
+        and not str(item.get("parent_taxonomy_node_id") or "").strip()
+    }
+    unknown = [item["taxonomy_node_id"] for item in normalized if str(item["taxonomy_node_id"]) not in top_node_ids]
+    if unknown:
+        raise ValueError("Top sleeve weight bounds must reference top-level nodes in the selected planning taxonomy.")
+    return normalized
 
 
 def _planning_taxonomy_options(portfolio_id: str) -> list[dict[str, object]]:
@@ -312,8 +421,11 @@ def _serialize_settings_row(
         "capital_mode": row.capital_mode or "unit_notional",
         "gross_exposure": _safe_float(row.gross_exposure),
         "target_volatility": _safe_float(row.target_volatility),
-        "max_gross_exposure": _safe_float(row.max_gross_exposure),
+        "max_gross_exposure": _normalize_research_max_gross_exposure(row.capital_mode, row.max_gross_exposure),
         "frozen_taxonomy_node_ids": deepcopy(row.frozen_taxonomy_node_ids_json or []),
+        "top_sleeve_weight_bounds": deepcopy(row.top_sleeve_weight_bounds_json or []),
+        "backtest_rebalance_frequency": str(row.backtest_rebalance_frequency or "1m").strip() or "1m",
+        "backtest_benchmark_instrument_id": str(row.backtest_benchmark_instrument_id or "").strip() or None,
         "notes": row.notes,
         "updated_at": row.updated_at,
     }
@@ -587,7 +699,7 @@ def _build_research_context(
         base_currency=str(statement.get("base_currency") or portfolio.get("base_currency") or "USD"),
         as_of_date=as_of_date,
     )
-    lookback_start = as_of_date - timedelta(days=max(lookback_days - 1, 0))
+    lookback_start = research_window_start_date(as_of_date, lookback_days)
     statement_positions = list(statement.get("positions", []))
     top_holdings = _build_top_holdings_snapshot(statement_positions, base_currency=str(statement.get("base_currency") or "USD"))
     planning_groups = _build_planning_group_snapshot(
@@ -651,7 +763,11 @@ def _build_research_context(
         "planning_groups": planning_groups,
     }
 
-def _build_current_target_findings(solution: dict[str, object]) -> tuple[list[dict[str, str]], list[str]]:
+def _build_current_target_findings(
+    solution: dict[str, object],
+    *,
+    settings_payload: dict[str, object],
+) -> tuple[list[dict[str, str]], list[str]]:
     scope = solution.get("scope") or {}
     target_weight_gaps = list(solution.get("target_weight_gaps") or [])
     solve_event = solution.get("solve_event") if isinstance(solution.get("solve_event"), dict) else None
@@ -676,12 +792,14 @@ def _build_current_target_findings(solution: dict[str, object]) -> tuple[list[di
         )
 
     if solve_event:
+        capital_mode = str(settings_payload.get("capital_mode") or "unit_notional")
+        volatility_label = "volatility cap" if capital_mode == "volatility_cap" else "target volatility"
         findings.append(
             {
                 "title": "Volatility Overlay",
                 "detail": (
                     f"Estimated risky-sleeve volatility is {_format_pct(_safe_float(solve_event.get('estimated_risk_sleeve_volatility')))} "
-                    f"versus target volatility {_format_pct(_safe_float(solve_event.get('target_volatility')))}; gross exposure resolves to "
+                    f"versus {volatility_label} {_format_pct(_safe_float(solve_event.get('target_volatility')))}; gross exposure resolves to "
                     f"{_format_number(_safe_float(solve_event.get('gross_exposure')), 3)}."
                 ),
             }
@@ -720,7 +838,7 @@ def _build_current_target_signals(
         {"label": "Target Layer", "value": "Active TAA", "tone": "neutral"},
         {
             "label": "Capital Mode",
-            "value": str(settings_payload.get("capital_mode") or "unit_notional").replace("_", " ").title(),
+            "value": _format_capital_mode(settings_payload.get("capital_mode")),
             "tone": "neutral",
         },
         {
@@ -734,8 +852,8 @@ def _build_current_target_signals(
             "tone": "neutral",
         },
         {
-            "label": "Lookback",
-            "value": f"{int(settings_payload.get('lookback_days') or 90)}D",
+            "label": "Risk Window",
+            "value": risk_window_label(int(settings_payload.get("lookback_days") or 90)),
             "tone": "neutral",
         },
         {
@@ -769,7 +887,7 @@ def _build_current_target_signals(
             "tone": "neutral",
         },
         {
-            "label": "Target Volatility",
+            "label": "Vol Target/Cap",
             "value": _format_pct(_safe_float(settings_payload.get("target_volatility"))),
             "tone": "neutral",
         },
@@ -912,6 +1030,8 @@ def _build_target_assumptions(
         assumptions.append("The selected scope can use an explicit target-dimension override; child sleeves still use their own configured default target dimension.")
     if str(settings_payload.get("capital_mode") or "unit_notional") == "target_volatility":
         assumptions.append("After recursive sleeve targets are resolved, Research estimates risky-sleeve volatility, scales gross exposure toward target volatility, and sends the residual into cash.")
+    elif str(settings_payload.get("capital_mode") or "unit_notional") == "volatility_cap":
+        assumptions.append("After recursive sleeve targets are resolved, Research estimates risky-sleeve volatility and only scales risky exposure down when it exceeds the volatility cap.")
     elif str(settings_payload.get("capital_mode") or "unit_notional") == "fixed_gross":
         assumptions.append("After recursive sleeve targets are resolved, Research applies a fixed gross-exposure overlay and leaves the residual in cash.")
     if any(str(item.get("source_label_override") or "") == "Single Member" for item in target_rows):
@@ -926,7 +1046,7 @@ def _build_current_target_detail(
     settings_payload: dict[str, object],
     solution: dict[str, object],
 ) -> dict[str, object]:
-    findings, questions = _build_current_target_findings(solution)
+    findings, questions = _build_current_target_findings(solution, settings_payload=settings_payload)
     scope = solution.get("scope") or {}
     solve_event = solution.get("solve_event") if isinstance(solution.get("solve_event"), dict) else None
     resolved_target_rows = list(solution.get("resolved_target_rows") or [])
@@ -960,9 +1080,13 @@ def _build_current_target_detail(
         "target_rows": target_rows,
         "member_targets": deepcopy(solution.get("member_targets") or []),
         "leaf_targets": deepcopy(solution.get("leaf_targets") or []),
+        "solved_result_groups": deepcopy(solution.get("solved_result_groups") or []),
         "solve_event": deepcopy(solve_event),
         "scope_solve_events": deepcopy(solution.get("scope_solve_events") or []),
         "target_weight_gaps": deepcopy(solution.get("target_weight_gaps") or []),
+        "backtest": deepcopy(solution.get("backtest")),
+        "backtest_benchmark": deepcopy(solution.get("backtest_benchmark")),
+        "backtest_relative_metrics": deepcopy(solution.get("backtest_relative_metrics")),
         "warnings": deepcopy(solution.get("warnings") or []),
     }
 
@@ -1177,6 +1301,9 @@ def update_research_settings(
     target_volatility: float | None,
     max_gross_exposure: float | None,
     frozen_taxonomy_node_ids: list[str] | None,
+    top_sleeve_weight_bounds: list[dict[str, object]] | None,
+    backtest_rebalance_frequency: str,
+    backtest_benchmark_instrument_id: str | None,
     notes: str | None,
 ) -> dict[str, object] | None:
     portfolio = get_portfolio(portfolio_id)
@@ -1216,6 +1343,18 @@ def update_research_settings(
             unknown = [item for item in resolved_frozen_ids if item not in valid_node_ids]
             if unknown:
                 raise ValueError("Frozen taxonomy nodes must belong to the selected planning taxonomy.")
+        if top_sleeve_weight_bounds is None:
+            resolved_top_sleeve_bounds = (
+                []
+                if resolved_planning_taxonomy_id != existing_planning_taxonomy_id
+                else None
+            )
+        else:
+            resolved_top_sleeve_bounds = _validate_top_sleeve_weight_bounds(
+                portfolio_id,
+                taxonomy=taxonomy,
+                bounds=top_sleeve_weight_bounds,
+            )
         row.planning_taxonomy_id = resolved_planning_taxonomy_id
         row.as_of_date = as_of_date or _default_as_of_date(portfolio)
         row.comparator_taxonomy_node_id = resolved_scope_node_id
@@ -1226,9 +1365,15 @@ def update_research_settings(
         row.capital_mode = (capital_mode or "unit_notional").strip() or "unit_notional"
         row.gross_exposure = gross_exposure
         row.target_volatility = target_volatility
-        row.max_gross_exposure = max_gross_exposure
+        row.max_gross_exposure = _normalize_research_max_gross_exposure(row.capital_mode, max_gross_exposure)
         if resolved_frozen_ids is not None:
             row.frozen_taxonomy_node_ids_json = resolved_frozen_ids
+        if resolved_top_sleeve_bounds is not None:
+            row.top_sleeve_weight_bounds_json = resolved_top_sleeve_bounds
+        row.backtest_rebalance_frequency = (
+            "3m" if str(backtest_rebalance_frequency or "").strip().lower() == "3m" else "1m"
+        )
+        row.backtest_benchmark_instrument_id = str(backtest_benchmark_instrument_id or "").strip() or None
         row.notes = notes
         row.updated_at = _utc_now_iso()
         portfolio_row = session.get(PortfolioRecordModel, portfolio_id)
@@ -1276,7 +1421,6 @@ def run_portfolio_research(
             taxonomy=taxonomy,
             comparator_taxonomy_node_id=settings_row.comparator_taxonomy_node_id,
         )
-
         requested_at = _utc_now_iso()
         run_id = _next_research_run_id(portfolio_id)
         effective_as_of_date = settings_row.as_of_date or _default_as_of_date(portfolio)
@@ -1289,6 +1433,11 @@ def run_portfolio_research(
             (production_risk_model or {}).get("missing_return_policy")
             or settings_row.missing_return_policy
             or RESEARCH_DEFAULT_MISSING_RETURN_POLICY
+        )
+        research_capital_mode = settings_row.capital_mode or "unit_notional"
+        research_max_gross_exposure = _normalize_research_max_gross_exposure(
+            research_capital_mode,
+            settings_row.max_gross_exposure,
         )
         run_row = ResearchRunRecordModel(
             research_run_id=run_id,
@@ -1315,11 +1464,14 @@ def run_portfolio_research(
                 "missing_return_policy": risk_missing_return_policy,
                 "risk_model": deepcopy(production_risk_model or {}),
                 "target_dimension": settings_row.target_dimension or "scope_default",
-                "capital_mode": settings_row.capital_mode or "unit_notional",
+                "capital_mode": research_capital_mode,
                 "gross_exposure": _safe_float(settings_row.gross_exposure),
                 "target_volatility": _safe_float(settings_row.target_volatility),
-                "max_gross_exposure": _safe_float(settings_row.max_gross_exposure),
+                "max_gross_exposure": research_max_gross_exposure,
                 "frozen_taxonomy_node_ids": deepcopy(settings_row.frozen_taxonomy_node_ids_json or []),
+                "top_sleeve_weight_bounds": deepcopy(settings_row.top_sleeve_weight_bounds_json or []),
+                "backtest_rebalance_frequency": str(settings_row.backtest_rebalance_frequency or "1m"),
+                "backtest_benchmark_instrument_id": str(settings_row.backtest_benchmark_instrument_id or "").strip() or None,
                 "notes": settings_row.notes,
             },
             error_message=None,
@@ -1344,13 +1496,35 @@ def run_portfolio_research(
                 calculation_frequency=risk_calculation_frequency,
                 missing_return_policy=risk_missing_return_policy,
                 target_dimension=settings_row.target_dimension or "scope_default",
-                capital_mode=settings_row.capital_mode or "unit_notional",
+                capital_mode=research_capital_mode,
                 gross_exposure=_safe_float(settings_row.gross_exposure),
                 target_volatility=_safe_float(settings_row.target_volatility),
-                max_gross_exposure=_safe_float(settings_row.max_gross_exposure),
+                max_gross_exposure=research_max_gross_exposure,
                 frozen_taxonomy_node_ids=deepcopy(settings_row.frozen_taxonomy_node_ids_json or []),
+                top_sleeve_weight_bounds=deepcopy(settings_row.top_sleeve_weight_bounds_json or []),
                 risk_model_config=deepcopy(production_risk_model or {}),
             )
+            backtest_payload = build_current_target_backtest(
+                portfolio_id,
+                planning_taxonomy_id=str(settings_row.planning_taxonomy_id or "").strip(),
+                comparator_taxonomy_node_id=resolved_scope_node_id,
+                as_of_date=effective_as_of_date,
+                lookback_days=risk_lookback_days,
+                calculation_frequency=risk_calculation_frequency,
+                missing_return_policy=risk_missing_return_policy,
+                target_dimension=settings_row.target_dimension or "scope_default",
+                capital_mode=research_capital_mode,
+                gross_exposure=_safe_float(settings_row.gross_exposure),
+                target_volatility=_safe_float(settings_row.target_volatility),
+                max_gross_exposure=research_max_gross_exposure,
+                frozen_taxonomy_node_ids=deepcopy(settings_row.frozen_taxonomy_node_ids_json or []),
+                top_sleeve_weight_bounds=deepcopy(settings_row.top_sleeve_weight_bounds_json or []),
+                risk_model_config=deepcopy(production_risk_model or {}),
+                rebalance_frequency=str(settings_row.backtest_rebalance_frequency or "1m"),
+                benchmark_instrument_id=str(settings_row.backtest_benchmark_instrument_id or "").strip() or None,
+                current_solution=solution,
+            )
+            solution.update(backtest_payload)
             detail = _build_current_target_detail(
                 context,
                 planning_taxonomy_name=planning_taxonomy_name,
@@ -1370,6 +1544,7 @@ def run_portfolio_research(
             run_row.detail_json = detail
             run_row.artifacts_json = artifacts
             run_row.error_message = None
+            _prune_portfolio_research_runs(session, portfolio_id, keep_run_id=run_id)
             session.commit()
         except (InstrumentRegistryError, ValueError) as error:
             run_row.status = "failed"

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
 import { formatCurrency, formatPercent, formatSignedCurrency, signedValueClass } from '../lib/format'
@@ -6,7 +6,14 @@ import {
   copyPortfolio,
   deletePortfolio,
   getPortfolios,
+  getPortfolioRiskPolicy,
   getWorkspaceSummaryForPortfolio,
+  updatePortfolioRiskPolicy,
+  type PortfolioResearchMissingReturnPolicy,
+  type PortfolioRiskCalculationFrequency,
+  type PortfolioRiskContributionMode,
+  type PortfolioRiskCovarianceModel,
+  type PortfolioRiskPolicyRecord,
   type PortfolioWorkspaceSummary,
 } from '../lib/api'
 import {
@@ -35,6 +42,34 @@ type PortfolioSelectorOption = {
 }
 
 const portfolioTabs: WorkspaceTab[] = [...workspacePrimaryNavigation]
+const DEFAULT_RISK_POLICY_WINDOW_DAYS = 90
+const RISK_WINDOW_OPTIONS = [
+  { value: 30, label: '1M' },
+  { value: 90, label: '3M' },
+  { value: 180, label: '6M' },
+  { value: 366, label: '12M' },
+  { value: 730, label: '24M' },
+] as const
+const RISK_FREQUENCY_OPTIONS: Array<{ value: PortfolioRiskCalculationFrequency; label: string }> = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+]
+const RISK_MISSING_RETURN_POLICY_OPTIONS: Array<{ value: PortfolioResearchMissingReturnPolicy; label: string }> = [
+  { value: 'strict', label: 'Strict' },
+  { value: 'complete_case_drop', label: 'Complete Case Drop' },
+]
+const RISK_MODEL_OPTIONS: Array<{ value: PortfolioRiskCovarianceModel; label: string }> = [
+  { value: 'ewma_vol_shrinkage_corr_covariance', label: 'EWMA + Shrinkage' },
+  { value: 'ewma_covariance', label: 'EWMA' },
+  { value: 'sample_covariance', label: 'Sample' },
+]
+const RISK_CONTRIBUTION_MODE_OPTIONS: Array<{ value: PortfolioRiskContributionMode; label: string }> = [
+  { value: 'signed', label: 'Signed' },
+  { value: 'abs', label: 'Absolute' },
+]
+const SUPPORTED_RISK_POLICY_WINDOW_DAYS = new Set<number>(RISK_WINDOW_OPTIONS.map((option) => option.value))
 
 const FALLBACK_SUMMARY: PortfolioWorkspaceSummary = {
   portfolio_id: '',
@@ -47,6 +82,10 @@ const FALLBACK_SUMMARY: PortfolioWorkspaceSummary = {
   toolbar_label: 'View: Portfolio Summary',
   badges: [],
   sections: [],
+}
+
+function extractErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Request failed.'
 }
 
 export default function PortfolioWorkspaceLayout({
@@ -62,6 +101,18 @@ export default function PortfolioWorkspaceLayout({
   const [portfolioOptions, setPortfolioOptions] = useState<PortfolioSelectorOption[]>([])
   const [selectorMenuOpen, setSelectorMenuOpen] = useState(false)
   const [selectorNotice, setSelectorNotice] = useState<string | null>(null)
+  const [riskSettingsOpen, setRiskSettingsOpen] = useState(false)
+  const [riskSettingsLoading, setRiskSettingsLoading] = useState(false)
+  const [riskSettingsSaving, setRiskSettingsSaving] = useState(false)
+  const [riskSettingsError, setRiskSettingsError] = useState<string | null>(null)
+  const [riskPolicyLookbackDays, setRiskPolicyLookbackDays] = useState(String(DEFAULT_RISK_POLICY_WINDOW_DAYS))
+  const [riskPolicyFrequency, setRiskPolicyFrequency] = useState<PortfolioRiskCalculationFrequency>('auto')
+  const [riskPolicyMissingReturnPolicy, setRiskPolicyMissingReturnPolicy] =
+    useState<PortfolioResearchMissingReturnPolicy>('strict')
+  const [riskPolicyModelId, setRiskPolicyModelId] =
+    useState<PortfolioRiskCovarianceModel>('ewma_vol_shrinkage_corr_covariance')
+  const [riskPolicyContributionMode, setRiskPolicyContributionMode] =
+    useState<PortfolioRiskContributionMode>('signed')
   const selectorMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -147,6 +198,11 @@ export default function PortfolioWorkspaceLayout({
     return () => window.clearTimeout(timeoutId)
   }, [selectorNotice])
 
+  useEffect(() => {
+    setRiskSettingsOpen(false)
+    setRiskSettingsError(null)
+  }, [portfolioId])
+
   const resolvedSummary = summary ?? FALLBACK_SUMMARY
   const resolvedPortfolioId = portfolioId || resolvedSummary.portfolio_id
   const portfolioHomePath = resolvedPortfolioId
@@ -200,6 +256,70 @@ export default function PortfolioWorkspaceLayout({
       )
     } finally {
       setSelectorMenuOpen(false)
+    }
+  }
+
+  function applyRiskPolicy(policy: PortfolioRiskPolicyRecord) {
+    setRiskPolicyLookbackDays(String(policy.lookback_days))
+    setRiskPolicyFrequency(policy.calculation_frequency)
+    setRiskPolicyMissingReturnPolicy(policy.missing_return_policy)
+    setRiskPolicyModelId(policy.covariance_model_id)
+    setRiskPolicyContributionMode(policy.contribution_mode)
+  }
+
+  async function handleOpenRiskSettings() {
+    if (!resolvedPortfolioId) {
+      return
+    }
+    setRiskSettingsOpen(true)
+    setRiskSettingsLoading(true)
+    setRiskSettingsError(null)
+    try {
+      const policy = await getPortfolioRiskPolicy(resolvedPortfolioId)
+      applyRiskPolicy(policy)
+    } catch (error) {
+      setRiskSettingsError(extractErrorMessage(error))
+    } finally {
+      setRiskSettingsLoading(false)
+    }
+  }
+
+  async function handleSaveRiskSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!resolvedPortfolioId) {
+      return
+    }
+    const parsedLookbackDays = Number(riskPolicyLookbackDays)
+    if (!SUPPORTED_RISK_POLICY_WINDOW_DAYS.has(parsedLookbackDays)) {
+      setRiskSettingsError('Risk window must be 1M, 3M, 6M, 12M, or 24M.')
+      return
+    }
+    const resolvedLookbackDays = parsedLookbackDays
+    setRiskSettingsSaving(true)
+    setRiskSettingsError(null)
+    try {
+      const policy = await updatePortfolioRiskPolicy(resolvedPortfolioId, {
+        covariance_model_id: riskPolicyModelId,
+        lookback_days: resolvedLookbackDays,
+        calculation_frequency: riskPolicyFrequency,
+        missing_return_policy: riskPolicyMissingReturnPolicy,
+        contribution_mode: riskPolicyContributionMode,
+      })
+      applyRiskPolicy(policy)
+      window.dispatchEvent(
+        new CustomEvent('portfolio-risk-policy-updated', {
+          detail: {
+            portfolioId: resolvedPortfolioId,
+            policy,
+          },
+        }),
+      )
+      setRiskSettingsOpen(false)
+      setSelectorNotice('Risk model settings updated.')
+    } catch (error) {
+      setRiskSettingsError(extractErrorMessage(error))
+    } finally {
+      setRiskSettingsSaving(false)
     }
   }
 
@@ -314,7 +434,153 @@ export default function PortfolioWorkspaceLayout({
                 ))}
               </div>
             </div>
+            <div className="portfolio-header-actions">
+              <button
+                type="button"
+                className="portfolio-settings-button"
+                onClick={() => void handleOpenRiskSettings()}
+                aria-label="Production risk model settings"
+                disabled={!resolvedPortfolioId}
+              >
+                Settings
+              </button>
+            </div>
           </div>
+          {riskSettingsOpen ? (
+            <div
+              className="portfolio-settings-modal-backdrop"
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !riskSettingsSaving) {
+                  setRiskSettingsOpen(false)
+                }
+              }}
+            >
+              <div
+                className="portfolio-settings-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="portfolio-risk-settings-title"
+              >
+                <div className="portfolio-settings-modal-header">
+                  <div>
+                    <div className="panel-title" id="portfolio-risk-settings-title">
+                      Production Risk Model
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setRiskSettingsOpen(false)}
+                    disabled={riskSettingsSaving}
+                    aria-label="Close settings"
+                  >
+                    Close
+                  </button>
+                </div>
+                {riskSettingsError ? (
+                  <div className="inline-notice inline-notice-error portfolio-settings-notice">
+                    {riskSettingsError}
+                  </div>
+                ) : null}
+                {riskSettingsLoading ? (
+                  <div className="empty-state">Loading.</div>
+                ) : (
+                  <form className="portfolio-settings-form" onSubmit={(event) => void handleSaveRiskSettings(event)}>
+                    <div className="portfolio-settings-grid">
+                      <label>
+                        <span>Risk Window</span>
+                        <select
+                          value={riskPolicyLookbackDays}
+                          onChange={(event) => setRiskPolicyLookbackDays(event.target.value)}
+                          disabled={riskSettingsSaving}
+                        >
+                          {RISK_WINDOW_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Frequency</span>
+                        <select
+                          value={riskPolicyFrequency}
+                          onChange={(event) =>
+                            setRiskPolicyFrequency(event.target.value as PortfolioRiskCalculationFrequency)
+                          }
+                          disabled={riskSettingsSaving}
+                        >
+                          {RISK_FREQUENCY_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Missing Returns</span>
+                        <select
+                          value={riskPolicyMissingReturnPolicy}
+                          onChange={(event) =>
+                            setRiskPolicyMissingReturnPolicy(event.target.value as PortfolioResearchMissingReturnPolicy)
+                          }
+                          disabled={riskSettingsSaving}
+                        >
+                          {RISK_MISSING_RETURN_POLICY_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Risk Model</span>
+                        <select
+                          value={riskPolicyModelId}
+                          onChange={(event) => setRiskPolicyModelId(event.target.value as PortfolioRiskCovarianceModel)}
+                          disabled={riskSettingsSaving}
+                        >
+                          {RISK_MODEL_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>RC Mode</span>
+                        <select
+                          value={riskPolicyContributionMode}
+                          onChange={(event) =>
+                            setRiskPolicyContributionMode(event.target.value as PortfolioRiskContributionMode)
+                          }
+                          disabled={riskSettingsSaving}
+                        >
+                          {RISK_CONTRIBUTION_MODE_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <div className="portfolio-settings-modal-actions">
+                      <button
+                        type="button"
+                        onClick={() => setRiskSettingsOpen(false)}
+                        disabled={riskSettingsSaving}
+                      >
+                        Cancel
+                      </button>
+                      <button type="submit" className="button-primary" disabled={riskSettingsSaving}>
+                        {riskSettingsSaving ? 'Saving…' : 'Save Settings'}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            </div>
+          ) : null}
           <nav className="portfolio-tabs" aria-label="Portfolio sections">
             {portfolioTabs.map((item) => (
               <Link

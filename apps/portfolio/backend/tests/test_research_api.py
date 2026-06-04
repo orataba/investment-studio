@@ -14,9 +14,15 @@ from portfolio_app.services.instrument_charts import (
     _candidate_chart_bases,
     build_instrument_trend_metrics_from_detail,
 )
+from portfolio_app.services.risk_model import normalize_portfolio_risk_policy, risk_min_observations_for_window
 
 from portfolio_app.services.research_solver import (
+    CAPITAL_MODE_TARGET_VOLATILITY,
+    CAPITAL_MODE_VOLATILITY_CAP,
     RiskBudgetProblem,
+    SYSTEM_CASH_TARGET_MEMBER_ID,
+    SYSTEM_CASH_TARGET_LABEL,
+    TARGET_MEMBER_CASH,
     TARGET_MEMBER_INSTRUMENT,
     TARGET_MEMBER_NODE,
     ScopeMemberRecord,
@@ -24,9 +30,14 @@ from portfolio_app.services.research_solver import (
     _estimate_covariance,
     _infer_periods_per_year,
     _periodic_nav_series,
+    _rebalance_schedule,
+    _resolve_active_top_sleeve_bound_vectors,
     _selected_price_points,
     _series_to_nav,
+    _resolve_volatility_overlay_gross_exposure,
     _solve_risk_budget_problem,
+    _solve_risk_budget_weights,
+    research_window_start_date,
 )
 
 def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "weight") -> tuple[str, dict[str, str]]:
@@ -49,7 +60,6 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
     for payload in [
         {"node_name": "Risk Assets", "node_code": "RISK"},
         {"node_name": "Rates", "node_code": "RATES"},
-        {"node_name": "Cash Reserve", "node_code": "CASH"},
     ]:
         node_response = client.post(
             f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/nodes",
@@ -83,7 +93,6 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
         ("instrument", "equity-us-abbv", "Defensive Equity"),
         ("instrument", "fund-hk-2800", "Hong Kong Beta"),
         ("instrument", "fund-us-agg", "Rates"),
-        ("cash_bucket", "cash-usd-main", "Cash Reserve"),
     ]:
         assignment_response = client.post(
             f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/assignments",
@@ -125,8 +134,8 @@ def _create_target_sets(client, taxonomy_id: str, node_ids: dict[str, str]) -> N
                     "target_risk_share": 0.4,
                 },
                 {
-                    "target_member_type": "taxonomy_node",
-                    "target_member_id": node_ids["Cash Reserve"],
+                    "target_member_type": TARGET_MEMBER_CASH,
+                    "target_member_id": SYSTEM_CASH_TARGET_MEMBER_ID,
                     "target_weight": 0.15,
                     "target_risk_share": 0.0,
                 },
@@ -152,8 +161,8 @@ def _create_target_sets(client, taxonomy_id: str, node_ids: dict[str, str]) -> N
                     "target_risk_share": 0.38,
                 },
                 {
-                    "target_member_type": "taxonomy_node",
-                    "target_member_id": node_ids["Cash Reserve"],
+                    "target_member_type": TARGET_MEMBER_CASH,
+                    "target_member_id": SYSTEM_CASH_TARGET_MEMBER_ID,
                     "target_weight": 0.15,
                     "target_risk_share": 0.0,
                 },
@@ -208,7 +217,7 @@ def _create_target_sets(client, taxonomy_id: str, node_ids: dict[str, str]) -> N
             f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/target-sets",
             json=payload,
         )
-        assert target_set_response.status_code == 200
+        assert target_set_response.status_code == 200, target_set_response.json()
 
 
 def test_research_workbench_returns_target_solve_defaults(client):
@@ -222,6 +231,8 @@ def test_research_workbench_returns_target_solve_defaults(client):
     assert payload["settings"]["capital_mode"] == "unit_notional"
     assert payload["settings"]["calculation_frequency"] == "auto"
     assert payload["settings"]["missing_return_policy"] == "strict"
+    assert payload["settings"]["backtest_rebalance_frequency"] == "1m"
+    assert payload["settings"]["backtest_benchmark_instrument_id"] is None
     assert payload["calculation_frequency"]["resolved_frequency"] == "daily"
     assert payload["risk_policy"]["model_name"] == "Production Risk Model"
     assert payload["risk_policy"]["model_role"] == "production"
@@ -231,9 +242,15 @@ def test_research_workbench_returns_target_solve_defaults(client):
     assert payload["risk_policy"]["resolved_calculation_frequency"] == "daily"
     assert payload["risk_policy"]["missing_return_policy"] == "strict"
     assert payload["risk_policy"]["contribution_mode"] == "signed"
+    assert payload["risk_policy"]["parameters"]["min_observations"] == 45
+    assert payload["risk_policy"]["parameters"]["corr_min_observations"] == 45
+    assert payload["risk_policy"]["parameters_by_frequency"]["daily"]["min_observations"] == 45
+    assert payload["risk_policy"]["parameters_by_frequency"]["weekly"]["min_observations"] == 9
+    assert payload["risk_policy"]["parameters_by_frequency"]["monthly"]["min_observations"] == 3
     assert payload["settings"]["gross_exposure"] is None
     assert payload["settings"]["target_volatility"] is None
     assert payload["settings"]["max_gross_exposure"] is None
+    assert payload["settings"]["top_sleeve_weight_bounds"] == []
     assert "run_template" not in payload["settings"]
     assert "target_set_mode" not in payload["settings"]
     assert "rebalance_frequency" not in payload["settings"]
@@ -245,6 +262,66 @@ def test_research_workbench_returns_target_solve_defaults(client):
     assert payload["current_context"]["holdings_count"] == 3
     assert payload["current_context"]["planning_group_count"] == 0
     assert payload["current_context"]["nav"] == payload["current_context"]["summary"]["end_nav"]
+
+
+def test_production_risk_window_min_observations_scale_with_calendar_window() -> None:
+    assert risk_min_observations_for_window("daily", 30) == 15
+    assert risk_min_observations_for_window("daily", 90) == 45
+    assert risk_min_observations_for_window("daily", 180) == 90
+    assert risk_min_observations_for_window("weekly", 90) == 9
+    assert risk_min_observations_for_window("monthly", 90) == 3
+
+
+def test_production_risk_policy_rejects_unsupported_windows() -> None:
+    with pytest.raises(ValueError, match="Risk window must be one of 1M, 3M, 6M, 12M, 24M"):
+        normalize_portfolio_risk_policy({"lookback_days": 7})
+
+
+def test_research_window_dates_use_calendar_months() -> None:
+    assert research_window_start_date(date(2026, 5, 29), 30) == date(2026, 4, 29)
+    assert research_window_start_date(date(2026, 5, 29), 90) == date(2026, 2, 28)
+    assert research_window_start_date(date(2026, 5, 29), 180) == date(2025, 11, 29)
+
+
+def test_research_backtest_rebalance_schedule_rolls_from_first_valid_month() -> None:
+    assert _rebalance_schedule(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 10, 15),
+        frequency="3m",
+    ) == [date(2026, 4, 1), date(2026, 7, 1), date(2026, 10, 1)]
+    assert _rebalance_schedule(
+        start_date=date(2026, 5, 2),
+        end_date=date(2026, 12, 15),
+        frequency="3m",
+    ) == [date(2026, 6, 1), date(2026, 9, 1), date(2026, 12, 1)]
+
+
+def test_top_sleeve_bounds_reject_fixed_gross_above_max_capacity() -> None:
+    member_by_key = {
+        "taxonomy_node::cta": ScopeMemberRecord(
+            member_type=TARGET_MEMBER_NODE,
+            member_id="cta",
+            label="CTA",
+        ),
+        "taxonomy_node::macro": ScopeMemberRecord(
+            member_type=TARGET_MEMBER_NODE,
+            member_id="macro",
+            label="Macro",
+        ),
+    }
+
+    with pytest.raises(ValueError, match="maximum weights allow only 70.00%"):
+        _resolve_active_top_sleeve_bound_vectors(
+            scope_label="Top Level",
+            active_keys=list(member_by_key),
+            active_budget=0.8,
+            bounds_by_key={
+                "taxonomy_node::cta": {"min_weight": None, "max_weight": 0.35},
+                "taxonomy_node::macro": {"min_weight": None, "max_weight": 0.35},
+            },
+            member_by_key=member_by_key,
+            allow_upper_shortfall=False,
+        )
 
 
 def test_research_settings_updates_production_risk_policy(client):
@@ -274,6 +351,11 @@ def test_research_settings_updates_production_risk_policy(client):
     assert risk_policy["resolved_calculation_frequency"] == "weekly"
     assert risk_policy["missing_return_policy"] == "complete_case_drop"
     assert risk_policy["contribution_mode"] == "abs"
+    assert risk_policy["parameters"]["min_observations"] == 18
+    assert risk_policy["parameters"]["corr_min_observations"] == 18
+    assert risk_policy["parameters_by_frequency"]["daily"]["min_observations"] == 90
+    assert risk_policy["parameters_by_frequency"]["weekly"]["min_observations"] == 18
+    assert risk_policy["parameters_by_frequency"]["monthly"]["min_observations"] == 5
 
     workbench_response = client.get("/api/portfolios/yungu/research/workbench")
     assert workbench_response.status_code == 200
@@ -283,6 +365,103 @@ def test_research_settings_updates_production_risk_policy(client):
     assert workbench_policy["calculation_frequency"] == "weekly"
     assert workbench_policy["missing_return_policy"] == "complete_case_drop"
     assert workbench_policy["contribution_mode"] == "abs"
+
+
+def test_research_settings_updates_backtest_controls(client):
+    settings_response = client.put(
+        "/api/portfolios/yungu/research/settings",
+        json={
+            "planning_taxonomy_id": None,
+            "comparator_taxonomy_node_id": None,
+            "as_of_date": "2026-04-15",
+            "lookback_days": 90,
+            "target_dimension": "scope_default",
+            "capital_mode": "unit_notional",
+            "backtest_rebalance_frequency": "3m",
+            "backtest_benchmark_instrument_id": "fund-us-agg",
+        },
+    )
+    assert settings_response.status_code == 200
+    settings_payload = settings_response.json()
+    assert settings_payload["backtest_rebalance_frequency"] == "3m"
+    assert settings_payload["backtest_benchmark_instrument_id"] == "fund-us-agg"
+
+    workbench_response = client.get("/api/portfolios/yungu/research/workbench")
+    assert workbench_response.status_code == 200
+    workbench_settings = workbench_response.json()["settings"]
+    assert workbench_settings["backtest_rebalance_frequency"] == "3m"
+    assert workbench_settings["backtest_benchmark_instrument_id"] == "fund-us-agg"
+
+
+def test_research_settings_accepts_volatility_cap_mode(client):
+    settings_response = client.put(
+        "/api/portfolios/yungu/research/settings",
+        json={
+            "planning_taxonomy_id": None,
+            "comparator_taxonomy_node_id": None,
+            "as_of_date": "2026-04-15",
+            "lookback_days": 90,
+            "target_dimension": "scope_default",
+            "capital_mode": "volatility_cap",
+            "target_volatility": 0.08,
+        },
+    )
+    assert settings_response.status_code == 200
+    settings_payload = settings_response.json()
+    assert settings_payload["capital_mode"] == "volatility_cap"
+    assert settings_payload["target_volatility"] == pytest.approx(0.08)
+    assert settings_payload["gross_exposure"] is None
+    assert settings_payload["max_gross_exposure"] is None
+
+    workbench_response = client.get("/api/portfolios/yungu/research/workbench")
+    assert workbench_response.status_code == 200
+    assert workbench_response.json()["settings"]["capital_mode"] == "volatility_cap"
+
+
+def test_research_target_volatility_defaults_max_gross_to_unit_leverage(client):
+    settings_response = client.put(
+        "/api/portfolios/yungu/research/settings",
+        json={
+            "planning_taxonomy_id": None,
+            "comparator_taxonomy_node_id": None,
+            "as_of_date": "2026-04-15",
+            "lookback_days": 90,
+            "target_dimension": "scope_default",
+            "capital_mode": "target_volatility",
+            "target_volatility": 0.08,
+        },
+    )
+    assert settings_response.status_code == 200
+    settings_payload = settings_response.json()
+    assert settings_payload["capital_mode"] == "target_volatility"
+    assert settings_payload["max_gross_exposure"] == pytest.approx(1.0)
+
+
+def test_volatility_overlay_gross_exposure_separates_target_and_cap_modes() -> None:
+    assert _resolve_volatility_overlay_gross_exposure(
+        capital_mode=CAPITAL_MODE_TARGET_VOLATILITY,
+        estimated_volatility=0.05,
+        target_volatility=0.10,
+        max_gross_exposure=None,
+    ) == pytest.approx(1.0)
+    assert _resolve_volatility_overlay_gross_exposure(
+        capital_mode=CAPITAL_MODE_TARGET_VOLATILITY,
+        estimated_volatility=0.05,
+        target_volatility=0.10,
+        max_gross_exposure=2.0,
+    ) == pytest.approx(2.0)
+    assert _resolve_volatility_overlay_gross_exposure(
+        capital_mode=CAPITAL_MODE_VOLATILITY_CAP,
+        estimated_volatility=0.05,
+        target_volatility=0.10,
+        max_gross_exposure=None,
+    ) == pytest.approx(1.0)
+    assert _resolve_volatility_overlay_gross_exposure(
+        capital_mode=CAPITAL_MODE_VOLATILITY_CAP,
+        estimated_volatility=0.20,
+        target_volatility=0.10,
+        max_gross_exposure=None,
+    ) == pytest.approx(0.5)
 
 
 def test_research_workbench_reads_canonical_run_top_holdings(client):
@@ -912,6 +1091,63 @@ def test_research_risk_budget_solver_matches_tight_tolerance() -> None:
     assert solution.weights.sum() == pytest.approx(1.0)
 
 
+def test_research_risk_budget_solve_allows_empty_current_reference_weights() -> None:
+    returns = pd.DataFrame(
+        {
+            "asset_a": [0.01, -0.01, 0.0, 0.0, 0.012, -0.012],
+            "asset_b": [0.0, 0.0, 0.02, -0.02, -0.004, 0.004],
+        },
+        index=[date(2026, 1, day) for day in range(1, 7)],
+        dtype="float64",
+    )
+
+    solution = _solve_risk_budget_weights(
+        target_shares=np.asarray([0.5, 0.5], dtype="float64"),
+        return_window=returns,
+        reference_weights=np.asarray([0.0, 0.0], dtype="float64"),
+        as_of_date=date(2026, 1, 6),
+        lookback_days=30,
+        calculation_frequency="daily",
+        missing_return_policy="strict",
+        risk_model_config={
+            "covariance_model_id": "sample_covariance",
+            "contribution_mode": "signed",
+            "parameters": {"min_observations": 2, "max_period_staleness_days": 0},
+        },
+    )
+
+    assert solution.weights.sum() == pytest.approx(1.0)
+    assert all(weight > 0 for weight in solution.weights)
+    assert solution.max_abs_share_gap <= 1e-4
+
+
+def test_research_risk_budget_default_model_uses_calendar_window_observation_floor() -> None:
+    dates = [item.date() for item in pd.bdate_range(end="2026-05-29", periods=48)]
+    returns = pd.DataFrame(
+        {
+            "asset_a": [0.004 if index % 2 == 0 else -0.002 for index in range(len(dates))],
+            "asset_b": [-0.001 if index % 3 == 0 else 0.003 for index in range(len(dates))],
+        },
+        index=dates,
+        dtype="float64",
+    )
+
+    solution = _solve_risk_budget_weights(
+        target_shares=np.asarray([0.5, 0.5], dtype="float64"),
+        return_window=returns,
+        reference_weights=None,
+        as_of_date=date(2026, 5, 29),
+        lookback_days=90,
+        calculation_frequency="daily",
+        missing_return_policy="strict",
+        risk_model_config=None,
+    )
+
+    assert solution.covariance_observations == 48
+    assert solution.weights.sum() == pytest.approx(1.0)
+    assert solution.max_abs_share_gap <= 1e-4
+
+
 def test_research_run_creates_current_target_weight_outputs(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
     _create_target_sets(client, taxonomy_id, node_ids)
@@ -922,7 +1158,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
             "as_of_date": "2026-04-15",
-            "lookback_days": 7,
+            "lookback_days": 30,
             "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
             "notes": "Research regression test",
@@ -940,7 +1176,6 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert len(workbench_payload["planning_taxonomy_options"]) == 1
     assert any(item["label"] == "Top Level" for item in workbench_payload["planning_scope_options"])
     assert any(item["label"] == "Risk Assets" for item in workbench_payload["planning_scope_options"])
-    assert any(item["group_label"] == "Cash Reserve" for item in workbench_payload["current_context"]["planning_groups"])
 
     run_response = client.post(
         "/api/portfolios/yungu/research/runs",
@@ -960,6 +1195,17 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert "weight_schedule" not in run_payload["detail"]
     assert len(run_payload["detail"]["member_targets"]) == 2
     assert len(run_payload["detail"]["leaf_targets"]) == 2
+    assert run_payload["detail"]["backtest"]["rebalance_frequency"] == "1m"
+    assert run_payload["detail"]["backtest"]["lookback_days"] == 30
+    assert run_payload["detail"]["backtest_benchmark"] is None
+    assert run_payload["detail"]["backtest_relative_metrics"] is None
+    assert len(run_payload["detail"]["solved_result_groups"]) == 1
+    solved_group = run_payload["detail"]["solved_result_groups"][0]
+    assert solved_group["top_sleeve_label"] == "Risk Assets"
+    solved_rows_by_member = {item["member_id"]: item for item in solved_group["rows"]}
+    assert set(solved_rows_by_member) == {"equity-us-abbv", "fund-hk-2800"}
+    assert solved_rows_by_member["equity-us-abbv"]["target_risk_share"] is None
+    assert solved_rows_by_member["fund-hk-2800"]["target_risk_share"] == pytest.approx(1.0)
     member_targets_by_label = {item["label"]: item for item in run_payload["detail"]["member_targets"]}
     assert member_targets_by_label["Defensive Equity"]["configured_risk_share"] == pytest.approx(0.45)
     assert member_targets_by_label["Hong Kong Beta"]["configured_risk_share"] == pytest.approx(0.55)
@@ -1009,6 +1255,97 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert selected_workbench_payload["selected_run"]["research_run_id"] == run_payload["research_run_id"]
 
 
+def test_research_run_replaces_previous_run(client):
+    taxonomy_id, node_ids = _create_planning_taxonomy(client)
+    _create_target_sets(client, taxonomy_id, node_ids)
+
+    settings_response = client.put(
+        "/api/portfolios/yungu/research/settings",
+        json={
+            "planning_taxonomy_id": taxonomy_id,
+            "comparator_taxonomy_node_id": node_ids["Risk Assets"],
+            "as_of_date": "2026-04-15",
+            "lookback_days": 30,
+            "target_dimension": "scope_default",
+            "capital_mode": "unit_notional",
+        },
+    )
+    assert settings_response.status_code == 200
+
+    first_response = client.post("/api/portfolios/yungu/research/runs", json={"requested_by": "pytest"})
+    assert first_response.status_code == 200, first_response.json()
+    first_run_id = first_response.json()["research_run_id"]
+
+    second_response = client.post("/api/portfolios/yungu/research/runs", json={"requested_by": "pytest"})
+    assert second_response.status_code == 200, second_response.json()
+    second_run_id = second_response.json()["research_run_id"]
+    assert second_run_id != first_run_id
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        remaining_runs = session.query(ResearchRunRecordModel).filter_by(portfolio_id="yungu").all()
+    assert [item.research_run_id for item in remaining_runs] == [second_run_id]
+
+    workbench_response = client.get("/api/portfolios/yungu/research/workbench")
+    assert workbench_response.status_code == 200
+    workbench_payload = workbench_response.json()
+    assert [item["research_run_id"] for item in workbench_payload["runs"]] == [second_run_id]
+    assert workbench_payload["selected_run"]["research_run_id"] == second_run_id
+
+
+def test_failed_research_run_keeps_previous_completed_run(client):
+    taxonomy_id, node_ids = _create_planning_taxonomy(client)
+    _create_target_sets(client, taxonomy_id, node_ids)
+
+    settings_response = client.put(
+        "/api/portfolios/yungu/research/settings",
+        json={
+            "planning_taxonomy_id": taxonomy_id,
+            "comparator_taxonomy_node_id": node_ids["Risk Assets"],
+            "as_of_date": "2026-04-15",
+            "lookback_days": 30,
+            "target_dimension": "scope_default",
+            "capital_mode": "unit_notional",
+        },
+    )
+    assert settings_response.status_code == 200
+
+    first_response = client.post("/api/portfolios/yungu/research/runs", json={"requested_by": "pytest"})
+    assert first_response.status_code == 200, first_response.json()
+    first_run_id = first_response.json()["research_run_id"]
+
+    assignment_response = client.post(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/assignments",
+        json={
+            "target_scope": TARGET_MEMBER_INSTRUMENT,
+            "target_entity_id": "fund-us-watch",
+            "taxonomy_node_id": node_ids["Defensive Equity"],
+        },
+    )
+    assert assignment_response.status_code == 200, assignment_response.json()
+
+    failed_response = client.post("/api/portfolios/yungu/research/runs", json={"requested_by": "pytest"})
+    assert failed_response.status_code == 400, failed_response.json()
+    assert "Defensive Equity" in failed_response.json()["detail"]
+    assert "weight target set" in failed_response.json()["detail"]
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        remaining_runs = session.query(ResearchRunRecordModel).filter_by(portfolio_id="yungu").all()
+    run_by_id = {item.research_run_id: item for item in remaining_runs}
+    assert run_by_id[first_run_id].status == "completed"
+    assert any(item.status == "failed" for item in remaining_runs)
+
+    workbench_response = client.get(
+        "/api/portfolios/yungu/research/workbench",
+        params={"selected_run_id": first_run_id},
+    )
+    assert workbench_response.status_code == 200
+    workbench_payload = workbench_response.json()
+    assert first_run_id in {item["research_run_id"] for item in workbench_payload["runs"]}
+    assert workbench_payload["selected_run"]["research_run_id"] == first_run_id
+
+
 def test_research_target_solve_actuals_include_pending_security_settlement(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
     _create_target_sets(client, taxonomy_id, node_ids)
@@ -1019,7 +1356,8 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
-            "lookback_days": 7,
+            "lookback_days": 90,
+            "missing_return_policy": "complete_case_drop",
             "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
             "notes": "Delayed settlement actuals regression",
@@ -1027,12 +1365,15 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
     )
     assert settings_response.status_code == 200
 
-    baseline_workbench_response = client.get("/api/portfolios/yungu/research/workbench")
-    assert baseline_workbench_response.status_code == 200
+    baseline_run_response = client.post(
+        "/api/portfolios/yungu/research/runs",
+        json={"requested_by": "pytest"},
+    )
+    assert baseline_run_response.status_code == 200, baseline_run_response.json()
     baseline_cash_value = next(
-        item["end_value_base"]
-        for item in baseline_workbench_response.json()["current_context"]["planning_groups"]
-        if item["group_label"] == "Cash Reserve"
+        item["current_value_base"]
+        for item in baseline_run_response.json()["detail"]["target_rows"]
+        if item["label"] == SYSTEM_CASH_TARGET_LABEL
     )
 
     buy_response = client.post(
@@ -1063,9 +1404,65 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
     cash_row = next(
         item
         for item in run_payload["detail"]["target_rows"]
-        if item["label"] == "Cash Reserve"
+        if item["label"] == SYSTEM_CASH_TARGET_LABEL
     )
     assert cash_row["current_value_base"] == pytest.approx(baseline_cash_value - 206.47)
+
+
+def test_research_run_rejects_incomplete_scope_targets_after_new_watch_member(client):
+    taxonomy_id, node_ids = _create_planning_taxonomy(client)
+    _create_target_sets(client, taxonomy_id, node_ids)
+
+    target_set_response = client.post(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/target-sets",
+        json={
+            "comparator_taxonomy_node_id": node_ids["Defensive Equity"],
+            "target_set_type": "taa",
+            "name": "Defensive Equity Direct Weights",
+            "weight_enabled": True,
+            "risk_budget_enabled": False,
+            "lines": [
+                {
+                    "target_member_type": TARGET_MEMBER_INSTRUMENT,
+                    "target_member_id": "equity-us-abbv",
+                    "target_weight": 1.0,
+                },
+            ],
+        },
+    )
+    assert target_set_response.status_code == 200, target_set_response.json()
+
+    assignment_response = client.post(
+        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/assignments",
+        json={
+            "target_scope": TARGET_MEMBER_INSTRUMENT,
+            "target_entity_id": "fund-us-watch",
+            "taxonomy_node_id": node_ids["Defensive Equity"],
+        },
+    )
+    assert assignment_response.status_code == 200, assignment_response.json()
+
+    settings_response = client.put(
+        "/api/portfolios/yungu/research/settings",
+        json={
+            "planning_taxonomy_id": taxonomy_id,
+            "comparator_taxonomy_node_id": node_ids["Defensive Equity"],
+            "as_of_date": "2026-04-15",
+            "lookback_days": 30,
+            "target_dimension": "scope_default",
+            "capital_mode": "unit_notional",
+        },
+    )
+    assert settings_response.status_code == 200
+
+    run_response = client.post(
+        "/api/portfolios/yungu/research/runs",
+        json={"requested_by": "pytest"},
+    )
+    assert run_response.status_code == 400, run_response.json()
+    error_detail = run_response.json()["detail"]
+    assert "Defensive Equity weight target set is incomplete" in error_detail
+    assert "Watchlist Fund" in error_detail
 
 
 def test_research_scope_default_respects_taxonomy_root_default_dimension(client):
@@ -1077,7 +1474,8 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
             "as_of_date": "2026-04-15",
-            "lookback_days": 7,
+            "lookback_days": 90,
+            "missing_return_policy": "complete_case_drop",
             "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
         },
@@ -1114,8 +1512,8 @@ def test_research_scope_default_requires_configured_dimension_target_set(client)
                     "target_weight": 0.2,
                 },
                 {
-                    "target_member_type": "taxonomy_node",
-                    "target_member_id": node_ids["Cash Reserve"],
+                    "target_member_type": TARGET_MEMBER_CASH,
+                    "target_member_id": SYSTEM_CASH_TARGET_MEMBER_ID,
                     "target_weight": 0.1,
                 },
             ],
@@ -1182,24 +1580,113 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
         "target_dimension": "scope_default",
         "capital_mode": "unit_notional",
         "frozen_taxonomy_node_ids": [node_ids["Risk Assets"]],
+        "top_sleeve_weight_bounds": [
+            {"taxonomy_node_id": node_ids["Risk Assets"], "min_weight": 0.2, "max_weight": 0.55},
+        ],
     }
     initial_response = client.put("/api/portfolios/yungu/research/settings", json=payload)
     assert initial_response.status_code == 200
     assert initial_response.json()["frozen_taxonomy_node_ids"] == [node_ids["Risk Assets"]]
+    assert initial_response.json()["top_sleeve_weight_bounds"] == [
+        {"taxonomy_node_id": node_ids["Risk Assets"], "min_weight": 0.2, "max_weight": 0.55},
+    ]
     assert initial_response.json()["missing_return_policy"] == "complete_case_drop"
 
     omitted_payload = dict(payload)
     omitted_payload.pop("frozen_taxonomy_node_ids")
+    omitted_payload.pop("top_sleeve_weight_bounds")
     omitted_payload["notes"] = "Preserve frozen sleeves"
     omitted_response = client.put("/api/portfolios/yungu/research/settings", json=omitted_payload)
     assert omitted_response.status_code == 200
     assert omitted_response.json()["frozen_taxonomy_node_ids"] == [node_ids["Risk Assets"]]
+    assert omitted_response.json()["top_sleeve_weight_bounds"] == [
+        {"taxonomy_node_id": node_ids["Risk Assets"], "min_weight": 0.2, "max_weight": 0.55},
+    ]
 
     clear_payload = dict(omitted_payload)
     clear_payload["frozen_taxonomy_node_ids"] = []
+    clear_payload["top_sleeve_weight_bounds"] = []
     clear_response = client.put("/api/portfolios/yungu/research/settings", json=clear_payload)
     assert clear_response.status_code == 200
     assert clear_response.json()["frozen_taxonomy_node_ids"] == []
+    assert clear_response.json()["top_sleeve_weight_bounds"] == []
+
+
+def test_research_settings_rejects_non_top_sleeve_weight_bounds(client):
+    taxonomy_id, node_ids = _create_planning_taxonomy(client)
+    response = client.put(
+        "/api/portfolios/yungu/research/settings",
+        json={
+            "planning_taxonomy_id": taxonomy_id,
+            "comparator_taxonomy_node_id": None,
+            "as_of_date": "2026-04-15",
+            "lookback_days": 90,
+            "missing_return_policy": "complete_case_drop",
+            "target_dimension": "scope_default",
+            "capital_mode": "unit_notional",
+            "top_sleeve_weight_bounds": [
+                {"taxonomy_node_id": node_ids["Defensive Equity"], "max_weight": 0.3},
+            ],
+        },
+    )
+    assert response.status_code == 400
+    assert "top-level nodes" in response.json()["detail"]
+
+
+def test_research_risk_budget_solver_accepts_binding_weight_bounds():
+    dates = pd.date_range(end="2026-05-29", periods=60, freq="B")
+    factor = np.sin(np.linspace(0.0, 8.0 * np.pi, len(dates)))
+    returns = pd.DataFrame(
+        {
+            "low_vol": 0.0003 + 0.002 * factor,
+            "high_vol": 0.0005 + 0.018 * factor + 0.001 * np.cos(np.linspace(0.0, 4.0 * np.pi, len(dates))),
+        },
+        index=[item.date() for item in dates],
+    )
+
+    bounded = _solve_risk_budget_weights(
+        target_shares=np.asarray([0.5, 0.5], dtype="float64"),
+        return_window=returns,
+        reference_weights=None,
+        as_of_date=date(2026, 5, 29),
+        lookback_days=90,
+        calculation_frequency="daily",
+        missing_return_policy="strict",
+        risk_model_config=None,
+        lower_bounds=np.asarray([0.0, 0.0], dtype="float64"),
+        upper_bounds=np.asarray([0.3, 1.0], dtype="float64"),
+    )
+
+    assert bounded.weights[0] == pytest.approx(0.3, abs=1e-6)
+    assert bounded.weights.sum() == pytest.approx(1.0)
+    assert bounded.solver_detail in {"slsqp_minimax", "slsqp_minimax_balanced"}
+    assert bounded.max_abs_share_gap is not None
+    assert bounded.max_abs_share_gap > 1e-4
+
+
+def test_research_risk_budget_solver_returns_binding_signed_negative_constrained_solution():
+    problem = RiskBudgetProblem(
+        bucket_ids=["diversifier", "risk_asset"],
+        covariance=np.array(
+            [
+                [0.01, -0.09],
+                [-0.09, 1.0],
+            ],
+            dtype="float64",
+        ),
+        target_risk_shares=np.array([0.5, 0.5], dtype="float64"),
+        lower_bounds=np.array([0.3, 0.0], dtype="float64"),
+        upper_bounds=np.array([0.6, 1.0], dtype="float64"),
+        reference_weights=np.array([0.5, 0.5], dtype="float64"),
+        contribution_mode="signed",
+    )
+
+    solution = _solve_risk_budget_problem(problem, enforce_tolerance=False)
+
+    assert solution.weights.sum() == pytest.approx(1.0)
+    assert solution.solver_kind in {"slsqp_minimax", "slsqp_minimax_balanced"}
+    assert solution.max_abs_share_gap > 1e-4
+    assert float(solution.achieved_risk_shares.min()) < 0.0
 
 
 def test_research_target_volatility_rejects_unaligned_risk_history(client):

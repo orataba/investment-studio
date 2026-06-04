@@ -99,6 +99,13 @@ QUOTE_SELECTION_POLICY_DEFAULTS: dict[str, dict[str, list[str]]] = {
         "chart": ["adjusted_close", "close", "last"],
         "reference": ["close", "last"],
     },
+    "index": {
+        "trading": ["close", "last"],
+        "valuation": ["close", "adjusted_close", "last"],
+        "total_return": ["adjusted_close", "close", "last"],
+        "chart": ["adjusted_close", "close", "last"],
+        "reference": ["close", "last"],
+    },
     "bond": {
         "trading": ["clean_price", "dirty_price"],
         "valuation": ["dirty_price", "clean_price"],

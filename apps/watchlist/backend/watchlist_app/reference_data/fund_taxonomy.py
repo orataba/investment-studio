@@ -207,6 +207,7 @@ FUND_TAXONOMY_TREE = [
             {"node_id": "fund-private-other", "label": "其他"},
         ],
     },
+    {"node_id": "index", "label": "指数", "instrument_type": "index"},
 ]
 
 
@@ -230,7 +231,7 @@ def _flatten_nodes(
                 "node_id": node_id,
                 "taxonomy_code": FUND_TAXONOMY_CODE,
                 "taxonomy_label": FUND_TAXONOMY_LABEL,
-                "instrument_type": FUND_TAXONOMY_ASSET_TYPE,
+                "instrument_type": str(node.get("instrument_type") or FUND_TAXONOMY_ASSET_TYPE),
                 "label": label,
                 "parent_node_id": parent_node_id,
                 "level_index": level_index,

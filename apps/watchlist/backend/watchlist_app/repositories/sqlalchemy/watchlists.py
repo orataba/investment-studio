@@ -41,16 +41,21 @@ def _allocate_local_view_id(
 
 
 FUND_SCREENING_VIEW_ID = "fund-screening"
-FUND_SCREENING_VIEW_NAME = "基金分类筛选"
-FUND_SCREENING_VIEW_DESCRIPTION = "先按分类树缩小基金池，再叠加研究标签和监控判断。"
+FUND_SCREENING_VIEW_NAME = "产品分类筛选"
+FUND_SCREENING_VIEW_DESCRIPTION = "先按分类树缩小产品池，再叠加研究标签和监控判断。"
+LOCAL_DETAIL_VIEW_FILTERS = {"instrument_type": ["fund", "index"]}
 ALL_COVERAGE_WATCHLIST_ID = "all-coverage"
 ALL_COVERAGE_WATCHLIST_NAME = "All Covered"
 ALL_COVERAGE_WATCHLIST_DESCRIPTION = (
-    "System-maintained coverage of every active fund in the shared instrument registry."
+    "System-maintained coverage of every active fund and index in the shared instrument registry."
 )
 SYSTEM_OWNER_TYPE = "system"
 SYSTEM_OWNER_ID = "watchlist"
 TAXONOMY_GROUP_BY_CODE = "taxonomy"
+
+
+def _local_detail_view_filters() -> dict[str, list[str]]:
+    return {"instrument_type": list(LOCAL_DETAIL_VIEW_FILTERS["instrument_type"])}
 
 
 def _overview_view_columns() -> list[dict[str, object]]:
@@ -168,7 +173,7 @@ class SQLAlchemyWatchlistRepository:
             kind="system",
             default_group_by=fund_screening_default_group_by,
             default_sort=[],
-            default_filters={"instrument_type": ["fund"]},
+            default_filters=_local_detail_view_filters(),
             default_advanced_filter={},
             columns=_fund_screening_view_columns(),
             is_default=False,
@@ -256,15 +261,17 @@ class SQLAlchemyWatchlistRepository:
                 kind="system",
                 default_group_by=TAXONOMY_GROUP_BY_CODE,
                 default_sort=[],
-                default_filters={"instrument_type": ["fund"]},
+                default_filters=_local_detail_view_filters(),
                 default_advanced_filter={},
                 columns=_fund_screening_view_columns(),
                 is_default=False,
             )
         else:
             screening.kind = "system"
+            screening.name = FUND_SCREENING_VIEW_NAME
+            screening.description = FUND_SCREENING_VIEW_DESCRIPTION
             screening.default_group_by = TAXONOMY_GROUP_BY_CODE
-            screening.default_filters_json = {"instrument_type": ["fund"]}
+            screening.default_filters_json = _local_detail_view_filters()
 
         default_view_key = _scoped_view_id(ALL_COVERAGE_WATCHLIST_ID, "overview")
         for view in session.scalars(

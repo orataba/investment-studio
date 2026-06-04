@@ -41,6 +41,17 @@ button {
   font: inherit;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 select {
   font: inherit;
 }
@@ -987,6 +998,34 @@ th {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.watchlists-current-search {
+  display: inline-flex;
+  align-items: center;
+  min-width: 220px;
+  height: 30px;
+}
+
+.watchlists-current-search input {
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.watchlists-current-search input:focus {
+  border-color: var(--accent);
+}
+
+.watchlists-current-search input::placeholder {
+  color: var(--faint);
 }
 
 .watchlists-toolbar-button {

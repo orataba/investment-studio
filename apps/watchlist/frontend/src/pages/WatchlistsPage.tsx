@@ -703,8 +703,33 @@ function primarySharedIdentifier(instrument: SharedInstrumentRecord) {
   )
 }
 
+function rowValueMatchesSearch(value: unknown, query: string): boolean {
+  if (value == null) {
+    return false
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => rowValueMatchesSearch(item, query))
+  }
+  if (typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some((item) =>
+      rowValueMatchesSearch(item, query),
+    )
+  }
+  return String(value).toLowerCase().includes(query)
+}
+
+function rowMatchesWatchlistSearch(row: Record<string, unknown>, query: string): boolean {
+  if (!query) {
+    return true
+  }
+  return Object.values(row).some((value) => rowValueMatchesSearch(value, query))
+}
+
 export default function WatchlistsPage() {
   const primaryDisplayColumn = 'instrument_name'
+  const primaryDisplayColumnAliases = ['asset_name', 'fund_name', 'name']
+  const isPrimaryDisplayColumn = (fieldKey: string) =>
+    fieldKey === primaryDisplayColumn || primaryDisplayColumnAliases.includes(fieldKey)
   const requiredColumns = [primaryDisplayColumn]
   const navigate = useNavigate()
   const { watchlistId = '' } = useParams()
@@ -723,6 +748,7 @@ export default function WatchlistsPage() {
   const [workingFilters, setWorkingFilters] = useState<FilterState>({})
   const [selectedFieldCategory, setSelectedFieldCategory] = useState('')
   const [fieldSearch, setFieldSearch] = useState('')
+  const [watchlistSearch, setWatchlistSearch] = useState('')
   const [selectedRows, setSelectedRows] = useState<string[]>([])
   const [modalKind, setModalKind] = useState<ModalKind>(null)
   const [filterMenuOpen, setFilterMenuOpen] = useState(false)
@@ -944,16 +970,31 @@ export default function WatchlistsPage() {
     let cancelled = false
     setIsSearchingInstruments(true)
 
-    getSharedInstruments({
-      search: instrumentSearch,
-      instrument_type: 'fund',
-      limit: 12,
-    })
-      .then((results) => {
+    Promise.all([
+      getSharedInstruments({
+        search: instrumentSearch,
+        instrument_type: 'fund',
+        limit: 12,
+      }),
+      getSharedInstruments({
+        search: instrumentSearch,
+        instrument_type: 'index',
+        limit: 12,
+      }),
+    ])
+      .then(([fundResults, indexResults]) => {
         if (cancelled) {
           return
         }
 
+        const seenInstrumentIds = new Set<string>()
+        const results = [...fundResults, ...indexResults].filter((item) => {
+          if (seenInstrumentIds.has(item.instrument_id)) {
+            return false
+          }
+          seenInstrumentIds.add(item.instrument_id)
+          return true
+        })
         setSharedInstrumentResults(results)
         setSelectedInstrumentId((current) => {
           if (current && results.some((item) => item.instrument_id === current)) {
@@ -1054,7 +1095,7 @@ export default function WatchlistsPage() {
         instrumentType: String(row.instrument_type || '').trim().toLowerCase(),
         detailSubjectId: String(row.detail_subject_id || row.instrument_id || '').trim(),
       }))
-      .filter((row) => row.instrumentId && row.instrumentType === 'fund' && row.detailSubjectId)
+      .filter((row) => row.instrumentId && ['fund', 'index'].includes(row.instrumentType) && row.detailSubjectId)
     const missingTargets = chartTargets.filter(
       (row) => sparklineMap[row.instrumentId]?.requestKey !== sparklineRequestKey,
     )
@@ -1118,8 +1159,8 @@ export default function WatchlistsPage() {
         rows.map(async (row) => {
           try {
             const resolved = await resolveSharedInstrument(row.identifier)
-            if (resolved.instrument_type !== 'fund') {
-              throw new Error(`${row.identifier} resolves to ${resolved.instrument_type}, but watchlist currently supports funds only.`)
+            if (resolved.instrument_type !== 'fund' && resolved.instrument_type !== 'index') {
+              throw new Error(`${row.identifier} resolves to ${resolved.instrument_type}, but watchlist currently supports funds and indexes only.`)
             }
             resolvedInstrumentIds.add(resolved.instrument_id)
           } catch (resolveError) {
@@ -1130,7 +1171,7 @@ export default function WatchlistsPage() {
 
       if (missingIdentifiers.length) {
         throw new Error(
-          `Watchlist accepts shared-registry funds only. Check these identifiers in Database Dashboard: ${missingIdentifiers.join(', ')}.`,
+          `Watchlist accepts shared-registry funds and indexes only. Check these identifiers in Database Dashboard: ${missingIdentifiers.join(', ')}.`,
         )
       }
 
@@ -1182,7 +1223,7 @@ export default function WatchlistsPage() {
         sort_mode: 'none',
         filter_mode: 'none',
         group_mode: 'none',
-        instrument_scope_json: ['fund'],
+        instrument_scope_json: ['fund', 'index'],
         product_scope_json: [],
         availability_rule_json: {},
         source_domain: 'derived',
@@ -1200,7 +1241,7 @@ export default function WatchlistsPage() {
         sort_mode: 'none',
         filter_mode: 'none',
         group_mode: 'none',
-        instrument_scope_json: ['fund'],
+        instrument_scope_json: ['fund', 'index'],
         product_scope_json: [],
         availability_rule_json: {},
         source_domain: 'derived',
@@ -1218,7 +1259,7 @@ export default function WatchlistsPage() {
         sort_mode: 'none',
         filter_mode: 'none',
         group_mode: 'none',
-        instrument_scope_json: ['fund'],
+        instrument_scope_json: ['fund', 'index'],
         product_scope_json: [],
         availability_rule_json: {},
         source_domain: 'derived',
@@ -1236,7 +1277,7 @@ export default function WatchlistsPage() {
         sort_mode: 'none',
         filter_mode: 'none',
         group_mode: 'none',
-        instrument_scope_json: ['fund'],
+        instrument_scope_json: ['fund', 'index'],
         product_scope_json: [],
         availability_rule_json: {},
         source_domain: 'derived',
@@ -1312,11 +1353,12 @@ export default function WatchlistsPage() {
     const seen = new Set<string>()
     const normalized: string[] = []
     ;[...requiredColumns, ...columns].forEach((field) => {
-      if (!field || seen.has(field)) {
+      const normalizedField = isPrimaryDisplayColumn(field) ? primaryDisplayColumn : field
+      if (!normalizedField || seen.has(normalizedField)) {
         return
       }
-      seen.add(field)
-      normalized.push(field)
+      seen.add(normalizedField)
+      normalized.push(normalizedField)
     })
     return normalized
   }
@@ -1324,7 +1366,7 @@ export default function WatchlistsPage() {
     const nextWidths: Record<string, number> = {}
     view?.column_meta?.forEach((item) => {
       if (typeof item.width === 'number') {
-        nextWidths[item.field_key] = item.width
+        nextWidths[isPrimaryDisplayColumn(item.field_key) ? primaryDisplayColumn : item.field_key] = item.width
       }
     })
     return nextWidths
@@ -1359,7 +1401,7 @@ export default function WatchlistsPage() {
     return map
   }, [mergedFieldRegistry])
   const visibleColumns = ensureRequiredColumns(workingColumns.length ? workingColumns : [primaryDisplayColumn])
-  const baseColumns = activeView?.columns || []
+  const baseColumns = ensureRequiredColumns(activeView?.columns || [])
   const baseGroupBy = activeView?.default_group_by || 'none'
   const baseSort = activeView?.default_sort || []
   const baseFilters = useMemo(
@@ -1666,7 +1708,7 @@ export default function WatchlistsPage() {
   }, [availableCategoryList, selectedFieldCategory])
 
   const filteredFieldRegistry = scopedFieldRegistry.filter((field) => {
-    if (requiredColumns.includes(field.field_key)) {
+    if (isPrimaryDisplayColumn(field.field_key)) {
       return false
     }
     const matchesCategory = !selectedFieldCategory || field.category_code === selectedFieldCategory
@@ -1832,8 +1874,17 @@ export default function WatchlistsPage() {
     }
   }, [availableGroupByOptions, workingGroupBy])
 
-  const groupedRows = useMemo(() => {
+  const watchlistSearchQuery = watchlistSearch.trim().toLowerCase()
+  const searchedRows = useMemo(() => {
     const rows = screenerResult?.rows || []
+    if (!watchlistSearchQuery) {
+      return rows
+    }
+    return rows.filter((row) => rowMatchesWatchlistSearch(row, watchlistSearchQuery))
+  }, [screenerResult, watchlistSearchQuery])
+
+  const groupedRows = useMemo(() => {
+    const rows = searchedRows
     if (!activeGroupBy) {
       return [{ key: 'all', label: null, rows, summaryRows: rows, rowCount: rows.length, depth: 0 }]
     }
@@ -1963,7 +2014,7 @@ export default function WatchlistsPage() {
       }
     })
     return groups
-  }, [activeGroupBy, screenerResult, taxonomyDisplayOrderByPath])
+  }, [activeGroupBy, screenerResult?.groups, searchedRows, taxonomyDisplayOrderByPath])
 
   const visibleGroupedRows = useMemo(() => {
     let collapsedDepth: number | null = null
@@ -2013,7 +2064,7 @@ export default function WatchlistsPage() {
       })),
     }
   }
-  const allVisibleInstrumentIds = screenerResult?.rows.map((row) => String(row.instrument_id)) || []
+  const allVisibleInstrumentIds = searchedRows.map((row) => String(row.instrument_id))
   const allRowsSelected =
     allVisibleInstrumentIds.length > 0 && allVisibleInstrumentIds.every((instrumentId) => selectedRows.includes(instrumentId))
 
@@ -2370,6 +2421,19 @@ export default function WatchlistsPage() {
       <section className="watchlists-main panel">
         <div className="watchlists-toolbar">
           <div className="watchlists-toolbar-left">
+            <label className="watchlists-current-search">
+              <span className="sr-only">Search this watchlist</span>
+              <input
+                type="search"
+                value={watchlistSearch}
+                onChange={(event) => {
+                  setWatchlistSearch(event.target.value)
+                  setSelectedRows([])
+                }}
+                placeholder="Search this watchlist"
+              />
+            </label>
+
             {!activeWatchlistIsAllCoverage ? (
               <button
                 type="button"
@@ -2385,7 +2449,7 @@ export default function WatchlistsPage() {
                   setError(null)
                 }}
               >
-                Add Funds
+                Add
               </button>
             ) : null}
 
@@ -2848,7 +2912,7 @@ export default function WatchlistsPage() {
               </tr>
             </thead>
             <tbody>
-              {screenerResult?.rows.length ? (
+              {searchedRows.length ? (
                 visibleGroupedRows.map((group, groupIndex) => {
                   const collapsed = collapsedGroupKeys.has(group.key)
                   const groupDropTarget = buildGroupDropTarget(group)
@@ -3007,7 +3071,9 @@ export default function WatchlistsPage() {
               ) : (
                 <tr>
                   <td colSpan={Math.max(visibleColumns.length + 1, 1)} className="empty-state">
-                    No rows matched the current watchlist view.
+                    {watchlistSearchQuery
+                      ? 'No rows matched the current watchlist search.'
+                      : 'No rows matched the current watchlist view.'}
                   </td>
                 </tr>
               )}
@@ -3018,7 +3084,9 @@ export default function WatchlistsPage() {
           <div className="watchlists-pagination">
             <div className="watchlists-pagination-summary">
               {screenerResult.total_rows
-                ? `Showing all ${screenerResult.total_rows} rows`
+                ? watchlistSearchQuery
+                  ? `Showing ${searchedRows.length} of ${screenerResult.total_rows} rows`
+                  : `Showing all ${screenerResult.total_rows} rows`
                 : 'No rows in this watchlist view'}
             </div>
           </div>
@@ -3490,8 +3558,8 @@ export default function WatchlistsPage() {
           <div className="watchlists-modal watchlists-add-modal" onClick={(event) => event.stopPropagation()}>
             <div className="watchlists-modal-header">
               <div>
-                <div className="panel-title">Add Funds</div>
-                <div className="section-heading">Shared Registry · Fund Only</div>
+                <div className="panel-title">Add</div>
+                <div className="section-heading">Shared Registry</div>
               </div>
               <button type="button" onClick={() => setModalKind(null)}>
                 Close
@@ -3505,13 +3573,14 @@ export default function WatchlistsPage() {
                   className="form-input"
                   value={instrumentSearch}
                   onChange={(event) => setInstrumentSearch(event.target.value)}
-                  placeholder="Ticker, ISIN, or fund name"
+                  placeholder="Ticker, ISIN, or instrument name"
                 />
               </div>
               <p className="watchlists-registry-note">
                 Watchlist only references existing instruments from{' '}
-                <a href={`${PLATFORM_HOME_URL}/database-dashboard`}>Database Dashboard</a>. This release only accepts
-                `fund` instruments. If the fund is not listed here, it does not exist in the shared registry yet.
+                <a href={`${PLATFORM_HOME_URL}/database-dashboard`}>Database Dashboard</a>. This release accepts
+                `fund` and `index` instruments. If the instrument is not listed here, it does not exist in the shared
+                registry yet.
               </p>
               {selectedSharedInstrument ? (
                 <div className="watchlists-registry-selected">
@@ -3550,8 +3619,8 @@ export default function WatchlistsPage() {
                 {!isSearchingInstruments && !sharedInstrumentResults.length ? (
                   <div className="empty-state">
                     {instrumentSearch.trim()
-                      ? `Fund "${instrumentSearch.trim()}" does not exist in the shared registry.`
-                      : 'No fund instruments are available in the shared registry.'}
+                      ? `Instrument "${instrumentSearch.trim()}" does not exist in the shared registry.`
+                      : 'No fund or index instruments are available in the shared registry.'}
                   </div>
                 ) : null}
               </div>

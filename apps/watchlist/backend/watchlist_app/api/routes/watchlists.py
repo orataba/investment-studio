@@ -61,6 +61,7 @@ read_model_repository = SQLAlchemyReadModelRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
 canonical_recalc_service = CanonicalRecalcService()
 MAX_WATCHLIST_ID_ATTEMPTS = 10
+LOCAL_DETAIL_VIEW_TYPES = {"fund", "index"}
 
 
 def _is_all_coverage_watchlist(watchlist_id: str) -> bool:
@@ -169,8 +170,13 @@ def _primary_shared_identifier(
     return identifier_type, identifier_value
 
 
+def _local_detail_view_type(shared_instrument: dict[str, object]) -> str | None:
+    instrument_type = str(shared_instrument.get("instrument_type") or "").strip().lower()
+    return instrument_type if instrument_type in LOCAL_DETAIL_VIEW_TYPES else None
+
+
 def _supports_local_detail(shared_instrument: dict[str, object]) -> bool:
-    return str(shared_instrument.get("instrument_type") or "").strip().lower() == "fund"
+    return _local_detail_view_type(shared_instrument) is not None
 
 
 def _ensure_local_instrument_detail(
@@ -184,12 +190,29 @@ def _ensure_local_instrument_detail(
     if not instrument_registry_id:
         return None
 
+    detail_view_type = _local_detail_view_type(shared_instrument)
+    if detail_view_type is None:
+        return None
+
     instrument_repository.upsert_from_shared_instrument(
         session,
         shared_instrument=shared_instrument,
-        detail_view_type="fund",
+        detail_view_type=detail_view_type,
     )
     return instrument_registry_id
+
+
+def _list_shared_local_detail_instruments() -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    seen_ids: set[str] = set()
+    for instrument_type in sorted(LOCAL_DETAIL_VIEW_TYPES):
+        for shared_instrument in list_shared_instruments(instrument_type=instrument_type, limit=None):
+            instrument_id = str(shared_instrument.get("instrument_id") or "").strip()
+            if not instrument_id or instrument_id in seen_ids:
+                continue
+            seen_ids.add(instrument_id)
+            records.append(shared_instrument)
+    return records
 
 
 def _ensure_required_columns(columns: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -496,7 +519,7 @@ def _materialize_watchlist_rows(
 def _sync_all_coverage_watchlist(session: Session):
     record = watchlist_repository.ensure_all_coverage_watchlist(session)
     try:
-        shared_funds = list_shared_instruments(instrument_type="fund", limit=None)
+        shared_funds = _list_shared_local_detail_instruments()
     except SharedInstrumentRegistryError:
         return record
 
@@ -761,8 +784,8 @@ def add_items_to_watchlist(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Watchlist currently supports fund instruments only: {unsupported_label}. "
-                "Use Database Dashboard for shared master data, then add supported funds here."
+                f"Watchlist currently supports fund and index instruments only: {unsupported_label}. "
+                "Use Database Dashboard for shared master data, then add supported instruments here."
             ),
         )
 

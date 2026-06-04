@@ -88,6 +88,22 @@ def test_parse_nav_rows_from_xlsx_supports_chinese_headers() -> None:
     assert parsed[0]["frequency"] == "daily"
 
 
+def test_parse_nav_rows_from_xlsx_supports_product_code_and_trade_date_aliases() -> None:
+    rows = [
+        ["产品编码", "产品名称", "交易日期", "单位净值", "累计净值"],
+        ["SBMM07", "国泰君安期货CTA因子组合3号集合资产管理计划", "20260529", "1.0148", "1.0148"],
+    ]
+
+    parsed = _parse_nav_rows_from_xlsx(_workbook_bytes(rows))
+
+    assert len(parsed) == 1
+    assert parsed[0]["as_of_date"] == "2026-05-29"
+    assert parsed[0]["instrument_code"] == "SBMM07"
+    assert parsed[0]["instrument_name"] == "国泰君安期货CTA因子组合3号集合资产管理计划"
+    assert str(parsed[0]["nav"]) == "1.0148"
+    assert str(parsed[0]["nav_with_dividend"]) == "1.0148"
+
+
 def test_parse_nav_rows_from_xlsx_ignores_broken_dimension_metadata() -> None:
     rows = [
         ["净值日期", "产品代码", "产品名称", "单位净值", "累计单位净值"],
@@ -116,6 +132,23 @@ def test_parse_nav_rows_from_xlsx_supports_total_nav_aliases_and_datetime_values
     assert str(parsed[0]["nav_with_dividend"]) == "1"
     assert parsed[0]["instrument_code"] == "ANZ73A(A级)"
     assert parsed[0]["instrument_name"] == "盈怀香柏树1号私募证券投资基金A类"
+
+
+def test_parse_nav_rows_from_xlsx_supports_yuan_per_share_headers() -> None:
+    rows = [
+        ["产品基金净值数据"],
+        ["产品代码", "产品名称", "净值日期", "单位净值(元/份)", "累计单位净值(元/份)"],
+        ["SAZN63", "孝庸混合策略配置一号私募证券投资基金", "2026-06-01", "1.0147", "1.0147"],
+    ]
+
+    parsed = _parse_nav_rows_from_xlsx(_workbook_bytes(rows))
+
+    assert len(parsed) == 1
+    assert parsed[0]["as_of_date"] == "2026-06-01"
+    assert str(parsed[0]["nav"]) == "1.0147"
+    assert str(parsed[0]["nav_with_dividend"]) == "1.0147"
+    assert parsed[0]["instrument_code"] == "SAZN63"
+    assert parsed[0]["instrument_name"] == "孝庸混合策略配置一号私募证券投资基金"
 
 
 def test_parse_nav_rows_from_xlsx_supports_chinese_date_strings_after_title_rows() -> None:

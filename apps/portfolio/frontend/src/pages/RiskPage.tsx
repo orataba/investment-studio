@@ -33,6 +33,19 @@ import { formatCurrency, formatLabel, formatNumber, formatPercent } from '../lib
 
 const DAYS_PER_YEAR = 365.25
 const RISK_MIN_WINDOW_COVERAGE_RATIO = 0.8
+const RISK_MIN_OBSERVATION_COVERAGE_RATIO = 0.75
+const RISK_WINDOW_MONTHS_BY_DAYS: Record<number, number> = {
+  30: 1,
+  90: 3,
+  180: 6,
+  366: 12,
+  730: 24,
+}
+const RISK_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: Record<CalculationFrequency, number> = {
+  daily: 20,
+  weekly: 4,
+  monthly: 1,
+}
 const DEFAULT_RISK_LOOKBACK_DAYS = 90
 const DEFAULT_RISK_ANALYTICS_LOOKBACK_DAYS = 30
 const DEFAULT_RISK_MODEL_ID = 'ewma_vol_shrinkage_corr_covariance'
@@ -142,16 +155,17 @@ function riskFail<T>(errors: string | string[], value: T): RiskCalculationResult
 }
 
 const RISK_WINDOW_OPTIONS = [
-  { value: 30, label: '1M', detail: '30D' },
-  { value: 90, label: '1Q', detail: '90D' },
-  { value: 180, label: '6M', detail: '180D' },
-  { value: 366, label: '1Y', detail: '366D' },
+  { value: 30, label: '1M' },
+  { value: 90, label: '3M' },
+  { value: 180, label: '6M' },
+  { value: 366, label: '12M' },
+  { value: 730, label: '24M' },
 ] as const
 
 const RISK_MODEL_OPTIONS: Array<{ value: RiskModelId; label: string; detail: string }> = [
   {
     value: 'ewma_vol_shrinkage_corr_covariance',
-    label: 'Research EWMA',
+    label: 'EWMA + Shrinkage',
     detail: 'EWMA vol + shrunk correlation',
   },
   { value: 'ewma_covariance', label: 'EWMA', detail: 'Exponentially weighted covariance' },
@@ -175,19 +189,16 @@ const DEFAULT_RISK_MODEL_PARAMETERS: Record<CalculationFrequency, Record<string,
     decay: 0.94,
     vol_decay: 0.9945,
     corr_shrinkage: 0.15,
-    min_observations: 52,
   },
   weekly: {
     decay: 0.94,
     vol_decay: 0.9737,
     corr_shrinkage: 0.15,
-    min_observations: 26,
   },
   monthly: {
     decay: 0.94,
     vol_decay: 0.8909,
     corr_shrinkage: 0.15,
-    min_observations: 12,
   },
 }
 
@@ -258,27 +269,6 @@ const RISK_MAX_START_GAP_DAYS: Record<CalculationFrequency, number> = {
   daily: 10,
   weekly: 21,
   monthly: 45,
-}
-
-const RISK_MIN_RETURN_OBSERVATIONS: Record<CalculationFrequency, Record<number, number>> = {
-  daily: {
-    30: 10,
-    90: 30,
-    180: 60,
-    366: 120,
-  },
-  weekly: {
-    30: 3,
-    90: 6,
-    180: 12,
-    366: 24,
-  },
-  monthly: {
-    30: 2,
-    90: 2,
-    180: 4,
-    366: 6,
-  },
 }
 
 function localDateIso(input = new Date()) {
@@ -504,10 +494,19 @@ function numericParameter(parameters: Record<string, unknown> | undefined, key: 
 }
 
 function riskModelParameters(settings: RiskSettingsState, frequency: CalculationFrequency) {
+  const minObservations = riskMinObservationsForWindow(frequency, settings.lookbackDays)
   return {
     ...DEFAULT_RISK_MODEL_PARAMETERS[frequency],
+    min_observations: minObservations,
+    corr_min_observations: minObservations,
     ...(settings.parameters ?? {}),
   }
+}
+
+function riskMinObservationsForWindow(frequency: CalculationFrequency, lookbackDays: number) {
+  const months = RISK_WINDOW_MONTHS_BY_DAYS[lookbackDays] ?? Math.max(lookbackDays, 1) / (DAYS_PER_YEAR / 12)
+  const expectedObservations = months * RISK_OBSERVATIONS_PER_MONTH_BY_FREQUENCY[frequency]
+  return Math.max(2, Math.ceil(expectedObservations * RISK_MIN_OBSERVATION_COVERAGE_RATIO))
 }
 
 function riskSettingsFromPolicy(policy: HoldingsWorkspaceResponse['risk_policy'] | undefined | null): RiskSettingsState {
@@ -532,8 +531,7 @@ function minReturnObservations(
   if (Number.isFinite(configured)) {
     return Math.max(2, Math.floor(configured))
   }
-  const thresholds = RISK_MIN_RETURN_OBSERVATIONS[frequency]
-  return thresholds[lookbackDays] ?? thresholds[366]
+  return riskMinObservationsForWindow(frequency, lookbackDays)
 }
 
 function assessRiskWindowCoverage(
@@ -603,8 +601,15 @@ function buildBenchmarkReturnPoints(chart: PortfolioInstrumentPriceChartResponse
   return returns
 }
 
-function commonReturnDateKeys(series: GroupReturnSeries[], startDate = '', endDate = '') {
-  const activeSeries = series.filter((item) => Math.abs(item.latestWeight ?? 0) > 1e-9)
+function commonReturnDateKeys(
+  series: GroupReturnSeries[],
+  startDate = '',
+  endDate = '',
+  options: { includeZeroWeight?: boolean } = {},
+) {
+  const activeSeries = options.includeZeroWeight
+    ? series
+    : series.filter((item) => Math.abs(item.latestWeight ?? 0) > 1e-9)
   if (!activeSeries.length) {
     return []
   }
@@ -1053,6 +1058,7 @@ function buildCorrelationMatrix(
     activeSeries.map(({ item }) => item),
     riskWindowStart(asOfDate, lookbackDays),
     asOfDate,
+    { includeZeroWeight: true },
   )
   const sampleCoverage = assessRiskWindowCoverage(sampleDates, asOfDate, lookbackDays, frequency)
   if (!sampleCoverage.ok) {
@@ -1093,6 +1099,52 @@ function isCashHoldingRow(row: HoldingsWorkspaceResponse['rows'][number]) {
   return row.instrument_core.instrument_type.trim().toLowerCase() === 'cash'
 }
 
+function isCashUniverseInstrument(record: PortfolioTaxonomyCatalogResponse['instrument_universe'][number]) {
+  const instrument = record.instrument_ref
+  return (
+    record.instrument_id.trim().toLowerCase().startsWith('cash:') ||
+    (instrument?.instrument_type ?? '').trim().toLowerCase() === 'cash'
+  )
+}
+
+function returnPointsToGroupSeries({
+  groupKey,
+  groupLabel,
+  returnPoints,
+  asOfDate,
+  latestWeight,
+}: {
+  groupKey: string
+  groupLabel: string
+  returnPoints: ReturnPoint[]
+  asOfDate: string
+  latestWeight: number
+}): GroupReturnSeries | null {
+  const returnsByDate = new Map<string, number>()
+  returnPoints.forEach((point) => {
+    const value = finiteNumber(point.value)
+    if (point.date && point.date <= asOfDate && value != null) {
+      returnsByDate.set(point.date, value)
+    }
+  })
+  if (!returnsByDate.size) {
+    return null
+  }
+  const endingWeightByDate = new Map<string, number>()
+  returnsByDate.forEach((_value, dateKey) => {
+    endingWeightByDate.set(dateKey, latestWeight)
+  })
+  endingWeightByDate.set(asOfDate, latestWeight)
+  return {
+    groupKey,
+    groupLabel,
+    returnsByDate,
+    endingWeightByDate,
+    latestWeight,
+    observationCount: returnsByDate.size,
+  } satisfies GroupReturnSeries
+}
+
 function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWorkspaceResponse | null) {
   if (!holdingsWorkspace) {
     return riskFail('Current risk requires the holdings workspace.', [] satisfies GroupReturnSeries[])
@@ -1117,30 +1169,18 @@ function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWorkspace
         errors.push(`Current risk requires a current portfolio weight for ${label}.`)
         return null
       }
-      const returnsByDate = new Map<string, number>()
-      ;(row.instrument_return_series_all?.points ?? []).forEach((point) => {
-        const value = finiteNumber(point.value)
-        if (point.date && point.date <= asOfDate && value != null) {
-          returnsByDate.set(point.date, value)
-        }
+      const series = returnPointsToGroupSeries({
+        groupKey: row.instrument_core.instrument_id,
+        groupLabel: label,
+        returnPoints: row.instrument_return_series_all?.points ?? [],
+        asOfDate,
+        latestWeight: currentWeight,
       })
-      if (!returnsByDate.size) {
+      if (!series) {
         errors.push(`Current risk requires full-history return series for ${label}.`)
         return null
       }
-      const endingWeightByDate = new Map<string, number>()
-      returnsByDate.forEach((_value, dateKey) => {
-        endingWeightByDate.set(dateKey, currentWeight)
-      })
-      endingWeightByDate.set(asOfDate, currentWeight)
-      return {
-        groupKey: row.instrument_core.instrument_id,
-        groupLabel: label,
-        returnsByDate,
-        endingWeightByDate,
-        latestWeight: currentWeight,
-        observationCount: returnsByDate.size,
-      } satisfies GroupReturnSeries
+      return series
     })
     .filter((item): item is GroupReturnSeries => item !== null)
     .sort((left, right) => {
@@ -1149,6 +1189,56 @@ function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWorkspace
     })
 
   return errors.length ? riskFail(errors, [] satisfies GroupReturnSeries[]) : riskOk(series)
+}
+
+function buildMatrixInstrumentReturnSeries({
+  holdingsWorkspace,
+  catalog,
+}: {
+  holdingsWorkspace: HoldingsWorkspaceResponse | null
+  catalog: PortfolioTaxonomyCatalogResponse | null
+}) {
+  if (!holdingsWorkspace || !catalog) {
+    return [] satisfies GroupReturnSeries[]
+  }
+  const asOfDate = holdingsWorkspace.as_of_date
+  if (!asOfDate) {
+    return [] satisfies GroupReturnSeries[]
+  }
+
+  const currentWeightByInstrumentId = new Map<string, number>()
+  holdingsWorkspace.rows
+    .filter((row) => !isCashHoldingRow(row))
+    .forEach((row) => {
+      const currentWeight = finiteNumber(row.allocation)
+      if (currentWeight != null) {
+        currentWeightByInstrumentId.set(row.instrument_core.instrument_id, currentWeight)
+      }
+    })
+
+  return catalog.instrument_universe
+    .filter((record) => record.status === 'active' && record.instrument_ref && !isCashUniverseInstrument(record))
+    .map((record): GroupReturnSeries | null => {
+      const instrument = record.instrument_ref
+      if (!instrument) {
+        return null
+      }
+      const label = instrument.instrument_name || instrument.instrument_id
+      const currentWeight = currentWeightByInstrumentId.get(record.instrument_id) ?? 0
+      const series = returnPointsToGroupSeries({
+        groupKey: record.instrument_id,
+        groupLabel: label,
+        returnPoints: record.instrument_return_series_all?.points ?? [],
+        asOfDate,
+        latestWeight: currentWeight,
+      })
+      return series
+    })
+    .filter((item): item is GroupReturnSeries => item !== null)
+    .sort((left, right) => {
+      const weightDelta = Math.abs(right.latestWeight ?? 0) - Math.abs(left.latestWeight ?? 0)
+      return weightDelta || left.groupLabel.localeCompare(right.groupLabel)
+    })
 }
 
 function buildCurrentTaxonomyReturnSeries({
@@ -1182,6 +1272,9 @@ function buildCurrentTaxonomyReturnSeries({
   >()
 
   instrumentSeries.forEach((item) => {
+    if (Math.abs(item.latestWeight ?? 0) <= 1e-9) {
+      return
+    }
     const assignmentResult = resolveActiveAssignment(
       catalog,
       taxonomy.taxonomy_id,
@@ -2102,6 +2195,7 @@ export default function RiskPage() {
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [workspaceSupportError, setWorkspaceSupportError] = useState<string | null>(null)
+  const [riskPolicyRevision, setRiskPolicyRevision] = useState(0)
   const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
@@ -2119,6 +2213,18 @@ export default function RiskPage() {
   useEffect(() => {
     saveRiskPageSettings({ rolling: rollingSettings, matrix: matrixSettings })
   }, [matrixSettings, rollingSettings])
+
+  useEffect(() => {
+    function handleRiskPolicyUpdated(event: Event) {
+      const detail = (event as CustomEvent<{ portfolioId?: string }>).detail
+      if (detail?.portfolioId === portfolioId) {
+        setRiskPolicyRevision((current) => current + 1)
+      }
+    }
+
+    window.addEventListener('portfolio-risk-policy-updated', handleRiskPolicyUpdated)
+    return () => window.removeEventListener('portfolio-risk-policy-updated', handleRiskPolicyUpdated)
+  }, [portfolioId])
 
   useEffect(() => {
     if (!portfolioId) {
@@ -2163,7 +2269,10 @@ export default function RiskPage() {
         }
       })
 
-    Promise.allSettled([getPortfolioAccountsWorkspace(portfolioId), getPortfolioTaxonomyCatalog(portfolioId)])
+    Promise.allSettled([
+      getPortfolioAccountsWorkspace(portfolioId),
+      getPortfolioTaxonomyCatalog(portfolioId, { include_market_profile: true }),
+    ])
       .then(([accountsResult, taxonomyResult]) => {
         if (cancelled) {
           return
@@ -2207,7 +2316,7 @@ export default function RiskPage() {
     return () => {
       cancelled = true
     }
-  }, [portfolioId])
+  }, [portfolioId, riskPolicyRevision])
 
   useEffect(() => {
     if (!portfolioId) {
@@ -2349,6 +2458,30 @@ export default function RiskPage() {
         : [],
     [portfolioRiskFrequency.frequency, rawInstrumentReturnSeries, riskBasisFinalDate, riskInputsReady],
   )
+  const rawMatrixInstrumentReturnSeries = useMemo(
+    () => buildMatrixInstrumentReturnSeries({ holdingsWorkspace, catalog: taxonomyCatalog }),
+    [holdingsWorkspace, taxonomyCatalog],
+  )
+  const matrixRiskFrequency = useMemo(() => {
+    const frequency = taxonomyCatalog?.risk_basis?.resolved_frequency
+    if (isCalculationFrequency(frequency)) {
+      return {
+        frequency,
+        statusLabel:
+          taxonomyCatalog?.risk_basis?.status_label ||
+          `${CALCULATION_FREQUENCY_LABELS[frequency]} risk basis`,
+      } satisfies RiskFrequencyProfile
+    }
+    return portfolioRiskFrequency
+  }, [
+    portfolioRiskFrequency,
+    taxonomyCatalog?.risk_basis?.resolved_frequency,
+    taxonomyCatalog?.risk_basis?.status_label,
+  ])
+  const matrixInstrumentReturnSeries = useMemo(
+    () => alignReturnSeriesToFrequency(rawMatrixInstrumentReturnSeries, matrixRiskFrequency.frequency, riskBasisFinalDate),
+    [matrixRiskFrequency.frequency, rawMatrixInstrumentReturnSeries, riskBasisFinalDate],
+  )
   const portfolioReturnPoints = useMemo(
     () => buildCurrentWeightedPortfolioReturnPoints(instrumentReturnSeries),
     [instrumentReturnSeries],
@@ -2406,12 +2539,16 @@ export default function RiskPage() {
     [benchmarkReturnPoints, portfolioRiskFrequency.frequency, rollingSettings],
   )
 
-  const riskDates = useMemo(() => uniqueSortedSeriesDates(instrumentReturnSeries), [instrumentReturnSeries])
+  const riskDates = useMemo(
+    () => uniqueSortedSeriesDates(matrixInstrumentReturnSeries.length ? matrixInstrumentReturnSeries : instrumentReturnSeries),
+    [instrumentReturnSeries, matrixInstrumentReturnSeries],
+  )
   // The scrubber reflects the portfolio life, while the risk estimators still receive full asset histories.
   const riskAsOfSelectionDates = useMemo(
     () => datesFromPortfolioStart(riskDates, portfolioStartDate),
     [portfolioStartDate, riskDates],
   )
+  const effectiveMatrixAsOfDate = matrixAsOfDate || riskAsOfSelectionDates[riskAsOfSelectionDates.length - 1] || ''
 
   useEffect(() => {
     if (!riskAsOfSelectionDates.length) {
@@ -2451,7 +2588,7 @@ export default function RiskPage() {
       matrixUsesAllInstruments
         ? riskOk([] satisfies GroupReturnSeries[])
         : buildCurrentTaxonomyReturnSeries({
-            instrumentSeries: instrumentReturnSeries,
+            instrumentSeries: matrixInstrumentReturnSeries.length ? matrixInstrumentReturnSeries : instrumentReturnSeries,
             catalog: taxonomyCatalog,
             taxonomy: defaultPlanningTaxonomy,
             scopeNodeId: matrixTaxonomyScopeNodeId,
@@ -2461,6 +2598,7 @@ export default function RiskPage() {
       defaultPlanningTaxonomy,
       holdingsWorkspace?.as_of_date,
       instrumentReturnSeries,
+      matrixInstrumentReturnSeries,
       matrixTaxonomyScopeNodeId,
       matrixUsesAllInstruments,
       taxonomyCatalog,
@@ -2469,19 +2607,18 @@ export default function RiskPage() {
   const matrixTaxonomySeries = matrixTaxonomySeriesResult.value
   const alignedMatrixTaxonomySeries = useMemo(
     () =>
-      riskInputsReady && !matrixTaxonomySeriesResult.errors.length
+      !matrixTaxonomySeriesResult.errors.length
         ? alignReturnSeriesToFrequency(
             matrixTaxonomySeries,
-            portfolioRiskFrequency.frequency,
+            matrixRiskFrequency.frequency,
             riskBasisFinalDate,
           )
         : [],
     [
       matrixTaxonomySeries,
       matrixTaxonomySeriesResult.errors.length,
-      portfolioRiskFrequency.frequency,
+      matrixRiskFrequency.frequency,
       riskBasisFinalDate,
-      riskInputsReady,
     ],
   )
   const topLevelTaxonomySeriesResult = useMemo(
@@ -2515,22 +2652,22 @@ export default function RiskPage() {
   const instrumentCorrelationMatrix = useMemo(
     () =>
       buildCorrelationMatrix(
-        instrumentReturnSeries,
-        matrixAsOfDate,
+        matrixInstrumentReturnSeries,
+        effectiveMatrixAsOfDate,
         matrixSettings.lookbackDays,
-        portfolioRiskFrequency.frequency,
+        matrixRiskFrequency.frequency,
       ),
-    [instrumentReturnSeries, matrixAsOfDate, matrixSettings.lookbackDays, portfolioRiskFrequency.frequency],
+    [effectiveMatrixAsOfDate, matrixInstrumentReturnSeries, matrixSettings.lookbackDays, matrixRiskFrequency.frequency],
   )
   const taxonomyCorrelationMatrix = useMemo(
     () =>
       buildCorrelationMatrix(
         alignedMatrixTaxonomySeries,
-        matrixAsOfDate,
+        effectiveMatrixAsOfDate,
         matrixSettings.lookbackDays,
-        portfolioRiskFrequency.frequency,
+        matrixRiskFrequency.frequency,
       ),
-    [alignedMatrixTaxonomySeries, matrixAsOfDate, matrixSettings.lookbackDays, portfolioRiskFrequency.frequency],
+    [alignedMatrixTaxonomySeries, effectiveMatrixAsOfDate, matrixSettings.lookbackDays, matrixRiskFrequency.frequency],
   )
   const selectedCorrelationMatrix = matrixUsesAllInstruments ? instrumentCorrelationMatrix : taxonomyCorrelationMatrix
   const selectedMatrixErrors = matrixUsesAllInstruments ? [] : matrixTaxonomySeriesResult.errors
@@ -2935,7 +3072,7 @@ export default function RiskPage() {
               </div>
               <RiskDateTimeline
                 dates={riskAsOfSelectionDates}
-                value={matrixAsOfDate}
+                value={effectiveMatrixAsOfDate}
                 onChange={setMatrixAsOfDate}
                 label="Matrix as of"
               />

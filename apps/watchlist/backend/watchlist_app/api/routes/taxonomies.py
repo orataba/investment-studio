@@ -31,12 +31,12 @@ taxonomy_repository = SQLAlchemyTaxonomyRepository()
 canonical_recalc_service = CanonicalRecalcService()
 
 
-def _require_fund_asset(session: Session, instrument_id: str):
+def _require_taxonomy_asset(session: Session, instrument_id: str):
     instrument = instrument_repository.get(session, instrument_id)
     if instrument is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
-    if str(instrument.instrument_type or "").strip().lower() != "fund":
-        raise HTTPException(status_code=400, detail="Fund taxonomy is only available for fund instruments.")
+    if str(instrument.instrument_type or "").strip().lower() not in {"fund", "index"}:
+        raise HTTPException(status_code=400, detail="Taxonomy is only available for fund and index instruments.")
     return instrument
 
 
@@ -98,7 +98,7 @@ def get_fund_taxonomy_assignment(
     instrument_id: str,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _require_fund_asset(session, instrument_id)
+    _require_taxonomy_asset(session, instrument_id)
     return _taxonomy_context_for_asset(session, instrument_id=instrument_id) | {"instrument_id": instrument_id}
 
 
@@ -108,7 +108,7 @@ def update_fund_taxonomy_assignment(
     payload: TaxonomyAssignmentUpsertRequest,
     session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    _require_fund_asset(session, instrument_id)
+    _require_taxonomy_asset(session, instrument_id)
     node_id = str(payload.node_id or "").strip() or None
     if node_id is not None:
         node = taxonomy_repository.get_node(session, node_id=node_id)

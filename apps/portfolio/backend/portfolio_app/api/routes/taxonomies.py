@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from datetime import date
+from typing import cast
+
 from fastapi import APIRouter, HTTPException
 
+from portfolio_app.services.calculation_frequency import CalculationFrequency
 from portfolio_app.api.contracts import (
     DefaultPlanningTaxonomyResponse,
     DefaultPlanningTaxonomyUpdateRequest,
@@ -22,6 +26,7 @@ from portfolio_app.api.contracts import (
     TaxonomyRecord,
     TaxonomyUpdateRequest,
 )
+from portfolio_app.services.instrument_charts import build_instrument_holdings_market_profile
 from portfolio_app.services.instrument_registry import InstrumentRegistryError, get_registry_instrument
 from portfolio_app.services.portfolio_store import (
     create_taxonomy,
@@ -48,6 +53,8 @@ from portfolio_app.services.portfolio_store import (
     update_target_set,
     upsert_portfolio_instrument_universe_record,
 )
+from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
+from portfolio_app.services.risk_model import get_portfolio_risk_policy
 
 
 router = APIRouter()
@@ -71,15 +78,86 @@ def _load_registry_instrument_ref(instrument_id: str) -> dict[str, object]:
     }
 
 
+def _universe_record_is_cash(record: dict[str, object]) -> bool:
+    instrument_id = str(record.get("instrument_id") or "").strip().lower()
+    instrument_ref = record.get("instrument_ref") if isinstance(record.get("instrument_ref"), dict) else {}
+    instrument_type = str((instrument_ref or {}).get("instrument_type") or "").strip().lower()
+    return instrument_type == "cash" or instrument_id.startswith("cash:")
+
+
+def _enrich_universe_market_profiles(
+    records: list[dict[str, object]],
+    *,
+    as_of_date: date,
+    requested_frequency: object = "auto",
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    instrument_ids = [
+        str(record.get("instrument_id") or "").strip()
+        for record in records
+        if str(record.get("status") or "active") == "active"
+        and str(record.get("instrument_id") or "").strip()
+        and not _universe_record_is_cash(record)
+    ]
+    risk_basis_profile = calculation_frequency_profile_for_instruments(
+        instrument_ids,
+        end_date=as_of_date,
+        requested_frequency=requested_frequency,
+    )
+    calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
+    enriched_records: list[dict[str, object]] = []
+    for record in records:
+        enriched = dict(record)
+        instrument_id = str(enriched.get("instrument_id") or "").strip()
+        if instrument_id and instrument_id in instrument_ids:
+            profile = build_instrument_holdings_market_profile(
+                instrument_id,
+                as_of_date=as_of_date,
+                calculation_frequency=calculation_frequency,
+            )
+            enriched["instrument_trend_basis"] = profile.get("instrument_trend_basis")
+            enriched["instrument_risk_frequency"] = profile.get("instrument_risk_frequency")
+            enriched["instrument_return_series_all"] = profile.get("instrument_return_series_all")
+        enriched_records.append(enriched)
+    return enriched_records, risk_basis_profile
+
+
 @router.get("/{portfolio_id}/taxonomies", response_model=TaxonomyCatalogResponse)
-def get_portfolio_taxonomies(portfolio_id: str) -> TaxonomyCatalogResponse:
+def get_portfolio_taxonomies(
+    portfolio_id: str,
+    include_market_profile: bool = False,
+    as_of_date: date | None = None,
+) -> TaxonomyCatalogResponse:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
+    universe_records = list_portfolio_instrument_universe(portfolio_id)
+    risk_basis_profile = None
+    if include_market_profile:
+        resolved_as_of_date = (
+            as_of_date
+            or (
+                date.fromisoformat(str(portfolio.get("as_of_date"))[:10])
+                if portfolio.get("as_of_date")
+                else None
+            )
+            or date.today()
+        )
+        risk_policy = get_portfolio_risk_policy(portfolio_id)
+        requested_risk_frequency = str((risk_policy or {}).get("calculation_frequency") or "auto")
+        try:
+            universe_records, risk_basis_profile = _enrich_universe_market_profiles(
+                universe_records,
+                as_of_date=resolved_as_of_date,
+                requested_frequency=requested_risk_frequency,
+            )
+        except InstrumentRegistryError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
     return TaxonomyCatalogResponse(
         portfolio_id=portfolio_id,
         default_planning_taxonomy_id=portfolio.get("default_planning_taxonomy_id"),
+        risk_basis=risk_basis_profile,
         taxonomies=[TaxonomyRecord.model_validate(item) for item in list_taxonomies(portfolio_id)],
         taxonomy_nodes=[TaxonomyNodeRecord.model_validate(item) for item in list_taxonomy_nodes(portfolio_id)],
         taxonomy_assignments=[
@@ -88,7 +166,7 @@ def get_portfolio_taxonomies(portfolio_id: str) -> TaxonomyCatalogResponse:
         ],
         instrument_universe=[
             PortfolioInstrumentUniverseRecord.model_validate(item)
-            for item in list_portfolio_instrument_universe(portfolio_id)
+            for item in universe_records
         ],
         target_sets=[TargetSetRecord.model_validate(item) for item in list_target_sets(portfolio_id)],
         target_set_lines=[TargetSetLineRecord.model_validate(item) for item in list_target_set_lines(portfolio_id)],

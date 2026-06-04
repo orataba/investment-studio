@@ -34,7 +34,7 @@ export default function SectionStubPage({
         <p>{summary}</p>
         <p className="muted" style={{ marginBottom: 0 }}>
           This section is intentionally lightweight for now. The v2 priority
-          remains watchlists, instrument detail, canonical facts, recalculation jobs,
+          remains watchlists, fund/index detail, canonical facts, recalculation jobs,
           and read models.
         </p>
       </div>

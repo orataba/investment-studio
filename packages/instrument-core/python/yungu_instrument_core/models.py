@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-InstrumentType = Literal["fund", "bond", "equity", "cash", "fx", "other"]
+InstrumentType = Literal["fund", "index", "bond", "equity", "cash", "fx", "other"]
 IdentifierType = Literal["ticker", "isin", "cusip", "sedol", "internal", "fund_name", "other"]
 MetricFamily = Literal["price", "nav", "fx"]
 QuoteBasis = Literal[

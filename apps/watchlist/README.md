@@ -2,7 +2,7 @@
 
 这是当前 `Yungu / Watchlist` app 的工作区。
 
-当前后端主语已经统一到 `instrument`，产品可用范围明确收敛为 `fund-only watchlist`。
+当前后端主语已经统一到 `instrument`，当前已发布主路径支持 `fund` 与 `index` 两类本地 watchlist/detail 工作面。
 
 当前 app 已经包含：
 
@@ -26,7 +26,8 @@
 
 - `Watchlists` 与单资产详情页是当前主界面
 - Watchlist 里的资产新增只允许从 `Database Dashboard` 共享库搜索并引用，不再在 Watchlist 内创建资产主档
-- 当前 watchlist 可用范围是 `fund`；shared registry 可以管理更广的资产类型，但它们不会进入 watchlist detail 主链路
+- 当前 watchlist 可用范围是 `fund` 与 `index`；shared registry 可以管理更广的资产类型，但其他类型不会进入 watchlist detail 主链路
+- `index` 使用轻量详情工作面，当前聚焦 `Overview / Performance / Risk`，不强行复用 fund-specific 的 exposure、people、strategy、documents 或 research 录入面
 - `Monitoring` 已经是可用工作面；`Research / Documents` 一级路由仍以轻量页为主
 - Copilot 后端接口仍保留为后续扩展入口，但当前 UI 默认隐藏，不作为已发布能力
 
@@ -101,10 +102,10 @@ npm --prefix apps/watchlist/frontend run build
 - Watchlist filter 菜单会基于当前 watchlist 的全量行构建选项，不再只采样前几页；当前页执行 add / delete / move 后，filter 选项也会随之刷新
 - Watchlist 的 `move` / `copy` 只允许操作 source watchlist 里已经存在的资产，不再把这两个接口当成隐式 `add`
 - 自定义 view 会把展示名称映射成 path-safe 的 slug id；复制 watchlist 时也会清洗 legacy custom view id，避免把不可路由的旧 id 继续扩散
-- Watchlist 和 Instrument Detail 已改成三层产品框架：`Fund Taxonomy / Research Tags / Monitoring Assessment`；详情页入口调整为 `Overview`，把基础信息和 `Fund Taxonomy` 放到第一屏
+- Watchlist 和 Instrument Detail 已改成三层产品框架：`Fund Taxonomy / Research Tags / Monitoring Assessment`；详情页入口调整为 `Overview`，把基础信息和产品 taxonomy 放到第一屏
 - `Peer Category` 仍然保留为外部同类比较口径；内部基金分类已经独立成 fund taxonomy tree，二者不再混用
 - fund 分类不再依赖固定 `fund_category_l1/l2/l3`；当前已经落成 `fund taxonomy tree + derived taxonomy levels`，支持可变深度路径和按层级 group by
-- fund taxonomy 不做自动推断或 migration 自动回填；默认未分类，由人在详情页 `Overview -> Fund Taxonomy` 明确选择
+- fund/index taxonomy 不做自动推断或 migration 自动回填；默认未分类，由人在详情页 `Overview -> Fund Taxonomy` 明确选择
 - Monitoring 的缺失项检查已经改成 taxonomy-aware；不同分类叶子只检查适用的 label，不再全 fund 共用一套静态 tag 清单
 - 示例基金标签值不再在 migration 或 add-to-watchlist 运行时自动注入；产品框架赋值只来自显式录入和后续真实数据链路
 - 后端主语已经统一到 `instrument`，当前只暴露 `/api/instruments/...` 明确接口；旧 `/api/funds/...` 兼容路由已移除
