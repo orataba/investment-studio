@@ -20,6 +20,7 @@ from portfolio_app.services.research_solver import (
     CAPITAL_MODE_TARGET_VOLATILITY,
     CAPITAL_MODE_VOLATILITY_CAP,
     RiskBudgetProblem,
+    RiskBudgetSolution,
     SYSTEM_CASH_TARGET_MEMBER_ID,
     SYSTEM_CASH_TARGET_LABEL,
     TARGET_MEMBER_CASH,
@@ -27,12 +28,15 @@ from portfolio_app.services.research_solver import (
     TARGET_MEMBER_NODE,
     ScopeMemberRecord,
     _align_member_series,
+    _build_backtest_metrics,
     _estimate_covariance,
     _infer_periods_per_year,
+    _is_better_risk_budget_solution,
     _periodic_nav_series,
     _rebalance_schedule,
     _resolve_active_top_sleeve_bound_vectors,
     _selected_price_points,
+    _selected_target_risk_share,
     _series_to_nav,
     _resolve_volatility_overlay_gross_exposure,
     _solve_risk_budget_problem,
@@ -285,6 +289,11 @@ def test_research_window_dates_use_calendar_months() -> None:
 
 def test_research_backtest_rebalance_schedule_rolls_from_first_valid_month() -> None:
     assert _rebalance_schedule(
+        start_date=date(2026, 5, 5),
+        end_date=date(2026, 5, 26),
+        frequency="1w",
+    ) == [date(2026, 5, 5), date(2026, 5, 12), date(2026, 5, 19), date(2026, 5, 26)]
+    assert _rebalance_schedule(
         start_date=date(2026, 4, 1),
         end_date=date(2026, 10, 15),
         frequency="3m",
@@ -294,6 +303,30 @@ def test_research_backtest_rebalance_schedule_rolls_from_first_valid_month() -> 
         end_date=date(2026, 12, 15),
         frequency="3m",
     ) == [date(2026, 6, 1), date(2026, 9, 1), date(2026, 12, 1)]
+
+
+def test_research_backtest_metrics_include_ytd_drawdown_duration_and_calmar() -> None:
+    points = [
+        {"date": "2025-12-31", "value": 1.0},
+        {"date": "2026-01-02", "value": 1.1},
+        {"date": "2026-01-05", "value": 0.88},
+        {"date": "2026-01-12", "value": 1.12},
+    ]
+    returns = {
+        "2026-01-02": 0.1,
+        "2026-01-05": -0.2,
+        "2026-01-12": 1.12 / 0.88 - 1.0,
+    }
+
+    metrics = _build_backtest_metrics(points, returns)
+
+    assert metrics["period_return"] == pytest.approx(0.12)
+    assert metrics["ytd_return"] == pytest.approx(0.12)
+    assert metrics["max_drawdown"] == pytest.approx(-0.2)
+    assert metrics["max_drawdown_days"] == 3
+    assert metrics["max_drawdown_recovery_days"] == 7
+    assert metrics["current_drawdown"] == pytest.approx(0.0)
+    assert metrics["calmar_ratio"] is not None
 
 
 def test_top_sleeve_bounds_reject_fixed_gross_above_max_capacity() -> None:
@@ -377,19 +410,19 @@ def test_research_settings_updates_backtest_controls(client):
             "lookback_days": 90,
             "target_dimension": "scope_default",
             "capital_mode": "unit_notional",
-            "backtest_rebalance_frequency": "3m",
+            "backtest_rebalance_frequency": "1w",
             "backtest_benchmark_instrument_id": "fund-us-agg",
         },
     )
     assert settings_response.status_code == 200
     settings_payload = settings_response.json()
-    assert settings_payload["backtest_rebalance_frequency"] == "3m"
+    assert settings_payload["backtest_rebalance_frequency"] == "1w"
     assert settings_payload["backtest_benchmark_instrument_id"] == "fund-us-agg"
 
     workbench_response = client.get("/api/portfolios/yungu/research/workbench")
     assert workbench_response.status_code == 200
     workbench_settings = workbench_response.json()["settings"]
-    assert workbench_settings["backtest_rebalance_frequency"] == "3m"
+    assert workbench_settings["backtest_rebalance_frequency"] == "1w"
     assert workbench_settings["backtest_benchmark_instrument_id"] == "fund-us-agg"
 
 
@@ -1148,6 +1181,65 @@ def test_research_risk_budget_default_model_uses_calendar_window_observation_flo
     assert solution.max_abs_share_gap <= 1e-4
 
 
+def test_risk_budget_solution_selection_prioritizes_normalized_max_gap() -> None:
+    problem = RiskBudgetProblem(
+        bucket_ids=["large", "small_a", "small_b"],
+        covariance=np.eye(3, dtype="float64"),
+        target_risk_shares=np.array([0.8, 0.1, 0.1], dtype="float64"),
+        lower_bounds=np.zeros(3, dtype="float64"),
+        upper_bounds=np.ones(3, dtype="float64"),
+        reference_weights=np.array([0.8, 0.1, 0.1], dtype="float64"),
+    )
+    smaller_absolute_gap_but_less_fair = RiskBudgetSolution(
+        bucket_ids=problem.bucket_ids,
+        weights=np.array([0.8, 0.05, 0.15], dtype="float64"),
+        achieved_risk_shares=np.array([0.8, 0.05, 0.15], dtype="float64"),
+        objective_value=0.0,
+        max_abs_share_gap=0.05,
+        iterations=1,
+        message="candidate",
+        solver_kind="test",
+        contribution_mode="signed",
+    )
+    larger_absolute_gap_but_more_fair = RiskBudgetSolution(
+        bucket_ids=problem.bucket_ids,
+        weights=np.array([0.74, 0.13, 0.13], dtype="float64"),
+        achieved_risk_shares=np.array([0.74, 0.13, 0.13], dtype="float64"),
+        objective_value=0.0,
+        max_abs_share_gap=0.06,
+        iterations=1,
+        message="candidate",
+        solver_kind="test",
+        contribution_mode="signed",
+    )
+
+    assert _is_better_risk_budget_solution(
+        problem,
+        larger_absolute_gap_but_more_fair,
+        smaller_absolute_gap_but_less_fair,
+    )
+    assert not _is_better_risk_budget_solution(
+        problem,
+        smaller_absolute_gap_but_less_fair,
+        larger_absolute_gap_but_more_fair,
+    )
+
+
+def test_selected_target_risk_share_only_applies_to_active_risk_budget_dimension() -> None:
+    assert _selected_target_risk_share(
+        {
+            "selected_target_dimension": "weight",
+            "configured_risk_share": 0.5,
+        }
+    ) is None
+    assert _selected_target_risk_share(
+        {
+            "selected_target_dimension": "risk_budget",
+            "configured_risk_share": 0.5,
+        }
+    ) == pytest.approx(0.5)
+
+
 def test_research_run_creates_current_target_weight_outputs(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
     _create_target_sets(client, taxonomy_id, node_ids)
@@ -1199,6 +1291,21 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert run_payload["detail"]["backtest"]["lookback_days"] == 30
     assert run_payload["detail"]["backtest_benchmark"] is None
     assert run_payload["detail"]["backtest_relative_metrics"] is None
+    comparison_response = client.get(
+        f"/api/portfolios/yungu/research/runs/{run_payload['research_run_id']}/benchmark-comparison",
+        params={"benchmark_instrument_id": "fund-hk-2800"},
+    )
+    assert comparison_response.status_code == 200, comparison_response.json()
+    comparison_payload = comparison_response.json()
+    assert comparison_payload["backtest_benchmark"]["instrument_id"] == "fund-hk-2800"
+    assert comparison_payload["backtest_benchmark"]["points"]
+    assert comparison_payload["backtest_benchmark"]["metrics"]["period_return"] is not None
+    assert comparison_payload["backtest_relative_metrics"] is not None
+    portfolio_period_return = run_payload["detail"]["backtest"]["metrics"]["period_return"]
+    benchmark_period_return = comparison_payload["backtest_benchmark"]["metrics"]["period_return"]
+    assert comparison_payload["backtest_relative_metrics"]["excess_return"] == pytest.approx(
+        portfolio_period_return - benchmark_period_return
+    )
     assert len(run_payload["detail"]["solved_result_groups"]) == 1
     solved_group = run_payload["detail"]["solved_result_groups"][0]
     assert solved_group["top_sleeve_label"] == "Risk Assets"

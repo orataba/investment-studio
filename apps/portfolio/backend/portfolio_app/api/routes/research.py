@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from portfolio_app.api.contracts import (
     ResearchArtifactContentResponse,
+    ResearchBacktestBenchmarkComparisonResponse,
     ResearchRunCreateRequest,
     ResearchRunRecord,
     ResearchSettingsRecord,
@@ -13,6 +14,7 @@ from portfolio_app.api.contracts import (
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.portfolio_store import get_portfolio
 from portfolio_app.services.research import (
+    get_research_backtest_benchmark_comparison,
     get_research_workbench,
     read_research_artifact_content,
     run_portfolio_research,
@@ -98,6 +100,32 @@ def create_portfolio_research_run(
     if run is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return ResearchRunRecord.model_validate(run)
+
+
+@router.get(
+    "/{portfolio_id}/research/runs/{research_run_id}/benchmark-comparison",
+    response_model=ResearchBacktestBenchmarkComparisonResponse,
+)
+def get_portfolio_research_run_benchmark_comparison(
+    portfolio_id: str,
+    research_run_id: str,
+    benchmark_instrument_id: str = Query(..., min_length=1),
+) -> ResearchBacktestBenchmarkComparisonResponse:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    try:
+        payload = get_research_backtest_benchmark_comparison(
+            portfolio_id,
+            research_run_id=research_run_id,
+            benchmark_instrument_id=benchmark_instrument_id,
+        )
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Research run not found")
+    return ResearchBacktestBenchmarkComparisonResponse.model_validate(payload)
 
 
 @router.get("/{portfolio_id}/research/artifacts/content", response_model=ResearchArtifactContentResponse)

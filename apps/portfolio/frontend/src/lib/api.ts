@@ -703,7 +703,7 @@ export type PortfolioResearchTargetDimension = 'scope_default' | 'weight' | 'ris
 export type PortfolioResearchCapitalMode = 'unit_notional' | 'fixed_gross' | 'target_volatility' | 'volatility_cap'
 export type PortfolioResearchCalculationFrequency = 'auto' | 'daily' | 'weekly' | 'monthly'
 export type PortfolioResearchMissingReturnPolicy = 'strict' | 'complete_case_drop'
-export type PortfolioResearchBacktestRebalanceFrequency = '1m' | '3m'
+export type PortfolioResearchBacktestRebalanceFrequency = '1w' | '1m' | '3m'
 export type PortfolioResearchArtifactPreviewKind = 'text' | 'html' | 'binary'
 
 export type PortfolioResearchPlanningTaxonomyOption = {
@@ -1001,14 +1001,18 @@ export type PortfolioResearchBacktestMetricsRecord = {
   start_date?: string | null
   end_date?: string | null
   period_return?: number | null
+  ytd_return?: number | null
   annualized_return?: number | null
   annualized_volatility?: number | null
   sharpe_ratio?: number | null
   max_drawdown?: number | null
   max_drawdown_start_date?: string | null
   max_drawdown_end_date?: string | null
+  max_drawdown_days?: number | null
   max_drawdown_recovery_date?: string | null
   max_drawdown_recovery_days?: number | null
+  current_drawdown?: number | null
+  calmar_ratio?: number | null
 }
 
 export type PortfolioResearchBacktestRecord = {
@@ -1032,10 +1036,15 @@ export type PortfolioResearchBacktestBenchmarkRecord = {
   warnings: string[]
 }
 
-export type PortfolioResearchBacktestRelativeMetricsRecord = {
+export type PortfolioResearchBacktestRelativeMetricsRecord = PortfolioResearchBacktestMetricsRecord & {
   excess_return?: number | null
   tracking_error?: number | null
   information_ratio?: number | null
+}
+
+export type PortfolioResearchBacktestBenchmarkComparisonResponse = {
+  backtest_benchmark?: PortfolioResearchBacktestBenchmarkRecord | null
+  backtest_relative_metrics?: PortfolioResearchBacktestRelativeMetricsRecord | null
 }
 
 export type PortfolioResearchRunDetailRecord = {
@@ -2058,6 +2067,18 @@ export function createPortfolioResearchRun(
       method: 'POST',
       body: JSON.stringify(payload),
     },
+  )
+}
+
+export function getPortfolioResearchBacktestBenchmarkComparison(
+  portfolioId: string,
+  researchRunId: string,
+  benchmarkInstrumentId: string,
+) {
+  const query = buildQuery({ benchmark_instrument_id: benchmarkInstrumentId })
+  return fetchJson<PortfolioResearchBacktestBenchmarkComparisonResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${portfolioId}/research/runs/${researchRunId}/benchmark-comparison${query}`,
   )
 }
 

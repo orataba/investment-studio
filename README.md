@@ -36,6 +36,8 @@ yungu/
 
 - [docs/README.md](./docs/README.md)
   顶层文档索引，串起数据库工作流、平台边界和设计基线。
+- [docs/USER_MANUAL.md](./docs/USER_MANUAL.md)
+  面向公司同事的使用手册，覆盖 Platform / Watchlist / Portfolio 的日常操作边界。
 - [docs/FRONTEND_DESIGN_BASELINE.md](./docs/FRONTEND_DESIGN_BASELINE.md)
   当前前端设计基线，约束白底数据终端、字体层级、tabs 与内容区节奏。
 - [apps/platform/README.md](./apps/platform/README.md)

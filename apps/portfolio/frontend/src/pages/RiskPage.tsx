@@ -15,7 +15,6 @@ import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
   getHoldingsWorkspace,
   getPortfolioAccountsWorkspace,
-  getPortfolioPerformance,
   getPortfolioInstrumentPriceChart,
   getPortfolioInstruments,
   getPortfolioTaxonomyCatalog,
@@ -1145,6 +1144,17 @@ function returnPointsToGroupSeries({
   } satisfies GroupReturnSeries
 }
 
+function latestReturnPointDate(returnPoints: ReturnPoint[] | undefined | null) {
+  let latestDate = ''
+  ;(returnPoints ?? []).forEach((point) => {
+    const value = finiteNumber(point.value)
+    if (point.date && value != null && point.date > latestDate) {
+      latestDate = point.date
+    }
+  })
+  return latestDate || null
+}
+
 function buildCurrentInstrumentReturnSeries(holdingsWorkspace: HoldingsWorkspaceResponse | null) {
   if (!holdingsWorkspace) {
     return riskFail('Current risk requires the holdings workspace.', [] satisfies GroupReturnSeries[])
@@ -1201,10 +1211,22 @@ function buildMatrixInstrumentReturnSeries({
   if (!holdingsWorkspace || !catalog) {
     return [] satisfies GroupReturnSeries[]
   }
-  const asOfDate = holdingsWorkspace.as_of_date
-  if (!asOfDate) {
+  const fallbackAsOfDate = holdingsWorkspace.as_of_date
+  if (!fallbackAsOfDate) {
     return [] satisfies GroupReturnSeries[]
   }
+
+  const universeRecords = catalog.instrument_universe.filter(
+    (record) => record.status === 'active' && record.instrument_ref && !isCashUniverseInstrument(record),
+  )
+  const matrixAsOfDate =
+    universeRecords.reduce<string | null>((latestDate, record) => {
+      const returnDate = latestReturnPointDate(record.instrument_return_series_all?.points)
+      if (!returnDate) {
+        return latestDate
+      }
+      return !latestDate || returnDate > latestDate ? returnDate : latestDate
+    }, null) ?? fallbackAsOfDate
 
   const currentWeightByInstrumentId = new Map<string, number>()
   holdingsWorkspace.rows
@@ -1216,8 +1238,7 @@ function buildMatrixInstrumentReturnSeries({
       }
     })
 
-  return catalog.instrument_universe
-    .filter((record) => record.status === 'active' && record.instrument_ref && !isCashUniverseInstrument(record))
+  return universeRecords
     .map((record): GroupReturnSeries | null => {
       const instrument = record.instrument_ref
       if (!instrument) {
@@ -1229,7 +1250,7 @@ function buildMatrixInstrumentReturnSeries({
         groupKey: record.instrument_id,
         groupLabel: label,
         returnPoints: record.instrument_return_series_all?.points ?? [],
-        asOfDate,
+        asOfDate: matrixAsOfDate,
         latestWeight: currentWeight,
       })
       return series
@@ -1991,20 +2012,21 @@ function formatCorrelation(value: number | null | undefined) {
   return formatNumber(value, 2)
 }
 
-function uniqueSortedSeriesDates(series: GroupReturnSeries[]) {
-  const dates = new Set<string>()
-  series.forEach((item) => {
-    item.returnsByDate.forEach((_value, dateKey) => dates.add(dateKey))
+function calculableCorrelationAsOfDates(
+  series: GroupReturnSeries[],
+  lookbackDays: number,
+  frequency: CalculationFrequency,
+) {
+  const commonDates = commonReturnDateKeys(series, '', '', { includeZeroWeight: true })
+  return commonDates.filter((asOfDate) => {
+    const windowDates = commonReturnDateKeys(
+      series,
+      riskWindowStart(asOfDate, lookbackDays),
+      asOfDate,
+      { includeZeroWeight: true },
+    )
+    return assessRiskWindowCoverage(windowDates, asOfDate, lookbackDays, frequency).ok
   })
-  return [...dates].sort()
-}
-
-function datesFromPortfolioStart(dates: string[], portfolioStartDate: string | null) {
-  if (!portfolioStartDate) {
-    return dates
-  }
-  const filteredDates = dates.filter((dateKey) => dateKey >= portfolioStartDate)
-  return filteredDates.length ? filteredDates : dates
 }
 
 function taxonomyScopeOptions(
@@ -2202,7 +2224,6 @@ export default function RiskPage() {
   const [benchmarkChart, setBenchmarkChart] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
-  const [portfolioStartDate, setPortfolioStartDate] = useState<string | null>(null)
   const [rollingSettings, setRollingSettings] = useState<RollingRiskSettingsState>(() => loadRiskPageSettings().rolling)
   const [matrixSettings, setMatrixSettings] = useState<RiskWindowSettingsState>(() => loadRiskPageSettings().matrix)
   const [matrixScopeNodeId, setMatrixScopeNodeId] = useState(MATRIX_SCOPE_ALL_INSTRUMENTS)
@@ -2231,7 +2252,6 @@ export default function RiskPage() {
       setHoldingsWorkspace(null)
       setAccountsWorkspace(null)
       setTaxonomyCatalog(null)
-      setPortfolioStartDate(null)
       setWorkspaceLoading(false)
       setWorkspaceError('Portfolio id is required.')
       setWorkspaceSupportError(null)
@@ -2245,7 +2265,6 @@ export default function RiskPage() {
     setHoldingsWorkspace(null)
     setAccountsWorkspace(null)
     setTaxonomyCatalog(null)
-    setPortfolioStartDate(null)
 
     getHoldingsWorkspace(portfolioId)
       .then((holdingsResponse) => {
@@ -2271,7 +2290,10 @@ export default function RiskPage() {
 
     Promise.allSettled([
       getPortfolioAccountsWorkspace(portfolioId),
-      getPortfolioTaxonomyCatalog(portfolioId, { include_market_profile: true }),
+      getPortfolioTaxonomyCatalog(portfolioId, {
+        include_market_profile: true,
+        as_of_date: localDateIso(),
+      }),
     ])
       .then(([accountsResult, taxonomyResult]) => {
         if (cancelled) {
@@ -2299,18 +2321,6 @@ export default function RiskPage() {
           )
         }
         setWorkspaceSupportError(supportErrors.length ? supportErrors.join(' ') : null)
-      })
-
-    getPortfolioPerformance(portfolioId)
-      .then((performanceResponse) => {
-        if (!cancelled) {
-          setPortfolioStartDate(performanceResponse.summary.start_date)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setPortfolioStartDate(null)
-        }
       })
 
     return () => {
@@ -2539,29 +2549,6 @@ export default function RiskPage() {
     [benchmarkReturnPoints, portfolioRiskFrequency.frequency, rollingSettings],
   )
 
-  const riskDates = useMemo(
-    () => uniqueSortedSeriesDates(matrixInstrumentReturnSeries.length ? matrixInstrumentReturnSeries : instrumentReturnSeries),
-    [instrumentReturnSeries, matrixInstrumentReturnSeries],
-  )
-  // The scrubber reflects the portfolio life, while the risk estimators still receive full asset histories.
-  const riskAsOfSelectionDates = useMemo(
-    () => datesFromPortfolioStart(riskDates, portfolioStartDate),
-    [portfolioStartDate, riskDates],
-  )
-  const effectiveMatrixAsOfDate = matrixAsOfDate || riskAsOfSelectionDates[riskAsOfSelectionDates.length - 1] || ''
-
-  useEffect(() => {
-    if (!riskAsOfSelectionDates.length) {
-      if (matrixAsOfDate) {
-        setMatrixAsOfDate('')
-      }
-      return
-    }
-    if (!riskAsOfSelectionDates.includes(matrixAsOfDate)) {
-      setMatrixAsOfDate(riskAsOfSelectionDates[riskAsOfSelectionDates.length - 1])
-    }
-  }, [matrixAsOfDate, riskAsOfSelectionDates])
-
   const matrixTaxonomyScopeOptions = useMemo(
     () => taxonomyScopeOptions(defaultPlanningTaxonomy, taxonomyCatalog),
     [defaultPlanningTaxonomy, taxonomyCatalog],
@@ -2649,27 +2636,40 @@ export default function RiskPage() {
       topLevelTaxonomySeriesResult.errors.length,
     ],
   )
-  const instrumentCorrelationMatrix = useMemo(
+  const selectedMatrixSeries = matrixUsesAllInstruments ? matrixInstrumentReturnSeries : alignedMatrixTaxonomySeries
+  const riskAsOfSelectionDates = useMemo(
+    () =>
+      calculableCorrelationAsOfDates(
+        selectedMatrixSeries,
+        matrixSettings.lookbackDays,
+        matrixRiskFrequency.frequency,
+      ),
+    [matrixRiskFrequency.frequency, matrixSettings.lookbackDays, selectedMatrixSeries],
+  )
+  const effectiveMatrixAsOfDate = matrixAsOfDate || riskAsOfSelectionDates[riskAsOfSelectionDates.length - 1] || ''
+
+  useEffect(() => {
+    if (!riskAsOfSelectionDates.length) {
+      if (matrixAsOfDate) {
+        setMatrixAsOfDate('')
+      }
+      return
+    }
+    if (!riskAsOfSelectionDates.includes(matrixAsOfDate)) {
+      setMatrixAsOfDate(riskAsOfSelectionDates[riskAsOfSelectionDates.length - 1])
+    }
+  }, [matrixAsOfDate, riskAsOfSelectionDates])
+
+  const selectedCorrelationMatrix = useMemo(
     () =>
       buildCorrelationMatrix(
-        matrixInstrumentReturnSeries,
+        selectedMatrixSeries,
         effectiveMatrixAsOfDate,
         matrixSettings.lookbackDays,
         matrixRiskFrequency.frequency,
       ),
-    [effectiveMatrixAsOfDate, matrixInstrumentReturnSeries, matrixSettings.lookbackDays, matrixRiskFrequency.frequency],
+    [effectiveMatrixAsOfDate, matrixRiskFrequency.frequency, matrixSettings.lookbackDays, selectedMatrixSeries],
   )
-  const taxonomyCorrelationMatrix = useMemo(
-    () =>
-      buildCorrelationMatrix(
-        alignedMatrixTaxonomySeries,
-        effectiveMatrixAsOfDate,
-        matrixSettings.lookbackDays,
-        matrixRiskFrequency.frequency,
-      ),
-    [alignedMatrixTaxonomySeries, effectiveMatrixAsOfDate, matrixSettings.lookbackDays, matrixRiskFrequency.frequency],
-  )
-  const selectedCorrelationMatrix = matrixUsesAllInstruments ? instrumentCorrelationMatrix : taxonomyCorrelationMatrix
   const selectedMatrixErrors = matrixUsesAllInstruments ? [] : matrixTaxonomySeriesResult.errors
   const selectedMatrixEmptyLabel = matrixUsesAllInstruments ? 'No matrix.' : defaultPlanningTaxonomy ? 'No matrix.' : 'No taxonomy.'
   const topLevelRiskContributionResult = useMemo(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from itertools import combinations
 from math import ceil, sqrt
 
@@ -86,6 +86,8 @@ RESEARCH_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: dict[CalculationFrequency, float] 
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
 RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
 RESEARCH_COVARIANCE_PSD_TOLERANCE = 1e-10
+RISK_BUDGET_NORMALIZED_GAP_FLOOR_EQUAL_SHARE_FRACTION = 0.25
+RISK_BUDGET_NORMALIZED_GAP_MAX_FLOOR = 0.05
 ABS_RC_SMOOTHING_EPS = 1e-12
 MISSING_RETURN_POLICY_STRICT = "strict"
 MISSING_RETURN_POLICY_COMPLETE_CASE_DROP = "complete_case_drop"
@@ -133,6 +135,7 @@ class ScopeTargetSolveResult:
     scope_solve_events: list[dict[str, object]]
     warnings: list[str]
     resolved_target_rows: list[dict[str, object]]
+    top_sleeve_bound_weight_by_id: dict[str, float]
 
 
 @dataclass(frozen=True)
@@ -1307,18 +1310,48 @@ def _risk_budget_problem_has_binding_bounds(problem: RiskBudgetProblem) -> bool:
     return bool(np.any(problem.lower_bounds > 1e-12) or np.any(problem.upper_bounds < 1.0 - 1e-12))
 
 
+def _risk_share_gap_scales(target_risk_shares: np.ndarray) -> np.ndarray:
+    count = max(len(target_risk_shares), 1)
+    floor = min(
+        RISK_BUDGET_NORMALIZED_GAP_MAX_FLOOR,
+        RISK_BUDGET_NORMALIZED_GAP_FLOOR_EQUAL_SHARE_FRACTION / float(count),
+    )
+    return np.maximum(np.asarray(target_risk_shares, dtype="float64"), floor)
+
+
+def _normalized_risk_share_gap(problem: RiskBudgetProblem, achieved_risk_shares: np.ndarray) -> np.ndarray:
+    gap = np.asarray(achieved_risk_shares, dtype="float64") - problem.target_risk_shares
+    return gap / _risk_share_gap_scales(problem.target_risk_shares)
+
+
+def _solution_max_normalized_share_gap(problem: RiskBudgetProblem, solution: RiskBudgetSolution) -> float:
+    normalized_gap = _normalized_risk_share_gap(problem, solution.achieved_risk_shares)
+    return float(np.max(np.abs(normalized_gap)))
+
+
+def _normalized_share_gap_l2(problem: RiskBudgetProblem, achieved_risk_shares: np.ndarray) -> float:
+    normalized_gap = _normalized_risk_share_gap(problem, achieved_risk_shares)
+    return float(normalized_gap @ normalized_gap)
+
+
 def _is_better_risk_budget_solution(
     problem: RiskBudgetProblem,
     candidate: RiskBudgetSolution,
     incumbent: RiskBudgetSolution,
 ) -> bool:
-    if candidate.max_abs_share_gap < incumbent.max_abs_share_gap - 1e-9:
+    candidate_normalized_gap = _solution_max_normalized_share_gap(problem, candidate)
+    incumbent_normalized_gap = _solution_max_normalized_share_gap(problem, incumbent)
+    if candidate_normalized_gap < incumbent_normalized_gap - 1e-9:
         return True
-    if abs(candidate.max_abs_share_gap - incumbent.max_abs_share_gap) > 1e-9:
+    if abs(candidate_normalized_gap - incumbent_normalized_gap) > 1e-9:
         return False
-    candidate_gap = candidate.achieved_risk_shares - problem.target_risk_shares
-    incumbent_gap = incumbent.achieved_risk_shares - problem.target_risk_shares
-    return float(candidate_gap @ candidate_gap) < float(incumbent_gap @ incumbent_gap) - 1e-12
+    candidate_l2 = _normalized_share_gap_l2(problem, candidate.achieved_risk_shares)
+    incumbent_l2 = _normalized_share_gap_l2(problem, incumbent.achieved_risk_shares)
+    if candidate_l2 < incumbent_l2 - 1e-12:
+        return True
+    if abs(candidate_l2 - incumbent_l2) > 1e-12:
+        return False
+    return candidate.max_abs_share_gap < incumbent.max_abs_share_gap - 1e-12
 
 
 def _solve_regularized_risk_budget_slsqp(
@@ -1334,17 +1367,17 @@ def _solve_regularized_risk_budget_slsqp(
             weights,
             contribution_mode=problem.contribution_mode,
         )
-        share_gap = shares - problem.target_risk_shares
+        normalized_gap = _normalized_risk_share_gap(problem, shares)
         reference_gap = weights - reference_weights
         return (
-            float(np.max(np.abs(share_gap)) ** 2)
-            + 1e-2 * float(share_gap @ share_gap)
+            float(np.max(np.abs(normalized_gap)) ** 2)
+            + 1e-2 * float(normalized_gap @ normalized_gap)
             + 1e-4 * float(reference_gap @ reference_gap)
         )
 
     constraints = [{"type": "eq", "fun": lambda weights: float(np.sum(weights) - 1.0)}]
     bounds = list(zip(problem.lower_bounds.tolist(), problem.upper_bounds.tolist()))
-    best_solution: tuple[np.ndarray, np.ndarray, float, int, str] | None = None
+    best_solution: tuple[np.ndarray, np.ndarray, float, float, int, str] | None = None
     failures: list[str] = []
     for x0 in initial_guesses:
         result = minimize(
@@ -1365,16 +1398,18 @@ def _solve_regularized_risk_budget_slsqp(
             contribution_mode=problem.contribution_mode,
         )
         share_gap = shares - problem.target_risk_shares
+        normalized_gap = _normalized_risk_share_gap(problem, shares)
         candidate = (
             weights,
             shares,
             float(np.max(np.abs(share_gap))),
+            float(np.max(np.abs(normalized_gap))),
             int(getattr(result, "nit", 0)),
             str(result.message),
         )
-        if best_solution is None or candidate[2] < best_solution[2] - 1e-12:
+        if best_solution is None or candidate[3] < best_solution[3] - 1e-12:
             best_solution = candidate
-        elif best_solution is not None and abs(candidate[2] - best_solution[2]) <= 1e-12:
+        elif best_solution is not None and abs(candidate[3] - best_solution[3]) <= 1e-12:
             if objective(candidate[0]) < objective(best_solution[0]) - 1e-18:
                 best_solution = candidate
 
@@ -1382,7 +1417,7 @@ def _solve_regularized_risk_budget_slsqp(
         detail = "" if not failures else f": {'; '.join(sorted(set(failures)))}"
         raise ValueError(f"Risk budget solver failed{detail}")
 
-    weights, shares, max_abs_share_gap, iterations, message = best_solution
+    weights, shares, max_abs_share_gap, _max_normalized_share_gap, iterations, message = best_solution
     return RiskBudgetSolution(
         bucket_ids=problem.bucket_ids,
         weights=weights,
@@ -1403,35 +1438,39 @@ def _solve_minimax_risk_budget_slsqp(
     initial_guesses: list[np.ndarray],
     max_iterations: int,
 ) -> RiskBudgetSolution | None:
-    def share_gap(weights: np.ndarray) -> np.ndarray:
-        return (
-            _risk_contribution_shares(
-                problem.covariance,
-                weights,
-                contribution_mode=problem.contribution_mode,
-            )
-            - problem.target_risk_shares
+    def achieved_shares(weights: np.ndarray) -> np.ndarray:
+        return _risk_contribution_shares(
+            problem.covariance,
+            weights,
+            contribution_mode=problem.contribution_mode,
         )
+
+    def normalized_share_gap(weights: np.ndarray) -> np.ndarray:
+        return _normalized_risk_share_gap(problem, achieved_shares(weights))
 
     constraints = [{"type": "eq", "fun": lambda variables: float(np.sum(variables[:-1]) - 1.0)}]
     for index in range(len(problem.bucket_ids)):
         constraints.append(
             {
                 "type": "ineq",
-                "fun": lambda variables, index=index: float(variables[-1] - share_gap(variables[:-1])[index]),
+                "fun": lambda variables, index=index: float(
+                    variables[-1] - normalized_share_gap(variables[:-1])[index]
+                ),
             }
         )
         constraints.append(
             {
                 "type": "ineq",
-                "fun": lambda variables, index=index: float(variables[-1] + share_gap(variables[:-1])[index]),
+                "fun": lambda variables, index=index: float(
+                    variables[-1] + normalized_share_gap(variables[:-1])[index]
+                ),
             }
         )
 
-    bounds = list(zip(problem.lower_bounds.tolist(), problem.upper_bounds.tolist())) + [(0.0, 1.0)]
-    best_solution: tuple[np.ndarray, np.ndarray, float, float, int, str] | None = None
+    bounds = list(zip(problem.lower_bounds.tolist(), problem.upper_bounds.tolist())) + [(0.0, None)]
+    best_solution: tuple[np.ndarray, np.ndarray, float, float, float, int, str] | None = None
     for guess in initial_guesses:
-        initial_gap = float(np.max(np.abs(share_gap(guess))))
+        initial_gap = float(np.max(np.abs(normalized_share_gap(guess))))
         result = minimize(
             lambda variables: float(variables[-1]),
             x0=np.concatenate([guess, [initial_gap]]),
@@ -1443,32 +1482,30 @@ def _solve_minimax_risk_budget_slsqp(
         if not result.success:
             continue
         weights = np.asarray(result.x[:-1], dtype="float64")
-        shares = _risk_contribution_shares(
-            problem.covariance,
-            weights,
-            contribution_mode=problem.contribution_mode,
-        )
+        shares = achieved_shares(weights)
         gap = shares - problem.target_risk_shares
+        normalized_gap = _normalized_risk_share_gap(problem, shares)
         reference_gap = weights - reference_weights
-        secondary_score = float(gap @ gap) + 1e-4 * float(reference_gap @ reference_gap)
+        secondary_score = float(normalized_gap @ normalized_gap) + 1e-4 * float(reference_gap @ reference_gap)
         candidate = (
             weights,
             shares,
             float(np.max(np.abs(gap))),
+            float(np.max(np.abs(normalized_gap))),
             secondary_score,
             int(getattr(result, "nit", 0)),
             str(result.message),
         )
-        if best_solution is None or candidate[2] < best_solution[2] - 1e-9:
+        if best_solution is None or candidate[3] < best_solution[3] - 1e-9:
             best_solution = candidate
-        elif best_solution is not None and abs(candidate[2] - best_solution[2]) <= 1e-9:
-            if candidate[3] < best_solution[3] - 1e-12:
+        elif best_solution is not None and abs(candidate[3] - best_solution[3]) <= 1e-9:
+            if candidate[4] < best_solution[4] - 1e-12:
                 best_solution = candidate
 
     if best_solution is None:
         return None
 
-    weights, shares, max_abs_share_gap, objective_value, iterations, message = best_solution
+    weights, shares, max_abs_share_gap, max_normalized_share_gap, objective_value, iterations, message = best_solution
     solution = RiskBudgetSolution(
         bucket_ids=problem.bucket_ids,
         weights=weights,
@@ -1484,7 +1521,7 @@ def _solve_minimax_risk_budget_slsqp(
         problem,
         reference_weights=reference_weights,
         initial_guesses=[*initial_guesses, solution.weights],
-        max_gap_ceiling=max_abs_share_gap,
+        max_normalized_gap_ceiling=max_normalized_share_gap,
         max_iterations=max_iterations,
     )
     if refined is not None and _is_better_risk_budget_solution(problem, refined, solution):
@@ -1497,42 +1534,46 @@ def _refine_balanced_risk_budget_solution(
     *,
     reference_weights: np.ndarray,
     initial_guesses: list[np.ndarray],
-    max_gap_ceiling: float,
+    max_normalized_gap_ceiling: float,
     max_iterations: int,
 ) -> RiskBudgetSolution | None:
-    tolerance = max(1e-6, max_gap_ceiling * 1e-6)
+    tolerance = max(1e-6, max_normalized_gap_ceiling * 1e-6)
 
-    def share_gap(weights: np.ndarray) -> np.ndarray:
-        return (
-            _risk_contribution_shares(
-                problem.covariance,
-                weights,
-                contribution_mode=problem.contribution_mode,
-            )
-            - problem.target_risk_shares
+    def achieved_shares(weights: np.ndarray) -> np.ndarray:
+        return _risk_contribution_shares(
+            problem.covariance,
+            weights,
+            contribution_mode=problem.contribution_mode,
         )
 
+    def normalized_share_gap(weights: np.ndarray) -> np.ndarray:
+        return _normalized_risk_share_gap(problem, achieved_shares(weights))
+
     def objective(weights: np.ndarray) -> float:
-        gap = share_gap(weights)
+        normalized_gap = normalized_share_gap(weights)
         reference_gap = weights - reference_weights
-        return float(gap @ gap) + 1e-4 * float(reference_gap @ reference_gap)
+        return float(normalized_gap @ normalized_gap) + 1e-4 * float(reference_gap @ reference_gap)
 
     constraints = [{"type": "eq", "fun": lambda weights: float(np.sum(weights) - 1.0)}]
     for index in range(len(problem.bucket_ids)):
         constraints.append(
             {
                 "type": "ineq",
-                "fun": lambda weights, index=index: float((max_gap_ceiling + tolerance) - share_gap(weights)[index]),
+                "fun": lambda weights, index=index: float(
+                    (max_normalized_gap_ceiling + tolerance) - normalized_share_gap(weights)[index]
+                ),
             }
         )
         constraints.append(
             {
                 "type": "ineq",
-                "fun": lambda weights, index=index: float((max_gap_ceiling + tolerance) + share_gap(weights)[index]),
+                "fun": lambda weights, index=index: float(
+                    (max_normalized_gap_ceiling + tolerance) + normalized_share_gap(weights)[index]
+                ),
             }
         )
     bounds = list(zip(problem.lower_bounds.tolist(), problem.upper_bounds.tolist()))
-    best_solution: tuple[np.ndarray, np.ndarray, float, float, int, str] | None = None
+    best_solution: tuple[np.ndarray, np.ndarray, float, float, float, int, str] | None = None
     for guess in initial_guesses:
         result = minimize(
             objective,
@@ -1545,28 +1586,26 @@ def _refine_balanced_risk_budget_solution(
         if not result.success:
             continue
         weights = np.asarray(result.x, dtype="float64")
-        shares = _risk_contribution_shares(
-            problem.covariance,
-            weights,
-            contribution_mode=problem.contribution_mode,
-        )
+        shares = achieved_shares(weights)
         gap = shares - problem.target_risk_shares
+        normalized_gap = _normalized_risk_share_gap(problem, shares)
         candidate = (
             weights,
             shares,
             float(np.max(np.abs(gap))),
-            float(gap @ gap),
+            float(np.max(np.abs(normalized_gap))),
+            float(normalized_gap @ normalized_gap),
             int(getattr(result, "nit", 0)),
             str(result.message),
         )
-        if best_solution is None or candidate[2] < best_solution[2] - 1e-9:
+        if best_solution is None or candidate[3] < best_solution[3] - 1e-9:
             best_solution = candidate
-        elif best_solution is not None and abs(candidate[2] - best_solution[2]) <= 1e-9:
-            if candidate[3] < best_solution[3] - 1e-12:
+        elif best_solution is not None and abs(candidate[3] - best_solution[3]) <= 1e-9:
+            if candidate[4] < best_solution[4] - 1e-12:
                 best_solution = candidate
     if best_solution is None:
         return None
-    weights, shares, max_abs_share_gap, l2_gap, iterations, message = best_solution
+    weights, shares, max_abs_share_gap, _max_normalized_share_gap, l2_gap, iterations, message = best_solution
     return RiskBudgetSolution(
         bucket_ids=problem.bucket_ids,
         weights=weights,
@@ -1621,7 +1660,7 @@ def _solve_risk_budget_problem(
             )
             best = (
                 minimax
-                if minimax is not None and minimax.max_abs_share_gap < primary.max_abs_share_gap - 1e-9
+                if minimax is not None and _is_better_risk_budget_solution(problem, minimax, primary)
                 else primary
             )
     if enforce_tolerance and best.max_abs_share_gap > RESEARCH_MAX_RISK_BUDGET_SHARE_GAP + 1e-12:
@@ -2723,6 +2762,7 @@ def _solve_current_scope(
                 f"{scope_label} had no positive risky target weight before capital overlay, so Research used equal risky-sleeve weights."
             )
 
+    top_sleeve_bound_weights = implementation_weights.copy()
     estimated_risk_sleeve_volatility = None
     effective_gross_exposure = None
     risky_allocation_scaling_factor = None
@@ -2782,9 +2822,14 @@ def _solve_current_scope(
                         f"{scope_label} capital overlay leaves a {residual_cash:.2%} residual but the scope has no cash-like member."
                     )
 
+    top_sleeve_bound_status_weights = (
+        top_sleeve_bound_weights
+        if capital_mode == CAPITAL_MODE_VOLATILITY_CAP
+        else implementation_weights
+    )
     _validate_final_top_sleeve_bounds(
         scope_label=scope_label,
-        implementation_weights=implementation_weights,
+        implementation_weights=top_sleeve_bound_status_weights,
         bounds_by_key=top_sleeve_bounds_by_key,
         member_by_key=member_by_key,
     )
@@ -2798,6 +2843,11 @@ def _solve_current_scope(
     for row in resolved_rows:
         member_key = f"{row['member_type']}::{row['member_id']}"
         row["implementation_weight"] = float(implementation_weights.get(member_key, 0.0))
+    top_sleeve_bound_weight_by_id = {
+        member_by_key[key].member_id: float(top_sleeve_bound_status_weights.get(key, 0.0))
+        for key in top_sleeve_bounds_by_key
+        if key in member_by_key
+    }
 
     current_weights = pd.Series(current_actual_weight_by_key, dtype="float64").reindex(member_keys, fill_value=0.0)
     current_risk_share_by_key, current_risk_share_warnings = _estimate_scope_risk_share_map(
@@ -3002,6 +3052,7 @@ def _solve_current_scope(
         scope_solve_events=[*child_scope_solve_events, deepcopy(solve_event)],
         warnings=list(dict.fromkeys(item for item in warnings if item)),
         resolved_target_rows=deepcopy(resolved_rows),
+        top_sleeve_bound_weight_by_id=top_sleeve_bound_weight_by_id,
     )
 
 
@@ -3508,11 +3559,18 @@ def _estimate_forward_risk_contribution_by_key(
     )
 
 
+def _selected_target_risk_share(row: dict[str, object]) -> float | None:
+    if str(row.get("selected_target_dimension") or "") != TARGET_DIMENSION_RISK_BUDGET:
+        return None
+    return _safe_float(row.get("configured_risk_share"))
+
+
 def _build_solved_result_groups(
     state: TaxonomyResearchState,
     *,
     leaf_rows: list[dict[str, object]],
     member_rows: list[dict[str, object]],
+    top_sleeve_bound_weight_by_id: dict[str, float] | None = None,
     as_of_date: date,
     lookback_days: int,
     calculation_frequency: CalculationFrequency,
@@ -3529,7 +3587,7 @@ def _build_solved_result_groups(
         risk_model_config=risk_model_config,
     )
     group_target_risk_by_id = {
-        str(row.get("member_id") or ""): _safe_float(row.get("configured_risk_share"))
+        str(row.get("member_id") or ""): _selected_target_risk_share(row)
         for row in member_rows
         if str(row.get("member_type") or "") == TARGET_MEMBER_NODE
     }
@@ -3567,7 +3625,7 @@ def _build_solved_result_groups(
             "top_sleeve_id": top_sleeve_id,
             "top_sleeve_label": top_sleeve_label,
             "solved_weight": solved_weight,
-            "target_risk_share": _safe_float(leaf.get("configured_risk_share")),
+            "target_risk_share": _selected_target_risk_share(leaf),
             "forward_risk_contribution": forward_rc,
         }
         group["rows"].append(row)
@@ -3582,8 +3640,13 @@ def _build_solved_result_groups(
         group["rows"] = rows
         if abs(float(group.get("forward_risk_contribution") or 0.0)) <= 1e-12:
             group["forward_risk_contribution"] = None
+        bound_status_weight = _safe_float(
+            (top_sleeve_bound_weight_by_id or {}).get(str(group.get("top_sleeve_id") or ""))
+        )
         group["bound_status"] = _top_sleeve_bound_status(
-            solved_weight=_safe_float(group.get("solved_weight")),
+            solved_weight=bound_status_weight
+            if bound_status_weight is not None
+            else _safe_float(group.get("solved_weight")),
             min_weight=_safe_float(group.get("min_weight")),
             max_weight=_safe_float(group.get("max_weight")),
         )
@@ -3592,11 +3655,21 @@ def _build_solved_result_groups(
 
 
 def _normalize_backtest_rebalance_frequency(value: str | None) -> str:
-    return "3m" if str(value or "").strip().lower() == "3m" else "1m"
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"1w", "1m", "3m"} else "1m"
 
 
 def _rebalance_schedule(*, start_date: date, end_date: date, frequency: str) -> list[date]:
-    month_step = 3 if _normalize_backtest_rebalance_frequency(frequency) == "3m" else 1
+    normalized_frequency = _normalize_backtest_rebalance_frequency(frequency)
+    if normalized_frequency == "1w":
+        dates: list[date] = []
+        current = start_date
+        while current <= end_date:
+            dates.append(current)
+            current = current + timedelta(days=7)
+        return dates
+
+    month_step = 3 if normalized_frequency == "3m" else 1
     first_month = date(start_date.year, start_date.month, 1)
     if first_month < start_date:
         first_month = (pd.Timestamp(first_month) + pd.DateOffset(months=1)).date()
@@ -3632,22 +3705,39 @@ def _build_backtest_metrics(points: list[dict[str, object]], returns: dict[str, 
             "start_date": points[0]["date"] if points else None,
             "end_date": points[-1]["date"] if points else None,
             "period_return": None,
+            "ytd_return": None,
             "annualized_return": None,
             "annualized_volatility": None,
             "sharpe_ratio": None,
             "max_drawdown": None,
             "max_drawdown_start_date": None,
             "max_drawdown_end_date": None,
+            "max_drawdown_days": None,
             "max_drawdown_recovery_date": None,
             "max_drawdown_recovery_days": None,
+            "current_drawdown": None,
+            "calmar_ratio": None,
         }
     start_value = _safe_float(points[0].get("value")) or 1.0
     end_value = _safe_float(points[-1].get("value")) or start_value
-    dates = [_parse_iso_date(item.get("date")) for item in points if _parse_iso_date(item.get("date"))]
+    dates: list[date] = []
+    for item in points:
+        parsed_date = _parse_iso_date(item.get("date"))
+        if parsed_date is not None:
+            dates.append(parsed_date)
     return_dates = [_parse_iso_date(date_key) for date_key in returns.keys()]
     periods_per_year = _infer_periods_per_year([item for item in return_dates if item is not None])
     period_count = max(len(returns), 1)
     period_return = end_value / start_value - 1.0 if abs(start_value) > 1e-12 else None
+    end_date = dates[-1] if dates else None
+    ytd_return_values = [
+        float(value)
+        for date_key, value in sorted(returns.items())
+        if (parsed_date := _parse_iso_date(date_key)) is not None
+        and end_date is not None
+        and parsed_date.year == end_date.year
+    ]
+    ytd_return = _compound_return(ytd_return_values)
     annualized_return = (
         (end_value / start_value) ** (periods_per_year / period_count) - 1.0
         if period_return is not None and end_value > 0 and start_value > 0
@@ -3688,20 +3778,40 @@ def _build_backtest_metrics(points: list[dict[str, object]], returns: dict[str, 
         if recovery_date is None and max_end is not None and point_date > max_end and target_recovery_value is not None:
             if point_value >= target_recovery_value:
                 recovery_date = point_date
+    max_drawdown_days = (max_end - max_start).days if max_start is not None and max_end is not None else None
     recovery_days = (recovery_date - max_end).days if recovery_date is not None and max_end is not None else None
+    current_drawdown = end_value / high_value - 1.0 if high_value > 0 and end_value is not None else None
+    calmar_ratio = (
+        float(annualized_return / abs(max_drawdown))
+        if annualized_return is not None and max_drawdown is not None and max_drawdown < -1e-12
+        else None
+    )
     return {
         "start_date": dates[0].isoformat() if dates else None,
         "end_date": dates[-1].isoformat() if dates else None,
         "period_return": period_return,
+        "ytd_return": ytd_return,
         "annualized_return": annualized_return,
         "annualized_volatility": annualized_volatility,
         "sharpe_ratio": sharpe_ratio,
         "max_drawdown": max_drawdown,
         "max_drawdown_start_date": max_start.isoformat() if max_start else None,
         "max_drawdown_end_date": max_end.isoformat() if max_end else None,
+        "max_drawdown_days": max_drawdown_days,
         "max_drawdown_recovery_date": recovery_date.isoformat() if recovery_date else None,
         "max_drawdown_recovery_days": recovery_days,
+        "current_drawdown": current_drawdown,
+        "calmar_ratio": calmar_ratio,
     }
+
+
+def _is_rebalance_data_gap_error(error: ValueError) -> bool:
+    message = str(error)
+    return (
+        "requires at least" in message
+        or "return observations" in message
+        or "complete aligned return observations" in message
+    )
 
 
 def _instrument_label(state: TaxonomyResearchState, instrument_id: str) -> str:
@@ -3709,6 +3819,147 @@ def _instrument_label(state: TaxonomyResearchState, instrument_id: str) -> str:
     if isinstance(detail, dict):
         return str(detail.get("instrument_name") or instrument_id)
     return instrument_id
+
+
+def _normalized_backtest_points(points: list[dict[str, object]]) -> list[dict[str, object]]:
+    normalized_points: list[dict[str, object]] = []
+    for point in points:
+        point_date = _parse_iso_date(point.get("date"))
+        point_value = _safe_float(point.get("value"))
+        if point_date is None or point_value is None:
+            continue
+        normalized_points.append({"date": point_date.isoformat(), "value": float(point_value)})
+    normalized_points.sort(key=lambda item: str(item.get("date") or ""))
+    return normalized_points
+
+
+def _backtest_return_map_from_points(points: list[dict[str, object]]) -> dict[str, float]:
+    normalized_points = _normalized_backtest_points(points)
+    if len(normalized_points) < 2:
+        return {}
+    returns: dict[str, float] = {}
+    previous_value = _safe_float(normalized_points[0].get("value"))
+    for point in normalized_points[1:]:
+        point_value = _safe_float(point.get("value"))
+        date_key = str(point.get("date") or "")
+        if previous_value is None or point_value is None or previous_value <= 0.0:
+            previous_value = point_value
+            continue
+        returns[date_key] = point_value / previous_value - 1.0
+        previous_value = point_value
+    return returns
+
+
+def _build_backtest_benchmark_comparison_from_state(
+    state: TaxonomyResearchState,
+    *,
+    benchmark_instrument_id: str | None,
+    portfolio_points: list[dict[str, object]],
+    portfolio_returns: dict[str, float] | None = None,
+) -> dict[str, object]:
+    normalized_benchmark_id = str(benchmark_instrument_id or "").strip()
+    if not normalized_benchmark_id:
+        return {"backtest_benchmark": None, "backtest_relative_metrics": None}
+
+    normalized_points = _normalized_backtest_points(portfolio_points)
+    portfolio_return_map = portfolio_returns or _backtest_return_map_from_points(normalized_points)
+    benchmark_label = _instrument_label(state, normalized_benchmark_id)
+    benchmark_warnings: list[str] = []
+    try:
+        benchmark_nav, benchmark_warnings = _build_instrument_nav_series(
+            state,
+            instrument_id=normalized_benchmark_id,
+            start_date=date(1900, 1, 1),
+            end_date=state.as_of_date,
+        )
+    except ValueError as error:
+        benchmark_warnings.append(str(error))
+        benchmark_nav = pd.Series(dtype="float64")
+
+    benchmark_returns = _nav_returns(benchmark_nav) if not benchmark_nav.empty else pd.Series(dtype="float64")
+    benchmark_points: list[dict[str, object]] = []
+    benchmark_return_map: dict[str, float] = {}
+    if normalized_points and not benchmark_returns.empty:
+        benchmark_nav_value = 1.0
+        benchmark_points.append({"date": normalized_points[0]["date"], "value": benchmark_nav_value})
+        for point in normalized_points[1:]:
+            date_key = str(point.get("date") or "")
+            point_date = _parse_iso_date(date_key)
+            if point_date is None or point_date not in benchmark_returns.index:
+                continue
+            benchmark_return = _safe_float(benchmark_returns.get(point_date))
+            if benchmark_return is None:
+                continue
+            benchmark_return_map[date_key] = benchmark_return
+            benchmark_nav_value *= 1.0 + benchmark_return
+            benchmark_points.append({"date": date_key, "value": benchmark_nav_value})
+
+    benchmark_payload = {
+        "instrument_id": normalized_benchmark_id,
+        "label": benchmark_label or normalized_benchmark_id,
+        "points": benchmark_points,
+        "metrics": _build_backtest_metrics(benchmark_points, benchmark_return_map),
+        "warnings": benchmark_warnings,
+    }
+
+    relative_metrics = None
+    common_return_dates = sorted(set(portfolio_return_map).intersection(benchmark_return_map))
+    if common_return_dates:
+        active_points: list[dict[str, object]] = []
+        active_return_map: dict[str, float] = {}
+        active_nav_value = 1.0
+        if normalized_points:
+            active_points.append({"date": normalized_points[0]["date"], "value": active_nav_value})
+        for date_key in common_return_dates:
+            active_return = float(portfolio_return_map[date_key]) - float(benchmark_return_map[date_key])
+            active_return_map[date_key] = active_return
+            active_nav_value *= 1.0 + active_return
+            active_points.append({"date": date_key, "value": active_nav_value})
+        active_metrics = _build_backtest_metrics(active_points, active_return_map)
+        portfolio_common = [float(portfolio_return_map[date_key]) for date_key in common_return_dates]
+        benchmark_common = [float(benchmark_return_map[date_key]) for date_key in common_return_dates]
+        portfolio_period_return = _compound_return(portfolio_common)
+        benchmark_period_return = _compound_return(benchmark_common)
+        tracking_error = _safe_float(active_metrics.get("annualized_volatility"))
+        parsed_dates = [_parse_iso_date(item) for item in common_return_dates]
+        periods_per_year = _infer_periods_per_year([item for item in parsed_dates if item is not None])
+        information_ratio = (
+            float((np.mean(list(active_return_map.values())) * periods_per_year) / tracking_error)
+            if tracking_error is not None and tracking_error > 1e-12
+            else None
+        )
+        relative_metrics = {
+            **active_metrics,
+            "excess_return": (
+                portfolio_period_return - benchmark_period_return
+                if portfolio_period_return is not None and benchmark_period_return is not None
+                else None
+            ),
+            "tracking_error": tracking_error,
+            "information_ratio": information_ratio,
+        }
+
+    return {"backtest_benchmark": benchmark_payload, "backtest_relative_metrics": relative_metrics}
+
+
+def build_research_backtest_benchmark_comparison(
+    portfolio_id: str,
+    *,
+    planning_taxonomy_id: str,
+    as_of_date: date,
+    benchmark_instrument_id: str,
+    portfolio_points: list[dict[str, object]],
+) -> dict[str, object]:
+    state = _build_taxonomy_state(
+        portfolio_id,
+        planning_taxonomy_id=planning_taxonomy_id,
+        as_of_date=as_of_date,
+    )
+    return _build_backtest_benchmark_comparison_from_state(
+        state,
+        benchmark_instrument_id=benchmark_instrument_id,
+        portfolio_points=portfolio_points,
+    )
 
 
 def build_current_target_backtest(
@@ -3798,22 +4049,6 @@ def build_current_target_backtest(
         portfolio_first_dates.append(nav_series.index[0])
         warnings.extend(instrument_warnings)
 
-    benchmark_nav = pd.Series(dtype="float64")
-    benchmark_label = None
-    benchmark_warnings: list[str] = []
-    if benchmark_instrument_id:
-        benchmark_label = _instrument_label(state, benchmark_instrument_id)
-        try:
-            benchmark_nav, benchmark_warnings = _build_instrument_nav_series(
-                state,
-                instrument_id=benchmark_instrument_id,
-                start_date=date(1900, 1, 1),
-                end_date=as_of_date,
-            )
-        except ValueError as error:
-            benchmark_warnings.append(str(error))
-            benchmark_nav = pd.Series(dtype="float64")
-
     if not nav_by_instrument or not portfolio_first_dates:
         empty_backtest = {
             "rebalance_frequency": frequency,
@@ -3859,13 +4094,39 @@ def build_current_target_backtest(
         rebal_dates = [earliest_start_date]
 
     returns_by_instrument = {instrument_id: _nav_returns(nav) for instrument_id, nav in nav_by_instrument.items()}
-    benchmark_returns = _nav_returns(benchmark_nav) if not benchmark_nav.empty else pd.Series(dtype="float64")
     portfolio_nav = 1.0
     points: list[dict[str, object]] = []
     portfolio_returns: dict[str, float] = {}
     contribution_accumulator: dict[str, float] = defaultdict(float)
     weight_points: list[dict[str, object]] = []
     contribution_points: list[dict[str, object]] = []
+    last_period_weights: dict[str, float] | None = None
+    last_top_by_instrument: dict[str, tuple[str | None, str]] = {}
+
+    def sleeve_weight_point(
+        date_key: str,
+        weights_by_instrument: dict[str, float],
+        top_lookup: dict[str, tuple[str | None, str]],
+    ) -> dict[str, object]:
+        top_weight_by_key: dict[str, dict[str, object]] = {}
+        for instrument_id, weight in weights_by_instrument.items():
+            if abs(weight) <= 1e-12:
+                continue
+            top_id, top_label = top_lookup.get(instrument_id, (None, "Unassigned"))
+            top_key = top_id or "__unassigned__"
+            sleeve = top_weight_by_key.setdefault(
+                top_key,
+                {"top_sleeve_id": top_id, "top_sleeve_label": top_label, "value": 0.0},
+            )
+            sleeve["value"] = float(sleeve["value"] or 0.0) + float(weight)
+        return {
+            "date": date_key,
+            "sleeves": sorted(
+                top_weight_by_key.values(),
+                key=lambda item: abs(_safe_float(item.get("value")) or 0.0),
+                reverse=True,
+            ),
+        }
 
     for index, rebalance_date in enumerate(rebal_dates):
         period_end = rebal_dates[index + 1] if index + 1 < len(rebal_dates) else as_of_date
@@ -3888,54 +4149,51 @@ def build_current_target_backtest(
                 risk_model_config=risk_model_config,
             )
         except ValueError as error:
-            raise ValueError(f"{rebalance_date.isoformat()} rebalance failed: {error}") from error
-
-        if not points:
-            points.append({"date": rebalance_date.isoformat(), "value": portfolio_nav})
-
-        leaf_weights = {
-            str(row.get("member_id") or ""): _safe_float(row.get("target_weight")) or 0.0
-            for row in list(period_solution.get("leaf_targets") or [])
-            if str(row.get("member_type") or "") == TARGET_MEMBER_INSTRUMENT
-        }
-        top_by_instrument: dict[str, tuple[str | None, str]] = {}
-        for row in list(period_solution.get("leaf_targets") or []):
-            if str(row.get("member_type") or "") != TARGET_MEMBER_INSTRUMENT:
-                continue
-            instrument_id = str(row.get("member_id") or "")
-            top_id, top_label, _path = _top_sleeve_for_member(
-                state,
-                member_type=TARGET_MEMBER_INSTRUMENT,
-                member_id=instrument_id,
-            )
-            top_key = top_id or "__unassigned__"
-            top_by_instrument[instrument_id] = (top_id, top_label)
-        def sleeve_weight_point(date_key: str, weights_by_instrument: dict[str, float]) -> dict[str, object]:
-            top_weight_by_key: dict[str, dict[str, object]] = {}
-            for instrument_id, weight in weights_by_instrument.items():
-                if abs(weight) <= 1e-12:
-                    continue
-                top_id, top_label = top_by_instrument.get(instrument_id, (None, "Unassigned"))
-                top_key = top_id or "__unassigned__"
-                sleeve = top_weight_by_key.setdefault(
-                    top_key,
-                    {"top_sleeve_id": top_id, "top_sleeve_label": top_label, "value": 0.0},
+            if not _is_rebalance_data_gap_error(error):
+                raise ValueError(f"{rebalance_date.isoformat()} rebalance failed: {error}") from error
+            if not points:
+                warnings.append(
+                    f"{rebalance_date.isoformat()} rebalance skipped during backtest warm-up: {error}"
                 )
-                sleeve["value"] = float(sleeve["value"] or 0.0) + float(weight)
-            return {
-                "date": date_key,
-                "sleeves": sorted(
-                    top_weight_by_key.values(),
-                    key=lambda item: abs(_safe_float(item.get("value")) or 0.0),
-                    reverse=True,
-                ),
+                continue
+            if last_period_weights is None:
+                raise ValueError(f"{rebalance_date.isoformat()} rebalance failed: {error}") from error
+            warnings.append(
+                f"{rebalance_date.isoformat()} rebalance skipped; previous weights carried forward: {error}"
+            )
+            period_weights = dict(last_period_weights)
+            top_by_instrument = dict(last_top_by_instrument)
+            weight_points.append(
+                sleeve_weight_point(rebalance_date.isoformat(), period_weights, top_by_instrument)
+            )
+        else:
+            if not points:
+                points.append({"date": rebalance_date.isoformat(), "value": portfolio_nav})
+
+            leaf_weights = {
+                str(row.get("member_id") or ""): _safe_float(row.get("target_weight")) or 0.0
+                for row in list(period_solution.get("leaf_targets") or [])
+                if str(row.get("member_type") or "") == TARGET_MEMBER_INSTRUMENT
             }
-        period_weights = {
-            instrument_id: float(weight)
-            for instrument_id, weight in leaf_weights.items()
-            if instrument_id in returns_by_instrument
-        }
-        weight_points.append(sleeve_weight_point(rebalance_date.isoformat(), period_weights))
+            top_by_instrument = {}
+            for row in list(period_solution.get("leaf_targets") or []):
+                if str(row.get("member_type") or "") != TARGET_MEMBER_INSTRUMENT:
+                    continue
+                instrument_id = str(row.get("member_id") or "")
+                top_id, top_label, _path = _top_sleeve_for_member(
+                    state,
+                    member_type=TARGET_MEMBER_INSTRUMENT,
+                    member_id=instrument_id,
+                )
+                top_by_instrument[instrument_id] = (top_id, top_label)
+            period_weights = {
+                instrument_id: float(weight)
+                for instrument_id, weight in leaf_weights.items()
+                if instrument_id in returns_by_instrument
+            }
+            weight_points.append(
+                sleeve_weight_point(rebalance_date.isoformat(), period_weights, top_by_instrument)
+            )
 
         active_instruments = [
             instrument_id
@@ -3983,7 +4241,7 @@ def build_current_target_backtest(
                 )
             portfolio_nav *= period_growth
             points.append({"date": date_key, "value": portfolio_nav})
-            weight_points.append(sleeve_weight_point(date_key, period_weights))
+            weight_points.append(sleeve_weight_point(date_key, period_weights, top_by_instrument))
             sleeves_for_date = []
             for top_key, sleeve in sleeve_contribution.items():
                 contribution_accumulator[top_key] += float(sleeve.get("value") or 0.0)
@@ -3995,56 +4253,15 @@ def build_current_target_backtest(
                     }
                 )
             contribution_points.append({"date": date_key, "sleeves": sleeves_for_date})
+        last_period_weights = dict(period_weights)
+        last_top_by_instrument = dict(top_by_instrument)
 
-    benchmark_payload = None
-    relative_metrics = None
-    if benchmark_instrument_id:
-        benchmark_points: list[dict[str, object]] = []
-        benchmark_return_map: dict[str, float] = {}
-        if points and not benchmark_returns.empty:
-            benchmark_nav_value = 1.0
-            benchmark_points.append({"date": points[0]["date"], "value": benchmark_nav_value})
-            for point in points[1:]:
-                date_key = str(point.get("date") or "")
-                point_date = _parse_iso_date(date_key)
-                if point_date is None or point_date not in benchmark_returns.index:
-                    continue
-                benchmark_return = _safe_float(benchmark_returns.get(point_date))
-                if benchmark_return is None:
-                    continue
-                benchmark_return_map[date_key] = benchmark_return
-                benchmark_nav_value *= 1.0 + benchmark_return
-                benchmark_points.append({"date": date_key, "value": benchmark_nav_value})
-        benchmark_payload = {
-            "instrument_id": benchmark_instrument_id,
-            "label": benchmark_label or benchmark_instrument_id,
-            "points": benchmark_points,
-            "metrics": _build_backtest_metrics(benchmark_points, benchmark_return_map),
-            "warnings": benchmark_warnings,
-        }
-        common_return_dates = sorted(set(portfolio_returns).intersection(benchmark_return_map))
-        if common_return_dates:
-            portfolio_common = [portfolio_returns[date_key] for date_key in common_return_dates]
-            benchmark_common = [benchmark_return_map[date_key] for date_key in common_return_dates]
-            active_returns = [left - right for left, right in zip(portfolio_common, benchmark_common)]
-            parsed_dates = [_parse_iso_date(item) for item in common_return_dates]
-            periods_per_year = _infer_periods_per_year([item for item in parsed_dates if item is not None])
-            tracking_error = (
-                float(np.std(np.asarray(active_returns, dtype="float64"), ddof=1) * sqrt(periods_per_year))
-                if len(active_returns) > 1
-                else None
-            )
-            active_return = (_compound_return(portfolio_common) or 0.0) - (_compound_return(benchmark_common) or 0.0)
-            information_ratio = (
-                float((np.mean(active_returns) * periods_per_year) / tracking_error)
-                if tracking_error is not None and tracking_error > 1e-12
-                else None
-            )
-            relative_metrics = {
-                "excess_return": active_return,
-                "tracking_error": tracking_error,
-                "information_ratio": information_ratio,
-            }
+    comparison_payload = _build_backtest_benchmark_comparison_from_state(
+        state,
+        benchmark_instrument_id=benchmark_instrument_id,
+        portfolio_points=points,
+        portfolio_returns=portfolio_returns,
+    )
 
     backtest = {
         "rebalance_frequency": frequency,
@@ -4060,8 +4277,8 @@ def build_current_target_backtest(
     }
     return {
         "backtest": backtest,
-        "backtest_benchmark": benchmark_payload,
-        "backtest_relative_metrics": relative_metrics,
+        "backtest_benchmark": comparison_payload.get("backtest_benchmark"),
+        "backtest_relative_metrics": comparison_payload.get("backtest_relative_metrics"),
     }
 
 
@@ -4130,6 +4347,7 @@ def solve_current_target_weights(
         state,
         leaf_rows=scope_result.leaf_target_rows,
         member_rows=scope_result.member_target_rows,
+        top_sleeve_bound_weight_by_id=scope_result.top_sleeve_bound_weight_by_id,
         as_of_date=as_of_date,
         lookback_days=lookback_days,
         calculation_frequency=resolved_calculation_frequency,  # type: ignore[arg-type]

@@ -29,6 +29,7 @@ from portfolio_app.services.research_solver import (
     build_research_calculation_frequency_profile,
     build_research_scope_options,
     build_current_target_backtest,
+    build_research_backtest_benchmark_comparison,
     research_window_start_date,
     solve_current_target_weights,
 )
@@ -1370,8 +1371,11 @@ def update_research_settings(
             row.frozen_taxonomy_node_ids_json = resolved_frozen_ids
         if resolved_top_sleeve_bounds is not None:
             row.top_sleeve_weight_bounds_json = resolved_top_sleeve_bounds
+        normalized_rebalance_frequency = str(backtest_rebalance_frequency or "").strip().lower()
         row.backtest_rebalance_frequency = (
-            "3m" if str(backtest_rebalance_frequency or "").strip().lower() == "3m" else "1m"
+            normalized_rebalance_frequency
+            if normalized_rebalance_frequency in {"1w", "1m", "3m"}
+            else "1m"
         )
         row.backtest_benchmark_instrument_id = str(backtest_benchmark_instrument_id or "").strip() or None
         row.notes = notes
@@ -1563,6 +1567,52 @@ def run_portfolio_research(
 
         session.refresh(run_row)
         return _serialize_run_row(run_row, taxonomy_name_map)
+
+
+def get_research_backtest_benchmark_comparison(
+    portfolio_id: str,
+    *,
+    research_run_id: str,
+    benchmark_instrument_id: str,
+) -> dict[str, object] | None:
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
+        return None
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        run_row = session.get(ResearchRunRecordModel, research_run_id)
+        if run_row is None or run_row.portfolio_id != portfolio_id:
+            return None
+        if run_row.status != "completed":
+            raise ValueError("Benchmark comparison requires a completed research run.")
+
+        detail = deepcopy(run_row.detail_json or {})
+        backtest = detail.get("backtest") if isinstance(detail, dict) else None
+        if not isinstance(backtest, dict):
+            raise ValueError("Benchmark comparison requires a research run with backtest output.")
+        portfolio_points = [
+            item for item in list(backtest.get("points") or []) if isinstance(item, dict)
+        ]
+        if not portfolio_points:
+            raise ValueError("Benchmark comparison requires a non-empty backtest series.")
+
+        request_payload = run_row.request_payload_json or {}
+        planning_taxonomy_id = str(
+            run_row.planning_taxonomy_id
+            or (request_payload.get("planning_taxonomy_id") if isinstance(request_payload, dict) else "")
+            or ""
+        ).strip()
+        if not planning_taxonomy_id:
+            raise ValueError("Benchmark comparison requires a planning taxonomy.")
+
+        return build_research_backtest_benchmark_comparison(
+            portfolio_id,
+            planning_taxonomy_id=planning_taxonomy_id,
+            as_of_date=run_row.as_of_date or _default_as_of_date(portfolio),
+            benchmark_instrument_id=benchmark_instrument_id,
+            portfolio_points=portfolio_points,
+        )
 
 
 def read_research_artifact_content(

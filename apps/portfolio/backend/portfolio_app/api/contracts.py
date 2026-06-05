@@ -63,7 +63,7 @@ ResearchTargetDimension = Literal["scope_default", "weight", "risk_budget"]
 ResearchCapitalMode = Literal["unit_notional", "fixed_gross", "target_volatility", "volatility_cap"]
 ResearchCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
 ResearchMissingReturnPolicy = Literal["strict", "complete_case_drop"]
-ResearchBacktestRebalanceFrequency = Literal["1m", "3m"]
+ResearchBacktestRebalanceFrequency = Literal["1w", "1m", "3m"]
 PortfolioCalculationFrequency = Literal["daily", "weekly", "monthly"]
 PortfolioRiskCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
 PortfolioRiskCovarianceModel = Literal["ewma_vol_shrinkage_corr_covariance", "ewma_covariance", "sample_covariance"]
@@ -1300,14 +1300,18 @@ class ResearchBacktestMetricsRecord(BaseModel):
     start_date: str | None = None
     end_date: str | None = None
     period_return: float | None = None
+    ytd_return: float | None = None
     annualized_return: float | None = None
     annualized_volatility: float | None = None
     sharpe_ratio: float | None = None
     max_drawdown: float | None = None
     max_drawdown_start_date: str | None = None
     max_drawdown_end_date: str | None = None
+    max_drawdown_days: int | None = None
     max_drawdown_recovery_date: str | None = None
     max_drawdown_recovery_days: int | None = None
+    current_drawdown: float | None = None
+    calmar_ratio: float | None = None
 
 
 class ResearchBacktestRecord(BaseModel):
@@ -1336,10 +1340,15 @@ class ResearchBacktestBenchmarkRecord(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class ResearchBacktestRelativeMetricsRecord(BaseModel):
+class ResearchBacktestRelativeMetricsRecord(ResearchBacktestMetricsRecord):
     excess_return: float | None = None
     tracking_error: float | None = None
     information_ratio: float | None = None
+
+
+class ResearchBacktestBenchmarkComparisonResponse(BaseModel):
+    backtest_benchmark: ResearchBacktestBenchmarkRecord | None = None
+    backtest_relative_metrics: ResearchBacktestRelativeMetricsRecord | None = None
 
 
 class ResearchRunDetailRecord(BaseModel):

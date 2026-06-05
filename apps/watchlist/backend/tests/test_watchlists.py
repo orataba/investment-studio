@@ -800,6 +800,103 @@ def test_calendar_period_returns_use_prior_close_as_base(
     assert row["return_ytd"] == pytest.approx(56.0, abs=1e-6)
 
 
+def test_index_close_series_calculates_watchlist_performance_metrics(
+    client: TestClient,
+) -> None:
+    seed_shared_instrument(
+        {
+            "instrument_id": "index-close-only",
+            "instrument_name": "Close Only Index",
+            "instrument_type": "index",
+            "currency": "USD",
+            "identifiers": [
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "CLOSEIDX",
+                    "is_primary": True,
+                },
+            ],
+            "market_data": [
+                {
+                    "metric_family": "price",
+                    "quote_basis": "close",
+                    "as_of_date": as_of_date,
+                    "value": value,
+                    "currency": "USD",
+                    "status": "complete",
+                }
+                for as_of_date, value in (
+                    ("2025-12-31", "100.000000"),
+                    ("2026-03-15", "110.000000"),
+                    ("2026-04-01", "115.000000"),
+                    ("2026-04-15", "121.000000"),
+                )
+            ],
+            "lifecycle_state": {"status": "active"},
+        }
+    )
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Index Return Coverage", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["index-close-only"]},
+    )
+    assert add_response.status_code == 200
+    assert add_response.json()["recalculated_instrument_ids"] == ["index-close-only"]
+
+    screener = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": watchlist_id,
+            "view_id": "overview",
+            "selected_fields": [
+                "ticker_or_isin",
+                "instrument_type",
+                "return_ytd",
+                "return_mtd",
+                "return_1m",
+                "annualized_return",
+                "max_drawdown",
+                "volatility",
+                "sharpe_ratio",
+                "attr.current_drawdown",
+            ],
+            "sort": [],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert screener.status_code == 200
+    row = screener.json()["rows"][0]
+    assert row["ticker_or_isin"] == "CLOSEIDX"
+    assert row["instrument_type"] == "index"
+    assert row["return_ytd"] == pytest.approx(21.0, abs=1e-6)
+    assert row["return_mtd"] == pytest.approx(10.0, abs=1e-6)
+    assert row["return_1m"] == pytest.approx(10.0, abs=1e-6)
+    assert row["annualized_return"] is not None
+    assert row["max_drawdown"] == pytest.approx(0.0, abs=1e-6)
+    assert row["volatility"] is not None
+    assert row["sharpe_ratio"] is not None
+    assert row["attr.current_drawdown"] == pytest.approx(0.0, abs=1e-6)
+
+    field_registry = client.get("/api/field-registry", params={"instrument_type": "index"})
+    assert field_registry.status_code == 200
+    index_field_keys = {item["field_key"] for item in field_registry.json()["fields"]}
+    assert {
+        "return_ytd",
+        "return_mtd",
+        "return_1m",
+        "annualized_return",
+        "max_drawdown",
+        "volatility",
+        "sharpe_ratio",
+    }.issubset(index_field_keys)
+
+
 def test_instrument_performance_and_risk_payloads_include_materialized_metrics(
     client: TestClient,
 ) -> None:

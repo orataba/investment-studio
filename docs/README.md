@@ -6,11 +6,13 @@
 
 1. [README.md](../README.md)
    仓库概览、目录、当前边界、启动方式和常用校验命令。
-2. [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)
+2. [USER_MANUAL.md](./USER_MANUAL.md)
+   面向公司同事的使用手册，说明 Platform / Watchlist / Portfolio 的日常使用方式。
+3. [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)
    单库多 schema 的数据库拓扑、迁移入口、重建脚本和 PostgreSQL integration test 路径。
-3. [PLATFORM_BOUNDARIES.md](./PLATFORM_BOUNDARIES.md)
+4. [PLATFORM_BOUNDARIES.md](./PLATFORM_BOUNDARIES.md)
    `Platform / Watchlist / Portfolio / instrument-core / instrument_registry` 之间的当前职责和数据边界。
-4. [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md)
+5. [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md)
    当前前端设计基线：白底数据终端、tab-to-content 节奏、字体层级和跨 app UI 边界。
 
 按 app 深入时：

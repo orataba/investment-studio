@@ -238,6 +238,10 @@ def _normalize_nav_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
     return normalized
 
 
+def _allows_ordinary_return_basis(instrument_type: object) -> bool:
+    return str(instrument_type or "").strip().lower() == "index"
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
@@ -1218,7 +1222,22 @@ class CanonicalRecalcService:
             manual_profile.nav_settings_json if manual_profile is not None else None
         )
         shared_instrument = get_shared_instrument(instrument_id)
-        nav_rows = _group_shared_nav_rows(list(shared_instrument.get("market_data", []))) if isinstance(shared_instrument, dict) else []
+        shared_instrument_type = (
+            str(shared_instrument.get("instrument_type") or "").strip().lower()
+            if isinstance(shared_instrument, dict)
+            else ""
+        )
+        local_instrument = self.instrument_repository.get(session, instrument_id)
+        instrument_type = shared_instrument_type or getattr(
+            local_instrument,
+            "instrument_type",
+            None,
+        )
+        nav_rows = (
+            _group_shared_nav_rows(list(shared_instrument.get("market_data", [])))
+            if isinstance(shared_instrument, dict)
+            else []
+        )
         if not nav_rows:
             nav_rows = _group_local_nav_rows(
                 self.facts_repository.list_nav_facts(
@@ -1231,6 +1250,7 @@ class CanonicalRecalcService:
         selection = _select_nav_basis_rows(
             nav_rows,
             preference=str(nav_settings.get("nav_basis_preference", "auto")),
+            allow_ordinary_nav=_allows_ordinary_return_basis(instrument_type),
         )
         frequency_context = build_calculation_frequency_context(selection["points"])
         return {
@@ -1458,6 +1478,7 @@ class CanonicalRecalcService:
         nav_selection = _select_nav_basis_rows(
             nav_rows,
             preference=str(nav_settings.get("nav_basis_preference", "auto")),
+            allow_ordinary_nav=_allows_ordinary_return_basis(instrument.instrument_type),
         )
         frequency_context = build_calculation_frequency_context(nav_selection["points"])
         calculation_nav_points = frequency_context["points"]
@@ -2327,6 +2348,8 @@ class CanonicalRecalcService:
                     "return_1m": getattr(performance_snapshot, "return_1m", None),
                     "return_1y": getattr(performance_snapshot, "return_1y", None),
                     "annualized_return": getattr(performance_snapshot, "annualized_return", None),
+                    "return_3y": getattr(performance_snapshot, "return_3y_annualized", None),
+                    "return_5y": getattr(performance_snapshot, "return_5y_annualized", None),
                     "max_drawdown": getattr(performance_snapshot, "max_drawdown", None),
                     "volatility": getattr(risk_snapshot, "volatility", None),
                     "sharpe_ratio": getattr(risk_snapshot, "sharpe_ratio", None),

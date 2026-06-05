@@ -27,7 +27,7 @@
 - `Watchlists` 与单资产详情页是当前主界面
 - Watchlist 里的资产新增只允许从 `Database Dashboard` 共享库搜索并引用，不再在 Watchlist 内创建资产主档
 - 当前 watchlist 可用范围是 `fund` 与 `index`；shared registry 可以管理更广的资产类型，但其他类型不会进入 watchlist detail 主链路
-- `index` 使用轻量详情工作面，当前聚焦 `Overview / Performance / Risk`，不强行复用 fund-specific 的 exposure、people、strategy、documents 或 research 录入面
+- `index` 使用轻量详情工作面，当前聚焦 `Overview / Performance / Risk`，不强行复用 fund-specific 的 exposure、people、strategy、documents 或 research 录入面；指数可以使用 close 序列计算收益、回撤、波动率和 Sharpe 等 watchlist 字段
 - `Monitoring` 已经是可用工作面；`Research / Documents` 一级路由仍以轻量页为主
 - Copilot 后端接口仍保留为后续扩展入口，但当前 UI 默认隐藏，不作为已发布能力
 
@@ -111,6 +111,7 @@ npm --prefix apps/watchlist/frontend run build
 - 后端主语已经统一到 `instrument`，当前只暴露 `/api/instruments/...` 明确接口；旧 `/api/funds/...` 兼容路由已移除
 - Instrument Detail 里的 canonical NAV history 现在是只读视图；导入、编辑、刷新共享净值要去 `Database Dashboard`，这里只保留本地 basis / benchmark 设置
 - Instrument Detail 的 benchmark 选择在 Quote / Performance / Risk 三个工作面共用同一状态；Performance matrix 和 Risk rolling charts 使用同一 benchmark calculation series，不再维护第二套 metric benchmark。Quote / Performance 图表在比较 benchmark 时只绘制双方重叠日期窗口，并按真实日期比例投影横轴，不按样本序号拉伸。Rolling risk chart 支持 1M / 3M / 6M / 12M / 24M / 36M 窗口；benchmark 曲线只在存在重叠 calculation series 时展示，不补齐缺失序列。
+- `return_ytd / return_mtd / return_1w / return_1m / return_1y / annualized_return / return_3y / return_5y / max_drawdown / current_drawdown / volatility / sharpe_ratio` 当前对 fund 与 index 都可见；fund 仍按 NAV 优先，index 允许普通 close 价格作为收益计算 basis。
 
 ## 当前文档
 
