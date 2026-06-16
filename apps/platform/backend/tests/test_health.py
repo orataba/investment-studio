@@ -19,6 +19,8 @@ def test_health_reports_email_readiness(monkeypatch) -> None:
         email_imap_host = None
         email_imap_username = None
         email_imap_password = None
+        tushare_ready = False
+        tushare_api_url = "https://api.tushare.pro"
 
     monkeypatch.setattr(health, "get_settings", lambda: StubSettings())
 
@@ -40,4 +42,8 @@ def test_health_reports_email_readiness(monkeypatch) -> None:
             "YUNGU_PLATFORM_EMAIL_IMAP_USERNAME",
             "YUNGU_PLATFORM_EMAIL_IMAP_PASSWORD",
         ],
+    }
+    assert payload["tushare_sync"] == {
+        "ready": False,
+        "api_url": "https://api.tushare.pro",
     }

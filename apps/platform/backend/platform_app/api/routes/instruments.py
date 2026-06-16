@@ -4,6 +4,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from typing import Annotated
 
 from platform_app.api.contracts import (
+    PlatformBulkRefreshRequest,
+    PlatformBulkRefreshResponse,
     PlatformInstrumentCreateRequest,
     PlatformInstrumentDetail,
     PlatformLifecycleTransitionRequest,
@@ -22,6 +24,7 @@ from platform_app.services.market_data_ops import (
     import_nav_text,
     preview_nav_import,
     refresh_market_data,
+    refresh_market_data_batch,
 )
 from platform_app.services.instrument_store import (
     archive_instrument,
@@ -72,6 +75,30 @@ def resolve_instrument_record(
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
     return PlatformInstrumentDetail.model_validate(record)
+
+
+@router.post("/refresh", response_model=PlatformBulkRefreshResponse)
+def refresh_instrument_market_data_batch(
+    payload: PlatformBulkRefreshRequest,
+    background_tasks: BackgroundTasks,
+) -> PlatformBulkRefreshResponse:
+    response = refresh_market_data_batch(
+        source=payload.source,
+        updated_by=payload.updated_by,
+        full_history=payload.full_history,
+        include_inactive=payload.include_inactive,
+    )
+    refreshed_ids = [
+        item["instrument_id"]
+        for item in response["results"]
+        if item.get("status") in {"imported", "refreshed"}
+    ]
+    if refreshed_ids:
+        queue_market_data_downstream_refresh(
+            background_tasks,
+            instrument_ids=refreshed_ids,
+        )
+    return PlatformBulkRefreshResponse.model_validate(response)
 
 
 @router.post("", response_model=PlatformInstrumentRecord)
@@ -163,6 +190,7 @@ def refresh_instrument_market_data(
         instrument_id=instrument_id,
         updated_by=payload.updated_by,
         full_history=payload.full_history,
+        source=payload.source,
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")

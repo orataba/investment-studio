@@ -26,6 +26,7 @@ type PlatformAppsResponse = {
   apps: PlatformAppCard[]
 }
 type SourceMode = 'manual' | 'email' | 'api'
+type RefreshChannel = 'configured' | 'email' | 'tushare' | 'all'
 type InstrumentLifecycleStatus = 'active' | 'archived'
 
 type PlatformMarketDataPoint = {
@@ -76,6 +77,21 @@ type PlatformInstrumentDetail = PlatformInstrumentRecord & {
 type PlatformInstrumentsResponse = {
   registry_name: string
   instruments: PlatformInstrumentRecord[]
+}
+
+type PlatformBulkRefreshResponse = {
+  source: RefreshChannel
+  refreshed_count: number
+  skipped_count: number
+  results: Array<{
+    instrument_id: string
+    instrument_name: string
+    instrument_type: InstrumentType
+    source_mode: SourceMode
+    source_api_profile: string
+    status: string
+    message: string
+  }>
 }
 
 type PlatformRegistrySummary = {
@@ -551,6 +567,7 @@ function InstrumentsPage({
   onUpsertMarketData,
   onUpdateSourceSettings,
   onTriggerRefresh,
+  onTriggerChannelRefresh,
   onImportNavText,
   onImportNavFile,
   onArchiveInstrument,
@@ -596,7 +613,16 @@ function InstrumentsPage({
     source_location: string
     source_api_profile: string
   }) => Promise<void>
-  onTriggerRefresh: (payload: { instrument_id: string; updated_by?: string | null }) => Promise<void>
+  onTriggerRefresh: (payload: {
+    instrument_id: string
+    updated_by?: string | null
+    source?: RefreshChannel
+  }) => Promise<void>
+  onTriggerChannelRefresh: (payload: {
+    source: RefreshChannel
+    updated_by?: string | null
+    full_history?: boolean
+  }) => Promise<void>
   onImportNavText: (payload: {
     instrument_id: string
     raw_text: string
@@ -651,6 +677,7 @@ function InstrumentsPage({
   const [sourceFilter, setSourceFilter] = useState<'all' | SourceMode>('all')
   const [navFilter, setNavFilter] = useState<'all' | 'has_nav' | 'missing_nav'>('all')
   const [sortMode, setSortMode] = useState<'name_asc' | 'nav_desc' | 'identifier_asc' | 'coverage'>('name_asc')
+  const [refreshChannel, setRefreshChannel] = useState<RefreshChannel>('all')
   const [selectionPrimed, setSelectionPrimed] = useState(false)
 
   const selectedEditableFxPair = useMemo(() => {
@@ -991,8 +1018,19 @@ function InstrumentsPage({
     await onTriggerRefresh({
       instrument_id: selectedInstrumentId,
       updated_by: 'platform_ui',
+      source: refreshChannel === 'all' ? 'configured' : refreshChannel,
     })
     await refreshSelectedInstrumentDetail(selectedInstrumentId)
+  }
+
+  async function handleRefreshChannelClick() {
+    await onTriggerChannelRefresh({
+      source: refreshChannel,
+      updated_by: 'platform_ui',
+    })
+    if (selectedInstrumentId) {
+      await refreshSelectedInstrumentDetail(selectedInstrumentId)
+    }
   }
 
   async function handleNavFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -1258,6 +1296,17 @@ function InstrumentsPage({
                 <span>Funds Missing NAV {filteredMissingNavCount}</span>
               </div>
               <div className="registry-filter-actions">
+                <label className="registry-inline-field">
+                  <span>Refresh</span>
+                  <select value={refreshChannel} onChange={(event) => setRefreshChannel(event.target.value as RefreshChannel)}>
+                    <option value="all">Email + Tushare</option>
+                    <option value="email">Email</option>
+                    <option value="tushare">Tushare</option>
+                  </select>
+                </label>
+                <button type="button" className="registry-submit" onClick={() => void handleRefreshChannelClick()}>
+                  Refresh Channel
+                </button>
                 <button
                   type="button"
                   className={`registry-submit secondary${instrumentTypeFilter === 'fund' ? ' registry-submit-active' : ''}`}
@@ -1576,7 +1625,16 @@ function InstrumentsPage({
                     </label>
                     <label>
                       <span>Source Mode</span>
-                      <select value={sourceMode} onChange={(event) => setSourceMode(event.target.value as SourceMode)}>
+                      <select
+                        value={sourceMode}
+                        onChange={(event) => {
+                          const nextMode = event.target.value as SourceMode
+                          setSourceMode(nextMode)
+                          if (nextMode === 'api' && !sourceApiProfile.trim()) {
+                            setSourceApiProfile('tushare')
+                          }
+                        }}
+                      >
                         <option value="manual">Manual</option>
                         <option value="email">Email</option>
                         <option value="api">API</option>
@@ -1597,7 +1655,7 @@ function InstrumentsPage({
                         value={sourceApiProfile}
                         onChange={(event) => setSourceApiProfile(event.target.value)}
                         disabled={sourceMode !== 'api'}
-                        placeholder="vendor_profile"
+                        placeholder="tushare"
                       />
                     </label>
                     <label className="registry-field-wide">
@@ -2391,7 +2449,11 @@ export default function App() {
     }
   }
 
-  async function handleTriggerRefresh(payload: { instrument_id: string; updated_by?: string | null }) {
+  async function handleTriggerRefresh(payload: {
+    instrument_id: string
+    updated_by?: string | null
+    source?: RefreshChannel
+  }) {
     try {
       const updated = await fetchJson<PlatformInstrumentRecord>(
         `/api/instruments/${encodeURIComponent(payload.instrument_id)}/refresh`,
@@ -2407,6 +2469,36 @@ export default function App() {
     } catch (requestError) {
       setRegistryError(
         requestError instanceof Error ? requestError.message : 'Failed to trigger refresh.',
+      )
+    }
+  }
+
+  async function handleTriggerChannelRefresh(payload: {
+    source: RefreshChannel
+    updated_by?: string | null
+    full_history?: boolean
+  }) {
+    try {
+      const response = await fetchJson<PlatformBulkRefreshResponse>('/api/instruments/refresh', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      const instrumentPath = showInactive ? '/api/instruments?include_inactive=true' : '/api/instruments'
+      const [refreshedInstruments, refreshedAllInstruments, refreshedFxRates] = await Promise.all([
+        fetchJson<PlatformInstrumentsResponse>(instrumentPath),
+        fetchJson<PlatformInstrumentsResponse>('/api/instruments?include_inactive=true'),
+        fetchJson<PlatformFxRatesResponse>('/api/fx-rates'),
+      ])
+      setInstruments(refreshedInstruments.instruments)
+      setAllInstruments(refreshedAllInstruments.instruments)
+      setFxRates(refreshedFxRates)
+      setRegistryNotice(
+        `Refresh ${response.source}: ${response.refreshed_count} updated, ${response.results.length - response.refreshed_count} checked, ${response.skipped_count} skipped.`,
+      )
+      setRegistryError(null)
+    } catch (requestError) {
+      setRegistryError(
+        requestError instanceof Error ? requestError.message : 'Failed to refresh source channel.',
       )
     }
   }
@@ -2521,6 +2613,7 @@ export default function App() {
         onUpsertMarketData={handleUpsertMarketData}
         onUpdateSourceSettings={handleUpdateSourceSettings}
         onTriggerRefresh={handleTriggerRefresh}
+        onTriggerChannelRefresh={handleTriggerChannelRefresh}
         onImportNavText={handleImportNavText}
         onImportNavFile={handleImportNavFile}
         onArchiveInstrument={handleArchiveInstrument}

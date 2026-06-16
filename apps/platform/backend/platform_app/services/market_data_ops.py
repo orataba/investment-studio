@@ -7,14 +7,19 @@ from email.parser import BytesParser
 from email.utils import parseaddr
 from io import BytesIO
 import imaplib
+import json
 import re
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from platform_app.core.settings import get_settings
 from platform_app.services.instrument_store import (
     get_instrument,
+    list_instruments,
     replace_nav_history,
     update_refresh_status,
+    upsert_market_data,
 )
 
 try:
@@ -93,6 +98,9 @@ REINVESTED_TOTAL_RETURN_INSTRUMENT_IDS = {
 
 TOTAL_RETURN_NAV_DECIMAL_PLACES = Decimal("0.0000000000000001")
 CASH_DISTRIBUTION_EVENT_THRESHOLD = Decimal("0.0001")
+TUSHARE_PROFILE_ALIASES = {"tushare", "tushare_pro", "tushare-pro"}
+TUSHARE_PRICE_SUFFIXES = {"SH", "SZ"}
+TUSHARE_INDEX_SUFFIXES = {"SH", "SZ", "CSI", "CNI"}
 
 
 def _is_reinvested_total_return_instrument(instrument_id: str) -> bool:
@@ -807,6 +815,159 @@ def _latest_nav_date_from_instrument(instrument: dict[str, object]) -> date | No
     return latest_nav_date
 
 
+def _latest_market_data_date_from_instrument(
+    instrument: dict[str, object],
+    *,
+    metric_family: str,
+    quote_bases: set[str],
+) -> date | None:
+    latest_date: date | None = None
+    for point in list(instrument.get("market_data", [])):
+        if not isinstance(point, dict):
+            continue
+        if str(point.get("metric_family") or "").strip() != metric_family:
+            continue
+        if str(point.get("quote_basis") or "").strip() not in quote_bases:
+            continue
+        current_date = _parse_nav_date(point.get("as_of_date"))
+        if current_date is None:
+            continue
+        if latest_date is None or current_date > latest_date:
+            latest_date = current_date
+    return latest_date
+
+
+def _format_tushare_date(value: date) -> str:
+    return value.strftime("%Y%m%d")
+
+
+def _tushare_profile_enabled(source_settings: dict[str, object]) -> bool:
+    profile = str(source_settings.get("source_api_profile") or "").strip().lower()
+    return profile in TUSHARE_PROFILE_ALIASES
+
+
+def _tushare_identifier_code(instrument: dict[str, object]) -> str | None:
+    identifiers = [
+        item for item in list(instrument.get("identifiers", [])) if isinstance(item, dict)
+    ]
+    ordered_identifiers = sorted(
+        identifiers,
+        key=lambda item: (
+            0 if bool(item.get("is_primary")) else 1,
+            0 if str(item.get("identifier_type") or "").strip().lower() == "ticker" else 1,
+        ),
+    )
+    for identifier in ordered_identifiers:
+        raw_value = str(identifier.get("identifier_value") or "").strip().upper()
+        if re.fullmatch(r"[0-9A-Z]{5,12}\.(?:OF|SH|SZ|CSI|CNI)", raw_value):
+            return raw_value
+    return None
+
+
+class TushareRefreshError(RuntimeError):
+    pass
+
+
+def _call_tushare_api(
+    *,
+    api_name: str,
+    params: dict[str, object],
+    fields: str,
+) -> list[dict[str, object]]:
+    settings = get_settings()
+    if not settings.tushare_ready:
+        raise TushareRefreshError("Tushare token is not configured. Set YUNGU_PLATFORM_TUSHARE_TOKEN first.")
+    request_payload = {
+        "api_name": api_name,
+        "token": settings.tushare_token,
+        "params": params,
+        "fields": fields,
+    }
+    request = Request(
+        settings.tushare_api_url,
+        data=json.dumps(request_payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=settings.tushare_timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise TushareRefreshError(f"Tushare request failed: {exc}") from exc
+
+    code = payload.get("code")
+    if code != 0:
+        message = str(payload.get("msg") or f"Tushare returned code {code}.").strip()
+        raise TushareRefreshError(message)
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return []
+    raw_fields = data.get("fields")
+    raw_items = data.get("items")
+    if not isinstance(raw_fields, list) or not isinstance(raw_items, list):
+        return []
+    rows: list[dict[str, object]] = []
+    for item in raw_items:
+        if isinstance(item, list):
+            rows.append({str(key): value for key, value in zip(raw_fields, item, strict=False)})
+    return rows
+
+
+def _tushare_nav_rows(
+    rows: list[dict[str, object]],
+    *,
+    latest_date: date | None,
+) -> list[dict[str, object]]:
+    prepared_rows: list[dict[str, object]] = []
+    for row in rows:
+        point_date = _parse_nav_date(row.get("end_date") or row.get("ann_date"))
+        if point_date is None:
+            continue
+        if latest_date is not None and point_date <= latest_date:
+            continue
+        nav = _parse_nav_decimal(row.get("unit_nav"))
+        total_return_nav = _parse_nav_decimal(row.get("accum_nav"))
+        if total_return_nav is None:
+            total_return_nav = _parse_nav_decimal(row.get("adj_nav"))
+        if nav is None and total_return_nav is None:
+            continue
+        prepared_rows.append(
+            {
+                "as_of_date": point_date.isoformat(),
+                "nav": nav,
+                "nav_with_dividend": total_return_nav,
+                "currency": "CNY",
+                "frequency": "daily",
+            }
+        )
+    return _merge_rows_by_date(prepared_rows)
+
+
+def _tushare_price_rows(
+    rows: list[dict[str, object]],
+    *,
+    latest_date: date | None,
+) -> list[dict[str, object]]:
+    prepared_rows: list[dict[str, object]] = []
+    for row in rows:
+        point_date = _parse_nav_date(row.get("trade_date"))
+        if point_date is None:
+            continue
+        if latest_date is not None and point_date <= latest_date:
+            continue
+        close_value = _parse_nav_decimal(row.get("close"))
+        if close_value is None:
+            continue
+        prepared_rows.append(
+            {
+                "as_of_date": point_date,
+                "value": close_value,
+            }
+        )
+    return sorted(prepared_rows, key=lambda item: item["as_of_date"])
+
+
 def _format_imap_since_date(value: date) -> str:
     month = (
         "Jan",
@@ -1049,12 +1210,30 @@ def refresh_market_data(
     instrument_id: str,
     updated_by: str | None,
     full_history: bool = False,
+    source: str = "configured",
 ) -> dict[str, object] | None:
     instrument = get_instrument(instrument_id)
     if instrument is None:
         return None
 
     source_settings = dict(instrument.get("source_settings", {}))
+    requested_source = str(source or "configured").strip().lower()
+    if requested_source == "email":
+        return _refresh_from_email(
+            instrument_id=instrument_id,
+            instrument=instrument,
+            source_settings=source_settings,
+            updated_by=updated_by,
+            full_history=full_history,
+        )
+    if requested_source == "tushare":
+        return _refresh_from_tushare(
+            instrument_id=instrument_id,
+            instrument=instrument,
+            updated_by=updated_by,
+            full_history=full_history,
+        )
+
     source_mode = str(source_settings.get("source_mode") or "manual")
     if source_mode == "email":
         return _refresh_from_email(
@@ -1066,6 +1245,13 @@ def refresh_market_data(
         )
     if source_mode == "api":
         profile = str(source_settings.get("source_api_profile") or "").strip()
+        if profile.lower() in TUSHARE_PROFILE_ALIASES:
+            return _refresh_from_tushare(
+                instrument_id=instrument_id,
+                instrument=instrument,
+                updated_by=updated_by,
+                full_history=full_history,
+            )
         return update_refresh_status(
             instrument_id=instrument_id,
             status="blocked",
@@ -1084,6 +1270,216 @@ def refresh_market_data(
         updated_by=updated_by,
         mode="manual",
     )
+
+
+def _refresh_from_tushare(
+    *,
+    instrument_id: str,
+    instrument: dict[str, object],
+    updated_by: str | None,
+    full_history: bool,
+) -> dict[str, object] | None:
+    ts_code = _tushare_identifier_code(instrument)
+    if ts_code is None:
+        return update_refresh_status(
+            instrument_id=instrument_id,
+            status="blocked",
+            message="Tushare refresh requires a Tushare ts_code identifier such as 018654.OF or 000300.SH.",
+            updated_by=updated_by,
+            mode="api",
+        )
+
+    instrument_type = str(instrument.get("instrument_type") or "").strip().lower()
+    suffix = ts_code.rsplit(".", 1)[-1]
+    try:
+        if instrument_type == "fund" and suffix == "OF":
+            latest_date = None if full_history else _latest_nav_date_from_instrument(instrument)
+            rows = _call_tushare_api(
+                api_name="fund_nav",
+                params={"ts_code": ts_code},
+                fields="ts_code,ann_date,end_date,unit_nav,accum_nav,adj_nav,update_flag",
+            )
+            nav_rows = _tushare_nav_rows(rows, latest_date=latest_date)
+            if not nav_rows:
+                since_text = f" since {latest_date.isoformat()}" if latest_date else ""
+                return update_refresh_status(
+                    instrument_id=instrument_id,
+                    status="no_new_data",
+                    message=f"Tushare fund_nav returned no new NAV rows for {ts_code}{since_text}.",
+                    updated_by=updated_by,
+                    mode="api",
+                )
+            return replace_nav_history(
+                instrument_id=instrument_id,
+                rows=nav_rows,
+                provider="tushare:fund_nav",
+                point_status="complete",
+                refresh_status="imported",
+                updated_by=updated_by,
+                message=f"Imported {len(nav_rows)} NAV rows from Tushare fund_nav for {ts_code}.",
+                mode="api",
+            )
+
+        if instrument_type == "fund" and suffix in TUSHARE_PRICE_SUFFIXES:
+            latest_date = None if full_history else _latest_market_data_date_from_instrument(
+                instrument,
+                metric_family="price",
+                quote_bases={"close"},
+            )
+            params: dict[str, object] = {"ts_code": ts_code}
+            if full_history:
+                params["start_date"] = "19900101"
+            elif latest_date is not None:
+                params["start_date"] = _format_tushare_date(latest_date + timedelta(days=1))
+            params["end_date"] = _format_tushare_date(date.today())
+            rows = _call_tushare_api(
+                api_name="fund_daily",
+                params=params,
+                fields="ts_code,trade_date,close",
+            )
+            return _upsert_tushare_price_rows(
+                instrument_id=instrument_id,
+                ts_code=ts_code,
+                api_name="fund_daily",
+                rows=_tushare_price_rows(rows, latest_date=latest_date),
+                updated_by=updated_by,
+            )
+
+        if instrument_type == "index" and suffix in TUSHARE_INDEX_SUFFIXES:
+            latest_date = None if full_history else _latest_market_data_date_from_instrument(
+                instrument,
+                metric_family="price",
+                quote_bases={"close"},
+            )
+            params = {"ts_code": ts_code}
+            if full_history:
+                params["start_date"] = "19900101"
+            elif latest_date is not None:
+                params["start_date"] = _format_tushare_date(latest_date + timedelta(days=1))
+            params["end_date"] = _format_tushare_date(date.today())
+            rows = _call_tushare_api(
+                api_name="index_daily",
+                params=params,
+                fields="ts_code,trade_date,close",
+            )
+            return _upsert_tushare_price_rows(
+                instrument_id=instrument_id,
+                ts_code=ts_code,
+                api_name="index_daily",
+                rows=_tushare_price_rows(rows, latest_date=latest_date),
+                updated_by=updated_by,
+            )
+    except TushareRefreshError as exc:
+        return update_refresh_status(
+            instrument_id=instrument_id,
+            status="failed",
+            message=f"Tushare refresh failed for {ts_code}: {exc}",
+            updated_by=updated_by,
+            mode="api",
+        )
+
+    return update_refresh_status(
+        instrument_id=instrument_id,
+        status="blocked",
+        message=f"Tushare refresh is not supported for {instrument_type or 'instrument'} code {ts_code}.",
+        updated_by=updated_by,
+        mode="api",
+    )
+
+
+def _upsert_tushare_price_rows(
+    *,
+    instrument_id: str,
+    ts_code: str,
+    api_name: str,
+    rows: list[dict[str, object]],
+    updated_by: str | None,
+) -> dict[str, object] | None:
+    if not rows:
+        return update_refresh_status(
+            instrument_id=instrument_id,
+            status="no_new_data",
+            message=f"Tushare {api_name} returned no new close rows for {ts_code}.",
+            updated_by=updated_by,
+            mode="api",
+        )
+
+    refreshed: dict[str, object] | None = None
+    for row in rows:
+        refreshed = upsert_market_data(
+            instrument_id=instrument_id,
+            metric_family="price",
+            quote_basis="close",
+            as_of_date=row["as_of_date"],
+            value=str(row["value"]),
+            currency="CNY",
+            provider=f"tushare:{api_name}",
+            status="complete",
+        )
+    return update_refresh_status(
+        instrument_id=instrument_id,
+        status="refreshed",
+        message=f"Imported {len(rows)} close rows from Tushare {api_name} for {ts_code}.",
+        updated_by=updated_by,
+        mode="api",
+    ) or refreshed
+
+
+def _matches_batch_source(instrument: dict[str, object], source: str) -> bool:
+    source_settings = dict(instrument.get("source_settings", {}))
+    source_mode = str(source_settings.get("source_mode") or "manual").strip().lower()
+    normalized_source = source.strip().lower()
+    if normalized_source == "email":
+        return source_mode == "email"
+    if normalized_source == "tushare":
+        return source_mode == "api" and _tushare_profile_enabled(source_settings)
+    if normalized_source == "all":
+        return source_mode == "email" or (source_mode == "api" and _tushare_profile_enabled(source_settings))
+    return False
+
+
+def refresh_market_data_batch(
+    *,
+    source: str,
+    updated_by: str | None,
+    full_history: bool = False,
+    include_inactive: bool = False,
+) -> dict[str, object]:
+    normalized_source = str(source or "all").strip().lower()
+    if normalized_source == "configured":
+        normalized_source = "all"
+    instruments = list_instruments(include_inactive=include_inactive)
+    targets = [item for item in instruments if _matches_batch_source(item, normalized_source)]
+    results: list[dict[str, object]] = []
+    for instrument in targets:
+        instrument_id = str(instrument.get("instrument_id") or "")
+        refreshed = refresh_market_data(
+            instrument_id=instrument_id,
+            updated_by=updated_by,
+            full_history=full_history,
+            source="configured",
+        )
+        if refreshed is None:
+            continue
+        source_settings = dict(refreshed.get("source_settings", {}))
+        refresh_status = dict(refreshed.get("refresh_status", {}))
+        results.append(
+            {
+                "instrument_id": refreshed["instrument_id"],
+                "instrument_name": refreshed["instrument_name"],
+                "instrument_type": refreshed["instrument_type"],
+                "source_mode": source_settings.get("source_mode") or "manual",
+                "source_api_profile": source_settings.get("source_api_profile") or "",
+                "status": refresh_status.get("status") or "idle",
+                "message": refresh_status.get("message") or "",
+            }
+        )
+    return {
+        "source": normalized_source,
+        "refreshed_count": sum(1 for item in results if item["status"] in {"imported", "refreshed"}),
+        "skipped_count": len(instruments) - len(targets),
+        "results": results,
+    }
 
 
 def _refresh_from_email(

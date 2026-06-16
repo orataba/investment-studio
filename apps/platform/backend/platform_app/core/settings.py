@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     email_imap_timeout_seconds: int = 60
     email_imap_max_messages: int = 500
     email_imap_mark_seen: bool = False
+    tushare_token: str | None = None
+    tushare_api_url: str = "https://api.tushare.pro"
+    tushare_timeout_seconds: int = 30
 
     model_config = SettingsConfigDict(
         env_prefix="YUNGU_PLATFORM_",
@@ -73,6 +76,10 @@ class Settings(BaseSettings):
     @property
     def email_sync_ready(self) -> bool:
         return bool(self.email_imap_host and self.email_imap_username and self.email_imap_password)
+
+    @property
+    def tushare_ready(self) -> bool:
+        return bool(self.tushare_token)
 
 
 @lru_cache

@@ -338,8 +338,21 @@ textarea {
 
 .registry-filter-actions {
   display: flex;
+  align-items: end;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.registry-inline-field {
+  display: grid;
+  gap: 5px;
+  min-width: 148px;
+}
+
+.registry-inline-field span {
+  font-size: 12px;
+  font-weight: 700;
+  color: #5b6471;
 }
 
 .registry-selected-instrument {

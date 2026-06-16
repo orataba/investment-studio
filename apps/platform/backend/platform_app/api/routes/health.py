@@ -29,4 +29,8 @@ def get_health() -> dict[str, object]:
             "max_messages": settings.email_imap_max_messages,
             "missing_required_settings": missing_email_settings,
         },
+        "tushare_sync": {
+            "ready": settings.tushare_ready,
+            "api_url": settings.tushare_api_url,
+        },
     }

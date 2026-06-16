@@ -25,6 +25,7 @@ class PlatformAppsResponse(BaseModel):
     apps: list[PlatformAppCard]
 
 SourceMode = Literal["manual", "email", "api"]
+RefreshChannel = Literal["configured", "email", "tushare", "all"]
 SupportedCurrency = Literal["USD", "HKD", "CNY"]
 FxRateSourceKind = Literal["direct", "inverse", "cross"]
 InstrumentLifecycleStatus = Literal["active", "archived"]
@@ -224,6 +225,31 @@ class PlatformSourceSettingsUpdateRequest(BaseModel):
 class PlatformRefreshTriggerRequest(BaseModel):
     updated_by: str | None = None
     full_history: bool = False
+    source: RefreshChannel = "configured"
+
+
+class PlatformBulkRefreshRequest(BaseModel):
+    source: RefreshChannel = "all"
+    updated_by: str | None = None
+    full_history: bool = False
+    include_inactive: bool = False
+
+
+class PlatformBulkRefreshResult(BaseModel):
+    instrument_id: str
+    instrument_name: str
+    instrument_type: InstrumentType
+    source_mode: SourceMode
+    source_api_profile: str = ""
+    status: str
+    message: str
+
+
+class PlatformBulkRefreshResponse(BaseModel):
+    source: RefreshChannel
+    refreshed_count: int
+    skipped_count: int
+    results: list[PlatformBulkRefreshResult]
 
 
 class PlatformLifecycleTransitionRequest(BaseModel):
