@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     email_imap_max_messages: int = 500
     email_imap_mark_seen: bool = False
     tushare_token: str | None = None
-    tushare_api_url: str = "https://api.tushare.pro"
+    tushare_api_url: str = "https://fastapic.stockai888.top"
     tushare_timeout_seconds: int = 30
 
     model_config = SettingsConfigDict(

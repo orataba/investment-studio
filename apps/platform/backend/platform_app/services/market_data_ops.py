@@ -7,11 +7,9 @@ from email.parser import BytesParser
 from email.utils import parseaddr
 from io import BytesIO
 import imaplib
-import json
 import re
+import socket
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from platform_app.core.settings import get_settings
 from platform_app.services.instrument_store import (
@@ -31,6 +29,11 @@ try:
     import xlrd
 except ImportError:  # pragma: no cover - optional dependency
     xlrd = None
+
+try:
+    import tushare as ts
+except ImportError:  # pragma: no cover - optional dependency
+    ts = None
 
 
 NAV_IMPORT_HEADER_MAP = {
@@ -868,6 +871,15 @@ class TushareRefreshError(RuntimeError):
     pass
 
 
+def _is_tushare_missing_value(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(value != value)
+    except (TypeError, ValueError):
+        return False
+
+
 def _call_tushare_api(
     *,
     api_name: str,
@@ -877,40 +889,42 @@ def _call_tushare_api(
     settings = get_settings()
     if not settings.tushare_ready:
         raise TushareRefreshError("Tushare token is not configured. Set YUNGU_PLATFORM_TUSHARE_TOKEN first.")
-    request_payload = {
-        "api_name": api_name,
-        "token": settings.tushare_token,
-        "params": params,
-        "fields": fields,
-    }
-    request = Request(
-        settings.tushare_api_url,
-        data=json.dumps(request_payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    if ts is None:
+        raise TushareRefreshError("Tushare SDK is not installed. Install the backend dependency first.")
+
+    previous_socket_timeout = socket.getdefaulttimeout()
     try:
-        with urlopen(request, timeout=settings.tushare_timeout_seconds) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise TushareRefreshError(f"Tushare request failed: {exc}") from exc
+        socket.setdefaulttimeout(getattr(settings, "tushare_timeout_seconds", 30))
+        ts.set_token(settings.tushare_token)
+        pro = ts.pro_api()
+        setattr(pro, "_DataApi__http_url", settings.tushare_api_url)
+        api_method = getattr(pro, api_name)
+        frame = api_method(**params, fields=fields)
+    except Exception as exc:
+        raise TushareRefreshError(f"Tushare SDK request failed: {exc}") from exc
+    finally:
+        socket.setdefaulttimeout(previous_socket_timeout)
 
-    code = payload.get("code")
-    if code != 0:
-        message = str(payload.get("msg") or f"Tushare returned code {code}.").strip()
-        raise TushareRefreshError(message)
+    if frame is None:
+        return []
+    to_dict = getattr(frame, "to_dict", None)
+    if not callable(to_dict):
+        return []
+    raw_rows = to_dict("records")
+    if not isinstance(raw_rows, list):
+        return []
 
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        return []
-    raw_fields = data.get("fields")
-    raw_items = data.get("items")
-    if not isinstance(raw_fields, list) or not isinstance(raw_items, list):
-        return []
     rows: list[dict[str, object]] = []
-    for item in raw_items:
-        if isinstance(item, list):
-            rows.append({str(key): value for key, value in zip(raw_fields, item, strict=False)})
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, dict):
+            continue
+        row: dict[str, object] = {}
+        for key, value in raw_row.items():
+            if _is_tushare_missing_value(value):
+                row[str(key)] = None
+            else:
+                row[str(key)] = value
+        rows.append(row)
     return rows
 
 

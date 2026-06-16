@@ -20,7 +20,7 @@ def test_health_reports_email_readiness(monkeypatch) -> None:
         email_imap_username = None
         email_imap_password = None
         tushare_ready = False
-        tushare_api_url = "https://api.tushare.pro"
+        tushare_api_url = "https://fastapic.stockai888.top"
 
     monkeypatch.setattr(health, "get_settings", lambda: StubSettings())
 
@@ -45,5 +45,5 @@ def test_health_reports_email_readiness(monkeypatch) -> None:
     }
     assert payload["tushare_sync"] == {
         "ready": False,
-        "api_url": "https://api.tushare.pro",
+        "api_url": "https://fastapic.stockai888.top",
     }

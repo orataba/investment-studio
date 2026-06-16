@@ -636,6 +636,56 @@ def test_email_refresh_searches_since_latest_nav_date_and_filters_older_rows(
     )
 
 
+def test_tushare_api_uses_sdk_with_configured_proxy_url(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeSettings:
+        tushare_ready = True
+        tushare_token = "secret-token"
+        tushare_api_url = "https://fastapic.stockai888.top"
+
+    class FakeFrame:
+        def to_dict(self, orient: str) -> list[dict[str, object]]:
+            assert orient == "records"
+            return [{"ts_code": "000300.SH", "trade_date": "20260615", "close": "4200.12"}]
+
+    class FakePro:
+        def __init__(self) -> None:
+            self._DataApi__http_url = ""
+
+        def index_daily(self, **kwargs: object) -> FakeFrame:
+            captured["http_url"] = self._DataApi__http_url
+            captured["index_daily_kwargs"] = kwargs
+            return FakeFrame()
+
+    class FakeTushareModule:
+        def __init__(self) -> None:
+            self.pro = FakePro()
+
+        def set_token(self, token: str) -> None:
+            captured["token"] = token
+
+        def pro_api(self) -> FakePro:
+            return self.pro
+
+    monkeypatch.setattr(market_data_ops, "get_settings", lambda: FakeSettings())
+    monkeypatch.setattr(market_data_ops, "ts", FakeTushareModule())
+
+    rows = market_data_ops._call_tushare_api(
+        api_name="index_daily",
+        params={"ts_code": "000300.SH"},
+        fields="ts_code,trade_date,close",
+    )
+
+    assert captured["token"] == "secret-token"
+    assert captured["http_url"] == "https://fastapic.stockai888.top"
+    assert captured["index_daily_kwargs"] == {
+        "ts_code": "000300.SH",
+        "fields": "ts_code,trade_date,close",
+    }
+    assert rows == [{"ts_code": "000300.SH", "trade_date": "20260615", "close": "4200.12"}]
+
+
 def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
