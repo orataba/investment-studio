@@ -516,8 +516,11 @@ def _materialize_watchlist_rows(
         )
 
 
-def _sync_all_coverage_watchlist(session: Session):
+def _sync_all_coverage_watchlist(session: Session, *, force: bool = True):
     record = watchlist_repository.ensure_all_coverage_watchlist(session)
+    if not force and record.items:
+        return record
+
     try:
         shared_funds = _list_shared_local_detail_instruments()
     except SharedInstrumentRegistryError:
@@ -583,7 +586,7 @@ def _sync_all_coverage_watchlist(session: Session):
 
 @router.get("")
 def list_watchlists(session: Session = Depends(get_db_session)) -> list[dict[str, object]]:
-    _sync_all_coverage_watchlist(session)
+    _sync_all_coverage_watchlist(session, force=False)
     session.commit()
     records = watchlist_repository.list(session)
     return [present_watchlist(item) for item in records]

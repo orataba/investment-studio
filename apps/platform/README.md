@@ -88,7 +88,7 @@ npm run dev
 
 说明：
 
-- Vite 默认监听 `http://127.0.0.1:5172`
+- Vite 默认监听 `0.0.0.0:5172`；本机访问 `http://127.0.0.1:5172`
 - `/api` 默认代理到 `http://127.0.0.1:8002`
 
 ## Frontend Runtime Config

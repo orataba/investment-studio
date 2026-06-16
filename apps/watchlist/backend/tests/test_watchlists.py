@@ -2040,6 +2040,31 @@ def test_default_all_coverage_watchlist_syncs_active_shared_funds(
     assert {row["instrument_id"] for row in screener_payload["rows"]} == set(TEST_SHARED_INSTRUMENTS)
 
 
+def test_list_watchlists_reuses_existing_all_coverage_without_resync(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = client.get("/api/watchlists")
+    assert initial.status_code == 200
+    assert initial.json()[0]["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+
+    from watchlist_app.api.routes import watchlists as watchlists_route
+
+    def fail_if_resynced() -> list[dict[str, object]]:
+        raise AssertionError("list endpoint should not resync existing all-coverage")
+
+    monkeypatch.setattr(
+        watchlists_route,
+        "_list_shared_local_detail_instruments",
+        fail_if_resynced,
+    )
+
+    response = client.get("/api/watchlists")
+
+    assert response.status_code == 200
+    assert response.json()[0]["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+
+
 def test_default_all_coverage_watchlist_resyncs_when_registry_grows(
     client: TestClient,
 ) -> None:

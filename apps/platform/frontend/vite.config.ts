@@ -26,7 +26,7 @@ export default defineConfig(({ mode }) => {
       dedupe: ['react', 'react-dom'],
     },
     server: {
-      host: '127.0.0.1',
+      host: '0.0.0.0',
       port: 5172,
       fs: {
         allow: [workspaceRoot],
