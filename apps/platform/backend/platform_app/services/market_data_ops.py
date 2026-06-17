@@ -104,6 +104,7 @@ CASH_DISTRIBUTION_EVENT_THRESHOLD = Decimal("0.0001")
 TUSHARE_PROFILE_ALIASES = {"tushare", "tushare_pro", "tushare-pro"}
 TUSHARE_PRICE_SUFFIXES = {"SH", "SZ"}
 TUSHARE_INDEX_SUFFIXES = {"SH", "SZ", "CSI", "CNI"}
+TUSHARE_HISTORY_START_DATE = date(2024, 1, 1)
 
 
 def _is_reinvested_total_return_instrument(instrument_id: str) -> bool:
@@ -844,6 +845,12 @@ def _format_tushare_date(value: date) -> str:
     return value.strftime("%Y%m%d")
 
 
+def _tushare_query_start_date(*, latest_date: date | None, full_history: bool) -> date:
+    if full_history or latest_date is None or latest_date < TUSHARE_HISTORY_START_DATE:
+        return TUSHARE_HISTORY_START_DATE
+    return latest_date + timedelta(days=1)
+
+
 def _tushare_profile_enabled(source_settings: dict[str, object]) -> bool:
     profile = str(source_settings.get("source_api_profile") or "").strip().lower()
     return profile in TUSHARE_PROFILE_ALIASES
@@ -938,6 +945,8 @@ def _tushare_nav_rows(
         point_date = _parse_nav_date(row.get("end_date") or row.get("ann_date"))
         if point_date is None:
             continue
+        if point_date < TUSHARE_HISTORY_START_DATE:
+            continue
         if latest_date is not None and point_date <= latest_date:
             continue
         nav = _parse_nav_decimal(row.get("unit_nav"))
@@ -967,6 +976,8 @@ def _tushare_price_rows(
     for row in rows:
         point_date = _parse_nav_date(row.get("trade_date"))
         if point_date is None:
+            continue
+        if point_date < TUSHARE_HISTORY_START_DATE:
             continue
         if latest_date is not None and point_date <= latest_date:
             continue
@@ -1341,10 +1352,9 @@ def _refresh_from_tushare(
                 quote_bases={"close"},
             )
             params: dict[str, object] = {"ts_code": ts_code}
-            if full_history:
-                params["start_date"] = "19900101"
-            elif latest_date is not None:
-                params["start_date"] = _format_tushare_date(latest_date + timedelta(days=1))
+            params["start_date"] = _format_tushare_date(
+                _tushare_query_start_date(latest_date=latest_date, full_history=full_history)
+            )
             params["end_date"] = _format_tushare_date(date.today())
             rows = _call_tushare_api(
                 api_name="fund_daily",
@@ -1366,10 +1376,9 @@ def _refresh_from_tushare(
                 quote_bases={"close"},
             )
             params = {"ts_code": ts_code}
-            if full_history:
-                params["start_date"] = "19900101"
-            elif latest_date is not None:
-                params["start_date"] = _format_tushare_date(latest_date + timedelta(days=1))
+            params["start_date"] = _format_tushare_date(
+                _tushare_query_start_date(latest_date=latest_date, full_history=full_history)
+            )
             params["end_date"] = _format_tushare_date(date.today())
             rows = _call_tushare_api(
                 api_name="index_daily",

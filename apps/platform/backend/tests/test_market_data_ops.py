@@ -816,6 +816,97 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
     assert captured["refresh_status"]["mode"] == "api"
 
 
+def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
+        captured["api_call"] = kwargs
+        return [
+            {"ts_code": "513050.SH", "trade_date": "20231229", "close": "0.90"},
+            {"ts_code": "513050.SH", "trade_date": "20240102", "close": "0.91"},
+        ]
+
+    def fake_upsert_market_data(**kwargs: object) -> dict[str, object]:
+        captured.setdefault("upserts", []).append(kwargs)
+        return {"instrument_id": kwargs["instrument_id"]}
+
+    def fake_update_refresh_status(**kwargs: object) -> dict[str, object]:
+        captured["refresh_status"] = kwargs
+        return {"instrument_id": kwargs["instrument_id"]}
+
+    monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
+    monkeypatch.setattr(market_data_ops, "upsert_market_data", fake_upsert_market_data)
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
+
+    market_data_ops._refresh_from_tushare(
+        instrument_id="513050-sh",
+        instrument={
+            "instrument_id": "513050-sh",
+            "instrument_type": "fund",
+            "identifiers": [
+                {"identifier_type": "ticker", "identifier_value": "513050.SH", "is_primary": True}
+            ],
+            "market_data": [],
+        },
+        updated_by="test",
+        full_history=False,
+    )
+
+    assert captured["api_call"]["api_name"] == "fund_daily"
+    assert captured["api_call"]["params"]["start_date"] == "20240101"
+    assert captured["upserts"] == [
+        {
+            "instrument_id": "513050-sh",
+            "metric_family": "price",
+            "quote_basis": "close",
+            "as_of_date": market_data_ops.date(2024, 1, 2),
+            "value": "0.91",
+            "currency": "CNY",
+            "provider": "tushare:fund_daily",
+            "status": "complete",
+        }
+    ]
+
+
+def test_tushare_full_history_is_capped_at_2024(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_call_tushare_api(**kwargs: object) -> list[dict[str, object]]:
+        captured["api_call"] = kwargs
+        return []
+
+    def fake_update_refresh_status(**kwargs: object) -> dict[str, object]:
+        captured["refresh_status"] = kwargs
+        return {"instrument_id": kwargs["instrument_id"]}
+
+    monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
+    monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
+
+    market_data_ops._refresh_from_tushare(
+        instrument_id="000300-sh",
+        instrument={
+            "instrument_id": "000300-sh",
+            "instrument_type": "index",
+            "identifiers": [
+                {"identifier_type": "ticker", "identifier_value": "000300.SH", "is_primary": True}
+            ],
+            "market_data": [
+                {
+                    "metric_family": "price",
+                    "quote_basis": "close",
+                    "as_of_date": "2026-06-12",
+                    "value": "4190.00",
+                }
+            ],
+        },
+        updated_by="test",
+        full_history=True,
+    )
+
+    assert captured["api_call"]["api_name"] == "index_daily"
+    assert captured["api_call"]["params"]["start_date"] == "20240101"
+
+
 def test_parse_nav_rows_from_label_snapshot_matrix_extracts_nav_values() -> None:
     matrix = [
         ["招商证券股份有限公司_九慕云谷1号私募证券投资基金_专用表", None],
