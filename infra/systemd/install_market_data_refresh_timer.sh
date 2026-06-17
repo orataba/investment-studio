@@ -11,6 +11,8 @@ LOG_DIR="${LOG_DIR:-$HOME/.local/state/yungu/logs}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/market-data-refresh.log}"
 CHANNEL="${CHANNEL:-all}"
 UPDATED_BY="${UPDATED_BY:-scheduler}"
+RETRY_FAILED_ATTEMPTS="${RETRY_FAILED_ATTEMPTS:-2}"
+TIMEOUT_START_SEC="${TIMEOUT_START_SEC:-45min}"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "PYTHON_BIN is not executable: $PYTHON_BIN" >&2
@@ -33,6 +35,7 @@ escaped_python_bin="$(printf '%q' "$PYTHON_BIN")"
 escaped_log_file="$(printf '%q' "$LOG_FILE")"
 escaped_channel="$(printf '%q' "$CHANNEL")"
 escaped_updated_by="$(printf '%q' "$UPDATED_BY")"
+escaped_retry_failed_attempts="$(printf '%q' "$RETRY_FAILED_ATTEMPTS")"
 
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
@@ -42,7 +45,8 @@ Description=Yungu scheduled market data refresh
 Type=oneshot
 WorkingDirectory=$BACKEND_ROOT
 Environment=PYTHONPATH=$BACKEND_ROOT
-ExecStart=/bin/bash -lc 'cd $escaped_backend_root && PYTHONPATH=$escaped_backend_root $escaped_python_bin $escaped_backend_root/scripts/refresh_market_data_scheduled.py --channel $escaped_channel --updated-by $escaped_updated_by >> $escaped_log_file 2>&1'
+TimeoutStartSec=$TIMEOUT_START_SEC
+ExecStart=/bin/bash -lc 'cd $escaped_backend_root && PYTHONPATH=$escaped_backend_root $escaped_python_bin $escaped_backend_root/scripts/refresh_market_data_scheduled.py --channel $escaped_channel --updated-by $escaped_updated_by --retry-failed-attempts $escaped_retry_failed_attempts >> $escaped_log_file 2>&1'
 EOF
 
 cat > "$TIMER_FILE" <<EOF

@@ -29,7 +29,7 @@ def _parse_args() -> argparse.Namespace:
         "--channel",
         choices=("all", "email", "tushare"),
         default="all",
-        help="Data channel to refresh. all runs email first, then tushare.",
+        help="Data channel to refresh. all runs tushare first, then email.",
     )
     parser.add_argument("--updated-by", default="scheduler", help="Audit label for refresh_status.")
     parser.add_argument("--full-history", action="store_true", help="Request full history instead of incremental refresh.")
@@ -56,7 +56,7 @@ def _parse_args() -> argparse.Namespace:
 
 def _channels(selected_channel: str) -> list[str]:
     if selected_channel == "all":
-        return ["email", "tushare"]
+        return ["tushare", "email"]
     return [selected_channel]
 
 
@@ -156,6 +156,8 @@ def main() -> int:
 
     channel_summaries: list[dict[str, object]] = []
     all_results: list[dict[str, object]] = []
+    all_updated_ids: list[str] = []
+    seen_updated_ids: set[str] = set()
     for channel in _channels(args.channel):
         LOGGER.info("refreshing channel=%s", channel)
         response = refresh_market_data_batch(
@@ -173,6 +175,19 @@ def main() -> int:
             retry_attempts=args.retry_failed_attempts,
         )
         all_results.extend(results)
+        updated_ids = _updated_instrument_ids(results)
+        for instrument_id in updated_ids:
+            if instrument_id not in seen_updated_ids:
+                seen_updated_ids.add(instrument_id)
+                all_updated_ids.append(instrument_id)
+        if updated_ids and not args.no_downstream_refresh:
+            LOGGER.info(
+                "notifying downstream refresh channel=%s instrument_count=%s",
+                channel,
+                len(updated_ids),
+            )
+            notify_market_data_downstream_refresh(instrument_ids=updated_ids)
+
         counts = _status_counts(results)
         channel_summaries.append(
             {
@@ -192,11 +207,6 @@ def main() -> int:
             counts,
         )
 
-    updated_ids = _updated_instrument_ids(all_results)
-    if updated_ids and not args.no_downstream_refresh:
-        LOGGER.info("notifying downstream refresh instrument_count=%s", len(updated_ids))
-        notify_market_data_downstream_refresh(instrument_ids=updated_ids)
-
     failures = _failed_results(all_results)
     for item in failures:
         LOGGER.warning(
@@ -211,9 +221,9 @@ def main() -> int:
         "finished_at": datetime.now().astimezone().isoformat(),
         "channel": args.channel,
         "channels": channel_summaries,
-        "updated_instrument_count": len(updated_ids),
+        "updated_instrument_count": len(all_updated_ids),
         "failed_item_count": len(failures),
-        "downstream_refresh": bool(updated_ids and not args.no_downstream_refresh),
+        "downstream_refresh": bool(all_updated_ids and not args.no_downstream_refresh),
     }
     LOGGER.info("scheduled market data refresh finished summary=%s", summary)
     if args.json:
