@@ -50,6 +50,15 @@ Database Dashboard 的邮件刷新使用显式产品规则匹配发件人、主�
 
 Database Dashboard 也支持 Tushare SDK 兼容刷新。将 instrument 的 `Source Mode` 设为 `API`，`API Profile` 设为 `tushare` 后，后端会用 `tushare` Python SDK 调用，并把 SDK 的 `_DataApi__http_url` 指向 `YUNGU_PLATFORM_TUSHARE_API_URL`，默认值为 `https://fastapic.stockai888.top`。公募 `.OF` 代码通过 `fund_nav` 写入 `official_nav / total_return_nav`，场内基金 `.SH/.SZ` 通过 `fund_daily` 写入 `price/close`，指数 `.SH/.SZ/.CSI/.CNI` 通过 `index_daily` 写入 `price/close`。Tushare token 只通过未提交的 `YUNGU_PLATFORM_TUSHARE_TOKEN` 环境变量配置。
 
+后台定时刷新使用 [backend/scripts/refresh_market_data_scheduled.py](./backend/scripts/refresh_market_data_scheduled.py)。默认依次刷新邮件和 Tushare，成功写入后通知 Watchlist / Portfolio 下游重算。安装工作日 16:00 静默刷新 timer：
+
+```bash
+PYTHON_BIN=/home/shaw/miniconda3/envs/us_sector_rotation/bin/python \
+  infra/systemd/install_market_data_refresh_timer.sh
+```
+
+服务器部署时在服务器项目目录执行同一个脚本，并把 `PYTHON_BIN` 指向服务器后端运行环境。timer 按 `Mon..Fri 16:00 Asia/Shanghai` 运行，日志追加到 `~/.local/state/yungu/logs/market-data-refresh.log`。
+
 ## Downstream Refresh
 
 `Database Dashboard` 更新共享市场数据后，Platform 会通过后台通知刷新 downstream app：
