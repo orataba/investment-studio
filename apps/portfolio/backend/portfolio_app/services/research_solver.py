@@ -60,7 +60,7 @@ RESEARCH_COVARIANCE_FREQUENCY_PARAMETERS: dict[CalculationFrequency, dict[str, o
         "vol_decay": 0.9737,
         "corr_min_observations": 9,
         "corr_shrinkage": 0.15,
-        "max_period_staleness_days": 3,
+        "max_period_staleness_days": 4,
     },
     "monthly": {
         "min_observations": 3,
@@ -2454,6 +2454,7 @@ def _solve_current_scope(
     missing_return_policy: str,
     apply_capital_overlay: bool,
     risk_model_config: dict[str, object] | None = None,
+    include_actuals: bool = True,
 ) -> ScopeTargetSolveResult:
     scope_label = str(state.node_by_id.get(scope_node_id, {}).get("node_name") or ROOT_SCOPE_LABEL)
     scope_path = state.node_path_by_id.get(scope_node_id or ROOT_SCOPE_MEMBER_ID, ROOT_SCOPE_LABEL)
@@ -2487,6 +2488,7 @@ def _solve_current_scope(
                 missing_return_policy=missing_return_policy,
                 apply_capital_overlay=False,
                 risk_model_config=risk_model_config,
+                include_actuals=include_actuals,
             )
             child_results_by_key[member_key] = child_result
             child_scope_solve_events.extend(child_result.scope_solve_events)
@@ -2517,17 +2519,20 @@ def _solve_current_scope(
             current_nav_series_by_member[(member.member_type, member.member_id)] = instrument_nav
             warnings.extend(instrument_warnings)
 
-    current_actual_rows, current_actual_warnings = _current_scope_actuals(
-        state,
-        scope_node_id=scope_node_id,
-        as_of_date=as_of_date,
-    )
-    warnings.extend(current_actual_warnings)
-    current_actual_weight_by_key = {
-        f"{item['member_type']}::{item['member_id']}": float(_safe_float(item.get("current_weight")) or 0.0)
-        for item in current_actual_rows
-        if item.get("member_type") in {TARGET_MEMBER_NODE, TARGET_MEMBER_INSTRUMENT, TARGET_MEMBER_CASH}
-    }
+    if include_actuals:
+        current_actual_rows, current_actual_warnings = _current_scope_actuals(
+            state,
+            scope_node_id=scope_node_id,
+            as_of_date=as_of_date,
+        )
+        warnings.extend(current_actual_warnings)
+        current_actual_weight_by_key = {
+            f"{item['member_type']}::{item['member_id']}": float(_safe_float(item.get("current_weight")) or 0.0)
+            for item in current_actual_rows
+            if item.get("member_type") in {TARGET_MEMBER_NODE, TARGET_MEMBER_INSTRUMENT, TARGET_MEMBER_CASH}
+        }
+    else:
+        current_actual_weight_by_key = {}
 
     resolved_rows, resolution_warnings = _resolve_dimension_target_rows(
         state,
@@ -2850,19 +2855,22 @@ def _solve_current_scope(
     }
 
     current_weights = pd.Series(current_actual_weight_by_key, dtype="float64").reindex(member_keys, fill_value=0.0)
-    current_risk_share_by_key, current_risk_share_warnings = _estimate_scope_risk_share_map(
-        members=members,
-        nav_series_by_member=current_nav_series_by_member,
-        risk_keys=non_cash_keys,
-        weights_by_key=current_weights,
-        as_of_date=as_of_date,
-        lookback_days=lookback_days,
-        calculation_frequency=calculation_frequency,
-        missing_return_policy=missing_return_policy,
-        contribution_mode=risk_solve.risk_contribution_mode or RESEARCH_RISK_CONTRIBUTION_MODE,
-        risk_model_config=risk_model_config,
-    )
-    warnings.extend(current_risk_share_warnings)
+    if include_actuals:
+        current_risk_share_by_key, current_risk_share_warnings = _estimate_scope_risk_share_map(
+            members=members,
+            nav_series_by_member=current_nav_series_by_member,
+            risk_keys=non_cash_keys,
+            weights_by_key=current_weights,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+            calculation_frequency=calculation_frequency,
+            missing_return_policy=missing_return_policy,
+            contribution_mode=risk_solve.risk_contribution_mode or RESEARCH_RISK_CONTRIBUTION_MODE,
+            risk_model_config=risk_model_config,
+        )
+        warnings.extend(current_risk_share_warnings)
+    else:
+        current_risk_share_by_key = {}
     for key in cash_like_keys:
         current_risk_share_by_key[key] = 0.0
     gap_turnover = float(0.5 * np.abs(implementation_weights - current_weights).sum())
@@ -3021,17 +3029,20 @@ def _solve_current_scope(
         scope_returns = pd.Series(dtype="float64")
     else:
         scope_returns = _weighted_complete_return_series(scope_return_window, implementation_weights)
-    try:
-        current_scope_return_window = _solver_return_window(
-            members=members,
-            nav_series_by_member=current_nav_series_by_member,
-            as_of_date=as_of_date,
-            lookback_days=lookback_days,
-            calculation_frequency=calculation_frequency,
-        )
-    except ValueError as error:
+    if include_actuals:
+        try:
+            current_scope_return_window = _solver_return_window(
+                members=members,
+                nav_series_by_member=current_nav_series_by_member,
+                as_of_date=as_of_date,
+                lookback_days=lookback_days,
+                calculation_frequency=calculation_frequency,
+            )
+        except ValueError as error:
+            current_scope_return_window = pd.DataFrame()
+            warnings.append(f"{scope_label} current return series unavailable: {error}")
+    else:
         current_scope_return_window = pd.DataFrame()
-        warnings.append(f"{scope_label} current return series unavailable: {error}")
     if current_scope_return_window.empty:
         current_scope_returns = pd.Series(dtype="float64")
     else:
@@ -4147,6 +4158,7 @@ def build_current_target_backtest(
                 frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
                 top_sleeve_weight_bounds=top_sleeve_weight_bounds,
                 risk_model_config=risk_model_config,
+                include_actuals=False,
             )
         except ValueError as error:
             if not _is_rebalance_data_gap_error(error):
@@ -4299,6 +4311,7 @@ def solve_current_target_weights(
     frozen_taxonomy_node_ids: list[str] | None = None,
     top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
     risk_model_config: dict[str, object] | None = None,
+    include_actuals: bool = True,
 ) -> dict[str, object]:
     state = _build_taxonomy_state(
         portfolio_id,
@@ -4336,29 +4349,36 @@ def solve_current_target_weights(
         missing_return_policy=_normalize_missing_return_policy(missing_return_policy),
         apply_capital_overlay=comparator_taxonomy_node_id is None,
         risk_model_config=risk_model_config,
+        include_actuals=include_actuals,
     )
-    actual_rows, actual_warnings = _current_scope_actuals(
-        state,
-        scope_node_id=comparator_taxonomy_node_id,
-        as_of_date=as_of_date,
-    )
-    warnings = list(dict.fromkeys([*scope_result.warnings, *actual_warnings]))
-    solved_result_groups, solved_result_warnings = _build_solved_result_groups(
-        state,
-        leaf_rows=scope_result.leaf_target_rows,
-        member_rows=scope_result.member_target_rows,
-        top_sleeve_bound_weight_by_id=scope_result.top_sleeve_bound_weight_by_id,
-        as_of_date=as_of_date,
-        lookback_days=lookback_days,
-        calculation_frequency=resolved_calculation_frequency,  # type: ignore[arg-type]
-        missing_return_policy=_normalize_missing_return_policy(missing_return_policy),
-        risk_model_config=risk_model_config,
-    )
-    warnings = list(dict.fromkeys([*warnings, *solved_result_warnings]))
-    target_weight_gaps = _build_leaf_target_weight_gaps(
-        leaf_target_rows=scope_result.leaf_target_rows,
-        base_currency=state.base_currency,
-    )
+    if include_actuals:
+        actual_rows, actual_warnings = _current_scope_actuals(
+            state,
+            scope_node_id=comparator_taxonomy_node_id,
+            as_of_date=as_of_date,
+        )
+        warnings = list(dict.fromkeys([*scope_result.warnings, *actual_warnings]))
+        solved_result_groups, solved_result_warnings = _build_solved_result_groups(
+            state,
+            leaf_rows=scope_result.leaf_target_rows,
+            member_rows=scope_result.member_target_rows,
+            top_sleeve_bound_weight_by_id=scope_result.top_sleeve_bound_weight_by_id,
+            as_of_date=as_of_date,
+            lookback_days=lookback_days,
+            calculation_frequency=resolved_calculation_frequency,  # type: ignore[arg-type]
+            missing_return_policy=_normalize_missing_return_policy(missing_return_policy),
+            risk_model_config=risk_model_config,
+        )
+        warnings = list(dict.fromkeys([*warnings, *solved_result_warnings]))
+        target_weight_gaps = _build_leaf_target_weight_gaps(
+            leaf_target_rows=scope_result.leaf_target_rows,
+            base_currency=state.base_currency,
+        )
+    else:
+        actual_rows = []
+        warnings = list(dict.fromkeys(scope_result.warnings))
+        solved_result_groups = []
+        target_weight_gaps = []
     return {
         "portfolio_id": portfolio_id,
         "planning_taxonomy_id": planning_taxonomy_id,
