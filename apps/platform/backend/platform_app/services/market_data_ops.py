@@ -17,6 +17,7 @@ from platform_app.services.instrument_store import (
     list_instruments,
     replace_nav_history,
     update_refresh_status,
+    upsert_quote_selection_policy,
     upsert_market_data,
 )
 
@@ -105,6 +106,13 @@ TUSHARE_PROFILE_ALIASES = {"tushare", "tushare_pro", "tushare-pro"}
 TUSHARE_PRICE_SUFFIXES = {"SH", "SZ"}
 TUSHARE_INDEX_SUFFIXES = {"SH", "SZ", "CSI", "CNI"}
 TUSHARE_HISTORY_START_DATE = date(2024, 1, 1)
+TUSHARE_LISTED_FUND_QUOTE_SELECTION_POLICY: dict[str, list[str]] = {
+    "trading": ["close", "last", "official_nav"],
+    "valuation": ["close", "last", "official_nav"],
+    "total_return": ["close", "adjusted_close", "total_return_nav", "official_nav"],
+    "chart": ["close", "adjusted_close", "total_return_nav", "official_nav"],
+    "reference": ["close", "last", "official_nav"],
+}
 
 
 def _is_reinvested_total_return_instrument(instrument_id: str) -> bool:
@@ -874,6 +882,41 @@ def _tushare_identifier_code(instrument: dict[str, object]) -> str | None:
     return None
 
 
+def _policy_role_values(policy: dict[str, object], role: str) -> list[str]:
+    raw_values = policy.get(role)
+    if not isinstance(raw_values, list):
+        return []
+    values: list[str] = []
+    for raw_value in raw_values:
+        value = str(raw_value or "").strip()
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
+def _ensure_tushare_listed_fund_quote_policy(
+    *,
+    instrument_id: str,
+    instrument: dict[str, object],
+) -> None:
+    current_policy = instrument.get("quote_selection_policy", {})
+    if not isinstance(current_policy, dict):
+        current_policy = {}
+    target_policy = {
+        role: list(values)
+        for role, values in TUSHARE_LISTED_FUND_QUOTE_SELECTION_POLICY.items()
+    }
+    if all(
+        _policy_role_values(current_policy, role) == values
+        for role, values in target_policy.items()
+    ):
+        return
+    upsert_quote_selection_policy(
+        instrument_id=instrument_id,
+        quote_selection_policy=target_policy,
+    )
+
+
 class TushareRefreshError(RuntimeError):
     pass
 
@@ -1346,6 +1389,10 @@ def _refresh_from_tushare(
             )
 
         if instrument_type == "fund" and suffix in TUSHARE_PRICE_SUFFIXES:
+            _ensure_tushare_listed_fund_quote_policy(
+                instrument_id=instrument_id,
+                instrument=instrument,
+            )
             latest_date = None if full_history else _latest_market_data_date_from_instrument(
                 instrument,
                 metric_family="price",

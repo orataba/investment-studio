@@ -764,6 +764,25 @@ def upsert_source_settings(
     return _serialize_record(refreshed) if refreshed is not None else None
 
 
+def upsert_quote_selection_policy(
+    session_factory: SessionFactory,
+    *,
+    instrument_id: str,
+    quote_selection_policy: dict[str, object],
+) -> dict[str, object] | None:
+    with session_factory() as session:
+        target = session.get(Instrument, instrument_id)
+        if target is None:
+            return None
+
+        store_item = _instrument_to_store_dict(target)
+        store_item["quote_selection_policy"] = quote_selection_policy
+        target.quote_selection_policy_json = _normalized_quote_selection_policy(store_item)
+        session.commit()
+    refreshed = get_instrument(session_factory, instrument_id)
+    return _serialize_record(refreshed) if refreshed is not None else None
+
+
 def replace_nav_history(
     session_factory: SessionFactory,
     *,

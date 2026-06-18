@@ -108,6 +108,18 @@ def upsert_source_settings(
     )
 
 
+def upsert_quote_selection_policy(
+    *,
+    instrument_id: str,
+    quote_selection_policy: dict[str, object],
+) -> dict[str, object] | None:
+    return shared_store.upsert_quote_selection_policy(
+        get_session_factory(),
+        instrument_id=instrument_id,
+        quote_selection_policy=quote_selection_policy,
+    )
+
+
 def replace_nav_history(
     *,
     instrument_id: str,

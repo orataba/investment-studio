@@ -834,9 +834,18 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
         captured["refresh_status"] = kwargs
         return {"instrument_id": kwargs["instrument_id"]}
 
+    def fake_upsert_quote_selection_policy(**kwargs: object) -> dict[str, object]:
+        captured["quote_selection_policy"] = kwargs
+        return {"instrument_id": kwargs["instrument_id"]}
+
     monkeypatch.setattr(market_data_ops, "_call_tushare_api", fake_call_tushare_api)
     monkeypatch.setattr(market_data_ops, "upsert_market_data", fake_upsert_market_data)
     monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
+    monkeypatch.setattr(
+        market_data_ops,
+        "upsert_quote_selection_policy",
+        fake_upsert_quote_selection_policy,
+    )
 
     market_data_ops._refresh_from_tushare(
         instrument_id="513050-sh",
@@ -854,6 +863,16 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
 
     assert captured["api_call"]["api_name"] == "fund_daily"
     assert captured["api_call"]["params"]["start_date"] == "20240101"
+    assert captured["quote_selection_policy"] == {
+        "instrument_id": "513050-sh",
+        "quote_selection_policy": {
+            "trading": ["close", "last", "official_nav"],
+            "valuation": ["close", "last", "official_nav"],
+            "total_return": ["close", "adjusted_close", "total_return_nav", "official_nav"],
+            "chart": ["close", "adjusted_close", "total_return_nav", "official_nav"],
+            "reference": ["close", "last", "official_nav"],
+        },
+    }
     assert captured["upserts"] == [
         {
             "instrument_id": "513050-sh",
