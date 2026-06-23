@@ -28,7 +28,10 @@ from portfolio_app.services.research_solver import (
     TARGET_MEMBER_NODE,
     ScopeMemberRecord,
     _align_member_series,
+    _backtest_rebalance_dates,
     _build_backtest_metrics,
+    _build_backtest_sampled_nav_by_instrument,
+    _build_sampled_benchmark_points,
     _estimate_covariance,
     _infer_periods_per_year,
     _is_better_risk_budget_solution,
@@ -1360,6 +1363,67 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert selected_workbench_response.status_code == 200
     selected_workbench_payload = selected_workbench_response.json()
     assert selected_workbench_payload["selected_run"]["research_run_id"] == run_payload["research_run_id"]
+
+
+def test_backtest_benchmark_returns_use_sampling_interval_returns() -> None:
+    benchmark_nav = pd.Series(
+        {
+            date(2026, 3, 30): 4491.95,
+            date(2026, 4, 3): 4440.7889,
+            date(2026, 4, 10): 4636.5655,
+        },
+        dtype="float64",
+    )
+    portfolio_points = [
+        {"date": "2026-03-30", "value": 1.0},
+        {"date": "2026-04-03", "value": 1.01},
+        {"date": "2026-04-10", "value": 1.02},
+    ]
+
+    benchmark_points, benchmark_returns = _build_sampled_benchmark_points(benchmark_nav, portfolio_points)
+
+    assert benchmark_returns["2026-04-03"] == pytest.approx(4440.7889 / 4491.95 - 1.0)
+    assert benchmark_returns["2026-04-10"] == pytest.approx(4636.5655 / 4440.7889 - 1.0)
+    assert benchmark_points[-1]["value"] == pytest.approx(4636.5655 / 4491.95)
+
+
+def test_backtest_weekly_sampling_uses_periodic_returns_for_daily_series() -> None:
+    daily_nav = pd.Series(
+        {
+            date(2026, 3, 27): 100.0,
+            date(2026, 3, 30): 102.0,
+            date(2026, 4, 2): 103.0,
+            date(2026, 4, 3): 110.0,
+            date(2026, 4, 10): 121.0,
+        },
+        dtype="float64",
+    )
+    weekly_nav = pd.Series(
+        {
+            date(2026, 3, 27): 200.0,
+            date(2026, 4, 3): 220.0,
+            date(2026, 4, 10): 242.0,
+        },
+        dtype="float64",
+    )
+
+    sampled = _build_backtest_sampled_nav_by_instrument(
+        {"daily": daily_nav, "weekly": weekly_nav},
+        calculation_frequency="weekly",
+        end_date=date(2026, 4, 10),
+    )
+    returns_by_instrument = {instrument_id: sampled_nav.pct_change().dropna() for instrument_id, sampled_nav in sampled.items()}
+    rebal_dates = _backtest_rebalance_dates(
+        start_date=date(2026, 3, 30),
+        end_date=date(2026, 4, 10),
+        frequency="1w",
+        calculation_frequency="weekly",
+        returns_by_instrument=returns_by_instrument,
+    )
+
+    assert returns_by_instrument["daily"].loc[date(2026, 4, 3)] == pytest.approx(110.0 / 100.0 - 1.0)
+    assert returns_by_instrument["daily"].loc[date(2026, 4, 10)] == pytest.approx(121.0 / 110.0 - 1.0)
+    assert rebal_dates == [date(2026, 4, 3), date(2026, 4, 10)]
 
 
 def test_research_run_replaces_previous_run(client):

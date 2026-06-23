@@ -3861,6 +3861,102 @@ def _backtest_return_map_from_points(points: list[dict[str, object]]) -> dict[st
     return returns
 
 
+def _resolved_backtest_calculation_frequency(solution: dict[str, object], requested_frequency: object) -> CalculationFrequency:
+    profile = solution.get("calculation_frequency")
+    if isinstance(profile, dict):
+        resolved = str(profile.get("resolved_frequency") or "").strip().lower()
+        if resolved in RESEARCH_COVARIANCE_FREQUENCY_PARAMETERS:
+            return resolved  # type: ignore[return-value]
+    requested = str(requested_frequency or "").strip().lower()
+    if requested in RESEARCH_COVARIANCE_FREQUENCY_PARAMETERS:
+        return requested  # type: ignore[return-value]
+    return "daily"
+
+
+def _build_backtest_sampled_nav_by_instrument(
+    nav_by_instrument: dict[str, pd.Series],
+    *,
+    calculation_frequency: CalculationFrequency,
+    end_date: date,
+) -> dict[str, pd.Series]:
+    sampled: dict[str, pd.Series] = {}
+    for instrument_id, series in nav_by_instrument.items():
+        sampled_series = _periodic_nav_series(
+            series,
+            calculation_frequency=calculation_frequency,
+            start_date=date(1900, 1, 1),
+            end_date=end_date,
+        )
+        if not sampled_series.empty:
+            sampled[instrument_id] = sampled_series
+    return sampled
+
+
+def _common_return_dates(returns_by_instrument: dict[str, pd.Series]) -> list[date]:
+    return_sets = [set(series.index.tolist()) for series in returns_by_instrument.values() if not series.empty]
+    if not return_sets:
+        return []
+    common_dates = set.intersection(*return_sets)
+    return sorted(item for item in common_dates if isinstance(item, date))
+
+
+def _backtest_rebalance_dates(
+    *,
+    start_date: date,
+    end_date: date,
+    frequency: str,
+    calculation_frequency: CalculationFrequency,
+    returns_by_instrument: dict[str, pd.Series],
+) -> list[date]:
+    if frequency == "1w" and calculation_frequency != "daily":
+        return [item for item in _common_return_dates(returns_by_instrument) if start_date <= item <= end_date]
+    return _rebalance_schedule(start_date=start_date, end_date=end_date, frequency=frequency)
+
+
+def _latest_series_value_on_or_before(series: pd.Series, point_date: date) -> float | None:
+    if series.empty:
+        return None
+    eligible = series.loc[series.index <= point_date]
+    if eligible.empty:
+        return None
+    value = _safe_float(eligible.iloc[-1])
+    if value is None or value <= 0.0:
+        return None
+    return float(value)
+
+
+def _build_sampled_benchmark_points(
+    benchmark_nav: pd.Series,
+    normalized_points: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], dict[str, float]]:
+    benchmark_points: list[dict[str, object]] = []
+    benchmark_return_map: dict[str, float] = {}
+    if not normalized_points or benchmark_nav.empty:
+        return benchmark_points, benchmark_return_map
+
+    benchmark_nav_value = 1.0
+    previous_benchmark_value: float | None = None
+    for point in normalized_points:
+        date_key = str(point.get("date") or "")
+        point_date = _parse_iso_date(date_key)
+        if point_date is None:
+            continue
+        benchmark_value = _latest_series_value_on_or_before(benchmark_nav, point_date)
+        if benchmark_value is None:
+            continue
+        if previous_benchmark_value is None:
+            benchmark_points.append({"date": date_key, "value": benchmark_nav_value})
+            previous_benchmark_value = benchmark_value
+            continue
+        benchmark_return = benchmark_value / previous_benchmark_value - 1.0
+        benchmark_return_map[date_key] = benchmark_return
+        benchmark_nav_value *= 1.0 + benchmark_return
+        benchmark_points.append({"date": date_key, "value": benchmark_nav_value})
+        previous_benchmark_value = benchmark_value
+
+    return benchmark_points, benchmark_return_map
+
+
 def _build_backtest_benchmark_comparison_from_state(
     state: TaxonomyResearchState,
     *,
@@ -3887,23 +3983,7 @@ def _build_backtest_benchmark_comparison_from_state(
         benchmark_warnings.append(str(error))
         benchmark_nav = pd.Series(dtype="float64")
 
-    benchmark_returns = _nav_returns(benchmark_nav) if not benchmark_nav.empty else pd.Series(dtype="float64")
-    benchmark_points: list[dict[str, object]] = []
-    benchmark_return_map: dict[str, float] = {}
-    if normalized_points and not benchmark_returns.empty:
-        benchmark_nav_value = 1.0
-        benchmark_points.append({"date": normalized_points[0]["date"], "value": benchmark_nav_value})
-        for point in normalized_points[1:]:
-            date_key = str(point.get("date") or "")
-            point_date = _parse_iso_date(date_key)
-            if point_date is None or point_date not in benchmark_returns.index:
-                continue
-            benchmark_return = _safe_float(benchmark_returns.get(point_date))
-            if benchmark_return is None:
-                continue
-            benchmark_return_map[date_key] = benchmark_return
-            benchmark_nav_value *= 1.0 + benchmark_return
-            benchmark_points.append({"date": date_key, "value": benchmark_nav_value})
+    benchmark_points, benchmark_return_map = _build_sampled_benchmark_points(benchmark_nav, normalized_points)
 
     benchmark_payload = {
         "instrument_id": normalized_benchmark_id,
@@ -4042,7 +4122,6 @@ def build_current_target_backtest(
         return {"backtest": empty_backtest, "backtest_benchmark": None, "backtest_relative_metrics": None}
 
     nav_by_instrument: dict[str, pd.Series] = {}
-    portfolio_first_dates: list[date] = []
     for instrument_id in active_leaf_ids:
         try:
             nav_series, instrument_warnings = _build_instrument_nav_series(
@@ -4057,10 +4136,17 @@ def build_current_target_backtest(
         if nav_series.empty:
             continue
         nav_by_instrument[instrument_id] = nav_series
-        portfolio_first_dates.append(nav_series.index[0])
         warnings.extend(instrument_warnings)
 
-    if not nav_by_instrument or not portfolio_first_dates:
+    backtest_calculation_frequency = _resolved_backtest_calculation_frequency(solution, calculation_frequency)
+    sampled_nav_by_instrument = _build_backtest_sampled_nav_by_instrument(
+        nav_by_instrument,
+        calculation_frequency=backtest_calculation_frequency,
+        end_date=as_of_date,
+    )
+    portfolio_first_dates = [series.index[0] for series in sampled_nav_by_instrument.values() if not series.empty]
+
+    if not sampled_nav_by_instrument or not portfolio_first_dates:
         empty_backtest = {
             "rebalance_frequency": frequency,
             "common_history_start_date": None,
@@ -4100,11 +4186,17 @@ def build_current_target_backtest(
             ),
         }
         return {"backtest": empty_backtest, "backtest_benchmark": None, "backtest_relative_metrics": None}
-    rebal_dates = _rebalance_schedule(start_date=earliest_start_date, end_date=as_of_date, frequency=frequency)
+    returns_by_instrument = {instrument_id: _nav_returns(nav) for instrument_id, nav in sampled_nav_by_instrument.items()}
+    rebal_dates = _backtest_rebalance_dates(
+        start_date=earliest_start_date,
+        end_date=as_of_date,
+        frequency=frequency,
+        calculation_frequency=backtest_calculation_frequency,
+        returns_by_instrument=returns_by_instrument,
+    )
     if not rebal_dates:
         rebal_dates = [earliest_start_date]
 
-    returns_by_instrument = {instrument_id: _nav_returns(nav) for instrument_id, nav in nav_by_instrument.items()}
     portfolio_nav = 1.0
     points: list[dict[str, object]] = []
     portfolio_returns: dict[str, float] = {}
