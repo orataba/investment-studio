@@ -46,6 +46,7 @@ Description=Yungu scheduled market data refresh
 Type=oneshot
 WorkingDirectory=$BACKEND_ROOT
 Environment=PYTHONPATH=$BACKEND_ROOT
+Environment=PYTHONNOUSERSITE=1
 TimeoutStartSec=$TIMEOUT_START_SEC
 ExecStart=/bin/bash -lc 'cd $escaped_backend_root && PYTHONPATH=$escaped_backend_root $escaped_python_bin $escaped_backend_root/scripts/refresh_market_data_scheduled.py --channel $escaped_channel --updated-by $escaped_updated_by --retry-failed-attempts $escaped_retry_failed_attempts >> $escaped_log_file 2>&1'
 EOF

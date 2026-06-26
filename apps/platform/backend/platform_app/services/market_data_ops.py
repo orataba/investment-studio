@@ -985,7 +985,7 @@ def _tushare_nav_rows(
 ) -> list[dict[str, object]]:
     prepared_rows: list[dict[str, object]] = []
     for row in rows:
-        point_date = _parse_nav_date(row.get("end_date") or row.get("ann_date"))
+        point_date = _parse_nav_date(row.get("nav_date") or row.get("end_date") or row.get("ann_date"))
         if point_date is None:
             continue
         if point_date < TUSHARE_HISTORY_START_DATE:
@@ -1365,7 +1365,7 @@ def _refresh_from_tushare(
             rows = _call_tushare_api(
                 api_name="fund_nav",
                 params={"ts_code": ts_code},
-                fields="ts_code,ann_date,end_date,unit_nav,accum_nav,adj_nav,update_flag",
+                fields="ts_code,ann_date,end_date,nav_date,unit_nav,accum_nav,adj_nav,update_flag",
             )
             nav_rows = _tushare_nav_rows(rows, latest_date=latest_date)
             if not nav_rows:

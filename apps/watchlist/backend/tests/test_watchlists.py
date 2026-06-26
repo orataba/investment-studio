@@ -153,6 +153,53 @@ def test_return_nav_basis_does_not_fallback_to_ordinary_nav() -> None:
     assert [point["value"] for point in quote_selection["points"]] == [1.0, 1.01]
 
 
+def test_quote_policy_can_select_close_series_over_stale_cumulative_nav() -> None:
+    from watchlist_app.services.canonical_recalc import (
+        _group_shared_nav_rows,
+        _quote_policy_prefers_ordinary_nav,
+        _select_nav_basis_rows,
+    )
+
+    shared_instrument = {
+        "quote_selection_policy": {
+            "total_return": ["close", "adjusted_close", "total_return_nav", "official_nav"],
+            "chart": ["close", "adjusted_close", "total_return_nav", "official_nav"],
+        }
+    }
+    rows = _group_shared_nav_rows(
+        [
+            {
+                "quote_basis": "total_return_nav",
+                "as_of_date": "2026-06-15",
+                "value": "1.7993",
+                "currency": "CNY",
+            },
+            {
+                "quote_basis": "close",
+                "as_of_date": "2026-06-15",
+                "value": "1.8000",
+                "currency": "CNY",
+            },
+            {
+                "quote_basis": "close",
+                "as_of_date": "2026-06-25",
+                "value": "1.8670",
+                "currency": "CNY",
+            },
+        ]
+    )
+
+    assert _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
+    selection = _select_nav_basis_rows(rows, preference="nav", allow_ordinary_nav=True)
+
+    assert selection["nav_basis_type"] == "nav"
+    assert [point["as_of_date"] for point in selection["points"]] == [
+        date(2026, 6, 15),
+        date(2026, 6, 25),
+    ]
+    assert [point["value"] for point in selection["points"]] == [1.8, 1.867]
+
+
 def test_create_watchlist_generates_unique_ids_and_required_columns(
     client: TestClient,
 ) -> None:

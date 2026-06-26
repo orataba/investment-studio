@@ -695,7 +695,8 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
             {
                 "ts_code": "018654.OF",
                 "ann_date": "20260616",
-                "end_date": "20260615",
+                "end_date": None,
+                "nav_date": "20260615",
                 "unit_nav": "1.2345",
                 "accum_nav": "1.3456",
             },
@@ -703,6 +704,7 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
                 "ts_code": "018654.OF",
                 "ann_date": "20260613",
                 "end_date": "20260612",
+                "nav_date": "20260612",
                 "unit_nav": "1.2000",
                 "accum_nav": "1.3000",
             },
@@ -739,6 +741,7 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
     assert record == {"instrument_id": "018654-of"}
     assert captured["api_call"]["api_name"] == "fund_nav"
     assert captured["api_call"]["params"] == {"ts_code": "018654.OF"}
+    assert captured["api_call"]["fields"] == "ts_code,ann_date,end_date,nav_date,unit_nav,accum_nav,adj_nav,update_flag"
     replace_payload = captured["replace"]
     assert replace_payload["provider"] == "tushare:fund_nav"
     assert replace_payload["mode"] == "api"

@@ -70,6 +70,24 @@ DEFAULT_TABS = [
 
 RETURN_NAV_BASIS_PRIORITY = ("nav_with_dividend",)
 QUOTE_NAV_BASIS_PRIORITY = ("nav_with_dividend", "nav")
+ORDINARY_NAV_QUOTE_BASES = {
+    "close",
+    "last",
+    "official_nav",
+    "nav",
+    "unit_nav",
+    "net_asset_value",
+}
+TOTAL_RETURN_NAV_QUOTE_BASES = {
+    "total_return_nav",
+    "nav_with_dividend",
+    "cumulative_nav",
+    "accumulated_nav",
+    "cum_nav",
+    "dividend_adjusted_nav",
+    "reinvested_nav",
+    "adjusted_close",
+}
 PEER_METRIC_MIN_SAMPLE = 2
 PEER_COMPARISON_METRICS = [
     {
@@ -240,6 +258,28 @@ def _normalize_nav_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
 
 def _allows_ordinary_return_basis(instrument_type: object) -> bool:
     return str(instrument_type or "").strip().lower() == "index"
+
+
+def _quote_policy_prefers_ordinary_nav(
+    shared_instrument: dict[str, object] | None,
+    *,
+    role: str,
+) -> bool:
+    if not isinstance(shared_instrument, dict):
+        return False
+    raw_policy = shared_instrument.get("quote_selection_policy")
+    if not isinstance(raw_policy, dict):
+        return False
+    raw_values = raw_policy.get(role)
+    if not isinstance(raw_values, list):
+        return False
+    for raw_value in raw_values:
+        value = str(raw_value or "").strip().lower()
+        if value in ORDINARY_NAV_QUOTE_BASES:
+            return True
+        if value in TOTAL_RETURN_NAV_QUOTE_BASES:
+            return False
+    return False
 
 
 def _utcnow() -> datetime:
@@ -1247,16 +1287,26 @@ class CanonicalRecalcService:
                     primary_only=True,
                 )
             )
+        nav_basis_preference = str(nav_settings.get("nav_basis_preference", "auto"))
+        selection_preference = nav_basis_preference
+        if (
+            nav_basis_preference.strip().lower() == "auto"
+            and _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
+        ):
+            selection_preference = "nav"
         selection = _select_nav_basis_rows(
             nav_rows,
-            preference=str(nav_settings.get("nav_basis_preference", "auto")),
-            allow_ordinary_nav=_allows_ordinary_return_basis(instrument_type),
+            preference=selection_preference,
+            allow_ordinary_nav=(
+                _allows_ordinary_return_basis(instrument_type)
+                or selection_preference.strip().lower() == "nav"
+            ),
         )
         frequency_context = build_calculation_frequency_context(selection["points"])
         return {
             "instrument_id": instrument_id,
             "count": len(selection["rows"]),
-            "nav_basis_preference": str(nav_settings.get("nav_basis_preference", "auto")),
+            "nav_basis_preference": nav_basis_preference,
             "nav_basis_type": selection["nav_basis_type"],
             "nav_basis_source": selection["nav_basis_source"],
             "nav_basis_status": selection["nav_basis_status"],
@@ -1475,17 +1525,33 @@ class CanonicalRecalcService:
             _group_shared_nav_rows(list((shared_instrument or {}).get("market_data", [])))
             or _group_local_nav_rows(nav_facts)
         )
+        nav_basis_preference = str(nav_settings.get("nav_basis_preference", "auto"))
+        return_basis_preference = nav_basis_preference
+        if (
+            nav_basis_preference.strip().lower() == "auto"
+            and _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
+        ):
+            return_basis_preference = "nav"
         nav_selection = _select_nav_basis_rows(
             nav_rows,
-            preference=str(nav_settings.get("nav_basis_preference", "auto")),
-            allow_ordinary_nav=_allows_ordinary_return_basis(instrument.instrument_type),
+            preference=return_basis_preference,
+            allow_ordinary_nav=(
+                _allows_ordinary_return_basis(instrument.instrument_type)
+                or return_basis_preference.strip().lower() == "nav"
+            ),
         )
         frequency_context = build_calculation_frequency_context(nav_selection["points"])
         calculation_nav_points = frequency_context["points"]
         calculation_frequency_profile = frequency_context["profile"]
+        quote_basis_preference = nav_basis_preference
+        if (
+            nav_basis_preference.strip().lower() == "auto"
+            and _quote_policy_prefers_ordinary_nav(shared_instrument, role="chart")
+        ):
+            quote_basis_preference = "nav"
         quote_selection = _select_nav_basis_rows(
             nav_rows,
-            preference=str(nav_settings.get("nav_basis_preference", "auto")),
+            preference=quote_basis_preference,
             allow_ordinary_nav=True,
         )
         holding_snapshot = self.facts_repository.get_current_holding_snapshot(
