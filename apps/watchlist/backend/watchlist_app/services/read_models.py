@@ -567,7 +567,16 @@ def default_fund_summary_payload(
 def default_fund_chart_payload(instrument_id: str) -> dict[str, object]:
     return {
         "instrument_id": instrument_id,
-        "base_series_type": "nav",
+        "base_series_type": "quote",
+        "selected_series": {
+            "role": None,
+            "metric_family": None,
+            "quote_basis": None,
+            "series_type": None,
+            "basis_type": None,
+            "label": None,
+            "date_label": None,
+        },
         "currency": "USD",
         "date_range": None,
         "series": [],

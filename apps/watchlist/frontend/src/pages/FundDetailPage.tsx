@@ -429,6 +429,8 @@ const NAV_BASIS_SOURCE_LABELS: Record<string, string> = {
   nav_with_dividend_series: 'NAV with Dividend Series',
   nav_series: 'NAV Series',
   manual_nav_editor: 'Manual Editor',
+  shared: 'Shared Registry',
+  local: 'Local Facts',
 }
 
 const PEOPLE_PRIMARY_OVERVIEW_FIELDS: Array<{
@@ -1988,7 +1990,12 @@ function buildBasisSeries(rows: FundNavSeriesResponse['rows'], basis: QuoteBasis
   return [...rows]
     .sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
     .map((row) => {
-      const value = basis === 'nav' ? row.nav : row.nav_with_dividend
+      const value =
+        row.selected_basis_type === basis
+          ? row.selected_value ?? (basis === 'nav' ? row.nav : row.nav_with_dividend)
+          : basis === 'nav'
+            ? row.nav
+            : row.nav_with_dividend
       return value == null ? null : { date: row.as_of_date, value }
     })
     .filter((point): point is FundChartPoint => point !== null)
@@ -3395,9 +3402,9 @@ function resampleSeries(points: FundChartPoint[], frequency: ChartFrequency) {
   return Array.from(buckets.values()).sort((left, right) => left.date.localeCompare(right.date))
 }
 
-function buildCalculationPointSeries(series: Array<{ date: string; nav: number }>) {
+function buildCalculationPointSeries(series: FundNavSeriesResponse['calculation_series']) {
   return series
-    .map((point) => ({ date: point.date, value: point.nav }))
+    .map((point) => ({ date: point.date, value: point.value ?? point.nav }))
     .sort((left, right) => left.date.localeCompare(right.date))
 }
 
@@ -5047,10 +5054,20 @@ export default function FundDetailPage({
     detailKind === 'index' ? SYSTEM_LABELS.indexDetail : SYSTEM_LABELS.fundDetail,
   )
   const navBasisType = navSeries.nav_basis_type || summary.nav_snapshot?.nav_basis_type || 'auto'
-  const navBasisLabel = NAV_BASIS_LABELS[navBasisType]
+  const selectedSeriesLabel =
+    navSeries.selected_series_label ||
+    summary.nav_snapshot?.selected_series_label ||
+    summary.selected_series?.label ||
+    null
+  const selectedDateLabel =
+    navSeries.selected_date_label ||
+    summary.nav_snapshot?.selected_date_label ||
+    summary.selected_series?.date_label ||
+    'Last Quote Date'
+  const navBasisLabel = selectedSeriesLabel || (NAV_BASIS_LABELS[navBasisType]
     ? localize(language, NAV_BASIS_LABELS[navBasisType])
-    : toTitleCase(navBasisType)
-  const quoteBasisLabel = localize(language, QUOTE_BASIS_LABELS[activeQuoteBasis])
+    : toTitleCase(navBasisType))
+  const quoteBasisLabel = selectedSeriesLabel || localize(language, QUOTE_BASIS_LABELS[activeQuoteBasis])
   const chartSeriesBasisLabel = shouldIndexCompareSeries
     ? localize(language, SYSTEM_LABELS.indexed)
     : quoteBasisLabel
@@ -5058,7 +5075,8 @@ export default function FundDetailPage({
     ? availableQuoteBases
     : [activeQuoteBasis]
   const basisValue =
-    activeQuoteBasis === 'nav_with_dividend'
+    latestQuoteRow?.selected_value ??
+    (activeQuoteBasis === 'nav_with_dividend'
       ? latestQuoteRow?.nav_with_dividend ??
         latestSeriesPoint?.value ??
         summary.nav_snapshot?.latest_nav_with_dividend ??
@@ -5066,7 +5084,7 @@ export default function FundDetailPage({
       : latestQuoteRow?.nav ??
         latestSeriesPoint?.value ??
         summary.nav_snapshot?.latest_nav ??
-        latestQuoteRow?.nav_with_dividend
+        latestQuoteRow?.nav_with_dividend)
   const quoteToneClass =
     quoteChange == null
       ? ''
@@ -5838,7 +5856,7 @@ export default function FundDetailPage({
       tone: null,
     },
     {
-      label: 'Last NAV Date',
+      label: selectedDateLabel,
       value: formatDate(latestNavRecord?.as_of_date || null),
       tone: null,
     },
@@ -5855,7 +5873,7 @@ export default function FundDetailPage({
   ]
   const monitoringPipelineRows = [
     {
-      domain: 'NAV Facts',
+      domain: `${quoteBasisLabel} Series`,
       asOf: formatDate(latestNavRecord?.as_of_date || null),
       cutoff: formatDateTime(navRefreshStatus?.requested_at || latestNavRecord?.adopted_at || summary.freshness.last_fact_update_at),
       methodology: formatNavBasisSource(navSeries.nav_basis_source),
@@ -5923,7 +5941,7 @@ export default function FundDetailPage({
     },
     { label: 'Basis Source', value: formatNavBasisSource(navSeries.nav_basis_source) },
     { label: 'Series Count', value: String(navSeries.count || navSeries.rows.length || 0) },
-    { label: 'NAV Date', value: formatDate(latestQuoteRow?.as_of_date || navSeries.rows[navSeries.rows.length - 1]?.as_of_date) },
+    { label: selectedDateLabel.replace(/^Last\\s+/, ''), value: formatDate(latestQuoteRow?.as_of_date || navSeries.rows[navSeries.rows.length - 1]?.as_of_date) },
     { label: 'Currency', value: getString(navSeries.rows[navSeries.rows.length - 1]?.currency || chart.currency) },
   ]
   const distributionRowsSummary = [

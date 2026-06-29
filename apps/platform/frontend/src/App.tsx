@@ -100,7 +100,7 @@ type PlatformRegistrySummary = {
   archived_count: number
   fund_count: number
   index_count: number
-  fund_with_nav_count: number
+  fund_with_quote_count: number
 }
 
 type SupportedCurrency = 'USD' | 'HKD' | 'CNY'
@@ -357,18 +357,52 @@ function latestMarketPoint(
   )
 }
 
-function latestNavSnapshot(record: PlatformInstrumentRecord) {
+function latestAnyMarketPoint(record: PlatformInstrumentRecord) {
+  return record.latest_market_data.reduce<PlatformMarketDataPoint | null>((latest, point) => {
+    if (!latest || point.as_of_date > latest.as_of_date) {
+      return point
+    }
+    return latest
+  }, null)
+}
+
+function latestQuoteSnapshot(record: PlatformInstrumentRecord) {
   const officialNav = latestMarketPoint(record, 'nav', 'official_nav')
   const totalReturnNav = latestMarketPoint(record, 'nav', 'total_return_nav')
+  const selectedQuote = resolveRoleQuote(record, 'valuation') ?? latestAnyMarketPoint(record)
   return {
     officialNav,
     totalReturnNav,
-    latestNavDate: officialNav?.as_of_date ?? totalReturnNav?.as_of_date ?? null,
+    selectedQuote,
+    latestQuoteDate: selectedQuote?.as_of_date ?? null,
   }
 }
 
 function formatPointValue(point: PlatformMarketDataPoint | null) {
   return point ? `${point.value} ${point.currency}` : '—'
+}
+
+function formatPrimaryQuoteDetail(
+  primaryQuote: PlatformMarketDataPoint | null,
+  officialNav: PlatformMarketDataPoint | null,
+  totalReturnNav: PlatformMarketDataPoint | null,
+) {
+  if (primaryQuote && !['official_nav', 'total_return_nav'].includes(primaryQuote.quote_basis)) {
+    return formatBasisLabel(primaryQuote.quote_basis)
+  }
+  if (officialNav && totalReturnNav) {
+    return `TR ${formatPointValue(totalReturnNav)}`
+  }
+  if (officialNav) {
+    return 'Official NAV only'
+  }
+  if (totalReturnNav) {
+    return 'Total return NAV only'
+  }
+  if (primaryQuote) {
+    return formatBasisLabel(primaryQuote.quote_basis)
+  }
+  return 'No quote in shared data'
 }
 
 function formatCoverageLabel(state: DataStatus) {
@@ -675,8 +709,8 @@ function InstrumentsPage({
   const [instrumentTypeFilter, setInstrumentTypeFilter] = useState<'all' | InstrumentType>('all')
   const [coverageFilter, setCoverageFilter] = useState<'all' | DataStatus>('all')
   const [sourceFilter, setSourceFilter] = useState<'all' | SourceMode>('all')
-  const [navFilter, setNavFilter] = useState<'all' | 'has_nav' | 'missing_nav'>('all')
-  const [sortMode, setSortMode] = useState<'name_asc' | 'nav_desc' | 'identifier_asc' | 'coverage'>('name_asc')
+  const [quoteFilter, setQuoteFilter] = useState<'all' | 'has_quote' | 'missing_quote'>('all')
+  const [sortMode, setSortMode] = useState<'name_asc' | 'quote_desc' | 'identifier_asc' | 'coverage'>('name_asc')
   const [refreshChannel, setRefreshChannel] = useState<RefreshChannel>('all')
   const [selectionPrimed, setSelectionPrimed] = useState(false)
 
@@ -728,8 +762,8 @@ function InstrumentsPage({
     () => (selectedInstrument ? summaryQuoteChips(selectedInstrument) : []),
     [selectedInstrument],
   )
-  const selectedInstrumentNavSnapshot = useMemo(
-    () => (selectedInstrument ? latestNavSnapshot(selectedInstrument) : null),
+  const selectedInstrumentQuoteSnapshot = useMemo(
+    () => (selectedInstrument ? latestQuoteSnapshot(selectedInstrument) : null),
     [selectedInstrument],
   )
   const selectedInstrumentNavHistory = useMemo(
@@ -798,11 +832,11 @@ function InstrumentsPage({
       if (sourceFilter !== 'all' && item.source_settings.source_mode !== sourceFilter) {
         return false
       }
-      const latestNavDate = latestNavSnapshot(item).latestNavDate
-      if (navFilter === 'has_nav' && !latestNavDate) {
+      const latestQuoteDate = latestQuoteSnapshot(item).latestQuoteDate
+      if (quoteFilter === 'has_quote' && !latestQuoteDate) {
         return false
       }
-      if (navFilter === 'missing_nav' && latestNavDate) {
+      if (quoteFilter === 'missing_quote' && latestQuoteDate) {
         return false
       }
       if (!searchNeedle) {
@@ -820,11 +854,11 @@ function InstrumentsPage({
       if (sortMode === 'identifier_asc') {
         return primaryIdentifier(left).localeCompare(primaryIdentifier(right))
       }
-      if (sortMode === 'nav_desc') {
-        const leftNav = latestNavSnapshot(left).latestNavDate || ''
-        const rightNav = latestNavSnapshot(right).latestNavDate || ''
-        if (leftNav !== rightNav) {
-          return rightNav.localeCompare(leftNav)
+      if (sortMode === 'quote_desc') {
+        const leftQuote = latestQuoteSnapshot(left).latestQuoteDate || ''
+        const rightQuote = latestQuoteSnapshot(right).latestQuoteDate || ''
+        if (leftQuote !== rightQuote) {
+          return rightQuote.localeCompare(leftQuote)
         }
         return left.instrument_name.localeCompare(right.instrument_name)
       }
@@ -841,15 +875,15 @@ function InstrumentsPage({
       }
       return left.instrument_name.localeCompare(right.instrument_name)
     })
-  }, [instrumentTypeFilter, coverageFilter, instruments, navFilter, searchText, sortMode, sourceFilter])
+  }, [instrumentTypeFilter, coverageFilter, instruments, quoteFilter, searchText, sortMode, sourceFilter])
   const filteredFundCount = useMemo(
     () => filteredInstruments.filter((item) => item.instrument_type === 'fund').length,
     [filteredInstruments],
   )
-  const filteredMissingNavCount = useMemo(
+  const filteredMissingQuoteCount = useMemo(
     () =>
       filteredInstruments.filter(
-        (item) => item.instrument_type === 'fund' && !latestNavSnapshot(item).latestNavDate,
+        (item) => item.instrument_type === 'fund' && !latestQuoteSnapshot(item).latestQuoteDate,
       ).length,
     [filteredInstruments],
   )
@@ -1169,7 +1203,7 @@ function InstrumentsPage({
     setInstrumentTypeFilter('all')
     setCoverageFilter('all')
     setSourceFilter('all')
-    setNavFilter('all')
+    setQuoteFilter('all')
     setSortMode('name_asc')
   }
 
@@ -1218,7 +1252,7 @@ function InstrumentsPage({
           <span role="listitem">Archived {registrySummary.archived_count}</span>
           <span role="listitem">Funds {registrySummary.fund_count}</span>
           <span role="listitem">Indexes {registrySummary.index_count}</span>
-          <span role="listitem">Funds With NAV {registrySummary.fund_with_nav_count}</span>
+          <span role="listitem">Funds With Quote {registrySummary.fund_with_quote_count}</span>
         </div>
       </section>
 
@@ -1272,18 +1306,18 @@ function InstrumentsPage({
                 </select>
               </label>
               <label>
-                <span>NAV</span>
-                <select value={navFilter} onChange={(event) => setNavFilter(event.target.value as 'all' | 'has_nav' | 'missing_nav')}>
+                <span>Quote</span>
+                <select value={quoteFilter} onChange={(event) => setQuoteFilter(event.target.value as 'all' | 'has_quote' | 'missing_quote')}>
                   <option value="all">All Instruments</option>
-                  <option value="has_nav">Has NAV</option>
-                  <option value="missing_nav">Missing NAV</option>
+                  <option value="has_quote">Has Quote</option>
+                  <option value="missing_quote">Missing Quote</option>
                 </select>
               </label>
               <label>
                 <span>Sort</span>
-                <select value={sortMode} onChange={(event) => setSortMode(event.target.value as 'name_asc' | 'nav_desc' | 'identifier_asc' | 'coverage')}>
+                <select value={sortMode} onChange={(event) => setSortMode(event.target.value as 'name_asc' | 'quote_desc' | 'identifier_asc' | 'coverage')}>
                   <option value="name_asc">Name</option>
-                  <option value="nav_desc">Latest NAV Date</option>
+                  <option value="quote_desc">Latest Quote Date</option>
                   <option value="identifier_asc">Identifier</option>
                   <option value="coverage">Coverage</option>
                 </select>
@@ -1293,7 +1327,7 @@ function InstrumentsPage({
               <div className="registry-summary-inline registry-summary-inline-compact">
                 <span>Visible {filteredInstruments.length}</span>
                 <span>Funds {filteredFundCount}</span>
-                <span>Funds Missing NAV {filteredMissingNavCount}</span>
+                <span>Funds Missing Quote {filteredMissingQuoteCount}</span>
               </div>
               <div className="registry-filter-actions">
                 <label className="registry-inline-field">
@@ -1316,13 +1350,13 @@ function InstrumentsPage({
                 </button>
                 <button
                   type="button"
-                  className={`registry-submit secondary${instrumentTypeFilter === 'fund' && navFilter === 'missing_nav' ? ' registry-submit-active' : ''}`}
+                  className={`registry-submit secondary${instrumentTypeFilter === 'fund' && quoteFilter === 'missing_quote' ? ' registry-submit-active' : ''}`}
                   onClick={() => {
                     setInstrumentTypeFilter('fund')
-                    setNavFilter('missing_nav')
+                    setQuoteFilter('missing_quote')
                   }}
                 >
-                  Missing NAV
+                  Missing Quote
                 </button>
                 <button type="button" className="registry-submit secondary" onClick={clearTableFilters}>
                   Reset Filters
@@ -1347,11 +1381,9 @@ function InstrumentsPage({
                 </div>
                 <div className="registry-selected-subtitle">
                   {selectedInstrument.instrument_type.toUpperCase()} · {selectedInstrument.currency} ·{' '}
-                  {selectedInstrumentNavSnapshot?.latestNavDate
-                    ? `Latest NAV ${selectedInstrumentNavSnapshot.latestNavDate}`
-                    : selectedInstrument.instrument_type === 'fund'
-                      ? 'No NAV loaded yet'
-                      : 'Not NAV-based'}
+                  {selectedInstrumentQuoteSnapshot?.latestQuoteDate
+                    ? `Latest Quote ${selectedInstrumentQuoteSnapshot.latestQuoteDate}`
+                    : 'No quote loaded yet'}
                 </div>
                 <div className="registry-selected-meta">
                   <span className={`coverage-badge coverage-badge-${selectedInstrument.coverage_state}`}>
@@ -1878,8 +1910,8 @@ function InstrumentsPage({
                 <th>Name</th>
                 <th>Type</th>
                 <th>Currency</th>
-                <th>Latest NAV</th>
-                <th>NAV Date</th>
+                <th>Latest Quote</th>
+                <th>Quote Date</th>
                 <th>Selected Quotes</th>
                 <th>Source</th>
                 <th>Coverage</th>
@@ -1898,7 +1930,8 @@ function InstrumentsPage({
               {filteredInstruments.map((item) => {
                 const isSelected = item.instrument_id === selectedInstrumentId
                 const quoteSummary = summaryQuoteChips(item)
-                const { officialNav, totalReturnNav, latestNavDate } = latestNavSnapshot(item)
+                const { officialNav, totalReturnNav, selectedQuote, latestQuoteDate } = latestQuoteSnapshot(item)
+                const primaryQuote = selectedQuote ?? officialNav ?? totalReturnNav
                 return (
                   <Fragment key={item.instrument_id}>
                     <tr
@@ -1926,26 +1959,16 @@ function InstrumentsPage({
                       <td>{item.currency}</td>
                       <td>
                         <div className="instrument-id-stack">
-                          <strong>{formatPointValue(officialNav ?? totalReturnNav)}</strong>
-                          <span>
-                            {officialNav && totalReturnNav
-                              ? `TR ${formatPointValue(totalReturnNav)}`
-                              : officialNav
-                                ? 'Official NAV only'
-                                : totalReturnNav
-                                  ? 'Total return NAV only'
-                                  : item.instrument_type === 'fund'
-                                    ? 'No NAV in shared data'
-                                    : 'Not NAV-based'}
-                          </span>
+                          <strong>{formatPointValue(primaryQuote)}</strong>
+                          <span>{formatPrimaryQuoteDetail(primaryQuote, officialNav, totalReturnNav)}</span>
                         </div>
                       </td>
                       <td>
                         <div className="instrument-id-stack">
-                          <strong>{latestNavDate || '—'}</strong>
+                          <strong>{latestQuoteDate || '—'}</strong>
                           <span>
-                            {latestNavDate
-                              ? officialNav?.provider || totalReturnNav?.provider || 'Shared market data'
+                            {latestQuoteDate
+                              ? primaryQuote?.provider || 'Shared market data'
                               : '—'}
                           </span>
                         </div>
@@ -2076,8 +2099,8 @@ function InstrumentsPage({
                                         <td>{formatCoverageLabel(item.coverage_state)}</td>
                                       </tr>
                                       <tr>
-                                        <td>Latest NAV Date</td>
-                                        <td>{latestNavDate || '—'}</td>
+                                        <td>Latest Quote Date</td>
+                                        <td>{latestQuoteDate || '—'}</td>
                                       </tr>
                                       <tr>
                                         <td>Refresh Status</td>
@@ -2322,14 +2345,14 @@ export default function App() {
     const activeCount = base.filter((item) => item.lifecycle_state.status === 'active').length
     const fundInstruments = base.filter((item) => item.instrument_type === 'fund')
     const indexInstruments = base.filter((item) => item.instrument_type === 'index')
-    const fundsWithNavCount = fundInstruments.filter((item) => latestNavSnapshot(item).latestNavDate).length
+    const fundsWithQuoteCount = fundInstruments.filter((item) => latestQuoteSnapshot(item).latestQuoteDate).length
     return {
       total_count: base.length,
       active_count: activeCount,
       archived_count: base.length - activeCount,
       fund_count: fundInstruments.length,
       index_count: indexInstruments.length,
-      fund_with_nav_count: fundsWithNavCount,
+      fund_with_quote_count: fundsWithQuoteCount,
     }
   }, [allInstruments, instruments])
 

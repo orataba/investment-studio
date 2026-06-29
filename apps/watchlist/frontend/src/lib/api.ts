@@ -344,9 +344,16 @@ export type FundSummaryResponse = {
   nav_snapshot?: {
     nav_basis_type?: string | null
     nav_basis_source?: string | null
+    selected_role?: string | null
+    selected_metric_family?: string | null
+    selected_quote_basis?: string | null
+    selected_series_type?: string | null
+    selected_series_label?: string | null
+    selected_date_label?: string | null
     latest_nav?: number | null
     latest_nav_with_dividend?: number | null
   }
+  selected_series?: SelectedQuoteSeriesMetadata
 }
 
 export type FundLibraryItem = {
@@ -387,10 +394,30 @@ export type CalculationFrequencyProfile = {
 export type FundChartResponse = {
   fund_id: string
   base_series_type: string
+  selected_series?: SelectedQuoteSeriesMetadata
   currency: string
   date_range: { start: string; end: string } | null
   series: Array<{ name: string; points: FundChartPoint[] }>
   available_compare_targets: string[]
+}
+
+export type SelectedQuoteSeriesMetadata = {
+  role?: string | null
+  metric_family?: string | null
+  quote_basis?: string | null
+  series_type?: string | null
+  basis_type?: string | null
+  label?: string | null
+  date_label?: string | null
+}
+
+export type SelectedQuotePoint = {
+  date: string
+  value: number
+  nav: number
+  metric_family?: string | null
+  quote_basis?: string | null
+  series_type?: string | null
 }
 
 export type FundPerformanceResponse = {
@@ -562,6 +589,12 @@ export type FundNavSeriesResponse = {
   nav_basis_type: string | null
   nav_basis_source: string
   nav_basis_status: string
+  selected_role?: string | null
+  selected_metric_family?: string | null
+  selected_quote_basis?: string | null
+  selected_series_type?: string | null
+  selected_series_label?: string | null
+  selected_date_label?: string | null
   calculation_frequency_profile: CalculationFrequencyProfile
   compare_settings?: {
     default_benchmark_instrument_id: string | null
@@ -574,17 +607,24 @@ export type FundNavSeriesResponse = {
     requested_by: string | null
     mode: string
   }
-  series: Array<{ date: string; nav: number }>
-  calculation_series: Array<{ date: string; nav: number }>
+  series: SelectedQuotePoint[]
+  calculation_series: SelectedQuotePoint[]
   rows: Array<{
     as_of_date: string
     nav: number | null
     nav_with_dividend: number | null
+    selected_basis_type?: string | null
+    selected_value?: number | null
+    selected_metric_family?: string | null
+    selected_quote_basis?: string | null
+    selected_series_type?: string | null
+    selected_series_label?: string | null
     cumulative_distribution: number | null
     distribution_amount: number | null
     currency: string | null
     frequency: string | null
     adopted_at: string | null
+    basis_metadata?: Record<string, SelectedQuoteSeriesMetadata>
   }>
 }
 
@@ -595,6 +635,12 @@ type RawFundNavSeriesResponse = {
   nav_basis_type: string | null
   nav_basis_source: string
   nav_basis_status: string
+  selected_role?: string | null
+  selected_metric_family?: string | null
+  selected_quote_basis?: string | null
+  selected_series_type?: string | null
+  selected_series_label?: string | null
+  selected_date_label?: string | null
   calculation_frequency_profile: CalculationFrequencyProfile
   compare_settings?: {
     default_benchmark_instrument_id: string | null
@@ -607,17 +653,24 @@ type RawFundNavSeriesResponse = {
     requested_by: string | null
     mode: string
   }
-  series: Array<{ date: string; nav: number }>
-  calculation_series: Array<{ date: string; nav: number }>
+  series: Array<Partial<SelectedQuotePoint> & { date: string; nav?: number; value?: number }>
+  calculation_series: Array<Partial<SelectedQuotePoint> & { date: string; nav?: number; value?: number }>
   rows: Array<{
     date: string
     nav: number | null
     nav_with_dividend: number | null
+    selected_basis_type?: string | null
+    selected_value?: number | null
+    selected_metric_family?: string | null
+    selected_quote_basis?: string | null
+    selected_series_type?: string | null
+    selected_series_label?: string | null
     cumulative_distribution?: number | null
     distribution_amount?: number | null
     currency: string | null
     frequency: string | null
     adopted_at: string | null
+    basis_metadata?: Record<string, SelectedQuoteSeriesMetadata>
   }>
 }
 
@@ -672,6 +725,21 @@ function normalizeFundLibraryItem(item: RawFundLibraryItem): FundLibraryItem {
 }
 
 function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): FundNavSeriesResponse {
+  const normalizeQuotePoints = (
+    points: Array<Partial<SelectedQuotePoint> & { date: string; nav?: number; value?: number }>,
+  ): SelectedQuotePoint[] =>
+    points.map((point) => {
+      const value = point.value ?? point.nav ?? 0
+      return {
+        date: point.date,
+        value,
+        nav: point.nav ?? value,
+        metric_family: point.metric_family,
+        quote_basis: point.quote_basis,
+        series_type: point.series_type,
+      }
+    })
+
   return {
     fund_id: response.instrument_id,
     count: response.count,
@@ -679,20 +747,33 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
     nav_basis_type: response.nav_basis_type,
     nav_basis_source: response.nav_basis_source,
     nav_basis_status: response.nav_basis_status,
+    selected_role: response.selected_role,
+    selected_metric_family: response.selected_metric_family,
+    selected_quote_basis: response.selected_quote_basis,
+    selected_series_type: response.selected_series_type,
+    selected_series_label: response.selected_series_label,
+    selected_date_label: response.selected_date_label,
     calculation_frequency_profile: response.calculation_frequency_profile,
     compare_settings: response.compare_settings,
     refresh_status: response.refresh_status,
-    series: response.series,
-    calculation_series: response.calculation_series,
+    series: normalizeQuotePoints(response.series),
+    calculation_series: normalizeQuotePoints(response.calculation_series),
     rows: response.rows.map((row) => ({
       as_of_date: row.date,
       nav: row.nav,
       nav_with_dividend: row.nav_with_dividend,
+      selected_basis_type: row.selected_basis_type,
+      selected_value: row.selected_value,
+      selected_metric_family: row.selected_metric_family,
+      selected_quote_basis: row.selected_quote_basis,
+      selected_series_type: row.selected_series_type,
+      selected_series_label: row.selected_series_label,
       cumulative_distribution: row.cumulative_distribution ?? null,
       distribution_amount: row.distribution_amount ?? null,
       currency: row.currency,
       frequency: row.frequency,
       adopted_at: row.adopted_at,
+      basis_metadata: row.basis_metadata,
     })),
   }
 }

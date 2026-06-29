@@ -62,7 +62,7 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 - fund taxonomy 默认允许 `Unassigned`；系统不再基于旧分类字段或 migration 自动猜测分类，必须由人在详情页明确选择
 - watchlist `move` / `copy` 必须先命中 source watchlist membership，不能绕过 source 直接向 target 加资产
 - 自定义 view 的 `view_id` 会做 path-safe slug 化；创建冲突会重试；复制 watchlist 时也会清洗 legacy custom view id
-- canonical NAV history 在 watchlist detail 是只读视图；导入、刷新、编辑共享净值要回到 `Database Dashboard`
+- canonical quote/NAV history 在 watchlist detail 是只读视图；导入、刷新、编辑共享行情/净值要回到 `Database Dashboard`。watchlist 派生层必须保留真实 `metric_family / quote_basis / role`，例如 `price/close/chart` 和 `nav/total_return_nav/total_return` 不能再只压成 NAV 文案。
 - monitoring 的缺失项检查是 taxonomy-aware；它既检查当前分类下适用且 `required_for_monitoring` 的字段，也检查 `fund_regime` 和分类叶子是否完整
 - 后端 API 已统一到 `instrument` 主语；旧 `/api/funds/...` 兼容路由已删除
 - 前端详情 canonical 路由是 `/instruments/:instrumentId`

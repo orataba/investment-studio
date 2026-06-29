@@ -236,7 +236,7 @@ Monitoring 页面不再硬编码一张“所有 fund 必填 tags”清单。
 - `PUT /api/instruments/{instrument_id}/nav-series` 固定返回 `409`
 - `POST /api/instruments/{instrument_id}/nav-refresh` 固定返回 `409`
 
-也就是说，watchlist detail 里 canonical NAV history 是只读视图。
+也就是说，watchlist detail 里 canonical quote/NAV history 是只读视图；派生 payload 需要保留实际 `metric_family / quote_basis / role`，避免场内 ETF 或指数的 `close` 被误标成 NAV。
 
 ### 6.4 Instrument Attributes
 

@@ -84,9 +84,9 @@ def test_calculation_frequency_context_resamples_declared_weekly_points() -> Non
 
 
 def test_return_nav_basis_prefers_cumulative_nav_when_available() -> None:
-    from watchlist_app.services.canonical_recalc import _group_shared_nav_rows, _select_nav_basis_rows
+    from watchlist_app.services.canonical_recalc import _select_quote_series, _shared_quote_points_by_basis
 
-    rows = _group_shared_nav_rows(
+    points_by_basis = _shared_quote_points_by_basis(
         [
             {
                 "quote_basis": "official_nav",
@@ -115,16 +115,22 @@ def test_return_nav_basis_prefers_cumulative_nav_when_available() -> None:
         ]
     )
 
-    selection = _select_nav_basis_rows(rows, preference="auto")
+    selection = _select_quote_series(
+        points_by_basis,
+        shared_instrument=None,
+        role="total_return",
+        preference="auto",
+    )
 
     assert selection["nav_basis_type"] == "nav_with_dividend"
+    assert selection["selected_quote_basis"] == "cumulative_nav"
     assert [point["value"] for point in selection["points"]] == [1.25, 1.2625]
 
 
 def test_return_nav_basis_does_not_fallback_to_ordinary_nav() -> None:
-    from watchlist_app.services.canonical_recalc import _group_shared_nav_rows, _select_nav_basis_rows
+    from watchlist_app.services.canonical_recalc import _select_quote_series, _shared_quote_points_by_basis
 
-    rows = _group_shared_nav_rows(
+    points_by_basis = _shared_quote_points_by_basis(
         [
             {
                 "quote_basis": "official_nav",
@@ -141,9 +147,25 @@ def test_return_nav_basis_does_not_fallback_to_ordinary_nav() -> None:
         ]
     )
 
-    auto_selection = _select_nav_basis_rows(rows, preference="auto")
-    explicit_nav_selection = _select_nav_basis_rows(rows, preference="nav")
-    quote_selection = _select_nav_basis_rows(rows, preference="auto", allow_ordinary_nav=True)
+    auto_selection = _select_quote_series(
+        points_by_basis,
+        shared_instrument=None,
+        role="total_return",
+        preference="auto",
+    )
+    explicit_nav_selection = _select_quote_series(
+        points_by_basis,
+        shared_instrument=None,
+        role="total_return",
+        preference="nav",
+    )
+    quote_selection = _select_quote_series(
+        points_by_basis,
+        shared_instrument=None,
+        role="chart",
+        preference="auto",
+        allow_ordinary_nav=True,
+    )
 
     assert auto_selection["nav_basis_type"] is None
     assert auto_selection["points"] == []
@@ -157,7 +179,9 @@ def test_quote_policy_can_select_close_series_over_stale_cumulative_nav() -> Non
     from watchlist_app.services.canonical_recalc import (
         _group_shared_nav_rows,
         _quote_policy_prefers_ordinary_nav,
-        _select_nav_basis_rows,
+        _rows_with_selected_series,
+        _select_quote_series,
+        _shared_quote_points_by_basis,
     )
 
     shared_instrument = {
@@ -188,11 +212,48 @@ def test_quote_policy_can_select_close_series_over_stale_cumulative_nav() -> Non
             },
         ]
     )
+    points_by_basis = _shared_quote_points_by_basis(
+        [
+            {
+                "metric_family": "nav",
+                "quote_basis": "total_return_nav",
+                "as_of_date": "2026-06-15",
+                "value": "1.7993",
+                "currency": "CNY",
+            },
+            {
+                "metric_family": "nav",
+                "quote_basis": "close",
+                "as_of_date": "2026-06-15",
+                "value": "1.8000",
+                "currency": "CNY",
+            },
+            {
+                "metric_family": "price",
+                "quote_basis": "close",
+                "as_of_date": "2026-06-25",
+                "value": "1.8670",
+                "currency": "CNY",
+            },
+        ]
+    )
 
     assert _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
-    selection = _select_nav_basis_rows(rows, preference="nav", allow_ordinary_nav=True)
+    selection = _select_quote_series(
+        points_by_basis,
+        shared_instrument=shared_instrument,
+        role="total_return",
+        preference="auto",
+        allow_ordinary_nav=True,
+    )
+    rows = _rows_with_selected_series(rows, selection)
 
     assert selection["nav_basis_type"] == "nav"
+    assert selection["selected_metric_family"] == "price"
+    assert selection["selected_quote_basis"] == "close"
+    assert selection["selected_series_label"] == "Close"
+    assert rows[-1]["basis_metadata"]["nav"]["quote_basis"] == "close"
+    assert rows[-1]["basis_metadata"]["nav"]["metric_family"] == "price"
     assert [point["as_of_date"] for point in selection["points"]] == [
         date(2026, 6, 15),
         date(2026, 6, 25),

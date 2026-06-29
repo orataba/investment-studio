@@ -1064,7 +1064,7 @@ FIELD_REGISTRY = [
     {
         "field_key": "price_chart_1m",
         "label": "Chart 1M",
-        "description": "1-month NAV chart from the current chart read model.",
+        "description": "1-month chart from the current selected quote series.",
         "category_code": "performance_risk",
         "data_type": "sparkline",
         "formatter_code": "sparkline",
@@ -1693,8 +1693,8 @@ FIELD_REGISTRY = [
     },
     {
         "field_key": "last_nav_date",
-        "label": "Last NAV Date",
-        "description": "Most recent canonical NAV fact adopted for the instrument.",
+        "label": "Last Quote Date",
+        "description": "Most recent selected quote-series date adopted for the instrument.",
         "category_code": "monitoring",
         "data_type": "date",
         "formatter_code": "date",

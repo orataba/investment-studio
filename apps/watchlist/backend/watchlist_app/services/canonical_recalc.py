@@ -68,8 +68,24 @@ DEFAULT_TABS = [
     "monitoring",
 ]
 
-RETURN_NAV_BASIS_PRIORITY = ("nav_with_dividend",)
-QUOTE_NAV_BASIS_PRIORITY = ("nav_with_dividend", "nav")
+ORDINARY_NAV_QUOTE_BASIS_PRIORITY = (
+    "official_nav",
+    "nav",
+    "unit_nav",
+    "net_asset_value",
+    "close",
+    "last",
+)
+TOTAL_RETURN_NAV_QUOTE_BASIS_PRIORITY = (
+    "total_return_nav",
+    "nav_with_dividend",
+    "cumulative_nav",
+    "accumulated_nav",
+    "cum_nav",
+    "dividend_adjusted_nav",
+    "reinvested_nav",
+    "adjusted_close",
+)
 ORDINARY_NAV_QUOTE_BASES = {
     "close",
     "last",
@@ -87,6 +103,54 @@ TOTAL_RETURN_NAV_QUOTE_BASES = {
     "dividend_adjusted_nav",
     "reinvested_nav",
     "adjusted_close",
+}
+QUOTE_BASIS_ROW_SLOT = {
+    "official_nav": "nav",
+    "nav": "nav",
+    "unit_nav": "nav",
+    "net_asset_value": "nav",
+    "close": "nav",
+    "last": "nav",
+    "total_return_nav": "nav_with_dividend",
+    "nav_with_dividend": "nav_with_dividend",
+    "cumulative_nav": "nav_with_dividend",
+    "accumulated_nav": "nav_with_dividend",
+    "cum_nav": "nav_with_dividend",
+    "dividend_adjusted_nav": "nav_with_dividend",
+    "reinvested_nav": "nav_with_dividend",
+    "adjusted_close": "nav_with_dividend",
+}
+QUOTE_BASIS_METRIC_FAMILY = {
+    "official_nav": "nav",
+    "nav": "nav",
+    "unit_nav": "nav",
+    "net_asset_value": "nav",
+    "total_return_nav": "nav",
+    "nav_with_dividend": "nav",
+    "cumulative_nav": "nav",
+    "accumulated_nav": "nav",
+    "cum_nav": "nav",
+    "dividend_adjusted_nav": "nav",
+    "reinvested_nav": "nav",
+    "close": "price",
+    "last": "price",
+    "adjusted_close": "price",
+}
+QUOTE_BASIS_LABELS = {
+    "official_nav": "Official NAV",
+    "nav": "NAV",
+    "unit_nav": "Unit NAV",
+    "net_asset_value": "NAV",
+    "close": "Close",
+    "last": "Last Price",
+    "total_return_nav": "Total Return NAV",
+    "nav_with_dividend": "NAV with Dividends",
+    "cumulative_nav": "Cumulative NAV",
+    "accumulated_nav": "Accumulated NAV",
+    "cum_nav": "Cumulative NAV",
+    "dividend_adjusted_nav": "Dividend-Adjusted NAV",
+    "reinvested_nav": "Reinvested NAV",
+    "adjusted_close": "Adjusted Close",
 }
 PEER_METRIC_MIN_SAMPLE = 2
 PEER_COMPARISON_METRICS = [
@@ -280,6 +344,39 @@ def _quote_policy_prefers_ordinary_nav(
         if value in TOTAL_RETURN_NAV_QUOTE_BASES:
             return False
     return False
+
+
+def _normalize_quote_basis(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _quote_basis_row_slot(quote_basis: object) -> str | None:
+    return QUOTE_BASIS_ROW_SLOT.get(_normalize_quote_basis(quote_basis))
+
+
+def _quote_basis_metric_family(quote_basis: object, fallback: object = None) -> str:
+    normalized = _normalize_quote_basis(quote_basis)
+    return str(QUOTE_BASIS_METRIC_FAMILY.get(normalized) or fallback or "").strip().lower()
+
+
+def _quote_basis_label(quote_basis: object) -> str:
+    normalized = _normalize_quote_basis(quote_basis)
+    return QUOTE_BASIS_LABELS.get(normalized, normalized.replace("_", " ").title() or "Quote")
+
+
+def _quote_basis_date_label(quote_basis: object) -> str:
+    metric_family = _quote_basis_metric_family(quote_basis)
+    return "Last Price Date" if metric_family == "price" else "Last NAV Date"
+
+
+def _quote_basis_series_type(quote_basis: object) -> str:
+    normalized = _normalize_quote_basis(quote_basis)
+    metric_family = _quote_basis_metric_family(normalized)
+    if metric_family == "price":
+        return "price"
+    if normalized in TOTAL_RETURN_NAV_QUOTE_BASES:
+        return "total_return_nav"
+    return "nav"
 
 
 def _utcnow() -> datetime:
@@ -1098,28 +1195,12 @@ def _risk_level_label(volatility: float | None) -> str | None:
 
 
 def _group_shared_nav_rows(market_data: list[dict[str, object]]) -> list[dict[str, Any]]:
-    quote_basis_map = {
-        "official_nav": "nav",
-        "nav": "nav",
-        "unit_nav": "nav",
-        "net_asset_value": "nav",
-        "close": "nav",
-        "last": "nav",
-        "total_return_nav": "nav_with_dividend",
-        "nav_with_dividend": "nav_with_dividend",
-        "cumulative_nav": "nav_with_dividend",
-        "accumulated_nav": "nav_with_dividend",
-        "cum_nav": "nav_with_dividend",
-        "dividend_adjusted_nav": "nav_with_dividend",
-        "reinvested_nav": "nav_with_dividend",
-        "adjusted_close": "nav_with_dividend",
-    }
     grouped: dict[date, dict[str, Any]] = {}
     for item in market_data:
         if not isinstance(item, dict):
             continue
-        quote_basis = str(item.get("quote_basis") or "").strip().lower()
-        target_key = quote_basis_map.get(quote_basis)
+        quote_basis = _normalize_quote_basis(item.get("quote_basis"))
+        target_key = _quote_basis_row_slot(quote_basis)
         value = _safe_decimal(item.get("value"))
         as_of_date_raw = str(item.get("as_of_date") or "").strip()
         if target_key is None or value is None or not as_of_date_raw:
@@ -1139,6 +1220,7 @@ def _group_shared_nav_rows(market_data: list[dict[str, object]]) -> list[dict[st
                 "adopted_at": None,
                 "nav": None,
                 "nav_with_dividend": None,
+                "basis_metadata": {},
             },
         )
         if row.get("frequency") is None:
@@ -1146,6 +1228,12 @@ def _group_shared_nav_rows(market_data: list[dict[str, object]]) -> list[dict[st
                 item.get("frequency") or item.get("observation_frequency")
             )
         row[target_key] = value
+        row["basis_metadata"][target_key] = {
+            "metric_family": _quote_basis_metric_family(quote_basis, item.get("metric_family")),
+            "quote_basis": quote_basis,
+            "provider": item.get("provider"),
+            "status": item.get("status"),
+        }
     return [grouped[key] for key in sorted(grouped)]
 
 
@@ -1161,63 +1249,256 @@ def _group_local_nav_rows(nav_facts) -> list[dict[str, Any]]:
                 "adopted_at": item.adopted_at,
                 "nav": None,
                 "nav_with_dividend": None,
+                "basis_metadata": {},
             },
         )
         if item.nav_type == "nav":
             row["nav"] = item.value
+            row["basis_metadata"]["nav"] = {
+                "metric_family": "nav",
+                "quote_basis": "official_nav",
+                "provider": item.source_record_id,
+                "status": "complete",
+            }
         elif item.nav_type == "nav_with_dividend":
             row["nav_with_dividend"] = item.value
+            row["basis_metadata"]["nav_with_dividend"] = {
+                "metric_family": "nav",
+                "quote_basis": "total_return_nav",
+                "provider": item.source_record_id,
+                "status": "complete",
+            }
     return [grouped[key] for key in sorted(grouped)]
 
 
-def _select_nav_basis_rows(
-    rows: list[dict[str, Any]],
+def _shared_quote_points_by_basis(
+    market_data: list[dict[str, object]],
+) -> dict[str, list[dict[str, Any]]]:
+    points_by_basis: dict[str, list[dict[str, Any]]] = {}
+    for item in market_data:
+        if not isinstance(item, dict):
+            continue
+        quote_basis = _normalize_quote_basis(item.get("quote_basis"))
+        if _quote_basis_row_slot(quote_basis) is None:
+            continue
+        value = _safe_decimal(item.get("value"))
+        as_of_date_raw = str(item.get("as_of_date") or "").strip()
+        if value is None or not as_of_date_raw:
+            continue
+        try:
+            as_of_date = date.fromisoformat(as_of_date_raw)
+        except ValueError:
+            continue
+        points_by_basis.setdefault(quote_basis, []).append(
+            {
+                "as_of_date": as_of_date,
+                "value": float(value),
+                "currency": str(item.get("currency") or "USD"),
+                "frequency": normalize_frequency(
+                    item.get("frequency") or item.get("observation_frequency")
+                ),
+                "adopted_at": None,
+                "metric_family": _quote_basis_metric_family(quote_basis, item.get("metric_family")),
+                "quote_basis": quote_basis,
+                "provider": item.get("provider"),
+                "status": item.get("status"),
+                "source": "shared",
+            }
+        )
+    for points in points_by_basis.values():
+        points.sort(key=lambda point: point["as_of_date"])
+    return points_by_basis
+
+
+def _local_quote_points_by_basis(nav_facts) -> dict[str, list[dict[str, Any]]]:
+    points_by_basis: dict[str, list[dict[str, Any]]] = {}
+    for item in nav_facts:
+        if item.nav_type == "nav":
+            quote_basis = "official_nav"
+        elif item.nav_type == "nav_with_dividend":
+            quote_basis = "total_return_nav"
+        else:
+            continue
+        points_by_basis.setdefault(quote_basis, []).append(
+            {
+                "as_of_date": item.as_of_date,
+                "value": float(item.value),
+                "currency": item.currency,
+                "frequency": item.frequency,
+                "adopted_at": item.adopted_at,
+                "metric_family": "nav",
+                "quote_basis": quote_basis,
+                "provider": item.source_record_id,
+                "status": "complete",
+                "source": "local",
+            }
+        )
+    for points in points_by_basis.values():
+        points.sort(key=lambda point: point["as_of_date"])
+    return points_by_basis
+
+
+def _quote_policy_candidates(
+    shared_instrument: dict[str, object] | None,
     *,
+    role: str,
+) -> list[str]:
+    if not isinstance(shared_instrument, dict):
+        return []
+    raw_policy = shared_instrument.get("quote_selection_policy")
+    if not isinstance(raw_policy, dict):
+        return []
+    raw_values = raw_policy.get(role)
+    if not isinstance(raw_values, list):
+        return []
+    candidates: list[str] = []
+    for raw_value in raw_values:
+        quote_basis = _normalize_quote_basis(raw_value)
+        if _quote_basis_row_slot(quote_basis) is not None and quote_basis not in candidates:
+            candidates.append(quote_basis)
+    return candidates
+
+
+def _selection_candidates(
+    shared_instrument: dict[str, object] | None,
+    *,
+    role: str,
+    preference: str,
+    allow_ordinary_nav: bool,
+) -> list[str]:
+    normalized_preference = (preference or "auto").strip().lower()
+    if normalized_preference == "nav_with_dividend":
+        return list(TOTAL_RETURN_NAV_QUOTE_BASIS_PRIORITY)
+    if normalized_preference == "nav":
+        return list(ORDINARY_NAV_QUOTE_BASIS_PRIORITY) if allow_ordinary_nav else []
+
+    candidates = _quote_policy_candidates(shared_instrument, role=role)
+    if not candidates:
+        candidates = (
+            list(TOTAL_RETURN_NAV_QUOTE_BASIS_PRIORITY)
+            + list(ORDINARY_NAV_QUOTE_BASIS_PRIORITY)
+        )
+    if allow_ordinary_nav:
+        return candidates
+    return [basis for basis in candidates if basis in TOTAL_RETURN_NAV_QUOTE_BASES]
+
+
+def _select_quote_series(
+    points_by_basis: dict[str, list[dict[str, Any]]],
+    *,
+    shared_instrument: dict[str, object] | None,
+    role: str,
     preference: str,
     allow_ordinary_nav: bool = False,
 ) -> dict[str, object]:
-    normalized_preference = (preference or "auto").strip().lower()
-    if normalized_preference == "nav_with_dividend":
-        basis_order = (normalized_preference,)
-    elif normalized_preference == "nav":
-        basis_order = ("nav",) if allow_ordinary_nav else ()
-    else:
-        basis_order = QUOTE_NAV_BASIS_PRIORITY if allow_ordinary_nav else RETURN_NAV_BASIS_PRIORITY
-
-    for basis in basis_order:
-        points = [
-            {
-                "as_of_date": row["as_of_date"],
-                "value": float(row[basis]),
-                "currency": row["currency"],
-                "frequency": row.get("frequency"),
-                "adopted_at": row.get("adopted_at"),
-            }
-            for row in rows
-            if row.get(basis) is not None
-        ]
-        if points:
-            return {
-                "nav_basis_type": basis,
-                "nav_basis_source": "shared" if any(row.get("adopted_at") is None for row in rows) else "local",
-                "nav_basis_status": "ready",
-                "points": points,
-                "rows": rows,
-            }
+    for quote_basis in _selection_candidates(
+        shared_instrument,
+        role=role,
+        preference=preference,
+        allow_ordinary_nav=allow_ordinary_nav,
+    ):
+        points = list(points_by_basis.get(quote_basis) or [])
+        if not points:
+            continue
+        row_slot = _quote_basis_row_slot(quote_basis)
+        metric_family = _quote_basis_metric_family(quote_basis, points[-1].get("metric_family"))
+        return {
+            "nav_basis_type": row_slot,
+            "nav_basis_source": str(points[-1].get("source") or "shared"),
+            "nav_basis_status": "ready",
+            "points": points,
+            "rows": [],
+            "selected_role": role,
+            "selected_metric_family": metric_family,
+            "selected_quote_basis": quote_basis,
+            "selected_series_type": _quote_basis_series_type(quote_basis),
+            "selected_series_label": _quote_basis_label(quote_basis),
+            "selected_date_label": _quote_basis_date_label(quote_basis),
+        }
 
     return {
         "nav_basis_type": None,
         "nav_basis_source": "unavailable",
         "nav_basis_status": "unavailable",
         "points": [],
-        "rows": rows,
+        "rows": [],
+        "selected_role": role,
+        "selected_metric_family": None,
+        "selected_quote_basis": None,
+        "selected_series_type": None,
+        "selected_series_label": None,
+        "selected_date_label": None,
     }
 
 
-def _build_chart_payload(instrument_id: str, nav_points: list[dict[str, Any]], currency: str) -> dict[str, object]:
+def _rows_with_selected_series(
+    rows: list[dict[str, Any]],
+    selection: dict[str, object],
+) -> list[dict[str, Any]]:
+    row_slot = selection.get("nav_basis_type")
+    points = selection.get("points")
+    if row_slot not in {"nav", "nav_with_dividend"} or not isinstance(points, list):
+        return rows
+
+    grouped: dict[date, dict[str, Any]] = {row["as_of_date"]: dict(row) for row in rows}
+    for row in grouped.values():
+        row["basis_metadata"] = dict(row.get("basis_metadata") or {})
+
+    for point in points:
+        if not isinstance(point, dict) or not isinstance(point.get("as_of_date"), date):
+            continue
+        point_date = point["as_of_date"]
+        row = grouped.setdefault(
+            point_date,
+            {
+                "as_of_date": point_date,
+                "currency": str(point.get("currency") or "USD"),
+                "frequency": point.get("frequency"),
+                "adopted_at": point.get("adopted_at"),
+                "nav": None,
+                "nav_with_dividend": None,
+                "basis_metadata": {},
+            },
+        )
+        row[row_slot] = _safe_decimal(point.get("value"))
+        row["currency"] = str(point.get("currency") or row.get("currency") or "USD")
+        if row.get("frequency") is None:
+            row["frequency"] = point.get("frequency")
+        row["basis_metadata"][row_slot] = {
+            "metric_family": point.get("metric_family"),
+            "quote_basis": point.get("quote_basis"),
+            "provider": point.get("provider"),
+            "status": point.get("status"),
+        }
+
+    return [grouped[key] for key in sorted(grouped)]
+
+
+def _selection_metadata(selection: dict[str, object]) -> dict[str, object]:
+    return {
+        "role": selection.get("selected_role"),
+        "metric_family": selection.get("selected_metric_family"),
+        "quote_basis": selection.get("selected_quote_basis"),
+        "series_type": selection.get("selected_series_type"),
+        "basis_type": selection.get("nav_basis_type"),
+        "label": selection.get("selected_series_label"),
+        "date_label": selection.get("selected_date_label"),
+    }
+
+
+def _build_chart_payload(
+    instrument_id: str,
+    nav_points: list[dict[str, Any]],
+    currency: str,
+    *,
+    selection: dict[str, object] | None = None,
+) -> dict[str, object]:
+    metadata = _selection_metadata(selection or {})
+    series_label = str(metadata.get("label") or "Quote")
     return {
         "instrument_id": instrument_id,
-        "base_series_type": "nav",
+        "base_series_type": str(metadata.get("series_type") or "quote"),
+        "selected_series": metadata,
         "currency": currency,
         "date_range": (
             {
@@ -1229,7 +1510,10 @@ def _build_chart_payload(instrument_id: str, nav_points: list[dict[str, Any]], c
         ),
         "series": [
             {
-                "name": f"{instrument_id.upper()} NAV",
+                "name": f"{instrument_id.upper()} {series_label}",
+                "metric_family": metadata.get("metric_family"),
+                "quote_basis": metadata.get("quote_basis"),
+                "role": metadata.get("role"),
                 "points": [
                     {"date": point["as_of_date"].isoformat(), "value": round(point["value"], 4)}
                     for point in nav_points
@@ -1278,30 +1562,33 @@ class CanonicalRecalcService:
             if isinstance(shared_instrument, dict)
             else []
         )
+        quote_points_by_basis = (
+            _shared_quote_points_by_basis(list(shared_instrument.get("market_data", [])))
+            if isinstance(shared_instrument, dict)
+            else {}
+        )
         if not nav_rows:
-            nav_rows = _group_local_nav_rows(
-                self.facts_repository.list_nav_facts(
-                    session,
-                    instrument_id=instrument_id,
-                    nav_type=None,
-                    primary_only=True,
-                )
+            local_nav_facts = self.facts_repository.list_nav_facts(
+                session,
+                instrument_id=instrument_id,
+                nav_type=None,
+                primary_only=True,
             )
+            nav_rows = _group_local_nav_rows(local_nav_facts)
+            quote_points_by_basis = _local_quote_points_by_basis(local_nav_facts)
         nav_basis_preference = str(nav_settings.get("nav_basis_preference", "auto"))
-        selection_preference = nav_basis_preference
-        if (
-            nav_basis_preference.strip().lower() == "auto"
-            and _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
-        ):
-            selection_preference = "nav"
-        selection = _select_nav_basis_rows(
-            nav_rows,
-            preference=selection_preference,
+        selection = _select_quote_series(
+            quote_points_by_basis,
+            shared_instrument=shared_instrument,
+            role="total_return",
+            preference=nav_basis_preference,
             allow_ordinary_nav=(
                 _allows_ordinary_return_basis(instrument_type)
-                or selection_preference.strip().lower() == "nav"
+                or _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
             ),
         )
+        nav_rows = _rows_with_selected_series(nav_rows, selection)
+        selection["rows"] = nav_rows
         frequency_context = build_calculation_frequency_context(selection["points"])
         return {
             "instrument_id": instrument_id,
@@ -1310,6 +1597,12 @@ class CanonicalRecalcService:
             "nav_basis_type": selection["nav_basis_type"],
             "nav_basis_source": selection["nav_basis_source"],
             "nav_basis_status": selection["nav_basis_status"],
+            "selected_role": selection.get("selected_role"),
+            "selected_metric_family": selection.get("selected_metric_family"),
+            "selected_quote_basis": selection.get("selected_quote_basis"),
+            "selected_series_type": selection.get("selected_series_type"),
+            "selected_series_label": selection.get("selected_series_label"),
+            "selected_date_label": selection.get("selected_date_label"),
             "calculation_frequency_profile": frequency_context["profile"],
             "compare_settings": {
                 "default_benchmark_instrument_id": nav_settings.get("default_benchmark_instrument_id"),
@@ -1331,20 +1624,40 @@ class CanonicalRecalcService:
                         if row.get("adopted_at") is not None
                         else None
                     ),
+                    "basis_metadata": row.get("basis_metadata") or {},
+                    "selected_basis_type": selection.get("nav_basis_type"),
+                    "selected_value": (
+                        float(row.get(selection["nav_basis_type"]))
+                        if selection.get("nav_basis_type") in {"nav", "nav_with_dividend"}
+                        and row.get(selection["nav_basis_type"]) is not None
+                        else None
+                    ),
+                    "selected_metric_family": selection.get("selected_metric_family"),
+                    "selected_quote_basis": selection.get("selected_quote_basis"),
+                    "selected_series_type": selection.get("selected_series_type"),
+                    "selected_series_label": selection.get("selected_series_label"),
                 }
                 for row in selection["rows"]
             ],
             "series": [
                 {
                     "date": point["as_of_date"].isoformat(),
+                    "value": round(point["value"], 8),
                     "nav": round(point["value"], 8),
+                    "metric_family": point.get("metric_family"),
+                    "quote_basis": point.get("quote_basis"),
+                    "series_type": selection.get("selected_series_type"),
                 }
                 for point in selection["points"]
             ],
             "calculation_series": [
                 {
                     "date": point["as_of_date"].isoformat(),
+                    "value": round(point["value"], 8),
                     "nav": round(point["value"], 8),
+                    "metric_family": point.get("metric_family"),
+                    "quote_basis": point.get("quote_basis"),
+                    "series_type": selection.get("selected_series_type"),
                 }
                 for point in frequency_context["points"]
             ],
@@ -1525,34 +1838,35 @@ class CanonicalRecalcService:
             _group_shared_nav_rows(list((shared_instrument or {}).get("market_data", [])))
             or _group_local_nav_rows(nav_facts)
         )
+        quote_points_by_basis = (
+            _shared_quote_points_by_basis(list((shared_instrument or {}).get("market_data", [])))
+            or _local_quote_points_by_basis(nav_facts)
+        )
         nav_basis_preference = str(nav_settings.get("nav_basis_preference", "auto"))
-        return_basis_preference = nav_basis_preference
-        if (
-            nav_basis_preference.strip().lower() == "auto"
-            and _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
-        ):
-            return_basis_preference = "nav"
-        nav_selection = _select_nav_basis_rows(
-            nav_rows,
-            preference=return_basis_preference,
+        nav_selection = _select_quote_series(
+            quote_points_by_basis,
+            shared_instrument=shared_instrument,
+            role="total_return",
+            preference=nav_basis_preference,
             allow_ordinary_nav=(
                 _allows_ordinary_return_basis(instrument.instrument_type)
-                or return_basis_preference.strip().lower() == "nav"
+                or _quote_policy_prefers_ordinary_nav(shared_instrument, role="total_return")
             ),
         )
+        nav_rows = _rows_with_selected_series(nav_rows, nav_selection)
+        nav_selection["rows"] = nav_rows
         frequency_context = build_calculation_frequency_context(nav_selection["points"])
         calculation_nav_points = frequency_context["points"]
         calculation_frequency_profile = frequency_context["profile"]
-        quote_basis_preference = nav_basis_preference
-        if (
-            nav_basis_preference.strip().lower() == "auto"
-            and _quote_policy_prefers_ordinary_nav(shared_instrument, role="chart")
-        ):
-            quote_basis_preference = "nav"
-        quote_selection = _select_nav_basis_rows(
-            nav_rows,
-            preference=quote_basis_preference,
-            allow_ordinary_nav=True,
+        quote_selection = _select_quote_series(
+            quote_points_by_basis,
+            shared_instrument=shared_instrument,
+            role="chart",
+            preference=nav_basis_preference,
+            allow_ordinary_nav=(
+                _allows_ordinary_return_basis(instrument.instrument_type)
+                or _quote_policy_prefers_ordinary_nav(shared_instrument, role="chart")
+            ),
         )
         holding_snapshot = self.facts_repository.get_current_holding_snapshot(
             session,
@@ -1636,6 +1950,7 @@ class CanonicalRecalcService:
             instrument_id,
             quote_selection["points"],
             quote_selection["points"][-1]["currency"] if quote_selection["points"] else "USD",
+            selection=quote_selection,
         )
         peer_comparison = self._peer_comparison_payload(
             session,
@@ -1980,6 +2295,8 @@ class CanonicalRecalcService:
             if nav_selection["points"]
             else None
         )
+        selected_series = _selection_metadata(nav_selection)
+        date_label = str(selected_series.get("date_label") or "Last Quote Date")
         freshness_status = "fresh" if nav_selection["points"] else "pending_recalc"
         return {
             "instrument_id": instrument.instrument_id,
@@ -1991,8 +2308,29 @@ class CanonicalRecalcService:
             "analyst_stance": getattr(score_snapshot, "analyst_stance", "Unrated"),
             "instrument_attributes": attributes,
             "taxonomy": taxonomy_context,
+            "selected_series": selected_series,
+            "nav_snapshot": {
+                "nav_basis_type": nav_selection.get("nav_basis_type"),
+                "nav_basis_source": nav_selection.get("nav_basis_source"),
+                "selected_role": nav_selection.get("selected_role"),
+                "selected_metric_family": nav_selection.get("selected_metric_family"),
+                "selected_quote_basis": nav_selection.get("selected_quote_basis"),
+                "selected_series_type": nav_selection.get("selected_series_type"),
+                "selected_series_label": nav_selection.get("selected_series_label"),
+                "selected_date_label": nav_selection.get("selected_date_label"),
+                "latest_nav": (
+                    nav_selection["points"][-1]["value"]
+                    if nav_selection.get("nav_basis_type") == "nav" and nav_selection["points"]
+                    else None
+                ),
+                "latest_nav_with_dividend": (
+                    nav_selection["points"][-1]["value"]
+                    if nav_selection.get("nav_basis_type") == "nav_with_dividend" and nav_selection["points"]
+                    else None
+                ),
+            },
             "key_stats": [
-                {"label": "Last NAV Date", "value": last_nav_date or "—"},
+                {"label": date_label, "value": last_nav_date or "—"},
                 {
                     "label": "MTD Return",
                     "value": (
