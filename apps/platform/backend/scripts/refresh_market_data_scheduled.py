@@ -50,6 +50,13 @@ def _parse_args() -> argparse.Namespace:
         default=2,
         help="Retry failed item refreshes this many times before the final summary.",
     )
+    parser.add_argument(
+        "--instrument-id",
+        dest="instrument_ids",
+        action="append",
+        default=[],
+        help="Refresh only these instrument ids. Repeat or use comma-separated values.",
+    )
     parser.add_argument("--json", action="store_true", help="Emit a JSON summary in addition to logs.")
     return parser.parse_args()
 
@@ -76,6 +83,18 @@ def _updated_instrument_ids(results: Iterable[dict[str, object]]) -> list[str]:
     return ids
 
 
+def _requested_instrument_ids(raw_values: Iterable[str]) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values:
+        for item in str(raw_value or "").split(","):
+            instrument_id = item.strip()
+            if instrument_id and instrument_id not in seen:
+                seen.add(instrument_id)
+                ids.append(instrument_id)
+    return ids
+
+
 def _failed_results(results: Iterable[dict[str, object]]) -> list[dict[str, object]]:
     return [
         item
@@ -96,6 +115,52 @@ def _result_from_record(record: dict[str, object]) -> dict[str, object]:
         "status": refresh_status.get("status") or "idle",
         "message": refresh_status.get("message") or "",
     }
+
+
+def _refresh_selected_instruments(
+    *,
+    channel: str,
+    instrument_ids: list[str],
+    updated_by: str | None,
+    full_history: bool,
+) -> list[dict[str, object]]:
+    results: list[dict[str, object]] = []
+    for index, instrument_id in enumerate(instrument_ids, start=1):
+        LOGGER.info(
+            "refreshing selected item channel=%s index=%s/%s instrument_id=%s",
+            channel,
+            index,
+            len(instrument_ids),
+            instrument_id,
+        )
+        record = refresh_market_data(
+            instrument_id=instrument_id,
+            updated_by=updated_by,
+            full_history=full_history,
+            source=channel,
+        )
+        if record is None:
+            result = {
+                "instrument_id": instrument_id,
+                "instrument_name": "",
+                "instrument_type": "",
+                "source_mode": "",
+                "source_api_profile": "",
+                "status": "failed",
+                "message": "Instrument not found.",
+            }
+        else:
+            result = _result_from_record(record)
+        results.append(result)
+        LOGGER.info(
+            "selected item result channel=%s index=%s/%s instrument_id=%s status=%s",
+            channel,
+            index,
+            len(instrument_ids),
+            instrument_id,
+            result["status"],
+        )
+    return results
 
 
 def _retry_failed_results(
@@ -152,20 +217,40 @@ def main() -> int:
     )
     args = _parse_args()
     started_at = datetime.now().astimezone()
-    LOGGER.info("scheduled market data refresh started channel=%s", args.channel)
+    requested_instrument_ids = _requested_instrument_ids(args.instrument_ids)
+    LOGGER.info(
+        "scheduled market data refresh started channel=%s selected_count=%s",
+        args.channel,
+        len(requested_instrument_ids),
+    )
 
     channel_summaries: list[dict[str, object]] = []
     all_results: list[dict[str, object]] = []
     all_updated_ids: list[str] = []
     seen_updated_ids: set[str] = set()
-    for channel in _channels(args.channel):
+    channels = ["configured"] if requested_instrument_ids and args.channel == "all" else _channels(args.channel)
+    for channel in channels:
         LOGGER.info("refreshing channel=%s", channel)
-        response = refresh_market_data_batch(
-            source=channel,
-            updated_by=args.updated_by,
-            full_history=args.full_history,
-            include_inactive=args.include_inactive,
-        )
+        if requested_instrument_ids:
+            results = _refresh_selected_instruments(
+                channel=channel,
+                instrument_ids=requested_instrument_ids,
+                updated_by=args.updated_by,
+                full_history=args.full_history,
+            )
+            response = {
+                "source": channel,
+                "refreshed_count": sum(1 for item in results if item["status"] in UPDATED_STATUSES),
+                "skipped_count": 0,
+                "results": results,
+            }
+        else:
+            response = refresh_market_data_batch(
+                source=channel,
+                updated_by=args.updated_by,
+                full_history=args.full_history,
+                include_inactive=args.include_inactive,
+            )
         results = list(response.get("results", []))
         results = _retry_failed_results(
             channel=channel,
@@ -221,6 +306,7 @@ def main() -> int:
         "finished_at": datetime.now().astimezone().isoformat(),
         "channel": args.channel,
         "channels": channel_summaries,
+        "selected_instrument_count": len(requested_instrument_ids),
         "updated_instrument_count": len(all_updated_ids),
         "failed_item_count": len(failures),
         "downstream_refresh": bool(all_updated_ids and not args.no_downstream_refresh),

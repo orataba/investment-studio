@@ -14,6 +14,17 @@ import { buildPortfolioSectionPath, PLATFORM_HOME_URL } from '../lib/navigation'
 
 const FALLBACK_PORTFOLIOS: PortfolioEntryRecord[] = []
 
+function formatAsOfDate(value: string | null | undefined) {
+  if (!value) {
+    return '-'
+  }
+  const [year, month, day] = value.split('-')
+  if (!year || !month || !day) {
+    return value
+  }
+  return `${year}-${month}-${day}`
+}
+
 export default function PortfoliosPage() {
   const navigate = useNavigate()
   const [portfolios, setPortfolios] = useState<PortfolioEntryRecord[]>([])
@@ -247,7 +258,9 @@ export default function PortfoliosPage() {
             <Link className="portfolio-entry-card-main" to={buildPortfolioSectionPath(portfolio.portfolio_id, '/overview')}>
               <div className="portfolio-entry-card-title-stack">
                 <strong>{portfolio.portfolio_name}</strong>
-                <span>{portfolio.securities_count} Securities</span>
+                <span>
+                  {portfolio.securities_count} Securities | As of {formatAsOfDate(portfolio.as_of_date)}
+                </span>
               </div>
               <div className="portfolio-entry-card-metrics">
                 <strong>{formatCurrency(portfolio.nav, portfolio.base_currency)}</strong>

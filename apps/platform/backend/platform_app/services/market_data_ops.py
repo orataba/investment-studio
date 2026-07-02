@@ -7,6 +7,7 @@ from email.parser import BytesParser
 from email.utils import parseaddr
 from io import BytesIO
 import imaplib
+import logging
 import re
 import socket
 from typing import Any
@@ -36,6 +37,8 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     ts = None
 
+
+LOGGER = logging.getLogger("yungu.market_data_ops")
 
 NAV_IMPORT_HEADER_MAP = {
     "date": "as_of_date",
@@ -1520,9 +1523,22 @@ def refresh_market_data_batch(
         normalized_source = "all"
     instruments = list_instruments(include_inactive=include_inactive)
     targets = [item for item in instruments if _matches_batch_source(item, normalized_source)]
+    LOGGER.info(
+        "market data batch targets source=%s target_count=%s skipped_count=%s",
+        normalized_source,
+        len(targets),
+        len(instruments) - len(targets),
+    )
     results: list[dict[str, object]] = []
-    for instrument in targets:
+    for index, instrument in enumerate(targets, start=1):
         instrument_id = str(instrument.get("instrument_id") or "")
+        LOGGER.info(
+            "market data batch item started source=%s index=%s/%s instrument_id=%s",
+            normalized_source,
+            index,
+            len(targets),
+            instrument_id,
+        )
         refreshed = refresh_market_data(
             instrument_id=instrument_id,
             updated_by=updated_by,
@@ -1530,9 +1546,24 @@ def refresh_market_data_batch(
             source="configured",
         )
         if refreshed is None:
+            LOGGER.info(
+                "market data batch item skipped source=%s index=%s/%s instrument_id=%s",
+                normalized_source,
+                index,
+                len(targets),
+                instrument_id,
+            )
             continue
         source_settings = dict(refreshed.get("source_settings", {}))
         refresh_status = dict(refreshed.get("refresh_status", {}))
+        LOGGER.info(
+            "market data batch item finished source=%s index=%s/%s instrument_id=%s status=%s",
+            normalized_source,
+            index,
+            len(targets),
+            refreshed["instrument_id"],
+            refresh_status.get("status") or "idle",
+        )
         results.append(
             {
                 "instrument_id": refreshed["instrument_id"],

@@ -173,6 +173,10 @@ def test_portfolio_summary_prefers_latest_fresh_complete_snapshot(client) -> Non
     assert portfolio["as_of_date"] == "2026-05-21"
     assert portfolio["nav"] == 101.0
 
+    portfolio_rows = portfolio_store.list_portfolios()
+    yungu_row = next(row for row in portfolio_rows if row["portfolio_id"] == "yungu")
+    assert yungu_row["as_of_date"] == "2026-05-21"
+
     response = client.get("/api/workspace/summary", params={"portfolio_id": "yungu"})
     assert response.status_code == 200
     assert response.json()["as_of_date"] == "2026-05-21"
