@@ -6,13 +6,18 @@ PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 BACKEND_ROOT="${BACKEND_ROOT:-$PROJECT_ROOT/apps/platform/backend}"
 PYTHON_BIN="${PYTHON_BIN:-$(command -v python3)}"
 UNIT_NAME="${UNIT_NAME:-yungu-market-data-refresh}"
-ON_CALENDAR="${ON_CALENDAR:-*-*-* 09:00 Asia/Shanghai}"
+ON_CALENDAR="${ON_CALENDAR:-*-*-* 03:00 Asia/Shanghai}"
 LOG_DIR="${LOG_DIR:-$HOME/.local/state/yungu/logs}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/market-data-refresh.log}"
 CHANNEL="${CHANNEL:-all}"
 UPDATED_BY="${UPDATED_BY:-scheduler}"
 RETRY_FAILED_ATTEMPTS="${RETRY_FAILED_ATTEMPTS:-2}"
 TIMEOUT_START_SEC="${TIMEOUT_START_SEC:-45min}"
+FAIL_ON_ITEM_FAILURE="${FAIL_ON_ITEM_FAILURE:-true}"
+RESTART_ON_FAILURE="${RESTART_ON_FAILURE:-true}"
+RESTART_SEC="${RESTART_SEC:-20min}"
+START_LIMIT_INTERVAL_SEC="${START_LIMIT_INTERVAL_SEC:-3h}"
+START_LIMIT_BURST="${START_LIMIT_BURST:-3}"
 PERSISTENT="${PERSISTENT:-false}"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
@@ -37,10 +42,20 @@ escaped_log_file="$(printf '%q' "$LOG_FILE")"
 escaped_channel="$(printf '%q' "$CHANNEL")"
 escaped_updated_by="$(printf '%q' "$UPDATED_BY")"
 escaped_retry_failed_attempts="$(printf '%q' "$RETRY_FAILED_ATTEMPTS")"
+fail_on_item_failure_arg=""
+if [[ "$FAIL_ON_ITEM_FAILURE" == "true" ]]; then
+  fail_on_item_failure_arg=" --fail-on-item-failure"
+fi
+restart_policy="no"
+if [[ "$RESTART_ON_FAILURE" == "true" ]]; then
+  restart_policy="on-failure"
+fi
 
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Yungu scheduled market data refresh
+StartLimitIntervalSec=$START_LIMIT_INTERVAL_SEC
+StartLimitBurst=$START_LIMIT_BURST
 
 [Service]
 Type=oneshot
@@ -48,12 +63,14 @@ WorkingDirectory=$BACKEND_ROOT
 Environment=PYTHONPATH=$BACKEND_ROOT
 Environment=PYTHONNOUSERSITE=1
 TimeoutStartSec=$TIMEOUT_START_SEC
-ExecStart=/bin/bash -lc 'cd $escaped_backend_root && PYTHONPATH=$escaped_backend_root $escaped_python_bin $escaped_backend_root/scripts/refresh_market_data_scheduled.py --channel $escaped_channel --updated-by $escaped_updated_by --retry-failed-attempts $escaped_retry_failed_attempts >> $escaped_log_file 2>&1'
+Restart=$restart_policy
+RestartSec=$RESTART_SEC
+ExecStart=/bin/bash -lc 'cd $escaped_backend_root && PYTHONPATH=$escaped_backend_root $escaped_python_bin $escaped_backend_root/scripts/refresh_market_data_scheduled.py --channel $escaped_channel --updated-by $escaped_updated_by --retry-failed-attempts $escaped_retry_failed_attempts$fail_on_item_failure_arg >> $escaped_log_file 2>&1'
 EOF
 
 cat > "$TIMER_FILE" <<EOF
 [Unit]
-Description=Run Yungu market data refresh daily at 09:00
+Description=Run Yungu market data refresh daily at 03:00
 
 [Timer]
 OnCalendar=$ON_CALENDAR

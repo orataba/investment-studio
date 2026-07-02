@@ -57,7 +57,7 @@ PYTHON_BIN=/home/shaw/miniconda3/envs/us_sector_rotation/bin/python \
   infra/systemd/install_market_data_refresh_timer.sh
 ```
 
-服务器部署时在服务器项目目录执行同一个脚本，并把 `PYTHON_BIN` 指向服务器后端运行环境。timer 按 `*-*-* 09:00 Asia/Shanghai` 运行，日志追加到 `~/.local/state/yungu/logs/market-data-refresh.log`。
+服务器部署时在服务器项目目录执行同一个脚本，并把 `PYTHON_BIN` 指向服务器后端运行环境。timer 默认按 `*-*-* 03:00 Asia/Shanghai` 运行，日志追加到 `~/.local/state/yungu/logs/market-data-refresh.log`。脚本会先对失败 instrument 做内部重试；若仍存在失败或阻塞项，systemd 会按 `Restart=on-failure` 做整批重试。
 
 ## Downstream Refresh
 
