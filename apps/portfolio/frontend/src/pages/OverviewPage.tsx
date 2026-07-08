@@ -290,6 +290,19 @@ function periodReturnFromValuePoints(
   return anchorPoint && anchorPoint.value !== 0 ? latestPoint.value / anchorPoint.value - 1 : null
 }
 
+function latestValuePointOnOrBefore(
+  points: PortfolioInstrumentPriceChartPoint[],
+  targetDate: string,
+): PortfolioInstrumentPriceChartPoint | null {
+  let selected: PortfolioInstrumentPriceChartPoint | null = null
+  points.forEach((point) => {
+    if (point.date <= targetDate) {
+      selected = point
+    }
+  })
+  return selected
+}
+
 function sampleStandardDeviation(values: number[]) {
   if (values.length < 2) {
     return null
@@ -373,13 +386,22 @@ function buildDrawdownMetrics(points: PortfolioInstrumentPriceChartPoint[]) {
   return { currentDrawdown, maxDrawdown }
 }
 
-function buildBenchmarkMetrics(points: PortfolioInstrumentPriceChartPoint[]) {
+function buildBenchmarkMetrics(
+  points: PortfolioInstrumentPriceChartPoint[],
+  portfolioInceptionDate?: string | null,
+  portfolioEndDate?: string | null,
+) {
   const sortedPoints = points
-    .filter((point) => Number.isFinite(point.value))
+    .filter((point) => Number.isFinite(point.value) && (!portfolioEndDate || point.date <= portfolioEndDate))
     .slice()
     .sort((left, right) => left.date.localeCompare(right.date))
-  const latestPoint = sortedPoints[sortedPoints.length - 1]
-  const firstPoint = sortedPoints[0]
+  const firstPoint = portfolioInceptionDate
+    ? latestValuePointOnOrBefore(sortedPoints, portfolioInceptionDate)
+    : sortedPoints[0]
+  const metricPoints = firstPoint
+    ? sortedPoints.filter((point) => point.date >= firstPoint.date)
+    : []
+  const latestPoint = metricPoints[metricPoints.length - 1]
   const latestDate = latestPoint ? dateFromString(latestPoint.date) : null
   if (!firstPoint || !latestPoint || !latestDate) {
     return null
@@ -389,20 +411,21 @@ function buildBenchmarkMetrics(points: PortfolioInstrumentPriceChartPoint[]) {
   const yearStart = new Date(latestDate.getFullYear(), 0, 1)
   const priorMonthEnd = addDays(monthStart, -1)
   const priorYearEnd = addDays(yearStart, -1)
-  const dailyReturns = sortedPoints
+  const dailyReturns = metricPoints
     .slice(1)
     .map((point, index) => {
-      const previous = sortedPoints[index]
+      const previous = metricPoints[index]
       return previous.value !== 0 ? { date: point.date, value: point.value / previous.value - 1 } : null
     })
     .filter((value): value is { date: string; value: number } => value != null)
   const volatility = sampleStandardDeviation(dailyReturns.map((point) => point.value))
+  const metricStartDate = portfolioInceptionDate ?? firstPoint.date
   const periodsPerYear = annualizationPeriodsPerYear(
     dailyReturns.map((point) => point.date),
     dailyReturns.length,
-    firstPoint.date,
+    metricStartDate,
   )
-  const startDate = dateFromString(firstPoint.date)
+  const startDate = dateFromString(metricStartDate)
   const daySpan = startDate ? Math.max(1, (latestDate.getTime() - startDate.getTime()) / 86_400_000) : null
   const sinceInception = firstPoint.value !== 0 ? latestPoint.value / firstPoint.value - 1 : null
   const annualizedReturn =
@@ -411,12 +434,12 @@ function buildBenchmarkMetrics(points: PortfolioInstrumentPriceChartPoint[]) {
       : null
   const annualizedVolatility = volatility == null || periodsPerYear == null ? null : volatility * Math.sqrt(periodsPerYear)
   const annualizedMean = annualizedMeanReturn(dailyReturns.map((point) => point.value), periodsPerYear)
-  const drawdowns = buildDrawdownMetrics(sortedPoints)
+  const drawdowns = buildDrawdownMetrics(metricPoints)
 
   return {
-    oneWeek: periodReturnFromValuePoints(sortedPoints, formatDateKey(addDays(latestDate, -7))),
-    mtd: periodReturnFromValuePoints(sortedPoints, formatDateKey(priorMonthEnd), false),
-    ytd: periodReturnFromValuePoints(sortedPoints, formatDateKey(priorYearEnd), false),
+    oneWeek: periodReturnFromValuePoints(metricPoints, formatDateKey(addDays(latestDate, -7))),
+    mtd: periodReturnFromValuePoints(metricPoints, formatDateKey(priorMonthEnd), false),
+    ytd: periodReturnFromValuePoints(metricPoints, formatDateKey(priorYearEnd), false),
     sinceInception,
     annualizedReturn,
     annualizedVolatility,
@@ -867,9 +890,14 @@ export default function OverviewPage() {
   }))
   const selectedBenchmarkInstrument =
     benchmarkInstruments.find((instrument) => instrument.instrument_id === benchmarkInstrumentId) ?? null
+  const portfolioInceptionDate =
+    performanceWorkspace?.summary.start_date ??
+    performanceWorkspace?.daily_series.find((point) => point.ending_nav != null)?.as_of_date ??
+    null
+  const benchmarkEndDate = performanceWorkspace?.summary.end_date ?? holdingsWorkspace?.as_of_date ?? summary?.as_of_date ?? null
   const benchmarkMetrics = useMemo(
-    () => buildBenchmarkMetrics(benchmarkChart?.points ?? []) ?? null,
-    [benchmarkChart],
+    () => buildBenchmarkMetrics(benchmarkChart?.points ?? [], portfolioInceptionDate, benchmarkEndDate) ?? null,
+    [benchmarkChart, benchmarkEndDate, portfolioInceptionDate],
   )
   const portfolioReturnMetrics = useMemo(
     () => buildPortfolioReturnMetrics(performanceWorkspace?.daily_series ?? []),
