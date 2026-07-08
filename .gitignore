@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 .env
 .env.*
+!.env.example
 .local-pg/
 node_modules/
 dist/
@@ -16,6 +17,5 @@ build/
 *.sqlite3
 apps/portfolio/backend/research_outputs/
 apps/watchlist/backups/
-nav/
 ref/
 *:Zone.Identifier

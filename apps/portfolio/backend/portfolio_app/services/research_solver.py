@@ -1844,7 +1844,7 @@ def _periodic_nav_series(
         max_stale_days = _max_period_staleness_days(calculation_frequency)
         for target_date, (point_date, _point_value) in rows.items():
             stale_days = (target_date - point_date).days
-            if stale_days > max_stale_days:
+            if stale_days >= max_stale_days:
                 raise ValueError(
                     f"{calculation_frequency.title()} research alignment found a stale observation: "
                     f"period ending {target_date.isoformat()} uses {point_date.isoformat()} "

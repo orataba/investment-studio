@@ -14,6 +14,8 @@
    `Platform / Watchlist / Portfolio / instrument-core / instrument_registry` 之间的当前职责和数据边界。
 5. [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md)
    当前前端设计基线：白底数据终端、tab-to-content 节奏、字体层级和跨 app UI 边界。
+6. [MAC_MIGRATION_FREEZE.md](./MAC_MIGRATION_FREEZE.md)
+   WSL 到 Mac 迁移冻结清单：Git 承载范围、数据 dump、NAV 附件、服务重建和秘密迁移边界。
 
 按 app 深入时：
 
@@ -27,7 +29,7 @@
 - 描述当前真实运行方式，不保留过程复盘、临时排查记录或旧架构兼容说明。
 - `packages/ui` 已经进入当前路径，先承载语言选择与跨 app 前端共享上下文；不是纯占位目录。
 - 前端视觉调整以 [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md) 为准；不要再引入米黄、沙色或暖灰页面背景。
-- `nav/`、runtime DB、构建产物和缓存都按本地工作产物处理，不作为文档或源码资产提交。
+- `nav/`、`data/migration/` 和 `.env.example` 是冻结迁移资产；runtime DB、构建产物、依赖目录、缓存和真实 `.env` 秘密文件仍按本地工作产物处理。
 
 提交前快速检查：
 

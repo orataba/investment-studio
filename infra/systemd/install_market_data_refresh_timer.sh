@@ -6,7 +6,7 @@ PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 BACKEND_ROOT="${BACKEND_ROOT:-$PROJECT_ROOT/apps/platform/backend}"
 PYTHON_BIN="${PYTHON_BIN:-$(command -v python3)}"
 UNIT_NAME="${UNIT_NAME:-yungu-market-data-refresh}"
-ON_CALENDAR="${ON_CALENDAR:-*-*-* 03:00 Asia/Shanghai}"
+ON_CALENDAR="${ON_CALENDAR:-*-*-* 09:00 Asia/Shanghai}"
 LOG_DIR="${LOG_DIR:-$HOME/.local/state/yungu/logs}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/market-data-refresh.log}"
 CHANNEL="${CHANNEL:-all}"
@@ -30,6 +30,12 @@ if [[ ! -f "$BACKEND_ROOT/scripts/refresh_market_data_scheduled.py" ]]; then
   exit 1
 fi
 
+PROJECT_INSTRUMENT_CORE="$PROJECT_ROOT/packages/instrument-core/python"
+PYTHONPATH_VALUE="$BACKEND_ROOT"
+if [[ -d "$PROJECT_INSTRUMENT_CORE" ]]; then
+  PYTHONPATH_VALUE="$BACKEND_ROOT:$PROJECT_INSTRUMENT_CORE"
+fi
+
 USER_SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$USER_SYSTEMD_DIR" "$LOG_DIR"
 
@@ -38,6 +44,7 @@ TIMER_FILE="$USER_SYSTEMD_DIR/$UNIT_NAME.timer"
 
 escaped_backend_root="$(printf '%q' "$BACKEND_ROOT")"
 escaped_python_bin="$(printf '%q' "$PYTHON_BIN")"
+escaped_pythonpath_value="$(printf '%q' "$PYTHONPATH_VALUE")"
 escaped_log_file="$(printf '%q' "$LOG_FILE")"
 escaped_channel="$(printf '%q' "$CHANNEL")"
 escaped_updated_by="$(printf '%q' "$UPDATED_BY")"
@@ -60,17 +67,17 @@ StartLimitBurst=$START_LIMIT_BURST
 [Service]
 Type=oneshot
 WorkingDirectory=$BACKEND_ROOT
-Environment=PYTHONPATH=$BACKEND_ROOT
+Environment=PYTHONPATH=$PYTHONPATH_VALUE
 Environment=PYTHONNOUSERSITE=1
 TimeoutStartSec=$TIMEOUT_START_SEC
 Restart=$restart_policy
 RestartSec=$RESTART_SEC
-ExecStart=/bin/bash -lc 'cd $escaped_backend_root && PYTHONPATH=$escaped_backend_root $escaped_python_bin $escaped_backend_root/scripts/refresh_market_data_scheduled.py --channel $escaped_channel --updated-by $escaped_updated_by --retry-failed-attempts $escaped_retry_failed_attempts$fail_on_item_failure_arg >> $escaped_log_file 2>&1'
+ExecStart=/bin/bash -lc 'cd $escaped_backend_root && PYTHONPATH=$escaped_pythonpath_value $escaped_python_bin $escaped_backend_root/scripts/refresh_market_data_scheduled.py --channel $escaped_channel --updated-by $escaped_updated_by --retry-failed-attempts $escaped_retry_failed_attempts$fail_on_item_failure_arg >> $escaped_log_file 2>&1'
 EOF
 
 cat > "$TIMER_FILE" <<EOF
 [Unit]
-Description=Run Yungu market data refresh daily at 03:00
+Description=Run Yungu market data refresh
 
 [Timer]
 OnCalendar=$ON_CALENDAR

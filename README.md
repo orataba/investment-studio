@@ -29,7 +29,10 @@ yungu/
     instrument-core/
     ui/
     copilot/
+  data/
+    migration/
   docs/
+  nav/
 ```
 
 ## 文档入口
@@ -40,6 +43,8 @@ yungu/
   面向公司同事的使用手册，覆盖 Platform / Watchlist / Portfolio 的日常操作边界。
 - [docs/FRONTEND_DESIGN_BASELINE.md](./docs/FRONTEND_DESIGN_BASELINE.md)
   当前前端设计基线，约束白底数据终端、字体层级、tabs 与内容区节奏。
+- [docs/MAC_MIGRATION_FREEZE.md](./docs/MAC_MIGRATION_FREEZE.md)
+  WSL 到 Mac 迁移冻结清单，记录 Git 承载范围、本地状态边界和恢复步骤。
 - [apps/platform/README.md](./apps/platform/README.md)
   Platform app 的职责、启动命令和前端运行时配置。
 - [apps/watchlist/README.md](./apps/watchlist/README.md)
@@ -141,6 +146,8 @@ npm --prefix apps/watchlist/frontend run build
 
 ## 仓库卫生
 
-- `nav/` 是本地 NAV / Excel 导入落盘目录，不再作为源码提交；需要导入时临时放入本机目录。
+- `nav/` 是冻结迁移要保留的 NAV 附件图片数据，已纳入 Git；后续新增大批量原始材料前先确认是否应进入仓库。
+- `data/migration/` 存放冻结迁移用的可恢复数据库 dump 与校验文件；不要把 raw PostgreSQL data directory 放进 Git。
 - `node_modules/`、`dist/`、`*.db`、`*.sqlite*`、`__pycache__/`、`.pytest_cache/` 都是本地产物，不应进入提交。
+- `.local-pg/`、真实 `.env`/`.env.*`、`ref/`、虚拟环境和用户级 `systemd --user` unit 都是本机状态，不作为跨机器 Git 迁移载体；`.env.example` 模板保留在 Git 里用于重建配置。
 - 提交前至少跑一次三个后端测试和三个前端 build；PostgreSQL cross-schema 行为按需补跑 [docs/DATABASE_WORKFLOW.md](./docs/DATABASE_WORKFLOW.md) 里的 integration tests。
