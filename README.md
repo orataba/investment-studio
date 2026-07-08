@@ -86,6 +86,8 @@ yungu/
 (cd infra/postgres && docker compose up -d)
 ```
 
+新 Mac 从零恢复冻结数据时，按 [docs/MAC_MIGRATION_FREEZE.md](./docs/MAC_MIGRATION_FREEZE.md) 的 `Fresh Mac Bring-Up` 执行：先启动 PostgreSQL，再校验并 `pg_restore` `data/migration/` 里的 dump。不要在恢复后运行 `./infra/postgres/rebuild_local_schemas.sh`，除非明确要清空冻结数据并重建空 schema。
+
 默认单库 schema 划分：
 
 - `instrument_registry`
