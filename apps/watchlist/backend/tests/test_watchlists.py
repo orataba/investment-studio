@@ -1201,7 +1201,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
     )
     assert recalc_archived_peer_response.status_code == 200
 
-    from yungu_instrument_core import instrument_store as shared_store
+    from portfolio_ops_instrument_core import instrument_store as shared_store
     from watchlist_app.db import session as session_module
 
     shared_store.archive_instrument(

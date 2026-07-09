@@ -9,8 +9,8 @@ import {
   type ReactNode,
 } from 'react'
 
-export const LANGUAGE_STORAGE_KEY = 'yungu.language'
-export const LANGUAGE_COOKIE_NAME = 'yungu_language'
+export const LANGUAGE_STORAGE_KEY = 'portfolio_ops.language'
+export const LANGUAGE_COOKIE_NAME = 'portfolio_ops_language'
 
 export const supportedLanguages = [
   { value: 'en', label: 'English', shortLabel: 'EN', htmlLang: 'en' },
@@ -534,7 +534,7 @@ function shouldIgnoreElement(element: Element | null) {
   }
   return Boolean(
     element.closest(
-      'script, style, code, pre, textarea, [contenteditable="true"], [data-yungu-i18n-ignore="true"]',
+      'script, style, code, pre, textarea, [contenteditable="true"], [data-portfolio-ops-i18n-ignore="true"]',
     ),
   )
 }
@@ -727,7 +727,7 @@ export function LanguageSelector() {
   const { language, setLanguage, t } = useLanguage()
 
   return (
-    <label className="language-switcher" data-yungu-i18n-ignore="true">
+    <label className="language-switcher" data-portfolio-ops-i18n-ignore="true">
       <span>{t('Language')}</span>
       <select
         value={language}

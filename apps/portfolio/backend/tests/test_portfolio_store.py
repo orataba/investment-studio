@@ -19,8 +19,8 @@ def test_reset_store_without_payload_leaves_store_empty() -> None:
     portfolio_store.reset_store()
 
     assert portfolio_store.list_portfolios() == []
-    assert portfolio_store.list_accounts("yungu") == []
-    assert portfolio_store.list_transactions("yungu") == []
+    assert portfolio_store.list_accounts("portfolio-ops") == []
+    assert portfolio_store.list_transactions("portfolio-ops") == []
 
 
 def test_reset_store_round_trips_manual_instrument_universe() -> None:
@@ -133,7 +133,7 @@ def test_portfolio_summary_prefers_latest_fresh_complete_snapshot(client) -> Non
     with session_factory() as session:
         session.add(
             _seed_daily_snapshot(
-                portfolio_id="yungu",
+                portfolio_id="portfolio-ops",
                 as_of_date=date(2026, 5, 20),
                 nav=100.0,
                 daily_twr=0.02,
@@ -141,7 +141,7 @@ def test_portfolio_summary_prefers_latest_fresh_complete_snapshot(client) -> Non
         )
         session.add(
             _seed_daily_snapshot(
-                portfolio_id="yungu",
+                portfolio_id="portfolio-ops",
                 as_of_date=date(2026, 5, 21),
                 nav=101.0,
                 daily_twr=0.01,
@@ -150,16 +150,16 @@ def test_portfolio_summary_prefers_latest_fresh_complete_snapshot(client) -> Non
         )
         session.add(
             _seed_daily_snapshot(
-                portfolio_id="yungu",
+                portfolio_id="portfolio-ops",
                 as_of_date=date(2026, 5, 22),
                 nav=102.0,
                 daily_twr=0.01,
                 stale_price_flag=True,
             )
         )
-        state = session.get(PortfolioCalculationStateModel, "yungu")
+        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
         if state is None:
-            state = PortfolioCalculationStateModel(portfolio_id="yungu", daily_snapshot_status="current")
+            state = PortfolioCalculationStateModel(portfolio_id="portfolio-ops", daily_snapshot_status="current")
             session.add(state)
         state.daily_snapshot_status = "current"
         state.refreshed_from = date(2026, 5, 20)
@@ -168,20 +168,20 @@ def test_portfolio_summary_prefers_latest_fresh_complete_snapshot(client) -> Non
         state.refresh_request_id = None
         session.commit()
 
-    portfolio = portfolio_store.get_portfolio("yungu")
+    portfolio = portfolio_store.get_portfolio("portfolio-ops")
     assert portfolio is not None
     assert portfolio["as_of_date"] == "2026-05-21"
     assert portfolio["nav"] == 101.0
 
     portfolio_rows = portfolio_store.list_portfolios()
-    yungu_row = next(row for row in portfolio_rows if row["portfolio_id"] == "yungu")
-    assert yungu_row["as_of_date"] == "2026-05-21"
+    portfolio_ops_row = next(row for row in portfolio_rows if row["portfolio_id"] == "portfolio-ops")
+    assert portfolio_ops_row["as_of_date"] == "2026-05-21"
 
-    response = client.get("/api/workspace/summary", params={"portfolio_id": "yungu"})
+    response = client.get("/api/workspace/summary", params={"portfolio_id": "portfolio-ops"})
     assert response.status_code == 200
     assert response.json()["as_of_date"] == "2026-05-21"
 
-    holdings_response = client.get("/api/workspace/holdings", params={"portfolio_id": "yungu"})
+    holdings_response = client.get("/api/workspace/holdings", params={"portfolio_id": "portfolio-ops"})
     assert holdings_response.status_code == 200
     holdings_payload = holdings_response.json()
     assert holdings_payload["as_of_date"] == "2026-05-21"
@@ -189,7 +189,7 @@ def test_portfolio_summary_prefers_latest_fresh_complete_snapshot(client) -> Non
     assert holdings_payload["forward_risk"]["status"] in {"ok", "unavailable"}
     assert all("forward_risk_status" in row for row in holdings_payload["rows"])
 
-    performance_response = client.get("/api/portfolios/yungu/performance", params={"end_date": "2026-05-21"})
+    performance_response = client.get("/api/portfolios/portfolio-ops/performance", params={"end_date": "2026-05-21"})
     assert performance_response.status_code == 200
     assert performance_response.json()["summary"]["end_date"] == "2026-05-21"
 

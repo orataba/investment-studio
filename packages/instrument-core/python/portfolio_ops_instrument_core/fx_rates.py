@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from yungu_instrument_core.instrument_store import (
+from portfolio_ops_instrument_core.instrument_store import (
     SessionFactory,
     get_instrument,
     upsert_market_data,

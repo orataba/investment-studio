@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from yungu_instrument_core import instrument_store as shared_store
+from portfolio_ops_instrument_core import instrument_store as shared_store
 
 from platform_app.db.session import get_session_factory
 

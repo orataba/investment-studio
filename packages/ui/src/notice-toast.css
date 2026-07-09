@@ -1,4 +1,4 @@
-.yungu-notice-toast {
+.portfolio-ops-notice-toast {
   position: fixed;
   top: 72px;
   right: 24px;
@@ -14,25 +14,25 @@
   font-size: 13px;
   line-height: 1.45;
   pointer-events: none;
-  animation: yungu-notice-toast-enter 140ms ease-out;
+  animation: portfolio-ops-notice-toast-enter 140ms ease-out;
 }
 
-.yungu-notice-toast-success {
+.portfolio-ops-notice-toast-success {
   border-left-color: #18653b;
   color: #14532d;
 }
 
-.yungu-notice-toast-error {
+.portfolio-ops-notice-toast-error {
   border-left-color: #8f1d1d;
   color: #8f1d1d;
 }
 
-.yungu-notice-toast-info {
+.portfolio-ops-notice-toast-info {
   border-left-color: #64748b;
   color: #1f2937;
 }
 
-@keyframes yungu-notice-toast-enter {
+@keyframes portfolio-ops-notice-toast-enter {
   from {
     opacity: 0;
     transform: translateY(-6px);
@@ -45,7 +45,7 @@
 }
 
 @media (max-width: 640px) {
-  .yungu-notice-toast {
+  .portfolio-ops-notice-toast {
     top: 64px;
     right: 16px;
   }

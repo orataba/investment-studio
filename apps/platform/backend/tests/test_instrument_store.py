@@ -129,8 +129,8 @@ def test_normalize_store_does_not_reinsert_missing_default_instruments() -> None
 def isolated_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     database_path = tmp_path / "platform.db"
     database_url = f"sqlite+pysqlite:///{database_path}"
-    monkeypatch.setenv("YUNGU_PLATFORM_DATABASE_URL", database_url)
-    monkeypatch.setenv("YUNGU_PLATFORM_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("PORTFOLIO_OPS_PLATFORM_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA", "")
 
     from platform_app.core import settings as settings_module
     from platform_app.db import session as session_module

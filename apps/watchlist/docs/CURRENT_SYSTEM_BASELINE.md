@@ -103,9 +103,9 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 
 ## 6. 当前默认存储
 
-- 运行时数据库连接：`FTV2_DATABASE_URL`
-- 迁移连接：`FTV2_ALEMBIC_DATABASE_URL`
-- schema：`FTV2_DATABASE_SCHEMA`
+- 运行时数据库连接：`PORTFOLIO_OPS_WATCHLIST_DATABASE_URL`
+- 迁移连接：`PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL`
+- schema：`PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA`
 - 迁移目录：`backend/alembic`
 - 初始化方式：只执行 `alembic upgrade head`
 

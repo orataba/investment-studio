@@ -1,18 +1,18 @@
 :root {
-  --yungu-font-sans-en: "Aptos", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  --yungu-font-sans-zh: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Aptos", "Inter", "Segoe UI", sans-serif;
-  --yungu-font-mono: "Aptos Mono", "Cascadia Mono", "Consolas", "SFMono-Regular", monospace;
-  --yungu-font-sans: var(--yungu-font-sans-en);
+  --portfolio-ops-font-sans-en: "Aptos", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --portfolio-ops-font-sans-zh: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Aptos", "Inter", "Segoe UI", sans-serif;
+  --portfolio-ops-font-mono: "Aptos Mono", "Cascadia Mono", "Consolas", "SFMono-Regular", monospace;
+  --portfolio-ops-font-sans: var(--portfolio-ops-font-sans-en);
 }
 
 :root[data-language='en'],
 :root[lang='en'] {
-  --yungu-font-sans: var(--yungu-font-sans-en);
+  --portfolio-ops-font-sans: var(--portfolio-ops-font-sans-en);
 }
 
 :root[data-language='zh-Hans'],
 :root[lang^='zh'] {
-  --yungu-font-sans: var(--yungu-font-sans-zh);
+  --portfolio-ops-font-sans: var(--portfolio-ops-font-sans-zh);
 }
 
 :root,
@@ -21,13 +21,13 @@ button,
 input,
 select,
 textarea {
-  font-family: var(--yungu-font-sans);
+  font-family: var(--portfolio-ops-font-sans);
 }
 
 code,
 kbd,
 pre {
-  font-family: var(--yungu-font-mono);
+  font-family: var(--portfolio-ops-font-mono);
 }
 
 h1,

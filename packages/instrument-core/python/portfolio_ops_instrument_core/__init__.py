@@ -1,7 +1,4 @@
-from .models import InstrumentCore, InstrumentIdentifier, MarketDataPoint, QuoteSelectionPolicy
-
-__all__ = ["InstrumentCore", "InstrumentIdentifier", "MarketDataPoint", "QuoteSelectionPolicy"]
-from yungu_instrument_core.models import (
+from portfolio_ops_instrument_core.models import (
     InstrumentCore,
     InstrumentIdentifier,
     DataStatus,

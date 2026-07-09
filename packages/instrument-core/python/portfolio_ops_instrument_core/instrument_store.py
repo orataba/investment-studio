@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
-from yungu_instrument_core.db_models import (
+from portfolio_ops_instrument_core.db_models import (
     Instrument,
     InstrumentIdentifier,
     InstrumentMarketData,

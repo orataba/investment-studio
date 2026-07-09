@@ -1583,7 +1583,7 @@ export default function WatchlistsPage() {
       return
     }
     event.dataTransfer.setData('text/plain', instrumentId)
-    event.dataTransfer.setData('application/x-yungu-instrument-id', instrumentId)
+    event.dataTransfer.setData('application/x-portfolio-ops-instrument-id', instrumentId)
     event.dataTransfer.effectAllowed = 'move'
     setDraggingInstrumentId(instrumentId)
   }
@@ -1612,7 +1612,7 @@ export default function WatchlistsPage() {
     event.preventDefault()
     setGroupDropTargetKey(null)
     const instrumentId =
-      event.dataTransfer.getData('application/x-yungu-instrument-id') ||
+      event.dataTransfer.getData('application/x-portfolio-ops-instrument-id') ||
       event.dataTransfer.getData('text/plain') ||
       draggingInstrumentId ||
       ''

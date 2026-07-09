@@ -21,8 +21,8 @@ from tests.store_fixture import TEST_PORTFOLIO_STORE
 
 from portfolio_app.api.routes import transactions as transaction_routes
 from portfolio_app.services import instrument_charts, ledger, performance, portfolio_store
-from yungu_instrument_core import instrument_store as shared_store
-from yungu_instrument_core.db_models import InstrumentRegistryBase
+from portfolio_ops_instrument_core import instrument_store as shared_store
+from portfolio_ops_instrument_core.db_models import InstrumentRegistryBase
 
 
 def _market_point(
@@ -252,9 +252,9 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     database_path = tmp_path / "portfolio.db"
     database_url = f"sqlite+pysqlite:///{database_path}"
     research_outputs_root = tmp_path / "research_outputs"
-    monkeypatch.setenv("YUNGU_PORTFOLIO_DATABASE_URL", database_url)
-    monkeypatch.setenv("YUNGU_PORTFOLIO_DATABASE_SCHEMA", "")
-    monkeypatch.setenv("YUNGU_PORTFOLIO_RESEARCH_OUTPUTS_ROOT", str(research_outputs_root))
+    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("PORTFOLIO_OPS_PORTFOLIO_RESEARCH_OUTPUTS_ROOT", str(research_outputs_root))
 
     from portfolio_app.core import settings as settings_module
     from portfolio_app.db import session as session_module

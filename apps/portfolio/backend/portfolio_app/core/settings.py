@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: str = "development"
     frontend_url: str = "http://127.0.0.1:5174"
-    database_url: str = "postgresql+psycopg://yungu:yungu@127.0.0.1:5432/yungu"
+    database_url: str = "postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops"
     alembic_database_url: str | None = None
     database_schema: str | None = "portfolio"
     research_outputs_root: Path = WORKSPACE_ROOT / "backend" / "research_outputs"
@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://127.0.0.1:5174", "http://localhost:5174"]
 
     model_config = SettingsConfigDict(
-        env_prefix="YUNGU_PORTFOLIO_",
+        env_prefix="PORTFOLIO_OPS_PORTFOLIO_",
         env_file=WORKSPACE_ROOT / "backend" / ".env",
         extra="ignore",
     )

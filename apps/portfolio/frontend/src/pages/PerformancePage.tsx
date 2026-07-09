@@ -175,8 +175,8 @@ type CalculationTableRow =
     }
 
 const LOCKED_CALCULATION_COLUMN: CalculationColumnKey = 'line'
-const PERFORMANCE_WINDOW_STORAGE_KEY = 'yungu.portfolio.performance.window.v1'
-const CALCULATION_TABLE_VIEWS_STORAGE_KEY = 'yungu.portfolio.performance.calculation.views.v1'
+const PERFORMANCE_WINDOW_STORAGE_KEY = 'portfolio_ops.portfolio.performance.window.v1'
+const CALCULATION_TABLE_VIEWS_STORAGE_KEY = 'portfolio_ops.portfolio.performance.calculation.views.v1'
 
 const RISK_ATTRIBUTION_COLUMNS: CalculationColumnKey[] = [
   'line',

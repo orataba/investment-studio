@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PSQL_URL="${YUNGU_LOCAL_POSTGRES_URL:-postgresql://yungu:yungu@127.0.0.1:5432/yungu}"
+PSQL_URL="${PORTFOLIO_OPS_LOCAL_POSTGRES_URL:-postgresql://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops}"
 
 echo "Rebuilding local schemas in ${PSQL_URL}"
 

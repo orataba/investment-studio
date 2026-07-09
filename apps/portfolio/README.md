@@ -50,7 +50,7 @@ uvicorn portfolio_app.main:app --reload --host 127.0.0.1 --port 8001
 
 说明：
 
-- 数据库连接通过 `YUNGU_PORTFOLIO_DATABASE_URL` 配置；私有仓库已提交 backend `.env` 作为恢复配置
+- 数据库连接通过 `PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL` 配置；私有仓库已提交 backend `.env` 作为恢复配置
 - `portfolio` 使用 `portfolio` schema
 - 测试使用临时 SQLite，不会污染默认运行库
 - research 运行产物默认落在 `backend/research_outputs/`，用于本地查看和回放，已按运行时目录管理；当前产物以 request、context、target rows、member/leaf targets、solved result groups、solve event、scope solve events、target weight gaps 和 backtest payload 为主

@@ -70,6 +70,37 @@ class _FakeMailbox:
         return "NO", []
 
 
+def _zb945a_existing_nav_instrument() -> dict[str, object]:
+    return {
+        "market_data": [
+            {
+                "metric_family": "nav",
+                "quote_basis": "official_nav",
+                "as_of_date": "2026-04-02",
+                "value": "0.9334",
+            },
+            {
+                "metric_family": "nav",
+                "quote_basis": "total_return_nav",
+                "as_of_date": "2026-04-02",
+                "value": "1.4897",
+            },
+            {
+                "metric_family": "nav",
+                "quote_basis": "official_nav",
+                "as_of_date": "2026-04-03",
+                "value": "0.9352",
+            },
+            {
+                "metric_family": "nav",
+                "quote_basis": "total_return_nav",
+                "as_of_date": "2026-04-03",
+                "value": "1.4915",
+            },
+        ]
+    }
+
+
 def test_parse_nav_rows_from_xlsx_supports_chinese_headers() -> None:
     rows = [
         ["净值日期", "产品代码", "产品名称", "单位净值", "累计单位净值"],
@@ -206,14 +237,14 @@ def test_filter_rows_for_rule_supports_exact_code_match() -> None:
         {
             "as_of_date": "2026-04-14",
             "instrument_code": "SAZB60",
-            "instrument_name": "九慕云谷均衡配置私募证券投资基金",
+            "instrument_name": "九慕稳健配置私募证券投资基金",
             "nav": "1.0657",
             "nav_with_dividend": "1.0657",
         },
         {
             "as_of_date": "2026-04-14",
             "instrument_code": "AZB60A",
-            "instrument_name": "九慕云谷均衡配置私募证券投资基金A",
+            "instrument_name": "九慕稳健配置私募证券投资基金A",
             "nav": "1.0657",
             "nav_with_dividend": "1.0657",
         },
@@ -344,8 +375,8 @@ def test_incremental_email_import_uses_prior_rows_as_dividend_context(monkeypatc
         "source_email_rules": [
             {
                 "sender_equals": ["yywbfa@cmschina.com.cn"],
-                "subject_contains": ["九慕云谷3号"],
-                "attachment_name_contains": ["九慕云谷3号"],
+                "subject_contains": ["九慕稳健3号"],
+                "attachment_name_contains": ["九慕稳健3号"],
                 "attachment_extensions": ["xlsx"],
                 "row_code_equals": ["SAVF63"],
             }
@@ -354,13 +385,13 @@ def test_incremental_email_import_uses_prior_rows_as_dividend_context(monkeypatc
     header = ["产品代码", "产品名称", "净值日期", "单位净值", "累计净值"]
     messages = {
         1: _nav_email_bytes(
-            subject="九慕云谷3号净值序列",
-            attachment_name="九慕云谷3号净值序列.xlsx",
+            subject="九慕稳健3号净值序列",
+            attachment_name="九慕稳健3号净值序列.xlsx",
             rows=[
                 header,
-                ["SAVF63", "九慕云谷3号私募证券投资基金", "20260324", "1.0218", "1.0218"],
-                ["SAVF63", "九慕云谷3号私募证券投资基金", "20260325", "0.9976", "1.0295"],
-                ["SAVF63", "九慕云谷3号私募证券投资基金", "20260326", "0.9922", "1.0241"],
+                ["SAVF63", "九慕稳健3号私募证券投资基金", "20260324", "1.0218", "1.0218"],
+                ["SAVF63", "九慕稳健3号私募证券投资基金", "20260325", "0.9976", "1.0295"],
+                ["SAVF63", "九慕稳健3号私募证券投资基金", "20260326", "0.9922", "1.0241"],
             ],
         )
     }
@@ -398,8 +429,8 @@ def test_incremental_email_import_requires_reinvested_anchor_row(monkeypatch) ->
         "source_email_rules": [
             {
                 "sender_equals": ["yywbfa@cmschina.com.cn"],
-                "subject_contains": ["九慕云谷3号"],
-                "attachment_name_contains": ["九慕云谷3号"],
+                "subject_contains": ["九慕稳健3号"],
+                "attachment_name_contains": ["九慕稳健3号"],
                 "attachment_extensions": ["xlsx"],
                 "row_code_equals": ["SAVF63"],
             }
@@ -408,11 +439,11 @@ def test_incremental_email_import_requires_reinvested_anchor_row(monkeypatch) ->
     header = ["产品代码", "产品名称", "净值日期", "单位净值", "累计净值"]
     messages = {
         1: _nav_email_bytes(
-            subject="九慕云谷3号净值序列",
-            attachment_name="九慕云谷3号净值序列.xlsx",
+            subject="九慕稳健3号净值序列",
+            attachment_name="九慕稳健3号净值序列.xlsx",
             rows=[
                 header,
-                ["SAVF63", "九慕云谷3号私募证券投资基金", "20260326", "0.9922", "1.0241"],
+                ["SAVF63", "九慕稳健3号私募证券投资基金", "20260326", "0.9922", "1.0241"],
             ],
         )
     }
@@ -463,16 +494,16 @@ def test_incremental_email_import_uses_attachment_nav_dates_not_latest_received_
     header = ["产品代码", "产品名称", "业务日期", "单位净值", "累计单位净值"]
     messages = {
         1: _nav_email_bytes(
-            subject="润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_虚拟计提净值表_20260403",
-            attachment_name="20260403_润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
+            subject="润洲正行11号私募证券投资基金A_九慕稳健3号私募证券投资基金_虚拟计提净值表_20260403",
+            attachment_name="20260403_润洲正行11号私募证券投资基金A_九慕稳健3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
             rows=[
                 header,
                 ["ZB945A", "润洲正行11号私募证券投资基金A", "20260403", "0.9352", "1.4915"],
             ],
         ),
         2: _nav_email_bytes(
-            subject="润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_虚拟计提净值表_20260402",
-            attachment_name="20260402_润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
+            subject="润洲正行11号私募证券投资基金A_九慕稳健3号私募证券投资基金_虚拟计提净值表_20260402",
+            attachment_name="20260402_润洲正行11号私募证券投资基金A_九慕稳健3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
             rows=[
                 header,
                 ["ZB945A", "润洲正行11号私募证券投资基金A", "20260402", "0.9334", "1.4897"],
@@ -485,6 +516,11 @@ def test_incremental_email_import_uses_attachment_nav_dates_not_latest_received_
         captured.update(kwargs)
         return {"instrument_id": kwargs["instrument_id"]}
 
+    def fake_get_instrument(instrument_id: str) -> dict[str, object]:
+        assert instrument_id == "zb945a"
+        return _zb945a_existing_nav_instrument()
+
+    monkeypatch.setattr(market_data_ops, "get_instrument", fake_get_instrument)
     monkeypatch.setattr(market_data_ops, "replace_nav_history", fake_replace_nav_history)
 
     record = _import_rows_from_email_rules(
@@ -524,16 +560,16 @@ def test_email_refresh_searches_since_latest_nav_date_and_filters_older_rows(
     header = ["产品代码", "产品名称", "业务日期", "单位净值", "累计单位净值"]
     messages = {
         1: _nav_email_bytes(
-            subject="润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_虚拟计提净值表_20260402",
-            attachment_name="20260402_润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
+            subject="润洲正行11号私募证券投资基金A_九慕稳健3号私募证券投资基金_虚拟计提净值表_20260402",
+            attachment_name="20260402_润洲正行11号私募证券投资基金A_九慕稳健3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
             rows=[
                 header,
                 ["ZB945A", "润洲正行11号私募证券投资基金A", "20260402", "0.9334", "1.4897"],
             ],
         ),
         2: _nav_email_bytes(
-            subject="润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_虚拟计提净值表_20260403",
-            attachment_name="20260403_润洲正行11号私募证券投资基金A_九慕云谷3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
+            subject="润洲正行11号私募证券投资基金A_九慕稳健3号私募证券投资基金_虚拟计提净值表_20260403",
+            attachment_name="20260403_润洲正行11号私募证券投资基金A_九慕稳健3号私募证券投资基金_TA虚拟计提后净值表.xlsx",
             rows=[
                 header,
                 ["ZB945A", "润洲正行11号私募证券投资基金A", "20260403", "0.9352", "1.4915"],
@@ -594,7 +630,12 @@ def test_email_refresh_searches_since_latest_nav_date_and_filters_older_rows(
         captured.update({"refresh_status": kwargs})
         return {"instrument_id": kwargs["instrument_id"]}
 
+    def fake_get_instrument(instrument_id: str) -> dict[str, object]:
+        assert instrument_id == "zb945a"
+        return _zb945a_existing_nav_instrument()
+
     monkeypatch.setattr(market_data_ops, "get_settings", lambda: FakeSettings())
+    monkeypatch.setattr(market_data_ops, "get_instrument", fake_get_instrument)
     monkeypatch.setattr(market_data_ops.imaplib, "IMAP4_SSL", FakeRefreshMailbox)
     monkeypatch.setattr(market_data_ops, "replace_nav_history", fake_replace_nav_history)
     monkeypatch.setattr(market_data_ops, "update_refresh_status", fake_update_refresh_status)
@@ -931,7 +972,7 @@ def test_tushare_full_history_is_capped_at_2024(monkeypatch) -> None:
 
 def test_parse_nav_rows_from_label_snapshot_matrix_extracts_nav_values() -> None:
     matrix = [
-        ["招商证券股份有限公司_九慕云谷1号私募证券投资基金_专用表", None],
+        ["招商证券股份有限公司_九慕稳健1号私募证券投资基金_专用表", None],
         ["日期：2026-04-14", None],
         ["期初单位净值", "1.0980"],
         ["单位净值", "1.1135"],

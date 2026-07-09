@@ -51,12 +51,12 @@ Clone the GitHub repository, then install:
 
 ### 2. Start PostgreSQL
 
-The repository includes a local Docker profile that creates the `yungu` database, `yungu` user, and the three schemas used by this workspace.
+The repository includes a local Docker profile that creates the `portfolio_ops` database, `portfolio_ops` user, and the three schemas used by this workspace.
 
 ```bash
 (cd infra/postgres && docker compose up -d)
 
-until pg_isready -h 127.0.0.1 -p 5432 -U yungu -d yungu; do
+until pg_isready -h 127.0.0.1 -p 5432 -U portfolio_ops -d portfolio_ops; do
   sleep 1
 done
 ```
@@ -80,16 +80,16 @@ shasum -a 256 -c data/migration/portfolio_ops_2026-07-08.sha256
 Restore the data into the local database:
 
 ```bash
-PGPASSWORD=yungu \
+PGPASSWORD=portfolio_ops \
 pg_restore --clean --if-exists --no-owner --no-acl \
-  -h 127.0.0.1 -U yungu -d yungu \
+  -h 127.0.0.1 -U portfolio_ops -d portfolio_ops \
   data/migration/portfolio_ops_2026-07-08.pgdump
 ```
 
 Check that the restored schemas are populated:
 
 ```bash
-PGPASSWORD=yungu psql -h 127.0.0.1 -U yungu -d yungu -c "
+PGPASSWORD=portfolio_ops psql -h 127.0.0.1 -U portfolio_ops -d portfolio_ops -c "
 select 'instrument_registry.instrument' as table_name, count(*) from instrument_registry.instrument
 union all
 select 'portfolio.portfolio_record', count(*) from portfolio.portfolio_record
@@ -112,16 +112,16 @@ test -f apps/portfolio/backend/.env
 
 Review them locally if the new machine uses different endpoints:
 
-- `YUNGU_PLATFORM_TUSHARE_TOKEN`
+- `PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN`
 - email IMAP credentials, if mail refresh should run on the Mac
 - Watchlist copilot API key, if enabled
 - any non-local database URL, CORS, or frontend URL override
 
 The local development database defaults are:
 
-- database: `yungu`
-- user: `yungu`
-- password: `yungu`
+- database: `portfolio_ops`
+- user: `portfolio_ops`
+- password: `portfolio_ops`
 - host: `127.0.0.1`
 - port: `5432`
 - schemas: `instrument_registry`, `watchlist`, `portfolio`

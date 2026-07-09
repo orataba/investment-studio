@@ -49,7 +49,7 @@ from portfolio_app.services.research_solver import (
 
 def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "weight") -> tuple[str, dict[str, str]]:
     taxonomy_response = client.post(
-        "/api/portfolios/yungu/taxonomies",
+        "/api/portfolios/portfolio-ops/taxonomies",
         json={
             "name": "Research Planning Axis",
             "taxonomy_type": "custom",
@@ -69,7 +69,7 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
         {"node_name": "Rates", "node_code": "RATES"},
     ]:
         node_response = client.post(
-            f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/nodes",
+            f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/nodes",
             json=payload,
         )
         assert node_response.status_code == 200
@@ -90,7 +90,7 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
         },
     ]:
         node_response = client.post(
-            f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/nodes",
+            f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/nodes",
             json=payload,
         )
         assert node_response.status_code == 200
@@ -102,7 +102,7 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
         ("instrument", "fund-us-agg", "Rates"),
     ]:
         assignment_response = client.post(
-            f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/assignments",
+            f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/assignments",
             json={
                 "target_scope": assignment[0],
                 "target_entity_id": assignment[1],
@@ -112,7 +112,7 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
         assert assignment_response.status_code == 200
 
     default_response = client.put(
-        "/api/portfolios/yungu/taxonomies/default-planning",
+        "/api/portfolios/portfolio-ops/taxonomies/default-planning",
         json={"taxonomy_id": taxonomy_id},
     )
     assert default_response.status_code == 200
@@ -221,18 +221,18 @@ def _create_target_sets(client, taxonomy_id: str, node_ids: dict[str, str]) -> N
         },
     ]:
         target_set_response = client.post(
-            f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/target-sets",
+            f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets",
             json=payload,
         )
         assert target_set_response.status_code == 200, target_set_response.json()
 
 
 def test_research_workbench_returns_target_solve_defaults(client):
-    response = client.get("/api/portfolios/yungu/research/workbench")
+    response = client.get("/api/portfolios/portfolio-ops/research/workbench")
     assert response.status_code == 200
 
     payload = response.json()
-    assert payload["portfolio_id"] == "yungu"
+    assert payload["portfolio_id"] == "portfolio-ops"
     assert payload["settings"]["planning_taxonomy_id"] is None
     assert payload["settings"]["target_dimension"] == "scope_default"
     assert payload["settings"]["capital_mode"] == "unit_notional"
@@ -362,7 +362,7 @@ def test_top_sleeve_bounds_reject_fixed_gross_above_max_capacity() -> None:
 
 def test_research_settings_updates_production_risk_policy(client):
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": None,
             "comparator_taxonomy_node_id": None,
@@ -378,7 +378,7 @@ def test_research_settings_updates_production_risk_policy(client):
     )
     assert settings_response.status_code == 200
 
-    risk_policy_response = client.get("/api/portfolios/yungu/risk-policy")
+    risk_policy_response = client.get("/api/portfolios/portfolio-ops/risk-policy")
     assert risk_policy_response.status_code == 200
     risk_policy = risk_policy_response.json()
     assert risk_policy["covariance_model_id"] == "sample_covariance"
@@ -393,7 +393,7 @@ def test_research_settings_updates_production_risk_policy(client):
     assert risk_policy["parameters_by_frequency"]["weekly"]["min_observations"] == 18
     assert risk_policy["parameters_by_frequency"]["monthly"]["min_observations"] == 5
 
-    workbench_response = client.get("/api/portfolios/yungu/research/workbench")
+    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
     assert workbench_response.status_code == 200
     workbench_policy = workbench_response.json()["risk_policy"]
     assert workbench_policy["covariance_model_id"] == "sample_covariance"
@@ -405,7 +405,7 @@ def test_research_settings_updates_production_risk_policy(client):
 
 def test_research_settings_updates_backtest_controls(client):
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": None,
             "comparator_taxonomy_node_id": None,
@@ -422,7 +422,7 @@ def test_research_settings_updates_backtest_controls(client):
     assert settings_payload["backtest_rebalance_frequency"] == "1w"
     assert settings_payload["backtest_benchmark_instrument_id"] == "fund-us-agg"
 
-    workbench_response = client.get("/api/portfolios/yungu/research/workbench")
+    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
     assert workbench_response.status_code == 200
     workbench_settings = workbench_response.json()["settings"]
     assert workbench_settings["backtest_rebalance_frequency"] == "1w"
@@ -431,7 +431,7 @@ def test_research_settings_updates_backtest_controls(client):
 
 def test_research_settings_accepts_volatility_cap_mode(client):
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": None,
             "comparator_taxonomy_node_id": None,
@@ -449,14 +449,14 @@ def test_research_settings_accepts_volatility_cap_mode(client):
     assert settings_payload["gross_exposure"] is None
     assert settings_payload["max_gross_exposure"] is None
 
-    workbench_response = client.get("/api/portfolios/yungu/research/workbench")
+    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
     assert workbench_response.status_code == 200
     assert workbench_response.json()["settings"]["capital_mode"] == "volatility_cap"
 
 
 def test_research_target_volatility_defaults_max_gross_to_unit_leverage(client):
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": None,
             "comparator_taxonomy_node_id": None,
@@ -506,7 +506,7 @@ def test_research_workbench_reads_canonical_run_top_holdings(client):
         session.add(
             ResearchRunRecordModel(
                 research_run_id="canonical-run",
-                portfolio_id="yungu",
+                portfolio_id="portfolio-ops",
                 job_type="target_weight_solve",
                 status="completed",
                 requested_at="2026-04-15T10:00:00Z",
@@ -538,7 +538,7 @@ def test_research_workbench_reads_canonical_run_top_holdings(client):
         )
         session.commit()
 
-    response = client.get("/api/portfolios/yungu/research/workbench")
+    response = client.get("/api/portfolios/portfolio-ops/research/workbench")
     assert response.status_code == 200
     payload = response.json()
     top_holding = payload["runs"][0]["detail"]["top_holdings"][0]
@@ -1248,7 +1248,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     _create_target_sets(client, taxonomy_id, node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
@@ -1265,7 +1265,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert settings_payload["comparator_taxonomy_node_id"] == node_ids["Risk Assets"]
     assert settings_payload["target_dimension"] == "scope_default"
 
-    workbench_response = client.get("/api/portfolios/yungu/research/workbench")
+    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
     assert workbench_response.status_code == 200
     workbench_payload = workbench_response.json()
     assert len(workbench_payload["planning_taxonomy_options"]) == 1
@@ -1273,7 +1273,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert any(item["label"] == "Risk Assets" for item in workbench_payload["planning_scope_options"])
 
     run_response = client.post(
-        "/api/portfolios/yungu/research/runs",
+        "/api/portfolios/portfolio-ops/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 200, run_response.json()
@@ -1295,7 +1295,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert run_payload["detail"]["backtest_benchmark"] is None
     assert run_payload["detail"]["backtest_relative_metrics"] is None
     comparison_response = client.get(
-        f"/api/portfolios/yungu/research/runs/{run_payload['research_run_id']}/benchmark-comparison",
+        f"/api/portfolios/portfolio-ops/research/runs/{run_payload['research_run_id']}/benchmark-comparison",
         params={"benchmark_instrument_id": "fund-hk-2800"},
     )
     assert comparison_response.status_code == 200, comparison_response.json()
@@ -1347,7 +1347,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
 
     report_artifact = next(item for item in run_payload["artifacts"] if item["artifact_id"] == "report")
     artifact_response = client.get(
-        "/api/portfolios/yungu/research/artifacts/content",
+        "/api/portfolios/portfolio-ops/research/artifacts/content",
         params={"path": report_artifact["path"]},
     )
     assert artifact_response.status_code == 200
@@ -1357,7 +1357,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert "Current Target Weights" in artifact_payload["content"]
 
     selected_workbench_response = client.get(
-        "/api/portfolios/yungu/research/workbench",
+        "/api/portfolios/portfolio-ops/research/workbench",
         params={"selected_run_id": run_payload["research_run_id"]},
     )
     assert selected_workbench_response.status_code == 200
@@ -1431,7 +1431,7 @@ def test_research_run_replaces_previous_run(client):
     _create_target_sets(client, taxonomy_id, node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
@@ -1443,21 +1443,21 @@ def test_research_run_replaces_previous_run(client):
     )
     assert settings_response.status_code == 200
 
-    first_response = client.post("/api/portfolios/yungu/research/runs", json={"requested_by": "pytest"})
+    first_response = client.post("/api/portfolios/portfolio-ops/research/runs", json={"requested_by": "pytest"})
     assert first_response.status_code == 200, first_response.json()
     first_run_id = first_response.json()["research_run_id"]
 
-    second_response = client.post("/api/portfolios/yungu/research/runs", json={"requested_by": "pytest"})
+    second_response = client.post("/api/portfolios/portfolio-ops/research/runs", json={"requested_by": "pytest"})
     assert second_response.status_code == 200, second_response.json()
     second_run_id = second_response.json()["research_run_id"]
     assert second_run_id != first_run_id
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        remaining_runs = session.query(ResearchRunRecordModel).filter_by(portfolio_id="yungu").all()
+        remaining_runs = session.query(ResearchRunRecordModel).filter_by(portfolio_id="portfolio-ops").all()
     assert [item.research_run_id for item in remaining_runs] == [second_run_id]
 
-    workbench_response = client.get("/api/portfolios/yungu/research/workbench")
+    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
     assert workbench_response.status_code == 200
     workbench_payload = workbench_response.json()
     assert [item["research_run_id"] for item in workbench_payload["runs"]] == [second_run_id]
@@ -1469,7 +1469,7 @@ def test_failed_research_run_keeps_previous_completed_run(client):
     _create_target_sets(client, taxonomy_id, node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
@@ -1481,12 +1481,12 @@ def test_failed_research_run_keeps_previous_completed_run(client):
     )
     assert settings_response.status_code == 200
 
-    first_response = client.post("/api/portfolios/yungu/research/runs", json={"requested_by": "pytest"})
+    first_response = client.post("/api/portfolios/portfolio-ops/research/runs", json={"requested_by": "pytest"})
     assert first_response.status_code == 200, first_response.json()
     first_run_id = first_response.json()["research_run_id"]
 
     assignment_response = client.post(
-        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/assignments",
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/assignments",
         json={
             "target_scope": TARGET_MEMBER_INSTRUMENT,
             "target_entity_id": "fund-us-watch",
@@ -1495,20 +1495,20 @@ def test_failed_research_run_keeps_previous_completed_run(client):
     )
     assert assignment_response.status_code == 200, assignment_response.json()
 
-    failed_response = client.post("/api/portfolios/yungu/research/runs", json={"requested_by": "pytest"})
+    failed_response = client.post("/api/portfolios/portfolio-ops/research/runs", json={"requested_by": "pytest"})
     assert failed_response.status_code == 400, failed_response.json()
     assert "Defensive Equity" in failed_response.json()["detail"]
     assert "weight target set" in failed_response.json()["detail"]
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        remaining_runs = session.query(ResearchRunRecordModel).filter_by(portfolio_id="yungu").all()
+        remaining_runs = session.query(ResearchRunRecordModel).filter_by(portfolio_id="portfolio-ops").all()
     run_by_id = {item.research_run_id: item for item in remaining_runs}
     assert run_by_id[first_run_id].status == "completed"
     assert any(item.status == "failed" for item in remaining_runs)
 
     workbench_response = client.get(
-        "/api/portfolios/yungu/research/workbench",
+        "/api/portfolios/portfolio-ops/research/workbench",
         params={"selected_run_id": first_run_id},
     )
     assert workbench_response.status_code == 200
@@ -1522,7 +1522,7 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
     _create_target_sets(client, taxonomy_id, node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -1537,7 +1537,7 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
     assert settings_response.status_code == 200
 
     baseline_run_response = client.post(
-        "/api/portfolios/yungu/research/runs",
+        "/api/portfolios/portfolio-ops/research/runs",
         json={"requested_by": "pytest"},
     )
     assert baseline_run_response.status_code == 200, baseline_run_response.json()
@@ -1548,7 +1548,7 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
     )
 
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -1567,7 +1567,7 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
     assert buy_response.status_code == 200
 
     run_response = client.post(
-        "/api/portfolios/yungu/research/runs",
+        "/api/portfolios/portfolio-ops/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 200, run_response.json()
@@ -1585,7 +1585,7 @@ def test_research_run_rejects_incomplete_scope_targets_after_new_watch_member(cl
     _create_target_sets(client, taxonomy_id, node_ids)
 
     target_set_response = client.post(
-        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/target-sets",
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets",
         json={
             "comparator_taxonomy_node_id": node_ids["Defensive Equity"],
             "target_set_type": "taa",
@@ -1604,7 +1604,7 @@ def test_research_run_rejects_incomplete_scope_targets_after_new_watch_member(cl
     assert target_set_response.status_code == 200, target_set_response.json()
 
     assignment_response = client.post(
-        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/assignments",
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/assignments",
         json={
             "target_scope": TARGET_MEMBER_INSTRUMENT,
             "target_entity_id": "fund-us-watch",
@@ -1614,7 +1614,7 @@ def test_research_run_rejects_incomplete_scope_targets_after_new_watch_member(cl
     assert assignment_response.status_code == 200, assignment_response.json()
 
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Defensive Equity"],
@@ -1627,7 +1627,7 @@ def test_research_run_rejects_incomplete_scope_targets_after_new_watch_member(cl
     assert settings_response.status_code == 200
 
     run_response = client.post(
-        "/api/portfolios/yungu/research/runs",
+        "/api/portfolios/portfolio-ops/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()
@@ -1640,7 +1640,7 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
     taxonomy_id, _node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
 
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -1653,7 +1653,7 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
     )
     assert settings_response.status_code == 200
 
-    workbench_response = client.get("/api/portfolios/yungu/research/workbench")
+    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
     assert workbench_response.status_code == 200
     top_level_scope = next(
         item for item in workbench_response.json()["planning_scope_options"] if item["taxonomy_node_id"] is None
@@ -1664,7 +1664,7 @@ def test_research_scope_default_respects_taxonomy_root_default_dimension(client)
 def test_research_scope_default_requires_configured_dimension_target_set(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client, root_default_target_dimension="risk_budget")
     target_set_response = client.post(
-        f"/api/portfolios/yungu/taxonomies/{taxonomy_id}/target-sets",
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets",
         json={
             "target_set_type": "taa",
             "name": "Root Weight Only",
@@ -1692,7 +1692,7 @@ def test_research_scope_default_requires_configured_dimension_target_set(client)
     )
     assert target_set_response.status_code == 200
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -1705,7 +1705,7 @@ def test_research_scope_default_requires_configured_dimension_target_set(client)
     assert settings_response.status_code == 200
 
     run_response = client.post(
-        "/api/portfolios/yungu/research/runs",
+        "/api/portfolios/portfolio-ops/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()
@@ -1717,7 +1717,7 @@ def test_deleting_selected_research_taxonomy_clears_settings(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
 
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": node_ids["Risk Assets"],
@@ -1729,10 +1729,10 @@ def test_deleting_selected_research_taxonomy_clears_settings(client):
     )
     assert settings_response.status_code == 200
 
-    delete_response = client.delete(f"/api/portfolios/yungu/taxonomies/{taxonomy_id}")
+    delete_response = client.delete(f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}")
     assert delete_response.status_code == 200
 
-    workbench_response = client.get("/api/portfolios/yungu/research/workbench")
+    workbench_response = client.get("/api/portfolios/portfolio-ops/research/workbench")
     assert workbench_response.status_code == 200
     workbench_payload = workbench_response.json()
     assert workbench_payload["default_planning_taxonomy_id"] is None
@@ -1755,7 +1755,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
             {"taxonomy_node_id": node_ids["Risk Assets"], "min_weight": 0.2, "max_weight": 0.55},
         ],
     }
-    initial_response = client.put("/api/portfolios/yungu/research/settings", json=payload)
+    initial_response = client.put("/api/portfolios/portfolio-ops/research/settings", json=payload)
     assert initial_response.status_code == 200
     assert initial_response.json()["frozen_taxonomy_node_ids"] == [node_ids["Risk Assets"]]
     assert initial_response.json()["top_sleeve_weight_bounds"] == [
@@ -1767,7 +1767,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
     omitted_payload.pop("frozen_taxonomy_node_ids")
     omitted_payload.pop("top_sleeve_weight_bounds")
     omitted_payload["notes"] = "Preserve frozen sleeves"
-    omitted_response = client.put("/api/portfolios/yungu/research/settings", json=omitted_payload)
+    omitted_response = client.put("/api/portfolios/portfolio-ops/research/settings", json=omitted_payload)
     assert omitted_response.status_code == 200
     assert omitted_response.json()["frozen_taxonomy_node_ids"] == [node_ids["Risk Assets"]]
     assert omitted_response.json()["top_sleeve_weight_bounds"] == [
@@ -1777,7 +1777,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
     clear_payload = dict(omitted_payload)
     clear_payload["frozen_taxonomy_node_ids"] = []
     clear_payload["top_sleeve_weight_bounds"] = []
-    clear_response = client.put("/api/portfolios/yungu/research/settings", json=clear_payload)
+    clear_response = client.put("/api/portfolios/portfolio-ops/research/settings", json=clear_payload)
     assert clear_response.status_code == 200
     assert clear_response.json()["frozen_taxonomy_node_ids"] == []
     assert clear_response.json()["top_sleeve_weight_bounds"] == []
@@ -1786,7 +1786,7 @@ def test_research_settings_preserve_frozen_nodes_when_field_is_omitted(client):
 def test_research_settings_rejects_non_top_sleeve_weight_bounds(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
     response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -1865,7 +1865,7 @@ def test_research_target_volatility_rejects_unaligned_risk_history(client):
     _create_target_sets(client, taxonomy_id, _node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -1884,7 +1884,7 @@ def test_research_target_volatility_rejects_unaligned_risk_history(client):
     assert settings_payload["max_gross_exposure"] == pytest.approx(1.0)
 
     run_response = client.post(
-        "/api/portfolios/yungu/research/runs",
+        "/api/portfolios/portfolio-ops/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()
@@ -1896,7 +1896,7 @@ def test_research_target_volatility_rejects_missing_child_sleeve_history(client)
     _create_target_sets(client, taxonomy_id, node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -1911,7 +1911,7 @@ def test_research_target_volatility_rejects_missing_child_sleeve_history(client)
     assert settings_response.status_code == 200
 
     run_response = client.post(
-        "/api/portfolios/yungu/research/runs",
+        "/api/portfolios/portfolio-ops/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()
@@ -1923,7 +1923,7 @@ def test_research_run_rejects_insufficient_history_for_unaligned_sparse_window(c
     _create_target_sets(client, taxonomy_id, _node_ids)
 
     settings_response = client.put(
-        "/api/portfolios/yungu/research/settings",
+        "/api/portfolios/portfolio-ops/research/settings",
         json={
             "planning_taxonomy_id": taxonomy_id,
             "comparator_taxonomy_node_id": None,
@@ -1936,7 +1936,7 @@ def test_research_run_rejects_insufficient_history_for_unaligned_sparse_window(c
     assert settings_response.status_code == 200
 
     run_response = client.post(
-        "/api/portfolios/yungu/research/runs",
+        "/api/portfolios/portfolio-ops/research/runs",
         json={"requested_by": "pytest"},
     )
     assert run_response.status_code == 400, run_response.json()

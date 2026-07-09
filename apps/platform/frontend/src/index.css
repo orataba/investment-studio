@@ -1,6 +1,6 @@
 :root {
   color-scheme: light;
-  font-family: var(--yungu-font-sans, "Aptos", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif);
+  font-family: var(--portfolio-ops-font-sans, "Aptos", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif);
   color: #111827;
   background: #ffffff;
   --platform-ink: #111827;

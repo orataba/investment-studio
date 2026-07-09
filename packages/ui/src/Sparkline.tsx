@@ -50,7 +50,7 @@ export default function Sparkline({ values, maxPoints, ariaLabel, className }: S
       : normalized
 
   if (points.length < 2) {
-    return <span className="yungu-sparkline-empty">--</span>
+    return <span className="portfolio-ops-sparkline-empty">--</span>
   }
 
   const min = Math.min(...points.map((point) => point.value))
@@ -66,19 +66,19 @@ export default function Sparkline({ values, maxPoints, ariaLabel, className }: S
     .join(' L ')
   const area = `${line} L ${SPARKLINE_WIDTH - 1} ${SPARKLINE_HEIGHT} L 0 ${SPARKLINE_HEIGHT} Z`
   const trend = trendForPoints(points)
-  const cellClassName = ['yungu-sparkline-cell', className].filter(Boolean).join(' ')
+  const cellClassName = ['portfolio-ops-sparkline-cell', className].filter(Boolean).join(' ')
 
   return (
     <span className={cellClassName} data-trend={trend}>
       <svg
-        className="yungu-sparkline"
+        className="portfolio-ops-sparkline"
         viewBox={`0 0 ${SPARKLINE_WIDTH} ${SPARKLINE_HEIGHT}`}
         role={ariaLabel ? 'img' : undefined}
         aria-label={ariaLabel}
         aria-hidden={ariaLabel ? undefined : true}
       >
-        <path className="yungu-sparkline-area" d={`M ${area}`} />
-        <path className="yungu-sparkline-path" d={`M ${line}`} />
+        <path className="portfolio-ops-sparkline-area" d={`M ${area}`} />
+        <path className="portfolio-ops-sparkline-path" d={`M ${line}`} />
       </svg>
     </span>
   )

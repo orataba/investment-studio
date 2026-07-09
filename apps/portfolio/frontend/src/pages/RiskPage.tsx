@@ -49,7 +49,7 @@ const DEFAULT_RISK_LOOKBACK_DAYS = 90
 const DEFAULT_RISK_ANALYTICS_LOOKBACK_DAYS = 30
 const DEFAULT_RISK_MODEL_ID = 'ewma_vol_shrinkage_corr_covariance'
 const MATRIX_SCOPE_ALL_INSTRUMENTS = '__all_instruments__'
-const RISK_PAGE_SETTINGS_STORAGE_KEY = 'yungu.portfolio.risk.settings.v1'
+const RISK_PAGE_SETTINGS_STORAGE_KEY = 'portfolio_ops.portfolio.risk.settings.v1'
 const INSUFFICIENT_DATA_MESSAGE = 'Insufficient data.'
 
 type RiskModelId = 'ewma_vol_shrinkage_corr_covariance' | 'ewma_covariance' | 'sample_covariance'

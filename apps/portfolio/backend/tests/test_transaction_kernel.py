@@ -33,11 +33,11 @@ def test_store_reset_rejects_legacy_asset_references():
 
 
 def test_portfolio_instruments_endpoint_reads_shared_registry_via_portfolio_backend(client):
-    response = client.get("/api/portfolios/yungu/instruments")
+    response = client.get("/api/portfolios/portfolio-ops/instruments")
     assert response.status_code == 200
 
     payload = response.json()
-    assert payload["portfolio_id"] == "yungu"
+    assert payload["portfolio_id"] == "portfolio-ops"
     assert {item["instrument_core"]["instrument_id"] for item in payload["instruments"]} >= {
         "equity-us-abbv",
         "fund-us-agg",
@@ -51,11 +51,11 @@ def test_portfolio_instruments_endpoint_reads_shared_registry_via_portfolio_back
 
 
 def test_transaction_write_refreshes_materialized_daily_snapshots(client):
-    baseline_response = client.get("/api/portfolios/yungu/snapshots/daily")
+    baseline_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert baseline_response.status_code == 200
 
     created_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-16",
@@ -68,14 +68,14 @@ def test_transaction_write_refreshes_materialized_daily_snapshots(client):
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "yungu")
+        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
         assert state is not None
         assert state.daily_snapshot_status == "current"
         assert state.dirty_from is None
         assert state.refreshed_to == date(2026, 4, 16)
         latest_snapshot = (
             session.query(PortfolioDailySnapshotModel)
-            .filter(PortfolioDailySnapshotModel.portfolio_id == "yungu")
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
             .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
             .first()
         )
@@ -84,12 +84,12 @@ def test_transaction_write_refreshes_materialized_daily_snapshots(client):
 
 
 def test_transaction_update_marks_daily_snapshots_dirty_from_old_trade_date():
-    refresh_portfolio_daily_snapshots("yungu")
-    existing = portfolio_store.get_transaction("yungu", "txn-0002")
+    refresh_portfolio_daily_snapshots("portfolio-ops")
+    existing = portfolio_store.get_transaction("portfolio-ops", "txn-0002")
     assert existing is not None
 
     updated = portfolio_store.update_transaction(
-        "yungu",
+        "portfolio-ops",
         "txn-0002",
         transaction_type=str(existing["transaction_type"]),
         trade_date=date(2026, 4, 20),
@@ -120,7 +120,7 @@ def test_transaction_update_marks_daily_snapshots_dirty_from_old_trade_date():
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "yungu")
+        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
         assert state is not None
         assert state.daily_snapshot_status == "stale"
         assert state.dirty_from == date(2026, 2, 3)
@@ -134,7 +134,7 @@ def test_daily_snapshot_refresh_replays_when_data_changes_mid_refresh(monkeypatc
         build_calls["count"] += 1
         if build_calls["count"] == 1:
             portfolio_store.create_transaction(
-                portfolio_id="yungu",
+                portfolio_id="portfolio-ops",
                 transaction_type="deposit",
                 trade_date=date(2026, 4, 18),
                 trade_time=None,
@@ -167,21 +167,21 @@ def test_daily_snapshot_refresh_replays_when_data_changes_mid_refresh(monkeypatc
         build_with_mid_refresh_update,
     )
 
-    result = daily_snapshots.refresh_portfolio_daily_snapshots("yungu")
+    result = daily_snapshots.refresh_portfolio_daily_snapshots("portfolio-ops")
 
     assert build_calls["count"] == 2
     assert result is not None
     assert result["refreshed_to"] == date(2026, 4, 18)
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "yungu")
+        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
         assert state is not None
         assert state.daily_snapshot_status == "current"
         assert state.dirty_from is None
         assert state.refreshed_to == date(2026, 4, 18)
         latest_snapshot = (
             session.query(PortfolioDailySnapshotModel)
-            .filter(PortfolioDailySnapshotModel.portfolio_id == "yungu")
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
             .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
             .first()
         )
@@ -191,7 +191,7 @@ def test_daily_snapshot_refresh_replays_when_data_changes_mid_refresh(monkeypatc
 
 def test_securities_account_defaults_to_fifo_when_cost_basis_omitted(client):
     response = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "FIFO Default Account",
             "account_type": "securities_account",
@@ -210,7 +210,7 @@ def test_securities_account_defaults_to_fifo_when_cost_basis_omitted(client):
 
 def test_account_cost_method_can_be_updated_before_instrument_history(client):
     created_response = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Cost Method Editable Account",
             "account_type": "securities_account",
@@ -227,7 +227,7 @@ def test_account_cost_method_can_be_updated_before_instrument_history(client):
     account = created_response.json()
 
     updated_response = client.patch(
-        f"/api/portfolios/yungu/accounts/{account['account_id']}",
+        f"/api/portfolios/portfolio-ops/accounts/{account['account_id']}",
         json={
             "account_name": "Cost Method Editable Account",
             "institution": "Test Broker",
@@ -245,7 +245,7 @@ def test_account_cost_method_can_be_updated_before_instrument_history(client):
 
 def test_account_cost_method_change_restates_instrument_history(client):
     created_response = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Cost Method Restatement Account",
             "account_type": "securities_account",
@@ -267,7 +267,7 @@ def test_account_cost_method_change_restates_instrument_history(client):
         ("2026-04-12", "sell", 6000.0, 75.0),
     ]:
         transaction_response = client.post(
-            "/api/portfolios/yungu/transactions",
+            "/api/portfolios/portfolio-ops/transactions",
             json={
                 "transaction_type": transaction_type,
                 "trade_date": trade_date,
@@ -285,7 +285,7 @@ def test_account_cost_method_change_restates_instrument_history(client):
         assert transaction_response.status_code == 200
 
     fifo_lots_response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert fifo_lots_response.status_code == 200
@@ -295,7 +295,7 @@ def test_account_cost_method_change_restates_instrument_history(client):
     assert sum(lot["realized_pnl"] for lot in fifo_lots) == pytest.approx(100000.0)
 
     updated_response = client.patch(
-        f"/api/portfolios/yungu/accounts/{account['account_id']}",
+        f"/api/portfolios/portfolio-ops/accounts/{account['account_id']}",
         json={
             "account_name": "Cost Method Restatement Account",
             "institution": "Test Broker",
@@ -310,7 +310,7 @@ def test_account_cost_method_change_restates_instrument_history(client):
     assert updated_response.json()["cost_basis_method"] == "moving_average"
 
     restated_lots_response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert restated_lots_response.status_code == 200
@@ -323,7 +323,7 @@ def test_account_cost_method_change_restates_instrument_history(client):
 
 def test_transaction_fact_can_be_updated_and_deleted(client):
     created_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-16",
@@ -337,7 +337,7 @@ def test_transaction_fact_can_be_updated_and_deleted(client):
     transaction_id = created_response.json()["transaction_id"]
 
     updated_response = client.put(
-        f"/api/portfolios/yungu/transactions/{transaction_id}",
+        f"/api/portfolios/portfolio-ops/transactions/{transaction_id}",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-17",
@@ -354,13 +354,13 @@ def test_transaction_fact_can_be_updated_and_deleted(client):
     assert updated_payload["gross_amount"] == pytest.approx(1250.0)
     assert updated_payload["note"] == "Corrected note"
 
-    deleted_response = client.delete(f"/api/portfolios/yungu/transactions/{transaction_id}")
+    deleted_response = client.delete(f"/api/portfolios/portfolio-ops/transactions/{transaction_id}")
     assert deleted_response.status_code == 200
     deleted_payload = deleted_response.json()
     assert deleted_payload["deleted_count"] == 1
     assert deleted_payload["deleted_transaction_ids"] == [transaction_id]
 
-    listing_response = client.get("/api/portfolios/yungu/transactions")
+    listing_response = client.get("/api/portfolios/portfolio-ops/transactions")
     assert listing_response.status_code == 200
     assert transaction_id not in {
         item["transaction_id"] for item in listing_response.json()["transactions"]
@@ -369,7 +369,7 @@ def test_transaction_fact_can_be_updated_and_deleted(client):
 
 def test_deleting_transfer_leg_removes_entire_pair(client):
     transfer_response = client.post(
-        "/api/portfolios/yungu/transactions/internal-transfer",
+        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-16",
             "from_account_id": "cash-usd-main",
@@ -383,7 +383,7 @@ def test_deleting_transfer_leg_removes_entire_pair(client):
     transfer_payload = transfer_response.json()
     delete_target = transfer_payload["transactions"][0]["transaction_id"]
 
-    deleted_response = client.delete(f"/api/portfolios/yungu/transactions/{delete_target}")
+    deleted_response = client.delete(f"/api/portfolios/portfolio-ops/transactions/{delete_target}")
     assert deleted_response.status_code == 200
     deleted_payload = deleted_response.json()
     assert deleted_payload["deleted_count"] == 2
@@ -393,11 +393,11 @@ def test_deleting_transfer_leg_removes_entire_pair(client):
 def test_create_transactions_rolls_back_whole_batch_on_later_failure(client):
     from portfolio_app.services.portfolio_store import create_transactions, list_transactions
 
-    before_ids = {item["transaction_id"] for item in list_transactions("yungu")}
+    before_ids = {item["transaction_id"] for item in list_transactions("portfolio-ops")}
 
     with pytest.raises(KeyError, match="gross_amount"):
         create_transactions(
-            portfolio_id="yungu",
+            portfolio_id="portfolio-ops",
             records=[
                 {
                     "transaction_type": "deposit",
@@ -438,14 +438,14 @@ def test_create_transactions_rolls_back_whole_batch_on_later_failure(client):
             ],
         )
 
-    after = list_transactions("yungu")
+    after = list_transactions("portfolio-ops")
     assert {item["transaction_id"] for item in after} == before_ids
     assert all(item["note"] != "batch rollback sentinel" for item in after)
 
 
 def test_rejects_cross_currency_security_facts(client):
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -464,7 +464,7 @@ def test_rejects_cross_currency_security_facts(client):
     assert "Securities account currency must match instrument currency" in buy_response.json()["detail"]
 
     transfer_response = client.post(
-        "/api/portfolios/yungu/transactions/internal-transfer",
+        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-15",
             "from_account_id": "broker-us-core",
@@ -479,7 +479,7 @@ def test_rejects_cross_currency_security_facts(client):
 
 
 def test_holdings_and_account_workspace_use_base_currency_valuation(client):
-    holdings_response = client.get("/api/workspace/holdings", params={"portfolio_id": "yungu"})
+    holdings_response = client.get("/api/workspace/holdings", params={"portfolio_id": "portfolio-ops"})
     assert holdings_response.status_code == 200
     holdings = holdings_response.json()
     assert holdings["base_currency"] == "USD"
@@ -516,7 +516,7 @@ def test_holdings_and_account_workspace_use_base_currency_valuation(client):
     assert hkd_row["allocation"] == pytest.approx(expected_hkd_allocation)
     assert holdings["totals"]["allocation"] == pytest.approx(expected_total_market_value / expected_total_nav)
 
-    accounts_response = client.get("/api/portfolios/yungu/accounts/workspace")
+    accounts_response = client.get("/api/portfolios/portfolio-ops/accounts/workspace")
     assert accounts_response.status_code == 200
     accounts_workspace = accounts_response.json()
     hk_account = next(
@@ -529,7 +529,7 @@ def test_holdings_and_account_workspace_use_base_currency_valuation(client):
 def test_holdings_workspace_replays_requested_as_of_date(client):
     response = client.get(
         "/api/workspace/holdings",
-        params={"portfolio_id": "yungu", "as_of_date": "2026-04-02"},
+        params={"portfolio_id": "portfolio-ops", "as_of_date": "2026-04-02"},
     )
     assert response.status_code == 200
     holdings = response.json()
@@ -550,12 +550,12 @@ def test_holdings_workspace_replays_requested_as_of_date(client):
 
 
 def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
-    baseline_summary_response = client.get("/api/workspace/summary", params={"portfolio_id": "yungu"})
+    baseline_summary_response = client.get("/api/workspace/summary", params={"portfolio_id": "portfolio-ops"})
     assert baseline_summary_response.status_code == 200
     baseline_nav = baseline_summary_response.json()["nav"]
 
     baseline_response = client.get(
-        "/api/portfolios/yungu/accounts/workspace",
+        "/api/portfolios/portfolio-ops/accounts/workspace",
         params={"as_of_date": "2026-04-15"},
     )
     assert baseline_response.status_code == 200
@@ -567,7 +567,7 @@ def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
     baseline_cash_balance = baseline_cash_row["derived_cash_balance"]
 
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -586,7 +586,7 @@ def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
     assert buy_response.status_code == 200
 
     trade_date_response = client.get(
-        "/api/portfolios/yungu/accounts/workspace",
+        "/api/portfolios/portfolio-ops/accounts/workspace",
         params={"as_of_date": "2026-04-15"},
     )
     assert trade_date_response.status_code == 200
@@ -606,12 +606,12 @@ def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
     )
     assert trade_date_broker_row["position_market_value"] >= 206.47
 
-    post_buy_summary_response = client.get("/api/workspace/summary", params={"portfolio_id": "yungu"})
+    post_buy_summary_response = client.get("/api/workspace/summary", params={"portfolio_id": "portfolio-ops"})
     assert post_buy_summary_response.status_code == 200
     assert post_buy_summary_response.json()["nav"] == pytest.approx(baseline_nav)
 
     settlement_date_response = client.get(
-        "/api/portfolios/yungu/accounts/workspace",
+        "/api/portfolios/portfolio-ops/accounts/workspace",
         params={"as_of_date": "2026-04-16"},
     )
     assert settlement_date_response.status_code == 200
@@ -625,7 +625,7 @@ def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
 
 
 def test_holdings_workspace_includes_shared_price_sparklines(client):
-    response = client.get("/api/workspace/holdings", params={"portfolio_id": "yungu"})
+    response = client.get("/api/workspace/holdings", params={"portfolio_id": "portfolio-ops"})
     assert response.status_code == 200
     holdings = response.json()
     assert "price_chart_range" not in holdings
@@ -667,7 +667,7 @@ def test_live_holdings_workspace_propagates_position_day_change(client, monkeypa
         lambda *_args, **_kwargs: None,
     )
 
-    response = client.get("/api/workspace/holdings", params={"portfolio_id": "yungu"})
+    response = client.get("/api/workspace/holdings", params={"portfolio_id": "portfolio-ops"})
     assert response.status_code == 200
     holdings = response.json()
 
@@ -689,13 +689,13 @@ def test_live_holdings_workspace_propagates_position_day_change(client, monkeypa
 
 def test_instrument_price_chart_endpoint_returns_filtered_shared_history(client):
     response = client.get(
-        "/api/portfolios/yungu/instruments/equity-us-abbv/price-chart",
+        "/api/portfolios/portfolio-ops/instruments/equity-us-abbv/price-chart",
         params={"as_of_date": "2026-04-15", "range": "1m"},
     )
     assert response.status_code == 200
     payload = response.json()
 
-    assert payload["portfolio_id"] == "yungu"
+    assert payload["portfolio_id"] == "portfolio-ops"
     assert payload["instrument_core"]["instrument_id"] == "equity-us-abbv"
     assert payload["range_key"] == "1m"
     assert payload["chart_basis"] == "close"
@@ -708,7 +708,7 @@ def test_instrument_price_chart_endpoint_returns_filtered_shared_history(client)
 
 def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client):
     response = client.get(
-        "/api/portfolios/yungu/transactions/position-preview",
+        "/api/portfolios/portfolio-ops/transactions/position-preview",
         params={
             "account_id": "broker-us-core",
             "instrument_id": "equity-us-abbv",
@@ -718,7 +718,7 @@ def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client
     assert response.status_code == 200
     payload = response.json()
 
-    assert payload["portfolio_id"] == "yungu"
+    assert payload["portfolio_id"] == "portfolio-ops"
     assert payload["account_id"] == "broker-us-core"
     assert payload["instrument_id"] == "equity-us-abbv"
     assert payload["as_of_date"] == "2026-04-15"
@@ -727,7 +727,7 @@ def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client
 
 def test_position_lots_support_historical_as_of_date(client):
     response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={"instrument_id": "equity-us-abbv", "status": "open", "as_of_date": "2026-04-02"},
     )
     assert response.status_code == 200
@@ -742,7 +742,7 @@ def test_position_lots_support_historical_as_of_date(client):
 
 def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(client):
     source_account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Test MA Equity Source",
             "account_type": "securities_account",
@@ -755,7 +755,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
         },
     ).json()
     destination_account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Test Equity Destination",
             "account_type": "securities_account",
@@ -770,7 +770,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
 
     for trade_date, price, gross_amount in [("2026-04-01", 10.0, 1000.0), ("2026-04-02", 20.0, 2000.0)]:
         buy_response = client.post(
-            "/api/portfolios/yungu/transactions",
+            "/api/portfolios/portfolio-ops/transactions",
             json={
                 "transaction_type": "buy",
                 "trade_date": trade_date,
@@ -788,7 +788,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
         assert buy_response.status_code == 200
 
     transfer_response = client.post(
-        "/api/portfolios/yungu/transactions/internal-transfer",
+        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-10",
             "from_account_id": source_account["account_id"],
@@ -803,7 +803,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
     assert {txn["gross_amount"] for txn in transfer_batch["transactions"]} == {2250.0}
 
     destination_lots_response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={"account_id": destination_account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert destination_lots_response.status_code == 200
@@ -813,7 +813,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
     assert destination_lots[0]["entry_cost_basis"] == pytest.approx(2250.0)
 
     source_lots_response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={"account_id": source_account["account_id"], "instrument_id": "equity-us-abbv", "status": "open"},
     )
     assert source_lots_response.status_code == 200
@@ -827,7 +827,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
 
 def test_position_transfer_allows_zero_cost_basis_lots(client):
     source_account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Zero Cost Source",
             "account_type": "securities_account",
@@ -841,7 +841,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
         },
     ).json()
     destination_account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Zero Cost Destination",
             "account_type": "securities_account",
@@ -856,7 +856,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
     ).json()
 
     opening_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "opening_balance",
             "trade_date": "2026-04-20",
@@ -870,7 +870,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
     assert opening_response.status_code == 200
 
     transfer_response = client.post(
-        "/api/portfolios/yungu/transactions/internal-transfer",
+        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-21",
             "transfer_object_type": "position",
@@ -884,11 +884,11 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
     assert {transaction["gross_amount"] for transaction in transfer_response.json()["transactions"]} == {0.0}
 
     source_lots_response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={"account_id": source_account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     destination_lots_response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={"account_id": destination_account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert source_lots_response.status_code == 200
@@ -904,7 +904,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
     assert destination_lots[0]["entry_cost_basis"] == pytest.approx(0.0)
 
     sell_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-22",
@@ -921,7 +921,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
 
 
 def test_copy_portfolio_remaps_counterparty_account_ids(client):
-    copy_response = client.post("/api/portfolios/yungu/copy")
+    copy_response = client.post("/api/portfolios/portfolio-ops/copy")
     assert copy_response.status_code == 200
     copied_portfolio_id = copy_response.json()["portfolio_id"]
 
@@ -937,7 +937,7 @@ def test_copy_portfolio_remaps_counterparty_account_ids(client):
 
 def test_fx_conversion_target_account_filter_includes_dual_account_fact(client):
     transactions_response = client.get(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         params={"account_id": "cash-cny-main", "transaction_type": "fx_conversion"},
     )
     assert transactions_response.status_code == 200
@@ -947,7 +947,7 @@ def test_fx_conversion_target_account_filter_includes_dual_account_fact(client):
 
 
 def test_rejects_backdated_sell_before_position_exists(client):
-    copy_response = client.post("/api/portfolios/yungu/copy")
+    copy_response = client.post("/api/portfolios/portfolio-ops/copy")
     assert copy_response.status_code == 200
     copied_portfolio_id = copy_response.json()["portfolio_id"]
     destination_account_response = client.post(
@@ -957,7 +957,7 @@ def test_rejects_backdated_sell_before_position_exists(client):
             "account_type": "securities_account",
             "currency": "USD",
             "institution": "Test Broker",
-            "default_settlement_cash_account_id": "cash-usd-reserve-yungu-copy",
+            "default_settlement_cash_account_id": "cash-usd-reserve-portfolio-ops-copy",
             "cost_basis_method": "fifo",
             "allowed_instrument_types": ["equity"],
             "opened_at": "2026-01-15",
@@ -972,8 +972,8 @@ def test_rejects_backdated_sell_before_position_exists(client):
         json={
             "transaction_type": "sell",
             "trade_date": "2026-01-20",
-            "account_id": "broker-us-core-yungu-copy",
-            "settlement_cash_account_id": "cash-usd-main-yungu-copy",
+            "account_id": "broker-us-core-portfolio-ops-copy",
+            "settlement_cash_account_id": "cash-usd-main-portfolio-ops-copy",
             "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
             "price": 200.0,
@@ -990,7 +990,7 @@ def test_rejects_backdated_sell_before_position_exists(client):
         f"/api/portfolios/{copied_portfolio_id}/transactions/internal-transfer",
         json={
             "trade_date": "2026-01-20",
-            "from_account_id": "broker-us-core-yungu-copy",
+            "from_account_id": "broker-us-core-portfolio-ops-copy",
             "to_account_id": destination_account["account_id"],
             "transfer_object_type": "position",
             "instrument_id": "equity-us-abbv",
@@ -1003,7 +1003,7 @@ def test_rejects_backdated_sell_before_position_exists(client):
 
 def test_rejects_inconsistent_buy_sell_amount_contracts(client):
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -1022,7 +1022,7 @@ def test_rejects_inconsistent_buy_sell_amount_contracts(client):
     assert "gross_amount must equal quantity multiplied by price" in buy_response.text
 
     sell_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-15",
@@ -1043,7 +1043,7 @@ def test_rejects_inconsistent_buy_sell_amount_contracts(client):
 
 def test_accepts_display_rounded_price_when_gross_amount_is_authoritative(client):
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -1066,7 +1066,7 @@ def test_accepts_display_rounded_price_when_gross_amount_is_authoritative(client
 
 def test_normalizes_transaction_precision_conventions(client):
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -1092,7 +1092,7 @@ def test_normalizes_transaction_precision_conventions(client):
 
 def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_contracts(client):
     opening_account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Opening Balance Review",
             "account_type": "securities_account",
@@ -1107,7 +1107,7 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
     ).json()
 
     opening_balance_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "opening_balance",
             "trade_date": "2026-04-15",
@@ -1123,7 +1123,7 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
     assert "security opening balance" in opening_balance_response.text.lower()
 
     reinvestment_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
@@ -1141,7 +1141,7 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
 
 def test_rejects_opening_balance_settlement_account_and_deposit_account_instrument(client):
     opening_balance_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "opening_balance",
             "trade_date": "2026-04-15",
@@ -1155,7 +1155,7 @@ def test_rejects_opening_balance_settlement_account_and_deposit_account_instrume
     assert "opening balance must not carry settlement_cash_account_id" in opening_balance_response.text.lower()
 
     deposit_account_security_opening_balance = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "opening_balance",
             "trade_date": "2026-04-15",
@@ -1172,7 +1172,7 @@ def test_rejects_opening_balance_settlement_account_and_deposit_account_instrume
 
 def test_rejects_deposit_account_fee_with_instrument_reference(client):
     fee_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "fee",
             "trade_date": "2026-04-15",
@@ -1186,7 +1186,7 @@ def test_rejects_deposit_account_fee_with_instrument_reference(client):
     assert "deposit-account fee and tax must not reference instrument" in fee_response.json()["detail"].lower()
 
     fee_with_settlement_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "fee",
             "trade_date": "2026-04-15",
@@ -1205,7 +1205,7 @@ def test_rejects_deposit_account_fee_with_instrument_reference(client):
 
 def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
     deposit_with_quantity = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-15",
@@ -1219,7 +1219,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
     assert "cash-flow transactions must not carry quantity or price" in deposit_with_quantity.text.lower()
 
     deposit_with_settlement = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-15",
@@ -1233,7 +1233,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
     assert "cash-flow transactions must not carry settlement_cash_account_id" in deposit_with_settlement.text.lower()
 
     interest_with_settlement = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "interest",
             "trade_date": "2026-04-15",
@@ -1247,7 +1247,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
     assert "interest must not carry settlement_cash_account_id" in interest_with_settlement.text.lower()
 
     drip_with_settlement = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
@@ -1263,7 +1263,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
     assert "dividend reinvestment must not carry settlement_cash_account_id" in drip_with_settlement.text.lower()
 
     deposit_with_counterparty = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-15",
@@ -1277,7 +1277,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
     assert "counterparty_account_id is only allowed for fx_conversion" in deposit_with_counterparty.text.lower()
 
     dividend_with_quantity = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "dividend",
             "trade_date": "2026-04-15",
@@ -1295,7 +1295,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
 
 def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_allocation(client):
     account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Income Attribution Review",
             "account_type": "securities_account",
@@ -1310,7 +1310,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -1328,7 +1328,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
     assert buy_response.status_code == 200
 
     dividend_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "dividend",
             "trade_date": "2026-04-15",
@@ -1344,7 +1344,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
     assert dividend_response.status_code == 200
 
     roc_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "return_of_capital",
             "trade_date": "2026-04-16",
@@ -1360,7 +1360,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
     assert roc_response.status_code == 200
 
     lots_response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
@@ -1373,7 +1373,7 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
 
 def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(client):
     source_account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Flat Position Source",
             "account_type": "securities_account",
@@ -1387,7 +1387,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
         },
     ).json()
     destination_account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Flat Position Destination",
             "account_type": "securities_account",
@@ -1402,7 +1402,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -1418,7 +1418,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
     assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-11",
@@ -1434,7 +1434,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
     assert sell_response.status_code == 200
 
     oversell_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-12",
@@ -1451,7 +1451,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
     assert "exceeds account position as of trade_date" in oversell_response.json()["detail"]
 
     transfer_response = client.post(
-        "/api/portfolios/yungu/transactions/internal-transfer",
+        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-12",
             "from_account_id": source_account["account_id"],
@@ -1465,7 +1465,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
     assert "exceeds source position as of trade_date" in transfer_response.json()["detail"]
 
     roc_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "return_of_capital",
             "trade_date": "2026-04-12",
@@ -1482,7 +1482,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
 
 def test_rejects_instrument_income_and_expense_without_open_position(client):
     account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Post-Close Income Review",
             "account_type": "securities_account",
@@ -1497,7 +1497,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -1513,7 +1513,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
     assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-11",
@@ -1529,7 +1529,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
     assert sell_response.status_code == 200
 
     dividend_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "dividend",
             "trade_date": "2026-04-12",
@@ -1544,7 +1544,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
     assert "requires account position as of entitlement_date" in dividend_response.json()["detail"]
 
     fee_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "fee",
             "trade_date": "2026-04-13",
@@ -1561,7 +1561,7 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
 
 def test_rejects_nested_fee_and_tax_fields_on_fee_tax_transactions(client):
     fee_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "fee",
             "trade_date": "2026-04-15",
@@ -1576,7 +1576,7 @@ def test_rejects_nested_fee_and_tax_fields_on_fee_tax_transactions(client):
     assert "must not carry nested fees or taxes" in fee_response.text.lower()
 
     tax_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "tax",
             "trade_date": "2026-04-15",
@@ -1592,7 +1592,7 @@ def test_rejects_nested_fee_and_tax_fields_on_fee_tax_transactions(client):
 
 def test_rejects_dividend_reinvestment_without_existing_position(client):
     account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Empty DRIP Review",
             "account_type": "securities_account",
@@ -1607,7 +1607,7 @@ def test_rejects_dividend_reinvestment_without_existing_position(client):
     ).json()
 
     response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
@@ -1625,7 +1625,7 @@ def test_rejects_dividend_reinvestment_without_existing_position(client):
 
 def test_rejects_entitlement_date_on_dividend_reinvestment(client):
     response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
@@ -1644,7 +1644,7 @@ def test_rejects_entitlement_date_on_dividend_reinvestment(client):
 
 def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
     account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Late Income Review",
             "account_type": "securities_account",
@@ -1660,7 +1660,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
 
     for trade_date in ("2026-04-01", "2026-04-02"):
         buy_response = client.post(
-            "/api/portfolios/yungu/transactions",
+            "/api/portfolios/portfolio-ops/transactions",
             json={
                 "transaction_type": "buy",
                 "trade_date": trade_date,
@@ -1676,7 +1676,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
         assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-12",
@@ -1692,7 +1692,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
     assert sell_response.status_code == 200
 
     dividend_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "dividend",
             "trade_date": "2026-04-15",
@@ -1708,7 +1708,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
     assert dividend_response.json()["entitlement_date"] == "2026-04-10"
 
     lots_response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
@@ -1721,7 +1721,7 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
 
 def test_rejects_late_paid_dividend_reinvestment_and_preserves_workspace_reads(client):
     account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Late DRIP Review",
             "account_type": "securities_account",
@@ -1736,7 +1736,7 @@ def test_rejects_late_paid_dividend_reinvestment_and_preserves_workspace_reads(c
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-01",
@@ -1752,7 +1752,7 @@ def test_rejects_late_paid_dividend_reinvestment_and_preserves_workspace_reads(c
     assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-12",
@@ -1768,7 +1768,7 @@ def test_rejects_late_paid_dividend_reinvestment_and_preserves_workspace_reads(c
     assert sell_response.status_code == 200
 
     drip_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
@@ -1783,16 +1783,16 @@ def test_rejects_late_paid_dividend_reinvestment_and_preserves_workspace_reads(c
     )
     assert drip_response.status_code == 422
 
-    ledger_response = client.get("/api/portfolios/yungu/ledger-postings")
+    ledger_response = client.get("/api/portfolios/portfolio-ops/ledger-postings")
     assert ledger_response.status_code == 200
 
-    workspace_response = client.get("/api/portfolios/yungu/accounts/workspace")
+    workspace_response = client.get("/api/portfolios/portfolio-ops/accounts/workspace")
     assert workspace_response.status_code == 200
 
 
 def test_rejects_entitlement_date_on_return_of_capital(client):
     response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "return_of_capital",
             "trade_date": "2026-04-15",
@@ -1889,7 +1889,7 @@ def test_ledger_postings_sort_by_trade_time_within_same_day():
 
 def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client):
     account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "DRIP Attribution Review",
             "account_type": "securities_account",
@@ -1904,7 +1904,7 @@ def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -1920,7 +1920,7 @@ def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client
     assert buy_response.status_code == 200
 
     drip_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-04-15",
@@ -1935,7 +1935,7 @@ def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client
     assert drip_response.status_code == 200
 
     lots_response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
@@ -2098,7 +2098,7 @@ def test_lot_kernels_reject_oversell_when_route_validation_is_bypassed():
 
 def test_rejects_settlement_before_trade_date(client):
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -2118,7 +2118,7 @@ def test_rejects_settlement_before_trade_date(client):
     assert "settlement_date must not be earlier than trade_date" in buy_response.text
 
     transfer_response = client.post(
-        "/api/portfolios/yungu/transactions/internal-transfer",
+        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-15",
             "settlement_date": "2026-04-01",
@@ -2134,7 +2134,7 @@ def test_rejects_settlement_before_trade_date(client):
 
 def test_rejects_transactions_outside_account_lifecycle(client):
     closed_account_response = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Closed Equity Sleeve",
             "account_type": "securities_account",
@@ -2152,7 +2152,7 @@ def test_rejects_transactions_outside_account_lifecycle(client):
     closed_account = closed_account_response.json()
 
     late_trade_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -2171,7 +2171,7 @@ def test_rejects_transactions_outside_account_lifecycle(client):
     assert "is closed on 2026-04-15" in late_trade_response.json()["detail"]
 
     future_account_response = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Future HKD Cash",
             "account_type": "deposit_account",
@@ -2185,7 +2185,7 @@ def test_rejects_transactions_outside_account_lifecycle(client):
     future_account = future_account_response.json()
 
     early_fx_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "fx_conversion",
             "trade_date": "2026-04-15",
@@ -2205,7 +2205,7 @@ def test_rejects_transactions_outside_account_lifecycle(client):
 
 def test_defaults_trade_time_and_trade_at_when_not_provided(client):
     deposit_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-15",
@@ -2226,7 +2226,7 @@ def test_defaults_trade_time_and_trade_at_when_not_provided(client):
 
 def test_transaction_list_sorts_same_day_by_trade_time_not_creation_order(client):
     later_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-15",
@@ -2241,7 +2241,7 @@ def test_transaction_list_sorts_same_day_by_trade_time_not_creation_order(client
     assert later_response.status_code == 200
 
     earlier_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "deposit",
             "trade_date": "2026-04-15",
@@ -2256,7 +2256,7 @@ def test_transaction_list_sorts_same_day_by_trade_time_not_creation_order(client
     assert earlier_response.status_code == 200
 
     transactions_response = client.get(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         params={"account_id": "cash-usd-main", "transaction_type": "deposit"},
     )
     assert transactions_response.status_code == 200
@@ -2267,7 +2267,7 @@ def test_transaction_list_sorts_same_day_by_trade_time_not_creation_order(client
 
 def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
     account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Timed Equity Sleeve",
             "account_type": "securities_account",
@@ -2282,7 +2282,7 @@ def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -2301,7 +2301,7 @@ def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
     assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-15",
@@ -2323,7 +2323,7 @@ def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
 
 def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
     account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Same Day Equity",
             "account_type": "securities_account",
@@ -2338,7 +2338,7 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
@@ -2358,7 +2358,7 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
     assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-15",
@@ -2378,14 +2378,14 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
     assert sell_response.status_code == 200
 
     account_workspace_response = client.get(
-        "/api/portfolios/yungu/accounts/workspace",
+        "/api/portfolios/portfolio-ops/accounts/workspace",
         params={"account_id": account["account_id"]},
     )
     assert account_workspace_response.status_code == 200
     assert account_workspace_response.json()["positions"] == []
 
     lots_response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
@@ -2396,7 +2396,7 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
     assert lots[0]["realized_pnl"] == pytest.approx(1000.0)
 
     ledger_response = client.get(
-        f"/api/portfolios/yungu/transactions/{sell_response.json()['transaction_id']}/ledger-postings"
+        f"/api/portfolios/portfolio-ops/transactions/{sell_response.json()['transaction_id']}/ledger-postings"
     )
     assert ledger_response.status_code == 200
     sell_position_posting = next(
@@ -2409,7 +2409,7 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
 
 def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
     account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Entry Price Review Account",
             "account_type": "securities_account",
@@ -2424,7 +2424,7 @@ def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-16",
@@ -2442,7 +2442,7 @@ def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
     assert buy_response.status_code == 200
 
     lots_response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv", "status": "open"},
     )
     assert lots_response.status_code == 200
@@ -2459,7 +2459,7 @@ def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
 
 def test_moving_average_position_lots_match_account_cost_basis_method(client):
     account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "MA Review Account",
             "account_type": "securities_account",
@@ -2475,7 +2475,7 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
 
     for trade_date, price in [("2026-04-10", 100.0), ("2026-04-11", 120.0)]:
         buy_response = client.post(
-            "/api/portfolios/yungu/transactions",
+            "/api/portfolios/portfolio-ops/transactions",
             json={
                 "transaction_type": "buy",
                 "trade_date": trade_date,
@@ -2493,7 +2493,7 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
         assert buy_response.status_code == 200
 
     sell_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "sell",
             "trade_date": "2026-04-12",
@@ -2511,7 +2511,7 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
     assert sell_response.status_code == 200
 
     account_workspace_response = client.get(
-        "/api/portfolios/yungu/accounts/workspace",
+        "/api/portfolios/portfolio-ops/accounts/workspace",
         params={"account_id": account["account_id"]},
     )
     assert account_workspace_response.status_code == 200
@@ -2523,7 +2523,7 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
     assert account_position["cost_basis"] == pytest.approx(16500.0)
 
     lots_response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
     )
     assert lots_response.status_code == 200
@@ -2539,7 +2539,7 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
 
 def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
     source_account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Transfer Source",
             "account_type": "securities_account",
@@ -2553,7 +2553,7 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
         },
     ).json()
     destination_account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Transfer Dest",
             "account_type": "securities_account",
@@ -2568,7 +2568,7 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -2586,7 +2586,7 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
     assert buy_response.status_code == 200
 
     transfer_response = client.post(
-        "/api/portfolios/yungu/transactions/internal-transfer",
+        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
         json={
             "trade_date": "2026-04-15",
             "from_account_id": source_account["account_id"],
@@ -2603,7 +2603,7 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
 
 def test_rejects_return_of_capital_above_remaining_cost_basis(client):
     account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "ROC Review",
             "account_type": "securities_account",
@@ -2618,7 +2618,7 @@ def test_rejects_return_of_capital_above_remaining_cost_basis(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -2636,7 +2636,7 @@ def test_rejects_return_of_capital_above_remaining_cost_basis(client):
     assert buy_response.status_code == 200
 
     roc_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "return_of_capital",
             "trade_date": "2026-04-15",
@@ -2655,7 +2655,7 @@ def test_rejects_return_of_capital_above_remaining_cost_basis(client):
 
 def test_accounts_workspace_includes_selected_account_linked_transactions(client):
     response = client.get(
-        "/api/portfolios/yungu/accounts/workspace",
+        "/api/portfolios/portfolio-ops/accounts/workspace",
         params={"account_id": "broker-us-core"},
     )
     assert response.status_code == 200
@@ -2679,7 +2679,7 @@ def test_accounts_workspace_includes_selected_account_linked_transactions(client
 
 def test_transactions_workspace_returns_selected_fact_ledger_and_related_position_lots(client):
     response = client.get(
-        "/api/portfolios/yungu/transactions/workspace",
+        "/api/portfolios/portfolio-ops/transactions/workspace",
         params={"transaction_id": "txn-0003"},
     )
     assert response.status_code == 200
@@ -2696,7 +2696,7 @@ def test_transactions_workspace_returns_selected_fact_ledger_and_related_positio
 
 def test_security_trade_cash_posting_uses_settlement_effective_date(client):
     account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Settlement Timing Review",
             "account_type": "securities_account",
@@ -2711,7 +2711,7 @@ def test_security_trade_cash_posting_uses_settlement_effective_date(client):
     ).json()
 
     buy_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "buy",
             "trade_date": "2026-04-10",
@@ -2730,7 +2730,7 @@ def test_security_trade_cash_posting_uses_settlement_effective_date(client):
     assert buy_response.status_code == 200
 
     ledger_response = client.get(
-        f"/api/portfolios/yungu/transactions/{buy_response.json()['transaction_id']}/ledger-postings"
+        f"/api/portfolios/portfolio-ops/transactions/{buy_response.json()['transaction_id']}/ledger-postings"
     )
     assert ledger_response.status_code == 200
     postings = ledger_response.json()["ledger_postings"]
@@ -2744,7 +2744,7 @@ def test_security_trade_cash_posting_uses_settlement_effective_date(client):
 
 def test_security_opening_balance_preserves_acquisition_date_in_position_lots(client):
     account = client.post(
-        "/api/portfolios/yungu/accounts",
+        "/api/portfolios/portfolio-ops/accounts",
         json={
             "account_name": "Imported Lot Account",
             "account_type": "securities_account",
@@ -2759,7 +2759,7 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
     ).json()
 
     opening_balance_response = client.post(
-        "/api/portfolios/yungu/transactions",
+        "/api/portfolios/portfolio-ops/transactions",
         json={
             "transaction_type": "opening_balance",
             "trade_date": "2026-04-10",
@@ -2778,7 +2778,7 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
     assert opening_balance_response.json()["acquisition_date"] == "2025-03-01"
 
     lots_response = client.get(
-        "/api/portfolios/yungu/position-lots",
+        "/api/portfolios/portfolio-ops/position-lots",
         params={
             "account_id": account["account_id"],
             "instrument_id": "equity-us-abbv",

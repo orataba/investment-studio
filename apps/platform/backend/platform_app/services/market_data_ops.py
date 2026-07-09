@@ -941,7 +941,7 @@ def _call_tushare_api(
 ) -> list[dict[str, object]]:
     settings = get_settings()
     if not settings.tushare_ready:
-        raise TushareRefreshError("Tushare token is not configured. Set YUNGU_PLATFORM_TUSHARE_TOKEN first.")
+        raise TushareRefreshError("Tushare token is not configured. Set PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN first.")
     if ts is None:
         raise TushareRefreshError("Tushare SDK is not installed. Install the backend dependency first.")
 
@@ -1596,7 +1596,7 @@ def _refresh_from_email(
         return update_refresh_status(
             instrument_id=instrument_id,
             status="blocked",
-            message="Email refresh is disabled. Set YUNGU_PLATFORM_EMAIL_SYNC_ENABLED=true first.",
+            message="Email refresh is disabled. Set PORTFOLIO_OPS_PLATFORM_EMAIL_SYNC_ENABLED=true first.",
             updated_by=updated_by,
             mode="email",
         )

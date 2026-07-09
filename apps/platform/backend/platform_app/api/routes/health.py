@@ -11,11 +11,11 @@ def get_health() -> dict[str, object]:
     settings = get_settings()
     missing_email_settings: list[str] = []
     if not settings.email_imap_host:
-        missing_email_settings.append("YUNGU_PLATFORM_EMAIL_IMAP_HOST")
+        missing_email_settings.append("PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_HOST")
     if not settings.email_imap_username:
-        missing_email_settings.append("YUNGU_PLATFORM_EMAIL_IMAP_USERNAME")
+        missing_email_settings.append("PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_USERNAME")
     if not settings.email_imap_password:
-        missing_email_settings.append("YUNGU_PLATFORM_EMAIL_IMAP_PASSWORD")
+        missing_email_settings.append("PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD")
 
     return {
         "status": "ok",

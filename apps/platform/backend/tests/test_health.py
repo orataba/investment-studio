@@ -38,9 +38,9 @@ def test_health_reports_email_readiness(monkeypatch) -> None:
         "imap_use_ssl": True,
         "max_messages": 20,
         "missing_required_settings": [
-            "YUNGU_PLATFORM_EMAIL_IMAP_HOST",
-            "YUNGU_PLATFORM_EMAIL_IMAP_USERNAME",
-            "YUNGU_PLATFORM_EMAIL_IMAP_PASSWORD",
+            "PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_HOST",
+            "PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_USERNAME",
+            "PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD",
         ],
     }
     assert payload["tushare_sync"] == {

@@ -184,8 +184,8 @@ type HoldingsViewStore = {
 }
 
 const LOCKED_HOLDINGS_COLUMN: HoldingsColumnKey = 'instrument'
-const HOLDINGS_COLUMN_WIDTHS_STORAGE_KEY = 'yungu.portfolio.holdings.columnWidths.v4'
-const HOLDINGS_VIEWS_STORAGE_KEY = 'yungu.portfolio.holdings.views.v4'
+const HOLDINGS_COLUMN_WIDTHS_STORAGE_KEY = 'portfolio_ops.portfolio.holdings.columnWidths.v4'
+const HOLDINGS_VIEWS_STORAGE_KEY = 'portfolio_ops.portfolio.holdings.views.v4'
 const HOLDINGS_COLUMN_MIN_WIDTH = 84
 const HOLDINGS_COLUMN_MAX_WIDTH = 520
 

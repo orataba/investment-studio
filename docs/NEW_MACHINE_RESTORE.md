@@ -9,7 +9,7 @@
 - 仓库已从私有 GitHub clone 到本机。
 - 本机可以访问 GitHub、PyPI/npm registry、Docker/PostgreSQL。
 - backend `.env` 已随私有仓库提交，无需从旧机器单独复制；不要在聊天、issue、PR 描述或提交信息中粘贴 `.env` 的密钥值。
-- `YUNGU_*`、`FTV2_*`、本地数据库用户名等运行时标识暂时保留为兼容变量名；项目对外名称使用 `Portfolio Operations Workbench`。
+- 所有 backend 运行时环境变量统一使用 `PORTFOLIO_OPS_*` 前缀；本地数据库名、用户和密码统一为 `portfolio_ops`。
 
 ## 1. 安装系统工具
 
@@ -50,12 +50,12 @@ test -f apps/portfolio/backend/.env
 ```bash
 (cd infra/postgres && docker compose up -d)
 
-until pg_isready -h 127.0.0.1 -p 5432 -U yungu -d yungu; do
+until pg_isready -h 127.0.0.1 -p 5432 -U portfolio_ops -d portfolio_ops; do
   sleep 1
 done
 ```
 
-这个本地 Docker profile 仍使用兼容的本地数据库名和用户。不要把 `.local-pg/` raw data directory 放入 Git。
+这个本地 Docker profile 会创建 `portfolio_ops` 数据库和同名用户。不要把 `.local-pg/` raw data directory 放入 Git。
 
 ## 4. 恢复数据库快照
 
@@ -74,16 +74,16 @@ shasum -a 256 -c data/migration/portfolio_ops_2026-07-08.sha256
 恢复：
 
 ```bash
-PGPASSWORD=yungu \
+PGPASSWORD=portfolio_ops \
 pg_restore --clean --if-exists --no-owner --no-acl \
-  -h 127.0.0.1 -U yungu -d yungu \
+  -h 127.0.0.1 -U portfolio_ops -d portfolio_ops \
   data/migration/portfolio_ops_2026-07-08.pgdump
 ```
 
 快速核对：
 
 ```bash
-PGPASSWORD=yungu psql -h 127.0.0.1 -U yungu -d yungu -c "
+PGPASSWORD=portfolio_ops psql -h 127.0.0.1 -U portfolio_ops -d portfolio_ops -c "
 select 'instrument_registry.instrument' as table_name, count(*) from instrument_registry.instrument
 union all
 select 'portfolio.portfolio_record', count(*) from portfolio.portfolio_record

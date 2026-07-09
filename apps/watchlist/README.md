@@ -65,8 +65,8 @@ uvicorn watchlist_app.main:app --reload --host 127.0.0.1 --port 8000
 
 说明：
 
-- 运行时数据库连接以 `FTV2_DATABASE_URL` 为准；如迁移需要单独连接，可设置 `FTV2_ALEMBIC_DATABASE_URL`
-- schema 以 `FTV2_DATABASE_SCHEMA` 为准
+- 运行时数据库连接以 `PORTFOLIO_OPS_WATCHLIST_DATABASE_URL` 为准；如迁移需要单独连接，可设置 `PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL`
+- schema 以 `PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA` 为准
 - settings 默认值仍指向本地 PostgreSQL，但实际运行应以你当前 `.env` / shell 环境为准
 - 数据库结构只通过 `alembic upgrade head` 管理；如果要清空旧数据，使用仓库根目录的 `./infra/postgres/rebuild_local_schemas.sh`
 - FastAPI 根路径会重定向到前端 `watchlists`

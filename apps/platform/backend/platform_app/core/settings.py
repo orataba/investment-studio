@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     portfolio_url: str = "http://127.0.0.1:5174"
     watchlist_api_url: str = "http://127.0.0.1:8000"
     portfolio_api_url: str = "http://127.0.0.1:8001"
-    database_url: str = "postgresql+psycopg://yungu:yungu@127.0.0.1:5432/yungu"
+    database_url: str = "postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops"
     database_schema: str | None = "instrument_registry"
     sql_echo: bool = False
     email_sync_enabled: bool = False
@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     tushare_timeout_seconds: int = 30
 
     model_config = SettingsConfigDict(
-        env_prefix="YUNGU_PLATFORM_",
+        env_prefix="PORTFOLIO_OPS_PLATFORM_",
         env_file=WORKSPACE_ROOT / "backend" / ".env",
         extra="ignore",
     )

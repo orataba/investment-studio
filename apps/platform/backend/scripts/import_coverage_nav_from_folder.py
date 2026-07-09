@@ -18,7 +18,7 @@ from platform_app.db.models import Instrument, InstrumentIdentifier  # noqa: E40
 from platform_app.db.session import get_session_factory  # noqa: E402
 from platform_app.services import market_data_ops  # noqa: E402
 from platform_app.services.instrument_store import replace_nav_history  # noqa: E402
-from yungu_instrument_core.instrument_store import (  # noqa: E402
+from portfolio_ops_instrument_core.instrument_store import (  # noqa: E402
     _default_lifecycle_state,
     _default_quote_selection_policy,
     _default_refresh_status,

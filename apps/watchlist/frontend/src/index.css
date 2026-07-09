@@ -1,6 +1,6 @@
 :root {
   color-scheme: light;
-  font-family: var(--yungu-font-sans, "Aptos", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif);
+  font-family: var(--portfolio-ops-font-sans, "Aptos", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif);
   line-height: 1.5;
   font-weight: 400;
   color: #111111;
@@ -2269,7 +2269,7 @@ th {
 }
 
 .instrument-library-instrument-id {
-  font-family: var(--yungu-font-mono, "Aptos Mono", "Cascadia Mono", "Consolas", monospace);
+  font-family: var(--portfolio-ops-font-mono, "Aptos Mono", "Cascadia Mono", "Consolas", monospace);
   color: #4b5563;
 }
 

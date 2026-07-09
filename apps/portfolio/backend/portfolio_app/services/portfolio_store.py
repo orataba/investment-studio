@@ -7,7 +7,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Integer, and_, cast, delete, func, or_, select
-from yungu_instrument_core.db_models import InstrumentMarketData
+from portfolio_ops_instrument_core.db_models import InstrumentMarketData
 
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (

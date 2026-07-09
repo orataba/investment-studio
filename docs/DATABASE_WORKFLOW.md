@@ -2,7 +2,7 @@
 
 ## Default Topology
 
-- PostgreSQL database: `yungu`
+- PostgreSQL database: `portfolio_ops`
 - Schemas:
   - `instrument_registry`
   - `portfolio`
@@ -42,8 +42,8 @@ Local connection values come from the committed private-repository backend `.env
 说明：
 
 - 这是破坏性命令，会删除 `instrument_registry / portfolio / watchlist` 三个 schema 的全部数据。
-- 默认读取 `YUNGU_LOCAL_POSTGRES_URL`。
-- 如果数据库地址不同，先在 backend `.env` 或 shell 环境里设置 `YUNGU_LOCAL_POSTGRES_URL`。
+- 默认读取 `PORTFOLIO_OPS_LOCAL_POSTGRES_URL`。
+- 如果数据库地址不同，先在 backend `.env` 或 shell 环境里设置 `PORTFOLIO_OPS_LOCAL_POSTGRES_URL`。
 - migration 只重建结构和仓库内定义的 reference rows；业务导入数据、手工录入数据、历史 runtime 数据不会自动恢复。
 - `portfolio` schema 重建后默认是空组合状态；需要组合时，显式通过 UI/API 创建，或运行 `apps/portfolio/backend/scripts/import_real_portfolio_from_csv.py --csv-path ... --portfolio-id ...` 导入。
 - `watchlist` schema 重建后不会自动注入示例 watchlist、示例标签值或 demo 产品框架赋值。
@@ -82,8 +82,8 @@ SQLite fast tests 不会覆盖 PostgreSQL 专属的 cross-schema FK / search_pat
 (cd apps/watchlist/backend && pytest tests/test_postgres_instrument_registry_constraints.py -q)
 ```
 
-这些测试默认读取 `YUNGU_TEST_POSTGRES_URL`。
-如果测试数据库地址不同，在 backend `.env` 或 shell 环境里设置 `YUNGU_TEST_POSTGRES_URL`。
+这些测试默认读取 `PORTFOLIO_OPS_TEST_POSTGRES_URL`。
+如果测试数据库地址不同，在 backend `.env` 或 shell 环境里设置 `PORTFOLIO_OPS_TEST_POSTGRES_URL`。
 这两条测试会在同一个 PostgreSQL 实例里临时创建并删除独立数据库，所以运行用户还需要能连接 `postgres` 库并具备 `CREATE DATABASE / DROP DATABASE` 权限。
 
 ## Repository Hygiene

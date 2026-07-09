@@ -35,7 +35,7 @@ export default function NoticeToast({ notice, durationMs = 2800, onDismiss }: No
 
   const tone = notice.tone || 'info'
   return (
-    <div className={`yungu-notice-toast yungu-notice-toast-${tone}`} role="status" aria-live="polite">
+    <div className={`portfolio-ops-notice-toast portfolio-ops-notice-toast-${tone}`} role="status" aria-live="polite">
       {notice.message}
     </div>
   )

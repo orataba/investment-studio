@@ -1,17 +1,17 @@
 services:
   postgres:
     image: postgres:17
-    container_name: yungu-postgres
+    container_name: portfolio-ops-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: yungu
-      POSTGRES_USER: yungu
-      POSTGRES_PASSWORD: yungu
+      POSTGRES_DB: portfolio_ops
+      POSTGRES_USER: portfolio_ops
+      POSTGRES_PASSWORD: portfolio_ops
     ports:
       - "5432:5432"
     volumes:
-      - yungu-postgres-data:/var/lib/postgresql/data
+      - portfolio-ops-postgres-data:/var/lib/postgresql/data
       - ./init:/docker-entrypoint-initdb.d:ro
 
 volumes:
-  yungu-postgres-data:
+  portfolio-ops-postgres-data:

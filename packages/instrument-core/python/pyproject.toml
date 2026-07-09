@@ -13,4 +13,4 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["yungu_instrument_core*"]
+include = ["portfolio_ops_instrument_core*"]

@@ -334,7 +334,7 @@ type WatchlistRollingRiskSettings = {
   chartDisplayStyle: ChartDisplayStyle
 }
 
-const WATCHLIST_ROLLING_RISK_SETTINGS_STORAGE_KEY = 'yungu.watchlist.instrument.risk.rolling.settings.v1'
+const WATCHLIST_ROLLING_RISK_SETTINGS_STORAGE_KEY = 'portfolio_ops.watchlist.instrument.risk.rolling.settings.v1'
 const DEFAULT_ROLLING_RISK_SETTINGS: WatchlistRollingRiskSettings = {
   windowMonths: 1,
   chartDisplayStyle: 'mountain',
@@ -7463,17 +7463,17 @@ export default function FundDetailPage({
             </h1>
             <div className="instrument-detail-badges">
               {detailClassificationLabel ? (
-                <span className="context-chip" data-yungu-i18n-ignore="true">
+                <span className="context-chip" data-portfolio-ops-i18n-ignore="true">
                   {localize(language, SYSTEM_LABELS.peer)}: {detailClassificationLabel}
                 </span>
               ) : null}
-              <span className="context-chip" data-yungu-i18n-ignore="true">
+              <span className="context-chip" data-portfolio-ops-i18n-ignore="true">
                 {localize(language, SYSTEM_LABELS.basis)}: {navBasisLabel}
               </span>
-              <span className="context-chip" data-yungu-i18n-ignore="true">
+              <span className="context-chip" data-portfolio-ops-i18n-ignore="true">
                 Risk basis: {calculationFrequencyStatus}
               </span>
-              <span className="context-chip" data-yungu-i18n-ignore="true">
+              <span className="context-chip" data-portfolio-ops-i18n-ignore="true">
                 {localize(language, SYSTEM_LABELS.analystStance)}:{' '}
                 {localizeSystemValue(summary.analyst_stance, language)}
               </span>
@@ -7481,7 +7481,7 @@ export default function FundDetailPage({
           </div>
         </div>
 
-        <div className="instrument-detail-tabs-row" data-yungu-i18n-ignore="true">
+        <div className="instrument-detail-tabs-row" data-portfolio-ops-i18n-ignore="true">
           <div className="instrument-detail-tabs">
             {availableTabs.map((tab) => (
               <button
@@ -10180,7 +10180,7 @@ export default function FundDetailPage({
       ) : null}
 
       {activeTab === 'documents' ? (
-        <section className="instrument-documents-shell instrument-edit-surface" data-yungu-i18n-ignore="true">
+        <section className="instrument-documents-shell instrument-edit-surface" data-portfolio-ops-i18n-ignore="true">
           <div className="instrument-price-topline" />
 
           <section className="instrument-documents-section">

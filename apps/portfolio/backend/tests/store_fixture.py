@@ -5,8 +5,8 @@ from typing import Any
 TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
     "portfolios": [
         {
-            "portfolio_id": "yungu",
-            "portfolio_name": "yungu",
+            "portfolio_id": "portfolio-ops",
+            "portfolio_name": "portfolio-ops",
             "base_currency": "USD",
             "valuation_timezone": "Asia/Shanghai",
             "valuation_cutoff_policy": "latest_complete_eod",
@@ -21,7 +21,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
     "accounts": [
         {
             "account_id": "cash-usd-main",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "account_name": "Main USD Cash",
             "account_type": "deposit_account",
             "currency": "USD",
@@ -34,7 +34,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "account_id": "cash-usd-reserve",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "account_name": "Reserve USD Cash",
             "account_type": "deposit_account",
             "currency": "USD",
@@ -47,7 +47,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "account_id": "broker-us-core",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "account_name": "IBKR Core Brokerage",
             "account_type": "securities_account",
             "currency": "USD",
@@ -60,7 +60,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "account_id": "broker-us-income",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "account_name": "IBKR Income Sleeve",
             "account_type": "securities_account",
             "currency": "USD",
@@ -73,7 +73,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "account_id": "cash-hkd-main",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "account_name": "Main HKD Cash",
             "account_type": "deposit_account",
             "currency": "HKD",
@@ -86,7 +86,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "account_id": "cash-cny-main",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "account_name": "Main CNY Cash",
             "account_type": "deposit_account",
             "currency": "CNY",
@@ -99,7 +99,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "account_id": "broker-hk-core",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "account_name": "IBKR Hong Kong",
             "account_type": "securities_account",
             "currency": "HKD",
@@ -114,7 +114,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
     "transactions": [
         {
             "transaction_id": "txn-0001",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "opening_balance",
             "trade_date": "2026-01-02",
             "settlement_date": "2026-01-02",
@@ -137,7 +137,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0002",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "deposit",
             "trade_date": "2026-02-03",
             "settlement_date": "2026-02-03",
@@ -160,7 +160,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0003",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "buy",
             "trade_date": "2026-02-10",
             "settlement_date": "2026-02-12",
@@ -200,7 +200,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0004",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "buy",
             "trade_date": "2026-03-05",
             "settlement_date": "2026-03-07",
@@ -235,7 +235,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0005",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "dividend",
             "trade_date": "2026-03-15",
             "settlement_date": "2026-03-15",
@@ -275,7 +275,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0006",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "dividend_reinvestment",
             "trade_date": "2026-03-28",
             "settlement_date": "2026-03-28",
@@ -310,7 +310,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0007",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "sell",
             "trade_date": "2026-04-08",
             "settlement_date": "2026-04-10",
@@ -350,7 +350,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0008",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "fee",
             "trade_date": "2026-04-09",
             "settlement_date": "2026-04-09",
@@ -373,7 +373,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0009",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "withdrawal",
             "trade_date": "2026-04-11",
             "settlement_date": "2026-04-11",
@@ -396,7 +396,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0010",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "transfer_out",
             "trade_date": "2026-04-12",
             "settlement_date": "2026-04-12",
@@ -419,7 +419,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0011",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "transfer_in",
             "trade_date": "2026-04-12",
             "settlement_date": "2026-04-12",
@@ -442,7 +442,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0012",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "transfer_out",
             "trade_date": "2026-04-13",
             "settlement_date": "2026-04-13",
@@ -477,7 +477,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0013",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "transfer_in",
             "trade_date": "2026-04-13",
             "settlement_date": "2026-04-13",
@@ -512,7 +512,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0014",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "sell",
             "trade_date": "2026-04-14",
             "settlement_date": "2026-04-14",
@@ -547,7 +547,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0015",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "interest",
             "trade_date": "2026-04-15",
             "settlement_date": "2026-04-15",
@@ -570,7 +570,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0016",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "opening_balance",
             "trade_date": "2026-02-20",
             "settlement_date": "2026-02-20",
@@ -593,7 +593,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0017",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "buy",
             "trade_date": "2026-03-04",
             "settlement_date": "2026-03-06",
@@ -628,7 +628,7 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
         },
         {
             "transaction_id": "txn-0018",
-            "portfolio_id": "yungu",
+            "portfolio_id": "portfolio-ops",
             "transaction_type": "fx_conversion",
             "trade_date": "2026-04-02",
             "settlement_date": "2026-04-02",

@@ -355,7 +355,7 @@ def _minimal_store(
 
 
 def test_seed_portfolio_performance_uses_external_boundary_flows(client):
-    snapshots_response = client.get("/api/portfolios/yungu/snapshots/daily")
+    snapshots_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert snapshots_response.status_code == 200
     snapshots_payload = snapshots_response.json()
     assert snapshots_payload["summary"]["latest_complete_as_of_date"] == "2026-04-15"
@@ -368,7 +368,7 @@ def test_seed_portfolio_performance_uses_external_boundary_flows(client):
     assert by_date["2026-04-12"]["external_cash_in"] == 0.0
     assert by_date["2026-04-12"]["external_cash_out"] == 0.0
 
-    performance_response = client.get("/api/portfolios/yungu/performance")
+    performance_response = client.get("/api/portfolios/portfolio-ops/performance")
     assert performance_response.status_code == 200
     performance_payload = performance_response.json()
     summary = performance_payload["summary"]
@@ -381,13 +381,13 @@ def test_seed_portfolio_performance_uses_external_boundary_flows(client):
 
 
 def test_performance_endpoints_reuse_materialized_daily_snapshots(client, monkeypatch):
-    first_response = client.get("/api/portfolios/yungu/snapshots/daily")
+    first_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert first_response.status_code == 200
-    assert _daily_snapshot_row_count("yungu") > 0
+    assert _daily_snapshot_row_count("portfolio-ops") > 0
 
     session_factory = get_session_factory()
     with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "yungu")
+        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
         assert state is not None
         assert state.daily_snapshot_status == "current"
 
@@ -396,31 +396,31 @@ def test_performance_endpoints_reuse_materialized_daily_snapshots(client, monkey
 
     monkeypatch.setattr(performance, "build_daily_portfolio_snapshots", fail_dynamic_snapshot_build)
 
-    second_snapshot_response = client.get("/api/portfolios/yungu/snapshots/daily")
+    second_snapshot_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert second_snapshot_response.status_code == 200
-    performance_response = client.get("/api/portfolios/yungu/performance")
+    performance_response = client.get("/api/portfolios/portfolio-ops/performance")
     assert performance_response.status_code == 200
 
 
 def test_refresh_materializes_holdings_and_contribution_slices(client):
-    response = client.get("/api/portfolios/yungu/snapshots/daily")
+    response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert response.status_code == 200
 
-    assert _daily_snapshot_row_count("yungu") > 0
-    assert _daily_holding_row_count("yungu") > 0
-    assert _daily_contribution_slice_count("yungu", "instrument") > 0
-    assert _daily_contribution_slice_count("yungu", "account") > 0
-    assert _daily_contribution_slice_count("yungu", "instrument_type") > 0
-    assert _daily_contribution_slice_count("yungu", "currency") > 0
-    assert _daily_contribution_slice_count("yungu", "cash_detail") > 0
-    assert _daily_contribution_slice_count("yungu", "instrument_detail") > 0
-    assert _daily_contribution_slice_count("yungu", "account_detail") > 0
-    assert _daily_contribution_slice_count("yungu", "instrument_type_detail") > 0
-    assert _daily_contribution_slice_count("yungu", "currency_detail") > 0
+    assert _daily_snapshot_row_count("portfolio-ops") > 0
+    assert _daily_holding_row_count("portfolio-ops") > 0
+    assert _daily_contribution_slice_count("portfolio-ops", "instrument") > 0
+    assert _daily_contribution_slice_count("portfolio-ops", "account") > 0
+    assert _daily_contribution_slice_count("portfolio-ops", "instrument_type") > 0
+    assert _daily_contribution_slice_count("portfolio-ops", "currency") > 0
+    assert _daily_contribution_slice_count("portfolio-ops", "cash_detail") > 0
+    assert _daily_contribution_slice_count("portfolio-ops", "instrument_detail") > 0
+    assert _daily_contribution_slice_count("portfolio-ops", "account_detail") > 0
+    assert _daily_contribution_slice_count("portfolio-ops", "instrument_type_detail") > 0
+    assert _daily_contribution_slice_count("portfolio-ops", "currency_detail") > 0
 
 
 def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(client, monkeypatch):
-    response = client.get("/api/portfolios/yungu/snapshots/daily")
+    response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert response.status_code == 200
 
     def fail_live_holdings(*_args, **_kwargs):
@@ -436,7 +436,7 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
     monkeypatch.setattr(workspace_routes, "build_instrument_holdings_market_profile", fail_live_market_profile)
     monkeypatch.setattr(performance_routes, "build_contribution_report", fail_dynamic_contribution)
 
-    holdings_response = client.get("/api/workspace/holdings?portfolio_id=yungu")
+    holdings_response = client.get("/api/workspace/holdings?portfolio_id=portfolio-ops")
     assert holdings_response.status_code == 200
     holdings_payload = holdings_response.json()
     holdings_rows = holdings_payload["rows"]
@@ -451,12 +451,12 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
         expected_day_change_base / expected_prior_market_value
     )
 
-    contribution_response = client.get("/api/portfolios/yungu/performance/contribution?axis=instrument")
+    contribution_response = client.get("/api/portfolios/portfolio-ops/performance/contribution?axis=instrument")
     assert contribution_response.status_code == 200
     assert contribution_response.json()["daily_slices"]
 
     lookback_response = client.get(
-        "/api/portfolios/yungu/performance/contribution"
+        "/api/portfolios/portfolio-ops/performance/contribution"
         "?axis=instrument&start_date=2025-01-01&end_date=2026-04-15"
     )
     assert lookback_response.status_code == 200
@@ -466,14 +466,14 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
 
 
 def test_materialized_contribution_rejects_missing_tail_snapshot(client):
-    response = client.get("/api/portfolios/yungu/snapshots/daily")
+    response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert response.status_code == 200
 
     session_factory = get_session_factory()
     with session_factory() as session:
         latest_snapshot = (
             session.query(PortfolioDailySnapshotModel)
-            .filter(PortfolioDailySnapshotModel.portfolio_id == "yungu")
+            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
             .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
             .first()
         )
@@ -483,7 +483,7 @@ def test_materialized_contribution_rejects_missing_tail_snapshot(client):
         session.commit()
 
     report = daily_snapshots.build_materialized_contribution_report(
-        "yungu",
+        "portfolio-ops",
         start_date=latest_snapshot_date,
         end_date=latest_snapshot_date,
         axis="instrument",
@@ -493,7 +493,7 @@ def test_materialized_contribution_rejects_missing_tail_snapshot(client):
 
 
 def test_daily_snapshot_refresh_endpoint_refreshes_impacted_instrument_portfolios(client):
-    initial_response = client.get("/api/portfolios/yungu/snapshots/daily")
+    initial_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert initial_response.status_code == 200
 
     refresh_response = client.post(
@@ -505,8 +505,8 @@ def test_daily_snapshot_refresh_endpoint_refreshes_impacted_instrument_portfolio
     )
     assert refresh_response.status_code == 200
     refresh_payload = refresh_response.json()
-    assert refresh_payload["portfolio_ids"] == ["yungu"]
-    assert refresh_payload["refreshed"][0]["snapshot_count"] == _daily_snapshot_row_count("yungu")
+    assert refresh_payload["portfolio_ids"] == ["portfolio-ops"]
+    assert refresh_payload["refreshed"][0]["snapshot_count"] == _daily_snapshot_row_count("portfolio-ops")
 
     empty_refresh_response = client.post(
         "/api/portfolios/snapshots/daily/refresh",
@@ -740,13 +740,13 @@ def test_explicit_performance_period_uses_beginning_nav_boundary(client, monkeyp
 
 def test_period_calculation_clamps_future_end_date_to_portfolio_as_of(client):
     response = client.get(
-        "/api/portfolios/yungu/performance/calculation?start_date=2026-04-12&end_date=2026-05-11"
+        "/api/portfolios/portfolio-ops/performance/calculation?start_date=2026-04-12&end_date=2026-05-11"
     )
     assert response.status_code == 200
     assert response.json()["summary"]["end_date"] == "2026-04-15"
 
     groups_response = client.get(
-        "/api/portfolios/yungu/performance/calculation/groups"
+        "/api/portfolios/portfolio-ops/performance/calculation/groups"
         "?axis=instrument&start_date=2026-04-12&end_date=2026-05-11"
     )
     assert groups_response.status_code == 200

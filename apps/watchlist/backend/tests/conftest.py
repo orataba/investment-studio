@@ -22,8 +22,8 @@ if INSTRUMENT_CORE_PYTHON_STR in sys.path:
     sys.path.remove(INSTRUMENT_CORE_PYTHON_STR)
 sys.path.insert(0, INSTRUMENT_CORE_PYTHON_STR)
 
-from yungu_instrument_core.db_models import InstrumentRegistryBase
-from yungu_instrument_core import instrument_store as shared_store
+from portfolio_ops_instrument_core.db_models import InstrumentRegistryBase
+from portfolio_ops_instrument_core import instrument_store as shared_store
 
 TEST_SHARED_INSTRUMENTS = {
     "fund-us-agg": {
@@ -150,11 +150,11 @@ def _run_alembic_upgrade(database_url: str) -> None:
 @pytest.fixture
 def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     database_path = tmp_path / "test.db"
-    monkeypatch.setenv("FTV2_DATABASE_URL", f"sqlite+pysqlite:///{database_path}")
-    monkeypatch.setenv("FTV2_DATABASE_SCHEMA", "")
-    monkeypatch.setenv("FTV2_EMAIL_SYNC_ENABLED", "false")
-    monkeypatch.setenv("FTV2_RECALC_WORKER_ENABLED", "false")
-    monkeypatch.setenv("FTV2_DOCUMENT_STORAGE_ROOT", str(tmp_path / "documents"))
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", f"sqlite+pysqlite:///{database_path}")
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_EMAIL_SYNC_ENABLED", "false")
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_RECALC_WORKER_ENABLED", "false")
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DOCUMENT_STORAGE_ROOT", str(tmp_path / "documents"))
 
     from watchlist_app.core import settings as settings_module
     from watchlist_app.db import session as session_module

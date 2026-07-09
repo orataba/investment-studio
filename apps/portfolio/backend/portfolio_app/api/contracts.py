@@ -5,9 +5,9 @@ from datetime import date, time
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from yungu_instrument_core.models import InstrumentCore as InstrumentCoreContract
-from yungu_instrument_core.models import InstrumentIdentifier as InstrumentIdentifierContract
-from yungu_instrument_core.models import InstrumentType, DataStatus as CoverageState, IdentifierType
+from portfolio_ops_instrument_core.models import InstrumentCore as InstrumentCoreContract
+from portfolio_ops_instrument_core.models import InstrumentIdentifier as InstrumentIdentifierContract
+from portfolio_ops_instrument_core.models import InstrumentType, DataStatus as CoverageState, IdentifierType
 
 
 AccountScopedInstrumentType = Literal["fund", "bond", "equity", "other"]

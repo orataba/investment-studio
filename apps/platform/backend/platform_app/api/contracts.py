@@ -5,9 +5,9 @@ import binascii
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from yungu_instrument_core.models import InstrumentIdentifier as PlatformInstrumentIdentifier
-from yungu_instrument_core.models import InstrumentType, DataStatus, IdentifierType, MetricFamily, QuoteBasis, QuoteRole
-from yungu_instrument_core.models import QuoteSelectionPolicy as PlatformQuoteSelectionPolicy
+from portfolio_ops_instrument_core.models import InstrumentIdentifier as PlatformInstrumentIdentifier
+from portfolio_ops_instrument_core.models import InstrumentType, DataStatus, IdentifierType, MetricFamily, QuoteBasis, QuoteRole
+from portfolio_ops_instrument_core.models import QuoteSelectionPolicy as PlatformQuoteSelectionPolicy
 
 
 class PlatformAppCard(BaseModel):

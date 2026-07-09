@@ -12,7 +12,7 @@ Minimal restore flow:
 ```bash
 (cd infra/postgres && docker compose up -d)
 
-until pg_isready -h 127.0.0.1 -p 5432 -U yungu -d yungu; do
+until pg_isready -h 127.0.0.1 -p 5432 -U portfolio_ops -d portfolio_ops; do
   sleep 1
 done
 
@@ -28,16 +28,16 @@ shasum -a 256 -c data/migration/portfolio_ops_2026-07-08.sha256
 Then restore:
 
 ```bash
-PGPASSWORD=yungu \
+PGPASSWORD=portfolio_ops \
 pg_restore --clean --if-exists --no-owner --no-acl \
-  -h 127.0.0.1 -U yungu -d yungu \
+  -h 127.0.0.1 -U portfolio_ops -d portfolio_ops \
   data/migration/portfolio_ops_2026-07-08.pgdump
 ```
 
 Quick verification:
 
 ```bash
-PGPASSWORD=yungu psql -h 127.0.0.1 -U yungu -d yungu -c "
+PGPASSWORD=portfolio_ops psql -h 127.0.0.1 -U portfolio_ops -d portfolio_ops -c "
 select 'instrument_registry.instrument' as table_name, count(*) from instrument_registry.instrument
 union all
 select 'portfolio.portfolio_record', count(*) from portfolio.portfolio_record

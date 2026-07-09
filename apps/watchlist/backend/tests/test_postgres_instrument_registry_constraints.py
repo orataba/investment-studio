@@ -30,12 +30,12 @@ sys.path.insert(0, INSTRUMENT_CORE_PYTHON_STR)
 
 from watchlist_app.db.models.instruments import InstrumentDetail
 from watchlist_app.db.models.watchlists import Watchlist, WatchlistItem
-from yungu_instrument_core import instrument_store as shared_store
+from portfolio_ops_instrument_core import instrument_store as shared_store
 
 
 pytestmark = pytest.mark.postgresql_integration
 
-DEFAULT_POSTGRES_URL = "postgresql+psycopg://yungu:yungu@127.0.0.1:5432/yungu"
+DEFAULT_POSTGRES_URL = "postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops"
 
 
 def _run_instrument_registry_upgrade() -> None:
@@ -148,8 +148,8 @@ def _admin_database_url(database_url: str) -> str:
 
 @pytest.fixture
 def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-    base_database_url = os.getenv("YUNGU_TEST_POSTGRES_URL", DEFAULT_POSTGRES_URL)
-    database_name = f"yungu_watchlist_fk_{uuid4().hex[:8]}"
+    base_database_url = os.getenv("PORTFOLIO_OPS_TEST_POSTGRES_URL", DEFAULT_POSTGRES_URL)
+    database_name = f"portfolio_ops_watchlist_fk_{uuid4().hex[:8]}"
     database_url = make_url(base_database_url).set(database=database_name).render_as_string(hide_password=False)
     admin_engine = create_engine(_admin_database_url(base_database_url), isolation_level="AUTOCOMMIT")
     try:
@@ -161,11 +161,11 @@ def postgres_watchlist_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     finally:
         admin_engine.dispose()
 
-    monkeypatch.setenv("YUNGU_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
-    monkeypatch.setenv("YUNGU_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry")
-    monkeypatch.setenv("FTV2_DATABASE_URL", database_url)
-    monkeypatch.setenv("FTV2_ALEMBIC_DATABASE_URL", database_url)
-    monkeypatch.setenv("FTV2_DATABASE_SCHEMA", "watchlist")
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry")
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "watchlist")
 
     from watchlist_app.core import settings as settings_module
     from watchlist_app.db import session as session_module

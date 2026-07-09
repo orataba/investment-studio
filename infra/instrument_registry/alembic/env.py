@@ -15,20 +15,20 @@ instrument_core_path = str(INSTRUMENT_CORE_PYTHON)
 if instrument_core_path not in sys.path:
     sys.path.insert(0, instrument_core_path)
 
-from yungu_instrument_core.db_models import InstrumentRegistryBase
+from portfolio_ops_instrument_core.db_models import InstrumentRegistryBase
 
 
 config = context.config
 
 database_url = (
-    os.getenv("YUNGU_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL")
-    or os.getenv("YUNGU_INSTRUMENT_REGISTRY_DATABASE_URL")
+    os.getenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL")
+    or os.getenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL")
     or config.get_main_option("sqlalchemy.url")
 )
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
 
-raw_schema = os.getenv("YUNGU_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry")
+raw_schema = os.getenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "instrument_registry")
 schema = raw_schema.strip() if raw_schema and raw_schema.strip() else None
 
 if config.config_file_name is not None:
