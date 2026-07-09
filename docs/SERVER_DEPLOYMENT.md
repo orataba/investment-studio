@@ -63,6 +63,7 @@ Install and start the market-data timer:
 
 ```bash
 PROJECT_ROOT="$PWD" BACKEND_ROOT="$PWD/apps/platform/backend" PYTHON_BIN="$PWD/.venv/bin/python" \
+  ENV_ROOT="$HOME/.config/portfolio-ops/env" \
   infra/systemd/install_market_data_refresh_timer.sh
 ```
 

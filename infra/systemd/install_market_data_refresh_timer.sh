@@ -11,6 +11,8 @@ fi
 PYTHON_BIN="${PYTHON_BIN:-$DEFAULT_PYTHON_BIN}"
 UNIT_NAME="${UNIT_NAME:-portfolio-ops-market-data-refresh}"
 ON_CALENDAR="${ON_CALENDAR:-*-*-* 09:00 Asia/Shanghai}"
+ENV_ROOT="${ENV_ROOT:-}"
+ENV_FILE="${ENV_FILE:-}"
 LOG_DIR="${LOG_DIR:-$HOME/.local/state/portfolio-ops/logs}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/market-data-refresh.log}"
 CHANNEL="${CHANNEL:-all}"
@@ -31,6 +33,15 @@ fi
 
 if [[ ! -f "$BACKEND_ROOT/scripts/refresh_market_data_scheduled.py" ]]; then
   echo "Cannot find refresh script under BACKEND_ROOT: $BACKEND_ROOT" >&2
+  exit 1
+fi
+
+if [[ -z "$ENV_FILE" && -n "$ENV_ROOT" ]]; then
+  ENV_FILE="$ENV_ROOT/platform.env"
+fi
+
+if [[ -n "$ENV_FILE" && ! -f "$ENV_FILE" ]]; then
+  echo "ENV_FILE does not exist: $ENV_FILE" >&2
   exit 1
 fi
 
@@ -61,6 +72,10 @@ restart_policy="no"
 if [[ "$RESTART_ON_FAILURE" == "true" ]]; then
   restart_policy="on-failure"
 fi
+environment_file_line=""
+if [[ -n "$ENV_FILE" ]]; then
+  environment_file_line="EnvironmentFile=$ENV_FILE"
+fi
 
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
@@ -73,6 +88,7 @@ Type=oneshot
 WorkingDirectory=$BACKEND_ROOT
 Environment=PYTHONPATH=$PYTHONPATH_VALUE
 Environment=PYTHONNOUSERSITE=1
+$environment_file_line
 TimeoutStartSec=$TIMEOUT_START_SEC
 Restart=$restart_policy
 RestartSec=$RESTART_SEC
