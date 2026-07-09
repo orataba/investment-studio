@@ -2,7 +2,7 @@
 
 本文档用于在新电脑上从私有 GitHub 仓库恢复 `Portfolio Operations Workbench`。
 
-恢复目标不是复制旧机器的运行时目录，而是用 Git 中的代码、配置、NAV 附件和数据库 dump 重建一套可运行环境。
+恢复目标不是复制旧机器的运行时目录，而是用 Git 中的代码、配置、NAV 附件和当前项目级数据库 dump 重建一套可运行环境。
 
 ## 0. 前置假设
 
@@ -40,6 +40,8 @@ git status --short --branch
 
 ```bash
 ls data/migration
+test -f data/migration/portfolio_ops_2026-07-09_current.pgdump
+test -f data/migration/portfolio_ops_2026-07-09_current.sha256
 test -f apps/platform/backend/.env
 test -f apps/watchlist/backend/.env
 test -f apps/portfolio/backend/.env
@@ -59,16 +61,18 @@ done
 
 ## 4. 恢复数据库快照
 
+当前 Git 恢复点是 `2026-07-09 14:54 Asia/Shanghai` 的项目级快照，已包含 `2026-07-09 14:35` 市场数据刷新后的 Portfolio Operations 数据。它只包含 `instrument_registry`、`portfolio`、`watchlist` 三个 schema，不包含同一生产库 `public` schema 里的 research-data-foundation 大表。
+
 先校验 dump：
 
 ```bash
-sha256sum -c data/migration/portfolio_ops_2026-07-08.sha256
+sha256sum -c data/migration/portfolio_ops_2026-07-09_current.sha256
 ```
 
 macOS 如果没有 `sha256sum`，使用：
 
 ```bash
-shasum -a 256 -c data/migration/portfolio_ops_2026-07-08.sha256
+shasum -a 256 -c data/migration/portfolio_ops_2026-07-09_current.sha256
 ```
 
 恢复：
@@ -77,7 +81,7 @@ shasum -a 256 -c data/migration/portfolio_ops_2026-07-08.sha256
 PGPASSWORD=portfolio_ops \
 pg_restore --clean --if-exists --no-owner --no-acl \
   -h 127.0.0.1 -U portfolio_ops -d portfolio_ops \
-  data/migration/portfolio_ops_2026-07-08.pgdump
+  data/migration/portfolio_ops_2026-07-09_current.pgdump
 ```
 
 快速核对：
@@ -163,9 +167,9 @@ curl --noproxy '*' http://127.0.0.1:8001/api/health
 
 如果健康检查失败，先看对应 backend 的 `.env`、数据库连接和 venv 依赖。
 
-## 10. 补齐快照之后的新数据
+## 10. 刷新快照之后的新数据
 
-数据库 dump 是 `2026-07-08` 的恢复点。恢复完成后，建议手动跑一次全量调度入口，让行情、净值和下游物化读模型追到当前：
+数据库 dump 是 `2026-07-09 14:54 Asia/Shanghai` 的恢复点。如果你在更晚日期恢复，恢复完成后可以手动跑一次全量调度入口，让行情、净值和下游物化读模型追到恢复当天：
 
 ```bash
 PYTHONPATH=/path/to/pm/apps/platform/backend:/path/to/pm/packages/instrument-core/python \
@@ -215,4 +219,4 @@ npm --prefix apps/watchlist/frontend run build
 npm --prefix apps/portfolio/frontend run build
 ```
 
-如果只是确认恢复能打开，至少完成数据库恢复、三个 health endpoints、三个前端页面访问、一次 `refresh_market_data_scheduled.py`。
+如果只是确认恢复能打开，至少完成数据库恢复、三个 health endpoints、三个前端页面访问。恢复日期晚于快照日期时，再补跑一次 `refresh_market_data_scheduled.py`。

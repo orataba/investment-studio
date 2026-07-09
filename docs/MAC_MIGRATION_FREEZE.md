@@ -1,6 +1,6 @@
 # Mac Migration Freeze
 
-Freeze date: 2026-07-08
+Freeze date: 2026-07-09
 
 This repository is the durable project handoff for moving `Portfolio Operations Workbench` from WSL to macOS. The rule is: Git carries code, docs, migration-safe data, committed backend environment configuration, and reproducible setup notes. Machine-local runtime state stays out of Git and must be rebuilt.
 
@@ -27,14 +27,16 @@ This repository is the durable project handoff for moving `Portfolio Operations 
 The freeze includes:
 
 - `nav/`: 104 NAV attachment files, about 65 MB total.
-- `data/migration/portfolio_ops_2026-07-08.pgdump`: custom-format PostgreSQL dump for schemas `instrument_registry`, `portfolio`, and `watchlist`.
-- `data/migration/portfolio_ops_2026-07-08.sha256`: checksum for the dump.
+- `data/migration/portfolio_ops_2026-07-09_current.pgdump`: custom-format PostgreSQL dump for schemas `instrument_registry`, `portfolio`, and `watchlist`.
+- `data/migration/portfolio_ops_2026-07-09_current.sha256`: checksum for the dump.
 
-The raw local database size at audit time was approximately:
+The committed dump was created from production at `2026-07-09 14:54 Asia/Shanghai`, after the `2026-07-09 14:35` market-data refresh finished. The source PostgreSQL database also contains a large shared `public` schema for research-data-foundation; that schema is deliberately excluded because it is not required to restore this project.
 
-- `instrument_registry`: 174 MB
-- `portfolio`: 99 MB
-- `watchlist`: 11 MB
+The project schema sizes in production at audit time were approximately:
+
+- `instrument_registry`: 35 MB
+- `portfolio`: 118 MB
+- `watchlist`: 10 MB
 
 ## Fresh Mac Bring-Up
 
@@ -68,13 +70,13 @@ Do not run `./infra/postgres/rebuild_local_schemas.sh` after restoring the dump 
 Validate the committed dump before restoring it:
 
 ```bash
-sha256sum -c data/migration/portfolio_ops_2026-07-08.sha256
+sha256sum -c data/migration/portfolio_ops_2026-07-09_current.sha256
 ```
 
 On macOS, `sha256sum` may be installed by `brew install coreutils`; if it is unavailable, use:
 
 ```bash
-shasum -a 256 -c data/migration/portfolio_ops_2026-07-08.sha256
+shasum -a 256 -c data/migration/portfolio_ops_2026-07-09_current.sha256
 ```
 
 Restore the data into the local database:
@@ -83,7 +85,7 @@ Restore the data into the local database:
 PGPASSWORD=portfolio_ops \
 pg_restore --clean --if-exists --no-owner --no-acl \
   -h 127.0.0.1 -U portfolio_ops -d portfolio_ops \
-  data/migration/portfolio_ops_2026-07-08.pgdump
+  data/migration/portfolio_ops_2026-07-09_current.pgdump
 ```
 
 Check that the restored schemas are populated:

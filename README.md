@@ -88,7 +88,7 @@ portfolio-operations-workbench/
 (cd infra/postgres && docker compose up -d)
 ```
 
-新电脑从零恢复时，优先按 [docs/NEW_MACHINE_RESTORE.md](./docs/NEW_MACHINE_RESTORE.md) 执行：先启动 PostgreSQL，再校验并 `pg_restore` `data/migration/` 里的 dump。不要在恢复后运行 `./infra/postgres/rebuild_local_schemas.sh`，除非明确要清空恢复数据并重建空 schema。
+新电脑从零恢复时，优先按 [docs/NEW_MACHINE_RESTORE.md](./docs/NEW_MACHINE_RESTORE.md) 执行：先启动 PostgreSQL，再校验并 `pg_restore` `data/migration/` 里的当前项目级 dump。不要在恢复后运行 `./infra/postgres/rebuild_local_schemas.sh`，除非明确要清空恢复数据并重建空 schema。
 
 默认单库 schema 划分：
 
@@ -151,7 +151,7 @@ npm --prefix apps/watchlist/frontend run build
 ## 仓库卫生
 
 - `nav/` 是冻结迁移要保留的 NAV 附件图片数据，已纳入 Git；后续新增大批量原始材料前先确认是否应进入仓库。
-- `data/migration/` 存放冻结迁移用的可恢复数据库 dump 与校验文件；不要把 raw PostgreSQL data directory 放进 Git。
+- `data/migration/` 存放可恢复的当前项目级数据库 dump 与校验文件；dump 只覆盖 `instrument_registry`、`portfolio`、`watchlist`，不要把 raw PostgreSQL data directory 或其他项目的共享基础库数据放进 Git。
 - `apps/platform/backend/.env`、`apps/watchlist/backend/.env`、`apps/portfolio/backend/.env` 是私有仓库恢复配置，已经纳入 Git；更新密钥时直接修改这些文件并提交，但不要在提交信息里写出密钥值。
 - `node_modules/`、`dist/`、`*.db`、`*.sqlite*`、`__pycache__/`、`.pytest_cache/` 都是本地产物，不应进入提交。
 - `.local-pg/`、`ref/`、虚拟环境和用户级 `systemd --user` unit 都是本机状态，不作为跨机器 Git 迁移载体；`.env.example` 模板仍保留在 Git 里用于说明配置项。
