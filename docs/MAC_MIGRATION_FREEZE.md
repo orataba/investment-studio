@@ -196,7 +196,7 @@ The WSL runtime had these user-systemd services active at freeze time. Older ins
 - platform frontend on `0.0.0.0:5172`
 - watchlist frontend on `0.0.0.0:5173`
 - portfolio frontend on `0.0.0.0:5174`
-- `portfolio-ops-market-data-refresh.timer` scheduled at `09:00 Asia/Shanghai`
+- `portfolio-ops-market-data-refresh.timer` scheduled at `08:00 Asia/Shanghai`
 
 On macOS, recreate these as foreground dev commands, `launchd` jobs, Homebrew services, or Docker-managed processes. Do not copy Linux unit files blindly.
 

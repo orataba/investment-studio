@@ -10,7 +10,7 @@ if [[ -x "$BACKEND_ROOT/.venv/bin/python" ]]; then
 fi
 PYTHON_BIN="${PYTHON_BIN:-$DEFAULT_PYTHON_BIN}"
 UNIT_NAME="${UNIT_NAME:-portfolio-ops-market-data-refresh}"
-ON_CALENDAR="${ON_CALENDAR:-*-*-* 09:00 Asia/Shanghai}"
+ON_CALENDAR="${ON_CALENDAR:-*-*-* 08:00 Asia/Shanghai}"
 ENV_ROOT="${ENV_ROOT:-}"
 ENV_FILE="${ENV_FILE:-}"
 LOG_DIR="${LOG_DIR:-$HOME/.local/state/portfolio-ops/logs}"

@@ -192,10 +192,10 @@ systemctl --user list-timers portfolio-ops-market-data-refresh.timer --all
 systemctl --user cat portfolio-ops-market-data-refresh.service portfolio-ops-market-data-refresh.timer
 ```
 
-默认时间是每天 `09:00 Asia/Shanghai`。如果要改时间：
+默认时间是每天 `08:00 Asia/Shanghai`。如果要改时间：
 
 ```bash
-ON_CALENDAR="Mon..Fri 09:00 Asia/Shanghai" \
+ON_CALENDAR="Mon..Fri 08:00 Asia/Shanghai" \
 PYTHON_BIN="$PWD/.venv/bin/python" \
   infra/systemd/install_market_data_refresh_timer.sh
 ```
