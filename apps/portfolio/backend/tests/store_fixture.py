@@ -183,6 +183,16 @@ TEST_PORTFOLIO_STORE: dict[str, list[dict[str, Any]]] = {
                         "identifier_value": "US00287Y1091",
                         "is_primary": False,
                     },
+                    {
+                        "identifier_type": "exchange_ticker",
+                        "identifier_value": "ABBV.N",
+                        "is_primary": False,
+                    },
+                    {
+                        "identifier_type": "ts_code",
+                        "identifier_value": "ABBV.US",
+                        "is_primary": False,
+                    },
                 ],
             },
             "quantity": 1000.0,

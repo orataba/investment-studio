@@ -8,7 +8,18 @@ from pydantic import BaseModel, Field
 
 
 InstrumentType = Literal["fund", "index", "bond", "equity", "cash", "fx", "other"]
-IdentifierType = Literal["ticker", "isin", "cusip", "sedol", "internal", "fund_name", "other"]
+IdentifierType = Literal[
+    "ticker",
+    "exchange_ticker",
+    "ts_code",
+    "isin",
+    "cusip",
+    "sedol",
+    "internal",
+    "fund_name",
+    "cash_currency",
+    "other",
+]
 MetricFamily = Literal["price", "nav", "fx"]
 QuoteBasis = Literal[
     "last",

@@ -20,6 +20,19 @@
 - `identifier_value`
 - `is_primary`
 
+Supported `identifier_type` values:
+
+- `ticker`
+- `exchange_ticker`
+- `ts_code`
+- `isin`
+- `cusip`
+- `sedol`
+- `internal`
+- `fund_name`
+- `cash_currency`
+- `other`
+
 ### `MarketDataPoint`
 
 - `instrument_id`
