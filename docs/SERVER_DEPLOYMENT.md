@@ -67,6 +67,9 @@ PROJECT_ROOT="$PWD" BACKEND_ROOT="$PWD/apps/platform/backend" PYTHON_BIN="$PWD/.
   infra/systemd/install_market_data_refresh_timer.sh
 ```
 
+By default, item-level refresh failures are recorded in `refresh_status` without
+forcing systemd to rerun the whole batch.
+
 ## Ports
 
 - Platform API: `8102`
