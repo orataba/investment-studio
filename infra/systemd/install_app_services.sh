@@ -14,6 +14,7 @@ PLATFORM_WEB_PORT="${PLATFORM_WEB_PORT:-3100}"
 WATCHLIST_WEB_PORT="${WATCHLIST_WEB_PORT:-3101}"
 PORTFOLIO_WEB_PORT="${PORTFOLIO_WEB_PORT:-3102}"
 START_SERVICES="${START_SERVICES:-true}"
+ENV_ROOT="${ENV_ROOT:-}"
 
 DEFAULT_PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
 if [[ ! -x "$DEFAULT_PYTHON_BIN" ]]; then
@@ -51,6 +52,10 @@ write_api_service() {
   local env_file="$backend_root/.env"
   local service_file="$USER_SYSTEMD_DIR/$UNIT_PREFIX-$app-api.service"
   local pythonpath_value="$backend_root:$PROJECT_ROOT/packages/instrument-core/python"
+
+  if [[ -n "$ENV_ROOT" ]]; then
+    env_file="$ENV_ROOT/$app.env"
+  fi
 
   if [[ ! -f "$env_file" ]]; then
     echo "Missing environment file: $env_file" >&2

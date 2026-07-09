@@ -45,6 +45,20 @@ PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
   infra/systemd/install_app_services.sh
 ```
 
+For production deployments, keep runtime-specific environment files outside the
+Git worktree and point systemd at that directory:
+
+```bash
+mkdir -p "$HOME/.config/portfolio-ops/env"
+cp apps/platform/backend/.env "$HOME/.config/portfolio-ops/env/platform.env"
+cp apps/watchlist/backend/.env "$HOME/.config/portfolio-ops/env/watchlist.env"
+cp apps/portfolio/backend/.env "$HOME/.config/portfolio-ops/env/portfolio.env"
+
+PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
+  ENV_ROOT="$HOME/.config/portfolio-ops/env" \
+  infra/systemd/install_app_services.sh
+```
+
 Install and start the market-data timer:
 
 ```bash
