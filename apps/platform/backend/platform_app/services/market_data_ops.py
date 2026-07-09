@@ -9,7 +9,9 @@ from io import BytesIO
 import imaplib
 import logging
 import re
+import signal
 import socket
+import threading
 from typing import Any
 
 from platform_app.core.settings import get_settings
@@ -39,6 +41,46 @@ except ImportError:  # pragma: no cover - optional dependency
 
 
 LOGGER = logging.getLogger("portfolio_ops.market_data_ops")
+
+
+class _MarketDataBatchItemTimeout(TimeoutError):
+    pass
+
+
+class _BatchItemTimeout:
+    def __init__(self, seconds: int, instrument_id: str) -> None:
+        self.seconds = max(0, int(seconds or 0))
+        self.instrument_id = instrument_id
+        self._enabled = (
+            self.seconds > 0
+            and threading.current_thread() is threading.main_thread()
+            and hasattr(signal, "SIGALRM")
+            and hasattr(signal, "setitimer")
+        )
+        self._previous_handler: Any = None
+        self._previous_timer: tuple[float, float] = (0.0, 0.0)
+
+    def __enter__(self) -> None:
+        if not self._enabled:
+            return
+        self._previous_handler = signal.getsignal(signal.SIGALRM)
+        self._previous_timer = signal.getitimer(signal.ITIMER_REAL)
+        signal.signal(signal.SIGALRM, self._raise_timeout)
+        signal.setitimer(signal.ITIMER_REAL, self.seconds)
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if not self._enabled:
+            return
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, self._previous_handler)
+        previous_delay, previous_interval = self._previous_timer
+        if previous_delay > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_delay, previous_interval)
+
+    def _raise_timeout(self, signum: int, frame: object) -> None:
+        raise _MarketDataBatchItemTimeout(
+            f"Market data refresh timed out after {self.seconds} seconds for {self.instrument_id}."
+        )
 
 NAV_IMPORT_HEADER_MAP = {
     "date": "as_of_date",
@@ -1518,6 +1560,7 @@ def refresh_market_data_batch(
     full_history: bool = False,
     include_inactive: bool = False,
 ) -> dict[str, object]:
+    settings = get_settings()
     normalized_source = str(source or "all").strip().lower()
     if normalized_source == "configured":
         normalized_source = "all"
@@ -1539,12 +1582,30 @@ def refresh_market_data_batch(
             len(targets),
             instrument_id,
         )
-        refreshed = refresh_market_data(
-            instrument_id=instrument_id,
-            updated_by=updated_by,
-            full_history=full_history,
-            source="configured",
-        )
+        try:
+            with _BatchItemTimeout(settings.market_data_batch_item_timeout_seconds, instrument_id):
+                refreshed = refresh_market_data(
+                    instrument_id=instrument_id,
+                    updated_by=updated_by,
+                    full_history=full_history,
+                    source="configured",
+                )
+        except _MarketDataBatchItemTimeout as exc:
+            LOGGER.warning(
+                "market data batch item timed out source=%s index=%s/%s instrument_id=%s timeout_seconds=%s",
+                normalized_source,
+                index,
+                len(targets),
+                instrument_id,
+                settings.market_data_batch_item_timeout_seconds,
+            )
+            refreshed = update_refresh_status(
+                instrument_id=instrument_id,
+                status="failed",
+                message=str(exc),
+                updated_by=updated_by,
+                mode=normalized_source,
+            )
         if refreshed is None:
             LOGGER.info(
                 "market data batch item skipped source=%s index=%s/%s instrument_id=%s",

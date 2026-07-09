@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     email_imap_timeout_seconds: int = 60
     email_imap_max_messages: int = 500
     email_imap_mark_seen: bool = False
+    market_data_batch_item_timeout_seconds: int = 300
     tushare_token: str | None = None
     tushare_api_url: str = "https://fastapic.stockai888.top"
     tushare_timeout_seconds: int = 30
