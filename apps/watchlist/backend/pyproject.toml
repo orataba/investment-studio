@@ -3,10 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "yungu-watchlist-backend"
+name = "portfolio-ops-watchlist-backend"
 version = "0.1.0"
-description = "Yungu Watchlist backend"
-readme = "../README.md"
+description = "Portfolio Operations Watchlist backend"
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.16,<2.0",

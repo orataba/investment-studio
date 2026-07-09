@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "yungu-instrument-core"
+name = "portfolio-ops-instrument-core"
 version = "0.1.0"
-description = "Shared instrument core contracts for Yungu"
+description = "Shared instrument core contracts for Portfolio Operations Workbench"
 requires-python = ">=3.12"
 dependencies = [
   "pydantic>=2.10,<3.0",

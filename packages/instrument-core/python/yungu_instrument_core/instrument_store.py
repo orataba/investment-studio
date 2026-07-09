@@ -17,7 +17,7 @@ from yungu_instrument_core.db_models import (
 )
 
 
-DEFAULT_REGISTRY_NAME = "Yungu Shared Instruments"
+DEFAULT_REGISTRY_NAME = "Portfolio Operations Shared Instruments"
 EMPTY_STORE: dict[str, object] = {
     "registry_name": DEFAULT_REGISTRY_NAME,
     "instruments": [],

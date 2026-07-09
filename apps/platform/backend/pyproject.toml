@@ -3,10 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "yungu-platform-backend"
+name = "portfolio-ops-platform-backend"
 version = "0.1.0"
-description = "Yungu platform entry backend"
-readme = "../README.md"
+description = "Portfolio Operations Workbench platform entry backend"
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.16,<2.0",

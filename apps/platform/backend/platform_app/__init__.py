@@ -1,4 +1,4 @@
-"""Yungu platform backend package."""
+"""Portfolio Operations platform backend package."""
 
 from __future__ import annotations
 

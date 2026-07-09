@@ -1,4 +1,4 @@
-# Yungu 使用手册
+# Portfolio Operations Workbench 使用手册
 
 ## 1. 系统入口
 
@@ -22,7 +22,7 @@ Platform 是系统总入口，首页会展示可进入的业务应用。Watchlis
 
 ## 2. 系统分工
 
-Yungu 分为三块：
+Portfolio Operations Workbench 分为三块：
 
 - Platform：共享资产库和行情主数据。维护 instrument、identifier、NAV、close price、FX 等基础事实。
 - Watchlist：基金和指数观察列表。用于资产池筛选、分组、单资产详情、研究标签、监控和导出。

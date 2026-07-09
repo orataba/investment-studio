@@ -1,4 +1,4 @@
-"""Yungu Watchlist backend package."""
+"""Portfolio Operations Watchlist backend package."""
 
 from __future__ import annotations
 

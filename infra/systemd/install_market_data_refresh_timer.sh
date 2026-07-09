@@ -9,9 +9,9 @@ if [[ -x "$BACKEND_ROOT/.venv/bin/python" ]]; then
   DEFAULT_PYTHON_BIN="$BACKEND_ROOT/.venv/bin/python"
 fi
 PYTHON_BIN="${PYTHON_BIN:-$DEFAULT_PYTHON_BIN}"
-UNIT_NAME="${UNIT_NAME:-yungu-market-data-refresh}"
+UNIT_NAME="${UNIT_NAME:-portfolio-ops-market-data-refresh}"
 ON_CALENDAR="${ON_CALENDAR:-*-*-* 09:00 Asia/Shanghai}"
-LOG_DIR="${LOG_DIR:-$HOME/.local/state/yungu/logs}"
+LOG_DIR="${LOG_DIR:-$HOME/.local/state/portfolio-ops/logs}"
 LOG_FILE="${LOG_FILE:-$LOG_DIR/market-data-refresh.log}"
 CHANNEL="${CHANNEL:-all}"
 UPDATED_BY="${UPDATED_BY:-scheduler}"
@@ -64,7 +64,7 @@ fi
 
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=Yungu scheduled market data refresh
+Description=Portfolio Operations scheduled market data refresh
 StartLimitIntervalSec=$START_LIMIT_INTERVAL_SEC
 StartLimitBurst=$START_LIMIT_BURST
 
@@ -81,7 +81,7 @@ EOF
 
 cat > "$TIMER_FILE" <<EOF
 [Unit]
-Description=Run Yungu market data refresh
+Description=Run Portfolio Operations market data refresh
 
 [Timer]
 OnCalendar=$ON_CALENDAR

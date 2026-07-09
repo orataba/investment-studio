@@ -2,7 +2,7 @@
 
 Freeze date: 2026-07-08
 
-This repository is the durable project handoff for moving the Yungu PM workspace from WSL to macOS. The rule is: Git carries code, docs, migration-safe data, and reproducible configuration. Machine-local runtime state stays out of Git and must be rebuilt or copied over a secure side channel.
+This repository is the durable project handoff for moving `Portfolio Operations Workbench` from WSL to macOS. The rule is: Git carries code, docs, migration-safe data, committed backend environment configuration, and reproducible setup notes. Machine-local runtime state stays out of Git and must be rebuilt.
 
 ## What Is In Git
 
@@ -10,13 +10,13 @@ This repository is the durable project handoff for moving the Yungu PM workspace
 - `packages/`: shared Python and frontend packages.
 - `infra/`: PostgreSQL schema bootstrap, instrument-registry migrations, and the Linux user-systemd market-data timer installer.
 - `docs/`: operating docs, design baseline, database workflow, and this migration note.
-- `.env.example`: safe local-development configuration templates.
+- `.env.example`: local-development configuration templates.
+- `apps/platform/backend/.env`, `apps/watchlist/backend/.env`, `apps/portfolio/backend/.env`: private-repository runtime configuration for restore.
 - `nav/`: NAV attachment image data captured for migration.
 - `data/migration/`: portable PostgreSQL dump and checksum files for this freeze.
 
 ## What Is Not In Git
 
-- Real `.env` and `.env.*` files: carry secrets and local service endpoints; migrate them separately if still needed. `.env.example` templates are intentionally kept in Git.
 - `.local-pg/`: raw PostgreSQL data directory; use the dump in `data/migration/` instead.
 - `node_modules/`, `.venv/`, `dist/`, `build/`, caches, bytecode, SQLite files, and local backups.
 - `ref/`: local reference checkout/material, including its own `.git`, dependencies, and caches.
@@ -27,8 +27,8 @@ This repository is the durable project handoff for moving the Yungu PM workspace
 The freeze includes:
 
 - `nav/`: 104 NAV attachment files, about 65 MB total.
-- `data/migration/yungu_local_2026-07-08.pgdump`: custom-format PostgreSQL dump for schemas `instrument_registry`, `portfolio`, and `watchlist`.
-- `data/migration/yungu_local_2026-07-08.sha256`: checksum for the dump.
+- `data/migration/portfolio_ops_2026-07-08.pgdump`: custom-format PostgreSQL dump for schemas `instrument_registry`, `portfolio`, and `watchlist`.
+- `data/migration/portfolio_ops_2026-07-08.sha256`: checksum for the dump.
 
 The raw local database size at audit time was approximately:
 
@@ -68,13 +68,13 @@ Do not run `./infra/postgres/rebuild_local_schemas.sh` after restoring the dump 
 Validate the committed dump before restoring it:
 
 ```bash
-sha256sum -c data/migration/yungu_local_2026-07-08.sha256
+sha256sum -c data/migration/portfolio_ops_2026-07-08.sha256
 ```
 
 On macOS, `sha256sum` may be installed by `brew install coreutils`; if it is unavailable, use:
 
 ```bash
-shasum -a 256 -c data/migration/yungu_local_2026-07-08.sha256
+shasum -a 256 -c data/migration/portfolio_ops_2026-07-08.sha256
 ```
 
 Restore the data into the local database:
@@ -83,7 +83,7 @@ Restore the data into the local database:
 PGPASSWORD=yungu \
 pg_restore --clean --if-exists --no-owner --no-acl \
   -h 127.0.0.1 -U yungu -d yungu \
-  data/migration/yungu_local_2026-07-08.pgdump
+  data/migration/portfolio_ops_2026-07-08.pgdump
 ```
 
 Check that the restored schemas are populated:
@@ -100,17 +100,17 @@ select 'watchlist.watchlist', count(*) from watchlist.watchlist;
 
 Exact row counts can change after later refreshes, but these tables should not be empty immediately after a successful restore.
 
-### 4. Register Local Backend Configuration
+### 4. Verify Local Backend Configuration
 
-Copy the committed templates into local `.env` files:
+The private repository now carries the three backend `.env` files needed for restore:
 
 ```bash
-cp apps/platform/backend/.env.example apps/platform/backend/.env
-cp apps/watchlist/backend/.env.example apps/watchlist/backend/.env
-cp apps/portfolio/backend/.env.example apps/portfolio/backend/.env
+test -f apps/platform/backend/.env
+test -f apps/watchlist/backend/.env
+test -f apps/portfolio/backend/.env
 ```
 
-Then edit only the local `.env` files for secrets and machine-specific endpoints:
+Review them locally if the new machine uses different endpoints:
 
 - `YUNGU_PLATFORM_TUSHARE_TOKEN`
 - email IMAP credentials, if mail refresh should run on the Mac
@@ -188,21 +188,21 @@ Then run the validation commands from `README.md`. On macOS, recreate background
 
 ## Services
 
-The WSL runtime had these user-systemd services active at freeze time:
+The WSL runtime had these user-systemd services active at freeze time. Older installed unit names may still use the pre-rename prefix; new installs should use the generic timer installer defaults.
 
-- `yungu-platform-backend.service` on `127.0.0.1:8002`
-- `yungu-watchlist-backend.service` on `127.0.0.1:8000`
-- `yungu-portfolio-backend.service` on `127.0.0.1:8001`
-- `yungu-platform-frontend.service` on `0.0.0.0:5172`
-- `yungu-watchlist-frontend.service` on `0.0.0.0:5173`
-- `yungu-portfolio-frontend.service` on `0.0.0.0:5174`
-- `yungu-market-data-refresh.timer` scheduled at `09:00 Asia/Shanghai`
+- platform backend on `127.0.0.1:8002`
+- watchlist backend on `127.0.0.1:8000`
+- portfolio backend on `127.0.0.1:8001`
+- platform frontend on `0.0.0.0:5172`
+- watchlist frontend on `0.0.0.0:5173`
+- portfolio frontend on `0.0.0.0:5174`
+- `portfolio-ops-market-data-refresh.timer` scheduled at `09:00 Asia/Shanghai`
 
 On macOS, recreate these as foreground dev commands, `launchd` jobs, Homebrew services, or Docker-managed processes. Do not copy Linux unit files blindly.
 
-## Secrets
+## Configuration And Secrets
 
-The repository intentionally excludes backend `.env` files. Review and migrate only the values still needed for:
+The repository is private and intentionally includes backend `.env` files for restore. Review and update only the values still needed for:
 
 - database connection overrides
 - Platform Tushare token and API URL
@@ -210,4 +210,4 @@ The repository intentionally excludes backend `.env` files. Review and migrate o
 - Watchlist copilot provider/API key, if enabled
 - CORS/frontend URL overrides for any non-local deployment
 
-Do not paste secrets into docs, Git commit messages, or chat transcripts.
+Do not paste secret values into docs, Git commit messages, issue text, PR descriptions, or chat transcripts.

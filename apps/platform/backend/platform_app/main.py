@@ -10,7 +10,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="Yungu platform entry backend for app discovery and routing.",
+    description="Portfolio Operations platform entry backend for app discovery and routing.",
 )
 
 app.add_middleware(

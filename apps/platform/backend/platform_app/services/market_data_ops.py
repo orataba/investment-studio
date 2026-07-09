@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover - optional dependency
     ts = None
 
 
-LOGGER = logging.getLogger("yungu.market_data_ops")
+LOGGER = logging.getLogger("portfolio_ops.market_data_ops")
 
 NAV_IMPORT_HEADER_MAP = {
     "date": "as_of_date",

@@ -1,2 +1,2 @@
-"""API package for Yungu Portfolio."""
+"""API package for Portfolio Operations Portfolio."""
 

@@ -2,8 +2,8 @@
 
 This directory stores portable data snapshots that are intentionally committed for migration.
 
-- `yungu_local_2026-07-08.pgdump`: PostgreSQL custom-format dump for `instrument_registry`, `portfolio`, and `watchlist`.
-- `yungu_local_2026-07-08.sha256`: checksum for the dump.
+- `portfolio_ops_2026-07-08.pgdump`: PostgreSQL custom-format dump for `instrument_registry`, `portfolio`, and `watchlist`.
+- `portfolio_ops_2026-07-08.sha256`: checksum for the dump.
 
 Starting or registering the backend services on a new computer does not recreate the old data automatically. Restore this dump into PostgreSQL before using the apps.
 
@@ -16,13 +16,13 @@ until pg_isready -h 127.0.0.1 -p 5432 -U yungu -d yungu; do
   sleep 1
 done
 
-sha256sum -c data/migration/yungu_local_2026-07-08.sha256
+sha256sum -c data/migration/portfolio_ops_2026-07-08.sha256
 ```
 
 If `sha256sum` is unavailable on macOS, install GNU coreutils or use:
 
 ```bash
-shasum -a 256 -c data/migration/yungu_local_2026-07-08.sha256
+shasum -a 256 -c data/migration/portfolio_ops_2026-07-08.sha256
 ```
 
 Then restore:
@@ -31,7 +31,7 @@ Then restore:
 PGPASSWORD=yungu \
 pg_restore --clean --if-exists --no-owner --no-acl \
   -h 127.0.0.1 -U yungu -d yungu \
-  data/migration/yungu_local_2026-07-08.pgdump
+  data/migration/portfolio_ops_2026-07-08.pgdump
 ```
 
 Quick verification:

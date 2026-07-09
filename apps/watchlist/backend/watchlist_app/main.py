@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="Yungu Watchlist backend with shared instruments, read models, and persistence scaffolding.",
+    description="Portfolio Operations Watchlist backend with shared instruments, read models, and persistence scaffolding.",
     lifespan=lifespan,
 )
 

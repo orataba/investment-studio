@@ -1,4 +1,4 @@
-# Yungu Database Workflow
+# Portfolio Operations Workbench Database Workflow
 
 ## Default Topology
 
@@ -14,7 +14,7 @@
 (cd infra/postgres && docker compose up -d)
 ```
 
-Local connection values should come from ignored `.env` files or shell environment variables. Do not commit real database users or passwords.
+Local connection values come from the committed private-repository backend `.env` files or shell environment variables. Do not paste credential-bearing URLs into docs, issues, PR text, commit messages, or chat transcripts.
 
 - host: `127.0.0.1`
 - port: `5432`
@@ -43,7 +43,7 @@ Local connection values should come from ignored `.env` files or shell environme
 
 - 这是破坏性命令，会删除 `instrument_registry / portfolio / watchlist` 三个 schema 的全部数据。
 - 默认读取 `YUNGU_LOCAL_POSTGRES_URL`。
-- 如果数据库地址不同，先在未提交的 `.env` 或 shell 环境里设置 `YUNGU_LOCAL_POSTGRES_URL`。
+- 如果数据库地址不同，先在 backend `.env` 或 shell 环境里设置 `YUNGU_LOCAL_POSTGRES_URL`。
 - migration 只重建结构和仓库内定义的 reference rows；业务导入数据、手工录入数据、历史 runtime 数据不会自动恢复。
 - `portfolio` schema 重建后默认是空组合状态；需要组合时，显式通过 UI/API 创建，或运行 `apps/portfolio/backend/scripts/import_real_portfolio_from_csv.py --csv-path ... --portfolio-id ...` 导入。
 - `watchlist` schema 重建后不会自动注入示例 watchlist、示例标签值或 demo 产品框架赋值。
@@ -83,7 +83,7 @@ SQLite fast tests 不会覆盖 PostgreSQL 专属的 cross-schema FK / search_pat
 ```
 
 这些测试默认读取 `YUNGU_TEST_POSTGRES_URL`。
-如果测试数据库地址不同，在未提交的 `.env` 或 shell 环境里设置 `YUNGU_TEST_POSTGRES_URL`。
+如果测试数据库地址不同，在 backend `.env` 或 shell 环境里设置 `YUNGU_TEST_POSTGRES_URL`。
 这两条测试会在同一个 PostgreSQL 实例里临时创建并删除独立数据库，所以运行用户还需要能连接 `postgres` 库并具备 `CREATE DATABASE / DROP DATABASE` 权限。
 
 ## Repository Hygiene
@@ -91,5 +91,5 @@ SQLite fast tests 不会覆盖 PostgreSQL 专属的 cross-schema FK / search_pat
 - 仓库不再保存任何运行时 SQLite 数据文件。
 - 如果目录里出现 `*.db / *.sqlite / *.sqlite3`，应视为临时本地产物并删除，而不是提交。
 - SQLite 仅保留在测试夹具中，通过 `tmp_path` 动态生成。
-- `nav/` 是本机 NAV / Excel 导入暂存目录，脚本会从这里读取文件，但目录内容不属于源码。
+- `nav/` 是迁移保留的 NAV 附件图片数据，已经纳入 Git；后续新增大批量原始材料前先判断是否应该进入仓库。
 - `node_modules/` 与 frontend `dist/` 只由本地 install/build 生成，不作为提交内容。

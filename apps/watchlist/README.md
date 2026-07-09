@@ -1,6 +1,6 @@
-# Yungu Watchlist
+# Portfolio Operations Workbench Watchlist
 
-这是当前 `Yungu / Watchlist` app 的工作区。
+这是当前 `Portfolio Operations Workbench / Watchlist` app 的工作区。
 
 当前后端主语已经统一到 `instrument`，当前已发布主路径支持 `fund` 与 `index` 两类本地 watchlist/detail 工作面。
 

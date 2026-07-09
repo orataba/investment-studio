@@ -1,1 +1,1 @@
-"""Core settings for the Yungu Portfolio backend."""
+"""Core settings for the Portfolio Operations Portfolio backend."""

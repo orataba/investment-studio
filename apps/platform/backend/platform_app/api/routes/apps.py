@@ -11,7 +11,7 @@ router = APIRouter()
 def list_apps() -> PlatformAppsResponse:
     settings = get_settings()
     return PlatformAppsResponse(
-        platform_name="Yungu",
+        platform_name="Portfolio Operations Workbench",
         apps=[
             PlatformAppCard(
                 app_id="database_dashboard",

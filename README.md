@@ -1,6 +1,6 @@
-# Yungu
+# Portfolio Operations Workbench
 
-`Yungu` 是一个包含 `Platform`、`Watchlist`、`Portfolio` 的 monorepo 工作区。
+`Portfolio Operations Workbench` 是一个包含 `Platform`、`Watchlist`、`Portfolio` 的 monorepo 工作区，用于投资组合运营、资产主数据、观察池研究和组合绩效/风险管理。
 
 当前状态：
 
@@ -20,7 +20,7 @@
 ## 目录
 
 ```text
-yungu/
+portfolio-operations-workbench/
   apps/
     platform/
     watchlist/
@@ -45,6 +45,8 @@ yungu/
   当前前端设计基线，约束白底数据终端、字体层级、tabs 与内容区节奏。
 - [docs/MAC_MIGRATION_FREEZE.md](./docs/MAC_MIGRATION_FREEZE.md)
   WSL 到 Mac 迁移冻结清单，记录 Git 承载范围、本地状态边界和恢复步骤。
+- [docs/NEW_MACHINE_RESTORE.md](./docs/NEW_MACHINE_RESTORE.md)
+  新电脑从 GitHub 私有仓库恢复项目的步骤参考。
 - [apps/platform/README.md](./apps/platform/README.md)
   Platform app 的职责、启动命令和前端运行时配置。
 - [apps/watchlist/README.md](./apps/watchlist/README.md)
@@ -78,7 +80,7 @@ yungu/
 
 ## 开发工作流
 
-以下命令默认从仓库根目录执行；如果你在其他目录，先进入自己的本地 clone。不要把本机绝对路径、用户名、密码或真实服务地址写入文档和提交信息。
+以下命令默认从仓库根目录执行；如果你在其他目录，先进入自己的本地 clone。真实 backend `.env` 文件已经作为私有仓库恢复资产纳入 Git，但不要把密钥值粘贴到聊天、issue、PR 描述或提交信息里。
 
 ### 数据库
 
@@ -86,7 +88,7 @@ yungu/
 (cd infra/postgres && docker compose up -d)
 ```
 
-新 Mac 从零恢复冻结数据时，按 [docs/MAC_MIGRATION_FREEZE.md](./docs/MAC_MIGRATION_FREEZE.md) 的 `Fresh Mac Bring-Up` 执行：先启动 PostgreSQL，再校验并 `pg_restore` `data/migration/` 里的 dump。不要在恢复后运行 `./infra/postgres/rebuild_local_schemas.sh`，除非明确要清空冻结数据并重建空 schema。
+新电脑从零恢复时，优先按 [docs/NEW_MACHINE_RESTORE.md](./docs/NEW_MACHINE_RESTORE.md) 执行：先启动 PostgreSQL，再校验并 `pg_restore` `data/migration/` 里的 dump。不要在恢复后运行 `./infra/postgres/rebuild_local_schemas.sh`，除非明确要清空恢复数据并重建空 schema。
 
 默认单库 schema 划分：
 
@@ -150,6 +152,7 @@ npm --prefix apps/watchlist/frontend run build
 
 - `nav/` 是冻结迁移要保留的 NAV 附件图片数据，已纳入 Git；后续新增大批量原始材料前先确认是否应进入仓库。
 - `data/migration/` 存放冻结迁移用的可恢复数据库 dump 与校验文件；不要把 raw PostgreSQL data directory 放进 Git。
+- `apps/platform/backend/.env`、`apps/watchlist/backend/.env`、`apps/portfolio/backend/.env` 是私有仓库恢复配置，已经纳入 Git；更新密钥时直接修改这些文件并提交，但不要在提交信息里写出密钥值。
 - `node_modules/`、`dist/`、`*.db`、`*.sqlite*`、`__pycache__/`、`.pytest_cache/` 都是本地产物，不应进入提交。
-- `.local-pg/`、真实 `.env`/`.env.*`、`ref/`、虚拟环境和用户级 `systemd --user` unit 都是本机状态，不作为跨机器 Git 迁移载体；`.env.example` 模板保留在 Git 里用于重建配置。
+- `.local-pg/`、`ref/`、虚拟环境和用户级 `systemd --user` unit 都是本机状态，不作为跨机器 Git 迁移载体；`.env.example` 模板仍保留在 Git 里用于说明配置项。
 - 提交前至少跑一次三个后端测试和三个前端 build；PostgreSQL cross-schema 行为按需补跑 [docs/DATABASE_WORKFLOW.md](./docs/DATABASE_WORKFLOW.md) 里的 integration tests。

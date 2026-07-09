@@ -9,7 +9,7 @@ def test_health_reports_email_readiness(monkeypatch) -> None:
     from platform_app.api.routes import health
 
     class StubSettings:
-        app_name = "Yungu Platform API"
+        app_name = "Portfolio Operations Platform API"
         environment = "test"
         email_sync_enabled = True
         email_sync_ready = False

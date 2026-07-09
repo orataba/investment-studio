@@ -9,7 +9,7 @@ WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
-    app_name: str = "Yungu Watchlist API"
+    app_name: str = "Portfolio Operations Watchlist API"
     app_version: str = "0.1.0"
     environment: str = "development"
     frontend_url: str = "http://127.0.0.1:5173"

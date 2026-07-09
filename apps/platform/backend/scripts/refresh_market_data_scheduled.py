@@ -17,14 +17,14 @@ from platform_app.services.downstream_notifications import notify_market_data_do
 from platform_app.services.market_data_ops import refresh_market_data, refresh_market_data_batch  # noqa: E402
 
 
-LOGGER = logging.getLogger("yungu.market_data_refresh")
+LOGGER = logging.getLogger("portfolio_ops.market_data_refresh")
 UPDATED_STATUSES = {"imported", "refreshed"}
 FAILED_STATUSES = {"failed", "blocked"}
 RETRYABLE_STATUSES = {"failed"}
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Refresh Yungu market data without a browser session.")
+    parser = argparse.ArgumentParser(description="Refresh Portfolio Operations market data without a browser session.")
     parser.add_argument(
         "--channel",
         choices=("all", "email", "tushare"),

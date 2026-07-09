@@ -1,6 +1,6 @@
-# Yungu Instrument Core
+# Portfolio Operations Workbench Instrument Core
 
-`instrument-core` 是 `Yungu` 平台当前唯一计划抽出来的最小共享业务底座。
+`instrument-core` 是 `Portfolio Operations Workbench` 当前唯一计划抽出来的最小共享业务底座。
 
 ## 当前范围
 

@@ -139,7 +139,9 @@ type PlatformNavImportPreviewResponse = {
   rows: PlatformNavImportPreviewRow[]
 }
 
-const PLATFORM_NAME_FALLBACK = (import.meta.env.VITE_PLATFORM_NAME || 'Yungu').trim() || 'Yungu'
+const PLATFORM_NAME_FALLBACK =
+  (import.meta.env.VITE_PLATFORM_NAME || 'Portfolio Operations Workbench').trim() ||
+  'Portfolio Operations Workbench'
 const PLATFORM_API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 const DATABASE_DASHBOARD_PATH = '/database-dashboard'
 const FX_PANEL_PAIRS: Array<[SupportedCurrency, SupportedCurrency]> = [
@@ -578,7 +580,7 @@ function HomePage({
         <div className="hero-meta">Registry source: {sourceLabel}</div>
       </section>
 
-      <section className="app-grid" aria-label="Yungu app switcher">
+      <section className="app-grid" aria-label="Portfolio Operations app switcher">
         {apps.map((app) => (
           <article className="app-card" key={app.app_id}>
             <div className="app-eyebrow">{app.eyebrow}</div>
@@ -2306,7 +2308,7 @@ export default function App() {
   const [platformName, setPlatformName] = useState(PLATFORM_NAME_FALLBACK)
   const [apps, setApps] = useState<PlatformAppCard[]>(fallbackApps)
   const [sourceLabel, setSourceLabel] = useState(fallbackSourceLabel)
-  const [registryName, setRegistryName] = useState('Yungu Shared Instruments')
+  const [registryName, setRegistryName] = useState('Portfolio Operations Shared Instruments')
   const [instruments, setInstruments] = useState<PlatformInstrumentRecord[]>([])
   const [allInstruments, setAllInstruments] = useState<PlatformInstrumentRecord[]>([])
   const [fxRates, setFxRates] = useState<PlatformFxRatesResponse | null>(null)

@@ -1,4 +1,4 @@
-"""Yungu Portfolio backend portfolio_app."""
+"""Portfolio Operations Portfolio backend portfolio_app."""
 
 from __future__ import annotations
 

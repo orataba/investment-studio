@@ -1,8 +1,8 @@
-# Yungu Platform Boundaries
+# Portfolio Operations Workbench Platform Boundaries
 
 ## Current Topology
 
-`Yungu` 现在是一个单仓、多 app、单 PostgreSQL 的结构：
+`Portfolio Operations Workbench` 现在是一个单仓、多 app、单 PostgreSQL 的结构：
 
 - `apps/platform`
   平台入口和 Database Dashboard。
@@ -48,7 +48,7 @@
 
 当前共享层分成三部分：
 
-### `packages/instrument-core`
+### `packages-ops/instrument-core`
 
 承载跨 app 稳定 contract 和共享持久化 helper：
 

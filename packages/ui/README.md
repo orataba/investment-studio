@@ -1,4 +1,4 @@
-# Yungu UI
+# Portfolio Operations Workbench UI
 
 用于承载跨 app 的前端共享能力。
 

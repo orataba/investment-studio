@@ -1,4 +1,4 @@
-# Yungu Copilot
+# Portfolio Operations Workbench Copilot
 
 未来用于承载平台级 copilot plumbing。
 

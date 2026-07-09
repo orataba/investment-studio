@@ -1,1 +1,1 @@
-"""API package for Yungu platform backend."""
+"""API package for Portfolio Operations platform backend."""
