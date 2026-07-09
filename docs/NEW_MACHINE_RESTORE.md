@@ -61,7 +61,7 @@ done
 
 ## 4. 恢复数据库快照
 
-当前 Git 恢复点是 `2026-07-09 14:54 Asia/Shanghai` 的项目级快照，已包含 `2026-07-09 14:35` 市场数据刷新后的 Portfolio Operations 数据。它只包含 `instrument_registry`、`portfolio`、`watchlist` 三个 schema，不包含同一生产库 `public` schema 里的 research-data-foundation 大表。
+当前 Git 恢复点是 `2026-07-09 16:12 Asia/Shanghai` 的项目级快照，已包含 A 股 ETF 核心池导入、初始行情补数和 All Covered watchlist 物化后的 Portfolio Operations 数据。它只包含 `instrument_registry`、`portfolio`、`watchlist` 三个 schema，不包含同一生产库 `public` schema 里的 research-data-foundation 大表。
 
 先校验 dump：
 
@@ -169,7 +169,7 @@ curl --noproxy '*' http://127.0.0.1:8001/api/health
 
 ## 10. 刷新快照之后的新数据
 
-数据库 dump 是 `2026-07-09 14:54 Asia/Shanghai` 的恢复点。如果你在更晚日期恢复，恢复完成后可以手动跑一次全量调度入口，让行情、净值和下游物化读模型追到恢复当天：
+数据库 dump 是 `2026-07-09 16:12 Asia/Shanghai` 的恢复点。如果你在更晚日期恢复，恢复完成后可以手动跑一次全量调度入口，让行情、净值和下游物化读模型追到恢复当天：
 
 ```bash
 PYTHONPATH=/path/to/pm/apps/platform/backend:/path/to/pm/packages/instrument-core/python \

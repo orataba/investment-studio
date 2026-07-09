@@ -7,7 +7,7 @@ This directory stores portable data snapshots that are intentionally committed f
 
 Snapshot source:
 
-- Created from the production server at `2026-07-09 14:54 Asia/Shanghai`, after the `2026-07-09 14:35` market-data refresh finished.
+- Created from the production server at `2026-07-09 16:12 Asia/Shanghai`, after the A-share ETF core-pool import, initial market-data backfill, and All Covered watchlist materialization finished.
 - Includes only the Portfolio Operations project schemas: `instrument_registry`, `portfolio`, and `watchlist`.
 - Excludes the shared `public` schema in `research_data_foundation`; that schema contains other foundation/project data and is not required to restore this project.
 
