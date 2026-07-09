@@ -61,7 +61,7 @@ done
 
 ## 4. 恢复数据库快照
 
-当前 Git 恢复点是 `2026-07-09 16:12 Asia/Shanghai` 的项目级快照，已包含 A 股 ETF 核心池导入、初始行情补数和 All Covered watchlist 物化后的 Portfolio Operations 数据。它只包含 `instrument_registry`、`portfolio`、`watchlist` 三个 schema，不包含同一生产库 `public` schema 里的 research-data-foundation 大表。
+当前 Git 恢复点是 `2026-07-09 16:53 Asia/Shanghai` 的项目级快照，来自本地 `portfolio_ops` PostgreSQL 数据库，已包含 A 股 ETF 核心池导入、初始行情补数、All Covered watchlist 物化和本地数据库改名清理后的 Portfolio Operations 数据。它只包含 `instrument_registry`、`portfolio`、`watchlist` 三个 schema，不包含 `public` 或其他非项目 schema。
 
 先校验 dump：
 

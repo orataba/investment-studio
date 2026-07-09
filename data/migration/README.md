@@ -7,9 +7,9 @@ This directory stores portable data snapshots that are intentionally committed f
 
 Snapshot source:
 
-- Created from the production server at `2026-07-09 16:12 Asia/Shanghai`, after the A-share ETF core-pool import, initial market-data backfill, and All Covered watchlist materialization finished.
+- Created from the local `portfolio_ops` PostgreSQL database at `2026-07-09 16:53 Asia/Shanghai`, after the A-share ETF core-pool import, initial market-data backfill, All Covered watchlist materialization, and local database rename cleanup finished.
 - Includes only the Portfolio Operations project schemas: `instrument_registry`, `portfolio`, and `watchlist`.
-- Excludes the shared `public` schema in `research_data_foundation`; that schema contains other foundation/project data and is not required to restore this project.
+- Excludes `public` and any non-project schemas; they are not required to restore this project.
 
 Starting or registering the backend services on a new computer does not recreate the old data automatically. Restore this dump into PostgreSQL before using the apps.
 

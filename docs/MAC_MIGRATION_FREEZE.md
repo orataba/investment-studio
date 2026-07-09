@@ -30,9 +30,9 @@ The freeze includes:
 - `data/migration/portfolio_ops_2026-07-09_current.pgdump`: custom-format PostgreSQL dump for schemas `instrument_registry`, `portfolio`, and `watchlist`.
 - `data/migration/portfolio_ops_2026-07-09_current.sha256`: checksum for the dump.
 
-The committed dump was created from production at `2026-07-09 16:12 Asia/Shanghai`, after the A-share ETF core-pool import, initial market-data backfill, and All Covered watchlist materialization finished. The source PostgreSQL database also contains a large shared `public` schema for research-data-foundation; that schema is deliberately excluded because it is not required to restore this project.
+The committed dump was created from the local `portfolio_ops` PostgreSQL database at `2026-07-09 16:53 Asia/Shanghai`, after the A-share ETF core-pool import, initial market-data backfill, All Covered watchlist materialization, and local database rename cleanup finished. It includes only the Portfolio Operations project schemas: `instrument_registry`, `portfolio`, and `watchlist`.
 
-The project schema sizes in production at audit time were approximately:
+The project schema sizes at audit time were approximately:
 
 - `instrument_registry`: 174 MB
 - `portfolio`: 115 MB
