@@ -8,14 +8,14 @@
 
 - 仓库已从私有 GitHub clone 到本机。
 - 本机可以访问 GitHub、PyPI/npm registry、Docker/PostgreSQL。
-- backend `.env` 已随私有仓库提交，无需从旧机器单独复制；不要在聊天、issue、PR 描述或提交信息中粘贴 `.env` 的密钥值。
+- backend `.env` 不随仓库分发；真实值应从受控秘密存储恢复到 `~/.config/orataba/secrets/portfolio-operations-workbench/`，权限设为 `0600`，再以本地软链接提供给各 backend。
 - 所有 backend 运行时环境变量统一使用 `PORTFOLIO_OPS_*` 前缀；本地数据库名、用户和密码统一为 `portfolio_ops`。
 
 ## 1. 安装系统工具
 
 需要：
 
-- Python 3.12+
+- `uv` 管理的 Python 3.12
 - Node.js + npm
 - Docker Desktop / Colima / Docker Engine
 - PostgreSQL client tools: `psql`、`pg_isready`、`pg_restore`
@@ -23,7 +23,7 @@
 macOS 可参考：
 
 ```bash
-brew install python node postgresql@16
+brew install uv node postgresql@17
 ```
 
 如果使用 Docker Desktop，确认 Docker daemon 已启动。
@@ -31,20 +31,20 @@ brew install python node postgresql@16
 ## 2. 拉取仓库
 
 ```bash
-git clone git@github.com:orataba/pm.git
-cd pm
+git clone git@github.com:orataba/pm.git portfolio-operations-workbench
+cd portfolio-operations-workbench
 git status --short --branch
 ```
 
-确认工作区干净，且 `data/migration/`、`nav/`、三个 backend `.env` 文件都存在：
+确认工作区干净，且 `data/migration/`、`nav/` 和三个 backend `.env.example` 都存在。真实 `.env` 由本机秘密存储单独提供：
 
 ```bash
 ls data/migration
 test -f data/migration/portfolio_ops_2026-07-09_current.pgdump
 test -f data/migration/portfolio_ops_2026-07-09_current.sha256
-test -f apps/platform/backend/.env
-test -f apps/watchlist/backend/.env
-test -f apps/portfolio/backend/.env
+test -f apps/platform/backend/.env.example
+test -f apps/watchlist/backend/.env.example
+test -f apps/portfolio/backend/.env.example
 ```
 
 ## 3. 启动 PostgreSQL

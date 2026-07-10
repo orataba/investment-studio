@@ -48,7 +48,7 @@
 
 Database Dashboard 的邮件刷新使用显式产品规则匹配发件人、主题、附件名与行级产品信息。非 full-history 刷新会先读取该 instrument 已有最新 NAV 日期，再用 IMAP `SINCE` 缩小邮件搜索范围，并在解析后过滤早于该 NAV 日期的行；若没有历史 NAV，才退回最近邮件窗口。IMAP 连接超时由 `email_imap_timeout_seconds` 控制，避免邮件服务器阻塞整个刷新请求。
 
-Database Dashboard 也支持 Tushare SDK 兼容刷新。将 instrument 的 `Source Mode` 设为 `API`，`API Profile` 设为 `tushare` 后，后端会用 `tushare` Python SDK 调用，并把 SDK 的 `_DataApi__http_url` 指向 `PORTFOLIO_OPS_PLATFORM_TUSHARE_API_URL`，默认值为 `https://fastapic.stockai888.top`。公募 `.OF` 代码通过 `fund_nav` 写入 `official_nav / total_return_nav`，场内基金 `.SH/.SZ` 通过 `fund_daily` 写入 `price/close`，指数 `.SH/.SZ/.CSI/.CNI` 通过 `index_daily` 写入 `price/close`。Tushare token 读取 committed private backend `.env` 或 shell 环境变量；不要把 token 明文写进提交信息或聊天记录。
+Database Dashboard 也支持 Tushare SDK 兼容刷新。将 instrument 的 `Source Mode` 设为 `API`，`API Profile` 设为 `tushare` 后，后端会用 `tushare` Python SDK 调用，并把 SDK 的 `_DataApi__http_url` 指向 `PORTFOLIO_OPS_PLATFORM_TUSHARE_API_URL`，默认值为 `https://fastapic.stockai888.top`。公募 `.OF` 代码通过 `fund_nav` 写入 `official_nav / total_return_nav`，场内基金 `.SH/.SZ` 通过 `fund_daily` 写入 `price/close`，指数 `.SH/.SZ/.CSI/.CNI` 通过 `index_daily` 写入 `price/close`。Tushare token 读取 Git-ignored backend `.env` 或 shell 环境变量；不要把 token 明文写进 Git、提交信息或聊天记录。
 
 后台定时刷新使用 [backend/scripts/refresh_market_data_scheduled.py](./backend/scripts/refresh_market_data_scheduled.py)。默认依次刷新邮件和 Tushare，成功写入后通知 Watchlist / Portfolio 下游重算。安装每天 08:00 静默刷新 timer：
 
@@ -84,7 +84,7 @@ uvicorn platform_app.main:app --reload --host 127.0.0.1 --port 8002
 
 说明：
 
-- 数据库连接通过 `PORTFOLIO_OPS_PLATFORM_DATABASE_URL` 配置；私有仓库已提交 backend `.env` 作为恢复配置
+- 数据库连接通过 `PORTFOLIO_OPS_PLATFORM_DATABASE_URL` 配置；真实 backend `.env` 由本机受限秘密目录提供，不进入 Git
 - backend 顶层包名现在是 `platform_app`
 - `platform` 运行时默认使用 `instrument_registry` schema
 - instrument registry schema 的迁移请去 `infra/instrument_registry`

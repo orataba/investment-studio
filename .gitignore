@@ -7,9 +7,6 @@ __pycache__/
 .env
 .env.*
 !.env.example
-!apps/platform/backend/.env
-!apps/portfolio/backend/.env
-!apps/watchlist/backend/.env
 .local-pg/
 node_modules/
 dist/

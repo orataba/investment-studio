@@ -14,7 +14,7 @@
 (cd infra/postgres && docker compose up -d)
 ```
 
-Local connection values come from the committed private-repository backend `.env` files or shell environment variables. Do not paste credential-bearing URLs into docs, issues, PR text, commit messages, or chat transcripts.
+Local connection values come from Git-ignored backend `.env` links to `~/.config/orataba/secrets/portfolio-operations-workbench/`, or from shell environment variables. Do not paste credential-bearing URLs into docs, issues, PR text, commit messages, or chat transcripts.
 
 - host: `127.0.0.1`
 - port: `5432`

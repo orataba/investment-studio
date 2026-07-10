@@ -31,7 +31,7 @@
 - 描述当前真实运行方式，不保留过程复盘、临时排查记录或旧架构兼容说明。
 - `packages/ui` 已经进入当前路径，先承载语言选择与跨 app 前端共享上下文；不是纯占位目录。
 - 前端视觉调整以 [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md) 为准；不要再引入米黄、沙色或暖灰页面背景。
-- `nav/`、`data/migration/`、三个 backend `.env` 和 `.env.example` 是私有仓库恢复资产；runtime DB、构建产物、依赖目录和缓存仍按本地工作产物处理。
+- `nav/`、`data/migration/` 和 `.env.example` 是仓库恢复资产；真实 backend `.env` 位于本机受限秘密目录，runtime DB、构建产物、依赖目录和缓存仍按本地工作产物处理。
 
 提交前快速检查：
 

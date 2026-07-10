@@ -1,8 +1,10 @@
 # Mac Migration Freeze
 
+> Security update (2026-07-10): the three real backend `.env` files were removed from the current tree and all reachable Git history. Statements below that describe committed secrets are superseded by this note. Git keeps only `.env.example`; real values live in a machine-local protected secret store.
+
 Freeze date: 2026-07-09
 
-This repository is the durable project handoff for moving `Portfolio Operations Workbench` from WSL to macOS. The rule is: Git carries code, docs, migration-safe data, committed backend environment configuration, and reproducible setup notes. Machine-local runtime state stays out of Git and must be rebuilt.
+This repository is the durable project handoff for moving `Portfolio Operations Workbench` from WSL to macOS. Git carries code, docs, migration-safe data, configuration templates, and reproducible setup notes. Secrets and machine-local runtime state stay out of Git and must be restored separately.
 
 ## What Is In Git
 
@@ -11,7 +13,6 @@ This repository is the durable project handoff for moving `Portfolio Operations 
 - `infra/`: PostgreSQL schema bootstrap, instrument-registry migrations, and the Linux user-systemd market-data timer installer.
 - `docs/`: operating docs, design baseline, database workflow, and this migration note.
 - `.env.example`: local-development configuration templates.
-- `apps/platform/backend/.env`, `apps/watchlist/backend/.env`, `apps/portfolio/backend/.env`: private-repository runtime configuration for restore.
 - `nav/`: NAV attachment image data captured for migration.
 - `data/migration/`: portable PostgreSQL dump and checksum files for this freeze.
 
@@ -104,7 +105,7 @@ Exact row counts can change after later refreshes, but these tables should not b
 
 ### 4. Verify Local Backend Configuration
 
-The private repository now carries the three backend `.env` files needed for restore:
+The repository carries only `.env.example`. Restore the three real backend `.env` files from the protected machine-local secret store:
 
 ```bash
 test -f apps/platform/backend/.env
@@ -204,7 +205,7 @@ On macOS, recreate these as foreground dev commands, `launchd` jobs, Homebrew se
 
 ## Configuration And Secrets
 
-The repository is private and intentionally includes backend `.env` files for restore. Review and update only the values still needed for:
+The repository intentionally excludes real backend `.env` files. Restore and rotate only the values still needed for:
 
 - database connection overrides
 - Platform Tushare token and API URL

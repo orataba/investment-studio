@@ -80,7 +80,7 @@ portfolio-operations-workbench/
 
 ## 开发工作流
 
-以下命令默认从仓库根目录执行；如果你在其他目录，先进入自己的本地 clone。真实 backend `.env` 文件已经作为私有仓库恢复资产纳入 Git，但不要把密钥值粘贴到聊天、issue、PR 描述或提交信息里。
+以下命令默认从仓库根目录执行；如果你在其他目录，先进入自己的本地 clone。真实 backend `.env` 不进入 Git；本机统一从 `~/.config/orataba/secrets/portfolio-operations-workbench/` 提供，并可在各 backend 目录建立被 Git 忽略的 `.env` 软链接。不要把密钥值粘贴到聊天、issue、PR 描述或提交信息里。
 
 ### 数据库
 
@@ -152,7 +152,7 @@ npm --prefix apps/watchlist/frontend run build
 
 - `nav/` 是冻结迁移要保留的 NAV 附件图片数据，已纳入 Git；后续新增大批量原始材料前先确认是否应进入仓库。
 - `data/migration/` 存放可恢复的当前项目级数据库 dump 与校验文件；dump 只覆盖 `instrument_registry`、`portfolio`、`watchlist`，不要把 raw PostgreSQL data directory 或其他项目的共享基础库数据放进 Git。
-- `apps/platform/backend/.env`、`apps/watchlist/backend/.env`、`apps/portfolio/backend/.env` 是私有仓库恢复配置，已经纳入 Git；更新密钥时直接修改这些文件并提交，但不要在提交信息里写出密钥值。
+- `apps/platform/backend/.env`、`apps/watchlist/backend/.env`、`apps/portfolio/backend/.env` 是本机秘密配置，必须保持 Git ignored；仓库只保留 `.env.example`，真实值放在 `~/.config/orataba/secrets/portfolio-operations-workbench/`。
 - `node_modules/`、`dist/`、`*.db`、`*.sqlite*`、`__pycache__/`、`.pytest_cache/` 都是本地产物，不应进入提交。
 - `.local-pg/`、`ref/`、虚拟环境和用户级 `systemd --user` unit 都是本机状态，不作为跨机器 Git 迁移载体；`.env.example` 模板仍保留在 Git 里用于说明配置项。
 - 提交前至少跑一次三个后端测试和三个前端 build；PostgreSQL cross-schema 行为按需补跑 [docs/DATABASE_WORKFLOW.md](./docs/DATABASE_WORKFLOW.md) 里的 integration tests。
