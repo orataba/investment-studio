@@ -3292,8 +3292,17 @@ def _build_leaf_target_weight_gaps(
             else float(target_weight - current_weight)
         )
         action = "Review"
+        execution_status = "ready"
+        execution_note = None
         if gap is not None:
-            if gap > 0.01:
+            if current_weight > 1e-8 and target_weight <= 1e-12:
+                action = "Review"
+                execution_status = "manual_review_required"
+                execution_note = (
+                    "Current holdings with a 0% solved target require an explicit PM decision; "
+                    "Research does not infer an executable liquidation from target eligibility or limited history."
+                )
+            elif gap > 0.01:
                 action = "Increase"
             elif gap < -0.01:
                 action = "Reduce"
@@ -3310,6 +3319,8 @@ def _build_leaf_target_weight_gaps(
                 "current_value_base": None,
                 "base_currency": base_currency,
                 "action": action,
+                "execution_status": execution_status,
+                "execution_note": execution_note,
             }
         )
     gaps.sort(key=lambda item: abs(_safe_float(item.get("gap")) or 0.0), reverse=True)

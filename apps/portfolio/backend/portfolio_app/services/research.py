@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import mimetypes
 import shutil
@@ -9,7 +10,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import defer
 
 from portfolio_app.core.settings import get_settings
@@ -17,8 +18,12 @@ from portfolio_app.db.models import (
     PortfolioRecordModel,
     ResearchRunRecordModel,
     ResearchSettingsRecordModel,
+    TargetSetLineRecordModel,
+    TargetSetRecordModel,
+    TaxonomyAssignmentRecordModel,
     TaxonomyNodeRecordModel,
     TaxonomyRecordModel,
+    TransactionRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.instrument_charts import build_instrument_sparkline
@@ -52,6 +57,7 @@ HTML_SUFFIXES = {".html"}
 CURRENT_TARGET_RUN_TEMPLATE = "target_weight_solve"
 RESEARCH_AS_OF_MODE_DYNAMIC = "dynamic"
 RESEARCH_AS_OF_MODE_PINNED = "pinned"
+RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION = 1
 
 
 def _utc_now() -> datetime:
@@ -473,11 +479,251 @@ def _serialize_settings_row(
     }
 
 
+def _date_value(value: object) -> date | None:
+    if isinstance(value, date):
+        return value
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _latest_research_transaction_date(portfolio_id: str) -> date | None:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        return session.scalar(
+            select(func.max(TransactionRecordModel.trade_date)).where(
+                TransactionRecordModel.portfolio_id == portfolio_id
+            )
+        )
+
+
+def _canonical_reliability_value(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _planning_state_fingerprint(
+    session,
+    *,
+    portfolio_id: str,
+    planning_taxonomy_id: str | None,
+) -> str | None:
+    taxonomy_id = str(planning_taxonomy_id or "").strip()
+    if not taxonomy_id:
+        return None
+
+    taxonomy = session.scalar(
+        select(TaxonomyRecordModel).where(
+            TaxonomyRecordModel.portfolio_id == portfolio_id,
+            TaxonomyRecordModel.taxonomy_id == taxonomy_id,
+        )
+    )
+    if taxonomy is None:
+        return None
+
+    nodes = session.scalars(
+        select(TaxonomyNodeRecordModel).where(TaxonomyNodeRecordModel.taxonomy_id == taxonomy_id)
+    ).all()
+    assignments = session.scalars(
+        select(TaxonomyAssignmentRecordModel).where(
+            TaxonomyAssignmentRecordModel.taxonomy_id == taxonomy_id,
+            TaxonomyAssignmentRecordModel.status == "active",
+        )
+    ).all()
+    target_sets = session.scalars(
+        select(TargetSetRecordModel).where(
+            TargetSetRecordModel.taxonomy_id == taxonomy_id,
+            TargetSetRecordModel.status == "active",
+        )
+    ).all()
+    active_target_set_ids = [item.target_set_id for item in target_sets]
+    target_lines = (
+        session.scalars(
+            select(TargetSetLineRecordModel).where(
+                TargetSetLineRecordModel.target_set_id.in_(active_target_set_ids)
+            )
+        ).all()
+        if active_target_set_ids
+        else []
+    )
+    lines_by_target_set_id: dict[str, list[dict[str, object]]] = {}
+    for item in target_lines:
+        lines_by_target_set_id.setdefault(item.target_set_id, []).append(
+            {
+                "target_member_type": item.target_member_type,
+                "target_member_id": item.target_member_id,
+                "taxonomy_node_id": item.taxonomy_node_id,
+                "target_weight": _safe_float(item.target_weight),
+                "target_risk_share": _safe_float(item.target_risk_share),
+            }
+        )
+    for lines in lines_by_target_set_id.values():
+        lines.sort(
+            key=lambda item: (
+                str(item.get("target_member_type") or ""),
+                str(item.get("target_member_id") or ""),
+            )
+        )
+
+    state = {
+        "schema_version": RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION,
+        "taxonomy": {
+            "taxonomy_id": taxonomy.taxonomy_id,
+            "name": taxonomy.name,
+            "taxonomy_type": taxonomy.taxonomy_type,
+            "primary_assignment_scope": taxonomy.primary_assignment_scope,
+            "planning_enabled": bool(taxonomy.planning_enabled),
+            "budgeting_level": taxonomy.budgeting_level,
+            "root_default_target_dimension": taxonomy.root_default_target_dimension,
+            "status": taxonomy.status,
+        },
+        "nodes": sorted(
+            [
+                {
+                    "taxonomy_node_id": item.taxonomy_node_id,
+                    "parent_taxonomy_node_id": item.parent_taxonomy_node_id,
+                    "node_name": item.node_name,
+                    "node_code": item.node_code,
+                    "sort_order": item.sort_order,
+                    "is_terminal": bool(item.is_terminal),
+                    "default_target_dimension": item.default_target_dimension,
+                    "status": item.status,
+                }
+                for item in nodes
+            ],
+            key=lambda item: str(item["taxonomy_node_id"]),
+        ),
+        "active_assignments": sorted(
+            [
+                {
+                    "target_scope": item.target_scope,
+                    "target_entity_id": item.target_entity_id,
+                    "taxonomy_node_id": item.taxonomy_node_id,
+                }
+                for item in assignments
+            ],
+            key=lambda item: (
+                str(item["target_scope"]),
+                str(item["target_entity_id"]),
+                str(item["taxonomy_node_id"]),
+            ),
+        ),
+        "active_target_sets": sorted(
+            [
+                {
+                    "target_set_id": item.target_set_id,
+                    "comparator_taxonomy_node_id": item.comparator_taxonomy_node_id,
+                    "target_set_type": item.target_set_type,
+                    "name": item.name,
+                    "weight_enabled": bool(item.weight_enabled),
+                    "risk_budget_enabled": bool(item.risk_budget_enabled),
+                    "lines": lines_by_target_set_id.get(item.target_set_id, []),
+                }
+                for item in target_sets
+            ],
+            key=lambda item: (
+                str(item["comparator_taxonomy_node_id"] or ""),
+                str(item["target_set_type"]),
+                str(item["target_set_id"]),
+            ),
+        ),
+    }
+    digest = hashlib.sha256(_canonical_reliability_value(state).encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def _research_run_reliability(
+    row: ResearchRunRecordModel,
+    *,
+    latest_portfolio_as_of_date: date,
+    settings_payload: dict[str, object],
+    production_risk_model: dict[str, object],
+    latest_transaction_date: date | None,
+    current_planning_state_fingerprint: str | None,
+) -> tuple[str, list[str]]:
+    if row.status != "completed":
+        return "not_completed", [f"Run status is {row.status}; no current solved result is available."]
+
+    reasons: list[str] = []
+    run_as_of_date = _date_value(row.as_of_date)
+    if run_as_of_date is None:
+        reasons.append("Run does not record an analysis date.")
+    elif run_as_of_date != latest_portfolio_as_of_date:
+        reasons.append(
+            f"Run analysis date {run_as_of_date.isoformat()} does not match the latest portfolio date "
+            f"{latest_portfolio_as_of_date.isoformat()}."
+        )
+    if run_as_of_date is not None and latest_transaction_date is not None and latest_transaction_date > run_as_of_date:
+        reasons.append(
+            f"Portfolio transactions exist through {latest_transaction_date.isoformat()}, after this run's "
+            f"{run_as_of_date.isoformat()} analysis date."
+        )
+
+    request_payload = row.request_payload_json if isinstance(row.request_payload_json, dict) else {}
+    run_planning_state_fingerprint = str(request_payload.get("planning_state_fingerprint") or "").strip()
+    if not run_planning_state_fingerprint:
+        reasons.append(
+            "Run predates planning-state fingerprinting; rerun Research before treating it as current."
+        )
+    elif current_planning_state_fingerprint is None:
+        reasons.append("The current planning taxonomy state is unavailable; rerun after repairing Research settings.")
+    elif run_planning_state_fingerprint != current_planning_state_fingerprint:
+        reasons.append(
+            "Planning taxonomy structure, active assignments, or active SAA/TAA target configuration changed "
+            "after this run was created."
+        )
+
+    if request_payload:
+        expected_payload = {
+            "planning_taxonomy_id": settings_payload.get("planning_taxonomy_id"),
+            "comparator_taxonomy_node_id": settings_payload.get("comparator_taxonomy_node_id"),
+            "as_of_mode": settings_payload.get("as_of_mode"),
+            "as_of_date": settings_payload.get("as_of_date"),
+            "lookback_days": int(production_risk_model.get("lookback_days") or settings_payload.get("lookback_days") or 90),
+            "calculation_frequency": str(
+                production_risk_model.get("calculation_frequency")
+                or settings_payload.get("calculation_frequency")
+                or "auto"
+            ),
+            "missing_return_policy": str(
+                production_risk_model.get("missing_return_policy")
+                or settings_payload.get("missing_return_policy")
+                or RESEARCH_DEFAULT_MISSING_RETURN_POLICY
+            ),
+            "target_dimension": settings_payload.get("target_dimension"),
+            "capital_mode": settings_payload.get("capital_mode"),
+            "gross_exposure": settings_payload.get("gross_exposure"),
+            "target_volatility": settings_payload.get("target_volatility"),
+            "max_gross_exposure": settings_payload.get("max_gross_exposure"),
+            "frozen_taxonomy_node_ids": settings_payload.get("frozen_taxonomy_node_ids") or [],
+            "top_sleeve_weight_bounds": settings_payload.get("top_sleeve_weight_bounds") or [],
+            "backtest_rebalance_frequency": settings_payload.get("backtest_rebalance_frequency"),
+            "backtest_benchmark_instrument_id": settings_payload.get("backtest_benchmark_instrument_id"),
+        }
+        material_keys = list(expected_payload)
+        request_material = {key: request_payload.get(key) for key in material_keys}
+        if _canonical_reliability_value(request_material) != _canonical_reliability_value(expected_payload):
+            reasons.append("Research settings or the production risk policy changed after this run was created.")
+
+        run_risk_model = request_payload.get("risk_model") if isinstance(request_payload.get("risk_model"), dict) else {}
+        risk_keys = ("covariance_model_id", "lookback_days", "calculation_frequency", "missing_return_policy", "contribution_mode")
+        expected_risk = {key: production_risk_model.get(key) for key in risk_keys}
+        actual_risk = {key: run_risk_model.get(key) for key in risk_keys}
+        if run_risk_model and _canonical_reliability_value(actual_risk) != _canonical_reliability_value(expected_risk):
+            reasons.append("The production covariance/risk-contribution model changed after this run was created.")
+
+    return ("stale", list(dict.fromkeys(reasons))) if reasons else ("current", [])
+
+
 def _serialize_run_row(
     row: ResearchRunRecordModel,
     taxonomy_name_map: dict[str, str],
     *,
     include_detail: bool = True,
+    reliability_state: str = "unassessed",
+    reliability_reasons: list[str] | None = None,
 ) -> dict[str, object]:
     planning_taxonomy_id = str(row.planning_taxonomy_id or "").strip() or None
     detail = None
@@ -505,6 +751,9 @@ def _serialize_run_row(
         "requested_by": row.requested_by,
         "headline": row.headline,
         "error_message": row.error_message,
+        "reliability_state": reliability_state,
+        "is_current": reliability_state == "current",
+        "reliability_reasons": list(reliability_reasons or []),
         "artifact_count": len(artifacts),
         "artifacts": artifacts,
         "detail": detail,
@@ -874,9 +1123,15 @@ def _build_current_target_findings(
     if target_weight_gaps:
         top_gap = max(target_weight_gaps, key=lambda item: abs(_safe_float(item.get("gap")) or 0.0))
         if abs(_safe_float(top_gap.get("gap")) or 0.0) > 0.01:
-            questions.append(
-                f"Review whether {top_gap.get('label')} should be {str(top_gap.get('action') or '').lower()}d by {_format_pct(abs(_safe_float(top_gap.get('gap')) or 0.0), 3)} versus the solved target weight."
-            )
+            if str(top_gap.get("execution_status") or "") == "manual_review_required":
+                questions.append(
+                    str(top_gap.get("execution_note") or "").strip()
+                    or f"Review the 0% target for {top_gap.get('label')} before creating any liquidation instruction."
+                )
+            else:
+                questions.append(
+                    f"Review whether {top_gap.get('label')} should be {str(top_gap.get('action') or '').lower()}d by {_format_pct(abs(_safe_float(top_gap.get('gap')) or 0.0), 3)} versus the solved target weight."
+                )
 
     if warnings:
         findings.append(
@@ -1056,6 +1311,8 @@ def _build_target_rows(solution: dict[str, object]) -> list[dict[str, object]]:
                 "implementation_weight": implementation_weight,
                 "gap_to_implementation": gap_to_implementation,
                 "action": str((target_gap or {}).get("action") or "").strip() or None,
+                "execution_status": str((target_gap or {}).get("execution_status") or "ready"),
+                "execution_note": str((target_gap or {}).get("execution_note") or "").strip() or None,
             }
         )
     return rendered
@@ -1311,6 +1568,7 @@ def get_research_workbench(
         return None
 
     latest_portfolio_as_of_date = _default_as_of_date(portfolio)
+    latest_transaction_date = _latest_research_transaction_date(portfolio_id)
     taxonomy_name_map = _taxonomy_name_map(portfolio_id)
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -1331,17 +1589,38 @@ def get_research_workbench(
             default_as_of_date=latest_portfolio_as_of_date,
         )
         production_risk_model = get_portfolio_risk_policy(portfolio_id) or {}
+        current_planning_state_fingerprint = _planning_state_fingerprint(
+            session,
+            portfolio_id=portfolio_id,
+            planning_taxonomy_id=str(settings_payload.get("planning_taxonomy_id") or "").strip() or None,
+        )
         run_rows = session.scalars(
             select(ResearchRunRecordModel)
             .where(ResearchRunRecordModel.portfolio_id == portfolio_id)
             .order_by(ResearchRunRecordModel.requested_at.desc(), ResearchRunRecordModel.research_run_id.desc())
             .options(
                 defer(ResearchRunRecordModel.detail_json),
-                defer(ResearchRunRecordModel.request_payload_json),
             )
         ).all()
+        reliability_by_run_id = {
+            row.research_run_id: _research_run_reliability(
+                row,
+                latest_portfolio_as_of_date=latest_portfolio_as_of_date,
+                settings_payload=settings_payload,
+                production_risk_model=production_risk_model,
+                latest_transaction_date=latest_transaction_date,
+                current_planning_state_fingerprint=current_planning_state_fingerprint,
+            )
+            for row in run_rows
+        }
         runs = [
-            _serialize_run_row(row, taxonomy_name_map, include_detail=False)
+            _serialize_run_row(
+                row,
+                taxonomy_name_map,
+                include_detail=False,
+                reliability_state=reliability_by_run_id[row.research_run_id][0],
+                reliability_reasons=reliability_by_run_id[row.research_run_id][1],
+            )
             for row in run_rows
         ]
         selected_run_row = None
@@ -1353,7 +1632,13 @@ def get_research_workbench(
         if selected_run_row is None and run_rows:
             selected_run_row = run_rows[0]
         selected_run = (
-            _serialize_run_row(selected_run_row, taxonomy_name_map, include_detail=True)
+            _serialize_run_row(
+                selected_run_row,
+                taxonomy_name_map,
+                include_detail=True,
+                reliability_state=reliability_by_run_id[selected_run_row.research_run_id][0],
+                reliability_reasons=reliability_by_run_id[selected_run_row.research_run_id][1],
+            )
             if selected_run_row is not None
             else None
         )
@@ -1573,6 +1858,13 @@ def run_portfolio_research(
             research_capital_mode,
             settings_row.max_gross_exposure,
         )
+        planning_state_fingerprint = _planning_state_fingerprint(
+            session,
+            portfolio_id=portfolio_id,
+            planning_taxonomy_id=settings_row.planning_taxonomy_id,
+        )
+        if planning_state_fingerprint is None:
+            raise ValueError("The selected planning taxonomy state is unavailable.")
         run_row = ResearchRunRecordModel(
             research_run_id=run_id,
             portfolio_id=portfolio_id,
@@ -1598,6 +1890,8 @@ def run_portfolio_research(
                 "calculation_frequency": risk_calculation_frequency,
                 "missing_return_policy": risk_missing_return_policy,
                 "risk_model": deepcopy(production_risk_model or {}),
+                "planning_state_fingerprint_version": RESEARCH_PLANNING_STATE_FINGERPRINT_VERSION,
+                "planning_state_fingerprint": planning_state_fingerprint,
                 "target_dimension": settings_row.target_dimension or "scope_default",
                 "capital_mode": research_capital_mode,
                 "gross_exposure": _safe_float(settings_row.gross_exposure),

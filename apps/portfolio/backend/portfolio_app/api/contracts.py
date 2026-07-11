@@ -68,6 +68,8 @@ PositionLotCloseReason = Literal["disposed", "transferred", "corporate_action"]
 LedgerSourceType = TransactionType | Literal["corporate_action"]
 PositionLotOpeningType = TransactionType | Literal["corporate_action"]
 ResearchRunStatus = Literal["running", "completed", "failed"]
+ResearchRunReliabilityState = Literal["current", "stale", "unassessed", "not_completed"]
+ResearchExecutionStatus = Literal["ready", "manual_review_required"]
 ResearchArtifactPreviewKind = Literal["text", "html", "binary"]
 ResearchAsOfMode = Literal["dynamic", "pinned"]
 ResearchTargetDimension = Literal["scope_default", "weight", "risk_budget"]
@@ -1316,6 +1318,8 @@ class ResearchTargetWeightGapRecord(BaseModel):
     current_value_base: float | None = None
     base_currency: str
     action: str
+    execution_status: ResearchExecutionStatus = "ready"
+    execution_note: str | None = None
 
 
 class ResearchTargetRowRecord(BaseModel):
@@ -1335,6 +1339,8 @@ class ResearchTargetRowRecord(BaseModel):
     implementation_weight: float | None = None
     gap_to_implementation: float | None = None
     action: str | None = None
+    execution_status: ResearchExecutionStatus = "ready"
+    execution_note: str | None = None
 
 
 class ResearchBacktestPointRecord(BaseModel):
@@ -1454,6 +1460,9 @@ class ResearchRunRecord(BaseModel):
     requested_by: str | None = None
     headline: str | None = None
     error_message: str | None = None
+    reliability_state: ResearchRunReliabilityState = "unassessed"
+    is_current: bool = False
+    reliability_reasons: list[str] = Field(default_factory=list)
     artifact_count: int = 0
     artifacts: list[ResearchArtifactRecord] = Field(default_factory=list)
     detail: ResearchRunDetailRecord | None = None

@@ -40,6 +40,8 @@ import {
   formatSignedCurrency,
   signedValueClass,
 } from '../lib/format'
+import { buildPerformanceHistoryReliability } from '../lib/performanceHistoryReliability'
+import { assessPerformanceBenchmarkBasis } from '../lib/performanceBenchmarkBasis'
 
 const DEFAULT_PERFORMANCE_LOOKBACK_DAYS = 30
 const DAYS_PER_YEAR = 365.25
@@ -51,6 +53,7 @@ type CalculationDisplayRow = CalculationGroupRow | CalculationGroupChildRow
 type PerformanceMetricRow = {
   metric: string
   value: string
+  reliabilityNote?: string
   valueClassName?: string
   benchmark?: string
   benchmarkClassName?: string
@@ -1166,16 +1169,20 @@ function buildPerformanceMetricRows(
   benchmarkLoading: boolean,
   benchmarkMetrics: BenchmarkPeriodMetrics | null,
 ) {
+  const historyReliability = buildPerformanceHistoryReliability(summary)
+  const annualizedReturnEligible = historyReliability.annualizedReturnEligible
   const relativeMetrics = buildRelativePerformanceMetrics(dailySeries, benchmarkMetrics)
   const showComparison = selectedBenchmarkInstrument != null || benchmarkLoading
   const irr = finiteNumber(summary.irr) ?? finiteNumber(summary.mwror)
-  const calmarRatio = ratioToDrawdown(summary.annualized_twr, summary.max_drawdown)
+  const calmarRatio = annualizedReturnEligible
+    ? ratioToDrawdown(summary.annualized_twr, summary.max_drawdown)
+    : null
   const returnDifference =
     summary.cumulative_twr != null && benchmarkMetrics?.periodReturn != null
       ? summary.cumulative_twr - benchmarkMetrics.periodReturn
       : null
   const annualizedReturnDifference =
-    summary.annualized_twr != null && benchmarkMetrics?.annualizedReturn != null
+    annualizedReturnEligible && summary.annualized_twr != null && benchmarkMetrics?.annualizedReturn != null
       ? summary.annualized_twr - benchmarkMetrics.annualizedReturn
       : null
   const volatilityDifference =
@@ -1203,7 +1210,7 @@ function buildPerformanceMetricRows(
 
   return [
     {
-      metric: 'TWR',
+      metric: 'Period TWR',
       value: signedPercent(summary.cumulative_twr),
       valueClassName: signedValueClass(summary.cumulative_twr),
       benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.periodReturn),
@@ -1218,26 +1225,32 @@ function buildPerformanceMetricRows(
     },
     {
       metric: 'Annualized TWR',
-      value: signedPercent(summary.annualized_twr),
-      valueClassName: signedValueClass(summary.annualized_twr),
-      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.annualizedReturn),
-      benchmarkClassName: benchmarkMetricClassName(
-        selectedBenchmarkInstrument,
-        benchmarkLoading,
-        benchmarkMetrics?.annualizedReturn,
-      ),
-      difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, annualizedReturnDifference),
-      differenceClassName: benchmarkMetricClassName(
-        selectedBenchmarkInstrument,
-        benchmarkLoading,
-        annualizedReturnDifference,
-      ),
+      value: annualizedReturnEligible ? signedPercent(summary.annualized_twr) : 'N/A',
+      valueClassName: annualizedReturnEligible ? signedValueClass(summary.annualized_twr) : 'performance-cell-muted',
+      reliabilityNote: annualizedReturnEligible ? undefined : 'Requires ≥ 1 year',
+      benchmark: annualizedReturnEligible
+        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.annualizedReturn)
+        : selectedBenchmarkInstrument
+          ? 'N/A'
+          : '—',
+      benchmarkClassName: annualizedReturnEligible
+        ? benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.annualizedReturn)
+        : 'performance-cell-muted',
+      difference: annualizedReturnEligible
+        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, annualizedReturnDifference)
+        : selectedBenchmarkInstrument
+          ? 'N/A'
+          : '—',
+      differenceClassName: annualizedReturnEligible
+        ? benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, annualizedReturnDifference)
+        : 'performance-cell-muted',
       showComparison,
     },
     {
-      metric: 'IRR / MWR',
-      value: signedPercent(irr),
-      valueClassName: signedValueClass(irr),
+      metric: 'IRR / MWRR',
+      value: annualizedReturnEligible ? signedPercent(irr) : 'N/A',
+      valueClassName: annualizedReturnEligible ? signedValueClass(irr) : 'performance-cell-muted',
+      reliabilityNote: annualizedReturnEligible ? undefined : 'Requires ≥ 1 year',
     },
     {
       metric: 'Total P&L',
@@ -1251,10 +1264,22 @@ function buildPerformanceMetricRows(
     },
     {
       metric: 'Calmar Ratio',
-      value: formatRatio(calmarRatio),
-      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.calmar, formatRatio),
-      difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, calmarDifference, signedRatio),
-      differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, calmarDifference),
+      value: annualizedReturnEligible ? formatRatio(calmarRatio) : 'N/A',
+      valueClassName: annualizedReturnEligible ? undefined : 'performance-cell-muted',
+      reliabilityNote: annualizedReturnEligible ? undefined : 'Annualized-return dependent',
+      benchmark: annualizedReturnEligible
+        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.calmar, formatRatio)
+        : selectedBenchmarkInstrument
+          ? 'N/A'
+          : '—',
+      difference: annualizedReturnEligible
+        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, calmarDifference, signedRatio)
+        : selectedBenchmarkInstrument
+          ? 'N/A'
+          : '—',
+      differenceClassName: annualizedReturnEligible
+        ? benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, calmarDifference)
+        : 'performance-cell-muted',
       showComparison,
     },
     {
@@ -1397,7 +1422,12 @@ function MetricGrid({ rows }: { rows: PerformanceMetricRow[] }) {
                 <tr key={row.metric}>
                   <th scope="row">
                     <span className="performance-metric-table-name">
-                      <span>{row.metric}</span>
+                      <span>
+                        {row.metric}
+                        {row.reliabilityNote ? (
+                          <small className="performance-metric-reliability-note">{row.reliabilityNote}</small>
+                        ) : null}
+                      </span>
                     </span>
                   </th>
                   <td className={row.valueClassName ?? ''}>{row.value}</td>
@@ -1928,6 +1958,7 @@ function PerformancePage() {
     let cancelled = false
     setBenchmarkLoading(true)
     setBenchmarkError(null)
+    setBenchmarkChart(null)
 
     getPortfolioInstrumentPriceChart(portfolioId, benchmarkInstrumentId, {
       as_of_date: effectiveEndDate,
@@ -1981,6 +2012,11 @@ function PerformancePage() {
     summary?.start_date && summary.end_date
       ? `${summary.start_date} to ${summary.end_date}`
       : `${effectiveStartDate} to ${effectiveEndDate}`
+  const performanceHistoryReliability = useMemo(
+    () => (summary ? buildPerformanceHistoryReliability(summary) : null),
+    [summary],
+  )
+  const performanceMetricsMeta = performanceHistoryReliability?.sampleLabel ?? periodLabel
 
   const selectedBenchmarkInstrument =
     benchmarkInstruments.find((instrument) => instrument.instrument_id === benchmarkInstrumentId) ?? null
@@ -1990,9 +2026,16 @@ function PerformancePage() {
     normalizedCurrency(benchmarkChart.currency) !== '' &&
     normalizedCurrency(baseCurrency) !== '' &&
     normalizedCurrency(benchmarkChart.currency) !== normalizedCurrency(baseCurrency)
+  const benchmarkBasisAssessment = useMemo(
+    () =>
+      selectedBenchmarkInstrument && benchmarkChart
+        ? assessPerformanceBenchmarkBasis(benchmarkChart.chart_basis)
+        : null,
+    [benchmarkChart, selectedBenchmarkInstrument],
+  )
   const benchmarkMetrics = useMemo(
     () =>
-      benchmarkCurrencyMismatch
+      benchmarkCurrencyMismatch || !benchmarkBasisAssessment?.comparisonEligible
         ? null
         : buildBenchmarkPeriodMetrics(
             benchmarkChart?.points ?? [],
@@ -2000,7 +2043,14 @@ function PerformancePage() {
             effectiveEndDate,
             workspace?.daily_series ?? [],
           ),
-    [benchmarkChart, benchmarkCurrencyMismatch, effectiveStartDate, effectiveEndDate, workspace?.daily_series],
+    [
+      benchmarkBasisAssessment?.comparisonEligible,
+      benchmarkChart,
+      benchmarkCurrencyMismatch,
+      effectiveStartDate,
+      effectiveEndDate,
+      workspace?.daily_series,
+    ],
   )
   const metricRows = useMemo(
     () =>
@@ -2435,6 +2485,24 @@ function PerformancePage() {
             {normalizedCurrency(baseCurrency)}.
           </div>
         ) : null}
+        {benchmarkBasisAssessment ? (
+          <div
+            className={`performance-benchmark-basis-status ${
+              benchmarkBasisAssessment.comparisonEligible
+                ? 'performance-benchmark-basis-status-comparable'
+                : 'performance-benchmark-basis-status-fallback'
+            }`}
+          >
+            <span>Benchmark basis</span>
+            <code>{benchmarkBasisAssessment.basis ?? 'unavailable'}</code>
+            <span>{benchmarkBasisAssessment.label}</span>
+          </div>
+        ) : null}
+        {!benchmarkError && benchmarkBasisAssessment?.warning ? (
+          <div className="inline-notice inline-notice-warning performance-benchmark-basis-warning" role="status">
+            {benchmarkBasisAssessment.warning}
+          </div>
+        ) : null}
         <QualityWarningsNotice warnings={summary?.quality_warnings} />
         {(loading || waitingForDefaultEndDate) && !workspace ? <CalculationStatus /> : null}
         {loading && workspace ? <CalculationStatus /> : null}
@@ -2448,9 +2516,15 @@ function PerformancePage() {
               <div className="portfolio-detail-toolbar performance-subsection-toolbar performance-section-toolbar">
                 <div>
                   <div className="panel-title">Return &amp; Risk Metrics</div>
-                  <div className="portfolio-detail-meta">{periodLabel}</div>
+                  <div className="portfolio-detail-meta">{performanceMetricsMeta}</div>
                 </div>
               </div>
+              {performanceHistoryReliability?.annualizationMessage ? (
+                <div className="performance-history-reliability-warning" role="status">
+                  <strong>Short observed history.</strong>
+                  <span>{performanceHistoryReliability.annualizationMessage}</span>
+                </div>
+              ) : null}
               <MetricGrid rows={metricRows} />
             </section>
 

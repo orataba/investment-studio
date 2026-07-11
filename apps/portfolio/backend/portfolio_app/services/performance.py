@@ -1236,9 +1236,10 @@ def _build_single_date_snapshot(
     transactions: list[dict[str, object]],
     *,
     as_of_date: date,
+    allow_materialized: bool = True,
 ) -> dict[str, object]:
     portfolio_id = str(portfolio.get("portfolio_id") or "")
-    if portfolio_id:
+    if portfolio_id and allow_materialized:
         from portfolio_app.services.daily_snapshots import get_materialized_daily_snapshot
 
         materialized_snapshot = get_materialized_daily_snapshot(portfolio_id, as_of_date)
@@ -2621,28 +2622,41 @@ def _xnpv(rate: float, cash_flows: list[tuple[date, float]]) -> float:
 
 
 def _solve_xirr(cash_flows: list[tuple[date, float]]) -> float | None:
-    if len(cash_flows) < 2:
+    cash_flows_by_date: dict[date, float] = defaultdict(float)
+    for cash_flow_date, amount in cash_flows:
+        if not isfinite(amount):
+            return None
+        cash_flows_by_date[cash_flow_date] += amount
+    normalized_cash_flows = [
+        (cash_flow_date, amount)
+        for cash_flow_date, amount in sorted(cash_flows_by_date.items())
+        if abs(amount) > 1e-12
+    ]
+    if (
+        len(normalized_cash_flows) < 2
+        or normalized_cash_flows[0][0] >= normalized_cash_flows[-1][0]
+    ):
         return None
-    has_positive = any(amount > 0 for _, amount in cash_flows)
-    has_negative = any(amount < 0 for _, amount in cash_flows)
+    has_positive = any(amount > 0 for _, amount in normalized_cash_flows)
+    has_negative = any(amount < 0 for _, amount in normalized_cash_flows)
     if not has_positive or not has_negative:
         return None
 
     low = -0.9999
     high = 0.1
-    low_value = _xnpv(low, cash_flows)
-    high_value = _xnpv(high, cash_flows)
+    low_value = _xnpv(low, normalized_cash_flows)
+    high_value = _xnpv(high, normalized_cash_flows)
     iterations = 0
     while low_value * high_value > 0 and high < 1_000_000 and iterations < 64:
         high *= 2.0
-        high_value = _xnpv(high, cash_flows)
+        high_value = _xnpv(high, normalized_cash_flows)
         iterations += 1
     if low_value * high_value > 0:
         return None
 
     for _ in range(128):
         mid = (low + high) / 2.0
-        mid_value = _xnpv(mid, cash_flows)
+        mid_value = _xnpv(mid, normalized_cash_flows)
         if abs(mid_value) <= 1e-10:
             return mid
         if low_value * mid_value <= 0:
@@ -3043,9 +3057,17 @@ def build_period_calculation_report(
     resolved_start_date, resolved_end_date = window
     initial_boundary_date = _initial_boundary_date(resolved_start_date, start_date)
     sorted_transactions = sorted(transactions, key=_transaction_sort_key)
-    start_boundary_transactions = _transactions_as_of_end_date(
-        sorted_transactions,
-        end_date=initial_boundary_date,
+    default_inception_window = start_date is None
+    start_boundary_transactions = (
+        _build_period_start_boundary_transactions(
+            sorted_transactions,
+            start_date=resolved_start_date,
+        )
+        if default_inception_window
+        else _transactions_as_of_end_date(
+            sorted_transactions,
+            end_date=initial_boundary_date,
+        )
     )
     end_boundary_transactions = _transactions_as_of_end_date(
         sorted_transactions,
@@ -3062,6 +3084,7 @@ def build_period_calculation_report(
         accounts,
         start_boundary_transactions,
         as_of_date=initial_boundary_date,
+        allow_materialized=not default_inception_window,
     )
     end_snapshot = _build_single_date_snapshot(
         portfolio,
@@ -3147,8 +3170,12 @@ def build_period_calculation_report(
     )
 
     coverage_state = "complete"
+    initial_boundary_complete = (
+        not start_boundary_transactions
+        or start_snapshot.get("coverage_state") == "complete"
+    )
     if (
-        start_snapshot.get("coverage_state") != "complete"
+        not initial_boundary_complete
         or end_snapshot.get("coverage_state") != "complete"
         or not transaction_buckets["coverage_complete"]
         or not unrealized_capital_summary["coverage_complete"]
@@ -5153,9 +5180,22 @@ def _build_contribution_slices_for_date(
             capital_flow_in_base=capital_flow_in_base,
             capital_flow_out_base=capital_flow_out_base,
         )
+        # Contribution is an arithmetic decomposition of the portfolio's
+        # daily TWR.  Use the same BOD external-flow denominator as the
+        # portfolio return so inception funding and later deposits reconcile
+        # instead of falling into contribution residual.
+        portfolio_return_denominator = (
+            beginning_nav + (_safe_float((snapshot or {}).get("external_cash_in")) or 0.0)
+            if beginning_nav is not None
+            else None
+        )
         daily_contribution = (
-            total_pnl / beginning_nav
-            if total_pnl is not None and beginning_nav is not None and beginning_nav > 1e-9
+            total_pnl / portfolio_return_denominator
+            if (
+                total_pnl is not None
+                and portfolio_return_denominator is not None
+                and portfolio_return_denominator > 1e-9
+            )
             else None
         )
         market_observation_count = int((current_state or {}).get("market_observation_count") or 0)

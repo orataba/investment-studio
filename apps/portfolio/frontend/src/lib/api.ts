@@ -1011,6 +1011,8 @@ export type PortfolioResearchTargetWeightGapRecord = {
   current_value_base?: number | null
   base_currency: string
   action: string
+  execution_status: 'ready' | 'manual_review_required'
+  execution_note?: string | null
 }
 
 export type PortfolioResearchTargetRowRecord = {
@@ -1030,6 +1032,8 @@ export type PortfolioResearchTargetRowRecord = {
   implementation_weight?: number | null
   gap_to_implementation?: number | null
   action?: string | null
+  execution_status: 'ready' | 'manual_review_required'
+  execution_note?: string | null
 }
 
 export type PortfolioResearchBacktestPointRecord = {
@@ -1144,6 +1148,9 @@ export type PortfolioResearchRunRecord = {
   requested_by?: string | null
   headline?: string | null
   error_message?: string | null
+  reliability_state: 'current' | 'stale' | 'unassessed' | 'not_completed'
+  is_current: boolean
+  reliability_reasons: string[]
   artifact_count: number
   artifacts: PortfolioResearchArtifactRecord[]
   detail?: PortfolioResearchRunDetailRecord | null

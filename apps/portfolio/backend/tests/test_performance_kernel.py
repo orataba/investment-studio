@@ -694,6 +694,19 @@ def test_daily_twr_neutralizes_external_deposit(client, monkeypatch):
     assert by_date["2026-01-02"]["external_cash_in"] == 50.0
     assert by_date["2026-01-02"]["daily_twr"] == 0.06666666666666665
 
+    contribution_response = client.get(
+        "/api/portfolios/twr-deposit-test/performance/contribution?axis=instrument"
+    )
+    assert contribution_response.status_code == 200
+    contribution_summary = contribution_response.json()["summary"]
+    assert contribution_summary["portfolio_arithmetic_return"] == pytest.approx(
+        0.06666666666666665
+    )
+    assert contribution_summary["total_period_contribution"] == pytest.approx(
+        0.06666666666666665
+    )
+    assert contribution_summary["contribution_residual"] == pytest.approx(0.0)
+
 
 def test_inception_day_twr_includes_bod_funding_and_first_day_pnl(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
@@ -770,6 +783,141 @@ def test_inception_day_twr_includes_bod_funding_and_first_day_pnl(client, monkey
     assert payload["summary"]["external_cash_in"] == pytest.approx(100.0)
     assert payload["summary"]["delta"] == pytest.approx(10.0)
     assert payload["summary"]["cumulative_twr"] == pytest.approx(0.10)
+
+    contribution_response = client.get(
+        "/api/portfolios/inception-return-test/performance/contribution?axis=instrument"
+    )
+    assert contribution_response.status_code == 200
+    contribution_summary = contribution_response.json()["summary"]
+    assert contribution_summary["portfolio_arithmetic_return"] == pytest.approx(0.10)
+    assert contribution_summary["total_period_contribution"] == pytest.approx(0.10)
+    assert contribution_summary["contribution_residual"] == pytest.approx(0.0)
+
+
+def test_default_inception_calculation_counts_first_day_deposit_once(client, monkeypatch):
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+    portfolio_id = "inception-calculation-deposit-test"
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "deposit",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 200.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-01T08:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "interest",
+                "trade_date": "2026-01-02",
+                "settlement_date": "2026-01-02",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 20.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-02T08:00:00Z",
+            },
+        ],
+    )
+    _write_store(store)
+
+    response = client.get(f"/api/portfolios/{portfolio_id}/performance/calculation")
+
+    assert response.status_code == 200
+    summary = response.json()["summary"]
+    assert summary["coverage_state"] == "complete"
+    assert summary["initial_value"] == pytest.approx(0.0)
+    assert summary["final_value"] == pytest.approx(220.0)
+    assert summary["deposits"] == pytest.approx(200.0)
+    assert summary["net_external_inflow"] == pytest.approx(200.0)
+    assert summary["delta"] == pytest.approx(20.0)
+    assert summary["earnings"] == pytest.approx(20.0)
+    assert summary["capital_gains"] == pytest.approx(0.0)
+    assert summary["realized_capital_gains"] == pytest.approx(0.0)
+    assert summary["unrealized_capital_gains"] == pytest.approx(0.0)
+
+
+def test_same_day_inception_cash_flows_have_no_money_weighted_return(client, monkeypatch):
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+    portfolio_id = "same-day-inception-mwrr-test"
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "deposit",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 200_000.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-01T08:00:00Z",
+            }
+        ],
+    )
+    _write_store(store)
+
+    performance_response = client.get(f"/api/portfolios/{portfolio_id}/performance")
+    calculation_response = client.get(f"/api/portfolios/{portfolio_id}/performance/calculation")
+
+    assert performance_response.status_code == 200
+    performance_summary = performance_response.json()["summary"]
+    assert performance_summary["cumulative_twr"] == pytest.approx(0.0)
+    assert performance_summary["irr"] is None
+    assert performance_summary["mwror"] is None
+
+    assert calculation_response.status_code == 200
+    calculation_summary = calculation_response.json()["summary"]
+    assert calculation_summary["coverage_state"] == "complete"
+    assert calculation_summary["initial_value"] == pytest.approx(0.0)
+    assert calculation_summary["final_value"] == pytest.approx(200_000.0)
+    assert calculation_summary["deposits"] == pytest.approx(200_000.0)
+    assert calculation_summary["delta"] == pytest.approx(0.0)
+    assert calculation_summary["capital_gains"] == pytest.approx(0.0)
+
+
+def test_xirr_rejects_zero_duration_even_when_same_day_flows_do_not_net_to_zero():
+    assert performance._solve_xirr(
+        [
+            (date(2026, 1, 1), -100.0),
+            (date(2026, 1, 1), 110.0),
+        ]
+    ) is None
 
 
 def test_dividend_receivable_is_accrued_on_entitlement_date(client, monkeypatch):

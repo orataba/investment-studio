@@ -1303,6 +1303,10 @@ export default function ResearchPage() {
 
   const solvedGroups = latestRun?.detail?.solved_result_groups ?? []
   const backtest = latestRun?.detail?.backtest ?? null
+  const staleRun = latestRun?.status === 'completed' && latestRun.reliability_state === 'stale'
+  const manualReviewGaps = (latestRun?.detail?.target_weight_gaps ?? []).filter(
+    (row) => row.execution_status === 'manual_review_required',
+  )
   const storedBenchmark = latestRun?.detail?.backtest_benchmark ?? null
   const selectedBenchmarkId = benchmarkInstrumentId.trim()
   const displayBenchmark = selectedBenchmarkId
@@ -1585,13 +1589,41 @@ export default function ResearchPage() {
             </section>
           ) : (
             <>
+              {staleRun ? (
+                <section className="panel">
+                  <div className="inline-notice inline-notice-warning">
+                    <strong>Historical result — not current or execution-ready.</strong>{' '}
+                    Run Research again before using these weights for allocation or orders.
+                    {(latestRun.reliability_reasons ?? []).length ? (
+                      <ul>
+                        {(latestRun.reliability_reasons ?? []).map((reason) => <li key={reason}>{reason}</li>)}
+                      </ul>
+                    ) : null}
+                  </div>
+                </section>
+              ) : null}
+              {manualReviewGaps.length ? (
+                <section className="panel">
+                  <div className="inline-notice inline-notice-warning">
+                    <strong>Manual PM decision required.</strong>{' '}
+                    A 0% solved target for a currently held instrument is not an executable liquidation instruction.
+                    <ul>
+                      {manualReviewGaps.map((row) => (
+                        <li key={`${row.member_type}:${row.member_id}`}>
+                          {row.label}: {row.execution_note ?? 'Confirm eligibility, liquidity, and redemption intent before acting.'}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </section>
+              ) : null}
               <section className="panel">
                 <div className="panel-header">
                   <div>
-                    <div className="panel-title">Solved Result</div>
+                    <div className="panel-title">{staleRun ? 'Historical Solved Result' : 'Solved Result'}</div>
                   </div>
                   <div className="portfolio-detail-meta">
-                    {latestRun.as_of_date ?? '-'} · {resolveStatusLabel(latestRun.status)} · {formatTimestamp(latestRun.finished_at)}
+                    {latestRun.as_of_date ?? '-'} · {staleRun ? 'Stale' : resolveStatusLabel(latestRun.status)} · {formatTimestamp(latestRun.finished_at)}
                   </div>
                 </div>
                 <div className="table-shell">

@@ -37,6 +37,7 @@ from portfolio_app.services.research_solver import (
     _backtest_rebalance_dates,
     _build_backtest_metrics,
     _build_backtest_sampled_nav_by_instrument,
+    _build_leaf_target_weight_gaps,
     _build_sampled_benchmark_points,
     _build_taxonomy_state,
     _estimate_covariance,
@@ -1177,6 +1178,11 @@ def test_research_workbench_reads_canonical_run_top_holdings(client):
     assert top_holding["instrument_name"] == "AbbVie Inc"
     assert top_holding["instrument_type"] == "equity"
     assert payload["selected_run"]["detail"]["top_holdings"][0]["instrument_id"] == "equity-us-abbv"
+    assert payload["selected_run"]["reliability_state"] == "stale"
+    assert any(
+        "predates planning-state fingerprinting" in reason
+        for reason in payload["selected_run"]["reliability_reasons"]
+    )
 
     run_response = client.get("/api/portfolios/portfolio-ops/research/runs/canonical-run")
     assert run_response.status_code == 200
@@ -1915,6 +1921,40 @@ def test_selected_target_risk_share_only_applies_to_active_risk_budget_dimension
     ) == pytest.approx(0.5)
 
 
+def test_current_holding_with_zero_solved_target_requires_manual_review() -> None:
+    gaps = _build_leaf_target_weight_gaps(
+        leaf_target_rows=[
+            {
+                "member_type": "instrument",
+                "member_id": "short-history-fund",
+                "label": "Short History Fund",
+                "current_weight": 0.08,
+                "target_weight": 0.0,
+            }
+        ],
+        base_currency="CNY",
+    )
+
+    assert gaps == [
+        {
+            "member_type": "instrument",
+            "member_id": "short-history-fund",
+            "label": "Short History Fund",
+            "current_weight": pytest.approx(0.08),
+            "target_weight": pytest.approx(0.0),
+            "gap": pytest.approx(-0.08),
+            "current_value_base": None,
+            "base_currency": "CNY",
+            "action": "Review",
+            "execution_status": "manual_review_required",
+            "execution_note": (
+                "Current holdings with a 0% solved target require an explicit PM decision; "
+                "Research does not infer an executable liquidation from target eligibility or limited history."
+            ),
+        }
+    ]
+
+
 def test_research_run_creates_current_target_weight_outputs(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
     _create_target_sets(client, taxonomy_id, node_ids)
@@ -2050,6 +2090,127 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert selected_workbench_response.status_code == 200
     selected_workbench_payload = selected_workbench_response.json()
     assert selected_workbench_payload["selected_run"]["research_run_id"] == run_payload["research_run_id"]
+    assert selected_workbench_payload["selected_run"]["reliability_state"] == "current"
+    assert selected_workbench_payload["selected_run"]["is_current"] is True
+    assert selected_workbench_payload["selected_run"]["reliability_reasons"] == []
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        stored_run = session.get(ResearchRunRecordModel, run_payload["research_run_id"])
+        assert stored_run is not None
+        assert stored_run.request_payload_json["planning_state_fingerprint_version"] == 1
+        assert stored_run.request_payload_json["planning_state_fingerprint"].startswith("sha256:")
+
+
+def test_research_run_becomes_stale_after_target_line_change(client) -> None:
+    taxonomy_id, node_ids = _create_planning_taxonomy(client)
+    _create_target_sets(client, taxonomy_id, node_ids)
+    settings_response = client.put(
+        "/api/portfolios/portfolio-ops/research/settings",
+        json={
+            "planning_taxonomy_id": taxonomy_id,
+            "comparator_taxonomy_node_id": node_ids["Risk Assets"],
+            "as_of_date": "2026-04-15",
+            "lookback_days": 30,
+            "target_dimension": "scope_default",
+            "capital_mode": "unit_notional",
+        },
+    )
+    assert settings_response.status_code == 200, settings_response.json()
+    run_response = client.post(
+        "/api/portfolios/portfolio-ops/research/runs",
+        json={"requested_by": "pytest"},
+    )
+    assert run_response.status_code == 200, run_response.json()
+    run_id = run_response.json()["research_run_id"]
+
+    catalog_response = client.get("/api/portfolios/portfolio-ops/taxonomies")
+    assert catalog_response.status_code == 200, catalog_response.json()
+    catalog = catalog_response.json()
+    selected_taa = next(
+        item
+        for item in catalog["target_sets"]
+        if item["taxonomy_id"] == taxonomy_id
+        and item["comparator_taxonomy_node_id"] == node_ids["Risk Assets"]
+        and item["target_set_type"] == "taa"
+    )
+    selected_taa_lines = [
+        item
+        for item in catalog["target_set_lines"]
+        if item["target_set_id"] == selected_taa["target_set_id"]
+    ]
+    changed_weight_by_member_id = {
+        node_ids["Defensive Equity"]: 0.51,
+        node_ids["Hong Kong Beta"]: 0.49,
+    }
+    update_response = client.patch(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets/{selected_taa['target_set_id']}",
+        json={
+            "lines": [
+                {
+                    "target_member_type": item["target_member_type"],
+                    "target_member_id": item["target_member_id"],
+                    "target_weight": changed_weight_by_member_id[item["target_member_id"]],
+                    "target_risk_share": item["target_risk_share"],
+                    "notes": item["notes"],
+                }
+                for item in selected_taa_lines
+            ]
+        },
+    )
+    assert update_response.status_code == 200, update_response.json()
+
+    workbench_response = client.get(
+        "/api/portfolios/portfolio-ops/research/workbench",
+        params={"selected_run_id": run_id},
+    )
+    assert workbench_response.status_code == 200, workbench_response.json()
+    selected_run = workbench_response.json()["selected_run"]
+    assert selected_run["reliability_state"] == "stale"
+    assert selected_run["is_current"] is False
+    assert selected_run["reliability_reasons"] == [
+        "Planning taxonomy structure, active assignments, or active SAA/TAA target configuration changed "
+        "after this run was created."
+    ]
+
+
+def test_research_workbench_marks_historical_run_stale_and_non_current(client) -> None:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        session.add(
+            ResearchRunRecordModel(
+                research_run_id="historical-stale-run",
+                portfolio_id="portfolio-ops",
+                job_type="target_weight_solve",
+                status="completed",
+                requested_at="2026-04-16T10:00:00Z",
+                started_at="2026-04-16T10:00:00Z",
+                finished_at="2026-04-16T10:01:00Z",
+                as_of_date=date(2026, 4, 1),
+                planning_taxonomy_id=None,
+                lookback_days=90,
+                requested_by="test",
+                headline="Historical run",
+                detail_json={},
+                artifacts_json=[],
+                request_payload_json={},
+                error_message=None,
+            )
+        )
+        session.commit()
+
+    response = client.get(
+        "/api/portfolios/portfolio-ops/research/workbench",
+        params={"selected_run_id": "historical-stale-run"},
+    )
+
+    assert response.status_code == 200, response.json()
+    selected_run = response.json()["selected_run"]
+    assert selected_run["research_run_id"] == "historical-stale-run"
+    assert selected_run["reliability_state"] == "stale"
+    assert selected_run["is_current"] is False
+    assert any("does not match the latest portfolio date 2026-04-15" in reason for reason in selected_run["reliability_reasons"])
+    assert any("Portfolio transactions exist through 2026-04-15" in reason for reason in selected_run["reliability_reasons"])
+    assert any("predates planning-state fingerprinting" in reason for reason in selected_run["reliability_reasons"])
 
 
 def test_backtest_benchmark_returns_use_sampling_interval_returns() -> None:
