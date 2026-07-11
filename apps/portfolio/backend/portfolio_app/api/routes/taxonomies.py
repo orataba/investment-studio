@@ -12,6 +12,7 @@ from portfolio_app.api.contracts import (
     PortfolioInstrumentUniverseCreateRequest,
     PortfolioInstrumentUniverseRecord,
     TargetSetCreateRequest,
+    TargetSetIntegrityIssueRecord,
     TargetSetLineRecord,
     TargetSetRecord,
     TargetSetUpdateRequest,
@@ -41,6 +42,7 @@ from portfolio_app.services.portfolio_store import (
     get_portfolio,
     get_taxonomy,
     list_target_set_lines,
+    list_target_set_integrity_issues,
     list_target_sets,
     list_portfolio_instrument_universe,
     list_taxonomies,
@@ -170,6 +172,10 @@ def get_portfolio_taxonomies(
         ],
         target_sets=[TargetSetRecord.model_validate(item) for item in list_target_sets(portfolio_id)],
         target_set_lines=[TargetSetLineRecord.model_validate(item) for item in list_target_set_lines(portfolio_id)],
+        target_set_integrity_issues=[
+            TargetSetIntegrityIssueRecord.model_validate(item)
+            for item in list_target_set_integrity_issues(portfolio_id)
+        ],
     )
 
 

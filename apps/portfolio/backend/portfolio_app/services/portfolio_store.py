@@ -2476,6 +2476,122 @@ def list_target_set_lines(
         return [_serialize_target_set_line_row(item) for item in records]
 
 
+def list_target_set_integrity_issues(
+    portfolio_id: str,
+    *,
+    taxonomy_id: str | None = None,
+) -> list[dict[str, object]]:
+    """Report active planning targets that no longer match their live scope.
+
+    Taxonomy membership and target budgets intentionally have separate write
+    paths: assigning a new instrument must not invent a risk budget, while
+    rejecting the assignment would leave no way to add the corresponding
+    target line. This derived validation keeps that workflow explicit. The
+    research solver remains fail-closed, and callers can direct the user back
+    to Edit Targets before attempting a run.
+    """
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        taxonomy_statement = select(TaxonomyRecordModel).where(
+            TaxonomyRecordModel.portfolio_id == portfolio_id,
+        )
+        if taxonomy_id:
+            taxonomy_statement = taxonomy_statement.where(TaxonomyRecordModel.taxonomy_id == taxonomy_id)
+        taxonomies = session.scalars(taxonomy_statement).all()
+        taxonomies_by_id = {item.taxonomy_id: item for item in taxonomies}
+        if not taxonomies_by_id:
+            return []
+
+        target_sets = session.scalars(
+            select(TargetSetRecordModel)
+            .where(
+                TargetSetRecordModel.taxonomy_id.in_(list(taxonomies_by_id)),
+                TargetSetRecordModel.status == "active",
+            )
+            .order_by(
+                TargetSetRecordModel.taxonomy_id,
+                TargetSetRecordModel.comparator_taxonomy_node_id,
+                TargetSetRecordModel.target_set_type,
+                TargetSetRecordModel.target_set_id,
+            )
+        ).all()
+        if not target_sets:
+            return []
+
+        target_set_ids = [item.target_set_id for item in target_sets]
+        target_lines = session.scalars(
+            select(TargetSetLineRecordModel)
+            .where(TargetSetLineRecordModel.target_set_id.in_(target_set_ids))
+            .order_by(
+                TargetSetLineRecordModel.target_set_id,
+                TargetSetLineRecordModel.target_member_type,
+                TargetSetLineRecordModel.target_member_id,
+                TargetSetLineRecordModel.target_line_id,
+            )
+        ).all()
+        target_lines_by_set_id: dict[str, list[TargetSetLineRecordModel]] = {}
+        for line in target_lines:
+            target_lines_by_set_id.setdefault(line.target_set_id, []).append(line)
+
+        scope_node_ids = {
+            item.comparator_taxonomy_node_id
+            for item in target_sets
+            if item.comparator_taxonomy_node_id
+        }
+        scope_nodes_by_id = {
+            item.taxonomy_node_id: item
+            for item in session.scalars(
+                select(TaxonomyNodeRecordModel).where(
+                    TaxonomyNodeRecordModel.taxonomy_node_id.in_(list(scope_node_ids))
+                )
+            ).all()
+        }
+
+        issues: list[dict[str, object]] = []
+        for target_set in target_sets:
+            taxonomy = taxonomies_by_id[target_set.taxonomy_id]
+            lines = [
+                {
+                    "target_member_type": line.target_member_type,
+                    "target_member_id": line.target_member_id,
+                    "taxonomy_node_id": line.taxonomy_node_id,
+                    "target_weight": line.target_weight,
+                    "target_risk_share": line.target_risk_share,
+                    "notes": line.notes,
+                }
+                for line in target_lines_by_set_id.get(target_set.target_set_id, [])
+            ]
+            try:
+                _validate_target_set_lines(
+                    session,
+                    taxonomy=taxonomy,
+                    comparator_taxonomy_node_id=target_set.comparator_taxonomy_node_id,
+                    target_set_type=target_set.target_set_type,
+                    weight_enabled=target_set.weight_enabled,
+                    risk_budget_enabled=target_set.risk_budget_enabled,
+                    status=target_set.status,
+                    lines=lines,
+                    exclude_target_set_id=target_set.target_set_id,
+                )
+            except ValueError as error:
+                scope_node = scope_nodes_by_id.get(target_set.comparator_taxonomy_node_id)
+                issues.append(
+                    {
+                        "taxonomy_id": target_set.taxonomy_id,
+                        "comparator_taxonomy_node_id": target_set.comparator_taxonomy_node_id,
+                        "scope_label": scope_node.node_name if scope_node is not None else "Top Level",
+                        "target_set_id": target_set.target_set_id,
+                        "target_set_type": target_set.target_set_type,
+                        "target_set_name": target_set.name,
+                        "issue_code": "invalid_active_target_set",
+                        "message": str(error),
+                    }
+                )
+
+        return issues
+
+
 def create_taxonomy_assignment(
     portfolio_id: str,
     *,

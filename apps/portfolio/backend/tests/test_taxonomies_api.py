@@ -745,6 +745,191 @@ def test_target_set_scope_uses_current_assignment_members(client):
     ]
 
 
+def test_taxonomy_catalog_reports_active_target_set_scope_drift(client):
+    taxonomy_response = client.post(
+        "/api/portfolios/portfolio-ops/taxonomies",
+        json={
+            "name": "Integrity Scope Axis",
+            "taxonomy_type": "custom",
+            "primary_assignment_scope": "instrument",
+            "planning_enabled": True,
+            "budgeting_level": "risk_budget",
+        },
+    )
+    taxonomy_id = taxonomy_response.json()["taxonomy_id"]
+    sleeve_response = client.post(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/nodes",
+        json={"node_name": "Absolute Return", "sort_order": 0},
+    )
+    sleeve_id = sleeve_response.json()["taxonomy_node_id"]
+    first_assignment_response = client.post(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/assignments",
+        json={
+            "target_scope": "instrument",
+            "target_entity_id": "equity-us-abbv",
+            "taxonomy_node_id": sleeve_id,
+        },
+    )
+    assert first_assignment_response.status_code == 200
+
+    saa_response = client.post(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets",
+        json={
+            "comparator_taxonomy_node_id": sleeve_id,
+            "target_set_type": "saa",
+            "name": "Absolute Return SAA",
+            "risk_budget_enabled": True,
+            "lines": [
+                {
+                    "target_member_type": "instrument",
+                    "target_member_id": "equity-us-abbv",
+                    "target_risk_share": 1.0,
+                }
+            ],
+        },
+    )
+    assert saa_response.status_code == 200
+    taa_response = client.post(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets",
+        json={
+            "comparator_taxonomy_node_id": sleeve_id,
+            "target_set_type": "taa",
+            "name": "Archived Absolute Return TAA",
+            "risk_budget_enabled": True,
+            "status": "archived",
+            "lines": [
+                {
+                    "target_member_type": "instrument",
+                    "target_member_id": "equity-us-abbv",
+                    "target_risk_share": 1.0,
+                }
+            ],
+        },
+    )
+    assert taa_response.status_code == 200
+    initially_valid_catalog = client.get("/api/portfolios/portfolio-ops/taxonomies").json()
+    assert initially_valid_catalog["target_set_integrity_issues"] == []
+
+    second_assignment_response = client.post(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/assignments",
+        json={
+            "target_scope": "instrument",
+            "target_entity_id": "fund-us-agg",
+            "taxonomy_node_id": sleeve_id,
+        },
+    )
+    assert second_assignment_response.status_code == 200
+
+    drifted_catalog = client.get("/api/portfolios/portfolio-ops/taxonomies").json()
+    assert drifted_catalog["target_set_integrity_issues"] == [
+        {
+            "taxonomy_id": taxonomy_id,
+            "comparator_taxonomy_node_id": sleeve_id,
+            "scope_label": "Absolute Return",
+            "target_set_id": saa_response.json()["target_set_id"],
+            "target_set_type": "saa",
+            "target_set_name": "Absolute Return SAA",
+            "issue_code": "invalid_active_target_set",
+            "message": "Target set lines must cover every direct member in the selected scope.",
+        }
+    ]
+
+    repaired_response = client.patch(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets/{saa_response.json()['target_set_id']}",
+        json={
+            "lines": [
+                {
+                    "target_member_type": "instrument",
+                    "target_member_id": "equity-us-abbv",
+                    "target_risk_share": 0.5,
+                },
+                {
+                    "target_member_type": "instrument",
+                    "target_member_id": "fund-us-agg",
+                    "target_risk_share": 0.5,
+                },
+            ]
+        },
+    )
+    assert repaired_response.status_code == 200
+    repaired_catalog = client.get("/api/portfolios/portfolio-ops/taxonomies").json()
+    assert repaired_catalog["target_set_integrity_issues"] == []
+
+
+def test_target_set_integrity_allows_root_cash_and_ignores_disabled_dimension(client):
+    taxonomy_response = client.post(
+        "/api/portfolios/portfolio-ops/taxonomies",
+        json={
+            "name": "Root Cash Integrity Axis",
+            "taxonomy_type": "custom",
+            "primary_assignment_scope": "instrument",
+            "planning_enabled": True,
+            "budgeting_level": "weight_and_risk_budget",
+        },
+    )
+    taxonomy_id = taxonomy_response.json()["taxonomy_id"]
+    defensive_response = client.post(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/nodes",
+        json={"node_name": "Defensive", "sort_order": 0},
+    )
+    growth_response = client.post(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/nodes",
+        json={"node_name": "Growth", "sort_order": 1},
+    )
+
+    target_set_response = client.post(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/target-sets",
+        json={
+            "target_set_type": "saa",
+            "name": "Root Risk Budget",
+            "weight_enabled": False,
+            "risk_budget_enabled": True,
+            "lines": [
+                {
+                    "taxonomy_node_id": defensive_response.json()["taxonomy_node_id"],
+                    "target_weight": None,
+                    "target_risk_share": 0.4,
+                },
+                {
+                    "taxonomy_node_id": growth_response.json()["taxonomy_node_id"],
+                    "target_weight": None,
+                    "target_risk_share": 0.6,
+                },
+                {
+                    "target_member_type": "cash_bucket",
+                    "target_member_id": "__cash__",
+                    "target_weight": None,
+                    "target_risk_share": 0.0,
+                },
+            ],
+        },
+    )
+    assert target_set_response.status_code == 200
+
+    catalog_response = client.get("/api/portfolios/portfolio-ops/taxonomies")
+    assert catalog_response.status_code == 200
+    assert catalog_response.json()["target_set_integrity_issues"] == []
+
+    tactical_response = client.post(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/nodes",
+        json={"node_name": "Tactical", "sort_order": 2},
+    )
+    assert tactical_response.status_code == 200
+    structurally_drifted_catalog = client.get("/api/portfolios/portfolio-ops/taxonomies").json()
+    assert structurally_drifted_catalog["target_set_integrity_issues"] == [
+        {
+            "taxonomy_id": taxonomy_id,
+            "comparator_taxonomy_node_id": None,
+            "scope_label": "Top Level",
+            "target_set_id": target_set_response.json()["target_set_id"],
+            "target_set_type": "saa",
+            "target_set_name": "Root Risk Budget",
+            "issue_code": "invalid_active_target_set",
+            "message": "Target set lines must cover every direct member in the selected scope.",
+        }
+    ]
+
+
 def test_deleting_default_planning_taxonomy_clears_pointer(client):
     taxonomy_response = client.post(
         "/api/portfolios/portfolio-ops/taxonomies",

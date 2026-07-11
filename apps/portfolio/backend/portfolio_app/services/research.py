@@ -1092,6 +1092,10 @@ def _build_target_assumptions(
             f"Risk-budget sleeves solve current implementation weights from the trailing local {covariance_model} window using {contribution_mode} risk contributions; "
             "leaf implementation weights can roll up through the sleeve tree, but risk targets remain local and are not multiplied by ancestor risk targets."
         )
+        assumptions.append(
+            "Look-through forward RC is recomputed from the solved leaf weights under the portfolio-level leaf covariance. "
+            "Because correlation shrinkage is re-estimated at each hierarchy level, look-through RC can differ from a parent sleeve's locally achieved risk-budget share."
+        )
     if str(settings_payload.get("target_dimension") or "") != "scope_default":
         assumptions.append("The selected scope can use an explicit target-dimension override; child sleeves still use their own configured default target dimension.")
     if str(settings_payload.get("capital_mode") or "unit_notional") == "target_volatility":
@@ -1102,7 +1106,13 @@ def _build_target_assumptions(
         assumptions.append("After recursive sleeve targets are resolved, Research applies a fixed gross-exposure overlay and leaves the residual in cash.")
     if any(str(item.get("source_label_override") or "") == "Single Member" for item in target_rows):
         assumptions.append("Single-member sleeves resolve to 100% of that member; multi-member scopes require an active complete SAA/TAA target set.")
-    return assumptions[:5]
+    assumptions.extend(
+        [
+            "The backtest applies the currently configured taxonomy membership and target policy across its full history; it is a policy simulation, not a point-in-time reconstruction of past classifications or mandates.",
+            "Backtest cash residual earns 0%, and reported simulated returns are gross of transaction costs, taxes, slippage, and implementation delay.",
+        ]
+    )
+    return list(dict.fromkeys(assumptions))
 
 
 def _build_current_target_detail(
@@ -1198,6 +1208,15 @@ def _write_artifacts(
     scope_solve_events_path = run_root / "scope_solve_events.csv"
     target_weight_gaps_path = run_root / "target_weight_gaps.csv"
 
+    report_warnings = [str(item) for item in list(detail.get("warnings") or []) if str(item).strip()]
+    backtest = detail.get("backtest") if isinstance(detail.get("backtest"), dict) else {}
+    report_warnings.extend(
+        str(item)
+        for item in list((backtest or {}).get("warnings") or [])
+        if str(item).strip()
+    )
+    report_warnings = list(dict.fromkeys(report_warnings))
+
     report_path.write_text(
         "\n".join(
             [
@@ -1216,6 +1235,15 @@ def _write_artifacts(
                     f"- **{item.get('title')}**: {item.get('detail')}"
                     for item in (detail.get("findings") or [])
                 ],
+                "",
+                "## Assumptions and Limitations",
+                *[
+                    f"- {item}"
+                    for item in (detail.get("target_assumptions") or [])
+                ],
+                "",
+                "## Warnings",
+                *([f"- {item}" for item in report_warnings] or ["- None."]),
                 "",
                 "## Next Questions",
                 *[

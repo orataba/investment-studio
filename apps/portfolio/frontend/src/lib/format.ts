@@ -52,6 +52,14 @@ export function formatPercent(value: number | null | undefined, digits = 2) {
   return `${(value * 100).toFixed(digits)}%`
 }
 
+export function formatPercentInput(value: number | null | undefined, digits = 4) {
+  if (value == null || !Number.isFinite(value)) {
+    return ''
+  }
+
+  return String(Number((value * 100).toFixed(digits)))
+}
+
 export function formatSignedCurrency(value: number | null | undefined, currency = 'USD') {
   if (value == null || Number.isNaN(value)) {
     return '—'

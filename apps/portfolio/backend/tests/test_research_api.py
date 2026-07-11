@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from portfolio_app.db.models import ResearchRunRecordModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import research as research_service
+from portfolio_app.services import research_solver as research_solver_service
 from portfolio_app.services.instrument_charts import (
     _annualized_volatility,
     _candidate_chart_bases,
@@ -21,6 +22,7 @@ from portfolio_app.services.risk_model import normalize_portfolio_risk_policy, r
 from portfolio_app.services.research_solver import (
     CAPITAL_MODE_TARGET_VOLATILITY,
     CAPITAL_MODE_VOLATILITY_CAP,
+    RESEARCH_BACKTEST_METHODOLOGY_WARNINGS,
     RiskBudgetProblem,
     RiskBudgetSolution,
     SYSTEM_CASH_TARGET_MEMBER_ID,
@@ -30,11 +32,13 @@ from portfolio_app.services.research_solver import (
     TARGET_MEMBER_NODE,
     ScopeMemberRecord,
     TaxonomyResearchState,
+    _active_backtest_leaf_ids,
     _align_member_series,
     _backtest_rebalance_dates,
     _build_backtest_metrics,
     _build_backtest_sampled_nav_by_instrument,
     _build_sampled_benchmark_points,
+    _build_taxonomy_state,
     _estimate_covariance,
     _infer_periods_per_year,
     _is_better_risk_budget_solution,
@@ -46,8 +50,10 @@ from portfolio_app.services.research_solver import (
     _current_scope_actuals,
     _series_to_nav,
     _resolve_volatility_overlay_gross_exposure,
+    _solve_current_scope,
     _solve_risk_budget_problem,
     _solve_risk_budget_weights,
+    build_current_target_backtest,
     research_window_start_date,
 )
 
@@ -182,6 +188,503 @@ def test_current_target_solve_fails_closed_for_unassigned_non_cash_holding(monke
             scope_node_id=None,
             as_of_date=date(2026, 1, 2),
         )
+
+
+def test_current_scope_actuals_reuses_one_portfolio_valuation_across_scopes(monkeypatch):
+    state = TaxonomyResearchState(
+        portfolio_id="portfolio-cache-test",
+        planning_taxonomy_id="taxonomy-test",
+        taxonomy_name="Planning",
+        root_default_target_dimension="weight",
+        base_currency="USD",
+        as_of_date=date(2026, 1, 2),
+        node_by_id={
+            "node-risk": {
+                "node_name": "Risk",
+                "parent_taxonomy_node_id": None,
+                "default_target_dimension": "weight",
+            }
+        },
+        children_by_parent={None: ["node-risk"]},
+        node_path_by_id={"node-risk": "Portfolio / Risk"},
+        node_depth_by_id={"node-risk": 1},
+        node_subtree_by_id={"node-risk": {"node-risk"}},
+        direct_assignments_by_node={
+            "node-risk": [
+                {
+                    "target_scope": "instrument",
+                    "target_entity_id": "instrument-a",
+                }
+            ]
+        },
+        target_sets_by_scope_type={},
+        target_lines_by_set_id={},
+        account_name_by_id={},
+        instrument_detail_cache={},
+        direct_fx_instruments={},
+        frozen_taxonomy_node_ids=frozenset(),
+        top_sleeve_weight_bounds={},
+    )
+    calls = {"portfolio": 0, "accounts": 0, "transactions": 0, "holdings": 0, "workspace": 0}
+
+    def fake_portfolio(_portfolio_id):
+        calls["portfolio"] += 1
+        return {"portfolio_id": "portfolio-cache-test", "base_currency": "USD"}
+
+    def fake_accounts(_portfolio_id):
+        calls["accounts"] += 1
+        return [{"account_id": "cash-a", "account_type": "deposit_account"}]
+
+    def fake_transactions(_portfolio_id):
+        calls["transactions"] += 1
+        return []
+
+    def fake_holdings(*_args, **_kwargs):
+        calls["holdings"] += 1
+        return {"positions": [{"instrument_id": "instrument-a", "market_value_base": 100.0}]}
+
+    def fake_workspace(*_args, **_kwargs):
+        calls["workspace"] += 1
+        return {
+            "accounts": [
+                {
+                    "account": {"account_id": "cash-a", "account_type": "deposit_account"},
+                    "account_value_base": 50.0,
+                }
+            ]
+        }
+
+    monkeypatch.setattr("portfolio_app.services.research_solver.get_portfolio", fake_portfolio)
+    monkeypatch.setattr("portfolio_app.services.research_solver.list_accounts", fake_accounts)
+    monkeypatch.setattr("portfolio_app.services.research_solver.list_transactions", fake_transactions)
+    monkeypatch.setattr("portfolio_app.services.research_solver.build_holdings_report", fake_holdings)
+    monkeypatch.setattr("portfolio_app.services.research_solver.build_account_workspace", fake_workspace)
+
+    root_rows, _warnings = _current_scope_actuals(state, scope_node_id=None, as_of_date=date(2026, 1, 2))
+    child_rows, _warnings = _current_scope_actuals(state, scope_node_id="node-risk", as_of_date=date(2026, 1, 2))
+
+    assert sum(float(row["current_weight"] or 0.0) for row in root_rows) == pytest.approx(1.0)
+    assert child_rows[0]["current_weight"] == pytest.approx(1.0)
+    assert calls == {"portfolio": 1, "accounts": 1, "transactions": 1, "holdings": 1, "workspace": 1}
+
+    _current_scope_actuals(state, scope_node_id=None, as_of_date=date(2026, 1, 3))
+    assert calls == {"portfolio": 2, "accounts": 2, "transactions": 2, "holdings": 2, "workspace": 2}
+
+
+def test_taxonomy_state_reuses_seeded_market_data_caches(monkeypatch) -> None:
+    seeded_details = {"instrument-a": {"instrument_id": "instrument-a", "market_data": []}}
+    seeded_fx = {("HKD", "USD"): "fx-hkd-usd"}
+
+    monkeypatch.setattr(
+        "portfolio_app.services.research_solver.get_portfolio",
+        lambda _portfolio_id: {"portfolio_id": "portfolio-cache-test", "base_currency": "USD"},
+    )
+    monkeypatch.setattr(
+        "portfolio_app.services.research_solver.list_taxonomies",
+        lambda _portfolio_id: [
+            {
+                "taxonomy_id": "taxonomy-cache-test",
+                "name": "Planning",
+                "root_default_target_dimension": "risk_budget",
+                "primary_assignment_scope": "instrument",
+            }
+        ],
+    )
+    monkeypatch.setattr("portfolio_app.services.research_solver.list_taxonomy_nodes", lambda _portfolio_id: [])
+    monkeypatch.setattr("portfolio_app.services.research_solver.list_taxonomy_assignments", lambda _portfolio_id: [])
+    monkeypatch.setattr(
+        "portfolio_app.services.research_solver.list_target_sets",
+        lambda _portfolio_id, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "portfolio_app.services.research_solver.list_target_set_lines",
+        lambda _portfolio_id, **_kwargs: [],
+    )
+    monkeypatch.setattr("portfolio_app.services.research_solver.list_accounts", lambda _portfolio_id: [])
+    monkeypatch.setattr(
+        "portfolio_app.services.research_solver._build_direct_fx_instrument_map",
+        lambda: pytest.fail("seeded FX map should avoid a platform reload"),
+    )
+
+    state = _build_taxonomy_state(
+        "portfolio-cache-test",
+        planning_taxonomy_id="taxonomy-cache-test",
+        as_of_date=date(2026, 1, 2),
+        instrument_detail_cache=seeded_details,
+        direct_fx_instruments=seeded_fx,
+    )
+
+    assert state.instrument_detail_cache is seeded_details
+    assert state.direct_fx_instruments is seeded_fx
+
+
+def test_zero_risk_budget_member_is_excluded_from_covariance_and_kept_in_results() -> None:
+    long_dates = [item.date() for item in pd.bdate_range("2026-01-05", periods=12)]
+    return_paths = {
+        "asset-a": [0.0, 0.010, -0.004, 0.006, 0.002, -0.003, 0.007, -0.002, 0.004, 0.001, -0.005, 0.006],
+        "asset-b": [0.0, -0.003, 0.008, 0.001, -0.004, 0.006, -0.002, 0.005, -0.001, 0.007, 0.002, -0.003],
+    }
+
+    def detail(instrument_id: str, dates: list[date], returns: list[float]) -> dict[str, object]:
+        value = 1.0
+        points = []
+        for point_date, point_return in zip(dates, returns, strict=True):
+            value *= 1.0 + point_return
+            points.append(
+                {
+                    "as_of_date": point_date.isoformat(),
+                    "value": value,
+                    "quote_basis": "total_return_nav",
+                    "currency": "USD",
+                    "status": "complete",
+                }
+            )
+        return {
+            "instrument_id": instrument_id,
+            "instrument_name": instrument_id,
+            "currency": "USD",
+            "quote_selection_policy": {"total_return": ["total_return_nav"]},
+            "market_data": points,
+        }
+
+    short_dates = long_dates[-2:]
+    state = TaxonomyResearchState(
+        portfolio_id="portfolio-zero-budget",
+        planning_taxonomy_id="taxonomy-zero-budget",
+        taxonomy_name="Planning",
+        root_default_target_dimension="risk_budget",
+        base_currency="USD",
+        as_of_date=long_dates[-1],
+        node_by_id={
+            "scope": {
+                "node_name": "Risk Sleeve",
+                "parent_taxonomy_node_id": None,
+                "default_target_dimension": "risk_budget",
+            }
+        },
+        children_by_parent={None: ["scope"]},
+        node_path_by_id={"scope": "Top Level / Risk Sleeve"},
+        node_depth_by_id={"scope": 1},
+        node_subtree_by_id={"scope": {"scope"}},
+        direct_assignments_by_node={
+            "scope": [
+                {"target_scope": "instrument", "target_entity_id": "asset-a"},
+                {"target_scope": "instrument", "target_entity_id": "asset-b"},
+                {"target_scope": "instrument", "target_entity_id": "asset-short"},
+            ]
+        },
+        target_sets_by_scope_type={
+            ("scope", "taa"): [
+                {
+                    "target_set_id": "target-zero-budget",
+                    "target_set_type": "taa",
+                    "name": "Zero budget exclusion",
+                    "weight_enabled": False,
+                    "risk_budget_enabled": True,
+                    "status": "active",
+                }
+            ]
+        },
+        target_lines_by_set_id={
+            "target-zero-budget": {
+                ("instrument", "asset-a"): {"target_risk_share": 0.5},
+                ("instrument", "asset-b"): {"target_risk_share": 0.5},
+                ("instrument", "asset-short"): {"target_risk_share": 0.0},
+            }
+        },
+        account_name_by_id={},
+        instrument_detail_cache={
+            "asset-a": detail("asset-a", long_dates, return_paths["asset-a"]),
+            "asset-b": detail("asset-b", long_dates, return_paths["asset-b"]),
+            "asset-short": detail("asset-short", short_dates, [0.0, 0.02]),
+        },
+        direct_fx_instruments={},
+        frozen_taxonomy_node_ids=frozenset(),
+        top_sleeve_weight_bounds={},
+    )
+
+    result = _solve_current_scope(
+        state,
+        scope_node_id="scope",
+        as_of_date=long_dates[-1],
+        lookback_days=30,
+        calculation_frequency="daily",
+        target_dimension="risk_budget",
+        capital_mode="unit_notional",
+        gross_exposure=None,
+        target_volatility=None,
+        max_gross_exposure=None,
+        missing_return_policy="strict",
+        apply_capital_overlay=False,
+        risk_model_config={
+            "covariance_model_id": "sample_covariance",
+            "contribution_mode": "signed",
+            "parameters": {"min_observations": 5},
+        },
+        include_actuals=False,
+    )
+
+    row_by_id = {str(row["member_id"]): row for row in result.member_target_rows}
+    assert row_by_id["asset-short"]["target_weight"] == pytest.approx(0.0)
+    assert row_by_id["asset-a"]["target_weight"] + row_by_id["asset-b"]["target_weight"] == pytest.approx(1.0)
+    assert result.solve_event["covariance_observations"] == 11
+    assert min(result.return_series.dropna().index) < short_dates[0]
+    assert any("excludes 0% risk budget members" in warning for warning in result.warnings)
+
+
+def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backtest(monkeypatch) -> None:
+    active_dates = [item.date() for item in pd.bdate_range("2026-01-02", "2026-07-09")]
+    late_dates = [item.date() for item in pd.bdate_range("2026-06-01", "2026-07-09")]
+
+    def detail(instrument_id: str, dates: list[date], daily_return: float) -> dict[str, object]:
+        value = 1.0
+        points = []
+        for index, point_date in enumerate(dates):
+            value *= 1.0 + (daily_return if index % 2 == 0 else -daily_return / 2.0)
+            points.append(
+                {
+                    "as_of_date": point_date.isoformat(),
+                    "value": value,
+                    "quote_basis": "total_return_nav",
+                    "currency": "USD",
+                    "status": "complete",
+                }
+            )
+        return {
+            "instrument_id": instrument_id,
+            "instrument_name": instrument_id,
+            "currency": "USD",
+            "quote_selection_policy": {"total_return": ["total_return_nav"]},
+            "market_data": points,
+        }
+
+    state = TaxonomyResearchState(
+        portfolio_id="portfolio-zero-weight",
+        planning_taxonomy_id="taxonomy-zero-weight",
+        taxonomy_name="Planning",
+        root_default_target_dimension="weight",
+        base_currency="USD",
+        as_of_date=date(2026, 7, 9),
+        node_by_id={
+            "scope": {
+                "node_name": "Low Correlation",
+                "parent_taxonomy_node_id": None,
+                "default_target_dimension": "weight",
+            }
+        },
+        children_by_parent={None: ["scope"]},
+        node_path_by_id={"scope": "Top Level / Low Correlation"},
+        node_depth_by_id={"scope": 1},
+        node_subtree_by_id={"scope": {"scope"}},
+        direct_assignments_by_node={
+            "scope": [
+                {"target_scope": "instrument", "target_entity_id": "active"},
+                {"target_scope": "instrument", "target_entity_id": "late-zero"},
+            ]
+        },
+        target_sets_by_scope_type={
+            ("scope", "taa"): [
+                {
+                    "target_set_id": "target-zero-weight",
+                    "target_set_type": "taa",
+                    "name": "Zero weight exclusion",
+                    "weight_enabled": True,
+                    "risk_budget_enabled": False,
+                    "status": "active",
+                }
+            ]
+        },
+        target_lines_by_set_id={
+            "target-zero-weight": {
+                ("instrument", "active"): {"target_weight": 1.0},
+                ("instrument", "late-zero"): {"target_weight": 0.0},
+            }
+        },
+        account_name_by_id={},
+        instrument_detail_cache={
+            "active": detail("active", active_dates, 0.002),
+            "late-zero": detail("late-zero", late_dates, 0.003),
+        },
+        direct_fx_instruments={},
+        frozen_taxonomy_node_ids=frozenset(),
+        top_sleeve_weight_bounds={},
+    )
+    monkeypatch.setattr(research_solver_service, "_build_taxonomy_state", lambda *_args, **_kwargs: state)
+    original_solve = research_solver_service.solve_current_target_weights
+    period_solutions: list[dict[str, object]] = []
+
+    def capture_period_solve(*args, **kwargs):
+        solution = original_solve(*args, **kwargs)
+        period_solutions.append(solution)
+        return solution
+
+    monkeypatch.setattr(research_solver_service, "solve_current_target_weights", capture_period_solve)
+    current_solution = {
+        "leaf_targets": [
+            {"member_type": "instrument", "member_id": "active", "target_weight": 1.0},
+            {"member_type": "instrument", "member_id": "late-zero", "target_weight": 0.0},
+        ],
+        "calculation_frequency": {"resolved_frequency": "daily"},
+    }
+
+    payload = build_current_target_backtest(
+        "portfolio-zero-weight",
+        planning_taxonomy_id="taxonomy-zero-weight",
+        comparator_taxonomy_node_id="scope",
+        as_of_date=date(2026, 7, 9),
+        lookback_days=30,
+        calculation_frequency="daily",
+        target_dimension="scope_default",
+        capital_mode="unit_notional",
+        gross_exposure=None,
+        target_volatility=None,
+        max_gross_exposure=None,
+        missing_return_policy="strict",
+        rebalance_frequency="1m",
+        current_solution=current_solution,
+    )
+
+    assert payload["backtest"]["points"]
+    assert period_solutions
+    assert not any(
+        "research window is clipped" in warning
+        for warning in payload["backtest"]["warnings"]
+    )
+    assert any(date.fromisoformat(str(solution["solve_event"]["as_of_date"])) < late_dates[0] for solution in period_solutions)
+    for solution in period_solutions:
+        row_by_id = {str(row["member_id"]): row for row in solution["leaf_targets"]}
+        assert row_by_id["late-zero"]["target_weight"] == pytest.approx(0.0)
+
+
+def test_positive_top_sleeve_minimum_overrides_zero_configured_weight() -> None:
+    dates = [item.date() for item in pd.bdate_range("2026-01-05", periods=8)]
+
+    def detail(instrument_id: str, step: float) -> dict[str, object]:
+        return {
+            "instrument_id": instrument_id,
+            "instrument_name": instrument_id,
+            "currency": "USD",
+            "quote_selection_policy": {"total_return": ["total_return_nav"]},
+            "market_data": [
+                {
+                    "as_of_date": point_date.isoformat(),
+                    "value": 1.0 + index * step,
+                    "quote_basis": "total_return_nav",
+                    "currency": "USD",
+                    "status": "complete",
+                }
+                for index, point_date in enumerate(dates)
+            ],
+        }
+
+    state = TaxonomyResearchState(
+        portfolio_id="portfolio-bound-zero",
+        planning_taxonomy_id="taxonomy-bound-zero",
+        taxonomy_name="Planning",
+        root_default_target_dimension="weight",
+        base_currency="USD",
+        as_of_date=dates[-1],
+        node_by_id={
+            "node-a": {"node_name": "A", "parent_taxonomy_node_id": None, "default_target_dimension": "weight"},
+            "node-b": {"node_name": "B", "parent_taxonomy_node_id": None, "default_target_dimension": "weight"},
+        },
+        children_by_parent={None: ["node-a", "node-b"]},
+        node_path_by_id={"node-a": "Top Level / A", "node-b": "Top Level / B"},
+        node_depth_by_id={"node-a": 1, "node-b": 1},
+        node_subtree_by_id={"node-a": {"node-a"}, "node-b": {"node-b"}},
+        direct_assignments_by_node={
+            "node-a": [{"target_scope": "instrument", "target_entity_id": "asset-a"}],
+            "node-b": [{"target_scope": "instrument", "target_entity_id": "asset-b"}],
+        },
+        target_sets_by_scope_type={
+            (None, "taa"): [
+                {
+                    "target_set_id": "root-zero-with-min",
+                    "target_set_type": "taa",
+                    "name": "Root weights",
+                    "weight_enabled": True,
+                    "risk_budget_enabled": False,
+                    "status": "active",
+                }
+            ]
+        },
+        target_lines_by_set_id={
+            "root-zero-with-min": {
+                ("taxonomy_node", "node-a"): {"target_weight": 1.0},
+                ("taxonomy_node", "node-b"): {"target_weight": 0.0},
+            }
+        },
+        account_name_by_id={},
+        instrument_detail_cache={"asset-a": detail("asset-a", 0.01), "asset-b": detail("asset-b", 0.005)},
+        direct_fx_instruments={},
+        frozen_taxonomy_node_ids=frozenset(),
+        top_sleeve_weight_bounds={"node-b": {"min_weight": 0.2, "max_weight": None}},
+    )
+
+    result = _solve_current_scope(
+        state,
+        scope_node_id=None,
+        as_of_date=dates[-1],
+        lookback_days=30,
+        calculation_frequency="daily",
+        target_dimension="weight",
+        capital_mode="unit_notional",
+        gross_exposure=None,
+        target_volatility=None,
+        max_gross_exposure=None,
+        missing_return_policy="strict",
+        apply_capital_overlay=False,
+        include_actuals=False,
+    )
+
+    row_by_id = {str(row["member_id"]): row for row in result.member_target_rows}
+    assert row_by_id["node-b"]["configured_weight"] == pytest.approx(0.0)
+    assert row_by_id["node-b"]["target_weight"] == pytest.approx(0.2)
+    assert row_by_id["node-a"]["target_weight"] == pytest.approx(0.8)
+
+
+def test_backtest_universe_omits_zero_weight_leaf_targets() -> None:
+    assert _active_backtest_leaf_ids(
+        {
+            "leaf_targets": [
+                {"member_type": "instrument", "member_id": "active-a", "target_weight": 0.6},
+                {"member_type": "instrument", "member_id": "excluded", "target_weight": 0.0},
+                {"member_type": "instrument", "member_id": "active-b", "target_weight": 0.4},
+                {"member_type": "instrument", "member_id": "active-a", "target_weight": 0.6},
+                {"member_type": "cash_bucket", "member_id": "cash", "target_weight": 0.2},
+            ]
+        }
+    ) == ["active-a", "active-b"]
+
+
+def test_research_backtest_methodology_warnings_are_explicit() -> None:
+    assert any("not a point-in-time reconstruction" in warning for warning in RESEARCH_BACKTEST_METHODOLOGY_WARNINGS)
+    assert any("transaction costs" in warning and "cash residual" in warning for warning in RESEARCH_BACKTEST_METHODOLOGY_WARNINGS)
+
+
+def test_research_assumptions_do_not_truncate_volatility_cap_or_backtest_caveats() -> None:
+    assumptions = research_service._build_target_assumptions(
+        settings_payload={
+            "target_dimension": "scope_default",
+            "calculation_frequency": "daily",
+            "missing_return_policy": "strict",
+            "capital_mode": "volatility_cap",
+        },
+        target_rows=[],
+        solve_event={
+            "target_dimension": "risk_budget",
+            "calculation_frequency": "daily",
+            "missing_return_policy": "strict",
+            "covariance_model": "sample_covariance",
+            "risk_contribution_mode": "signed",
+        },
+    )
+
+    assert len(assumptions) > 5
+    assert any("only scales risky exposure down" in assumption for assumption in assumptions)
+    assert any("not a point-in-time reconstruction" in assumption for assumption in assumptions)
+    assert any("transaction costs" in assumption for assumption in assumptions)
+    assert any("Look-through forward RC" in assumption for assumption in assumptions)
 
 
 def test_planning_group_snapshot_does_not_count_system_cash_as_unassigned(monkeypatch):
@@ -1461,6 +1964,14 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert len(run_payload["detail"]["leaf_targets"]) == 2
     assert run_payload["detail"]["backtest"]["rebalance_frequency"] == "1m"
     assert run_payload["detail"]["backtest"]["lookback_days"] == 30
+    assert any(
+        "not a point-in-time reconstruction" in warning
+        for warning in run_payload["detail"]["backtest"]["warnings"]
+    )
+    assert any(
+        "transaction costs" in warning
+        for warning in run_payload["detail"]["backtest"]["warnings"]
+    )
     assert run_payload["detail"]["backtest_benchmark"] is None
     assert run_payload["detail"]["backtest_relative_metrics"] is None
     comparison_response = client.get(
@@ -1492,6 +2003,10 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert leaf_targets_by_member["equity-us-abbv"]["configured_risk_share"] is None
     assert leaf_targets_by_member["fund-hk-2800"]["configured_risk_share"] == pytest.approx(1.0)
     assert len(run_payload["detail"]["target_assumptions"]) >= 1
+    assert any(
+        "not a point-in-time reconstruction" in assumption
+        for assumption in run_payload["detail"]["target_assumptions"]
+    )
     assert len(run_payload["detail"]["target_rows"]) == 2
     assert any(item["label"] == "Defensive Equity" for item in run_payload["detail"]["member_targets"])
     assert any(item["label"] == "Hong Kong Beta" for item in run_payload["detail"]["member_targets"])
@@ -1524,6 +2039,9 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert artifact_payload["preview_kind"] == "text"
     assert "# Research Run" in artifact_payload["content"]
     assert "Current Target Weights" in artifact_payload["content"]
+    assert "## Assumptions and Limitations" in artifact_payload["content"]
+    assert "not a point-in-time reconstruction" in artifact_payload["content"]
+    assert "transaction costs" in artifact_payload["content"]
 
     selected_workbench_response = client.get(
         "/api/portfolios/portfolio-ops/research/workbench",

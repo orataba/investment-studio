@@ -684,6 +684,17 @@ export type PortfolioTargetSetLineRecord = {
   notes?: string | null
 }
 
+export type PortfolioTargetSetIntegrityIssueRecord = {
+  taxonomy_id: string
+  comparator_taxonomy_node_id?: string | null
+  scope_label: string
+  target_set_id: string
+  target_set_type: PortfolioTargetSetType
+  target_set_name: string
+  issue_code: 'invalid_active_target_set'
+  message: string
+}
+
 export type PortfolioInstrumentUniverseRecord = {
   portfolio_id: string
   instrument_id: string
@@ -717,6 +728,7 @@ export type PortfolioTaxonomyCatalogResponse = {
   instrument_universe: PortfolioInstrumentUniverseRecord[]
   target_sets: PortfolioTargetSetRecord[]
   target_set_lines: PortfolioTargetSetLineRecord[]
+  target_set_integrity_issues: PortfolioTargetSetIntegrityIssueRecord[]
 }
 
 export type PortfolioDefaultPlanningTaxonomyUpdatePayload = {

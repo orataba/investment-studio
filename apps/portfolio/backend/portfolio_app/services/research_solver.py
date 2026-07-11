@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from itertools import combinations
 from math import ceil, sqrt
@@ -99,6 +99,10 @@ RESEARCH_COMPLETE_CASE_DROP_MAX_TRAILING_STALENESS_DAYS: dict[CalculationFrequen
     "monthly": 62,
 }
 SUPPORTED_RESEARCH_LOOKBACK_DAYS = frozenset(RESEARCH_WINDOW_MONTHS_BY_LOOKBACK_DAYS)
+RESEARCH_BACKTEST_METHODOLOGY_WARNINGS: tuple[str, ...] = (
+    "Backtest applies the currently configured taxonomy membership and target policy across the full historical simulation; it is not a point-in-time reconstruction of past classifications or mandates.",
+    "Backtest cash residual earns a 0% return, and simulated returns exclude transaction costs, taxes, slippage, and implementation delay.",
+)
 
 
 @dataclass(frozen=True)
@@ -216,6 +220,13 @@ class TaxonomyResearchState:
     direct_fx_instruments: dict[tuple[str, str], str]
     frozen_taxonomy_node_ids: frozenset[str]
     top_sleeve_weight_bounds: dict[str, dict[str, float | None]]
+    # A current-target solve walks the taxonomy recursively.  Current holdings
+    # and account values are portfolio-level inputs, so rebuilding both ledgers
+    # once per scope is redundant and can make deep taxonomies disproportionately
+    # expensive.  Keep the lazy valuation snapshot on the per-solve state; a new
+    # state is constructed for every as-of date (including each backtest
+    # rebalance), so this cache never crosses a point-in-time boundary.
+    current_valuation_cache: dict[str, object] = field(default_factory=dict, repr=False, compare=False)
 
 
 def _safe_float(value: object) -> float | None:
@@ -396,6 +407,7 @@ def _build_instrument_nav_series(
     instrument_id: str,
     start_date: date,
     end_date: date,
+    warn_on_start_clip: bool = True,
 ) -> tuple[pd.Series, list[str]]:
     detail = _instrument_detail(state, instrument_id)
     if not isinstance(detail, dict):
@@ -426,7 +438,7 @@ def _build_instrument_nav_series(
         visible = series.loc[series.index <= end_date]
     if visible.empty:
         raise ValueError(f"{instrument_id} does not have any observations on or before the selected end date.")
-    if visible.index[0] > start_date:
+    if warn_on_start_clip and visible.index[0] > start_date:
         warnings.append(
             f"{instrument_id} history starts on {visible.index[0].isoformat()}, so the research window is clipped for this member."
         )
@@ -1904,8 +1916,12 @@ def _align_member_series(
     end_date: date,
     calculation_frequency: CalculationFrequency = "daily",
 ) -> tuple[list[MemberSeries], list[date], list[str]]:
+    selected_nav_series_by_member = {
+        (member.member_type, member.member_id): nav_series_by_member[(member.member_type, member.member_id)]
+        for member in members
+    }
     periodic_nav_series_by_member = _periodic_series_by_member(
-        nav_series_by_member,
+        selected_nav_series_by_member,
         calculation_frequency=calculation_frequency,
         start_date=start_date,
         end_date=end_date,
@@ -2281,13 +2297,17 @@ def _estimate_scope_risk_share_map(
     if not risk_keys:
         return {}, []
     risky_weights = weights_by_key.reindex(risk_keys, fill_value=0.0).astype("float64")
-    if float(np.abs(risky_weights.to_numpy(dtype="float64")).sum()) <= 1e-12:
+    active_risk_keys = [key for key in risk_keys if abs(float(risky_weights.get(key, 0.0))) > 1e-12]
+    if not active_risk_keys:
         return {key: 0.0 for key in risk_keys}, []
-    if len(risk_keys) == 1:
-        return {risk_keys[0]: 1.0}, []
+    if len(active_risk_keys) == 1:
+        return {
+            key: 1.0 if key == active_risk_keys[0] else 0.0
+            for key in risk_keys
+        }, []
     member_by_key = {f"{member.member_type}::{member.member_id}": member for member in members}
-    solver_members = [member_by_key[key] for key in risk_keys if key in member_by_key]
-    if len(solver_members) != len(risk_keys):
+    solver_members = [member_by_key[key] for key in active_risk_keys if key in member_by_key]
+    if len(solver_members) != len(active_risk_keys):
         return {}, ["Current risk-share estimate skipped because scope member keys could not be resolved."]
     try:
         return_window = _solver_return_window(
@@ -2300,7 +2320,7 @@ def _estimate_scope_risk_share_map(
         if return_window.empty:
             return {}, ["Current risk-share estimate skipped because aligned return history is empty."]
         covariance = _estimate_covariance(
-            return_window.reindex(columns=risk_keys),
+            return_window.reindex(columns=active_risk_keys),
             model_id=_risk_model_covariance_model_id(risk_model_config),
             lookback_days=lookback_days,
             parameters=_risk_model_covariance_parameters(risk_model_config, calculation_frequency, lookback_days),
@@ -2309,13 +2329,15 @@ def _estimate_scope_risk_share_map(
             as_of_date=as_of_date,
         )
         shares = _risk_contribution_shares(
-            covariance.reindex(index=risk_keys, columns=risk_keys).to_numpy(dtype="float64"),
-            risky_weights.to_numpy(dtype="float64"),
+            covariance.reindex(index=active_risk_keys, columns=active_risk_keys).to_numpy(dtype="float64"),
+            risky_weights.reindex(active_risk_keys).to_numpy(dtype="float64"),
             contribution_mode=contribution_mode,
         )
     except ValueError as error:
         return {}, [f"Current risk-share estimate skipped: {error}"]
-    return {key: float(shares[index]) for index, key in enumerate(risk_keys)}, []
+    rendered = {key: 0.0 for key in risk_keys}
+    rendered.update({key: float(shares[index]) for index, key in enumerate(active_risk_keys)})
+    return rendered, []
 
 
 def _root_top_sleeve_bounds_by_key(
@@ -2463,17 +2485,70 @@ def _solve_current_scope(
     start_day = research_window_start_date(as_of_date, lookback_days)
 
     members, member_source = _scope_members(state, scope_node_id=scope_node_id)
+    warnings: list[str] = []
+    resolved_rows, resolution_warnings = _resolve_dimension_target_rows(
+        state,
+        scope_node_id=scope_node_id,
+        scope_members=members,
+        as_of_date=as_of_date,
+        selected_dimension=target_dimension,
+    )
+    warnings.extend(resolution_warnings)
+
     nav_series_by_member: dict[tuple[str, str], pd.Series] = {}
     current_nav_series_by_member: dict[tuple[str, str], pd.Series] = {}
-    member_by_key: dict[str, ScopeMemberRecord] = {}
+    member_by_key = {
+        f"{member.member_type}::{member.member_id}": member
+        for member in members
+    }
+    member_keys = list(member_by_key)
+    target_dimension_used = str(resolved_rows[0]["selected_dimension"]) if resolved_rows else TARGET_DIMENSION_WEIGHT
+    top_sleeve_bounds_by_key = _root_top_sleeve_bounds_by_key(
+        state,
+        scope_node_id=scope_node_id,
+        member_by_key=member_by_key,
+        member_keys=member_keys,
+    )
     child_results_by_key: dict[str, ScopeTargetSolveResult] = {}
     child_scope_solve_events: list[dict[str, object]] = []
-    warnings: list[str] = []
+    zero_target_keys = {
+        f"{row['member_type']}::{row['member_id']}"
+        for row in resolved_rows
+        if str(row.get("selected_dimension") or "") in {TARGET_DIMENSION_WEIGHT, TARGET_DIMENSION_RISK_BUDGET}
+        and abs(float(_safe_float(row.get("selected_value")) or 0.0)) <= 1e-12
+        and not _member_is_cash_like(
+            state,
+            member_by_key[f"{row['member_type']}::{row['member_id']}"],
+        )
+        and not _member_is_frozen(
+            state,
+            scope_node_id=scope_node_id,
+            member=member_by_key[f"{row['member_type']}::{row['member_id']}"],
+        )
+        and float(
+            _safe_float(
+                (top_sleeve_bounds_by_key.get(f"{row['member_type']}::{row['member_id']}") or {}).get(
+                    "min_weight"
+                )
+            )
+            or 0.0
+        )
+        <= 1e-12
+    }
+    if zero_target_keys:
+        excluded_labels = ", ".join(member_by_key[key].label for key in sorted(zero_target_keys))
+        warnings.append(
+            f"{scope_label} excludes 0% {target_dimension_used.replace('_', ' ')} members from target history, covariance, and return coverage: {excluded_labels}."
+        )
 
     for member in members:
         member_key = f"{member.member_type}::{member.member_id}"
-        member_by_key[member_key] = member
         if member.member_type == TARGET_MEMBER_NODE:
+            if member_key in zero_target_keys:
+                zero_nav = _build_cash_nav_series(start_date=start_day, end_date=as_of_date)
+                nav_series_by_member[(member.member_type, member.member_id)] = zero_nav
+                current_nav_series_by_member[(member.member_type, member.member_id)] = zero_nav
+                continue
             child_result = _solve_current_scope(
                 state,
                 scope_node_id=member.member_id,
@@ -2509,12 +2584,20 @@ def _solve_current_scope(
             nav_series_by_member[(member.member_type, member.member_id)] = cash_nav
             current_nav_series_by_member[(member.member_type, member.member_id)] = cash_nav
         else:
-            instrument_nav, instrument_warnings = _build_instrument_nav_series(
-                state,
-                instrument_id=member.member_id,
-                start_date=start_day,
-                end_date=as_of_date,
-            )
+            try:
+                instrument_nav, instrument_warnings = _build_instrument_nav_series(
+                    state,
+                    instrument_id=member.member_id,
+                    start_date=start_day,
+                    end_date=as_of_date,
+                )
+            except ValueError as error:
+                if member_key not in zero_target_keys:
+                    raise
+                instrument_nav = _build_cash_nav_series(start_date=start_day, end_date=as_of_date)
+                instrument_warnings = [
+                    f"{member.label} has a 0% {target_dimension_used.replace('_', ' ')} target and was excluded from target history/covariance/return coverage: {error}"
+                ]
             nav_series_by_member[(member.member_type, member.member_id)] = instrument_nav
             current_nav_series_by_member[(member.member_type, member.member_id)] = instrument_nav
             warnings.extend(instrument_warnings)
@@ -2534,17 +2617,6 @@ def _solve_current_scope(
     else:
         current_actual_weight_by_key = {}
 
-    resolved_rows, resolution_warnings = _resolve_dimension_target_rows(
-        state,
-        scope_node_id=scope_node_id,
-        scope_members=members,
-        as_of_date=as_of_date,
-        selected_dimension=target_dimension,
-    )
-    warnings.extend(resolution_warnings)
-
-    member_keys = [f"{member.member_type}::{member.member_id}" for member in members]
-    target_dimension_used = str(resolved_rows[0]["selected_dimension"]) if resolved_rows else TARGET_DIMENSION_WEIGHT
     target_values = pd.Series(
         {
             f"{row['member_type']}::{row['member_id']}": float(row["selected_value"])
@@ -2575,14 +2647,12 @@ def _solve_current_scope(
         },
         dtype="float64",
     ).clip(lower=0.0)
-    risk_keys = [key for key in member_keys if key not in cash_like_keys and key not in frozen_keys]
+    risk_keys = [
+        key
+        for key in member_keys
+        if key not in cash_like_keys and key not in frozen_keys and key not in zero_target_keys
+    ]
     non_cash_keys = [key for key in member_keys if key not in cash_like_keys]
-    top_sleeve_bounds_by_key = _root_top_sleeve_bounds_by_key(
-        state,
-        scope_node_id=scope_node_id,
-        member_by_key=member_by_key,
-        member_keys=member_keys,
-    )
     preferred_cash_weights = pd.Series(
         {
             f"{row['member_type']}::{row['member_id']}": float(_safe_float(row.get("target_weight")) or 0.0)
@@ -2695,7 +2765,11 @@ def _solve_current_scope(
         )
         implementation_weights = pd.Series(0.0, index=member_keys, dtype="float64")
         implementation_weights.loc[frozen_keys] = fixed_weight_targets.reindex(frozen_keys, fill_value=0.0)
-        active_weight_keys = [key for key in member_keys if key not in cash_like_keys and key not in frozen_keys]
+        active_weight_keys = [
+            key
+            for key in member_keys
+            if key not in cash_like_keys and key not in frozen_keys and key not in zero_target_keys
+        ]
         active_weight_targets = target_values.reindex(active_weight_keys, fill_value=0.0)
         active_weight_total = float(active_weight_targets.sum())
         available_non_cash_total = (
@@ -3014,9 +3088,14 @@ def _solve_current_scope(
             }
         )
 
+    target_return_members = [
+        member
+        for member in members
+        if abs(float(implementation_weights.get(f"{member.member_type}::{member.member_id}", 0.0))) > 1e-12
+    ]
     try:
         scope_return_window = _solver_return_window(
-            members=members,
+            members=target_return_members,
             nav_series_by_member=nav_series_by_member,
             as_of_date=as_of_date,
             lookback_days=lookback_days,
@@ -3030,9 +3109,14 @@ def _solve_current_scope(
     else:
         scope_returns = _weighted_complete_return_series(scope_return_window, implementation_weights)
     if include_actuals:
+        current_return_members = [
+            member
+            for member in members
+            if abs(float(current_weights.get(f"{member.member_type}::{member.member_id}", 0.0))) > 1e-12
+        ]
         try:
             current_scope_return_window = _solver_return_window(
-                members=members,
+                members=current_return_members,
                 nav_series_by_member=current_nav_series_by_member,
                 as_of_date=as_of_date,
                 lookback_days=lookback_days,
@@ -3073,50 +3157,60 @@ def _current_scope_actuals(
     scope_node_id: str | None,
     as_of_date: date,
 ) -> tuple[list[dict[str, object]], list[str]]:
-    portfolio = get_portfolio(state.portfolio_id)
-    if portfolio is None:
-        raise ValueError("Portfolio not found.")
-    accounts = list_accounts(state.portfolio_id)
-    transactions = list_transactions(state.portfolio_id)
-    statement = build_holdings_report(
-        portfolio,
-        accounts,
-        transactions,
-        as_of_date=as_of_date,
-    )
-    account_workspace = build_account_workspace(
-        state.portfolio_id,
-        accounts,
-        transactions,
-        base_currency=state.base_currency,
-        as_of_date=as_of_date,
-    )
-
-    position_value_by_instrument: dict[str, float] = {}
-    for position in list(statement.get("positions") or []):
-        instrument_id = str(position.get("instrument_id") or "")
-        if instrument_id:
-            market_value_base = _safe_float(position.get("market_value_base"))
-            if market_value_base is None:
-                raise ValueError(
-                    "Current allocation valuation is incomplete; refresh price and FX coverage before solving."
-                )
-            position_value_by_instrument[instrument_id] = market_value_base
-
-    visible_cash_accounts = [
-        account_row
-        for account_row in list(account_workspace.get("accounts") or [])
-        if str((account_row.get("account") or {}).get("account_type") or "") == "deposit_account"
-    ]
-    if any(_safe_float(account_row.get("account_value_base")) is None for account_row in visible_cash_accounts):
-        raise ValueError(
-            "Current cash valuation is incomplete; refresh FX coverage before solving."
+    cache_key = f"actual-valuation::{as_of_date.isoformat()}"
+    cached_valuation = state.current_valuation_cache.get(cache_key)
+    if isinstance(cached_valuation, dict):
+        position_value_by_instrument = dict(cached_valuation.get("position_value_by_instrument") or {})
+        cash_value_by_account = dict(cached_valuation.get("cash_value_by_account") or {})
+    else:
+        portfolio = get_portfolio(state.portfolio_id)
+        if portfolio is None:
+            raise ValueError("Portfolio not found.")
+        accounts = list_accounts(state.portfolio_id)
+        transactions = list_transactions(state.portfolio_id)
+        statement = build_holdings_report(
+            portfolio,
+            accounts,
+            transactions,
+            as_of_date=as_of_date,
         )
-    cash_value_by_account = {
-        str((account_row.get("account") or {}).get("account_id") or ""): float(account_row["account_value_base"])
-        for account_row in visible_cash_accounts
-        if str((account_row.get("account") or {}).get("account_id") or "")
-    }
+        account_workspace = build_account_workspace(
+            state.portfolio_id,
+            accounts,
+            transactions,
+            base_currency=state.base_currency,
+            as_of_date=as_of_date,
+        )
+
+        position_value_by_instrument: dict[str, float] = {}
+        for position in list(statement.get("positions") or []):
+            instrument_id = str(position.get("instrument_id") or "")
+            if instrument_id:
+                market_value_base = _safe_float(position.get("market_value_base"))
+                if market_value_base is None:
+                    raise ValueError(
+                        "Current allocation valuation is incomplete; refresh price and FX coverage before solving."
+                    )
+                position_value_by_instrument[instrument_id] = market_value_base
+
+        visible_cash_accounts = [
+            account_row
+            for account_row in list(account_workspace.get("accounts") or [])
+            if str((account_row.get("account") or {}).get("account_type") or "") == "deposit_account"
+        ]
+        if any(_safe_float(account_row.get("account_value_base")) is None for account_row in visible_cash_accounts):
+            raise ValueError(
+                "Current cash valuation is incomplete; refresh FX coverage before solving."
+            )
+        cash_value_by_account = {
+            str((account_row.get("account") or {}).get("account_id") or ""): float(account_row["account_value_base"])
+            for account_row in visible_cash_accounts
+            if str((account_row.get("account") or {}).get("account_id") or "")
+        }
+        state.current_valuation_cache[cache_key] = {
+            "position_value_by_instrument": dict(position_value_by_instrument),
+            "cash_value_by_account": dict(cash_value_by_account),
+        }
 
     cash_total_value = float(sum(cash_value_by_account.values()))
     direct_position_membership: dict[str, str] = {}
@@ -3229,6 +3323,8 @@ def _build_taxonomy_state(
     as_of_date: date,
     frozen_taxonomy_node_ids: list[str] | None = None,
     top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
+    instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
+    direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> TaxonomyResearchState:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -3351,8 +3447,12 @@ def _build_taxonomy_state(
         target_sets_by_scope_type=target_sets_by_scope_type,
         target_lines_by_set_id=target_lines_by_set_id,
         account_name_by_id=account_name_by_id,
-        instrument_detail_cache={},
-        direct_fx_instruments=_build_direct_fx_instrument_map(),
+        instrument_detail_cache=instrument_detail_cache if instrument_detail_cache is not None else {},
+        direct_fx_instruments=(
+            direct_fx_instruments
+            if direct_fx_instruments is not None
+            else _build_direct_fx_instrument_map()
+        ),
         frozen_taxonomy_node_ids=frozenset(
             str(item).strip() for item in (frozen_taxonomy_node_ids or []) if str(item).strip()
         ),
@@ -3982,6 +4082,7 @@ def _build_backtest_benchmark_comparison_from_state(
             instrument_id=normalized_benchmark_id,
             start_date=date(1900, 1, 1),
             end_date=state.as_of_date,
+            warn_on_start_clip=False,
         )
     except ValueError as error:
         benchmark_warnings.append(str(error))
@@ -4057,6 +4158,16 @@ def build_research_backtest_benchmark_comparison(
     )
 
 
+def _active_backtest_leaf_ids(solution: dict[str, object]) -> list[str]:
+    instrument_ids = [
+        str(row.get("member_id") or "")
+        for row in list(solution.get("leaf_targets") or [])
+        if str(row.get("member_type") or "") == TARGET_MEMBER_INSTRUMENT
+        and abs(float(_safe_float(row.get("target_weight")) or 0.0)) > 1e-12
+    ]
+    return list(dict.fromkeys(item for item in instrument_ids if item))
+
+
 def build_current_target_backtest(
     portfolio_id: str,
     *,
@@ -4103,13 +4214,8 @@ def build_current_target_backtest(
         top_sleeve_weight_bounds=top_sleeve_weight_bounds,
         risk_model_config=risk_model_config,
     )
-    active_leaf_ids = [
-        str(row.get("member_id") or "")
-        for row in list(solution.get("leaf_targets") or [])
-        if str(row.get("member_type") or "") == TARGET_MEMBER_INSTRUMENT
-    ]
-    active_leaf_ids = list(dict.fromkeys(item for item in active_leaf_ids if item))
-    warnings: list[str] = []
+    active_leaf_ids = _active_backtest_leaf_ids(solution)
+    warnings: list[str] = list(RESEARCH_BACKTEST_METHODOLOGY_WARNINGS)
     if not active_leaf_ids:
         empty_backtest = {
             "rebalance_frequency": frequency,
@@ -4121,7 +4227,14 @@ def build_current_target_backtest(
             "metrics": _build_backtest_metrics([], {}),
             "top_sleeve_weight_points": [],
             "top_sleeve_contribution_points": [],
-            "warnings": ["Backtest requires at least one solved instrument with non-zero weight."],
+            "warnings": list(
+                dict.fromkeys(
+                    [
+                        *warnings,
+                        "Backtest requires at least one solved instrument.",
+                    ]
+                )
+            ),
         }
         return {"backtest": empty_backtest, "backtest_benchmark": None, "backtest_relative_metrics": None}
 
@@ -4133,6 +4246,7 @@ def build_current_target_backtest(
                 instrument_id=instrument_id,
                 start_date=date(1900, 1, 1),
                 end_date=as_of_date,
+                warn_on_start_clip=False,
             )
         except ValueError as error:
             warnings.append(f"{instrument_id} excluded from backtest: {error}")
@@ -4255,6 +4369,8 @@ def build_current_target_backtest(
                 top_sleeve_weight_bounds=top_sleeve_weight_bounds,
                 risk_model_config=risk_model_config,
                 include_actuals=False,
+                _instrument_detail_cache=state.instrument_detail_cache,
+                _direct_fx_instruments=state.direct_fx_instruments,
             )
         except ValueError as error:
             if not _is_rebalance_data_gap_error(error):
@@ -4408,6 +4524,8 @@ def solve_current_target_weights(
     top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
     risk_model_config: dict[str, object] | None = None,
     include_actuals: bool = True,
+    _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
+    _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
     state = _build_taxonomy_state(
         portfolio_id,
@@ -4415,6 +4533,8 @@ def solve_current_target_weights(
         as_of_date=as_of_date,
         frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
         top_sleeve_weight_bounds=top_sleeve_weight_bounds,
+        instrument_detail_cache=_instrument_detail_cache,
+        direct_fx_instruments=_direct_fx_instruments,
     )
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
         raise ValueError("Selected research scope was not found in the planning taxonomy.")

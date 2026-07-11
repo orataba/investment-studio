@@ -36,6 +36,16 @@ import {
   type TaxonomyAssignmentScope,
 } from '../lib/api'
 import { formatCurrency, formatLabel, formatPercent } from '../lib/format'
+import {
+  TARGET_EDIT_ASSIGNMENT_LOCK_MESSAGE,
+  canDragTaxonomyEntity,
+  canDropTaxonomyEntity,
+  targetDimensionEnabledForDraft,
+} from '../lib/taxonomyInteractionPolicy'
+import {
+  formatTargetSetIntegrityNotice,
+  targetSetIntegrityIssuesForTaxonomy,
+} from '../lib/taxonomyTargetIntegrity'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 
@@ -401,8 +411,8 @@ function buildTargetSetDraft(args: {
 
   return {
     name: targetSet?.name ?? defaultName,
-    weight_enabled: defaultWeightEnabled || Boolean(targetSet?.weight_enabled),
-    risk_budget_enabled: defaultRiskBudgetEnabled || Boolean(targetSet?.risk_budget_enabled),
+    weight_enabled: targetDimensionEnabledForDraft(targetSet?.weight_enabled, defaultWeightEnabled),
+    risk_budget_enabled: targetDimensionEnabledForDraft(targetSet?.risk_budget_enabled, defaultRiskBudgetEnabled),
     status: targetSet?.status ?? 'active',
     notes: targetSet?.notes ?? '',
     lines_by_member_key: linesByMemberKey,
@@ -865,10 +875,13 @@ export default function TaxonomiesPage() {
         return
       }
       if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-        if (selectedNode?.is_terminal && selectedEntityIds.size) {
+        if (!targetEditMode && selectedNode?.is_terminal && selectedEntityIds.size) {
           event.preventDefault()
           void assignEntitiesToNode(selectedNode, Array.from(selectedEntityIds))
         }
+        return
+      }
+      if (targetEditMode) {
         return
       }
       if (event.key === 'Tab' && selectedNode) {
@@ -884,7 +897,15 @@ export default function TaxonomiesPage() {
 
     window.addEventListener('keydown', handleWindowKeydown)
     return () => window.removeEventListener('keydown', handleWindowKeydown)
-  }, [selectedNode, selectedEntityIds])
+  }, [selectedNode, selectedEntityIds, targetEditMode])
+
+  useEffect(() => {
+    if (!targetEditMode) {
+      return
+    }
+    setDragTargetNodeId(null)
+    setContextMenuState(null)
+  }, [targetEditMode])
 
   const activeAssignments = useMemo(
     () =>
@@ -1449,6 +1470,18 @@ export default function TaxonomiesPage() {
     () => selectedTaxonomyTargetSets.filter((targetSet) => targetSet.status === 'active'),
     [selectedTaxonomyTargetSets],
   )
+  const selectedTaxonomyTargetSetIntegrityIssues = useMemo(
+    () =>
+      targetSetIntegrityIssuesForTaxonomy(
+        catalog?.target_set_integrity_issues ?? [],
+        resolvedSelectedTaxonomyId,
+      ),
+    [catalog?.target_set_integrity_issues, resolvedSelectedTaxonomyId],
+  )
+  const targetSetIntegrityNotice = useMemo(
+    () => formatTargetSetIntegrityNotice(selectedTaxonomyTargetSetIntegrityIssues),
+    [selectedTaxonomyTargetSetIntegrityIssues],
+  )
   const selectedTaxonomyTargetSetLines = useMemo(
     () => (catalog?.target_set_lines ?? []).filter((line) => selectedTaxonomyTargetSets.some((targetSet) => targetSet.target_set_id === line.target_set_id)),
     [catalog?.target_set_lines, selectedTaxonomyTargetSets],
@@ -1760,6 +1793,11 @@ export default function TaxonomiesPage() {
   const hasTargetsConfigurationChanges = hasDefaultTargetChanges || (hasTargetScope && (saaDraftChanged || taaDraftChanged))
   const canSaveTargetsConfiguration = hasTargetsConfigurationChanges && !targetSaveBlockedReason
 
+  function preventTargetEditorDrag(event: ReactDragEvent<HTMLInputElement | HTMLSelectElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
   function renderDefaultTargetCell(node: PortfolioTaxonomyNodeRecord) {
     const draftValue = defaultTargetDraftsByNodeId[node.taxonomy_node_id] ?? (node.default_target_dimension as DefaultTargetDimension)
     if (!targetEditMode || !selectedTaxonomy?.planning_enabled) {
@@ -1769,6 +1807,8 @@ export default function TaxonomiesPage() {
       <select
         className="taxonomy-default-target-select"
         value={draftValue}
+        draggable={false}
+        onDragStart={preventTargetEditorDrag}
         onChange={(event) =>
           setDefaultTargetDraftsByNodeId((current) => ({
             ...current,
@@ -1811,12 +1851,19 @@ export default function TaxonomiesPage() {
         if (!draft.weight_enabled) {
           return '—'
         }
+        const targetWeightMissing = !lineDraft.target_weight.trim()
         return (
           <input
+            className={targetWeightMissing ? 'taxonomy-target-input-missing' : undefined}
             type="number"
             step="0.01"
             min="0"
             value={lineDraft.target_weight}
+            placeholder="Required"
+            aria-label={`${kind.toUpperCase()} target weight for ${targetMember.label}`}
+            aria-invalid={targetWeightMissing}
+            draggable={false}
+            onDragStart={preventTargetEditorDrag}
             onFocus={() => setActiveTargetScopeKey(scopeKey)}
             onChange={(event) =>
               updateDraftLine(scopeKey, kind, targetMember.member_key, 'target_weight', event.target.value)
@@ -1827,12 +1874,19 @@ export default function TaxonomiesPage() {
       if (!draft.risk_budget_enabled) {
         return '—'
       }
+      const targetRiskMissing = !lineDraft.target_risk_share.trim()
       return (
         <input
+          className={targetRiskMissing ? 'taxonomy-target-input-missing' : undefined}
           type="number"
           step="0.01"
           min="0"
           value={lineDraft.target_risk_share}
+          placeholder="Required"
+          aria-label={`${kind.toUpperCase()} target risk budget for ${targetMember.label}`}
+          aria-invalid={targetRiskMissing}
+          draggable={false}
+          onDragStart={preventTargetEditorDrag}
           onFocus={() => setActiveTargetScopeKey(scopeKey)}
           onChange={(event) =>
             updateDraftLine(scopeKey, kind, targetMember.member_key, 'target_risk_share', event.target.value)
@@ -1976,7 +2030,13 @@ export default function TaxonomiesPage() {
   }
 
   function handleEntityDragStart(event: ReactDragEvent, entity: CoverageEntity) {
-    if (entity.coverage_state === 'ambiguous' || isSystemCashEntity(entity, selectedTaxonomy)) {
+    const dragEnabled = canDragTaxonomyEntity({
+      targetEditMode,
+      lockedEntity: isSystemCashEntity(entity, selectedTaxonomy),
+      ambiguousEntity: entity.coverage_state === 'ambiguous',
+      actionPending: Boolean(actionPending),
+    })
+    if (!dragEnabled) {
       event.preventDefault()
       return
     }
@@ -1989,7 +2049,13 @@ export default function TaxonomiesPage() {
   }
 
   function handleNodeDragOver(event: ReactDragEvent, node: PortfolioTaxonomyNodeRecord) {
-    if (!node.is_terminal) {
+    if (
+      !canDropTaxonomyEntity({
+        targetEditMode,
+        terminalNode: node.is_terminal,
+        actionPending: Boolean(actionPending),
+      })
+    ) {
       return
     }
     event.preventDefault()
@@ -1998,7 +2064,14 @@ export default function TaxonomiesPage() {
   }
 
   async function handleNodeDrop(event: ReactDragEvent, node: PortfolioTaxonomyNodeRecord) {
-    if (!node.is_terminal) {
+    if (
+      !canDropTaxonomyEntity({
+        targetEditMode,
+        terminalNode: node.is_terminal,
+        actionPending: Boolean(actionPending),
+      })
+    ) {
+      setDragTargetNodeId(null)
       return
     }
     event.preventDefault()
@@ -2356,6 +2429,11 @@ export default function TaxonomiesPage() {
   }
 
   async function assignEntitiesToNode(targetNode: PortfolioTaxonomyNodeRecord, entityIds: string[]) {
+    if (targetEditMode) {
+      setContextMenuState(null)
+      setActionError(TARGET_EDIT_ASSIGNMENT_LOCK_MESSAGE)
+      return
+    }
     if (!portfolioId || !selectedTaxonomy || !targetNode.is_terminal || !entityIds.length) {
       return
     }
@@ -2539,6 +2617,12 @@ export default function TaxonomiesPage() {
 
   function renderEntityTreeRow(entity: CoverageEntity, depth: number) {
     const lockedCashEntity = isSystemCashEntity(entity, selectedTaxonomy)
+    const assignmentDragEnabled = canDragTaxonomyEntity({
+      targetEditMode,
+      lockedEntity: lockedCashEntity,
+      ambiguousEntity: entity.coverage_state === 'ambiguous',
+      actionPending: Boolean(actionPending),
+    })
     const selected = !lockedCashEntity && selectedEntityIds.has(entity.entity_id)
     const targetMember: TargetScopeMember = {
       member_key: targetMemberKey(entity.target_scope, entity.entity_id),
@@ -2559,12 +2643,16 @@ export default function TaxonomiesPage() {
     return (
       <tr
         key={entity.entity_id}
-        className={['taxonomy-entity-row', selected ? 'taxonomy-entity-row-active' : '', isTargetScopeMember ? 'taxonomy-scope-row' : '']
+        className={['taxonomy-entity-row', assignmentDragEnabled ? 'taxonomy-entity-row-draggable' : 'taxonomy-entity-row-drag-locked', selected ? 'taxonomy-entity-row-active' : '', isTargetScopeMember ? 'taxonomy-scope-row' : '']
           .filter(Boolean)
           .join(' ') || undefined}
-        draggable={!lockedCashEntity && entity.coverage_state !== 'ambiguous'}
-        onDragStart={lockedCashEntity ? undefined : (event) => handleEntityDragStart(event, entity)}
-        onContextMenu={lockedCashEntity ? undefined : (event) => handleEntityContextMenu(event, entity)}
+        draggable={assignmentDragEnabled}
+        data-assignment-drag={assignmentDragEnabled ? 'enabled' : 'disabled'}
+        aria-describedby={targetEditMode ? 'taxonomy-target-edit-lock-message' : undefined}
+        title={targetEditMode ? TARGET_EDIT_ASSIGNMENT_LOCK_MESSAGE : undefined}
+        onDragStart={assignmentDragEnabled ? (event) => handleEntityDragStart(event, entity) : undefined}
+        onDragEnd={assignmentDragEnabled ? () => setDragTargetNodeId(null) : undefined}
+        onContextMenu={!lockedCashEntity && !targetEditMode ? (event) => handleEntityContextMenu(event, entity) : undefined}
       >
         <td className="holding-name-cell">
           <div className="taxonomy-node-row taxonomy-hierarchy-row">
@@ -2678,6 +2766,11 @@ export default function TaxonomiesPage() {
       const isTargetScopeChild = currentScopeMemberKeySet.has(nodeTargetMember.member_key)
       const isEditableInTree =
         targetEditMode && Boolean(selectedTaxonomy?.planning_enabled) && Boolean(targetDraftsByScope[parentScopeKey])
+      const assignmentDropEnabled = canDropTaxonomyEntity({
+        targetEditMode,
+        terminalNode: node.is_terminal,
+        actionPending: Boolean(actionPending),
+      })
       const isDropTarget = dragTargetNodeId === node.taxonomy_node_id
       const isCollapsed = collapsedNodeIds.has(node.taxonomy_node_id)
       const rowClassName = [
@@ -2695,10 +2788,12 @@ export default function TaxonomiesPage() {
         <tr
           key={node.taxonomy_node_id}
           className={rowClassName || undefined}
-          onContextMenu={(event) => handleNodeContextMenu(event, node)}
-          onDragOver={(event) => handleNodeDragOver(event, node)}
-          onDragLeave={() => setDragTargetNodeId((current) => (current === node.taxonomy_node_id ? null : current))}
-          onDrop={(event) => void handleNodeDrop(event, node)}
+          data-assignment-drop={assignmentDropEnabled ? 'enabled' : 'disabled'}
+          aria-describedby={targetEditMode ? 'taxonomy-target-edit-lock-message' : undefined}
+          onContextMenu={targetEditMode ? undefined : (event) => handleNodeContextMenu(event, node)}
+          onDragOver={assignmentDropEnabled ? (event) => handleNodeDragOver(event, node) : undefined}
+          onDragLeave={assignmentDropEnabled ? () => setDragTargetNodeId((current) => (current === node.taxonomy_node_id ? null : current)) : undefined}
+          onDrop={assignmentDropEnabled ? (event) => void handleNodeDrop(event, node) : undefined}
         >
           <td className="holding-name-cell">
             <div className="taxonomy-node-row taxonomy-hierarchy-row">
@@ -2802,7 +2897,8 @@ export default function TaxonomiesPage() {
                       setContextMenuState(null)
                       setTaxonomyPickerOpen((current) => !current)
                     }}
-                    disabled={actionPending?.startsWith('default-taxonomy-')}
+                    disabled={targetEditMode || actionPending?.startsWith('default-taxonomy-')}
+                    title={targetEditMode ? TARGET_EDIT_ASSIGNMENT_LOCK_MESSAGE : undefined}
                   >
                     <span>{selectedTaxonomy?.name ?? 'No taxonomy'}</span>
                     <span className="taxonomy-picker-caret" aria-hidden="true" />
@@ -2849,6 +2945,7 @@ export default function TaxonomiesPage() {
                     setContextMenuState(null)
                     setShowTaxonomyCreate(true)
                   }}
+                  disabled={targetEditMode}
                 >
                   Add Taxonomy
                 </button>
@@ -2863,7 +2960,7 @@ export default function TaxonomiesPage() {
                       setTaxonomyPickerOpen(false)
                       setContextMenuState(null)
                     }}
-                    disabled={selectedTaxonomy.primary_assignment_scope !== 'instrument'}
+                    disabled={targetEditMode || selectedTaxonomy.primary_assignment_scope !== 'instrument'}
                   >
                     Add Instrument
                   </button>
@@ -2876,6 +2973,15 @@ export default function TaxonomiesPage() {
             <section className="panel taxonomy-levels-section">
               <div className="taxonomy-collapsed-summary taxonomy-tree-summary taxonomy-target-summary-row">
                 <div className="taxonomy-target-summary-meta">
+                  {targetEditMode ? (
+                    <span
+                      id="taxonomy-target-edit-lock-message"
+                      className="taxonomy-target-edit-lock-message"
+                      role="status"
+                    >
+                      Target edit mode · edit values/type only; structure and assignment moves locked
+                    </span>
+                  ) : null}
                   <span>
                     {selectedTaxonomy.primary_assignment_scope === 'instrument' ? 'Instruments' : 'Items'} {coverageSummary.currentEntityCount}
                   </span>
@@ -2896,11 +3002,13 @@ export default function TaxonomiesPage() {
                       className="table-inline-button"
                       onClick={() => {
                         setDefaultTargetDraftsByNodeId(defaultTargetDraftsFromNodes(selectedTaxonomyNodes))
+                        setDragTargetNodeId(null)
+                        setContextMenuState(null)
                         setTargetEditMode(true)
                       }}
                       disabled={!hasTargetScope && !selectedTaxonomyNodes.length}
                     >
-                      Edit
+                      Edit Targets
                     </button>
                   ) : null}
                   {selectedTaxonomy.planning_enabled && targetEditMode ? (
@@ -2929,6 +3037,13 @@ export default function TaxonomiesPage() {
                   ) : null}
                 </div>
               </div>
+
+              {targetSetIntegrityNotice ? (
+                <div className="taxonomy-target-integrity-warning" role="alert">
+                  <strong>Target budgets need attention.</strong>
+                  <span>{targetSetIntegrityNotice}</span>
+                </div>
+              ) : null}
 
               <div className="table-shell">
                 <table className="transactions-table taxonomy-tree-table taxonomy-levels-table">
@@ -2985,7 +3100,12 @@ export default function TaxonomiesPage() {
                             <tr className="table-status-row">
                               <td colSpan={8} className="empty-state-cell">
                                 <span>No nodes.</span>{' '}
-                                <button type="button" className="table-inline-button" onClick={() => startNodeCreate('root')}>
+                                <button
+                                  type="button"
+                                  className="table-inline-button"
+                                  onClick={() => startNodeCreate('root')}
+                                  disabled={targetEditMode}
+                                >
                                   Add Root
                                 </button>
                               </td>
@@ -3282,7 +3402,8 @@ export default function TaxonomiesPage() {
                     <button
                       type="button"
                       className="taxonomy-context-menu-item"
-                      disabled={selectedEntityCount === 0}
+                      disabled={targetEditMode || selectedEntityCount === 0}
+                      title={targetEditMode ? TARGET_EDIT_ASSIGNMENT_LOCK_MESSAGE : undefined}
                       onClick={() => {
                         setContextMenuState(null)
                         void assignEntitiesToNode(contextMenuNode, Array.from(selectedEntityIds))
@@ -3317,7 +3438,8 @@ export default function TaxonomiesPage() {
                   <button
                     type="button"
                     className="taxonomy-context-menu-item"
-                    disabled={!selectedNode?.is_terminal}
+                    disabled={targetEditMode || !selectedNode?.is_terminal}
+                    title={targetEditMode ? TARGET_EDIT_ASSIGNMENT_LOCK_MESSAGE : undefined}
                     onClick={() => {
                       const entityIds = selectedEntityIds.has(contextMenuEntity.entity_id)
                         ? Array.from(selectedEntityIds)

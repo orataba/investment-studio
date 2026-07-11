@@ -40,6 +40,7 @@ import {
   formatLabel,
   formatNumber,
   formatPercent,
+  formatPercentInput,
 } from '../lib/format'
 import { resolveResearchAsOfDraft, serializeResearchAsOf } from '../lib/researchAsOf'
 
@@ -141,13 +142,6 @@ function formatMaybeNumber(value: number | null | undefined, digits = 2) {
 
 function formatMaybeDays(value: number | null | undefined) {
   return value == null ? '-' : `${formatNumber(value, 0)}D`
-}
-
-function formatBoundInput(value: number | null | undefined) {
-  if (value == null || !Number.isFinite(value)) {
-    return ''
-  }
-  return String(Number((value * 100).toFixed(4)))
 }
 
 function formatSolvedBounds(minWeight: number | null | undefined, maxWeight: number | null | undefined) {
@@ -930,15 +924,15 @@ export default function ResearchPage() {
     const nextCapitalMode = workbench.settings.capital_mode
     const nextTopSleeveBounds = (workbench.settings.top_sleeve_weight_bounds ?? []).map((item) => ({
       taxonomyNodeId: item.taxonomy_node_id,
-      minWeightPct: formatBoundInput(item.min_weight),
-      maxWeightPct: formatBoundInput(item.max_weight),
+      minWeightPct: formatPercentInput(item.min_weight),
+      maxWeightPct: formatPercentInput(item.max_weight),
     }))
     const nextDraft: ResearchRunSetupDraft = {
       ...nextAsOf,
       capitalMode: nextCapitalMode,
       grossExposure: workbench.settings.gross_exposure != null ? String(workbench.settings.gross_exposure) : '',
       targetVolatilityPct:
-        workbench.settings.target_volatility != null ? String(workbench.settings.target_volatility * 100) : '',
+        formatPercentInput(workbench.settings.target_volatility),
       maxGrossExposure:
         workbench.settings.max_gross_exposure != null
           ? String(workbench.settings.max_gross_exposure)
@@ -1607,7 +1601,9 @@ export default function ResearchPage() {
                         <th>Instrument</th>
                           <th>Solved Weight</th>
                           <th>Target Risk</th>
-                          <th>Forward RC</th>
+                          <th title="Portfolio-level risk contribution recomputed from solved leaf weights; hierarchical shrinkage can differ from local sleeve targets.">
+                            Look-through RC
+                          </th>
                           <th>Bounds</th>
                           <th>Bound</th>
                         </tr>

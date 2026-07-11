@@ -6218,6 +6218,15 @@ input[type='checkbox'] {
   font-variant-numeric: tabular-nums;
 }
 
+.taxonomy-page-table .taxonomy-levels-table input.taxonomy-target-input-missing {
+  border-bottom-color: #d69e2e;
+}
+
+.taxonomy-levels-table input.taxonomy-target-input-missing::placeholder {
+  color: #a15c07;
+  opacity: 1;
+}
+
 .taxonomy-levels-table .taxonomy-node-table-row td {
   border-top: 1px solid var(--portfolio-line);
 }
@@ -6254,6 +6263,26 @@ input[type='checkbox'] {
   font-weight: 400;
 }
 
+.taxonomy-levels-table .taxonomy-entity-row-draggable .holding-name-cell {
+  cursor: grab;
+}
+
+.taxonomy-levels-table .taxonomy-entity-row-draggable:active .holding-name-cell {
+  cursor: grabbing;
+}
+
+.taxonomy-levels-table .taxonomy-entity-row-drag-locked .holding-name-cell {
+  cursor: default;
+}
+
+.taxonomy-levels-table .taxonomy-entity-row-drag-locked input {
+  cursor: text;
+}
+
+.taxonomy-levels-table .taxonomy-entity-row-drag-locked select {
+  cursor: pointer;
+}
+
 .taxonomy-levels-table .taxonomy-node-row-active td,
 .taxonomy-levels-table .taxonomy-entity-row-active td {
   background: var(--portfolio-accent-soft);
@@ -6277,6 +6306,37 @@ input[type='checkbox'] {
   flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
+}
+
+.taxonomy-target-edit-lock-message {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid #f2d18a;
+  border-radius: 999px;
+  background: #fff8e8;
+  color: #875b12;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.taxonomy-target-integrity-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid #f2d18a;
+  background: #fff8e8;
+  color: #875b12;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.taxonomy-target-integrity-warning strong {
+  flex: 0 0 auto;
+  font-weight: 600;
 }
 
 .taxonomy-status-legend {

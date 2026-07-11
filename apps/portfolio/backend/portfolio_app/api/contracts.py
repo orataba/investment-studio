@@ -925,6 +925,17 @@ class TargetSetLineRecord(BaseModel):
     notes: str | None = None
 
 
+class TargetSetIntegrityIssueRecord(BaseModel):
+    taxonomy_id: str
+    comparator_taxonomy_node_id: str | None = None
+    scope_label: str
+    target_set_id: str
+    target_set_type: TargetSetType
+    target_set_name: str
+    issue_code: Literal["invalid_active_target_set"]
+    message: str
+
+
 class TaxonomyCatalogResponse(BaseModel):
     portfolio_id: str
     default_planning_taxonomy_id: str | None = None
@@ -935,6 +946,7 @@ class TaxonomyCatalogResponse(BaseModel):
     instrument_universe: list[PortfolioInstrumentUniverseRecord] = Field(default_factory=list)
     target_sets: list[TargetSetRecord] = Field(default_factory=list)
     target_set_lines: list[TargetSetLineRecord] = Field(default_factory=list)
+    target_set_integrity_issues: list[TargetSetIntegrityIssueRecord] = Field(default_factory=list)
 
 
 class ResearchPlanningTaxonomyOption(BaseModel):
