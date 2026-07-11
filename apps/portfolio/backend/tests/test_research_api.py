@@ -1955,6 +1955,25 @@ def test_current_holding_with_zero_solved_target_requires_manual_review() -> Non
     ]
 
 
+def test_cash_with_zero_solved_target_is_not_mislabeled_as_a_liquidation() -> None:
+    gaps = _build_leaf_target_weight_gaps(
+        leaf_target_rows=[
+            {
+                "member_type": "cash_bucket",
+                "member_id": "__cash__",
+                "label": "Cash",
+                "current_weight": 0.006,
+                "target_weight": 0.0,
+            }
+        ],
+        base_currency="CNY",
+    )
+
+    assert gaps[0]["action"] == "Hold"
+    assert gaps[0]["execution_status"] == "ready"
+    assert gaps[0]["execution_note"] is None
+
+
 def test_research_run_creates_current_target_weight_outputs(client):
     taxonomy_id, node_ids = _create_planning_taxonomy(client)
     _create_target_sets(client, taxonomy_id, node_ids)

@@ -3295,7 +3295,11 @@ def _build_leaf_target_weight_gaps(
         execution_status = "ready"
         execution_note = None
         if gap is not None:
-            if current_weight > 1e-8 and target_weight <= 1e-12:
+            if (
+                str(row.get("member_type") or "") == "instrument"
+                and current_weight > 1e-8
+                and target_weight <= 1e-12
+            ):
                 action = "Review"
                 execution_status = "manual_review_required"
                 execution_note = (
