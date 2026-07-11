@@ -42,6 +42,10 @@ import {
 } from '../lib/format'
 import { buildPerformanceHistoryReliability } from '../lib/performanceHistoryReliability'
 import { assessPerformanceBenchmarkBasis } from '../lib/performanceBenchmarkBasis'
+import {
+  realizedRiskContributionResidual,
+  realizedRiskMetricsAvailable,
+} from '../lib/performanceRiskReliability'
 
 const DEFAULT_PERFORMANCE_LOOKBACK_DAYS = 30
 const DAYS_PER_YEAR = 365.25
@@ -2118,11 +2122,14 @@ function PerformancePage() {
         )}${calculationChildRowCount ? ` · ${formatNumber(calculationChildRowCount, 0)} instruments/cash` : ''}${
           calculationRiskStatusLabel ? ` · ${calculationRiskStatusLabel}` : ''
         }`
-  const riskContributionTotal = calculationRows.reduce(
-    (total, row) => total + (finiteNumber(row.realized_risk_contribution) ?? 0),
-    0,
+  const riskMetricsAvailable = realizedRiskMetricsAvailable(
+    calculationGroupsSummary?.risk_return_observation_count,
+    calculationGroupsSummary?.annualized_volatility,
   )
-  const riskContributionResidual = calculationRows.length ? 1 - riskContributionTotal : null
+  const riskContributionResidual = realizedRiskContributionResidual(
+    calculationRows.map((row) => finiteNumber(row.realized_risk_contribution)),
+    riskMetricsAvailable,
+  )
   const showRiskContributionResidual =
     calculationTableMode === 'risk_attribution' &&
     visibleCalculationColumns.includes('risk_contribution') &&
@@ -2304,7 +2311,7 @@ function PerformancePage() {
             case 'own_corr':
             case 'beta':
             case 'risk_contribution':
-              return 1
+              return riskMetricsAvailable ? 1 : null
             case 'observations':
               return finiteNumber(
                 calculationGroupsSummary?.risk_return_observation_count ?? summary?.risk_return_observation_count,
