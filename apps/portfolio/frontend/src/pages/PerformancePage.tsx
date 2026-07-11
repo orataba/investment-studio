@@ -5,9 +5,11 @@ import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/Benc
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import QualityWarningsNotice from '../components/QualityWarningsNotice'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import {
   getPortfolioInstrumentPriceChart,
   getPortfolioInstruments,
@@ -1487,6 +1489,14 @@ function PerformancePage() {
     () => initialCalculationTableViewState.mode,
   )
   const [calculationColumnsOpen, setCalculationColumnsOpen] = useState(false)
+  const calculationColumnsDialogRef = useModalDialog(
+    calculationColumnsOpen,
+    () => setCalculationColumnsOpen(false),
+  )
+  const calculationGroupByDialogRef = useModalDialog(
+    calculationGroupByOpen,
+    () => setCalculationGroupByOpen(false),
+  )
   const [calculationColumnCategory, setCalculationColumnCategory] = useState(
     CALCULATION_COLUMN_GROUPS[0]?.label ?? 'Core',
   )
@@ -2425,6 +2435,7 @@ function PerformancePage() {
             {normalizedCurrency(baseCurrency)}.
           </div>
         ) : null}
+        <QualityWarningsNotice warnings={summary?.quality_warnings} />
         {(loading || waitingForDefaultEndDate) && !workspace ? <CalculationStatus /> : null}
         {loading && workspace ? <CalculationStatus /> : null}
         {!waitingForDefaultEndDate && !loading && !workspace && !error ? (
@@ -2543,7 +2554,15 @@ function PerformancePage() {
       </section>
       {calculationColumnsOpen ? (
         <div className="holdings-modal-backdrop" onClick={() => setCalculationColumnsOpen(false)}>
-          <div className="holdings-modal holdings-columns-modal" onClick={(event) => event.stopPropagation()}>
+          <div
+            ref={calculationColumnsDialogRef}
+            className="holdings-modal holdings-columns-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Choose calculation columns"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="holdings-modal-header">
               <div>
                 <div className="panel-title">Data &amp; Columns</div>
@@ -2659,7 +2678,15 @@ function PerformancePage() {
       ) : null}
       {calculationGroupByOpen ? (
         <div className="holdings-modal-backdrop" onClick={() => setCalculationGroupByOpen(false)}>
-          <div className="holdings-modal holdings-compact-modal" onClick={(event) => event.stopPropagation()}>
+          <div
+            ref={calculationGroupByDialogRef}
+            className="holdings-modal holdings-compact-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Group performance calculations"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="holdings-modal-header">
               <div>
                 <div className="panel-title">Group By</div>

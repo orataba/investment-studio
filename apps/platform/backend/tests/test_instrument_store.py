@@ -20,7 +20,10 @@ from platform_app.services.instrument_store import (
     list_instruments,
     restore_instrument,
     replace_nav_history,
+    update_refresh_status,
+    upsert_corporate_action_event,
     upsert_market_data,
+    upsert_source_settings,
 )
 from platform_app.services.market_data_ops import import_nav_file, preview_nav_import
 from scripts.import_coverage_nav_from_folder import _ensure_instrument as ensure_coverage_nav_instrument
@@ -194,6 +197,50 @@ def test_archive_restore_filters_default_shared_search(
     assert "fund-us-agg" in restored_ids
 
 
+def test_corporate_action_upsert_deduplicates_provider_detection_and_issuer_confirmation(
+    isolated_store: Path,
+) -> None:
+    detected = upsert_corporate_action_event(
+        instrument_id="fund-us-agg",
+        action_type="share_split",
+        effective_date=date(2026, 7, 10),
+        new_units="2",
+        old_units="1",
+        source="tushare:fund_adj",
+        status="detected",
+        provenance={"observed_factor_ratio": "2"},
+    )
+    assert detected is not None
+    assert detected["status"] == "detected"
+
+    confirmed = upsert_corporate_action_event(
+        instrument_id="fund-us-agg",
+        action_type="share_split",
+        announcement_date=date(2026, 7, 6),
+        record_date=date(2026, 7, 9),
+        effective_date=date(2026, 7, 10),
+        payable_date=date(2026, 7, 10),
+        new_units="2",
+        old_units="1",
+        source="fund_manager_announcement",
+        external_event_id="issuer-123",
+        status="confirmed",
+        quantity_rounding="truncate",
+        provenance={"announcement_url": "https://issuer.example/split.pdf"},
+    )
+    assert confirmed is not None
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["source"] == "fund_manager_announcement"
+    assert confirmed["record_date"] == "2026-07-09"
+    assert confirmed["quantity_rounding"] == "truncate"
+
+    detail = get_instrument("fund-us-agg")
+    assert detail is not None
+    assert len(detail["corporate_actions"]) == 1
+    observations = detail["corporate_actions"][0]["provenance"]["observations"]
+    assert any(item["source"] == "fund_manager_announcement" for item in observations)
+
+
 def test_reset_store_without_payload_initializes_empty_registry(
     isolated_store: Path,
 ) -> None:
@@ -249,6 +296,45 @@ def test_create_allows_same_identifier_value_across_different_types(
     assert internal_match["instrument_id"] == "agg"
 
 
+@pytest.mark.parametrize("instrument_type", ["equity", "etf", "index"])
+def test_listed_security_with_only_adjusted_close_has_no_valuation_quote(
+    isolated_store: Path,
+    instrument_type: str,
+) -> None:
+    created = create_instrument(
+        instrument_name=f"Adjusted-only {instrument_type}",
+        instrument_type=instrument_type,
+        currency="CNY",
+        identifiers=[
+            {
+                "identifier_type": "ticker",
+                "identifier_value": "600000.SH",
+                "is_primary": True,
+            }
+        ],
+    )
+    upsert_market_data(
+        instrument_id=created["instrument_id"],
+        metric_family="price",
+        quote_basis="adjusted_close",
+        as_of_date=date(2026, 7, 10),
+        value="12.34",
+        currency="CNY",
+        provider="pytest",
+        status="complete",
+    )
+
+    detail = get_instrument(created["instrument_id"])
+    assert detail is not None
+    assert detail["quote_selection_policy"]["valuation"] == ["close", "last"]
+    available_bases = {
+        point["quote_basis"] for point in detail["market_data"]
+    }
+    assert not available_bases.intersection(
+        detail["quote_selection_policy"]["valuation"]
+    )
+
+
 def test_create_rejects_same_identifier_type_value_in_request(
     isolated_store: Path,
 ) -> None:
@@ -270,6 +356,65 @@ def test_create_rejects_same_identifier_type_value_in_request(
                 },
             ],
         )
+
+
+def test_create_rejects_blank_master_data_and_multiple_primary_identifiers(
+    isolated_store: Path,
+) -> None:
+    with pytest.raises(ValueError, match="Instrument name must not be blank"):
+        create_instrument(
+            instrument_name="   ",
+            instrument_type="fund",
+            currency="USD",
+            identifiers=[
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "NEW",
+                    "is_primary": True,
+                }
+            ],
+        )
+
+    with pytest.raises(ValueError, match="Exactly one instrument identifier must be primary"):
+        create_instrument(
+            instrument_name="Two Primary Identifiers",
+            instrument_type="fund",
+            currency="USD",
+            identifiers=[
+                {"identifier_type": "ticker", "identifier_value": "NEW", "is_primary": True},
+                {"identifier_type": "isin", "identifier_value": "US0000000001", "is_primary": True},
+            ],
+        )
+
+
+def test_list_instruments_filters_in_sql_semantics_and_returns_latest_points(
+    isolated_store: Path,
+) -> None:
+    upsert_market_data(
+        instrument_id="fund-us-agg",
+        metric_family="price",
+        quote_basis="close",
+        as_of_date=date(2026, 4, 16),
+        value="97.0100",
+        currency="USD",
+        provider="pytest",
+        status="complete",
+    )
+
+    records = list_instruments(search="agg", instrument_type="fund", limit=1)
+
+    assert [record["instrument_id"] for record in records] == ["fund-us-agg"]
+    assert records[0]["latest_market_data"] == [
+        {
+            "metric_family": "price",
+            "quote_basis": "close",
+            "as_of_date": "2026-04-16",
+            "value": "97.0100",
+            "currency": "USD",
+            "provider": "pytest",
+            "status": "complete",
+        }
+    ]
 
 
 def test_coverage_nav_import_ensure_instrument_upserts_shared_record(
@@ -323,10 +468,48 @@ def test_upsert_market_data_updates_shared_store_without_app_callbacks(
     )
 
     assert record is not None
+    assert record["market_data_updated_at"] is not None
     assert any(
         point["as_of_date"] == "2026-04-16" and point["value"] == "97.0100"
         for point in record["latest_market_data"]
     )
+
+
+def test_market_data_watermark_is_globally_monotonic_within_same_clock_tick(
+    isolated_store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        instrument_store.shared_store,
+        "_utcnow_iso",
+        lambda: "2099-01-01T00:00:00.000000Z",
+    )
+
+    first = upsert_market_data(
+        instrument_id="fund-us-agg",
+        metric_family="price",
+        quote_basis="close",
+        as_of_date=date(2026, 4, 16),
+        value="97.0100",
+        currency="USD",
+        provider="pytest",
+        status="complete",
+    )
+    second = upsert_market_data(
+        instrument_id="cash-usd",
+        metric_family="price",
+        quote_basis="par",
+        as_of_date=date(2026, 4, 16),
+        value="5300.0000",
+        currency="USD",
+        provider="pytest",
+        status="complete",
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first["market_data_updated_at"] == "2099-01-01T00:00:00.000000Z"
+    assert second["market_data_updated_at"] == "2099-01-01T00:00:00.000001Z"
 
 
 def test_replace_nav_history_updates_shared_store_without_app_callbacks(
@@ -356,11 +539,168 @@ def test_replace_nav_history_updates_shared_store_without_app_callbacks(
     )
 
     assert record is not None
+    assert record["market_data_updated_at"] is not None
     assert any(
         point["quote_basis"] == "official_nav"
         and point["as_of_date"] == "2026-04-15"
         and point["value"] == "100.2000"
         for point in record["latest_market_data"]
+    )
+
+
+def test_email_refresh_success_cursor_survives_failed_and_blocked_statuses(
+    isolated_store: Path,
+) -> None:
+    upsert_source_settings(
+        instrument_id="fund-us-agg",
+        source_mode="email",
+        source_email="nav@example.test",
+        source_location="INBOX",
+        source_api_profile=None,
+        source_email_rules=[{}],
+    )
+
+    succeeded = update_refresh_status(
+        instrument_id="fund-us-agg",
+        status="no_match",
+        message="mailbox scanned",
+        updated_by="pytest",
+        mode="email",
+    )
+    assert succeeded is not None
+    successful_at = succeeded["refresh_status"]["requested_at"]
+    assert succeeded["refresh_status"]["last_successful_requested_at"] == successful_at
+
+    no_new_data = update_refresh_status(
+        instrument_id="fund-us-agg",
+        status="no_new_data",
+        message="no newer NAV rows",
+        updated_by="pytest",
+        mode="email",
+    )
+    assert no_new_data is not None
+    successful_at = no_new_data["refresh_status"]["requested_at"]
+    assert no_new_data["refresh_status"]["last_successful_requested_at"] == successful_at
+
+    failed = update_refresh_status(
+        instrument_id="fund-us-agg",
+        status="failed",
+        message="timeout",
+        updated_by="pytest",
+        mode="email",
+    )
+    assert failed is not None
+    assert failed["refresh_status"]["status"] == "failed"
+    assert failed["refresh_status"]["last_successful_requested_at"] == successful_at
+
+    blocked = update_refresh_status(
+        instrument_id="fund-us-agg",
+        status="blocked",
+        message="configuration unavailable",
+        updated_by="pytest",
+        mode="email",
+    )
+    assert blocked is not None
+    assert blocked["refresh_status"]["last_successful_requested_at"] == successful_at
+
+
+def test_email_failure_promotes_legacy_current_success_to_persistent_cursor(
+    isolated_store: Path,
+) -> None:
+    legacy_store = deepcopy(TEST_SHARED_STORE)
+    target = legacy_store["instruments"][1]
+    target["source_settings"] = {
+        "source_mode": "email",
+        "source_email": "nav@example.test",
+        "source_location": "INBOX",
+        "source_api_profile": "",
+        "source_email_rules": [{}],
+    }
+    target["refresh_status"] = {
+        "status": "imported",
+        "message": "legacy success",
+        "requested_at": "2026-07-09T13:00:00Z",
+        "requested_by": "legacy",
+        "mode": "email",
+    }
+    instrument_store.reset_store(legacy_store)
+
+    failed = update_refresh_status(
+        instrument_id="fund-us-agg",
+        status="failed",
+        message="timeout",
+        updated_by="pytest",
+        mode="email",
+    )
+
+    assert failed is not None
+    assert (
+        failed["refresh_status"]["last_successful_requested_at"]
+        == "2026-07-09T13:00:00Z"
+    )
+
+
+def test_replace_nav_history_advances_only_email_success_cursor(
+    isolated_store: Path,
+) -> None:
+    manual = replace_nav_history(
+        instrument_id="fund-us-agg",
+        rows=[
+            {
+                "as_of_date": "2026-04-16",
+                "nav": "100.3000",
+                "nav_with_dividend": "100.8000",
+                "currency": "USD",
+            }
+        ],
+        provider="pytest",
+        point_status="complete",
+        refresh_status="imported",
+        updated_by="pytest",
+        message="manual import",
+        mode="manual",
+    )
+    assert manual is not None
+    assert manual["refresh_status"]["last_successful_requested_at"] is None
+    manual_status = update_refresh_status(
+        instrument_id="fund-us-agg",
+        status="no_match",
+        message="manual operation",
+        updated_by="pytest",
+        mode="manual",
+    )
+    assert manual_status is not None
+    assert manual_status["refresh_status"]["last_successful_requested_at"] is None
+
+    upsert_source_settings(
+        instrument_id="fund-us-agg",
+        source_mode="email",
+        source_email="nav@example.test",
+        source_location="INBOX",
+        source_api_profile=None,
+        source_email_rules=[{}],
+    )
+    email = replace_nav_history(
+        instrument_id="fund-us-agg",
+        rows=[
+            {
+                "as_of_date": "2026-04-17",
+                "nav": "100.4000",
+                "nav_with_dividend": "100.9000",
+                "currency": "USD",
+            }
+        ],
+        provider="pytest",
+        point_status="complete",
+        refresh_status="imported",
+        updated_by="pytest",
+        message="email import",
+        mode="email",
+    )
+    assert email is not None
+    assert (
+        email["refresh_status"]["last_successful_requested_at"]
+        == email["refresh_status"]["requested_at"]
     )
 
 

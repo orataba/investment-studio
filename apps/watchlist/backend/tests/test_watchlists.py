@@ -83,7 +83,7 @@ def test_calculation_frequency_context_resamples_declared_weekly_points() -> Non
     ]
 
 
-def test_return_nav_basis_prefers_cumulative_nav_when_available() -> None:
+def test_return_nav_basis_does_not_treat_cash_cumulative_nav_as_total_return() -> None:
     from watchlist_app.services.canonical_recalc import _select_quote_series, _shared_quote_points_by_basis
 
     points_by_basis = _shared_quote_points_by_basis(
@@ -122,9 +122,9 @@ def test_return_nav_basis_prefers_cumulative_nav_when_available() -> None:
         preference="auto",
     )
 
-    assert selection["nav_basis_type"] == "nav_with_dividend"
-    assert selection["selected_quote_basis"] == "cumulative_nav"
-    assert [point["value"] for point in selection["points"]] == [1.25, 1.2625]
+    assert selection["nav_basis_type"] is None
+    assert selection["selected_quote_basis"] is None
+    assert selection["points"] == []
 
 
 def test_return_nav_basis_does_not_fallback_to_ordinary_nav() -> None:
@@ -306,7 +306,7 @@ def test_create_watchlist_generates_unique_ids_and_required_columns(
     assert fund_screening_view["name"] == "产品分类筛选"
     assert fund_screening_view["default_group_by"] == "attr.fund_taxonomy_level_1"
     assert fund_screening_view["default_filters"] == {
-        "instrument_type": ["fund", "index"],
+        "instrument_type": ["fund", "etf", "index"],
     }
     assert fund_screening_view["columns"] == [
         "instrument_name",
@@ -421,7 +421,7 @@ def test_adding_index_shared_registry_instrument_is_supported(
     tree_response = client.get("/api/taxonomies/fund-taxonomy")
     assert tree_response.status_code == 200
     tree_payload = tree_response.json()
-    assert tree_payload["instrument_types"] == ["fund", "index"]
+    assert tree_payload["instrument_types"] == ["fund", "etf", "index"]
     assert "index" in {node["node_id"] for node in tree_payload["nodes"]}
 
     taxonomy_response = client.get("/api/taxonomies/fund-taxonomy/instruments/index-csi-300")
@@ -461,6 +461,54 @@ def test_adding_index_shared_registry_instrument_is_supported(
     assert screening_screener.json()["rows"][0]["instrument_type"] == "index"
 
 
+def test_archived_shared_alias_resolves_to_canonical_without_recreating_duplicate(
+    client: TestClient,
+) -> None:
+    seed_shared_instrument(
+        {
+            "instrument_id": "sh7639",
+            "instrument_name": "龙旗巨星一号私募投资基金",
+            "instrument_type": "fund",
+            "currency": "CNY",
+            "identifiers": [
+                {"identifier_type": "ticker", "identifier_value": "SH7639", "is_primary": True},
+            ],
+            "market_data": [],
+            "lifecycle_state": {"status": "active"},
+        }
+    )
+    seed_shared_instrument(
+        {
+            "instrument_id": "nav-8c76dae71a",
+            "instrument_name": "龙旗巨星一号",
+            "instrument_type": "fund",
+            "currency": "CNY",
+            "identifiers": [
+                {"identifier_type": "internal", "identifier_value": "legacy-longqi", "is_primary": True},
+            ],
+            "market_data": [],
+            "lifecycle_state": {
+                "status": "archived",
+                "canonical_instrument_id": "sh7639",
+            },
+        }
+    )
+
+    response = client.get("/api/instruments/nav-8c76dae71a/resolve")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["requested_instrument_id"] == "nav-8c76dae71a"
+    assert payload["canonical_instrument_id"] == "sh7639"
+    assert payload["detail_subject_id"] == "sh7639"
+
+    from watchlist_app.db.models.instruments import InstrumentDetail
+    from watchlist_app.db.session import get_session_factory
+
+    with get_session_factory()() as session:
+        assert session.get(InstrumentDetail, "nav-8c76dae71a") is None
+
+
 def test_adding_unsupported_shared_registry_instrument_is_rejected(
     client: TestClient,
 ) -> None:
@@ -498,7 +546,7 @@ def test_adding_unsupported_shared_registry_instrument_is_rejected(
     )
 
     assert add_response.status_code == 400
-    assert "fund and index instruments only" in add_response.json()["detail"]
+    assert "fund, ETF, and index instruments only" in add_response.json()["detail"]
 
 
 def test_move_watchlist_items_transfers_membership_to_target_watchlist(
@@ -861,7 +909,7 @@ def test_calendar_period_returns_use_prior_close_as_base(
             "market_data": [
                 {
                     "metric_family": "nav",
-                    "quote_basis": "cumulative_nav",
+                    "quote_basis": "total_return_nav",
                     "as_of_date": as_of_date,
                     "value": value,
                     "currency": "USD",
@@ -1074,7 +1122,7 @@ def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
             "market_data": [
                 {
                     "metric_family": "nav",
-                    "quote_basis": "cumulative_nav",
+                    "quote_basis": "total_return_nav",
                     "as_of_date": as_of_date,
                     "value": value,
                     "currency": "USD",
@@ -1104,7 +1152,11 @@ def test_instrument_detail_payload_exposes_weekly_calculation_frequency(
     assert nav_response.status_code == 200
     nav_payload = nav_response.json()
     assert nav_payload["calculation_frequency_profile"]["resolved_frequency"] == "weekly"
-    assert [point["date"] for point in nav_payload["calculation_series"]] == [
+    assert [
+        row["date"]
+        for row in nav_payload["rows"]
+        if row["calculation_included"]
+    ] == [
         "2026-01-02",
         "2026-01-09",
         "2026-01-16",
@@ -1157,7 +1209,7 @@ def test_instrument_performance_payload_includes_taxonomy_peer_ranking(
                 "market_data": [
                     {
                         "metric_family": "nav",
-                        "quote_basis": "cumulative_nav",
+                        "quote_basis": "total_return_nav",
                         "as_of_date": as_of_date,
                         "value": value,
                         "currency": "USD",
@@ -1425,8 +1477,8 @@ def test_screener_query_triggers_async_refresh_when_shared_data_is_newer(
 
     monkeypatch.setattr(
         screener_route,
-        "schedule_instrument_refresh_if_stale",
-        lambda **kwargs: scheduled.append(kwargs) or True,
+        "schedule_instrument_refreshes_if_stale",
+        lambda **kwargs: scheduled.append(kwargs) or 1,
     )
 
     response = client.post(
@@ -1442,14 +1494,13 @@ def test_screener_query_triggers_async_refresh_when_shared_data_is_newer(
     )
 
     assert response.status_code == 200
-    assert scheduled == [
-        {
-            "instrument_id": "sxv264",
-            "local_latest_date": date(2026, 4, 14),
-            "trigger_ref_type": "screener_query",
-            "trigger_ref_id": watchlist_id,
-        }
-    ]
+    assert len(scheduled) == 1
+    target = scheduled[0]["targets"][0]
+    assert target["instrument_id"] == "sxv264"
+    assert target["local_latest_date"] == date(2026, 4, 14)
+    assert "local_source_cutoff_at" in target
+    assert scheduled[0]["trigger_ref_type"] == "screener_query"
+    assert scheduled[0]["trigger_ref_id"] == watchlist_id
 
 
 def test_instrument_summary_triggers_async_refresh_when_shared_data_is_newer(
@@ -1555,6 +1606,50 @@ def test_stale_read_repair_enqueues_single_durable_recalc_job(client: TestClient
     assert matching[0].job_status == "queued"
 
 
+def test_same_date_market_data_revision_triggers_refresh(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.services import read_model_freshness
+    from watchlist_app.services.shared_instrument_registry import get_shared_instrument
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Revision Freshness Repair", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    assert client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    shared = get_shared_instrument("sxv264")
+    assert shared is not None
+    shared_updated_at = datetime.fromisoformat(
+        str(shared["market_data_updated_at"]).replace("Z", "+00:00")
+    )
+    scheduled: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        read_model_freshness,
+        "_enqueue_stale_recalc_job",
+        lambda **kwargs: scheduled.append(kwargs) or True,
+    )
+
+    assert read_model_freshness.schedule_instrument_refresh_if_stale(
+        instrument_id="sxv264",
+        local_latest_date=date(2026, 4, 14),
+        local_source_cutoff_at=shared_updated_at - timedelta(seconds=1),
+        trigger_ref_type="revision_test",
+    ) is True
+    assert read_model_freshness.schedule_instrument_refresh_if_stale(
+        instrument_id="sxv264",
+        local_latest_date=date(2026, 4, 14),
+        local_source_cutoff_at=shared_updated_at + timedelta(seconds=1),
+        trigger_ref_type="revision_test",
+    ) is False
+    assert len(scheduled) == 1
+
+
 def test_stale_read_repair_commits_requeued_existing_job(client: TestClient) -> None:
     from watchlist_app.db import session as session_module
     from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
@@ -1589,9 +1684,6 @@ def test_stale_read_repair_commits_requeued_existing_job(client: TestClient) -> 
             dedupe_key=make_recalc_dedupe_key(
                 job_type="all",
                 instrument_id="sxv264",
-                trigger_type="stale_read_repair",
-                trigger_ref_type="instrument_summary_read",
-                trigger_ref_id="sxv264",
             ),
             payload_json={"requested_by": "stale_read_repair"},
         )
@@ -1657,6 +1749,83 @@ def test_manual_recalc_enqueue_reuses_open_dedupe_job(client: TestClient) -> Non
     assert len(matching) == 1
 
 
+def test_synchronous_recalc_reuses_queued_job(client: TestClient) -> None:
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Queued synchronous reuse", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    assert client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    queued = client.post("/api/recalc/instruments/sxv264/performance")
+    assert queued.status_code == 200
+    executed = client.post(
+        "/api/recalc/instruments/sxv264/execute",
+        json={
+            "job_type": "performance",
+            "trigger_type": "test",
+            "trigger_ref_type": None,
+            "trigger_ref_id": None,
+        },
+    )
+
+    assert executed.status_code == 200
+    assert executed.json()["recalc_job_id"] == queued.json()["recalc_job_id"]
+    assert executed.json()["job_status"] == "completed"
+
+
+def test_synchronous_recalc_rejects_overlapping_instrument_job(client: TestClient) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Running recalc conflict", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    assert client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    repository = SQLAlchemyRecalcJobRepository()
+    with session_module.get_session_factory()() as session:
+        running = repository.create(
+            session,
+            recalc_job_id=make_recalc_job_id(),
+            job_type="exposure",
+            instrument_id="sxv264",
+            trigger_type="test",
+            trigger_ref_type=None,
+            trigger_ref_id=None,
+            job_status="queued",
+            priority=90,
+            dedupe_key=make_recalc_dedupe_key(
+                job_type="exposure",
+                instrument_id="sxv264",
+            ),
+            payload_json={"requested_by": "test"},
+        )
+        repository.mark_running(session, running)
+        session.commit()
+
+    response = client.post(
+        "/api/recalc/instruments/sxv264/execute",
+        json={
+            "job_type": "performance",
+            "trigger_type": "test",
+            "trigger_ref_type": None,
+            "trigger_ref_id": None,
+        },
+    )
+    assert response.status_code == 409
+    assert "already has running recalc job" in response.json()["detail"]
+
+
 def test_manual_recalc_enqueue_returns_existing_job_after_dedupe_race(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -1694,9 +1863,6 @@ def test_manual_recalc_enqueue_returns_existing_job_after_dedupe_race(
             dedupe_key=make_recalc_dedupe_key(
                 job_type="performance",
                 instrument_id="sxv264",
-                trigger_type="manual_api",
-                trigger_ref_type="api_request",
-                trigger_ref_id=None,
             ),
             payload_json={"requested_by": "api"},
         )
@@ -1838,6 +2004,7 @@ def test_process_next_recalc_job_recovers_stale_running_job(
         )
         repository.mark_running(session, record)
         record.started_at = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=10)
+        record.heartbeat_at = record.started_at
         session.commit()
 
     assert process_next_recalc_job() is True
@@ -1847,6 +2014,254 @@ def test_process_next_recalc_job_recovers_stale_running_job(
 
     assert recovered is not None
     assert recovered.job_status == "completed"
+
+
+def test_recalc_job_with_recent_heartbeat_is_not_recovered(
+    client: TestClient,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services.recalc_job_ids import make_recalc_job_id
+
+    session_factory = session_module.get_session_factory()
+    repository = SQLAlchemyRecalcJobRepository()
+    job_id = make_recalc_job_id()
+    with session_factory() as session:
+        record = repository.create(
+            session,
+            recalc_job_id=job_id,
+            job_type="all",
+            instrument_id="sxv264",
+            trigger_type="stale_read_repair",
+            trigger_ref_type="instrument_summary_read",
+            trigger_ref_id="sxv264",
+            job_status="queued",
+            priority=95,
+            dedupe_key=f"all:sxv264:{job_id}",
+            payload_json={"requested_by": "test"},
+        )
+        repository.mark_running(session, record)
+        record.started_at = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=10)
+        session.commit()
+
+    with session_factory() as session:
+        recovered_count = repository.requeue_stale_running_jobs(
+            session,
+            timeout_seconds=300,
+        )
+        session.commit()
+        active = repository.get(session, job_id)
+
+    assert recovered_count == 0
+    assert active is not None
+    assert active.job_status == "running"
+
+
+def test_open_recalc_identity_ignores_trigger_metadata(client: TestClient) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services.read_model_freshness import _enqueue_stale_recalc_job
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Cross-endpoint dedupe", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    assert client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    assert _enqueue_stale_recalc_job(
+        instrument_id="sxv264",
+        trigger_ref_type="instrument_summary_read",
+        trigger_ref_id="summary",
+    ) is True
+    assert _enqueue_stale_recalc_job(
+        instrument_id="sxv264",
+        trigger_ref_type="instrument_risk_read",
+        trigger_ref_id="risk",
+    ) is True
+
+    with session_module.get_session_factory()() as session:
+        open_jobs = [
+            job
+            for job in SQLAlchemyRecalcJobRepository().list_recent(session)
+            if job.instrument_id == "sxv264"
+            and job.job_type == "all"
+            and job.job_status in {"queued", "running"}
+        ]
+    assert len(open_jobs) == 1
+
+
+def test_recalc_claim_serializes_all_job_types_per_instrument(client: TestClient) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
+
+    repository = SQLAlchemyRecalcJobRepository()
+    with session_module.get_session_factory()() as session:
+        for job_type in ("performance", "exposure"):
+            repository.create(
+                session,
+                recalc_job_id=make_recalc_job_id(),
+                job_type=job_type,
+                instrument_id="sxv264",
+                trigger_type="test",
+                trigger_ref_type=None,
+                trigger_ref_id=None,
+                job_status="queued",
+                priority=90,
+                dedupe_key=make_recalc_dedupe_key(
+                    job_type=job_type,
+                    instrument_id="sxv264",
+                ),
+                payload_json={"requested_by": "test"},
+            )
+        first = repository.claim_next_queued(session)
+        assert first is not None
+        assert first.lease_token
+        assert repository.claim_next_queued(session) is None
+
+
+def test_lost_recalc_lease_rolls_back_materialized_changes(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.db.models.instruments import InstrumentDetail
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services.canonical_recalc import (
+        CanonicalRecalcService,
+        RecalcJobLeaseLostError,
+    )
+    from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Lease rollback", "description": None},
+    )
+    assert client.post(
+        f"/api/watchlists/{created_watchlist.json()['watchlist_id']}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    repository = SQLAlchemyRecalcJobRepository()
+    service = CanonicalRecalcService()
+    session_factory = session_module.get_session_factory()
+    with session_factory() as session:
+        record = repository.create(
+            session,
+            recalc_job_id=make_recalc_job_id(),
+            job_type="all",
+            instrument_id="sxv264",
+            trigger_type="test",
+            trigger_ref_type=None,
+            trigger_ref_id=None,
+            job_status="queued",
+            priority=100,
+            dedupe_key=make_recalc_dedupe_key(
+                job_type="all",
+                instrument_id="sxv264",
+            ),
+            payload_json={"requested_by": "test"},
+        )
+        repository.mark_running(session, record)
+        job_id = record.recalc_job_id
+        session.commit()
+
+    def _materialize_then_return(session, **_kwargs):
+        instrument = session.get(InstrumentDetail, "sxv264")
+        assert instrument is not None
+        instrument.instrument_name = "MUST NOT COMMIT"
+        session.flush()
+        return {"source_changed_during_recalc": False}
+
+    monkeypatch.setattr(service, "_execute_recalc_job", _materialize_then_return)
+    monkeypatch.setattr(service.recalc_repository, "mark_completed", lambda *_args, **_kwargs: False)
+
+    with session_factory() as session:
+        claimed = repository.get(session, job_id)
+        assert claimed is not None
+        with pytest.raises(RecalcJobLeaseLostError):
+            service.execute_claimed_job(session, record=claimed, commit=True)
+
+    with session_factory() as session:
+        instrument = session.get(InstrumentDetail, "sxv264")
+        assert instrument is not None
+        assert instrument.instrument_name == TEST_SHARED_INSTRUMENTS["sxv264"]["instrument_name"]
+
+
+def test_recalc_uses_read_watermark_and_enqueues_follow_up_when_source_changes(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.db.models.analytics import PerformanceSnapshot
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services import canonical_recalc
+    from watchlist_app.services.shared_instrument_registry import get_shared_instrument
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Watermark fencing", "description": None},
+    )
+    assert client.post(
+        f"/api/watchlists/{created_watchlist.json()['watchlist_id']}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    shared = get_shared_instrument("sxv264")
+    assert shared is not None
+    start_watermark = "2026-07-11T01:02:03.000001Z"
+    end_watermark = "2026-07-11T01:02:03.000002Z"
+    versions = [
+        {**shared, "market_data_updated_at": start_watermark},
+        {**shared, "market_data_updated_at": end_watermark},
+    ]
+    calls = 0
+
+    def _changing_shared_instrument(_instrument_id: str):
+        nonlocal calls
+        result = versions[min(calls, len(versions) - 1)]
+        calls += 1
+        return result
+
+    monkeypatch.setattr(canonical_recalc, "get_shared_instrument", _changing_shared_instrument)
+    response = client.post(
+        "/api/recalc/instruments/sxv264/execute",
+        json={
+            "job_type": "all",
+            "trigger_type": "test",
+            "trigger_ref_type": None,
+            "trigger_ref_id": None,
+        },
+    )
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["source_watermark_at_start"] == start_watermark
+    assert result["source_watermark_at_end"] == end_watermark
+    assert result["source_changed_during_recalc"] is True
+
+    session_factory = session_module.get_session_factory()
+    with session_factory() as session:
+        current_performance = session.query(PerformanceSnapshot).filter_by(
+            instrument_id="sxv264",
+            is_current=True,
+        ).one()
+        source_cutoff = current_performance.source_cutoff_at
+        if source_cutoff.tzinfo is None:
+            source_cutoff = source_cutoff.replace(tzinfo=UTC)
+        assert source_cutoff == datetime.fromisoformat(start_watermark.replace("Z", "+00:00"))
+        follow_ups = [
+            job
+            for job in SQLAlchemyRecalcJobRepository().list_recent(session)
+            if job.instrument_id == "sxv264"
+            and job.job_status == "queued"
+            and job.trigger_type == "source_changed_during_recalc"
+        ]
+    assert len(follow_ups) == 1
+    assert follow_ups[0].trigger_ref_id == end_watermark
 
 
 def test_legacy_funds_summary_route_is_gone(client: TestClient) -> None:
@@ -2158,9 +2573,22 @@ def test_list_watchlists_reuses_existing_all_coverage_without_resync(
 
     from watchlist_app.api.routes import watchlists as watchlists_route
 
+    original_list = watchlists_route.watchlist_repository.list
+    list_call_count = 0
+
+    def track_watchlist_list(session):
+        nonlocal list_call_count
+        list_call_count += 1
+        return original_list(session)
+
     def fail_if_resynced() -> list[dict[str, object]]:
         raise AssertionError("list endpoint should not resync existing all-coverage")
 
+    monkeypatch.setattr(
+        watchlists_route.watchlist_repository,
+        "list",
+        track_watchlist_list,
+    )
     monkeypatch.setattr(
         watchlists_route,
         "_list_shared_local_detail_instruments",
@@ -2171,6 +2599,40 @@ def test_list_watchlists_reuses_existing_all_coverage_without_resync(
 
     assert response.status_code == 200
     assert response.json()[0]["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+    assert list_call_count == 1
+
+
+def test_all_coverage_detail_uses_membership_probe_without_full_sync_or_upsert(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = client.get("/api/watchlists/all-coverage")
+    assert initial.status_code == 200
+    assert initial.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+
+    from watchlist_app.api.routes import watchlists as watchlists_route
+
+    def fail_if_full_registry_loaded() -> list[dict[str, object]]:
+        raise AssertionError("unchanged all-coverage GET should not load full registry records")
+
+    def fail_if_local_detail_upserted(*_args, **_kwargs) -> str | None:
+        raise AssertionError("unchanged all-coverage GET should not upsert local instruments")
+
+    monkeypatch.setattr(
+        watchlists_route,
+        "_list_shared_local_detail_instruments",
+        fail_if_full_registry_loaded,
+    )
+    monkeypatch.setattr(
+        watchlists_route,
+        "_ensure_local_instrument_detail",
+        fail_if_local_detail_upserted,
+    )
+
+    response = client.get("/api/watchlists/all-coverage")
+
+    assert response.status_code == 200
+    assert response.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS)
 
 
 def test_default_all_coverage_watchlist_resyncs_when_registry_grows(
@@ -2195,6 +2657,10 @@ def test_default_all_coverage_watchlist_resyncs_when_registry_grows(
         }
     )
 
+    summary = client.get("/api/watchlists")
+    assert summary.status_code == 200
+    assert summary.json()[0]["item_count"] == len(TEST_SHARED_INSTRUMENTS) + 1
+
     detail = client.get("/api/watchlists/all-coverage")
     assert detail.status_code == 200
     assert detail.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS) + 1
@@ -2212,6 +2678,116 @@ def test_default_all_coverage_watchlist_resyncs_when_registry_grows(
     )
     assert screener.status_code == 200
     assert "fund-new-income" in {row["instrument_id"] for row in screener.json()["rows"]}
+
+
+def test_all_coverage_reconcile_rolls_back_membership_when_materialization_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = client.get("/api/watchlists/all-coverage")
+    assert initial.status_code == 200
+    assert initial.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+
+    new_instrument_id = "fund-atomic-reconcile"
+    seed_shared_instrument(
+        {
+            **TEST_SHARED_INSTRUMENTS["savf63"],
+            "instrument_id": new_instrument_id,
+            "instrument_name": "Atomic Reconcile Fund",
+            "identifiers": [
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "ATOMIC",
+                    "is_primary": True,
+                },
+            ],
+        }
+    )
+
+    from watchlist_app.api.routes import watchlists as watchlists_route
+    from watchlist_app.db.session import get_session_factory
+    from watchlist_app.services.shared_instrument_registry import (
+        SharedInstrumentRegistryError,
+    )
+
+    original_materialize = watchlists_route._materialize_watchlist_rows
+
+    def materialize_then_fail(*args, **kwargs) -> None:
+        original_materialize(*args, **kwargs)
+        raise SharedInstrumentRegistryError("injected materialization failure")
+
+    monkeypatch.setattr(
+        watchlists_route,
+        "_materialize_watchlist_rows",
+        materialize_then_fail,
+    )
+
+    failed_refresh = client.get("/api/watchlists/all-coverage")
+    assert failed_refresh.status_code == 200
+    assert failed_refresh.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+
+    with get_session_factory()() as session:
+        record = watchlists_route.watchlist_repository.get(session, "all-coverage")
+        assert record is not None
+        assert new_instrument_id not in {item.instrument_id for item in record.items}
+        assert watchlists_route.instrument_repository.get(session, new_instrument_id) is None
+        assert (
+            watchlists_route.read_model_repository.get_watchlist_row(
+                session,
+                watchlist_id="all-coverage",
+                instrument_id=new_instrument_id,
+            )
+            is None
+        )
+
+    monkeypatch.setattr(
+        watchlists_route,
+        "_materialize_watchlist_rows",
+        original_materialize,
+    )
+    recovered = client.get("/api/watchlists/all-coverage")
+    assert recovered.status_code == 200
+    assert recovered.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS) + 1
+
+
+def test_default_all_coverage_watchlist_removes_archived_registry_members(
+    client: TestClient,
+) -> None:
+    initial = client.get("/api/watchlists/all-coverage")
+    assert initial.status_code == 200
+    assert initial.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS)
+
+    from portfolio_ops_instrument_core import instrument_store as shared_store
+    from watchlist_app.db.session import get_session_factory
+
+    archived = shared_store.archive_instrument(
+        get_session_factory(),
+        instrument_id="savf63",
+        updated_by="pytest",
+    )
+    assert archived is not None
+    assert "savf63" not in shared_store.list_active_instrument_ids(
+        get_session_factory(),
+        instrument_types={"fund", "etf", "index"},
+    )
+
+    detail = client.get("/api/watchlists/all-coverage")
+    assert detail.status_code == 200
+    assert detail.json()["item_count"] == len(TEST_SHARED_INSTRUMENTS) - 1
+
+    screener = client.post(
+        "/api/screener/query",
+        json={
+            "watchlist_id": "all-coverage",
+            "view_id": "overview",
+            "selected_fields": ["instrument_name"],
+            "sort": [],
+            "group_by": "none",
+            "pagination": {"page": 1, "page_size": 20},
+        },
+    )
+    assert screener.status_code == 200
+    assert "savf63" not in {row["instrument_id"] for row in screener.json()["rows"]}
 
 
 def test_default_all_coverage_watchlist_syncs_active_shared_indexes(
@@ -3181,6 +3757,37 @@ def test_fund_document_upload_adds_profile_row_and_allows_download(client: TestC
         files={"file": ("empty.txt", b"", "text/plain")},
     )
     assert empty_upload.status_code == 400
+
+
+def test_fund_document_upload_rejects_oversized_file_without_partial_artifact(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.api.routes import funds as funds_routes
+
+    created_watchlist = client.post(
+        "/api/watchlists",
+        json={"name": "Oversized Document", "description": None},
+    )
+    watchlist_id = created_watchlist.json()["watchlist_id"]
+    add_response = client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    )
+    assert add_response.status_code == 200
+
+    monkeypatch.setattr(funds_routes.settings, "document_upload_max_bytes", 4)
+    instrument_dir = funds_routes._instrument_document_dir("sxv264")
+    files_before = set(instrument_dir.iterdir()) if instrument_dir.exists() else set()
+
+    response = client.post(
+        "/api/instruments/sxv264/documents/upload",
+        files={"file": ("too-large.txt", b"12345", "text/plain")},
+    )
+
+    assert response.status_code == 413
+    files_after = set(instrument_dir.iterdir()) if instrument_dir.exists() else set()
+    assert files_after == files_before
 
 
 def test_instrument_attributes_can_be_cleared_with_null_and_empty_list(client: TestClient) -> None:

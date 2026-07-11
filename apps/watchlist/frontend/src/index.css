@@ -983,6 +983,37 @@ th {
   font-weight: 400;
 }
 
+.watchlists-table-loading {
+  height: 112px;
+  text-align: center;
+  color: #667085;
+  font-size: 13px;
+}
+
+.watchlists-table-loading-bar {
+  display: block;
+  width: min(320px, 48vw);
+  height: 3px;
+  margin: 0 auto 14px;
+  overflow: hidden;
+  background: #e5e7eb;
+  position: relative;
+}
+
+.watchlists-table-loading-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 42%;
+  background: var(--accent);
+  animation: watchlists-loading-sweep 1.1s ease-in-out infinite;
+}
+
+@keyframes watchlists-loading-sweep {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(260%); }
+}
+
 .watchlists-toolbar {
   display: flex;
   align-items: center;
@@ -1517,6 +1548,16 @@ th {
   max-width: 100%;
   min-width: 0;
   flex-wrap: nowrap;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+}
+
+.watchlists-th-label:disabled {
+  opacity: 1;
 }
 
 .watchlists-th-label > span:first-child {
@@ -5723,6 +5764,47 @@ td:last-child {
   padding: 0;
 }
 
+.instrument-framework-load-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border-left: 2px solid #8f1d1d;
+  background: #fff8f7;
+  color: #7f1d1d;
+}
+
+.instrument-framework-load-error > div {
+  display: grid;
+  gap: 4px;
+}
+
+.instrument-framework-load-error span {
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.instrument-framework-load-error button,
+.instrument-section-load-error button {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border-color: #b42318;
+  color: #8f1d1d;
+}
+
+.instrument-section-load-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 8px;
+  line-height: 1.45;
+}
+
 .instrument-price-shell {
   border: none;
   background: transparent;
@@ -5822,6 +5904,17 @@ td:last-child {
   overflow-x: auto;
   border: 1px solid #cbd5e1;
   background: #ffffff;
+}
+
+.instrument-corporate-actions-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.instrument-corporate-action-warning {
+  color: var(--color-warning-text, #8a5b00);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .instrument-profile-table {

@@ -198,7 +198,7 @@ def _rewrite_summary_payload(
 
 
 def upgrade() -> None:
-    from watchlist_app.reference_data.watchlist_fields import FIELD_CATEGORIES, FIELD_REGISTRY
+    from watchlist_migration_snapshots.watchlist_fields import FIELD_CATEGORIES, FIELD_REGISTRY
 
     bind = op.get_bind()
     field_category_table = sa.table(

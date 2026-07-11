@@ -2,15 +2,16 @@ import { FormEvent, useDeferredValue, useEffect, useMemo, useRef, useState } fro
 import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom'
 
 import CalculationStatus from '../components/CalculationStatus'
+import InstrumentFilterCombobox from '../components/InstrumentFilterCombobox'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
   createPortfolioInternalTransfer,
   createPortfolioTransaction,
   deletePortfolioTransaction,
   getPortfolioAccounts,
-  getPortfolioInstrumentPriceChart,
   getPortfolioFxRates,
   getPortfolioInstruments,
+  getPortfolioTransactionExecutionQuote,
   getPortfolioTransactionPositionPreview,
   getPortfolioTransactionsWorkspace,
   type PortfolioAccountRecord,
@@ -32,6 +33,20 @@ import {
   formatSignedCurrency,
   formatUnitPrice,
 } from '../lib/format'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
+import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
+import { downloadTable, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
+import {
+  buildTransactionExportRows,
+  countActiveTransactionFilters,
+  transactionDateLabels,
+} from '../lib/transactionPresentation'
+import { supportsTransactionInstrumentType } from '../lib/transactionEligibility'
+import {
+  resolveWorkspaceTransactionSelection,
+  stopTransactionRowSelection,
+} from '../lib/transactionSelection'
 
 const DEFAULT_FORM_TIME = (import.meta.env.VITE_PORTFOLIO_DEFAULT_TRADE_TIME || '12:00').slice(0, 5)
 const DEFAULT_TRADE_TIMEZONE = import.meta.env.VITE_PORTFOLIO_DEFAULT_TRADE_TIMEZONE || 'Asia/Shanghai'
@@ -54,15 +69,9 @@ const TRANSACTION_TYPES = [
   'opening_balance',
 ] as const
 
-const POSITION_ASSET_TYPES = new Set(['fund', 'bond', 'equity', 'other'])
 const ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = new Set(['buy', 'dividend_reinvestment', 'opening_balance'])
-const INCOME_ASSET_TYPES: Record<string, Set<string>> = {
-  dividend: new Set(['fund', 'equity']),
-  dividend_reinvestment: new Set(['fund', 'equity']),
-  coupon: new Set(['bond']),
-  return_of_capital: new Set(['fund', 'equity']),
-  maturity_redemption: new Set(['bond']),
-}
+
+type TransactionInspectorTab = 'fact' | 'lots' | 'postings'
 
 function primaryIdentifier(
   instrument:
@@ -141,27 +150,6 @@ function accountAllowsInstrumentType(
   }
 
   return account.allowed_instrument_types.includes(instrumentType.trim().toLowerCase())
-}
-
-function supportsTransactionInstrumentType(transactionType: string, instrumentType: string) {
-  const normalizedInstrumentType = instrumentType.trim().toLowerCase()
-  if (!normalizedInstrumentType) {
-    return false
-  }
-
-  if (transactionType === 'buy' || transactionType === 'sell' || transactionType === 'opening_balance') {
-    return POSITION_ASSET_TYPES.has(normalizedInstrumentType)
-  }
-
-  if (transactionType === 'fee' || transactionType === 'tax') {
-    return POSITION_ASSET_TYPES.has(normalizedInstrumentType)
-  }
-
-  const allowedInstrumentTypes = INCOME_ASSET_TYPES[transactionType]
-  if (!allowedInstrumentTypes) {
-    return true
-  }
-  return allowedInstrumentTypes.has(normalizedInstrumentType)
 }
 
 function requiresSettlement(transactionType: string, accountType?: string | null) {
@@ -506,13 +494,6 @@ function quantityDeltaForPreview(
   return 0
 }
 
-function summarizeHistoricalQuote(
-  points: Array<{ date: string; value: number }>,
-  tradeDate: string,
-) {
-  return [...points].reverse().find((point) => point.date <= tradeDate) ?? null
-}
-
 type TransactionFormState = {
   transaction_type: string
   trade_date: string
@@ -651,6 +632,7 @@ function resolvePositionLotImpactKinds(
 
 export default function TransactionsPage() {
   const { portfolioId = '' } = useParams()
+  const currentPortfolioIdRef = useRef(portfolioId)
   const [searchParams, setSearchParams] = useSearchParams()
   const securitySearchRef = useRef<HTMLInputElement | null>(null)
   const accountSelectRef = useRef<HTMLSelectElement | null>(null)
@@ -660,26 +642,40 @@ export default function TransactionsPage() {
   const [instruments, setInstruments] = useState<SharedInstrumentRecord[]>([])
   const [fxRates, setFxRates] = useState<PortfolioSharedFxRateRecord[]>([])
   const [transactionsWorkspace, setTransactionsWorkspace] = useState<PortfolioTransactionWorkspaceResponse | null>(null)
+  const [workspaceRequestedTransactionId, setWorkspaceRequestedTransactionId] = useState<string | null>(null)
   const [metaLoading, setMetaLoading] = useState(true)
   const [loadingTransactions, setLoadingTransactions] = useState(true)
-  const [pageError, setPageError] = useState<string | null>(null)
+  const [metadataError, setMetadataError] = useState<string | null>(null)
+  const [ledgerError, setLedgerError] = useState<string | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null)
+  const [pendingDeleteTransaction, setPendingDeleteTransaction] = useState<PortfolioTransactionRecord | null>(null)
+  const [deletingTransaction, setDeletingTransaction] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState<Set<string>>(() => new Set())
+  const [inspectorTab, setInspectorTab] = useState<TransactionInspectorTab>('fact')
   const [form, setForm] = useState<TransactionFormState>(() => buildInitialFormState([]))
   const [pricingAnchor, setPricingAnchor] = useState<PricingAnchor>('price')
   const [historicalQuote, setHistoricalQuote] = useState<{
     price: number
     asOfDate: string
     currency: string
-    exactDate: boolean
+    quoteBasis: string
+    stale: boolean
   } | null>(null)
   const [historicalQuoteLoading, setHistoricalQuoteLoading] = useState(false)
   const [historicalQuoteError, setHistoricalQuoteError] = useState<string | null>(null)
   const [positionPreview, setPositionPreview] = useState<PortfolioTransactionPositionPreviewResponse | null>(null)
   const [positionPreviewLoading, setPositionPreviewLoading] = useState(false)
   const [positionPreviewError, setPositionPreviewError] = useState<string | null>(null)
+  const drawerDialogRef = useModalDialog(drawerOpen, () => {
+    setDrawerOpen(false)
+    setEditingTransactionId(null)
+  })
+
+  currentPortfolioIdRef.current = portfolioId
 
   const filters: PortfolioTransactionFilters = {
     account_id: searchParams.get('account_id') ?? '',
@@ -714,12 +710,17 @@ export default function TransactionsPage() {
 
   useEffect(() => {
     let cancelled = false
+    setPendingDeleteTransaction(null)
+    setDeleteError(null)
+    setDeletingTransaction(false)
+    setSelectedTransactionIds(new Set())
+    setInspectorTab('fact')
 
     if (!portfolioId) {
       setAccounts([])
       setInstruments([])
       setFxRates([])
-      setPageError('Portfolio id is required.')
+      setMetadataError('Portfolio id is required.')
       setMetaLoading(false)
       return () => {
         cancelled = true
@@ -727,6 +728,11 @@ export default function TransactionsPage() {
     }
 
     setMetaLoading(true)
+    setAccounts([])
+    setInstruments([])
+    setFxRates([])
+    setForm(buildInitialFormState([]))
+    setMetadataError(null)
 
     Promise.all([
       getPortfolioAccounts(portfolioId),
@@ -742,11 +748,11 @@ export default function TransactionsPage() {
         setInstruments(instrumentsResponse.instruments)
         setFxRates(fxRatesResponse.rates)
         setForm(buildInitialFormState(accountsResponse.accounts))
-        setPageError(null)
+        setMetadataError(null)
       })
       .catch((error) => {
         if (!cancelled) {
-          setPageError(error instanceof Error ? error.message : 'Failed to load transaction metadata.')
+          setMetadataError(error instanceof Error ? error.message : 'Failed to load transaction metadata.')
         }
       })
       .finally(() => {
@@ -765,7 +771,8 @@ export default function TransactionsPage() {
 
     if (!portfolioId) {
       setTransactionsWorkspace(null)
-      setPageError('Portfolio id is required.')
+      setWorkspaceRequestedTransactionId(null)
+      setLedgerError('Portfolio id is required.')
       setLoadingTransactions(false)
       return () => {
         cancelled = true
@@ -773,6 +780,7 @@ export default function TransactionsPage() {
     }
 
     setLoadingTransactions(true)
+    setLedgerError(null)
 
     getPortfolioTransactionsWorkspace(portfolioId, {
       ...filters,
@@ -781,12 +789,13 @@ export default function TransactionsPage() {
       .then((response) => {
         if (!cancelled) {
           setTransactionsWorkspace(response)
-          setPageError(null)
+          setWorkspaceRequestedTransactionId(selectedTransactionId)
+          setLedgerError(null)
         }
       })
       .catch((error) => {
         if (!cancelled) {
-          setPageError(error instanceof Error ? error.message : 'Failed to load transaction ledger.')
+          setLedgerError(error instanceof Error ? error.message : 'Failed to load transaction ledger.')
         }
       })
       .finally(() => {
@@ -989,17 +998,13 @@ export default function TransactionsPage() {
     setHistoricalQuoteLoading(true)
     setHistoricalQuoteError(null)
 
-    getPortfolioInstrumentPriceChart(portfolioId, instrumentId, {
-      as_of_date: tradeDate,
-      range: 'all',
-    })
+    getPortfolioTransactionExecutionQuote(portfolioId, instrumentId, tradeDate)
       .then((response) => {
         if (cancelled) {
           return
         }
 
-        const quotePoint = summarizeHistoricalQuote(response.points, tradeDate)
-        if (!quotePoint) {
+        if (response.value == null || !response.quote_date || !response.quote_basis) {
           const shouldClearAutoQuote = autoQuoteKeyRef.current !== null
           if (shouldClearAutoQuote) {
             setForm((current) =>
@@ -1014,15 +1019,17 @@ export default function TransactionsPage() {
           }
           autoQuoteKeyRef.current = null
           setHistoricalQuote(null)
-          setHistoricalQuoteError('No historical quote before this trade date.')
+          setHistoricalQuoteError('No unadjusted execution quote on or before this trade date.')
           return
         }
 
+        const quoteValue = response.value
         setHistoricalQuote({
-          price: quotePoint.value,
-          asOfDate: quotePoint.date,
+          price: quoteValue,
+          asOfDate: response.quote_date,
           currency: response.currency,
-          exactDate: quotePoint.date === tradeDate,
+          quoteBasis: response.quote_basis,
+          stale: response.stale,
         })
         setForm((current) => {
           const canApplyQuote = !current.price.trim() || autoQuoteKeyRef.current !== null
@@ -1037,7 +1044,7 @@ export default function TransactionsPage() {
 
           const next = {
             ...current,
-            price: formatCalculatedFormNumber(quotePoint.value, 6),
+            price: formatCalculatedFormNumber(quoteValue, 6),
           }
           const quantity = parsePositiveFormNumber(next.quantity)
           if (quantity && !next.gross_amount.trim()) {
@@ -1045,7 +1052,7 @@ export default function TransactionsPage() {
               current.transaction_type,
               instrumentType,
               quantity,
-              quotePoint.value,
+              quoteValue,
             )
             if (resolved != null) {
               next.gross_amount = formatCalculatedFormNumber(resolved, 2)
@@ -1517,6 +1524,7 @@ export default function TransactionsPage() {
     selectedTransactionOverride?: string | null,
   ) {
     setLoadingTransactions(true)
+    setLedgerError(null)
     try {
       const resolvedTransactionId =
         selectedTransactionOverride === undefined
@@ -1527,13 +1535,19 @@ export default function TransactionsPage() {
         transaction_id: resolvedTransactionId,
       })
       setTransactionsWorkspace(response)
-      setPageError(null)
+      setWorkspaceRequestedTransactionId(resolvedTransactionId ?? '')
+      setLedgerError(null)
     } catch (error) {
-      setPageError(error instanceof Error ? error.message : 'Failed to load transaction ledger.')
+      setLedgerError(error instanceof Error ? error.message : 'Failed to load transaction ledger.')
     } finally {
       setLoadingTransactions(false)
     }
   }
+
+  const pageErrors = [metadataError, ledgerError].filter(
+    (message, index, messages): message is string => Boolean(message) && messages.indexOf(message) === index,
+  )
+  const pageError = pageErrors.length ? pageErrors.join(' ') : null
 
   function openCreateDrawer() {
     setEditingTransactionId(null)
@@ -1821,25 +1835,27 @@ export default function TransactionsPage() {
     }
   }
 
-  async function handleDeleteTransaction(transaction: PortfolioTransactionRecord) {
-    const deletingTransferPair = Boolean(transaction.transfer_group_id)
-    const confirmed = window.confirm(
-      deletingTransferPair
-        ? `Delete transfer pair ${transaction.transfer_group_id}? This removes both legs.`
-        : `Delete transaction ${transaction.transaction_id}?`,
-    )
-    if (!confirmed) {
+  async function handleDeleteTransaction() {
+    const transaction = pendingDeleteTransaction
+    const targetPortfolioId = portfolioId
+    if (!transaction || !targetPortfolioId || deletingTransaction) {
       return
     }
-
+    const deletingTransferPair = Boolean(transaction.transfer_group_id)
     setFormError(null)
+    setDeleteError(null)
     setNotice(null)
+    setDeletingTransaction(true)
 
     try {
-      const deleted = await deletePortfolioTransaction(portfolioId, transaction.transaction_id)
+      const deleted = await deletePortfolioTransaction(targetPortfolioId, transaction.transaction_id)
+      if (currentPortfolioIdRef.current !== targetPortfolioId) {
+        return
+      }
       setDrawerOpen(false)
       setEditingTransactionId(null)
       setForm(buildInitialFormState(accounts))
+      setPendingDeleteTransaction(null)
       patchSearchParams({ transaction_id: null })
       await refreshTransactions(filters, null)
       setNotice(
@@ -1848,25 +1864,30 @@ export default function TransactionsPage() {
           : `Deleted transaction ${transaction.transaction_id}.`,
       )
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : 'Failed to delete transaction.')
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setDeleteError(error instanceof Error ? error.message : 'Failed to delete transaction.')
+      }
+    } finally {
+      if (currentPortfolioIdRef.current === targetPortfolioId) {
+        setDeletingTransaction(false)
+      }
     }
   }
 
   const summary = transactionsWorkspace?.summary
-  const derivationBoundary = transactionsWorkspace?.derivation_boundary
   const selectedTransaction = transactionsWorkspace?.selected_transaction ?? null
   const isEditingTransaction = editingTransactionId !== null
 
   useEffect(() => {
-    const nextTransactionId = transactionsWorkspace?.selected_transaction_id ?? ''
-    if (!nextTransactionId) {
-      patchSearchParams({ transaction_id: null })
-      return
-    }
-    if (selectedTransactionId !== nextTransactionId) {
+    const nextTransactionId = resolveWorkspaceTransactionSelection({
+      currentTransactionId: selectedTransactionId,
+      workspaceRequestedTransactionId,
+      workspaceSelectedTransactionId: transactionsWorkspace?.selected_transaction_id,
+    })
+    if (nextTransactionId !== undefined) {
       patchSearchParams({ transaction_id: nextTransactionId })
     }
-  }, [selectedTransactionId, transactionsWorkspace])
+  }, [selectedTransactionId, transactionsWorkspace, workspaceRequestedTransactionId])
 
   const accountNameById = useMemo(
     () => Object.fromEntries(accounts.map((account) => [account.account_id, account.account_name])),
@@ -1877,6 +1898,14 @@ export default function TransactionsPage() {
     [accounts],
   )
   const relatedPositionLots = transactionsWorkspace?.related_position_lots ?? []
+  const visibleTransactions = transactionsWorkspace?.transactions ?? []
+  const activeFilterCount = countActiveTransactionFilters(filters)
+  const selectedVisibleTransactions = useMemo(
+    () => visibleTransactions.filter((transaction) => selectedTransactionIds.has(transaction.transaction_id)),
+    [selectedTransactionIds, visibleTransactions],
+  )
+  const allVisibleTransactionsSelected =
+    visibleTransactions.length > 0 && selectedVisibleTransactions.length === visibleTransactions.length
   const ticketGrossNumber = Number(computedGrossAmount)
   const ticketGrossAmount =
     computedGrossAmount.trim() && Number.isFinite(ticketGrossNumber) && ticketGrossNumber >= 0
@@ -1907,6 +1936,53 @@ export default function TransactionsPage() {
     projectedPositionQuantity != null &&
     projectedPositionQuantity < -1e-9
   const previewCurrency = resolvedTransactionCurrency || selectedAccount?.currency || 'USD'
+
+  useEffect(() => {
+    const visibleIds = new Set(visibleTransactions.map((transaction) => transaction.transaction_id))
+    setSelectedTransactionIds((current) => {
+      const retained = new Set(Array.from(current).filter((transactionId) => visibleIds.has(transactionId)))
+      if (retained.size === current.size) {
+        return current
+      }
+      return retained
+    })
+  }, [visibleTransactions])
+
+  useEffect(() => {
+    setInspectorTab('fact')
+  }, [selectedTransactionId])
+
+  function toggleTransactionSelection(transactionId: string) {
+    setSelectedTransactionIds((current) => {
+      const next = new Set(current)
+      if (next.has(transactionId)) {
+        next.delete(transactionId)
+      } else {
+        next.add(transactionId)
+      }
+      return next
+    })
+  }
+
+  function toggleAllVisibleTransactions() {
+    setSelectedTransactionIds(
+      allVisibleTransactionsSelected
+        ? new Set()
+        : new Set(visibleTransactions.map((transaction) => transaction.transaction_id)),
+    )
+  }
+
+  function exportTransactions(format: TableExportFormat) {
+    const exportRows = selectedVisibleTransactions.length
+      ? selectedVisibleTransactions
+      : visibleTransactions
+    downloadTable(
+      `transactions-${portfolioId}-${new Date().toISOString().slice(0, 10)}`,
+      buildTransactionExportRows(exportRows),
+      format,
+      'Transactions',
+    )
+  }
   const amountField = (
     <label className="transaction-ticket-field">
       <span>{grossAmountLabel(form.transaction_type)}</span>
@@ -1944,9 +2020,9 @@ export default function TransactionsPage() {
               <span className="summary-card-label">External Cash Flows</span>
               <strong className="summary-card-value">{summary.external_cash_flows}</strong>
             </article>
-            <article className="summary-card summary-card-warning">
-              <span className="summary-card-label">Next Layer</span>
-              <strong className="summary-card-value">{formatLabel(derivationBoundary?.ledger_postings ?? 'next_layer')}</strong>
+            <article className="summary-card">
+              <span className="summary-card-label">Opening Balances</span>
+              <strong className="summary-card-value">{summary.opening_balance_records}</strong>
             </article>
           </div>
         ) : undefined
@@ -1954,7 +2030,34 @@ export default function TransactionsPage() {
     >
       <section className="portfolio-detail-surface">
         <div className="portfolio-detail-toolbar">
-          <div className="panel-title">Transactions</div>
+          <div>
+            <div className="panel-title">Transaction Ledger</div>
+            <div className="portfolio-detail-meta">
+              {visibleTransactions.length} visible facts{activeFilterCount ? ` · ${activeFilterCount} active filters` : ''}
+            </div>
+          </div>
+          <div className="transaction-filter-actions">
+            {selectedVisibleTransactions.length ? (
+              <span className="transaction-selection-count">{selectedVisibleTransactions.length} selected</span>
+            ) : null}
+            <DownloadFormatMenu
+              wrapperClassName="portfolio-download-menu"
+              buttonClassName="holdings-toolbar-button"
+              menuClassName="portfolio-download-menu-list"
+              itemClassName="portfolio-download-menu-item"
+              buttonLabel={selectedVisibleTransactions.length ? 'Export Selected' : 'Export Ledger'}
+              disabled={!visibleTransactions.length}
+              onSelect={exportTransactions}
+            />
+            <button
+              type="button"
+              className="toolbar-link button-primary"
+              disabled={metaLoading || accounts.length === 0}
+              onClick={openCreateDrawer}
+            >
+              Add Transaction
+            </button>
+          </div>
         </div>
 
         <section className="transaction-filter-bar">
@@ -1999,26 +2102,20 @@ export default function TransactionsPage() {
                 ))}
               </select>
             </label>
-            <label>
+            <div className="transaction-filter-label">
               <span>Instrument</span>
-              <select
-                className="toolbar-select transaction-filter-input"
+              <InstrumentFilterCombobox
+                instruments={instruments}
                 value={filters.instrument_id ?? ''}
-                onChange={(event) =>
+                disabled={metaLoading}
+                onChange={(instrumentId) =>
                   patchSearchParams({
-                    instrument_id: event.target.value,
+                    instrument_id: instrumentId,
                     transaction_id: null,
                   })
                 }
-              >
-                <option value="">All instruments</option>
-                {instruments.map((instrument) => (
-                  <option key={instrument.instrument_id} value={instrument.instrument_id}>
-                    {primaryIdentifier(instrument)} · {instrument.instrument_name}
-                  </option>
-                ))}
-              </select>
-            </label>
+              />
+            </div>
             <label>
               <span>From</span>
               <input
@@ -2053,6 +2150,7 @@ export default function TransactionsPage() {
             <button
               type="button"
               className="toolbar-link"
+              disabled={!activeFilterCount}
               onClick={() =>
                 patchSearchParams({
                   account_id: null,
@@ -2064,409 +2162,364 @@ export default function TransactionsPage() {
                 })
               }
             >
-              Reset
-            </button>
-            <button
-              type="button"
-              className="toolbar-link button-primary"
-              disabled={metaLoading || accounts.length === 0}
-              onClick={openCreateDrawer}
-            >
-              Add Transaction
+              Clear Filters
             </button>
           </div>
         </section>
 
+        {activeFilterCount ? (
+          <div className="transaction-active-filters" aria-label="Active transaction filters">
+            {filters.account_id ? (
+              <button type="button" onClick={() => patchSearchParams({ account_id: null, transaction_id: null })}>
+                Account: {accountNameById[filters.account_id] || filters.account_id} <span aria-hidden="true">×</span>
+              </button>
+            ) : null}
+            {filters.transaction_type ? (
+              <button type="button" onClick={() => patchSearchParams({ transaction_type: null, transaction_id: null })}>
+                Type: {formatLabel(filters.transaction_type)} <span aria-hidden="true">×</span>
+              </button>
+            ) : null}
+            {filters.instrument_id ? (
+              <button type="button" onClick={() => patchSearchParams({ instrument_id: null, transaction_id: null })}>
+                Instrument: {primaryIdentifier(instruments.find((item) => item.instrument_id === filters.instrument_id) ?? {
+                  instrument_id: filters.instrument_id,
+                  identifiers: [],
+                })} <span aria-hidden="true">×</span>
+              </button>
+            ) : null}
+            {filters.start_date ? (
+              <button type="button" onClick={() => patchSearchParams({ start_date: null, transaction_id: null })}>
+                From: {filters.start_date} <span aria-hidden="true">×</span>
+              </button>
+            ) : null}
+            {filters.end_date ? (
+              <button type="button" onClick={() => patchSearchParams({ end_date: null, transaction_id: null })}>
+                To: {filters.end_date} <span aria-hidden="true">×</span>
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
         {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}
         {pageError ? <div className="error-state">{pageError}</div> : null}
+        {deleteError ? <div className="error-state">{deleteError}</div> : null}
         {metaLoading || loadingTransactions ? (
           <CalculationStatus />
         ) : null}
 
-        {!metaLoading && !loadingTransactions && !pageError && transactionsWorkspace ? (
-          <div className="table-shell transaction-table-shell">
-            <table className="transactions-table">
-              <thead>
-                <tr>
-                  <th>Trade Date</th>
-                  <th>Time</th>
-                  <th>Settle</th>
-                  <th>Type</th>
-                  <th>Scope</th>
-                  <th>Account</th>
-                  <th>Instrument</th>
-                  <th>Quantity</th>
-                  <th>Price</th>
-                  <th>Gross</th>
-                  <th>Fees / Taxes</th>
-                  <th>Net Cash</th>
-                  <th>Note</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactionsWorkspace.transactions.map((transaction) => {
-                  const timeMeta = tradeTimeLabel(
-                    transaction.trade_time,
-                    transaction.trade_timezone,
-                    transaction.trade_time_is_estimated,
-                  )
-                  return (
-                  <tr
-                    key={transaction.transaction_id}
-                    className={transaction.transaction_id === selectedTransactionId ? 'transaction-row-active' : ''}
-                    onClick={() => patchSearchParams({ transaction_id: transaction.transaction_id })}
-                  >
-                    <td>{transaction.trade_date}</td>
-                    <td className="holding-name-cell">
-                      <div className="holding-name-stack">
-                        <span>{timeMeta.primary}</span>
-                        <span className="holding-secondary">{timeMeta.secondary}</span>
-                      </div>
-                    </td>
-                    <td>{transaction.settlement_date}</td>
-                    <td>
-                      <span className="transaction-type-pill">{formatLabel(transaction.transaction_type)}</span>
-                    </td>
-                    <td>
-                      <span className={`coverage-pill ${transaction.flow_scope === 'external_cash_flow' ? 'coverage-pill-live' : 'coverage-pill-warning'}`}>
-                        {formatLabel(transaction.flow_scope)}
-                      </span>
-                    </td>
-                    <td className="transaction-account-cell">
-                      <div className="holding-name-stack">
-                        <Link className="table-inline-link" to={transactionAccountHref(portfolioId, transaction.account.account_id)}>
-                          {transaction.account.account_name}
-                        </Link>
-                        <span className="holding-secondary">
-                          {transaction.counterparty_account_id
-                            ? `${formatLabel(transaction.account.account_type)} → ${
-                                accountNameById[transaction.counterparty_account_id] || transaction.counterparty_account_id
-                              }`
-                            : formatLabel(transaction.account.account_type)}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="holding-name-cell">
-                      {transaction.instrument_ref ? (
-                        <div className="holding-name-stack">
-                          <span>{primaryIdentifier(transaction.instrument_ref)}</span>
-                          <span className="holding-secondary">{transaction.instrument_ref.instrument_name}</span>
-                        </div>
-                      ) : isFxConversionTransaction(transaction.transaction_type) ? (
-                        <div className="holding-name-stack">
-                          <span>FX Cash Conversion</span>
-                          <span className="holding-secondary">
-                            {transaction.currency} → {accountCurrencyById[transaction.counterparty_account_id || ''] || '—'}
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="holding-secondary">Cash ledger</span>
-                      )}
-                    </td>
-                    <td>{formatQuantity(transaction.quantity)}</td>
-                    <td>
-                      {transaction.price != null ? formatUnitPrice(transaction.price, transaction.currency) : '—'}
-                    </td>
-                    <td>{formatCurrency(transaction.gross_amount, transaction.currency)}</td>
-                    <td>
-                      {transaction.fees || transaction.taxes
-                        ? `${formatCurrency(transaction.fees, transaction.currency)} / ${formatCurrency(transaction.taxes, transaction.currency)}`
-                        : '—'}
-                    </td>
-                    <td
-                      className={
-                        transaction.net_cash_effect != null && transaction.net_cash_effect < 0
-                          ? 'negative-cell'
-                          : ''
-                      }
-                    >
-                      {formatSignedCurrency(transaction.net_cash_effect, transaction.currency)}
-                    </td>
-                    <td className="transaction-note-cell">
-                      <div className="holding-name-stack">
-                        <span>{transaction.note || '—'}</span>
-                        {transaction.transfer_group_id ? (
-                          <span className="holding-secondary">
-                            {transaction.transfer_group_id}
-                            {transaction.transfer_object_type
-                              ? ` · ${formatLabel(transaction.transfer_object_type)}`
-                              : ''}
-                          </span>
-                        ) : isFxConversionTransaction(transaction.transaction_type) &&
-                          transaction.counter_amount != null &&
-                          transaction.fx_rate != null ? (
-                          <span className="holding-secondary">
-                            Receive {formatCurrency(
-                              transaction.counter_amount,
-                              accountCurrencyById[transaction.counterparty_account_id || ''] || 'USD',
-                            )}{' '}
-                            · FX {formatNumber(transaction.fx_rate, 6)}
-                          </span>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-
-        {!metaLoading && !pageError && selectedTransaction ? (
-          <section className="transaction-inspector-grid">
-            <article className="panel">
-              <div className="panel-header">
-                <div>
-                  <div className="panel-title">Selected Transaction Fact</div>
-                  <div className="portfolio-detail-meta">{selectedTransaction.transaction_id}</div>
-                </div>
-                <div className="transaction-filter-actions">
-                  <button
-                    type="button"
-                    className="toolbar-link"
-                    disabled={!canEditTransaction(selectedTransaction)}
-                    onClick={() => openEditDrawer(selectedTransaction)}
-                  >
-                    Edit Fact
+        {!ledgerError && transactionsWorkspace ? (
+          <div className="transaction-workbench-grid">
+            <section className={`transaction-ledger-panel ${loadingTransactions ? 'transaction-ledger-panel-refreshing' : ''}`}>
+              <div className="transaction-bulk-bar">
+                <label className="transaction-select-all">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleTransactionsSelected}
+                    onChange={toggleAllVisibleTransactions}
+                  />
+                  <span>Select visible</span>
+                </label>
+                <span>{visibleTransactions.length} ledger facts</span>
+                {selectedVisibleTransactions.length ? (
+                  <button type="button" onClick={() => setSelectedTransactionIds(new Set())}>
+                    Clear selection
                   </button>
-                  <button
-                    type="button"
-                    className="toolbar-link"
-                    onClick={() => void handleDeleteTransaction(selectedTransaction)}
-                  >
-                    {selectedTransaction.transfer_group_id ? 'Delete Pair' : 'Delete Fact'}
-                  </button>
-                </div>
-              </div>
-              <div className="account-summary-list">
-                <div className="account-summary-row">
-                  <span>Account</span>
-                  <strong>
-                    <Link
-                      className="table-inline-link"
-                      to={transactionAccountHref(portfolioId, selectedTransaction.account.account_id)}
-                    >
-                      {selectedTransaction.account.account_name}
-                    </Link>
-                  </strong>
-                </div>
-                <div className="account-summary-row">
-                  <span>Settlement / Counterparty</span>
-                  <strong>
-                    {selectedTransaction.settlement_cash_account ? (
-                      <Link
-                        className="table-inline-link"
-                        to={transactionAccountHref(
-                          portfolioId,
-                          selectedTransaction.settlement_cash_account.account_id,
-                        )}
-                      >
-                        {selectedTransaction.settlement_cash_account.account_name}
-                      </Link>
-                    ) : selectedTransaction.counterparty_account_id ? (
-                      <Link
-                        className="table-inline-link"
-                        to={transactionAccountHref(portfolioId, selectedTransaction.counterparty_account_id)}
-                      >
-                        {accountNameById[selectedTransaction.counterparty_account_id] ||
-                          selectedTransaction.counterparty_account_id}
-                      </Link>
-                    ) : (
-                      '—'
-                    )}
-                  </strong>
-                </div>
-                <div className="account-summary-row">
-                  <span>Instrument</span>
-                  <strong>
-                    {selectedTransaction.instrument_ref
-                      ? `${primaryIdentifier(selectedTransaction.instrument_ref)} · ${selectedTransaction.instrument_ref.instrument_name}`
-                      : 'Cash ledger'}
-                  </strong>
-                </div>
-                <div className="account-summary-row">
-                  <span>Trade / Settle</span>
-                  <strong>
-                    {selectedTransaction.trade_date} {selectedTransaction.trade_time} / {selectedTransaction.settlement_date}
-                  </strong>
-                </div>
-                {selectedTransaction.entitlement_date ? (
-                  <div className="account-summary-row">
-                    <span>Entitlement Date</span>
-                    <strong>{selectedTransaction.entitlement_date}</strong>
-                  </div>
                 ) : null}
-                {selectedTransaction.acquisition_date ? (
-                  <div className="account-summary-row">
-                    <span>Acquisition Date</span>
-                    <strong>{selectedTransaction.acquisition_date}</strong>
-                  </div>
-                ) : null}
-                <div className="account-summary-row">
-                  <span>Gross / Net Cash</span>
-                  <strong>
-                    {formatCurrency(selectedTransaction.gross_amount, selectedTransaction.currency)} /{' '}
-                    {formatSignedCurrency(selectedTransaction.net_cash_effect, selectedTransaction.currency)}
-                  </strong>
-                </div>
-                <div className="account-summary-row">
-                  <span>Created</span>
-                  <strong>{selectedTransaction.created_at || '—'}</strong>
-                </div>
               </div>
-            </article>
-
-            <article className="panel">
-                <div className="panel-header">
-                  <div className="panel-title">Related PositionLots</div>
-                  <div className="portfolio-detail-meta">
-                  {selectedTransaction.instrument_id
-                    ? transactionsWorkspace?.related_position_lot_summary.position_lot_count ?? 0
-                    : 0}{' '}
-                  lots
-                  </div>
-                </div>
-              {!selectedTransaction.instrument_id ? (
-                <div className="empty-state">Cash-only facts do not create PositionLot context.</div>
-              ) : relatedPositionLots.length ? (
-                <div className="table-shell">
-                  <table className="transactions-table">
-                    <thead>
-                      <tr>
-                        <th>Impact</th>
-                        <th>Status</th>
-                        <th>Opened</th>
-                        <th>Entry / Remaining Qty</th>
-                        <th>Entry / Remaining Cost</th>
-                        <th>Realized P&L</th>
-                        <th>Income / Expense</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {relatedPositionLots.map((positionLot) => {
-                        const impactKinds = resolvePositionLotImpactKinds(
-                          positionLot,
-                          selectedTransaction.transaction_id,
-                        )
-                        return (
-                          <tr key={positionLot.position_lot_id}>
-                            <td>
-                              <div className="transaction-impact-tags">
-                                {impactKinds.map((impactKind) => (
-                                  <span key={impactKind} className="transaction-type-pill">
-                                    {formatLabel(impactKind)}
-                                  </span>
-                                ))}
-                              </div>
-                            </td>
-                            <td>{formatLabel(positionLot.status)}</td>
-                            <td>{positionLot.opened_at}</td>
-                            <td>
-                              {formatQuantity(positionLot.entry_quantity)} /{' '}
-                              {formatQuantity(positionLot.remaining_quantity)}
-                            </td>
-                            <td>
-                              {formatCurrency(positionLot.entry_cost_basis, positionLot.currency)} /{' '}
-                              {formatCurrency(positionLot.remaining_cost_basis, positionLot.currency)}
-                            </td>
-                            <td
-                              className={positionLot.realized_pnl < 0 ? 'negative-cell' : ''}
-                            >
-                              {formatSignedCurrency(positionLot.realized_pnl, positionLot.currency)}
-                            </td>
-                            <td>
-                              {formatCurrency(positionLot.income_cash_amount, positionLot.currency)} /{' '}
-                              {formatCurrency(positionLot.expense_cash_amount, positionLot.currency)}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div className="empty-state">No PositionLots were linked back to this fact.</div>
-              )}
-            </article>
-          </section>
-        ) : null}
-
-        {!metaLoading && !pageError && selectedTransactionId ? (
-          <section className="panel transaction-inspector-panel">
-            <div className="panel-header">
-              <div className="panel-title">Ledger Posting Inspector</div>
-              <div className="portfolio-detail-meta">{selectedTransactionId}</div>
-            </div>
-            {transactionsWorkspace ? (
-              <>
-                <div className="transaction-inspector-summary">
-                  <span className="portfolio-subhead-meta">
-                    {transactionsWorkspace.ledger_summary.posting_count} postings
-                  </span>
-                  <span className="portfolio-subhead-meta">
-                    {transactionsWorkspace.ledger_summary.cash_posting_count} cash
-                  </span>
-                  <span className="portfolio-subhead-meta">
-                    {transactionsWorkspace.ledger_summary.position_posting_count} position
-                  </span>
-                </div>
-                <div className="table-shell">
-                  <table className="transactions-table">
-                    <thead>
-                      <tr>
-                        <th>Posting Role</th>
-                        <th>Account</th>
-                        <th>Instrument</th>
-                        <th>Cash Delta</th>
-                        <th>Quantity Delta</th>
-                        <th>Cost Basis Delta</th>
-                        <th>Settle</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {transactionsWorkspace.ledger_postings.map((posting) => (
-                        <tr key={posting.posting_id}>
-                          <td>
-                            <span className="transaction-type-pill">{formatLabel(posting.posting_role)}</span>
+              <div className="table-shell transaction-table-shell" aria-busy={loadingTransactions}>
+                <table className="transactions-table transaction-ledger-table">
+                  <thead>
+                    <tr>
+                      <th className="transaction-select-column"><span className="sr-only">Select</span></th>
+                      <th>Trade / Settle</th>
+                      <th>Type / Scope</th>
+                      <th>Account</th>
+                      <th>Instrument</th>
+                      <th>Units / Price</th>
+                      <th>Gross / Net Cash</th>
+                      <th>Note</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleTransactions.map((transaction) => {
+                      const timeMeta = tradeTimeLabel(
+                        transaction.trade_time,
+                        transaction.trade_timezone,
+                        transaction.trade_time_is_estimated,
+                      )
+                      const isSelected = transaction.transaction_id === selectedTransactionId
+                      const isChecked = selectedTransactionIds.has(transaction.transaction_id)
+                      return (
+                        <tr
+                          key={transaction.transaction_id}
+                          className={isSelected ? 'transaction-row-active' : ''}
+                          tabIndex={0}
+                          aria-selected={isSelected}
+                          onClick={() => patchSearchParams({ transaction_id: transaction.transaction_id })}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              patchSearchParams({ transaction_id: transaction.transaction_id })
+                            }
+                          }}
+                        >
+                          <td className="transaction-select-column">
+                            <input
+                              type="checkbox"
+                              aria-label={`Select transaction ${transaction.transaction_id}`}
+                              checked={isChecked}
+                              onClick={(event) => event.stopPropagation()}
+                              onChange={() => toggleTransactionSelection(transaction.transaction_id)}
+                            />
                           </td>
-                          <td>{accountNameById[posting.account_id] || posting.account_id}</td>
+                          <td>
+                            <div className="holding-name-stack">
+                              <strong>{transaction.trade_date}</strong>
+                              <span className="holding-secondary">
+                                {timeMeta.primary} · settle {transaction.settlement_date}
+                              </span>
+                            </div>
+                          </td>
+                          <td>
+                            <div className="holding-name-stack">
+                              <span><span className="transaction-type-pill">{formatLabel(transaction.transaction_type)}</span></span>
+                              <span className="holding-secondary">{formatLabel(transaction.flow_scope)}</span>
+                            </div>
+                          </td>
+                          <td className="transaction-account-cell">
+                            <div className="holding-name-stack">
+                              <Link
+                                className="table-inline-link"
+                                to={transactionAccountHref(portfolioId, transaction.account.account_id)}
+                                onClick={stopTransactionRowSelection}
+                              >
+                                {transaction.account.account_name}
+                              </Link>
+                              <span className="holding-secondary">
+                                {transaction.counterparty_account_id
+                                  ? `To ${accountNameById[transaction.counterparty_account_id] || transaction.counterparty_account_id}`
+                                  : formatLabel(transaction.account.account_type)}
+                              </span>
+                            </div>
+                          </td>
                           <td className="holding-name-cell">
-                            {posting.instrument_ref ? (
+                            {transaction.instrument_ref ? (
                               <div className="holding-name-stack">
-                                <span>{primaryIdentifier(posting.instrument_ref)}</span>
-                                <span className="holding-secondary">{posting.instrument_ref.instrument_name}</span>
+                                <strong>{primaryIdentifier(transaction.instrument_ref)}</strong>
+                                <span className="holding-secondary">{transaction.instrument_ref.instrument_name}</span>
+                              </div>
+                            ) : isFxConversionTransaction(transaction.transaction_type) ? (
+                              <div className="holding-name-stack">
+                                <strong>FX Conversion</strong>
+                                <span className="holding-secondary">
+                                  {transaction.currency} → {accountCurrencyById[transaction.counterparty_account_id || ''] || '—'}
+                                </span>
                               </div>
                             ) : (
                               <span className="holding-secondary">Cash ledger</span>
                             )}
                           </td>
-                          <td
-                            className={
-                              posting.cash_amount_delta != null && posting.cash_amount_delta < 0 ? 'negative-cell' : ''
-                            }
-                          >
-                            {formatSignedCurrency(posting.cash_amount_delta, posting.currency)}
+                          <td className="transaction-number-cell">
+                            <div className="holding-name-stack">
+                              <span>{formatQuantity(transaction.quantity)}</span>
+                              <span className="holding-secondary">
+                                {transaction.price != null ? `@ ${formatUnitPrice(transaction.price, transaction.currency)}` : 'No unit price'}
+                              </span>
+                            </div>
                           </td>
-                          <td>{formatNumber(posting.quantity_delta, 2)}</td>
-                          <td
-                            className={
-                              posting.cost_basis_delta != null && posting.cost_basis_delta < 0 ? 'negative-cell' : ''
-                            }
-                          >
-                            {posting.cost_basis_delta != null
-                              ? formatSignedCurrency(posting.cost_basis_delta, posting.currency)
-                              : '—'}
+                          <td className="transaction-number-cell">
+                            <div className="holding-name-stack">
+                              <span>{formatCurrency(transaction.gross_amount, transaction.currency)}</span>
+                              <span className={transaction.net_cash_effect != null && transaction.net_cash_effect < 0 ? 'holding-secondary negative-cell' : 'holding-secondary'}>
+                                Net {formatSignedCurrency(transaction.net_cash_effect, transaction.currency)}
+                              </span>
+                              {transaction.fees || transaction.taxes ? (
+                                <span className="holding-secondary">
+                                  Fee / tax {formatCurrency(transaction.fees + transaction.taxes, transaction.currency)}
+                                </span>
+                              ) : null}
+                            </div>
                           </td>
-                          <td>{posting.settlement_date}</td>
+                          <td className="transaction-note-cell">
+                            <div className="holding-name-stack">
+                              <span>{transaction.note || '—'}</span>
+                              <span className="holding-secondary">
+                                {transaction.transfer_group_id
+                                  ? `${transaction.transfer_group_id} · ${formatLabel(transaction.transfer_object_type || 'transfer')}`
+                                  : transaction.transaction_id}
+                              </span>
+                            </div>
+                          </td>
                         </tr>
+                      )
+                    })}
+                    {!visibleTransactions.length ? (
+                      <tr>
+                        <td colSpan={8} className="empty-state-cell">No transactions match these filters.</td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <aside className="transaction-inspector" aria-label="Selected transaction details">
+              {selectedTransaction ? (
+                <>
+                  <div className="transaction-inspector-head">
+                    <div>
+                      <span className="portfolio-detail-meta">Selected fact</span>
+                      <div className="panel-title">{formatLabel(selectedTransaction.transaction_type)}</div>
+                      <div className="portfolio-detail-meta">{selectedTransaction.transaction_id}</div>
+                    </div>
+                    <div className="transaction-inspector-actions">
+                      <button
+                        type="button"
+                        className="toolbar-link"
+                        disabled={!canEditTransaction(selectedTransaction)}
+                        onClick={() => openEditDrawer(selectedTransaction)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        className="toolbar-link transaction-danger-action"
+                        onClick={() => {
+                          setDeleteError(null)
+                          setPendingDeleteTransaction(selectedTransaction)
+                        }}
+                      >
+                        {selectedTransaction.transfer_group_id ? 'Delete Pair' : 'Delete'}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="transaction-inspector-tabs" role="tablist" aria-label="Transaction detail views">
+                    {([
+                      ['fact', 'Fact'],
+                      ['lots', `Lots ${relatedPositionLots.length}`],
+                      ['postings', `Postings ${transactionsWorkspace.ledger_summary.posting_count}`],
+                    ] as const).map(([tabKey, label]) => (
+                      <button
+                        key={tabKey}
+                        type="button"
+                        role="tab"
+                        aria-selected={inspectorTab === tabKey}
+                        className={inspectorTab === tabKey ? 'transaction-inspector-tab-active' : ''}
+                        onClick={() => setInspectorTab(tabKey)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {inspectorTab === 'fact' ? (
+                    <div className="transaction-fact-sheet" role="tabpanel">
+                      <div className="transaction-fact-highlight">
+                        <span>Gross amount</span>
+                        <strong>{formatCurrency(selectedTransaction.gross_amount, selectedTransaction.currency)}</strong>
+                        <em className={selectedTransaction.net_cash_effect != null && selectedTransaction.net_cash_effect < 0 ? 'negative-cell' : ''}>
+                          Net cash {formatSignedCurrency(selectedTransaction.net_cash_effect, selectedTransaction.currency)}
+                        </em>
+                      </div>
+                      <dl className="transaction-fact-list">
+                        <div>
+                          <dt>Instrument</dt>
+                          <dd>{selectedTransaction.instrument_ref ? `${primaryIdentifier(selectedTransaction.instrument_ref)} · ${selectedTransaction.instrument_ref.instrument_name}` : 'Cash ledger'}</dd>
+                        </div>
+                        <div>
+                          <dt>Account</dt>
+                          <dd><Link className="table-inline-link" to={transactionAccountHref(portfolioId, selectedTransaction.account.account_id)}>{selectedTransaction.account.account_name}</Link></dd>
+                        </div>
+                        <div>
+                          <dt>Settlement</dt>
+                          <dd>{selectedTransaction.settlement_cash_account?.account_name ?? (selectedTransaction.counterparty_account_id ? accountNameById[selectedTransaction.counterparty_account_id] || selectedTransaction.counterparty_account_id : '—')}</dd>
+                        </div>
+                        <div>
+                          <dt>Trade / settle</dt>
+                          <dd>{selectedTransaction.trade_date} {selectedTransaction.trade_time}<br /><span>{selectedTransaction.settlement_date}</span></dd>
+                        </div>
+                        <div>
+                          <dt>Quantity / price</dt>
+                          <dd>{formatQuantity(selectedTransaction.quantity)}<br /><span>{formatUnitPrice(selectedTransaction.price, selectedTransaction.currency)}</span></dd>
+                        </div>
+                        <div>
+                          <dt>Fees / taxes</dt>
+                          <dd>{formatCurrency(selectedTransaction.fees, selectedTransaction.currency)} / {formatCurrency(selectedTransaction.taxes, selectedTransaction.currency)}</dd>
+                        </div>
+                      </dl>
+                      {selectedTransaction.note ? (
+                        <div className="transaction-inspector-note">
+                          <span>Note</span>
+                          <p>{selectedTransaction.note}</p>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {inspectorTab === 'lots' ? (
+                    <div className="transaction-inspector-list" role="tabpanel">
+                      {!selectedTransaction.instrument_id ? (
+                        <div className="empty-state">Cash-only facts do not create position lots.</div>
+                      ) : relatedPositionLots.length ? (
+                        relatedPositionLots.map((positionLot) => (
+                          <article key={positionLot.position_lot_id} className="transaction-inspector-card">
+                            <div className="transaction-inspector-card-head">
+                              <div>
+                                <strong>{positionLot.position_lot_id}</strong>
+                                <span>Opened {positionLot.opened_at}</span>
+                              </div>
+                              <span className="transaction-type-pill">{formatLabel(positionLot.status)}</span>
+                            </div>
+                            <div className="transaction-impact-tags">
+                              {resolvePositionLotImpactKinds(positionLot, selectedTransaction.transaction_id).map((impactKind) => (
+                                <span key={impactKind}>{formatLabel(impactKind)}</span>
+                              ))}
+                            </div>
+                            <dl className="transaction-inspector-card-metrics">
+                              <div><dt>Remaining</dt><dd>{formatQuantity(positionLot.remaining_quantity)}</dd></div>
+                              <div><dt>Cost</dt><dd>{formatCurrency(positionLot.remaining_cost_basis, positionLot.currency)}</dd></div>
+                              <div><dt>Realized P/L</dt><dd>{formatSignedCurrency(positionLot.realized_pnl, positionLot.currency)}</dd></div>
+                            </dl>
+                          </article>
+                        ))
+                      ) : (
+                        <div className="empty-state">No position lots linked to this fact.</div>
+                      )}
+                    </div>
+                  ) : null}
+
+                  {inspectorTab === 'postings' ? (
+                    <div className="transaction-inspector-list" role="tabpanel">
+                      {transactionsWorkspace.ledger_postings.map((posting) => (
+                        <article key={posting.posting_id} className="transaction-inspector-card">
+                          <div className="transaction-inspector-card-head">
+                            <div>
+                              <strong>{formatLabel(posting.posting_role)}</strong>
+                              <span>{accountNameById[posting.account_id] || posting.account_id}</span>
+                            </div>
+                            <span>{posting.settlement_date}</span>
+                          </div>
+                          <dl className="transaction-inspector-card-metrics">
+                            <div><dt>Cash</dt><dd>{formatSignedCurrency(posting.cash_amount_delta, posting.currency)}</dd></div>
+                            <div><dt>Quantity</dt><dd>{formatNumber(posting.quantity_delta, 2)}</dd></div>
+                            <div><dt>Cost basis</dt><dd>{posting.cost_basis_delta != null ? formatSignedCurrency(posting.cost_basis_delta, posting.currency) : '—'}</dd></div>
+                          </dl>
+                        </article>
                       ))}
-                    </tbody>
-                  </table>
+                      {!transactionsWorkspace.ledger_postings.length ? (
+                        <div className="empty-state">No ledger postings.</div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <div className="transaction-inspector-empty">
+                  <span>Transaction details</span>
+                  <p>Select a ledger row to inspect the fact, position lots, and accounting postings.</p>
                 </div>
-              </>
-            ) : null}
-          </section>
+              )}
+            </aside>
+          </div>
         ) : null}
       </section>
 
@@ -2480,10 +2533,12 @@ export default function TransactionsPage() {
           }}
         >
           <aside
+            ref={drawerDialogRef}
             className="transaction-entry-modal"
             role="dialog"
             aria-modal="true"
             aria-label={isEditingTransaction ? 'Edit transaction' : 'Add transaction'}
+            tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="transaction-entry-modal-header">
@@ -2503,6 +2558,14 @@ export default function TransactionsPage() {
             </div>
 
             <form className="transaction-form" onSubmit={(event) => void handleCreateTransaction(event)}>
+              <div className="transaction-ticket-main">
+                <div className="transaction-ticket-section-heading">
+                  <div>
+                    <span>Trade details</span>
+                    <strong>Instrument, account and economics</strong>
+                  </div>
+                  <em>All dates use {DEFAULT_TRADE_TIMEZONE}</em>
+                </div>
               {shouldAllowInstrument ? (
                 <section className="transaction-instrument-search transaction-instrument-search-top">
                   <label className="transaction-picker-search">
@@ -2689,7 +2752,7 @@ export default function TransactionsPage() {
                 </label>
 
                 <label className="transaction-ticket-field">
-                  <span>Settlement Date</span>
+                  <span>{transactionDateLabels(form.transaction_type).settlement}</span>
                   <input
                     type="date"
                     value={form.settlement_date}
@@ -2719,7 +2782,7 @@ export default function TransactionsPage() {
 
                 {supportsEntitlementDate(form.transaction_type) ? (
                   <label className="transaction-ticket-field">
-                    <span>Entitlement Date</span>
+                    <span>{transactionDateLabels(form.transaction_type).entitlement}</span>
                     <input
                       type="date"
                       value={form.entitlement_date}
@@ -2854,7 +2917,7 @@ export default function TransactionsPage() {
                       <span className="transaction-ticket-hint">Loading</span>
                     ) : historicalQuote ? (
                       <span className="transaction-ticket-hint">
-                        {historicalQuote.exactDate ? 'Close' : 'Prior close'}:{' '}
+                        {historicalQuote.stale ? 'Prior ' : ''}{formatLabel(historicalQuote.quoteBasis)}:{' '}
                         {formatUnitPrice(historicalQuote.price, historicalQuote.currency)} · {historicalQuote.asOfDate}
                       </span>
                     ) : historicalQuoteError ? (
@@ -2907,7 +2970,15 @@ export default function TransactionsPage() {
                   <div className="transaction-form-spacer" />
                 )}
               </div>
+              </div>
 
+              <aside className="transaction-ticket-review" aria-label="Transaction review">
+                <div className="transaction-ticket-section-heading">
+                  <div>
+                    <span>Review</span>
+                    <strong>Accounting impact</strong>
+                  </div>
+                </div>
               <div className="transaction-ticket-summary" aria-live="polite">
                 {isFxConversion ? (
                   <>
@@ -2998,8 +3069,19 @@ export default function TransactionsPage() {
               </label>
 
               {formError ? <div className="error-state transaction-form-error">{formError}</div> : null}
+              </aside>
 
               <div className="transaction-form-footer">
+                <button
+                  type="button"
+                  className="toolbar-link"
+                  onClick={() => {
+                    setDrawerOpen(false)
+                    setEditingTransactionId(null)
+                  }}
+                >
+                  Cancel
+                </button>
                 <button type="submit" className="toolbar-link button-primary">
                   {isEditingTransaction ? 'Save Changes' : 'Save Transaction'}
                 </button>
@@ -3008,6 +3090,26 @@ export default function TransactionsPage() {
           </aside>
         </div>
       ) : null}
+      <ConfirmDialog
+        open={Boolean(pendingDeleteTransaction)}
+        title={pendingDeleteTransaction?.transfer_group_id ? 'Delete Transfer Pair' : 'Delete Transaction'}
+        description={
+          pendingDeleteTransaction?.transfer_group_id
+            ? `This permanently deletes both legs of transfer pair ${pendingDeleteTransaction.transfer_group_id}. This action cannot be undone.`
+            : `This permanently deletes transaction ${pendingDeleteTransaction?.transaction_id ?? ''}. This action cannot be undone.`
+        }
+        confirmLabel={pendingDeleteTransaction?.transfer_group_id ? 'Delete Pair' : 'Delete Transaction'}
+        confirmationText={
+          pendingDeleteTransaction?.transfer_group_id ?? pendingDeleteTransaction?.transaction_id
+        }
+        error={deleteError}
+        busy={deletingTransaction}
+        onCancel={() => {
+          setPendingDeleteTransaction(null)
+          setDeleteError(null)
+        }}
+        onConfirm={handleDeleteTransaction}
+      />
     </PortfolioWorkspaceLayout>
   )
 }

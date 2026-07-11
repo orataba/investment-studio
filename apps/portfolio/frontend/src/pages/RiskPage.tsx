@@ -12,6 +12,7 @@ import RollingRiskMetricChart, {
 } from '../components/RollingRiskMetricChart'
 import RiskTargetGapChart, { type RiskTargetGapChartRow } from '../components/RiskTargetGapChart'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import QualityWarningsNotice from '../components/QualityWarningsNotice'
 import {
   getHoldingsWorkspace,
   getPortfolioAccountsWorkspace,
@@ -2266,7 +2267,7 @@ export default function RiskPage() {
     setAccountsWorkspace(null)
     setTaxonomyCatalog(null)
 
-    getHoldingsWorkspace(portfolioId)
+    getHoldingsWorkspace(portfolioId, { include_return_series: true })
       .then((holdingsResponse) => {
         if (cancelled) {
           return
@@ -2930,6 +2931,7 @@ export default function RiskPage() {
       <section className="portfolio-detail-surface risk-page-surface">
         {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
         {workspaceSupportError ? <div className="inline-notice inline-notice-error">{workspaceSupportError}</div> : null}
+        <QualityWarningsNotice warnings={holdingsWorkspace?.quality_warnings} />
         {holdingsWorkspace ? renderRiskErrors(currentRiskInputErrors) : null}
 
         {workspaceLoading ? (

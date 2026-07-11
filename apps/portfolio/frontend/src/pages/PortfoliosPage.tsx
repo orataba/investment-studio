@@ -11,6 +11,7 @@ import {
 } from '../lib/api'
 import { formatCurrency, formatPercent, formatSignedCurrency } from '../lib/format'
 import { buildPortfolioSectionPath, PLATFORM_HOME_URL } from '../lib/navigation'
+import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 
 const FALLBACK_PORTFOLIOS: PortfolioEntryRecord[] = []
 
@@ -32,6 +33,8 @@ export default function PortfoliosPage() {
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<PortfolioEntryRecord | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const menuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -143,6 +146,27 @@ export default function PortfoliosPage() {
     }
   }
 
+  async function handleDeletePortfolio() {
+    if (!pendingDelete || deleting) {
+      return
+    }
+    setDeleting(true)
+    try {
+      await deletePortfolio(pendingDelete.portfolio_id)
+      setPortfolios((current) =>
+        current.filter((item) => item.portfolio_id !== pendingDelete.portfolio_id),
+      )
+      setNotice(`Deleted portfolio "${pendingDelete.portfolio_name}".`)
+      setPendingDelete(null)
+    } catch (requestError) {
+      setNotice(
+        requestError instanceof Error ? requestError.message : 'Failed to delete portfolio.',
+      )
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <section className="terminal-page">
       <header className="portfolio-entry-shell">
@@ -231,22 +255,9 @@ export default function PortfoliosPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={async () => {
-                        try {
-                          await deletePortfolio(portfolio.portfolio_id)
-                          setPortfolios((current) =>
-                            current.filter((item) => item.portfolio_id !== portfolio.portfolio_id),
-                          )
-                          setNotice(`Deleted portfolio "${portfolio.portfolio_name}".`)
-                        } catch (requestError) {
-                          setNotice(
-                            requestError instanceof Error
-                              ? requestError.message
-                              : 'Failed to delete portfolio.',
-                          )
-                        } finally {
-                          setMenuOpenId(null)
-                        }
+                      onClick={() => {
+                        setPendingDelete(portfolio)
+                        setMenuOpenId(null)
                       }}
                     >
                       Delete Portfolio
@@ -286,6 +297,21 @@ export default function PortfoliosPage() {
           </button>
         </div>
       </section>
+      <ConfirmDialog
+        open={Boolean(pendingDelete)}
+        title="Delete Portfolio"
+        description={
+          <>
+            This permanently deletes the portfolio, including its accounts, transactions,
+            classifications, and snapshots. This action cannot be undone.
+          </>
+        }
+        confirmLabel="Delete Portfolio"
+        confirmationText={pendingDelete?.portfolio_name}
+        busy={deleting}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={handleDeletePortfolio}
+      />
     </section>
   )
 }

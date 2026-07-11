@@ -333,3 +333,101 @@ def test_watchlist_instrument_registry_foreign_keys_are_enforced(
         with pytest.raises(IntegrityError):
             session.commit()
         session.rollback()
+
+
+def test_recalc_instrument_advisory_lock_serializes_transactions(
+    postgres_watchlist_env: dict[str, str],
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+
+    repository = SQLAlchemyRecalcJobRepository()
+    session_factory = session_module.get_session_factory()
+    instrument_id = postgres_watchlist_env["instrument_id"]
+    with session_factory() as first, session_factory() as second:
+        assert repository.acquire_instrument_lock(
+            first,
+            instrument_id=instrument_id,
+            wait=False,
+        ) is True
+        assert repository.acquire_instrument_lock(
+            second,
+            instrument_id=instrument_id,
+            wait=False,
+        ) is False
+        first.commit()
+        assert repository.acquire_instrument_lock(
+            second,
+            instrument_id=instrument_id,
+            wait=False,
+        ) is True
+        second.rollback()
+
+
+def test_postgres_recalc_claim_serializes_job_types_for_one_instrument(
+    postgres_watchlist_env: dict[str, str],
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
+    from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
+
+    repository = SQLAlchemyRecalcJobRepository()
+    session_factory = session_module.get_session_factory()
+    instrument_id = postgres_watchlist_env["instrument_id"]
+    with session_factory() as session:
+        session.add(
+            InstrumentDetail(
+                instrument_id=instrument_id,
+                instrument_type="fund",
+                detail_view_type="fund",
+                instrument_name="PostgreSQL claim asset",
+                primary_identifier_type="ticker",
+                primary_identifier_value="CLAIMLOCK",
+                is_active=True,
+                metadata_json={},
+            )
+        )
+        for job_type in ("performance", "exposure"):
+            repository.create(
+                session,
+                recalc_job_id=make_recalc_job_id(),
+                job_type=job_type,
+                instrument_id=instrument_id,
+                trigger_type="integration_test",
+                trigger_ref_type=None,
+                trigger_ref_id=None,
+                job_status="queued",
+                priority=90,
+                dedupe_key=make_recalc_dedupe_key(
+                    job_type=job_type,
+                    instrument_id=instrument_id,
+                ),
+                payload_json={"requested_by": "integration_test"},
+            )
+        session.commit()
+
+    with session_factory() as session:
+        first = repository.claim_next_queued(session)
+        assert first is not None
+        first_job_id = first.recalc_job_id
+        first_lease = str(first.lease_token)
+        session.commit()
+
+    with session_factory() as session:
+        assert repository.claim_next_queued(session) is None
+        running = repository.get(session, first_job_id)
+        assert running is not None
+        assert repository.mark_completed(
+            session,
+            running,
+            lease_token=first_lease,
+            payload_json={"integration_test": True},
+        ) is True
+        session.commit()
+
+    with session_factory() as session:
+        second = repository.claim_next_queued(session)
+        assert second is not None
+        assert second.recalc_job_id != first_job_id
+        assert second.instrument_id == instrument_id
+        session.rollback()

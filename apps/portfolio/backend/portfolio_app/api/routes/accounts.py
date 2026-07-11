@@ -32,6 +32,21 @@ from portfolio_app.services.portfolio_store import (
 router = APIRouter()
 
 
+def _transactions_booked_to_account(
+    transactions: list[dict[str, object]],
+    account_id: str,
+) -> list[dict[str, object]]:
+    return [
+        transaction
+        for transaction in transactions
+        if str(transaction.get("account_id") or "") == account_id
+        or (
+            str(transaction.get("transaction_type") or "") == "fx_conversion"
+            and str(transaction.get("counterparty_account_id") or "") == account_id
+        )
+    ]
+
+
 def _validate_default_settlement_account(
     *,
     portfolio_id: str,
@@ -189,11 +204,12 @@ def get_accounts_workspace(
         else None
     )
     resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
+    transactions = list_transactions(portfolio_id, end_date=resolved_as_of_date)
     try:
         workspace = build_account_workspace(
             portfolio_id,
             accounts,
-            list_transactions(portfolio_id),
+            transactions,
             selected_account_id=account_id,
             base_currency=str(portfolio.get("base_currency") or "USD"),
             as_of_date=resolved_as_of_date,
@@ -203,11 +219,7 @@ def get_accounts_workspace(
 
     selected_account_id = str(workspace.get("selected_account_id") or "") or None
     linked_transactions_raw = (
-        list_transactions(
-            portfolio_id,
-            account_id=selected_account_id,
-            end_date=resolved_as_of_date,
-        )
+        _transactions_booked_to_account(transactions, selected_account_id)
         if selected_account_id
         else []
     )

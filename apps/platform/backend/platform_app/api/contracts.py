@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from portfolio_ops_instrument_core.models import InstrumentIdentifier as PlatformInstrumentIdentifier
+from portfolio_ops_instrument_core.models import CorporateActionEvent as PlatformCorporateActionEvent
 from portfolio_ops_instrument_core.models import InstrumentType, DataStatus, IdentifierType, MetricFamily, QuoteBasis, QuoteRole
 from portfolio_ops_instrument_core.models import QuoteSelectionPolicy as PlatformQuoteSelectionPolicy
 
@@ -35,6 +36,8 @@ EmailParserProfile = Literal[
 ]
 
 SUPPORTED_FX_CURRENCIES: tuple[SupportedCurrency, ...] = ("USD", "HKD", "CNY")
+MAX_NAV_IMPORT_BYTES = 25 * 1024 * 1024
+MAX_NAV_IMPORT_BASE64_CHARS = ((MAX_NAV_IMPORT_BYTES + 2) // 3) * 4
 
 
 class PlatformMarketDataPoint(BaseModel):
@@ -115,12 +118,14 @@ class PlatformRefreshStatus(BaseModel):
     requested_at: str | None = None
     requested_by: str | None = None
     mode: SourceMode = "manual"
+    last_successful_requested_at: str | None = None
 
 
 class PlatformLifecycleState(BaseModel):
     status: InstrumentLifecycleStatus = "active"
     changed_at: str | None = None
     changed_by: str | None = None
+    canonical_instrument_id: str | None = None
 
 
 class PlatformInstrumentRecord(BaseModel):
@@ -135,6 +140,8 @@ class PlatformInstrumentRecord(BaseModel):
     source_settings: PlatformSourceSettings
     refresh_status: PlatformRefreshStatus
     lifecycle_state: PlatformLifecycleState
+    market_data_updated_at: str | None = None
+    corporate_actions: list[PlatformCorporateActionEvent] = Field(default_factory=list)
 
 
 class PlatformInstrumentDetail(PlatformInstrumentRecord):
@@ -150,7 +157,38 @@ class PlatformInstrumentCreateRequest(BaseModel):
     instrument_name: str = Field(min_length=1)
     instrument_type: InstrumentType
     currency: str = Field(min_length=1, max_length=8)
-    identifiers: list[PlatformInstrumentIdentifier] = Field(default_factory=list)
+    identifiers: list[PlatformInstrumentIdentifier] = Field(min_length=1)
+    quote_selection_policy: PlatformQuoteSelectionPolicy | None = None
+
+    @field_validator("instrument_name", mode="before")
+    @classmethod
+    def normalize_instrument_name(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                raise ValueError("instrument_name must not be blank.")
+            return normalized
+        return value
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip().upper()
+            if not normalized:
+                raise ValueError("currency must not be blank.")
+            return normalized
+        return value
+
+    @model_validator(mode="after")
+    def validate_primary_identifier(self) -> "PlatformInstrumentCreateRequest":
+        if sum(1 for item in self.identifiers if item.is_primary) != 1:
+            raise ValueError("Exactly one identifier must be primary.")
+        return self
+
+
+class PlatformQuoteSelectionPolicyUpdateRequest(BaseModel):
+    quote_selection_policy: PlatformQuoteSelectionPolicy
 
 
 class PlatformMarketDataUpsertRequest(BaseModel):
@@ -257,15 +295,18 @@ class PlatformLifecycleTransitionRequest(BaseModel):
 
 
 class PlatformNavImportRequest(BaseModel):
-    raw_text: str = Field(min_length=1)
+    raw_text: str = Field(min_length=1, max_length=MAX_NAV_IMPORT_BYTES)
     provider: str | None = None
     status: DataStatus = "complete"
     updated_by: str | None = None
 
 
 class PlatformNavImportFileRequest(BaseModel):
-    file_name: str = Field(min_length=1)
-    file_content_base64: str = Field(min_length=1)
+    file_name: str = Field(min_length=1, max_length=255)
+    file_content_base64: str = Field(
+        min_length=1,
+        max_length=MAX_NAV_IMPORT_BASE64_CHARS,
+    )
     provider: str | None = None
     status: DataStatus = "complete"
     updated_by: str | None = None
@@ -282,15 +323,23 @@ class PlatformNavImportFileRequest(BaseModel):
 
     def decoded_bytes(self) -> bytes:
         try:
-            return b64decode(self.file_content_base64, validate=True)
+            decoded = b64decode(self.file_content_base64, validate=True)
         except (binascii.Error, ValueError) as error:
             raise ValueError("Invalid base64 file payload.") from error
+        if len(decoded) > MAX_NAV_IMPORT_BYTES:
+            raise ValueError(
+                f"NAV import file exceeds the {MAX_NAV_IMPORT_BYTES}-byte limit."
+            )
+        return decoded
 
 
 class PlatformNavImportPreviewRequest(BaseModel):
-    raw_text: str | None = None
-    file_name: str | None = None
-    file_content_base64: str | None = None
+    raw_text: str | None = Field(default=None, max_length=MAX_NAV_IMPORT_BYTES)
+    file_name: str | None = Field(default=None, max_length=255)
+    file_content_base64: str | None = Field(
+        default=None,
+        max_length=MAX_NAV_IMPORT_BASE64_CHARS,
+    )
 
     @model_validator(mode="after")
     def validate_source(self) -> "PlatformNavImportPreviewRequest":
@@ -306,14 +355,20 @@ class PlatformNavImportPreviewRequest(BaseModel):
         if not self.file_content_base64:
             return None
         try:
-            return b64decode(self.file_content_base64.strip(), validate=True)
+            decoded = b64decode(self.file_content_base64.strip(), validate=True)
         except (binascii.Error, ValueError) as error:
             raise ValueError("Invalid base64 file payload.") from error
+        if len(decoded) > MAX_NAV_IMPORT_BYTES:
+            raise ValueError(
+                f"NAV import file exceeds the {MAX_NAV_IMPORT_BYTES}-byte limit."
+            )
+        return decoded
 
 
 class PlatformNavImportPreviewRow(BaseModel):
     as_of_date: date
     nav: Decimal | None = None
+    cumulative_nav: Decimal | None = None
     nav_with_dividend: Decimal | None = None
     currency: str = Field(min_length=1, max_length=8)
     frequency: str = Field(min_length=1)

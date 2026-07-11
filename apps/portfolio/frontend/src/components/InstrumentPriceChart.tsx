@@ -9,6 +9,7 @@ import type {
   PortfolioInstrumentChartRangeKey,
   PortfolioInstrumentPriceChartResponse,
 } from '../lib/api'
+import { performanceSeriesLabel } from '../lib/instrumentMetricLabels'
 
 const RANGE_OPTIONS: { key: PortfolioInstrumentChartRangeKey; label: string }[] = [
   { key: '1m', label: '1M' },
@@ -121,7 +122,10 @@ export default function InstrumentPriceChart({
         {variant === 'instrument' && chart ? (
           <div className="instrument-series-label portfolio-instrument-series-label">
             <strong>{chart.instrument_core.identifiers.find((item) => item.is_primary)?.identifier_value ?? chart.instrument_core.instrument_id}</strong>
-            <span>{chart.chart_basis ?? 'Price'}</span>
+            <span>
+              {performanceSeriesLabel(chart.chart_basis ?? chart.metric_family)}
+              {chart.metric_family ? ` · ${performanceSeriesLabel(chart.metric_family)} family` : ''}
+            </span>
             <em>
               {activeChangeValue != null
                 ? `${formatSignedCurrency(activeChangeValue, currency)} · ${formatPercent(activeChangePct)}`
@@ -169,7 +173,7 @@ export default function InstrumentPriceChart({
             className="price-chart-svg"
             viewBox={`0 0 ${width} ${height}`}
             role="img"
-            aria-label={`${chart?.instrument_core.instrument_name ?? 'Instrument'} price trend`}
+            aria-label={`${chart?.instrument_core.instrument_name ?? 'Instrument'} ${performanceSeriesLabel(chart?.chart_basis ?? chart?.metric_family)} performance series`}
             onMouseLeave={() => setHoverIndex(null)}
             onMouseMove={(event) => {
               const bounds = event.currentTarget.getBoundingClientRect()
@@ -224,7 +228,9 @@ export default function InstrumentPriceChart({
           </svg>
           <div className="price-chart-footer">
             <span>{points[0] ? formatChartDate(points[0].date) : '—'}</span>
-            <span>{chart?.chart_basis ? `Basis: ${chart.chart_basis}` : 'Basis: —'}</span>
+            <span>
+              {chart ? `Series: ${performanceSeriesLabel(chart.chart_basis ?? chart.metric_family)}` : 'Series: —'}
+            </span>
             <span>{points[points.length - 1] ? formatChartDate(points[points.length - 1].date) : '—'}</span>
           </div>
         </div>

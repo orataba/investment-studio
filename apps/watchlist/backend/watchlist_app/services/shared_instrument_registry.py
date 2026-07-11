@@ -45,9 +45,37 @@ def list_shared_instruments(
         raise _registry_error("Failed to query shared instrument registry.") from error
 
 
+def list_shared_active_instrument_ids(
+    *,
+    instrument_types: set[str] | frozenset[str] | None = None,
+) -> list[str]:
+    try:
+        return shared_store.list_active_instrument_ids(
+            get_session_factory(),
+            instrument_types=instrument_types,
+        )
+    except Exception as error:  # pragma: no cover - defensive wrapper
+        raise _registry_error("Failed to query shared instrument registry membership.") from error
+
+
 def get_shared_instrument(instrument_id: str) -> dict[str, object] | None:
     try:
-        return shared_store.get_instrument(get_session_factory(), instrument_id)
+        record = shared_store.get_instrument(get_session_factory(), instrument_id)
+        visited = {instrument_id}
+        while isinstance(record, dict):
+            lifecycle = record.get("lifecycle_state")
+            if not isinstance(lifecycle, dict):
+                break
+            canonical_id = str(lifecycle.get("canonical_instrument_id") or "").strip()
+            status = str(lifecycle.get("status") or "active").strip().lower()
+            if status != "archived" or not canonical_id or canonical_id in visited:
+                break
+            visited.add(canonical_id)
+            canonical = shared_store.get_instrument(get_session_factory(), canonical_id)
+            if not isinstance(canonical, dict):
+                return None
+            record = canonical
+        return record
     except Exception as error:  # pragma: no cover - defensive wrapper
         raise _registry_error("Failed to query shared instrument registry.") from error
 

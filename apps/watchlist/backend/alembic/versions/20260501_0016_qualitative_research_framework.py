@@ -98,7 +98,7 @@ def _definition_payload(definition: dict[str, object]) -> dict[str, object]:
 
 
 def upgrade() -> None:
-    from watchlist_app.reference_data.watchlist_fields import (
+    from watchlist_migration_snapshots.watchlist_fields import (
         INSTRUMENT_ATTRIBUTE_DEFINITIONS,
         build_attribute_field_definition,
     )

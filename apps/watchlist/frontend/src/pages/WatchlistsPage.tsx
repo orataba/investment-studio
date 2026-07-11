@@ -21,7 +21,6 @@ import {
   deleteWatchlistItems,
   getFieldRegistry,
   getFundTaxonomyTree,
-  getInstrumentChart,
   getSharedInstruments,
   getWatchlistDetail,
   getWatchlists,
@@ -37,9 +36,12 @@ import {
   buildWatchlistPath,
   PLATFORM_HOME_URL,
 } from '../lib/navigation'
+import { clampColumnWidth, nextSortAction } from '../lib/tableControls'
 import LoadingOverlay from '../components/LoadingOverlay'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
+import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
 import {
@@ -61,7 +63,6 @@ type ModalKind =
   | 'copy-items'
   | 'move-items'
   | null
-type SparklineCacheEntry = { requestKey: string; points: FundChartPoint[] }
 type FilterState = Record<string, unknown[]>
 type FilterOption = { key: string; label: string; value: unknown }
 type WatchlistRowGroup = {
@@ -93,6 +94,7 @@ type ActiveFilterEntry = {
   isTaxonomy: boolean
 }
 const SCREENER_BULK_PAGE_SIZE = 500
+const WATCHLIST_INITIAL_RENDER_ROWS = 80
 const ALL_COVERAGE_WATCHLIST_ID = 'all-coverage'
 const TAXONOMY_FILTER_FIELD_KEY = 'taxonomy'
 const TAXONOMY_GROUP_BY_CODE = 'taxonomy'
@@ -349,6 +351,7 @@ async function loadCompleteScreenerResult(
   }
 
   const rows = [...firstPage.rows]
+  const sparklines = { ...(firstPage.sparklines || {}) }
   const totalPages = Math.max(1, Math.ceil(firstPage.total_rows / pageSize))
   for (let page = 2; page <= totalPages; page += 1) {
     const nextPage = await runScreenerQuery({
@@ -359,11 +362,13 @@ async function loadCompleteScreenerResult(
       break
     }
     rows.push(...nextPage.rows)
+    Object.assign(sparklines, nextPage.sparklines || {})
   }
   const completeRows = rows.slice(0, firstPage.total_rows)
   return {
     ...firstPage,
     rows: completeRows,
+    sparklines,
   }
 }
 
@@ -740,6 +745,8 @@ export default function WatchlistsPage() {
   const [activeViewId, setActiveViewId] = useState('')
   const [watchlistDetail, setWatchlistDetail] = useState<WatchlistDetail | null>(null)
   const [screenerResult, setScreenerResult] = useState<ScreenerResponse | null>(null)
+  const [screenerLoading, setScreenerLoading] = useState(false)
+  const [renderRowLimit, setRenderRowLimit] = useState(WATCHLIST_INITIAL_RENDER_ROWS)
   const [workingColumns, setWorkingColumns] = useState<string[]>([])
   const [columnDraft, setColumnDraft] = useState<string[]>([])
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({})
@@ -778,7 +785,9 @@ export default function WatchlistsPage() {
   const [viewToast, setViewToast] = useState<NoticeToastMessage | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [sparklineMap, setSparklineMap] = useState<Record<string, SparklineCacheEntry>>({})
+  const [pendingDeleteWatchlist, setPendingDeleteWatchlist] = useState<WatchlistRecord | null>(null)
+  const [deletingWatchlist, setDeletingWatchlist] = useState(false)
+  const [sparklineMap, setSparklineMap] = useState<Record<string, FundChartPoint[]>>({})
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(new Set())
   const [draggingInstrumentId, setDraggingInstrumentId] = useState<string | null>(null)
   const [groupDropTargetKey, setGroupDropTargetKey] = useState<string | null>(null)
@@ -797,6 +806,15 @@ export default function WatchlistsPage() {
   const resizeFrame = useRef<number | null>(null)
   const pendingResize = useRef<{ column: string; width: number } | null>(null)
   const batchFileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const modalBusy = isSavingView || isCreatingWatchlist || isCopyingItems || isMovingItems || isAdding || isBatchAdding
+  function closeActiveModal() {
+    if (!modalBusy) {
+      setModalKind(null)
+    }
+  }
+
+  const modalDialogRef = useModalDialog(Boolean(modalKind), closeActiveModal)
 
   useEffect(() => {
     if (!notice) {
@@ -877,14 +895,6 @@ export default function WatchlistsPage() {
         setFieldCategories(fieldRegistryData.categories)
         setFieldRegistry(fieldRegistryData.fields)
         setFundTaxonomy(taxonomyData)
-        const resolvedWatchlistId = watchlistData.some((item) => item.watchlist_id === watchlistId)
-          ? watchlistId
-          : watchlistData[0]?.watchlist_id || ''
-        if (resolvedWatchlistId && resolvedWatchlistId !== watchlistId) {
-          startTransition(() => {
-            navigate(buildWatchlistPath(resolvedWatchlistId), { replace: true })
-          })
-        }
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : 'Failed to load watchlists.')
@@ -901,7 +911,22 @@ export default function WatchlistsPage() {
     return () => {
       cancelled = true
     }
-  }, [navigate, watchlistId])
+  }, [])
+
+  useEffect(() => {
+    if (loading || !watchlists.length) {
+      return
+    }
+    if (watchlists.some((item) => item.watchlist_id === watchlistId)) {
+      return
+    }
+    const fallbackWatchlistId = watchlists[0]?.watchlist_id
+    if (fallbackWatchlistId) {
+      startTransition(() => {
+        navigate(buildWatchlistPath(fallbackWatchlistId), { replace: true })
+      })
+    }
+  }, [loading, navigate, watchlistId, watchlists])
 
   useEffect(() => {
     if (!watchlistId) {
@@ -978,17 +1003,22 @@ export default function WatchlistsPage() {
       }),
       getSharedInstruments({
         search: instrumentSearch,
+        instrument_type: 'etf',
+        limit: 12,
+      }),
+      getSharedInstruments({
+        search: instrumentSearch,
         instrument_type: 'index',
         limit: 12,
       }),
     ])
-      .then(([fundResults, indexResults]) => {
+      .then(([fundResults, etfResults, indexResults]) => {
         if (cancelled) {
           return
         }
 
         const seenInstrumentIds = new Set<string>()
-        const results = [...fundResults, ...indexResults].filter((item) => {
+        const results = [...fundResults, ...etfResults, ...indexResults].filter((item) => {
           if (seenInstrumentIds.has(item.instrument_id)) {
             return false
           }
@@ -1031,11 +1061,13 @@ export default function WatchlistsPage() {
     const payload = baseScreenerPayload
 
     async function loadRows() {
+      setScreenerLoading(true)
       try {
         const result = await loadCompleteScreenerResult(payload)
 
         if (!cancelled) {
           setScreenerResult(result)
+          setSparklineMap(result.sparklines || {})
           setSelectedRows((current) =>
             current.filter((instrumentId) => result.rows.some((row) => String(row.instrument_id) === instrumentId)),
           )
@@ -1043,6 +1075,10 @@ export default function WatchlistsPage() {
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : 'Failed to load watchlist rows.')
+        }
+      } finally {
+        if (!cancelled) {
+          setScreenerLoading(false)
         }
       }
     }
@@ -1056,85 +1092,6 @@ export default function WatchlistsPage() {
 
   const activeView =
     watchlistDetail?.views.find((item) => item.view_id === activeViewId) || watchlistDetail?.views[0] || null
-  const visibleSparklineColumns = useMemo(
-    () =>
-      workingColumns.filter(
-        (column) => isChartFieldKey(column),
-      ),
-    [workingColumns],
-  )
-  const sparklineRequestKey = useMemo(() => {
-    if (!screenerResult?.rows.length || !visibleSparklineColumns.length) {
-      return ''
-    }
-    const rowKey = screenerResult.rows
-      .map(
-        (row) =>
-          `${String(row.instrument_id || '').trim()}:${String(row.detail_subject_id || '').trim()}`,
-      )
-      .join('|')
-    return [
-      watchlistId,
-      activeViewId,
-      visibleSparklineColumns.join(','),
-      screenerResult.snapshot_metadata?.source_cutoff_at || '',
-      String(reloadToken),
-      rowKey,
-    ].join('::')
-  }, [activeViewId, reloadToken, screenerResult, visibleSparklineColumns, watchlistId])
-
-  useEffect(() => {
-    if (!screenerResult?.rows.length || !visibleSparklineColumns.length || !sparklineRequestKey) {
-      return
-    }
-
-    let cancelled = false
-    const chartTargets = screenerResult.rows
-      .map((row) => ({
-        instrumentId: String(row.instrument_id || '').trim(),
-        instrumentType: String(row.instrument_type || '').trim().toLowerCase(),
-        detailSubjectId: String(row.detail_subject_id || row.instrument_id || '').trim(),
-      }))
-      .filter((row) => row.instrumentId && ['fund', 'index'].includes(row.instrumentType) && row.detailSubjectId)
-    const missingTargets = chartTargets.filter(
-      (row) => sparklineMap[row.instrumentId]?.requestKey !== sparklineRequestKey,
-    )
-    if (!missingTargets.length) {
-      return
-    }
-
-    const rangeSize = 260
-    async function loadSparklines() {
-      const entries = await Promise.all(
-        missingTargets.map(async ({ instrumentId, detailSubjectId }) => {
-          try {
-            const chart = await getInstrumentChart(detailSubjectId)
-            const points: FundChartPoint[] = chart.series[0]?.points?.slice(-rangeSize) ?? []
-            return [instrumentId, { requestKey: sparklineRequestKey, points }] as const
-          } catch (chartError) {
-            return [instrumentId, { requestKey: sparklineRequestKey, points: [] as FundChartPoint[] }] as const
-          }
-        }),
-      )
-
-      if (cancelled) {
-        return
-      }
-
-      setSparklineMap((current) => {
-        const next = { ...current }
-        entries.forEach(([instrumentId, entry]) => {
-          next[instrumentId] = entry
-        })
-        return next
-      })
-    }
-
-    void loadSparklines()
-    return () => {
-      cancelled = true
-    }
-  }, [screenerResult, sparklineMap, sparklineRequestKey, visibleSparklineColumns])
 
   async function handleBatchAddFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
@@ -1159,8 +1116,8 @@ export default function WatchlistsPage() {
         rows.map(async (row) => {
           try {
             const resolved = await resolveSharedInstrument(row.identifier)
-            if (resolved.instrument_type !== 'fund' && resolved.instrument_type !== 'index') {
-              throw new Error(`${row.identifier} resolves to ${resolved.instrument_type}, but watchlist currently supports funds and indexes only.`)
+            if (!['fund', 'etf', 'index'].includes(resolved.instrument_type)) {
+              throw new Error(`${row.identifier} resolves to ${resolved.instrument_type}, but watchlist currently supports funds, ETFs, and indexes only.`)
             }
             resolvedInstrumentIds.add(resolved.instrument_id)
           } catch (resolveError) {
@@ -1171,7 +1128,7 @@ export default function WatchlistsPage() {
 
       if (missingIdentifiers.length) {
         throw new Error(
-          `Watchlist accepts shared-registry funds and indexes only. Check these identifiers in Database Dashboard: ${missingIdentifiers.join(', ')}.`,
+          `Watchlist accepts shared-registry funds, ETFs, and indexes only. Check these identifiers in Data Operations: ${missingIdentifiers.join(', ')}.`,
         )
       }
 
@@ -1195,6 +1152,25 @@ export default function WatchlistsPage() {
 
   const activeWatchlist = watchlists.find((item) => item.watchlist_id === watchlistId) || null
   const activeWatchlistIsAllCoverage = isAllCoverageWatchlist(activeWatchlist || watchlistDetail)
+
+  async function handleDeleteWatchlist() {
+    if (!pendingDeleteWatchlist || deletingWatchlist) {
+      return
+    }
+    setDeletingWatchlist(true)
+    try {
+      await deleteWatchlist(pendingDeleteWatchlist.watchlist_id)
+      setWatchlists((current) =>
+        current.filter((item) => item.watchlist_id !== pendingDeleteWatchlist.watchlist_id),
+      )
+      setPendingDeleteWatchlist(null)
+      navigate('/watchlists')
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Failed to delete watchlist.')
+    } finally {
+      setDeletingWatchlist(false)
+    }
+  }
   const moveTargetOptions = useMemo(
     () => watchlists.filter((item) => item.watchlist_id !== watchlistId && !isAllCoverageWatchlist(item)),
     [watchlists, watchlistId],
@@ -1223,7 +1199,7 @@ export default function WatchlistsPage() {
         sort_mode: 'none',
         filter_mode: 'none',
         group_mode: 'none',
-        instrument_scope_json: ['fund', 'index'],
+        instrument_scope_json: ['fund', 'etf', 'index'],
         product_scope_json: [],
         availability_rule_json: {},
         source_domain: 'derived',
@@ -1241,7 +1217,7 @@ export default function WatchlistsPage() {
         sort_mode: 'none',
         filter_mode: 'none',
         group_mode: 'none',
-        instrument_scope_json: ['fund', 'index'],
+        instrument_scope_json: ['fund', 'etf', 'index'],
         product_scope_json: [],
         availability_rule_json: {},
         source_domain: 'derived',
@@ -1259,7 +1235,7 @@ export default function WatchlistsPage() {
         sort_mode: 'none',
         filter_mode: 'none',
         group_mode: 'none',
-        instrument_scope_json: ['fund', 'index'],
+        instrument_scope_json: ['fund', 'etf', 'index'],
         product_scope_json: [],
         availability_rule_json: {},
         source_domain: 'derived',
@@ -1277,7 +1253,7 @@ export default function WatchlistsPage() {
         sort_mode: 'none',
         filter_mode: 'none',
         group_mode: 'none',
-        instrument_scope_json: ['fund', 'index'],
+        instrument_scope_json: ['fund', 'etf', 'index'],
         product_scope_json: [],
         availability_rule_json: {},
         source_domain: 'derived',
@@ -1464,6 +1440,19 @@ export default function WatchlistsPage() {
   const activeGroupSupportsDrop = activeGroupIsWritableAttribute || activeGroupIsWritableTaxonomy
   const sortField = sortRules[0]?.field || null
   const sortDirection = sortRules[0]?.direction || 'asc'
+
+  function toggleSort(column: string) {
+    setSortRules((current) => {
+      const currentRule = current[0]
+      if (!currentRule || currentRule.field !== column) {
+        return [{ field: column, direction: 'asc' }]
+      }
+      if (currentRule.direction === 'asc') {
+        return [{ field: column, direction: 'desc' }]
+      }
+      return []
+    })
+  }
 
   function moveWorkingColumn(sourceColumn: string, targetColumn: string) {
     if (!sourceColumn || sourceColumn === targetColumn || requiredColumns.includes(sourceColumn)) {
@@ -1875,6 +1864,9 @@ export default function WatchlistsPage() {
   }, [availableGroupByOptions, workingGroupBy])
 
   const watchlistSearchQuery = watchlistSearch.trim().toLowerCase()
+  useEffect(() => {
+    setRenderRowLimit(WATCHLIST_INITIAL_RENDER_ROWS)
+  }, [screenerCriteriaKey, watchlistSearchQuery])
   const searchedRows = useMemo(() => {
     const rows = screenerResult?.rows || []
     if (!watchlistSearchQuery) {
@@ -2033,6 +2025,24 @@ export default function WatchlistsPage() {
       return [{ ...group, rows: collapsed ? [] : group.rows }]
     })
   }, [collapsedGroupKeys, groupedRows])
+
+  const renderedGroupedRows = useMemo(() => {
+    const rendered: WatchlistRowGroup[] = []
+    let remaining = renderRowLimit
+    for (const group of visibleGroupedRows) {
+      if (remaining <= 0) {
+        break
+      }
+      const rows = group.rows.slice(0, remaining)
+      rendered.push({ ...group, rows })
+      remaining -= rows.length
+    }
+    return rendered
+  }, [renderRowLimit, visibleGroupedRows])
+  const renderedInstrumentCount = useMemo(
+    () => renderedGroupedRows.reduce((total, group) => total + group.rows.length, 0),
+    [renderedGroupedRows],
+  )
 
   const sortabilityByKey = useMemo(() => {
     const map = new Map<string, string>()
@@ -2365,23 +2375,9 @@ export default function WatchlistsPage() {
                     {!isAllCoverageWatchlist(watchlist) ? (
                       <button
                         type="button"
-                        onClick={async () => {
-                          try {
-                            await deleteWatchlist(watchlist.watchlist_id)
-                            setWatchlists((current) =>
-                              current.filter((item) => item.watchlist_id !== watchlist.watchlist_id),
-                            )
-                            setNotice(`Deleted watchlist "${watchlist.name}".`)
-                            navigate('/watchlists')
-                          } catch (requestError) {
-                            setError(
-                              requestError instanceof Error
-                                ? requestError.message
-                                : 'Failed to delete watchlist.',
-                            )
-                          } finally {
-                            setSelectorMenuOpen(false)
-                          }
+                        onClick={() => {
+                          setPendingDeleteWatchlist(watchlist)
+                          setSelectorMenuOpen(false)
                         }}
                       >
                         Delete Watchlist
@@ -2832,6 +2828,7 @@ export default function WatchlistsPage() {
                 <th className="watchlists-select-col">
                   <input
                     type="checkbox"
+                    aria-label="Select all visible instruments"
                     checked={allRowsSelected}
                     onChange={(event) =>
                       setSelectedRows(event.target.checked ? allVisibleInstrumentIds : [])
@@ -2841,9 +2838,21 @@ export default function WatchlistsPage() {
                 {visibleColumns.map((column) => {
                   const width = displayColumnWidths[column]
                   const sortMode = sortabilityByKey.get(column) || 'none'
+                  const sortAction = nextSortAction(sortField === column, sortDirection)
+                  const columnLabel = fieldLabelByKey.get(column) || formatLabel(column)
                   return (
                     <th
                       key={column}
+                      scope="col"
+                      aria-sort={
+                        sortMode === 'none'
+                          ? undefined
+                          : sortField === column
+                            ? sortDirection.toLowerCase() === 'desc'
+                              ? 'descending'
+                              : 'ascending'
+                            : 'none'
+                      }
                       className={[
                         requiredColumns.includes(column) ? '' : 'watchlists-column-draggable',
                         isChartFieldKey(column) ? 'chart-cell' : '',
@@ -2859,26 +2868,26 @@ export default function WatchlistsPage() {
                       onDrop={(event) => handleColumnDrop(event, column)}
                       onDragEnd={() => setColumnDropTarget('')}
                     >
-                      <span
+                      <button
+                        type="button"
+                        draggable={false}
                         className={
                           sortMode !== 'none'
                             ? 'watchlists-th-label watchlists-th-sortable'
                             : 'watchlists-th-label'
                         }
+                        disabled={sortMode === 'none'}
+                        aria-label={
+                          sortMode === 'none'
+                            ? undefined
+                            : sortAction === 'clear'
+                              ? `Clear sort for ${columnLabel}`
+                              : `Sort ${columnLabel} ${sortAction}`
+                        }
                         onClick={() => {
-                          if (sortMode === 'none') {
-                            return
+                          if (sortMode !== 'none') {
+                            toggleSort(column)
                           }
-                          setSortRules((current) => {
-                            const currentRule = current[0]
-                            if (!currentRule || currentRule.field !== column) {
-                              return [{ field: column, direction: 'asc' }]
-                            }
-                            if (currentRule.direction === 'asc') {
-                              return [{ field: column, direction: 'desc' }]
-                            }
-                            return []
-                          })
                         }}
                       >
                         <span>
@@ -2891,9 +2900,31 @@ export default function WatchlistsPage() {
                             {sortDirection.toLowerCase() === 'desc' ? '↓' : '↑'}
                           </span>
                         ) : null}
-                      </span>
+                      </button>
                       <span
                         className="watchlists-th-resizer"
+                        role="separator"
+                        aria-label={`Resize ${columnLabel} column`}
+                        aria-orientation="vertical"
+                        aria-valuemin={90}
+                        aria-valuemax={420}
+                        aria-valuenow={Math.round(width || WATCHLIST_DEFAULT_COLUMN_WIDTH)}
+                        tabIndex={0}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+                            return
+                          }
+                          event.preventDefault()
+                          const delta = event.key === 'ArrowLeft' ? -10 : 10
+                          setColumnWidths((current) => {
+                            const currentWidth =
+                              current[column] || displayColumnWidths[column] || WATCHLIST_DEFAULT_COLUMN_WIDTH
+                            return {
+                              ...current,
+                              [column]: clampColumnWidth(currentWidth + delta, 90, 420),
+                            }
+                          })
+                        }}
                         onMouseDown={(event) => {
                           event.preventDefault()
                           event.stopPropagation()
@@ -2913,7 +2944,7 @@ export default function WatchlistsPage() {
             </thead>
             <tbody>
               {searchedRows.length ? (
-                visibleGroupedRows.map((group, groupIndex) => {
+                renderedGroupedRows.map((group, groupIndex) => {
                   const collapsed = collapsedGroupKeys.has(group.key)
                   const groupDropTarget = buildGroupDropTarget(group)
                   const groupCanDrop = Boolean(groupDropTarget)
@@ -3023,6 +3054,7 @@ export default function WatchlistsPage() {
                             <td className="watchlists-select-col">
                               <input
                                 type="checkbox"
+                                aria-label={`Select ${String(row[primaryDisplayColumn] || instrumentId)}`}
                                 checked={checked}
                                 onChange={(event) =>
                                   setSelectedRows((current) =>
@@ -3057,7 +3089,7 @@ export default function WatchlistsPage() {
                                     row[column],
                                     instrumentId,
                                     watchlistId,
-                                    sparklineMap[instrumentId]?.points,
+                                    sparklineMap[instrumentId],
                                   )}
                                 </td>
                               )
@@ -3068,6 +3100,13 @@ export default function WatchlistsPage() {
                     </React.Fragment>
                   )
                 })
+              ) : screenerLoading || !screenerResult ? (
+                <tr>
+                  <td colSpan={Math.max(visibleColumns.length + 1, 1)} className="watchlists-table-loading">
+                    <span className="watchlists-table-loading-bar" />
+                    <span>Loading watchlist data…</span>
+                  </td>
+                </tr>
               ) : (
                 <tr>
                   <td colSpan={Math.max(visibleColumns.length + 1, 1)} className="empty-state">
@@ -3085,18 +3124,47 @@ export default function WatchlistsPage() {
             <div className="watchlists-pagination-summary">
               {screenerResult.total_rows
                 ? watchlistSearchQuery
-                  ? `Showing ${searchedRows.length} of ${screenerResult.total_rows} rows`
-                  : `Showing all ${screenerResult.total_rows} rows`
+                  ? `Showing ${renderedInstrumentCount} of ${searchedRows.length} matched rows`
+                  : `Showing ${renderedInstrumentCount} of ${screenerResult.total_rows} rows`
                 : 'No rows in this watchlist view'}
             </div>
+            {renderedInstrumentCount < searchedRows.length ? (
+              <div className="watchlists-pagination-actions">
+                <button
+                  type="button"
+                  className="watchlists-pagination-button"
+                  onClick={() =>
+                    startTransition(() =>
+                      setRenderRowLimit((current) =>
+                        Math.min(current + WATCHLIST_INITIAL_RENDER_ROWS, searchedRows.length),
+                      ),
+                    )
+                  }
+                >
+                  Show {Math.min(WATCHLIST_INITIAL_RENDER_ROWS, searchedRows.length - renderedInstrumentCount)} more
+                </button>
+                <button
+                  type="button"
+                  className="watchlists-pagination-button"
+                  onClick={() => startTransition(() => setRenderRowLimit(searchedRows.length))}
+                >
+                  Show all
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </section>
 
       {modalKind === 'columns' ? (
-        <div className="watchlists-modal-backdrop" onClick={() => setModalKind(null)}>
+        <div className="watchlists-modal-backdrop" onClick={closeActiveModal}>
           <div
+            ref={modalDialogRef}
             className="watchlists-modal watchlists-columns-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Choose columns"
+            tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="watchlists-modal-header">
@@ -3104,7 +3172,7 @@ export default function WatchlistsPage() {
                 <div className="panel-title">Data &amp; Columns</div>
                 <div className="section-heading">Manage Data And Columns</div>
               </div>
-              <button type="button" onClick={() => setModalKind(null)}>
+              <button type="button" onClick={closeActiveModal}>
                 Close
               </button>
             </div>
@@ -3192,9 +3260,14 @@ export default function WatchlistsPage() {
       ) : null}
 
       {modalKind === 'copy-items' ? (
-        <div className="watchlists-modal-backdrop" onClick={() => !isCopyingItems && setModalKind(null)}>
+        <div className="watchlists-modal-backdrop" onClick={closeActiveModal}>
           <div
+            ref={modalDialogRef}
             className="watchlists-modal watchlists-compact-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Copy selected instruments"
+            tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="watchlists-modal-header">
@@ -3291,9 +3364,14 @@ export default function WatchlistsPage() {
       ) : null}
 
       {modalKind === 'move-items' ? (
-        <div className="watchlists-modal-backdrop" onClick={() => !isMovingItems && setModalKind(null)}>
+        <div className="watchlists-modal-backdrop" onClick={closeActiveModal}>
           <div
+            ref={modalDialogRef}
             className="watchlists-modal watchlists-compact-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Move selected instruments"
+            tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="watchlists-modal-header">
@@ -3392,8 +3470,16 @@ export default function WatchlistsPage() {
       ) : null}
 
       {modalKind === 'create-watchlist' ? (
-        <div className="watchlists-modal-backdrop" onClick={() => setModalKind(null)}>
-          <div className="watchlists-modal watchlists-save-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="watchlists-modal-backdrop" onClick={closeActiveModal}>
+          <div
+            ref={modalDialogRef}
+            className="watchlists-modal watchlists-save-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Create watchlist"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="watchlists-modal-header">
               <div>
                 <div className="panel-title">Create Watchlist</div>
@@ -3401,6 +3487,7 @@ export default function WatchlistsPage() {
               </div>
               <button
                 type="button"
+                disabled={isCreatingWatchlist}
                 onClick={() => {
                   resetCreateWatchlistForm()
                   setModalKind(null)
@@ -3434,6 +3521,7 @@ export default function WatchlistsPage() {
             <div className="watchlists-modal-actions">
               <button
                 type="button"
+                disabled={isCreatingWatchlist}
                 onClick={() => {
                   resetCreateWatchlistForm()
                   setModalKind(null)
@@ -3483,14 +3571,22 @@ export default function WatchlistsPage() {
       ) : null}
 
       {modalKind === 'save-view' ? (
-        <div className="watchlists-modal-backdrop" onClick={() => setModalKind(null)}>
-          <div className="watchlists-modal watchlists-save-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="watchlists-modal-backdrop" onClick={closeActiveModal}>
+          <div
+            ref={modalDialogRef}
+            className="watchlists-modal watchlists-save-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Save watchlist view"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="watchlists-modal-header">
               <div>
                 <div className="panel-title">Create View</div>
                 <div className="section-heading">Save Current Columns And Grouping</div>
               </div>
-              <button type="button" onClick={() => setModalKind(null)}>
+              <button type="button" disabled={isSavingView} onClick={closeActiveModal}>
                 Close
               </button>
             </div>
@@ -3517,7 +3613,7 @@ export default function WatchlistsPage() {
             </div>
 
             <div className="watchlists-modal-actions">
-              <button type="button" onClick={() => setModalKind(null)}>
+              <button type="button" disabled={isSavingView} onClick={closeActiveModal}>
                 Cancel
               </button>
               <button
@@ -3554,14 +3650,22 @@ export default function WatchlistsPage() {
       ) : null}
 
       {modalKind === 'add' ? (
-        <div className="watchlists-modal-backdrop" onClick={() => setModalKind(null)}>
-          <div className="watchlists-modal watchlists-add-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="watchlists-modal-backdrop" onClick={closeActiveModal}>
+          <div
+            ref={modalDialogRef}
+            className="watchlists-modal watchlists-add-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Add instruments"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="watchlists-modal-header">
               <div>
                 <div className="panel-title">Add</div>
                 <div className="section-heading">Shared Registry</div>
               </div>
-              <button type="button" onClick={() => setModalKind(null)}>
+              <button type="button" disabled={isAdding || isBatchAdding} onClick={closeActiveModal}>
                 Close
               </button>
             </div>
@@ -3620,7 +3724,7 @@ export default function WatchlistsPage() {
                   <div className="empty-state">
                     {instrumentSearch.trim()
                       ? `Instrument "${instrumentSearch.trim()}" does not exist in the shared registry.`
-                      : 'No fund or index instruments are available in the shared registry.'}
+                      : 'No fund, ETF, or index instruments are available in the shared registry.'}
                   </div>
                 ) : null}
               </div>
@@ -3678,6 +3782,16 @@ export default function WatchlistsPage() {
       ) : null}
 
       </div>
+      <ConfirmDialog
+        open={Boolean(pendingDeleteWatchlist)}
+        title="Delete Watchlist"
+        description="This permanently deletes the watchlist, its saved views, and its list membership. Shared instruments are not deleted. This action cannot be undone."
+        confirmLabel="Delete Watchlist"
+        confirmationText={pendingDeleteWatchlist?.name}
+        busy={deletingWatchlist}
+        onCancel={() => setPendingDeleteWatchlist(null)}
+        onConfirm={handleDeleteWatchlist}
+      />
     </>
   )
 }

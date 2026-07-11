@@ -1,4 +1,4 @@
-import { Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes } from 'react-router-dom'
 import { LanguageSelector } from '../../../../packages/ui/src/i18n'
 
 import MonitoringPage from './pages/MonitoringPage'
@@ -41,6 +41,7 @@ export default function App() {
             path="/monitoring"
             element={<MonitoringPage />}
           />
+          <Route path="*" element={<Navigate replace to="/watchlists" />} />
         </Routes>
       </main>
     </div>

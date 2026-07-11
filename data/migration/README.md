@@ -31,14 +31,28 @@ If `sha256sum` is unavailable on macOS, install GNU coreutils or use:
 shasum -a 256 -c data/migration/portfolio_ops_2026-07-09_current.sha256
 ```
 
-Then restore:
+Then restore with the project wrapper. The explicit confirmation protects an
+existing local database from accidental replacement:
 
 ```bash
-PGPASSWORD=portfolio_ops \
-pg_restore --clean --if-exists --no-owner --no-acl \
-  -h 127.0.0.1 -U portfolio_ops -d portfolio_ops \
-  data/migration/portfolio_ops_2026-07-09_current.pgdump
+CONFIRM_RESTORE=portfolio_ops infra/postgres/restore_project_dump.sh
 ```
+
+The wrapper requires and verifies the checksum, validates the archive and exact
+database target, stops any installed local app services, disconnects remaining
+clients, and writes a private pre-restore backup of the current three schemas.
+It then restores only `instrument_registry`, `portfolio`, and `watchlist` and
+applies all current migrations. If restore, validation, or migration fails, it
+automatically drops the partial state, restores the safety backup, and restarts
+the services. Services are restarted only after either the new database or the
+rollback is complete.
+
+Safety backups are retained under
+`${XDG_STATE_HOME:-~/.local/state}/portfolio-operations-workbench/postgres-backups/`.
+Override that location with `PORTFOLIO_OPS_RESTORE_BACKUP_DIR`. A non-local
+database target is refused by default and requires both
+`ALLOW_REMOTE_RESTORE=true` and the full confirmation token printed by the
+wrapper.
 
 Quick verification:
 

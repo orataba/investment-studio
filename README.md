@@ -47,6 +47,8 @@ portfolio-operations-workbench/
   WSL 到 Mac 迁移冻结清单，记录 Git 承载范围、本地状态边界和恢复步骤。
 - [docs/NEW_MACHINE_RESTORE.md](./docs/NEW_MACHINE_RESTORE.md)
   新电脑从 GitHub 私有仓库恢复项目的步骤参考。
+- [docs/LOCAL_MACOS_SERVICE.md](./docs/LOCAL_MACOS_SERVICE.md)
+  macOS 本地后台服务、每日 21:00 行情刷新与自动重算任务的安装、状态检查、日志和卸载说明。
 - [apps/platform/README.md](./apps/platform/README.md)
   Platform app 的职责、启动命令和前端运行时配置。
 - [apps/watchlist/README.md](./apps/watchlist/README.md)
@@ -80,7 +82,7 @@ portfolio-operations-workbench/
 
 ## 开发工作流
 
-以下命令默认从仓库根目录执行；如果你在其他目录，先进入自己的本地 clone。真实 backend `.env` 不进入 Git；本机统一从 `~/.config/orataba/secrets/portfolio-operations-workbench/` 提供，并可在各 backend 目录建立被 Git 忽略的 `.env` 软链接。不要把密钥值粘贴到聊天、issue、PR 描述或提交信息里。
+以下命令默认从仓库根目录执行；如果你在其他目录，先进入自己的本地 clone。真实 backend `.env` 不进入 Git；本机统一从 `~/.config/orataba/secrets/portfolio-operations-workbench/` 提供。纯开发态可在各 backend 目录建立被 Git 忽略的 `.env` 软链接；macOS 后台服务只从外部秘密目录安全加载，安装前必须移除这些仓库内 `.env` 文件或链接。不要把密钥值粘贴到聊天、issue、PR 描述或提交信息里。
 
 ### 数据库
 
@@ -129,6 +131,12 @@ portfolio-operations-workbench/
 
 三个后端已经改成独立顶层包名，但测试和脚本仍建议在各自 backend 目录内执行，以复用本地 Alembic 配置和相对路径。
 
+首次安装或依赖变更后，先按统一锁文件同步环境：
+
+```bash
+infra/scripts/sync_python_env.sh
+```
+
 ```bash
 (cd apps/platform/backend && pytest)
 (cd apps/portfolio/backend && pytest)
@@ -147,6 +155,18 @@ npm --prefix apps/platform/frontend run build
 npm --prefix apps/portfolio/frontend run build
 npm --prefix apps/watchlist/frontend run build
 ```
+
+### macOS 本地后台服务
+
+本机 PostgreSQL 就绪后，可一次完成迁移、前端构建、六个 `launchd`
+常驻服务及每日 `21:00` 刷新/重算任务的安装或更新：
+
+```bash
+infra/launchd/install_local_services.sh
+```
+
+安装后从 `http://127.0.0.1:5172` 进入 Platform；详细状态、日志和卸载命令见
+[docs/LOCAL_MACOS_SERVICE.md](./docs/LOCAL_MACOS_SERVICE.md)。
 
 ## 仓库卫生
 

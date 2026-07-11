@@ -129,6 +129,7 @@ class SQLAlchemyFactsRepository:
         ):
             current.is_current = False
             current.superseded_at = now
+        session.flush()
 
         record = session.get(HoldingSnapshot, holding_snapshot_id)
         if record is None:

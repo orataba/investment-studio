@@ -75,7 +75,8 @@ export function signedValueClass(value: number | null | undefined) {
 }
 
 export function formatLabel(value: string) {
-  return value
+  const formatted = value
     .replace(/[_-]+/g, ' ')
     .replace(/\b\w/g, (letter) => letter.toUpperCase())
+  return formatted.replace(/\b(Etf|Fx|Nav|Twr|Irr)\b/g, (token) => token.toUpperCase())
 }

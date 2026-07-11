@@ -132,9 +132,9 @@ def _rewrite_advanced_filter(node: object) -> object:
 
 
 def upgrade() -> None:
-    from watchlist_app.reference_data.fund_taxonomy import fund_taxonomy_nodes
-    from watchlist_app.reference_data.watchlist_fields import FIELD_CATEGORIES, FIELD_REGISTRY
-    from watchlist_app.services.fund_taxonomy import (
+    from watchlist_migration_snapshots.fund_taxonomy import fund_taxonomy_nodes
+    from watchlist_migration_snapshots.watchlist_fields import FIELD_CATEGORIES, FIELD_REGISTRY
+    from watchlist_migration_snapshots.fund_taxonomy_ops import (
         build_taxonomy_context,
         merge_taxonomy_attributes,
     )

@@ -88,7 +88,13 @@ export default function InstrumentDetailPage() {
     instrument.detail_view_type === 'fund' &&
     instrument.detail_subject_id
   ) {
-    return <FundDetailPage fundId={instrument.detail_subject_id} watchlistContext={watchlistContext} />
+    return (
+      <FundDetailPage
+        fundId={instrument.detail_subject_id}
+        watchlistContext={watchlistContext}
+        corporateActions={instrument.corporate_actions}
+      />
+    )
   }
 
   if (
@@ -101,6 +107,7 @@ export default function InstrumentDetailPage() {
         fundId={instrument.detail_subject_id}
         detailKind="index"
         watchlistContext={watchlistContext}
+        corporateActions={instrument.corporate_actions}
       />
     )
   }
@@ -134,7 +141,7 @@ export default function InstrumentDetailPage() {
       </div>
       <div className="stub-body">
         <p>
-          This watchlist release supports fund and index detail workspaces.{' '}
+          This watchlist release supports fund, ETF, and index detail workspaces.{' '}
           <strong>{instrument.instrument_type}</strong> instruments can exist in the shared registry, but they do not
           have a local watchlist detail workspace yet.
         </p>

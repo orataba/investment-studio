@@ -16,6 +16,7 @@ from platform_app.api.contracts import (
     PlatformNavImportPreviewRequest,
     PlatformNavImportPreviewResponse,
     PlatformNavImportRequest,
+    PlatformQuoteSelectionPolicyUpdateRequest,
     PlatformRefreshTriggerRequest,
     PlatformSourceSettingsUpdateRequest,
 )
@@ -35,6 +36,7 @@ from platform_app.services.instrument_store import (
     list_instruments,
     restore_instrument,
     upsert_market_data,
+    upsert_quote_selection_policy,
     upsert_source_settings,
 )
 from platform_app.services.downstream_notifications import queue_market_data_downstream_refresh
@@ -105,21 +107,41 @@ def refresh_instrument_market_data_batch(
 def create_instrument_record(
     payload: PlatformInstrumentCreateRequest,
 ) -> PlatformInstrumentRecord:
-    if not payload.identifiers:
-        raise HTTPException(status_code=400, detail="At least one identifier is required.")
-    if not any(item.is_primary for item in payload.identifiers):
-        raise HTTPException(status_code=400, detail="One identifier must be primary.")
-
     try:
         record = create_instrument(
             instrument_name=payload.instrument_name,
             instrument_type=payload.instrument_type,
             currency=payload.currency,
             identifiers=[item.model_dump() for item in payload.identifiers],
+            quote_selection_policy=(
+                payload.quote_selection_policy.model_dump()
+                if payload.quote_selection_policy is not None
+                else None
+            ),
         )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
+    return PlatformInstrumentRecord.model_validate(record)
+
+
+@router.put(
+    "/{instrument_id}/quote-selection-policy",
+    response_model=PlatformInstrumentRecord,
+)
+def update_instrument_quote_selection_policy(
+    instrument_id: str,
+    payload: PlatformQuoteSelectionPolicyUpdateRequest,
+) -> PlatformInstrumentRecord:
+    try:
+        record = upsert_quote_selection_policy(
+            instrument_id=instrument_id,
+            quote_selection_policy=payload.quote_selection_policy.model_dump(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if record is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
     return PlatformInstrumentRecord.model_validate(record)
 
 

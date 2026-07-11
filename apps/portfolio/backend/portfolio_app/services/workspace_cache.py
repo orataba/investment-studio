@@ -4,6 +4,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass
 from datetime import date
+import json
 from threading import RLock
 from time import monotonic
 from typing import TypeVar
@@ -19,18 +20,22 @@ from portfolio_app.services.daily_snapshots import (
 
 T = TypeVar("T")
 
-WORKSPACE_CACHE_TTL_SECONDS = 180.0
-WORKSPACE_CACHE_MAX_ENTRIES = 256
+WORKSPACE_CACHE_TTL_SECONDS = 60.0
+WORKSPACE_CACHE_MAX_ENTRIES = 64
+WORKSPACE_CACHE_MAX_VALUE_BYTES = 2 * 1024 * 1024
+WORKSPACE_CACHE_MAX_TOTAL_BYTES = 32 * 1024 * 1024
 
 
 @dataclass
 class _CacheEntry:
     expires_at: float
     value: object
+    approx_size_bytes: int
 
 
 _cache: OrderedDict[tuple[Hashable, ...], _CacheEntry] = OrderedDict()
 _cache_lock = RLock()
+_cache_total_size_bytes = 0
 
 
 def _date_key(value: date | None) -> str | None:
@@ -52,6 +57,7 @@ def _snapshot_fingerprint(portfolio_id: str) -> tuple[str | None, str | None, st
 
 
 def _read_cache(cache_key: tuple[Hashable, ...]) -> object | None:
+    global _cache_total_size_bytes
     now = monotonic()
     with _cache_lock:
         entry = _cache.get(cache_key)
@@ -59,18 +65,42 @@ def _read_cache(cache_key: tuple[Hashable, ...]) -> object | None:
             return None
         if entry.expires_at <= now:
             _cache.pop(cache_key, None)
+            _cache_total_size_bytes -= entry.approx_size_bytes
             return None
         _cache.move_to_end(cache_key)
         return entry.value
 
 
 def _write_cache(cache_key: tuple[Hashable, ...], value: object) -> None:
+    global _cache_total_size_bytes
+    approx_size_bytes = len(
+        json.dumps(
+            value,
+            default=str,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    if approx_size_bytes > WORKSPACE_CACHE_MAX_VALUE_BYTES:
+        return
     expires_at = monotonic() + WORKSPACE_CACHE_TTL_SECONDS
     with _cache_lock:
-        _cache[cache_key] = _CacheEntry(expires_at=expires_at, value=value)
+        previous = _cache.pop(cache_key, None)
+        if previous is not None:
+            _cache_total_size_bytes -= previous.approx_size_bytes
+        _cache[cache_key] = _CacheEntry(
+            expires_at=expires_at,
+            value=value,
+            approx_size_bytes=approx_size_bytes,
+        )
+        _cache_total_size_bytes += approx_size_bytes
         _cache.move_to_end(cache_key)
-        while len(_cache) > WORKSPACE_CACHE_MAX_ENTRIES:
-            _cache.popitem(last=False)
+        while (
+            len(_cache) > WORKSPACE_CACHE_MAX_ENTRIES
+            or _cache_total_size_bytes > WORKSPACE_CACHE_MAX_TOTAL_BYTES
+        ):
+            _, evicted = _cache.popitem(last=False)
+            _cache_total_size_bytes -= evicted.approx_size_bytes
 
 
 def _cache_key(
@@ -141,17 +171,15 @@ def get_cached_materialized_contribution_report(
     axis: str = "instrument",
     group_key: str | None = None,
 ) -> dict[str, object] | None:
-    return _get_cached_portfolio_value(
+    # Contribution reports are inexpensive materialized reads but can be very
+    # large. Caching every axis/group multiplied resident memory without
+    # improving the underlying query path.
+    return build_materialized_contribution_report(
         portfolio_id,
-        surface="contribution",
-        args=(_date_key(start_date), _date_key(end_date), axis, group_key),
-        builder=lambda: build_materialized_contribution_report(
-            portfolio_id,
-            start_date=start_date,
-            end_date=end_date,
-            axis=axis,
-            group_key=group_key,
-        ),
+        start_date=start_date,
+        end_date=end_date,
+        axis=axis,
+        group_key=group_key,
     )
 
 
@@ -166,29 +194,7 @@ def preload_portfolio_workspace_cache(portfolio_id: str) -> dict[str, object]:
         except Exception as exc:  # pragma: no cover - background warmup must not fail foreground requests.
             errors.append(f"{label}: {exc}")
 
-    warm("holdings", lambda: get_cached_materialized_holdings_workspace(portfolio_id))
     warm("performance", lambda: get_cached_materialized_performance_report(portfolio_id))
-    warm(
-        "contribution:instrument",
-        lambda: get_cached_materialized_contribution_report(portfolio_id, axis="instrument"),
-    )
-    warm(
-        "contribution:account",
-        lambda: get_cached_materialized_contribution_report(portfolio_id, axis="account"),
-    )
-    for axis in (
-        "instrument_type",
-        "currency",
-        "cash_detail",
-        "instrument_detail",
-        "account_detail",
-        "instrument_type_detail",
-        "currency_detail",
-    ):
-        warm(
-            f"contribution:{axis}",
-            lambda axis=axis: get_cached_materialized_contribution_report(portfolio_id, axis=axis),
-        )
     return {
         "portfolio_id": portfolio_id,
         "warmed_surfaces": warmed,

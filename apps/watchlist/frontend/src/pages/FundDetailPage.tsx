@@ -12,8 +12,9 @@ import { Link, useParams } from 'react-router-dom'
 
 import LoadingOverlay from '../components/LoadingOverlay'
 import {
+  type CalculationFrequencyProfile,
+  type CorporateActionEvent,
   type FundChartPoint,
-  type FundChartResponse,
   type FundDocumentsResponse,
   type FundLibraryItem,
   type FundNavSeriesResponse,
@@ -33,7 +34,6 @@ import {
   type InstrumentAttributeDefinition,
   getFundTaxonomyTree,
   getInstrumentAttributes,
-  getInstrumentChart,
   getInstrumentDocuments,
   getInstrumentExposureHoldings as getInstrumentPortfolioHoldings,
   getInstrumentExposureSummary as getInstrumentPortfolioSummary,
@@ -67,11 +67,17 @@ import {
 } from '../lib/format'
 import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
 import { useLanguage } from '../../../../../packages/ui/src/i18n'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import {
+  beginDetailRequest,
+  completeDetailRequest,
+  createDetailRequestCoordinator,
+} from '../lib/detailRequestCoordinator'
+import { rejectedLabels, settledValue } from '../lib/settled'
 
 type FundDetailBundle = {
   summary: FundSummaryResponse
   library: FundLibraryItem[]
-  chart: FundChartResponse
   performance: FundPerformanceResponse
   risk: FundRiskResponse
   portfolio: FundPortfolioResponse
@@ -1648,6 +1654,62 @@ function defaultFundDocumentsResponse(): FundDocumentsResponse {
 
 function defaultFundResearchResponse(): FundResearchResponse {
   return { overview: {}, manual_rating: null, timeline_notes: [] }
+}
+
+function defaultCalculationFrequencyProfile(): CalculationFrequencyProfile {
+  return {
+    requested_frequency: 'auto',
+    resolved_frequency: 'daily',
+    inferred_frequency: 'daily',
+    source_frequency_counts: { daily: 0, weekly: 0, monthly: 0, unknown: 0 },
+    raw_observation_count: 0,
+    observation_count: 0,
+    start_date: null,
+    end_date: null,
+    annualization_periods_per_year: null,
+    largest_gap_days: null,
+    gap_count: 0,
+    gap_status: 'aligned',
+    status_label: 'Unavailable',
+  }
+}
+
+function defaultFundPerformanceResponse(): FundPerformanceResponse {
+  return {
+    growth_chart_series: [],
+    annual_returns: [],
+    trailing_returns: [],
+    ranking: null,
+    peer_comparison: null,
+    calculation_frequency_profile: null,
+    snapshot_metadata: null,
+  }
+}
+
+function defaultFundRiskResponse(): FundRiskResponse {
+  return {
+    risk_overview: null,
+    scatter_points: [],
+    risk_metrics: [],
+    drawdown_summary: null,
+    calculation_frequency_profile: null,
+    snapshot_metadata: null,
+  }
+}
+
+function defaultFundNavSeriesResponse(fundId: string): FundNavSeriesResponse {
+  return {
+    fund_id: fundId,
+    count: 0,
+    nav_basis_preference: 'auto',
+    nav_basis_type: null,
+    nav_basis_source: 'unavailable',
+    nav_basis_status: 'unavailable',
+    calculation_frequency_profile: defaultCalculationFrequencyProfile(),
+    series: [],
+    calculation_series: [],
+    rows: [],
+  }
 }
 
 function buildChartLinePath(
@@ -3968,12 +4030,14 @@ type FundDetailPageProps = {
     watchlistId: string
     watchlistName?: string | null
   } | null
+  corporateActions?: CorporateActionEvent[]
 }
 
 export default function FundDetailPage({
   fundId: propFundId,
   detailKind = 'fund',
   watchlistContext = null,
+  corporateActions = [],
 }: FundDetailPageProps = {}) {
   const { language } = useLanguage()
   const { fundId: routeFundId = 'fax' } = useParams()
@@ -4016,6 +4080,11 @@ export default function FundDetailPage({
     useState<ChartTimelineNoteContextMenu | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [loadWarning, setLoadWarning] = useState<string | null>(null)
+  const [detailBundleKey, setDetailBundleKey] = useState('')
+  const [loadingSectionKeys, setLoadingSectionKeys] = useState<Set<string>>(() => new Set())
+  const [sectionLoadErrors, setSectionLoadErrors] = useState<Partial<Record<DetailTab, string>>>({})
+  const [sectionRetryToken, setSectionRetryToken] = useState(0)
   const [refreshToken, setRefreshToken] = useState(0)
   const [editingPeople, setEditingPeople] = useState(false)
   const [editingStrategy, setEditingStrategy] = useState(false)
@@ -4045,8 +4114,27 @@ export default function FundDetailPage({
   const riskSettingsMenuRef = useRef<HTMLDivElement | null>(null)
   const productFrameworkPickerRef = useRef<HTMLDivElement | null>(null)
   const timelineNoteContextMenuRef = useRef<HTMLDivElement | null>(null)
+  const detailBundleKeyRef = useRef('')
+  const detailRequestCoordinatorRef = useRef(createDetailRequestCoordinator(''))
+
+  function closeSettingsDialog() {
+    if (savingSection !== 'fund_settings') {
+      setSettingsModalOpen(false)
+    }
+  }
+
+  function closeTimelineNoteDialog() {
+    if (savingSection !== 'timeline_note') {
+      setTimelineNoteDraft(null)
+    }
+  }
+
+  const settingsDialogRef = useModalDialog(settingsModalOpen, closeSettingsDialog)
+  const timelineNoteDialogRef = useModalDialog(Boolean(timelineNoteDraft), closeTimelineNoteDialog)
   const [productFrameworkAttributes, setProductFrameworkAttributes] =
     useState<InstrumentAttributeValuesResponse | null>(null)
+  const [productFrameworkLoadError, setProductFrameworkLoadError] = useState<string | null>(null)
+  const [productFrameworkRetryToken, setProductFrameworkRetryToken] = useState(0)
   const [productFrameworkSavingKey, setProductFrameworkSavingKey] = useState<string | null>(null)
   const [openProductFrameworkPickerKey, setOpenProductFrameworkPickerKey] =
     useState<string | null>(null)
@@ -4086,98 +4174,99 @@ export default function FundDetailPage({
 
   useEffect(() => {
     let cancelled = false
+    const previousBundle = bundle?.summary.fund_id === fundId ? bundle : null
+    const bundleKey = `${detailKind}:${fundId}:${refreshToken}`
+    const requestCoordinator = createDetailRequestCoordinator(bundleKey)
+    detailBundleKeyRef.current = ''
+    detailRequestCoordinatorRef.current = requestCoordinator
+    setDetailBundleKey('')
+    setLoadingSectionKeys(new Set())
+    setSectionLoadErrors({})
 
     async function loadFund() {
-      if (!bundle) {
+      if (!previousBundle) {
+        setBundle(null)
         setLoading(true)
       }
       setError(null)
+      setLoadWarning(null)
 
       try {
-        if (detailKind === 'index') {
-          const [summary, library, chart, performance, risk, navSeries] = await Promise.all([
-            getInstrumentSummary(fundId),
-            getInstrumentLibrary(),
-            getInstrumentChart(fundId),
-            getInstrumentPerformance(fundId),
-            getInstrumentRisk(fundId),
-            getInstrumentNavSeries(fundId),
-          ])
-
-          if (cancelled) {
-            return
-          }
-
-          const nextTabs = normalizeTabs(summary.tabs || [], detailKind)
-
-          setBundle({
-            summary: { ...summary, tabs: nextTabs },
-            library,
-            chart,
-            performance,
-            risk,
-            portfolio: defaultFundPortfolioResponse(),
-            holdings: defaultFundPortfolioHoldingsResponse(),
-            ratings: defaultFundRatingsResponse(summary),
-            people: defaultFundPeopleResponse(),
-            strategy: defaultFundStrategyResponse(),
-            price: defaultFundPriceResponse(),
-            documents: defaultFundDocumentsResponse(),
-            research: defaultFundResearchResponse(),
-            navSeries,
-          })
-          startTransition(() => {
-            setActiveTab((current) => (nextTabs.includes(current) ? current : nextTabs[0] || 'overview'))
-          })
-          return
-        }
-
-        const [summary, library, chart, performance, risk, portfolio, holdings, ratings, people, strategy, price, documents, research, navSeries] =
-          await Promise.all([
-            getInstrumentSummary(fundId),
-            getInstrumentLibrary(),
-            getInstrumentChart(fundId),
-            getInstrumentPerformance(fundId),
-            getInstrumentRisk(fundId),
-            getInstrumentPortfolioSummary(fundId),
-            getInstrumentPortfolioHoldings(fundId),
-            getInstrumentRatings(fundId),
-            getInstrumentPeople(fundId),
-            getInstrumentStrategy(fundId),
-            getInstrumentPrice(fundId),
-            getInstrumentDocuments(fundId),
-            getInstrumentResearch(fundId),
-            getInstrumentNavSeries(fundId),
-          ])
+        const results = await Promise.allSettled([
+          getInstrumentSummary(fundId),
+          getInstrumentLibrary(),
+          getInstrumentNavSeries(fundId),
+          detailKind === 'index'
+            ? Promise.resolve(defaultFundResearchResponse())
+            : getInstrumentResearch(fundId),
+        ] as const)
+        const [
+          summaryResult,
+          libraryResult,
+          navSeriesResult,
+          researchResult,
+        ] = results
 
         if (cancelled) {
           return
         }
 
+        const summary =
+          summaryResult.status === 'fulfilled' ? summaryResult.value : previousBundle?.summary
+        if (!summary) {
+          throw summaryResult.status === 'rejected'
+            ? summaryResult.reason
+            : new Error('Failed to load instrument summary.')
+        }
+
+        const failedSections = rejectedLabels(results, [
+          'summary',
+          'library',
+          'NAV series',
+          'research timeline',
+        ])
+
         const nextTabs = normalizeTabs(summary.tabs || [], detailKind)
 
+        detailBundleKeyRef.current = bundleKey
         setBundle({
           summary: { ...summary, tabs: nextTabs },
-          library,
-          chart,
-          performance,
-          risk,
-          portfolio,
-          holdings,
-          ratings,
-          people,
-          strategy,
-          price,
-          documents,
-          research,
-          navSeries,
+          library: settledValue(libraryResult, previousBundle?.library ?? []),
+          performance: previousBundle?.performance ?? defaultFundPerformanceResponse(),
+          risk: previousBundle?.risk ?? defaultFundRiskResponse(),
+          portfolio: previousBundle?.portfolio ?? defaultFundPortfolioResponse(),
+          holdings: previousBundle?.holdings ?? defaultFundPortfolioHoldingsResponse(),
+          ratings: previousBundle?.ratings ?? defaultFundRatingsResponse(summary),
+          people: previousBundle?.people ?? defaultFundPeopleResponse(),
+          strategy: previousBundle?.strategy ?? defaultFundStrategyResponse(),
+          price: previousBundle?.price ?? defaultFundPriceResponse(),
+          documents: previousBundle?.documents ?? defaultFundDocumentsResponse(),
+          research: settledValue(
+            researchResult,
+            previousBundle?.research ?? defaultFundResearchResponse(),
+          ),
+          navSeries: settledValue(
+            navSeriesResult,
+            previousBundle?.navSeries ?? defaultFundNavSeriesResponse(fundId),
+          ),
         })
+        setDetailBundleKey(bundleKey)
+        setLoadWarning(
+          failedSections.length
+            ? `Some sections could not be refreshed (${failedSections.join(', ')}). Available data remains usable.`
+            : null,
+        )
         startTransition(() => {
           setActiveTab((current) => (nextTabs.includes(current) ? current : nextTabs[0] || 'overview'))
         })
       } catch (loadError) {
         if (!cancelled) {
-          setError(loadError instanceof Error ? loadError.message : 'Failed to load detail.')
+          const message = loadError instanceof Error ? loadError.message : 'Failed to load detail.'
+          if (previousBundle) {
+            setLoadWarning(`Refresh failed. Showing the last available data. ${message}`)
+          } else {
+            setError(message)
+          }
         }
       } finally {
         if (!cancelled) {
@@ -4190,8 +4279,126 @@ export default function FundDetailPage({
 
     return () => {
       cancelled = true
+      if (detailRequestCoordinatorRef.current === requestCoordinator) {
+        detailRequestCoordinatorRef.current = createDetailRequestCoordinator(`${bundleKey}:invalidated`)
+        detailBundleKeyRef.current = ''
+      }
     }
   }, [detailKind, fundId, refreshToken])
+
+  useEffect(() => {
+    const bundleKey = `${detailKind}:${fundId}:${refreshToken}`
+    if (
+      !bundle ||
+      detailBundleKey !== bundleKey ||
+      detailBundleKeyRef.current !== bundleKey ||
+      activeTab === 'overview'
+    ) {
+      return undefined
+    }
+    const loadKey = `${bundleKey}:${activeTab}`
+
+    type LazyRequest = {
+      key: keyof FundDetailBundle
+      label: string
+      load: () => Promise<unknown>
+    }
+    let requests: LazyRequest[] = []
+    if (activeTab === 'performance') {
+      requests = [{ key: 'performance', label: 'performance', load: () => getInstrumentPerformance(fundId) }]
+    } else if (activeTab === 'risk') {
+      requests = [{ key: 'risk', label: 'risk', load: () => getInstrumentRisk(fundId) }]
+    } else if (activeTab === 'price') {
+      requests = [{ key: 'price', label: 'price', load: () => getInstrumentPrice(fundId) }]
+    } else if (activeTab === 'exposure') {
+      requests = [
+        { key: 'portfolio', label: 'exposure summary', load: () => getInstrumentPortfolioSummary(fundId) },
+        { key: 'holdings', label: 'holdings', load: () => getInstrumentPortfolioHoldings(fundId) },
+      ]
+    } else if (activeTab === 'people') {
+      requests = [{ key: 'people', label: 'people', load: () => getInstrumentPeople(fundId) }]
+    } else if (activeTab === 'strategy') {
+      requests = [{ key: 'strategy', label: 'strategy', load: () => getInstrumentStrategy(fundId) }]
+    } else if (activeTab === 'documents') {
+      requests = [{ key: 'documents', label: 'documents', load: () => getInstrumentDocuments(fundId) }]
+    } else if (activeTab === 'monitoring') {
+      requests = [
+        { key: 'performance', label: 'performance', load: () => getInstrumentPerformance(fundId) },
+        { key: 'risk', label: 'risk', load: () => getInstrumentRisk(fundId) },
+        { key: 'portfolio', label: 'exposure summary', load: () => getInstrumentPortfolioSummary(fundId) },
+        { key: 'ratings', label: 'ratings', load: () => getInstrumentRatings(fundId) },
+      ]
+    }
+    if (!requests.length) {
+      return undefined
+    }
+
+    const coordinator = detailRequestCoordinatorRef.current
+    const requestToken = beginDetailRequest(coordinator, loadKey)
+    if (!requestToken) {
+      return undefined
+    }
+    const activeRequest = requestToken
+
+    setLoadingSectionKeys((current) => new Set(current).add(loadKey))
+    setSectionLoadErrors((current) => {
+      if (!current[activeTab]) {
+        return current
+      }
+      const next = { ...current }
+      delete next[activeTab]
+      return next
+    })
+
+    async function loadSection() {
+      const results = await Promise.allSettled(requests.map((request) => request.load()))
+      const failedSections = rejectedLabels(results, requests.map((request) => request.label))
+      const accepted = completeDetailRequest(
+        coordinator,
+        activeRequest,
+        failedSections.length === 0,
+      )
+      if (
+        !accepted ||
+        detailRequestCoordinatorRef.current !== coordinator ||
+        detailBundleKeyRef.current !== bundleKey
+      ) {
+        return
+      }
+
+      const updates: Partial<FundDetailBundle> = {}
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          Object.assign(updates, { [requests[index].key]: result.value })
+        }
+      })
+      setBundle((current) => (current ? { ...current, ...updates } : current))
+      setSectionLoadErrors((current) => {
+        const next = { ...current }
+        if (failedSections.length) {
+          next[activeTab] =
+            `Could not load ${failedSections.join(', ')}. Existing data remains visible; retry when the service is available.`
+        } else {
+          delete next[activeTab]
+        }
+        return next
+      })
+    }
+
+    void loadSection().finally(() => {
+      if (detailRequestCoordinatorRef.current === coordinator) {
+        setLoadingSectionKeys((current) => {
+          if (!current.has(loadKey)) {
+            return current
+          }
+          const next = new Set(current)
+          next.delete(loadKey)
+          return next
+        })
+      }
+    })
+    return undefined
+  }, [activeTab, detailBundleKey, detailKind, fundId, refreshToken, sectionRetryToken])
 
   useEffect(() => {
     setTimelineNoteDraft(null)
@@ -4203,6 +4410,7 @@ export default function FundDetailPage({
   useEffect(() => {
     let cancelled = false
     setProductFrameworkAttributes(null)
+    setProductFrameworkLoadError(null)
     setOpenProductFrameworkPickerKey(null)
 
     async function loadProductFramework() {
@@ -4211,22 +4419,13 @@ export default function FundDetailPage({
         if (!cancelled) {
           setProductFrameworkAttributes(response)
         }
-      } catch {
+      } catch (loadError) {
         if (!cancelled) {
-          setProductFrameworkAttributes({
-            instrument_id: fundId,
-            definitions: [],
-            values: {},
-            taxonomy: {
-              taxonomy_code: 'fund_taxonomy',
-              assigned_node_id: null,
-              assigned_label: null,
-              path_labels: [],
-              path_node_ids: [],
-              depth: 0,
-              derived_values: {},
-            },
-          })
+          setProductFrameworkLoadError(
+            loadError instanceof Error
+              ? loadError.message
+              : 'The product framework service is unavailable.',
+          )
         }
       }
     }
@@ -4236,7 +4435,7 @@ export default function FundDetailPage({
     return () => {
       cancelled = true
     }
-  }, [fundId, refreshToken])
+  }, [fundId, productFrameworkRetryToken, refreshToken])
 
   useEffect(() => {
     const assignedNodeId =
@@ -4303,13 +4502,13 @@ export default function FundDetailPage({
     }
     const currencies = Array.from(
       new Set(
-        [bundle.chart.currency, ...bundle.navSeries.rows.map((row) => row.currency || '')]
+        bundle.navSeries.rows.map((row) => row.currency || '')
           .map((value) => value || '')
           .filter(Boolean),
       ),
     )
     const effectiveCurrency =
-      currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || bundle.chart.currency || 'USD'
+      currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || 'USD'
     const quoteContext = buildQuoteSeriesContext(bundle.navSeries.rows, {
       currency: effectiveCurrency,
       requestedBasis: quoteBasis,
@@ -4345,7 +4544,7 @@ export default function FundDetailPage({
     }
     const currencies = Array.from(
       new Set(
-        [bundle.chart.currency, ...bundle.navSeries.rows.map((row) => row.currency || '')]
+        bundle.navSeries.rows.map((row) => row.currency || '')
           .map((value) => value || '')
           .filter(Boolean),
       ),
@@ -4403,13 +4602,13 @@ export default function FundDetailPage({
 
     const currencies = Array.from(
       new Set(
-        [bundle.chart.currency, ...bundle.navSeries.rows.map((row) => row.currency || '')]
+        bundle.navSeries.rows.map((row) => row.currency || '')
           .map((value) => value || '')
           .filter(Boolean),
       ),
     )
     const effectiveCurrency =
-      currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || bundle.chart.currency || 'USD'
+      currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || 'USD'
     const quoteContext = buildQuoteSeriesContext(bundle.navSeries.rows, {
       currency: effectiveCurrency,
       requestedBasis: quoteBasis,
@@ -4921,18 +5120,18 @@ export default function FundDetailPage({
     )
   }
 
-  const { summary, chart, performance, risk, portfolio, holdings, ratings, people, strategy, price, documents, research, navSeries } = bundle
+  const { summary, performance, risk, portfolio, holdings, ratings, people, strategy, price, documents, research, navSeries } = bundle
   const timelineNotes = normalizeResearchTimelineNotes(research.timeline_notes)
   const availableCurrencies = Array.from(
     new Set(
-      [chart.currency, ...navSeries.rows.map((row) => row.currency || '')]
+      navSeries.rows.map((row) => row.currency || '')
         .map((value) => value || '')
         .filter(Boolean),
     ),
   )
   const effectiveCurrency = availableCurrencies.includes(selectedCurrency)
     ? selectedCurrency
-    : availableCurrencies[0] || chart.currency || 'USD'
+    : availableCurrencies[0] || 'USD'
   const quoteSeriesContext = buildQuoteSeriesContext(navSeries.rows, {
     currency: effectiveCurrency,
     requestedBasis: quoteBasis,
@@ -5942,7 +6141,7 @@ export default function FundDetailPage({
     { label: 'Basis Source', value: formatNavBasisSource(navSeries.nav_basis_source) },
     { label: 'Series Count', value: String(navSeries.count || navSeries.rows.length || 0) },
     { label: selectedDateLabel.replace(/^Last\\s+/, ''), value: formatDate(latestQuoteRow?.as_of_date || navSeries.rows[navSeries.rows.length - 1]?.as_of_date) },
-    { label: 'Currency', value: getString(navSeries.rows[navSeries.rows.length - 1]?.currency || chart.currency) },
+    { label: 'Currency', value: getString(navSeries.rows[navSeries.rows.length - 1]?.currency || 'USD') },
   ]
   const distributionRowsSummary = [
     {
@@ -7425,6 +7624,11 @@ export default function FundDetailPage({
   return (
     <div className="terminal-page instrument-detail-page">
       <section className="panel instrument-detail-shell">
+        {loadWarning ? (
+          <div className="inline-notice" role="status">
+            {loadWarning}
+          </div>
+        ) : null}
         <div className="instrument-detail-topbar">
           <div className="instrument-detail-breadcrumbs">
             <a href={PLATFORM_HOME_URL} className="instrument-detail-backlink">
@@ -7498,18 +7702,36 @@ export default function FundDetailPage({
 
         {sectionError ? <div className="inline-notice inline-notice-error">{sectionError}</div> : null}
         {sectionNotice ? <div className="inline-notice inline-notice-success">{sectionNotice}</div> : null}
+        {sectionLoadErrors[activeTab] ? (
+          <div className="inline-notice inline-notice-error instrument-section-load-error" role="alert">
+            <span>{sectionLoadErrors[activeTab]}</span>
+            <button
+              type="button"
+              onClick={() => setSectionRetryToken((current) => current + 1)}
+            >
+              {language === 'zh-Hans' ? '重试' : 'Retry'}
+            </button>
+          </div>
+        ) : null}
+        {loadingSectionKeys.has(`${detailBundleKey}:${activeTab}`) ? (
+          <div className="inline-notice" role="status">
+            Loading {localize(language, TAB_LABELS[activeTab]).toLowerCase()} data…
+          </div>
+        ) : null}
       </section>
 
       {settingsModalOpen ? (
         <div
           className="instrument-modal-backdrop"
-          onClick={() => setSettingsModalOpen(false)}
+          onClick={closeSettingsDialog}
         >
           <div
+            ref={settingsDialogRef}
             className="instrument-modal instrument-settings-modal"
             role="dialog"
             aria-modal="true"
             aria-label={localize(language, SYSTEM_LABELS.settings)}
+            tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="instrument-modal-header">
@@ -7518,7 +7740,11 @@ export default function FundDetailPage({
                 <div className="instrument-quote-source-title">{localize(language, SYSTEM_LABELS.taxonomySettings)}</div>
               </div>
               <div className="toolbar">
-                <button type="button" onClick={() => setSettingsModalOpen(false)}>
+                <button
+                  type="button"
+                  disabled={savingSection === 'fund_settings'}
+                  onClick={closeSettingsDialog}
+                >
                   {localize(language, SYSTEM_LABELS.cancel)}
                 </button>
                 <button
@@ -7598,6 +7824,51 @@ export default function FundDetailPage({
 
       {activeTab === 'overview' ? (
         <>
+          {corporateActions.length ? (
+            <section className="panel instrument-corporate-actions-panel">
+              <div className="instrument-section-header">
+                <div>
+                  <div className="panel-title">Corporate Actions</div>
+                  <div className="instrument-section-title">Unit adjustments</div>
+                </div>
+                <span className="muted">Adjusted series handles returns; confirmed events adjust portfolio units.</span>
+              </div>
+              <div className="table-shell">
+                <table className="instrument-data-table">
+                  <thead>
+                    <tr>
+                      <th>Effective</th>
+                      <th>Record</th>
+                      <th>Action</th>
+                      <th>Ratio</th>
+                      <th>Rounding</th>
+                      <th>Status</th>
+                      <th>Source</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...corporateActions].reverse().map((event) => (
+                      <tr key={event.corporate_action_event_id}>
+                        <td>{formatDate(event.effective_date)}</td>
+                        <td>{formatDate(event.record_date)}</td>
+                        <td>{event.action_type === 'share_split' ? 'Share split' : formatLabel(event.action_type)}</td>
+                        <td>{String(event.new_units)} : {String(event.old_units)}</td>
+                        <td>{formatLabel(event.quantity_rounding)}</td>
+                        <td><span className={`status-badge status-${event.status}`}>{formatLabel(event.status)}</span></td>
+                        <td>{formatLabel(event.source)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {corporateActions.some((event) => event.status === 'detected') ? (
+                <div className="instrument-corporate-action-warning">
+                  Detected events are informational only and never change portfolio quantities until issuer,
+                  exchange, or depository evidence confirms ratio and fractional treatment.
+                </div>
+              ) : null}
+            </section>
+          ) : null}
           <section className="panel instrument-quote-panel">
             <div className="instrument-chart-shell">
               <div className="instrument-chart-header">
@@ -8376,13 +8647,15 @@ export default function FundDetailPage({
           {timelineNoteDraft ? (
             <div
               className="instrument-modal-backdrop"
-              onClick={() => setTimelineNoteDraft(null)}
+              onClick={closeTimelineNoteDialog}
             >
               <div
+                ref={timelineNoteDialogRef}
                 className="instrument-modal instrument-timeline-note-modal"
                 role="dialog"
                 aria-modal="true"
                 aria-label="Timeline Note"
+                tabIndex={-1}
                 onClick={(event) => event.stopPropagation()}
               >
                 <div className="instrument-modal-header">
@@ -8402,7 +8675,11 @@ export default function FundDetailPage({
                         Delete
                       </button>
                     ) : null}
-                    <button type="button" onClick={() => setTimelineNoteDraft(null)}>
+                    <button
+                      type="button"
+                      disabled={savingSection === 'timeline_note'}
+                      onClick={closeTimelineNoteDialog}
+                    >
                       Cancel
                     </button>
                     <button
@@ -10836,9 +11113,35 @@ export default function FundDetailPage({
                   <div className="instrument-section-title">Classification</div>
                 </div>
               </div>
-              <div className="instrument-placeholder instrument-research-placeholder">
-                Loading product framework...
-              </div>
+              {productFrameworkLoadError ? (
+                <div
+                  className="instrument-placeholder instrument-research-placeholder instrument-framework-load-error"
+                  role="alert"
+                >
+                  <div>
+                    <strong>
+                      {language === 'zh-Hans'
+                        ? '研究框架加载失败'
+                        : 'Research framework unavailable'}
+                    </strong>
+                    <span>
+                      {language === 'zh-Hans'
+                        ? `属性服务未返回数据：${productFrameworkLoadError}`
+                        : `The attribute service did not return data: ${productFrameworkLoadError}`}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setProductFrameworkRetryToken((current) => current + 1)}
+                  >
+                    {language === 'zh-Hans' ? '重试' : 'Retry'}
+                  </button>
+                </div>
+              ) : (
+                <div className="instrument-placeholder instrument-research-placeholder">
+                  Loading product framework...
+                </div>
+              )}
             </section>
           ) : (
             productFrameworkSections.map((section) => (

@@ -11,7 +11,7 @@ from portfolio_app.db.models import (
     TransactionRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import portfolio_store
+from portfolio_app.services import daily_snapshots, portfolio_store
 from portfolio_app.services.daily_snapshots import DAILY_SNAPSHOT_CALCULATION_VERSION
 
 
@@ -165,6 +165,10 @@ def test_portfolio_summary_prefers_latest_fresh_complete_snapshot(client) -> Non
         state.refreshed_from = date(2026, 5, 20)
         state.refreshed_to = date(2026, 5, 22)
         state.refreshed_at = "2026-05-21T00:00:00Z"
+        state.source_market_data_updated_at = daily_snapshots._source_market_data_watermark(
+            session,
+            "portfolio-ops",
+        )
         state.refresh_request_id = None
         session.commit()
 

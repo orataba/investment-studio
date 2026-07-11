@@ -35,8 +35,8 @@ def _require_taxonomy_asset(session: Session, instrument_id: str):
     instrument = instrument_repository.get(session, instrument_id)
     if instrument is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
-    if str(instrument.instrument_type or "").strip().lower() not in {"fund", "index"}:
-        raise HTTPException(status_code=400, detail="Taxonomy is only available for fund and index instruments.")
+    if str(instrument.instrument_type or "").strip().lower() not in {"fund", "etf", "index"}:
+        raise HTTPException(status_code=400, detail="Taxonomy is only available for fund, ETF, and index instruments.")
     return instrument
 
 

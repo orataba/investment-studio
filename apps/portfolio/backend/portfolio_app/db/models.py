@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import Boolean, Date, ForeignKey, Index, JSON, String
+from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, Index, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from portfolio_app.db.base import Base
@@ -17,9 +17,9 @@ class PortfolioRecordModel(Base):
     valuation_timezone: Mapped[str] = mapped_column(String, nullable=False)
     valuation_cutoff_policy: Mapped[str] = mapped_column(String, nullable=False)
     as_of_date: Mapped[date | None] = mapped_column(Date)
-    nav: Mapped[float] = mapped_column(nullable=False, default=0.0)
-    day_change_value: Mapped[float] = mapped_column(nullable=False, default=0.0)
-    day_change_pct: Mapped[float] = mapped_column(nullable=False, default=0.0)
+    nav: Mapped[float | None] = mapped_column(default=0.0)
+    day_change_value: Mapped[float | None] = mapped_column(default=0.0)
+    day_change_pct: Mapped[float | None] = mapped_column(default=0.0)
     securities_count: Mapped[int] = mapped_column(nullable=False, default=0)
     sort_order: Mapped[int] = mapped_column(nullable=False, default=0)
     default_planning_taxonomy_id: Mapped[str | None] = mapped_column(String)
@@ -165,9 +165,19 @@ class PortfolioCalculationStateModel(Base):
     refresh_request_id: Mapped[str | None] = mapped_column(String)
     refresh_started_at: Mapped[str | None] = mapped_column(String)
     refresh_completed_at: Mapped[str | None] = mapped_column(String)
+    source_market_data_updated_at: Mapped[str | None] = mapped_column(String)
     error_message: Mapped[str | None] = mapped_column(String)
 
     portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="calculation_state")
+
+
+class TransactionIdAllocatorModel(Base):
+    """Database-coordinated allocator for the externally visible transaction id."""
+
+    __tablename__ = "transaction_id_allocator"
+
+    allocator_key: Mapped[str] = mapped_column(String, primary_key=True)
+    next_value: Mapped[int] = mapped_column(nullable=False, default=1)
 
 
 class PortfolioTableViewStoreModel(Base):
@@ -430,6 +440,16 @@ class TargetSetLineRecordModel(Base):
 
 class ResearchSettingsRecordModel(Base):
     __tablename__ = "research_settings_record"
+    __table_args__ = (
+        CheckConstraint(
+            "as_of_mode IN ('dynamic', 'pinned')",
+            name="ck_research_settings_as_of_mode",
+        ),
+        CheckConstraint(
+            "lookback_days IN (30, 90, 180, 366, 730)",
+            name="ck_research_settings_supported_lookback",
+        ),
+    )
 
     portfolio_id: Mapped[str] = mapped_column(
         ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
@@ -437,6 +457,7 @@ class ResearchSettingsRecordModel(Base):
     )
     planning_taxonomy_id: Mapped[str | None] = mapped_column(String)
     comparator_taxonomy_node_id: Mapped[str | None] = mapped_column(String)
+    as_of_mode: Mapped[str] = mapped_column(String, nullable=False, default="dynamic")
     as_of_date: Mapped[date | None] = mapped_column(Date)
     lookback_days: Mapped[int] = mapped_column(nullable=False, default=90)
     calculation_frequency: Mapped[str] = mapped_column(String, nullable=False, default="auto")
@@ -460,6 +481,10 @@ class ResearchRunRecordModel(Base):
     __tablename__ = "research_run_record"
     __table_args__ = (
         Index("ix_research_run_record_portfolio_requested", "portfolio_id", "requested_at", "research_run_id"),
+        CheckConstraint(
+            "lookback_days IN (30, 90, 180, 366, 730)",
+            name="ck_research_run_supported_lookback",
+        ),
     )
 
     research_run_id: Mapped[str] = mapped_column(String, primary_key=True)

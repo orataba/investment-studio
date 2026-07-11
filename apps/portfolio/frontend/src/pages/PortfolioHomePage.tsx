@@ -13,10 +13,12 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioTableViewControls, { type PortfolioTableViewOption } from '../components/PortfolioTableViewControls'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import QualityWarningsNotice from '../components/QualityWarningsNotice'
 import DownloadFormatMenu from '../../../../../packages/ui/src/DownloadFormatMenu'
 import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui/src/NoticeToast'
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import {
   formatCurrency,
   formatLabel,
@@ -2030,6 +2032,14 @@ export default function PortfolioHomePage() {
   const [holdingsColumnDraft, setHoldingsColumnDraft] = useState<HoldingsColumnKey[]>(() => initialHoldingsViewState.columns)
   const [holdingsColumnsOpen, setHoldingsColumnsOpen] = useState(false)
   const [holdingsGroupByOpen, setHoldingsGroupByOpen] = useState(false)
+  const holdingsColumnsDialogRef = useModalDialog(
+    holdingsColumnsOpen,
+    () => setHoldingsColumnsOpen(false),
+  )
+  const holdingsGroupByDialogRef = useModalDialog(
+    holdingsGroupByOpen,
+    () => setHoldingsGroupByOpen(false),
+  )
   const [holdingsColumnCategory, setHoldingsColumnCategory] = useState(HOLDINGS_COLUMN_GROUPS[0]?.label ?? 'Core')
   const [holdingsColumnSearch, setHoldingsColumnSearch] = useState('')
   const [holdingsColumnDropTarget, setHoldingsColumnDropTarget] = useState<HoldingsColumnKey | null>(null)
@@ -2850,6 +2860,7 @@ export default function PortfolioHomePage() {
         </div>
         {loading ? <CalculationStatus /> : null}
         {error ? <div className="error-state">{error}</div> : null}
+        <QualityWarningsNotice warnings={workspace?.quality_warnings} />
         {taxonomyError && holdingsGroupBy.startsWith('taxonomy') ? (
           <div className="inline-notice inline-notice-warning">{taxonomyError}</div>
         ) : null}
@@ -2900,6 +2911,24 @@ export default function PortfolioHomePage() {
                         {renderHoldingsSortHeader(column)}
                         <span
                           className="holdings-th-resizer"
+                          role="separator"
+                          aria-label={`Resize ${column.label} column`}
+                          aria-orientation="vertical"
+                          aria-valuemin={HOLDINGS_COLUMN_MIN_WIDTH}
+                          aria-valuemax={HOLDINGS_COLUMN_MAX_WIDTH}
+                          aria-valuenow={Math.round(width)}
+                          tabIndex={0}
+                          onKeyDown={(event) => {
+                            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+                              return
+                            }
+                            event.preventDefault()
+                            const delta = event.key === 'ArrowLeft' ? -10 : 10
+                            setHoldingsColumnWidths((current) => ({
+                              ...current,
+                              [column.key]: clampHoldingsColumnWidth((current[column.key] ?? width) + delta),
+                            }))
+                          }}
                           onMouseDown={(event) => handleHoldingsColumnResizeStart(event, column.key, width)}
                         />
                       </th>
@@ -2962,7 +2991,15 @@ export default function PortfolioHomePage() {
 
       {holdingsColumnsOpen ? (
         <div className="holdings-modal-backdrop" onClick={() => setHoldingsColumnsOpen(false)}>
-          <div className="holdings-modal holdings-columns-modal" onClick={(event) => event.stopPropagation()}>
+          <div
+            ref={holdingsColumnsDialogRef}
+            className="holdings-modal holdings-columns-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Choose holdings columns"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="holdings-modal-header">
               <div>
                 <div className="panel-title">Data &amp; Columns</div>
@@ -3057,7 +3094,15 @@ export default function PortfolioHomePage() {
 
       {holdingsGroupByOpen ? (
         <div className="holdings-modal-backdrop" onClick={() => setHoldingsGroupByOpen(false)}>
-          <div className="holdings-modal holdings-compact-modal" onClick={(event) => event.stopPropagation()}>
+          <div
+            ref={holdingsGroupByDialogRef}
+            className="holdings-modal holdings-compact-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Group holdings"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="holdings-modal-header">
               <div>
                 <div className="panel-title">Group By</div>

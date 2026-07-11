@@ -54,6 +54,7 @@ def create_instrument(
     instrument_type: str,
     currency: str,
     identifiers: list[dict[str, object]],
+    quote_selection_policy: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return shared_store.create_instrument(
         get_session_factory(),
@@ -61,6 +62,7 @@ def create_instrument(
         instrument_type=instrument_type,
         currency=currency,
         identifiers=identifiers,
+        quote_selection_policy=quote_selection_policy,
     )
 
 
@@ -85,6 +87,25 @@ def upsert_market_data(
         currency=currency,
         provider=provider,
         status=status,
+    )
+
+
+def upsert_market_data_points(
+    *,
+    instrument_id: str,
+    rows: list[dict[str, object]],
+) -> int | None:
+    return shared_store.upsert_market_data_points(
+        get_session_factory(),
+        instrument_id=instrument_id,
+        rows=rows,
+    )
+
+
+def upsert_corporate_action_event(**kwargs: object) -> dict[str, object] | None:
+    return shared_store.upsert_corporate_action_event(
+        get_session_factory(),
+        **kwargs,
     )
 
 

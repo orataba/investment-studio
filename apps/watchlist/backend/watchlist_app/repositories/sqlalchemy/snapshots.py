@@ -101,6 +101,7 @@ class SQLAlchemySnapshotRepository:
         ):
             current.is_current = False
             current.superseded_at = now
+        session.flush()
 
     def replace_performance(
         self,

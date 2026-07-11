@@ -69,7 +69,7 @@ npm run dev
 
 说明：
 
-- Vite 默认监听 `0.0.0.0:5174`；本机访问 `http://127.0.0.1:5174`
+- Vite 默认仅监听 `127.0.0.1:5174`；如需远程访问，请通过受控的反向代理显式开放
 - `/api` 已代理到 `http://127.0.0.1:8001`
 - Holdings 与 Performance Calculation 的自定义 table view 存在后端 `portfolio_table_view_store` 中，按 `portfolio_id + view_scope` 隔离；浏览器 `localStorage` 只作为首次迁移和后端不可用时的本地 fallback，不在读取失败时回写覆盖后端配置。
 

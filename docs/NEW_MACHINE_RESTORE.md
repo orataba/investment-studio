@@ -8,7 +8,7 @@
 
 - 仓库已从私有 GitHub clone 到本机。
 - 本机可以访问 GitHub、PyPI/npm registry、Docker/PostgreSQL。
-- backend `.env` 不随仓库分发；真实值应从受控秘密存储恢复到 `~/.config/orataba/secrets/portfolio-operations-workbench/`，权限设为 `0600`，再以本地软链接提供给各 backend。
+- backend `.env` 不随仓库分发；真实值应从受控秘密存储恢复到 `~/.config/orataba/secrets/portfolio-operations-workbench/`，目录权限设为 `0700`、文件权限设为 `0600`。开发态可临时建立 backend 软链接，但安装 macOS 后台服务前必须移除。
 - 所有 backend 运行时环境变量统一使用 `PORTFOLIO_OPS_*` 前缀；本地数据库名、用户和密码统一为 `portfolio_ops`。
 
 ## 1. 安装系统工具
@@ -78,11 +78,15 @@ shasum -a 256 -c data/migration/portfolio_ops_2026-07-09_current.sha256
 恢复：
 
 ```bash
-PGPASSWORD=portfolio_ops \
-pg_restore --clean --if-exists --no-owner --no-acl \
-  -h 127.0.0.1 -U portfolio_ops -d portfolio_ops \
-  data/migration/portfolio_ops_2026-07-09_current.pgdump
+CONFIRM_RESTORE=portfolio_ops infra/postgres/restore_project_dump.sh
 ```
+
+恢复脚本会再次校验 checksum 和目标数据库，停止已安装的 launchd/systemd
+应用服务，断开残留连接，并在破坏性操作前把当前三个 schema 备份到
+`${XDG_STATE_HOME:-~/.local/state}/portfolio-operations-workbench/postgres-backups/`。
+恢复或 Alembic 升级任一步失败时，脚本会自动清理半恢复状态、还原该备份，
+然后再启动原先运行的服务。若自动回滚本身失败，服务会保持停止，且日志会
+打印需要人工恢复的备份路径。
 
 快速核对：
 
@@ -103,16 +107,11 @@ select 'watchlist.watchlist', count(*) from watchlist.watchlist;
 推荐在仓库根目录使用一个共享 venv，便于本地验证和定时任务复用：
 
 ```bash
-python3 -m venv .venv
+infra/scripts/sync_python_env.sh
 source .venv/bin/activate
-python -m pip install -U pip
-pip install -e packages/instrument-core/python
-pip install -e apps/platform/backend
-pip install -e apps/watchlist/backend
-pip install -e apps/portfolio/backend
 ```
 
-如果后续给某个 backend 单独建 `.venv`，要确保该 venv 也安装了 `packages/instrument-core/python`。
+依赖版本由 `requirements/python.lock` 固定；更新 backend 依赖后需要重新生成并验证该锁文件。
 
 ## 6. 安装前端依赖
 
@@ -146,10 +145,12 @@ source .venv/bin/activate
 三个终端分别运行：
 
 ```bash
-npm --prefix apps/platform/frontend run dev -- --host 0.0.0.0 --port 5172
-npm --prefix apps/watchlist/frontend run dev -- --host 0.0.0.0 --port 5173
-npm --prefix apps/portfolio/frontend run dev -- --host 0.0.0.0 --port 5174
+npm --prefix apps/platform/frontend run dev -- --host 127.0.0.1 --port 5172
+npm --prefix apps/watchlist/frontend run dev -- --host 127.0.0.1 --port 5173
+npm --prefix apps/portfolio/frontend run dev -- --host 127.0.0.1 --port 5174
 ```
+
+Vite 默认仅监听本机回环地址；如需跨设备访问，请通过受控的反向代理显式开放。
 
 访问：
 
@@ -179,12 +180,31 @@ PYTHONPATH=/path/to/pm/apps/platform/backend:/path/to/pm/packages/instrument-cor
   --updated-by restore \
   --retry-failed-attempts 2 \
   --fail-on-item-failure \
+  --require-downstream-success \
   --json
 ```
 
 将 `/path/to/pm` 替换为新电脑上的仓库绝对路径。
 
-## 11. 重建定时任务
+## 11. 重建后台服务与定时任务
+
+macOS 在仓库根目录执行统一安装器。它会安装六个常驻 LaunchAgent，并注册每天
+本地时间 `21:00` 的独立行情刷新/自动重算任务；安装过程不会立即触发定时任务：
+
+```bash
+infra/launchd/install_local_services.sh
+infra/launchd/status_local_services.sh
+```
+
+安装器会直接、安全地解析权限为 `0600` 的
+`~/.config/orataba/secrets/portfolio-operations-workbench/platform.env`，同时供
+Platform API 和定时任务使用；无需为了 launchd 另复制一份 token 或邮件密码。
+launchd 路径会拒绝三个 backend 目录中的 `.env` 文件或软链接，避免外部配置被
+Pydantic 的第二 dotenv 来源补入。
+
+睡眠期间错过的日历触发会在唤醒时合并补跑一次；注销或关机时用户级
+LaunchAgent 没有加载，因此不会在重新登录时追补。调度时间、锁、最近运行摘要
+与日志说明见 [LOCAL_MACOS_SERVICE.md](./LOCAL_MACOS_SERVICE.md)。
 
 Linux / WSL 使用 user systemd：
 
@@ -196,20 +216,23 @@ systemctl --user list-timers portfolio-ops-market-data-refresh.timer --all
 systemctl --user cat portfolio-ops-market-data-refresh.service portfolio-ops-market-data-refresh.timer
 ```
 
-默认时间是每天 `08:00 Asia/Shanghai`。如果要改时间：
+默认时间是每天 `21:00 Asia/Shanghai`。如果要改时间：
 
 ```bash
-ON_CALENDAR="Mon..Fri 08:00 Asia/Shanghai" \
+ON_CALENDAR="Mon..Fri 22:00 Asia/Shanghai" \
 PYTHON_BIN="$PWD/.venv/bin/python" \
   infra/systemd/install_market_data_refresh_timer.sh
 ```
-
-macOS 不能直接运行 Linux `systemd --user` unit。先用前台命令确认刷新脚本稳定，再按需改成 `launchd`、Homebrew service、Docker job，或继续在 Linux/WSL/服务器上跑定时任务。
 
 ## 12. 最小验证清单
 
 ```bash
 bash -n infra/systemd/install_market_data_refresh_timer.sh
+bash -n infra/launchd/install_local_services.sh
+bash infra/tests/test_launchd_control_local_services.sh
+bash infra/tests/test_launchd_plist_generation.sh
+bash infra/tests/test_launchd_market_data_refresh_runner.sh
+bash infra/tests/test_systemd_market_data_refresh_timer.sh
 git diff --check
 (cd apps/platform/backend && pytest)
 (cd apps/watchlist/backend && pytest)

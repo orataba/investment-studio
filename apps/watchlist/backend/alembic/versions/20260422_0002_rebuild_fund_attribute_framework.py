@@ -280,7 +280,7 @@ def _rewrite_advanced_filter(node: object) -> object:
 
 
 def _load_framework_snapshot() -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
-    from watchlist_app.reference_data.watchlist_fields import (
+    from watchlist_migration_snapshots.watchlist_fields import (
         FIELD_CATEGORIES,
         INSTRUMENT_ATTRIBUTE_DEFINITIONS,
         build_attribute_field_definition,
@@ -547,7 +547,7 @@ def upgrade() -> None:
         sa.delete(field_registry_table).where(field_registry_table.c.field_key.like("attr.%"))
     )
     field_rows = []
-    from watchlist_app.reference_data.watchlist_fields import build_attribute_field_definition
+    from watchlist_migration_snapshots.watchlist_fields import build_attribute_field_definition
 
     for definition in field_seed_source:
         if definition.get("is_view_column", True):

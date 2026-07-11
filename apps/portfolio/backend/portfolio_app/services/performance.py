@@ -7,15 +7,12 @@ from math import isfinite, prod, sqrt
 from typing import cast
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency, period_end_date
-from portfolio_app.services.instrument_charts import (
-    build_instrument_holdings_market_profile_from_detail,
-    build_instrument_sparkline_from_detail,
-)
 from portfolio_app.core.settings import get_settings
 from portfolio_app.services.instrument_registry import (
     InstrumentRegistryError,
     get_platform_fx_rates,
     get_registry_instrument_detail,
+    list_registry_corporate_actions,
 )
 from portfolio_app.services.ledger import (
     build_position_lots,
@@ -52,10 +49,33 @@ NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES = {
     "interest",
     "return_of_capital",
 }
+ENTITLEMENT_ACCRUAL_TRANSACTION_TYPES = {"dividend", "coupon"}
+
+# A total-return series is suitable for return analysis, never for an actual
+# position valuation.  Fail closed if the shared registry accidentally puts
+# one of these bases in the valuation policy; otherwise cash distributions or
+# split adjustments can be counted twice in NAV.
+FORBIDDEN_VALUATION_QUOTE_BASES = frozenset(
+    {
+        "adjusted_close",
+        "adjusted_nav",
+        "adjusted_price",
+        "accum_nav",
+        "accumulated_nav",
+        "cum_nav",
+        "cumulative_nav",
+        "dividend_adjusted_nav",
+        "nav_with_dividend",
+        "reinvested_nav",
+        "split_adjusted_close",
+        "total_return_nav",
+        "total_return_price",
+    }
+)
 GROUP_CAPITAL_FLOW_IN_FIELD = "capital_flow_in_base"
 GROUP_CAPITAL_FLOW_OUT_FIELD = "capital_flow_out_base"
 DAYS_PER_YEAR = 365.25
-_SUPPORTED_INSTRUMENT_TYPES = {"fund", "bond", "equity", "cash", "fx", "other"}
+_SUPPORTED_INSTRUMENT_TYPES = {"fund", "etf", "bond", "equity", "cash", "fx", "other"}
 _LEGACY_INSTRUMENT_REF_KEYS = {"asset_id", "asset_name", "asset_type"}
 
 
@@ -66,6 +86,70 @@ def _safe_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def corporate_action_quality_warnings(
+    instrument_types: set[str],
+    instrument_ids: set[str] | None = None,
+) -> list[str]:
+    normalized_types = {str(value or "").strip().lower() for value in instrument_types}
+    warnings: list[str] = []
+    if normalized_types.intersection({"equity", "etf"}):
+        actions = (
+            list_registry_corporate_actions(instrument_ids or set())
+            if instrument_ids
+            else []
+        )
+        confirmed_count = sum(
+            1 for event in actions if str(event.get("status") or "") == "confirmed"
+        )
+        detected_count = sum(
+            1 for event in actions if str(event.get("status") or "") == "detected"
+        )
+        if confirmed_count:
+            warnings.append(
+                f"{confirmed_count} issuer-confirmed share-split event(s) are applied at effective-date BOD; "
+                "quantity changes preserve aggregate cost basis."
+            )
+        if detected_count:
+            warnings.append(
+                f"{detected_count} provider-detected share-adjustment event(s) are not posted to the ledger "
+                "until issuer, exchange, or depository evidence confirms ratio and fractional treatment."
+            )
+        warnings.append(
+            "Unrecorded equity/ETF corporate actions remain unsafe: adjusted close protects return charts, "
+            "but it cannot replace a confirmed quantity event in valuation or cost accounting."
+        )
+    return warnings
+
+
+def _transaction_instrument_types(
+    transactions: list[dict[str, object]] | None,
+) -> set[str]:
+    return {
+        str(instrument_ref.get("instrument_type") or "").strip().lower()
+        for transaction in transactions or []
+        if isinstance((instrument_ref := transaction.get("instrument_ref")), dict)
+        and str(instrument_ref.get("instrument_type") or "").strip()
+    }
+
+
+def _corporate_actions_for_transactions(
+    transactions: list[dict[str, object]],
+    *,
+    effective_on_or_before: date | None = None,
+) -> list[dict[str, object]]:
+    instrument_ids = {
+        str(transaction.get("instrument_id") or "").strip()
+        for transaction in transactions
+        if str(transaction.get("instrument_id") or "").strip()
+    }
+    if not instrument_ids:
+        return []
+    return list_registry_corporate_actions(
+        instrument_ids,
+        effective_on_or_before=effective_on_or_before,
+    )
 
 
 def summarize_holding_day_change(
@@ -174,121 +258,6 @@ def _cash_holding_instrument_ref(currency: str) -> dict[str, object]:
     }
 
 
-def _empty_return_series_payload() -> dict[str, object]:
-    return {"first_return_start_date": None, "points": []}
-
-
-def _cash_fx_conversion_detail(
-    *,
-    currency: str,
-    base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
-) -> dict[str, object] | None:
-    normalized_currency = _normalized_currency(currency)
-    normalized_base = _normalized_currency(base_currency)
-    if normalized_currency == normalized_base:
-        return None
-
-    fx_instrument_id: str | None = None
-    invert_values = False
-    if (normalized_currency, normalized_base) in direct_fx_instruments:
-        fx_instrument_id = direct_fx_instruments[(normalized_currency, normalized_base)]
-    elif (normalized_base, normalized_currency) in direct_fx_instruments:
-        fx_instrument_id = direct_fx_instruments[(normalized_base, normalized_currency)]
-        invert_values = True
-    if not fx_instrument_id:
-        return None
-
-    detail = _instrument_detail_cache_get(fx_instrument_id, instrument_detail_cache)
-    if not isinstance(detail, dict):
-        return None
-
-    transformed_detail = deepcopy(detail)
-    transformed_detail["instrument_id"] = cash_holding_instrument_id(normalized_currency)
-    transformed_detail["instrument_name"] = f"Cash ({normalized_currency})"
-    transformed_detail["instrument_type"] = "cash"
-    transformed_detail["currency"] = normalized_base
-    transformed_detail["identifiers"] = [
-        {
-            "identifier_type": "cash_currency",
-            "identifier_value": normalized_currency,
-            "is_primary": True,
-        }
-    ]
-    transformed_market_data: list[dict[str, object]] = []
-    raw_market_data = detail.get("market_data")
-    if isinstance(raw_market_data, list):
-        for raw_point in raw_market_data:
-            if not isinstance(raw_point, dict):
-                continue
-            value = _safe_float(raw_point.get("value"))
-            if value is None or value <= 1e-12:
-                continue
-            transformed_value = (1.0 / value) if invert_values else value
-            transformed_point = dict(raw_point)
-            transformed_point["value"] = str(transformed_value)
-            transformed_point["currency"] = normalized_base
-            transformed_point["metric_family"] = "fx"
-            transformed_market_data.append(transformed_point)
-    transformed_detail["market_data"] = transformed_market_data
-    return transformed_detail
-
-
-def _cash_holding_market_profile(
-    *,
-    currency: str,
-    base_currency: str,
-    as_of_date: date,
-    calculation_frequency: CalculationFrequency,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
-) -> dict[str, object]:
-    is_base_cash = _normalized_currency(currency) == _normalized_currency(base_currency)
-    if not is_base_cash:
-        conversion_detail = _cash_fx_conversion_detail(
-            currency=currency,
-            base_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
-        )
-        if conversion_detail is not None:
-            return build_instrument_holdings_market_profile_from_detail(
-                conversion_detail,
-                instrument_id=cash_holding_instrument_id(currency),
-                as_of_date=as_of_date,
-                calculation_frequency=calculation_frequency,
-            )
-    zero_or_none = 0.0 if is_base_cash else None
-    return {
-        "price_chart_1m": [],
-        "price_chart_3m": [],
-        "price_chart_6m": [],
-        "price_chart_1y": [],
-        "instrument_trend_as_of_date": as_of_date.isoformat(),
-        "instrument_trend_basis": "cash_balance",
-        "instrument_risk_frequency": calculation_frequency,
-        "instrument_return_1w": zero_or_none,
-        "instrument_return_mtd": zero_or_none,
-        "instrument_return_ytd": zero_or_none,
-        "instrument_return_1y": zero_or_none,
-        "instrument_volatility_1m": zero_or_none,
-        "instrument_volatility_3m": zero_or_none,
-        "instrument_volatility_6m": zero_or_none,
-        "instrument_volatility_1y": zero_or_none,
-        "instrument_return_series_1m": _empty_return_series_payload(),
-        "instrument_return_series_3m": _empty_return_series_payload(),
-        "instrument_return_series_6m": _empty_return_series_payload(),
-        "instrument_return_series_1y": _empty_return_series_payload(),
-        "instrument_return_series_all": _empty_return_series_payload(),
-        "instrument_holding_return_series": _empty_return_series_payload(),
-        "instrument_current_drawdown": zero_or_none,
-        "instrument_max_drawdown": zero_or_none,
-        "instrument_holding_max_drawdown": zero_or_none,
-        "instrument_holding_start_date": None,
-    }
-
-
 _CALCULATION_DETAIL_SUFFIX = "_detail"
 _CALCULATION_DETAIL_GROUP_SEPARATOR = "\x1f"
 _CALCULATION_DETAIL_PARENT_AXES = {"instrument", "account", "instrument_type", "currency", "taxonomy"}
@@ -356,6 +325,30 @@ def _transaction_sort_key(transaction: dict[str, object]) -> tuple[str, str, str
         str(transaction.get("transaction_id") or ""),
         str(transaction.get("settlement_date") or ""),
     )
+
+
+def transaction_performance_effective_date(transaction: dict[str, object]) -> date | None:
+    """Accounting-recognition date used by NAV and performance.
+
+    Dividend/coupon cash is a receivable from entitlement until settlement;
+    all other facts retain their trade-date recognition boundary.
+    """
+
+    transaction_type = str(transaction.get("transaction_type") or "")
+    if transaction_type in ENTITLEMENT_ACCRUAL_TRANSACTION_TYPES:
+        entitlement_date = _parse_iso_date(transaction.get("entitlement_date"))
+        if entitlement_date is not None:
+            return entitlement_date
+    return _parse_iso_date(transaction.get("trade_date"))
+
+
+def _transaction_is_recognized_as_of(
+    transaction: dict[str, object],
+    *,
+    as_of_date: date,
+) -> bool:
+    effective_date = transaction_performance_effective_date(transaction)
+    return effective_date is not None and effective_date <= as_of_date
 
 
 def _iter_dates(start_date: date, end_date: date) -> list[date]:
@@ -465,6 +458,11 @@ def _select_market_point_as_of(
 ) -> dict[str, object] | None:
     points_by_basis = _market_points_by_basis(detail)
     candidate_bases = _normalized_policy_bases(detail, role)
+    if role == "valuation" and any(
+        quote_basis.strip().lower() in FORBIDDEN_VALUATION_QUOTE_BASES
+        for quote_basis in candidate_bases
+    ):
+        return None
     seen_bases: set[str] = set()
     for quote_basis in candidate_bases:
         if quote_basis in seen_bases:
@@ -529,19 +527,32 @@ def _holding_day_change_metrics(
     current_price: float | None,
     previous_price: float | None,
     instrument_ref: dict[str, object] | None,
+    current_return_price: float | None = None,
+    previous_return_price: float | None = None,
 ) -> tuple[float | None, float | None]:
-    if current_price is None or previous_price is None or abs(previous_price) <= 1e-12:
+    resolved_current_return_price = (
+        current_return_price if current_return_price is not None else current_price
+    )
+    resolved_previous_return_price = (
+        previous_return_price if previous_return_price is not None else previous_price
+    )
+    if (
+        current_price is None
+        or resolved_current_return_price is None
+        or resolved_previous_return_price is None
+        or abs(resolved_previous_return_price) <= 1e-12
+    ):
         return None, None
-    day_change_pct = current_price / previous_price - 1.0
+    day_change_pct = resolved_current_return_price / resolved_previous_return_price - 1.0
     current_market_value = _position_market_value(
         quantity=quantity,
         last_price=current_price,
         instrument_ref=instrument_ref,
     )
-    previous_market_value = _position_market_value(
-        quantity=quantity,
-        last_price=previous_price,
-        instrument_ref=instrument_ref,
+    previous_market_value = (
+        current_market_value / (1.0 + day_change_pct)
+        if current_market_value is not None and abs(1.0 + day_change_pct) > 1e-12
+        else None
     )
     day_change_value = (
         current_market_value - previous_market_value
@@ -883,7 +894,6 @@ def _build_cash_holding_rows(
     base_currency: str,
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
-    calculation_frequency: CalculationFrequency,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for balance in cash_balances:
@@ -930,15 +940,7 @@ def _build_cash_holding_rows(
                 "account_ids": account_ids,
                 "account_count": len(account_ids) if account_ids else 1,
                 "open_position_lot_count": 0,
-                "price_chart": [],
-                **_cash_holding_market_profile(
-                    currency=currency,
-                    base_currency=base_currency,
-                    as_of_date=as_of_date,
-                    calculation_frequency=calculation_frequency,
-                    direct_fx_instruments=direct_fx_instruments,
-                    instrument_detail_cache=instrument_detail_cache,
-                ),
+                "instrument_holding_start_date": None,
                 "coverage_status": "cash" if amount_base is not None else "unpriced",
             }
         )
@@ -1087,7 +1089,6 @@ def _build_materialized_holding_rows(
     direct_fx_instruments: dict[tuple[str, str], str],
     instrument_detail_cache: dict[str, dict[str, object] | None],
     nav: float | None,
-    calculation_frequency: CalculationFrequency,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for bucket in account_instrument_buckets:
@@ -1118,6 +1119,19 @@ def _build_materialized_holding_rows(
             if isinstance(detail, dict)
             else None
         )
+        return_price_point = (
+            _select_market_point_as_of(detail=detail, role="total_return", as_of_date=as_of_date)
+            if isinstance(detail, dict)
+            else None
+        )
+        previous_return_price_point = (
+            _previous_market_point_for_selected_point(
+                detail=detail,
+                selected_point=return_price_point,
+            )
+            if isinstance(detail, dict)
+            else None
+        )
         holding_start_date = _parse_iso_date(bucket.get("holding_start_date"))
         last_price = _safe_float((price_point or {}).get("value"))
         previous_price = _safe_float((previous_price_point or {}).get("value"))
@@ -1132,6 +1146,8 @@ def _build_materialized_holding_rows(
             current_price=last_price,
             previous_price=previous_price,
             instrument_ref=instrument_ref,
+            current_return_price=_safe_float((return_price_point or {}).get("value")),
+            previous_return_price=_safe_float((previous_return_price_point or {}).get("value")),
         )
         converted_day_change_value, _ = convert_amount_on(
             day_change_value,
@@ -1153,17 +1169,6 @@ def _build_materialized_holding_rows(
             instrument_id,
             instrument_ref,
             fallback_currency=currency,
-        )
-        instrument_market_profile = (
-            build_instrument_holdings_market_profile_from_detail(
-                detail,
-                instrument_id=instrument_id,
-                as_of_date=as_of_date,
-                holding_start_date=holding_start_date,
-                calculation_frequency=calculation_frequency,
-            )
-            if isinstance(detail, dict)
-            else {}
         )
         rows.append(
             {
@@ -1195,16 +1200,12 @@ def _build_materialized_holding_rows(
                 "account_ids": [account_id],
                 "account_count": 1,
                 "open_position_lot_count": int(bucket.get("open_position_lot_count") or 0),
-                "price_chart": (
-                    build_instrument_sparkline_from_detail(
-                        detail,
-                        instrument_id=instrument_id,
-                        as_of_date=as_of_date,
-                    )
-                    if isinstance(detail, dict)
-                    else []
+                # Market histories are source-derived and are enriched on
+                # demand. Persisting them in every daily holding row multiplied
+                # identical arrays by date and account.
+                "instrument_holding_start_date": (
+                    holding_start_date.isoformat() if holding_start_date is not None else None
                 ),
-                **instrument_market_profile,
                 "coverage_status": "price-nav-fx" if converted_market_value is not None else "unpriced",
             }
         )
@@ -1216,7 +1217,6 @@ def _build_materialized_holding_rows(
             base_currency=base_currency,
             direct_fx_instruments=direct_fx_instruments,
             instrument_detail_cache=instrument_detail_cache,
-            calculation_frequency=calculation_frequency,
         )
     )
     _apply_position_portfolio_weights(rows, nav)
@@ -1284,11 +1284,12 @@ def _build_period_start_boundary_transactions(
     start_iso = start_date.isoformat()
     boundary_transactions: list[dict[str, object]] = []
     for transaction in sorted(transactions, key=_transaction_sort_key):
-        trade_date = str(transaction.get("trade_date") or "")
-        if trade_date < start_iso:
+        effective_date = transaction_performance_effective_date(transaction)
+        effective_date_iso = effective_date.isoformat() if effective_date is not None else ""
+        if effective_date_iso < start_iso:
             boundary_transactions.append(transaction)
             continue
-        if trade_date == start_iso and str(transaction.get("transaction_type") or "") == "opening_balance":
+        if effective_date_iso == start_iso and str(transaction.get("transaction_type") or "") == "opening_balance":
             boundary_transactions.append(transaction)
     return boundary_transactions
 
@@ -1304,7 +1305,10 @@ def _transactions_in_period(
     return [
         transaction
         for transaction in sorted(transactions, key=_transaction_sort_key)
-        if start_iso <= str(transaction.get("trade_date") or "") <= end_iso
+        if (
+            (effective_date := transaction_performance_effective_date(transaction)) is not None
+            and start_iso <= effective_date.isoformat() <= end_iso
+        )
     ]
 
 
@@ -1317,7 +1321,10 @@ def _transactions_as_of_end_date(
     return [
         transaction
         for transaction in sorted(transactions, key=_transaction_sort_key)
-        if str(transaction.get("trade_date") or "") <= end_iso
+        if (
+            (effective_date := transaction_performance_effective_date(transaction)) is not None
+            and effective_date.isoformat() <= end_iso
+        )
     ]
 
 
@@ -1358,8 +1365,8 @@ def _sum_period_transaction_buckets(
         return converted_amount
 
     for transaction in transactions:
-        trade_date = _parse_iso_date(transaction.get("trade_date"))
-        if trade_date is None:
+        effective_date = transaction_performance_effective_date(transaction)
+        if effective_date is None:
             coverage_complete = False
             continue
         currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
@@ -1369,39 +1376,39 @@ def _sum_period_transaction_buckets(
         tax_amount = _safe_float(transaction.get("taxes")) or 0.0
 
         if transaction_type in EXTERNAL_CASH_IN_TYPES:
-            converted = convert_component(gross_amount, trade_date=trade_date, currency=currency)
+            converted = convert_component(gross_amount, trade_date=effective_date, currency=currency)
             if converted is not None:
                 deposits += converted
         elif transaction_type in EXTERNAL_CASH_OUT_TYPES:
-            converted = convert_component(gross_amount, trade_date=trade_date, currency=currency)
+            converted = convert_component(gross_amount, trade_date=effective_date, currency=currency)
             if converted is not None:
                 withdrawals += converted
 
         if transaction_type in EARNINGS_TRANSACTION_TYPES:
-            converted = convert_component(gross_amount, trade_date=trade_date, currency=currency)
+            converted = convert_component(gross_amount, trade_date=effective_date, currency=currency)
             if converted is not None:
                 earnings += converted
 
         if transaction_type == "return_of_capital":
-            converted = convert_component(gross_amount, trade_date=trade_date, currency=currency)
+            converted = convert_component(gross_amount, trade_date=effective_date, currency=currency)
             if converted is not None:
                 return_of_capital_amount += converted
 
         if transaction_type == "fee":
-            converted = convert_component(gross_amount, trade_date=trade_date, currency=currency)
+            converted = convert_component(gross_amount, trade_date=effective_date, currency=currency)
             if converted is not None:
                 fees += converted
         if transaction_type == "tax":
-            converted = convert_component(gross_amount, trade_date=trade_date, currency=currency)
+            converted = convert_component(gross_amount, trade_date=effective_date, currency=currency)
             if converted is not None:
                 taxes += converted
 
         if fee_amount > 0 and transaction_type in NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES:
-            converted = convert_component(fee_amount, trade_date=trade_date, currency=currency)
+            converted = convert_component(fee_amount, trade_date=effective_date, currency=currency)
             if converted is not None:
                 fees += converted
         if tax_amount > 0 and transaction_type in NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES:
-            converted = convert_component(tax_amount, trade_date=trade_date, currency=currency)
+            converted = convert_component(tax_amount, trade_date=effective_date, currency=currency)
             if converted is not None:
                 taxes += converted
 
@@ -1670,7 +1677,12 @@ def _period_unrealized_capital_gains_by_group(
     coverage_complete = True
     stale_fx_flag = False
 
-    for position_lot in build_position_lots(portfolio_id, accounts, transactions_before_start):
+    for position_lot in build_position_lots(
+        portfolio_id,
+        accounts,
+        transactions_before_start,
+        as_of_date=start_boundary_date,
+    ):
         if str(position_lot.get("status") or "") != "open":
             continue
         quantity = _safe_float(position_lot.get("remaining_quantity")) or 0.0
@@ -1930,6 +1942,10 @@ def build_daily_portfolio_snapshots(
     account_currency_map = _account_currency_map(accounts)
     account_name_map = _account_name_map(accounts)
     portfolio_id = str(portfolio.get("portfolio_id") or "")
+    corporate_actions = _corporate_actions_for_transactions(
+        sorted_transactions,
+        effective_on_or_before=resolved_end_date,
+    )
     base_currency = _normalized_currency(portfolio.get("base_currency"))
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
@@ -1940,26 +1956,9 @@ def build_daily_portfolio_snapshots(
     transactions_by_date: dict[str, list[dict[str, object]]] = defaultdict(list)
     if include_materialized_rows:
         for transaction in sorted_transactions:
-            transactions_by_date[str(transaction.get("trade_date") or "")].append(transaction)
-    materialized_calculation_frequency: CalculationFrequency = "daily"
-    if include_materialized_rows:
-        materialized_risk_instrument_ids = _instrument_ids_for_calculation_risk_basis(
-            portfolio,
-            accounts,
-            sorted_transactions,
-            start_date=resolved_start_date,
-            end_date=resolved_end_date,
-        )
-        materialized_risk_frequency_profile = calculation_frequency_profile_for_instruments(
-            materialized_risk_instrument_ids,
-            end_date=resolved_end_date,
-            detail_loader=get_registry_instrument_detail,
-        )
-        materialized_calculation_frequency = cast(
-            CalculationFrequency,
-            str(materialized_risk_frequency_profile.get("resolved_frequency") or "daily"),
-        )
-
+            effective_date = transaction_performance_effective_date(transaction)
+            if effective_date is not None:
+                transactions_by_date[effective_date.isoformat()].append(transaction)
     snapshots: list[dict[str, object]] = []
     last_complete_nav: float | None = None
     growth_index = 1.0
@@ -1983,18 +1982,22 @@ def build_daily_portfolio_snapshots(
         transactions_as_of = [
             item
             for item in sorted_transactions
-            if str(item.get("trade_date") or "") <= as_of_iso
+            if _transaction_is_recognized_as_of(item, as_of_date=as_of_date)
         ]
         postings = derive_ledger_postings(
             portfolio_id,
             transactions_as_of,
             account_cost_methods=account_cost_methods,
             account_currency_map=account_currency_map,
+            corporate_actions=corporate_actions,
+            as_of_date=as_of_date,
         )
         position_lots = build_position_lots(
             portfolio_id,
             accounts,
             transactions_as_of,
+            as_of_date=as_of_date,
+            corporate_actions=corporate_actions,
         )
         all_position_lots = position_lots
         open_position_lots = [position_lot for position_lot in all_position_lots if position_lot.get("status") == "open"]
@@ -2291,6 +2294,22 @@ def build_daily_portfolio_snapshots(
             numerator = nav + flow_breakdown["external_cash_out"]
             if denominator > 1e-9 and numerator >= 0:
                 daily_twr = (numerator / denominator) - 1.0
+        elif (
+            nav is not None
+            and last_complete_nav is None
+            and flow_breakdown["coverage_complete"]
+            and float(flow_breakdown["external_cash_in"]) > 1e-9
+        ):
+            # Inception funding follows the same documented BOD contribution /
+            # EOD withdrawal convention as every later daily subperiod.  A
+            # null first-day return silently discarded inception-day P&L.
+            beginning_nav = 0.0
+            absolute_change = nav
+            delta = nav - flow_breakdown["net_external_inflow"]
+            denominator = float(flow_breakdown["external_cash_in"])
+            numerator = nav + float(flow_breakdown["external_cash_out"])
+            if numerator >= 0:
+                daily_twr = (numerator / denominator) - 1.0
 
         if daily_twr is not None and isfinite(daily_twr):
             has_return_history = True
@@ -2375,7 +2394,6 @@ def build_daily_portfolio_snapshots(
                 direct_fx_instruments=direct_fx_instruments,
                 instrument_detail_cache=instrument_detail_cache,
                 nav=nav,
-                calculation_frequency=materialized_calculation_frequency,
             )
             contribution_slices: list[dict[str, object]] = []
             for contribution_axis in MATERIALIZED_CONTRIBUTION_AXES:
@@ -2721,6 +2739,12 @@ def build_portfolio_performance_report_from_snapshots(
     risk_return_observation_count = len(risk_return_snapshots)
     start_snapshot = complete_snapshots[0] if complete_snapshots else None
     end_snapshot = visible_complete_snapshots[-1] if visible_complete_snapshots else (complete_snapshots[-1] if complete_snapshots else None)
+    inception_window = bool(
+        start_date is None
+        and start_snapshot is not None
+        and abs(_safe_float(start_snapshot.get("beginning_nav")) or 0.0) <= 1e-12
+        and (_safe_float(start_snapshot.get("external_cash_in")) or 0.0) > 1e-9
+    )
     start_anchor_date = start_snapshot.get("as_of_date") if isinstance((start_snapshot or {}).get("as_of_date"), date) else None
     end_anchor_date = end_snapshot.get("as_of_date") if isinstance((end_snapshot or {}).get("as_of_date"), date) else None
     display_start_date = start_anchor_date
@@ -2732,6 +2756,8 @@ def build_portfolio_performance_report_from_snapshots(
         if end_value is None:
             return None
         if start_snapshot is None:
+            return end_value
+        if inception_window:
             return end_value
         start_value = _safe_float((start_snapshot or {}).get(field_name))
         if start_value is None:
@@ -2747,7 +2773,12 @@ def build_portfolio_performance_report_from_snapshots(
         and isinstance(start_snapshot.get("as_of_date"), date)
         and isinstance(end_snapshot.get("as_of_date"), date)
     ):
-        years = _year_fraction(start_snapshot["as_of_date"], end_snapshot["as_of_date"])
+        annualization_start_date = (
+            start_snapshot["as_of_date"] - timedelta(days=1)
+            if inception_window
+            else start_snapshot["as_of_date"]
+        )
+        years = _year_fraction(annualization_start_date, end_snapshot["as_of_date"])
         if years > 1e-9:
             annualized_twr = (1.0 + cumulative_twr) ** (1.0 / years) - 1.0
 
@@ -2757,13 +2788,21 @@ def build_portfolio_performance_report_from_snapshots(
             snapshot
             for snapshot in visible_snapshots
             if isinstance(snapshot.get("as_of_date"), date)
-            and start_anchor_date < snapshot["as_of_date"] <= end_anchor_date
+            and (
+                start_anchor_date <= snapshot["as_of_date"] <= end_anchor_date
+                if inception_window
+                else start_anchor_date < snapshot["as_of_date"] <= end_anchor_date
+            )
         ]
     external_cash_in = sum((_safe_float(snapshot.get("external_cash_in")) or 0.0) for snapshot in flow_snapshots)
     external_cash_out = sum((_safe_float(snapshot.get("external_cash_out")) or 0.0) for snapshot in flow_snapshots)
     net_external_inflow = external_cash_in - external_cash_out
 
-    start_nav = _safe_float((start_snapshot or {}).get("nav"))
+    start_nav = (
+        _safe_float((start_snapshot or {}).get("beginning_nav"))
+        if inception_window
+        else _safe_float((start_snapshot or {}).get("nav"))
+    )
     end_nav = _safe_float((end_snapshot or {}).get("nav"))
     absolute_change = (end_nav - start_nav) if start_nav is not None and end_nav is not None else None
     delta = (
@@ -2789,7 +2828,9 @@ def build_portfolio_performance_report_from_snapshots(
         and start_anchor_date is not None
         and end_anchor_date is not None
     ):
-        cash_flows: list[tuple[date, float]] = [(start_anchor_date, -start_nav)]
+        cash_flows: list[tuple[date, float]] = (
+            [] if inception_window else [(start_anchor_date, -start_nav)]
+        )
         for snapshot in flow_snapshots:
             snapshot_date = snapshot.get("as_of_date")
             if not isinstance(snapshot_date, date):
@@ -2910,6 +2951,14 @@ def build_portfolio_performance_report_from_snapshots(
             "max_drawdown": max_drawdown,
             "max_drawdown_days": max_drawdown_days,
             "drawdown_duration_days": drawdown_duration_days,
+            "quality_warnings": corporate_action_quality_warnings(
+                _transaction_instrument_types(transactions),
+                {
+                    str(transaction.get("instrument_id") or "").strip()
+                    for transaction in transactions
+                    if str(transaction.get("instrument_id") or "").strip()
+                },
+            ),
         },
         "daily_series": [
             {
@@ -2921,6 +2970,7 @@ def build_portfolio_performance_report_from_snapshots(
                 "return_observation_eligible": bool(snapshot.get("return_observation_eligible")),
                 "beginning_nav": snapshot["beginning_nav"],
                 "ending_nav": snapshot["ending_nav"],
+                "pending_settlement": snapshot.get("pending_settlement"),
                 "realized_pnl": snapshot.get("realized_pnl"),
                 "unrealized_pnl": snapshot.get("unrealized_pnl"),
                 "income_cash_amount": snapshot.get("income_cash_amount"),
@@ -3278,6 +3328,7 @@ def _build_boundary_holding_records(
         accounts,
         transactions,
         status="open",
+        as_of_date=as_of_date,
     )
     position_buckets = _position_buckets_from_lots(position_lots)
     rendered_positions: list[dict[str, object]] = []
@@ -3307,6 +3358,19 @@ def _build_boundary_holding_records(
             if isinstance(detail, dict)
             else None
         )
+        return_price_point = (
+            _select_market_point_as_of(detail=detail, role="total_return", as_of_date=as_of_date)
+            if isinstance(detail, dict)
+            else None
+        )
+        previous_return_price_point = (
+            _previous_market_point_for_selected_point(
+                detail=detail,
+                selected_point=return_price_point,
+            )
+            if isinstance(detail, dict)
+            else None
+        )
         last_price = _safe_float((price_point or {}).get("value"))
         previous_price = _safe_float((previous_price_point or {}).get("value"))
         instrument_ref = bucket.get("instrument_ref") if isinstance(bucket.get("instrument_ref"), dict) else None
@@ -3320,6 +3384,8 @@ def _build_boundary_holding_records(
             current_price=last_price,
             previous_price=previous_price,
             instrument_ref=instrument_ref,
+            current_return_price=_safe_float((return_price_point or {}).get("value")),
+            previous_return_price=_safe_float((previous_return_price_point or {}).get("value")),
         )
         converted_day_change_value, _ = convert_amount_on(
             day_change_value,
@@ -3414,6 +3480,7 @@ def _statement_cash_nav_components(
         transactions,
         account_cost_methods=_account_cost_methods(accounts),
         account_currency_map=_account_currency_map(accounts),
+        as_of_date=as_of_date,
     )
     as_of_iso = as_of_date.isoformat()
     cash_balance_base = 0.0
@@ -3486,6 +3553,7 @@ def build_holdings_report(
     as_of_date: date,
     include_cash_rows: bool = False,
     calculation_frequency: CalculationFrequency = "daily",
+    instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
 ) -> dict[str, object]:
     base_currency = _normalized_currency(portfolio.get("base_currency"))
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
@@ -3495,7 +3563,9 @@ def build_holdings_report(
 
     fx_payload = get_platform_fx_rates()
     direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+    resolved_instrument_detail_cache = (
+        instrument_detail_cache if instrument_detail_cache is not None else {}
+    )
     positions, position_market_value_base = _build_boundary_holding_records(
         portfolio_id=str(portfolio.get("portfolio_id") or ""),
         accounts=accounts,
@@ -3503,7 +3573,7 @@ def build_holdings_report(
         as_of_date=as_of_date,
         base_currency=base_currency,
         direct_fx_instruments=direct_fx_instruments,
-        instrument_detail_cache=instrument_detail_cache,
+        instrument_detail_cache=resolved_instrument_detail_cache,
         boundary_nav=None,
     )
     cash_components = _statement_cash_nav_components(
@@ -3513,7 +3583,7 @@ def build_holdings_report(
         as_of_date=as_of_date,
         base_currency=base_currency,
         direct_fx_instruments=direct_fx_instruments,
-        instrument_detail_cache=instrument_detail_cache,
+        instrument_detail_cache=resolved_instrument_detail_cache,
     )
     cash_balance_base = _safe_float(cash_components.get("cash_balance_base"))
     pending_settlement_base = _safe_float(cash_components.get("pending_settlement_base"))
@@ -3534,8 +3604,7 @@ def build_holdings_report(
                 as_of_date=as_of_date,
                 base_currency=base_currency,
                 direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
-                calculation_frequency=calculation_frequency,
+                instrument_detail_cache=resolved_instrument_detail_cache,
             ),
         ]
     _apply_position_portfolio_weights(positions, total_nav_base)
@@ -4432,7 +4501,12 @@ def _build_contribution_group_end_states(
     resolved_position_lots = (
         position_lots
         if position_lots is not None
-        else build_position_lots(portfolio_id, accounts, transactions_as_of)
+        else build_position_lots(
+            portfolio_id,
+            accounts,
+            transactions_as_of,
+            as_of_date=as_of_date,
+        )
     )
     open_position_lots = [
         position_lot for position_lot in resolved_position_lots if position_lot.get("status") == "open"
@@ -4519,6 +4593,7 @@ def _build_contribution_group_end_states(
                 transactions_as_of,
                 account_cost_methods=account_cost_methods,
                 account_currency_map=account_currency_map,
+                as_of_date=as_of_date,
             )
         )
         for posting in resolved_postings:
@@ -6204,7 +6279,12 @@ def build_contribution_report(
         position_lots = (
             []
             if axis == _CALCULATION_CASH_DETAIL_AXIS
-            else build_position_lots(portfolio_id, accounts, transactions_as_of)
+            else build_position_lots(
+                portfolio_id,
+                accounts,
+                transactions_as_of,
+                as_of_date=as_of_date,
+            )
         )
         group_states_by_date[as_of_date] = _build_contribution_group_end_states(
             axis=axis,
@@ -8978,6 +9058,7 @@ def build_contribution_entries_report(
             str(portfolio.get("portfolio_id") or ""),
             accounts,
             end_boundary_transactions,
+            as_of_date=resolved_end_date,
         )
         for position_lot in position_lots:
             realizations = position_lot.get("realizations") or []
@@ -9432,6 +9513,7 @@ def build_period_calculation_entries_report(
             str(portfolio.get("portfolio_id") or ""),
             accounts,
             end_boundary_transactions,
+            as_of_date=resolved_end_date,
         )
         for position_lot in position_lots:
             realizations = position_lot.get("realizations") or []

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from watchlist_app.db.base import Base
@@ -25,6 +25,13 @@ class RecalcJob(Base):
             "priority",
             "enqueued_at",
         ),
+        Index(
+            "uq_recalc_job_running_instrument",
+            "instrument_id",
+            unique=True,
+            sqlite_where=text("job_status = 'running'"),
+            postgresql_where=text("job_status = 'running'"),
+        ),
     )
 
     recalc_job_id: Mapped[str] = mapped_column(primary_key=True)
@@ -42,5 +49,7 @@ class RecalcJob(Base):
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     enqueued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_token: Mapped[str | None] = mapped_column(String)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_message: Mapped[str | None]

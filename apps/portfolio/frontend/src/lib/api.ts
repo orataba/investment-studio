@@ -97,6 +97,21 @@ export type PortfolioInstrumentPriceChartResponse = {
   summary: PortfolioInstrumentPriceChartSummary
 }
 
+export type PortfolioTransactionExecutionQuoteResponse = {
+  portfolio_id: string
+  instrument_id: string
+  requested_as_of_date: string
+  selection_role: 'trading' | 'valuation' | null
+  value: number | null
+  quote_date: string | null
+  quote_basis: QuoteBasis | null
+  metric_family: MetricFamily | null
+  currency: string
+  provider: string | null
+  status: DataStatus
+  stale: boolean
+}
+
 export type PortfolioPerformanceCoverageState = 'complete' | 'partial' | 'unavailable'
 
 export type PortfolioDailyPerformancePoint = {
@@ -108,6 +123,7 @@ export type PortfolioDailyPerformancePoint = {
   return_observation_eligible: boolean
   beginning_nav: number | null
   ending_nav: number | null
+  pending_settlement: number | null
   realized_pnl: number | null
   unrealized_pnl: number | null
   income_cash_amount: number | null
@@ -164,6 +180,7 @@ export type PortfolioPerformanceSummary = {
   max_drawdown: number | null
   max_drawdown_days: number | null
   drawdown_duration_days: number | null
+  quality_warnings: string[]
 }
 
 export type PortfolioPerformanceResponse = {
@@ -506,6 +523,7 @@ export type HoldingsWorkspaceResponse = {
   as_of_date: string
   view_label: string
   coverage_note: string
+  quality_warnings: string[]
   risk_basis?: {
     requested_frequency: 'auto' | PortfolioCalculationFrequency
     resolved_frequency: PortfolioCalculationFrequency
@@ -526,8 +544,24 @@ export type HoldingsWorkspaceResponse = {
   }
 }
 
+export type PortfolioInstrumentHoldingRow = Omit<
+  PortfolioHoldingRow,
+  'price_chart_1m' | 'price_chart_3m' | 'price_chart_6m' | 'price_chart_1y'
+>
+
+export type PortfolioInstrumentHoldingProjectionResponse = {
+  portfolio_id: string
+  portfolio_name: string
+  base_currency: string
+  as_of_date: string
+  view_label: string
+  quality_warnings: string[]
+  row: PortfolioInstrumentHoldingRow | null
+}
+
 export type HoldingsWorkspaceFilters = {
   as_of_date?: string
+  include_return_series?: boolean
 }
 
 export type SharedMarketDataPoint = {
@@ -705,6 +739,7 @@ export type PortfolioResearchCalculationFrequency = 'auto' | 'daily' | 'weekly' 
 export type PortfolioResearchMissingReturnPolicy = 'strict' | 'complete_case_drop'
 export type PortfolioResearchBacktestRebalanceFrequency = '1w' | '1m' | '3m'
 export type PortfolioResearchArtifactPreviewKind = 'text' | 'html' | 'binary'
+export type PortfolioResearchAsOfMode = 'dynamic' | 'pinned'
 
 export type PortfolioResearchPlanningTaxonomyOption = {
   taxonomy_id: string
@@ -728,7 +763,9 @@ export type PortfolioResearchSettingsRecord = {
   planning_taxonomy_name?: string | null
   comparator_taxonomy_node_id?: string | null
   comparator_taxonomy_node_name?: string | null
+  as_of_mode: PortfolioResearchAsOfMode
   as_of_date?: string | null
+  pinned_as_of_date?: string | null
   lookback_days: number
   calculation_frequency: PortfolioResearchCalculationFrequency
   missing_return_policy: PortfolioResearchMissingReturnPolicy
@@ -748,6 +785,7 @@ export type PortfolioResearchSettingsRecord = {
 export type PortfolioResearchSettingsUpdatePayload = {
   planning_taxonomy_id?: string | null
   comparator_taxonomy_node_id?: string | null
+  as_of_mode: PortfolioResearchAsOfMode
   as_of_date?: string | null
   lookback_days: number
   calculation_frequency?: PortfolioResearchCalculationFrequency
@@ -858,6 +896,7 @@ export type PortfolioResearchCurrentContextRecord = {
   chart_currency?: string | null
   summary: PortfolioResearchCurrentContextSummary
   planning_target_summary?: PortfolioResearchPlanningTargetSummary | null
+  quality_warnings: string[]
   chart_points: PortfolioResearchContextPoint[]
   top_holdings: PortfolioResearchHoldingSnapshotRecord[]
   planning_groups: PortfolioResearchPlanningGroupSnapshotRecord[]
@@ -1464,8 +1503,15 @@ export type PortfolioPositionLotRecord = {
   opened_at: string
   closed_at?: string | null
   status: 'open' | 'closed'
-  close_reason?: 'disposed' | 'transferred' | null
+  close_reason?: 'disposed' | 'transferred' | 'corporate_action' | null
   source_position_lot_id?: string | null
+  corporate_action_event_id?: string | null
+  corporate_action_event?: Record<string, unknown> | null
+  corporate_action_quantity_out?: number | null
+  corporate_action_cost_basis_out?: number | null
+  predecessor_quantity?: number | null
+  unit_cost_basis_before?: number | null
+  unit_cost_basis_after?: number | null
   entry_quantity: number
   remaining_quantity: number
   realized_quantity: number
@@ -1591,10 +1637,6 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, ''
 const GET_CACHE_TTL_MS = 60_000
 const GET_CACHE_MAX_ENTRIES = 128
 
-type FetchJsonOptions = {
-  invalidateGetCache?: boolean
-}
-
 type CachedGetRequest = {
   expiresAt: number
   promise: Promise<unknown>
@@ -1620,7 +1662,6 @@ function fetchJson<T>(
   baseUrl: string,
   path: string,
   init?: RequestInit,
-  options: FetchJsonOptions = {},
 ): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase()
   const cacheKey = method === 'GET' ? `${baseUrl}${path}` : null
@@ -1676,10 +1717,6 @@ function fetchJson<T>(
     return request
   }
 
-  if (options.invalidateGetCache === false) {
-    return request
-  }
-
   return request.then((value) => {
     getRequestCache.clear()
     return value
@@ -1708,25 +1745,6 @@ export function getWorkspaceSummaryForPortfolio(portfolioId: string) {
   )
 }
 
-export type PortfolioWorkspacePreloadResponse = {
-  portfolio_id: string
-  status: string
-  warmed_surfaces: string[]
-}
-
-export function preloadPortfolioWorkspace(portfolioId: string) {
-  return fetchJson<PortfolioWorkspacePreloadResponse>(
-    API_BASE_URL,
-    `/api/workspace/preload?portfolio_id=${encodeURIComponent(portfolioId)}`,
-    {
-      method: 'POST',
-    },
-    {
-      invalidateGetCache: false,
-    },
-  )
-}
-
 export function getHoldingsWorkspace(
   portfolioId?: string,
   filters: HoldingsWorkspaceFilters = {},
@@ -1734,8 +1752,25 @@ export function getHoldingsWorkspace(
   const query = buildQuery({
     portfolio_id: portfolioId,
     as_of_date: filters.as_of_date,
+    include_return_series: filters.include_return_series ? 'true' : undefined,
   })
   return fetchJson<HoldingsWorkspaceResponse>(API_BASE_URL, `/api/workspace/holdings${query}`)
+}
+
+export function getPortfolioInstrumentHoldingProjection(
+  portfolioId: string,
+  instrumentId: string,
+  filters: Pick<HoldingsWorkspaceFilters, 'as_of_date'> = {},
+) {
+  const query = buildQuery({
+    portfolio_id: portfolioId,
+    instrument_id: instrumentId,
+    as_of_date: filters.as_of_date,
+  })
+  return fetchJson<PortfolioInstrumentHoldingProjectionResponse>(
+    API_BASE_URL,
+    `/api/workspace/holdings/instrument${query}`,
+  )
 }
 
 export function getPortfolios() {
@@ -1915,6 +1950,18 @@ export function getPortfolioTransactions(portfolioId: string, filters: Portfolio
   return fetchJson<PortfolioTransactionListResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/transactions${query}`,
+  )
+}
+
+export function getPortfolioTransactionExecutionQuote(
+  portfolioId: string,
+  instrumentId: string,
+  asOfDate: string,
+) {
+  const query = buildQuery({ instrument_id: instrumentId, as_of_date: asOfDate })
+  return fetchJson<PortfolioTransactionExecutionQuoteResponse>(
+    API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/transactions/execution-quote${query}`,
   )
 }
 

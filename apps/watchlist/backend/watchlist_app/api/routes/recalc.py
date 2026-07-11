@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from watchlist_app.api.contracts import RecalcExecuteRequest
+from watchlist_app.api.contracts import RecalcBulkRequest, RecalcExecuteRequest
 from watchlist_app.api.presenters import present_recalc_job
 from watchlist_app.db.session import get_db_session
+from watchlist_app.db.models.instruments import InstrumentDetail
+from watchlist_app.db.models.recalc import RecalcJob
 from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.recalc_jobs import SQLAlchemyRecalcJobRepository
-from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+from watchlist_app.services.canonical_recalc import (
+    CanonicalRecalcService,
+    RecalcJobAlreadyRunningError,
+)
 from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key, make_recalc_job_id
 
 
@@ -17,6 +23,79 @@ router = APIRouter()
 instrument_repository = SQLAlchemyInstrumentRepository()
 recalc_repository = SQLAlchemyRecalcJobRepository()
 canonical_recalc_service = CanonicalRecalcService()
+
+
+@router.post("/bulk")
+def enqueue_bulk_recalc(
+    payload: RecalcBulkRequest,
+    session: Session = Depends(get_db_session),
+) -> dict[str, object]:
+    instrument_ids = list(
+        dict.fromkeys(
+            instrument_id.strip()
+            for instrument_id in payload.instrument_ids
+            if instrument_id.strip()
+        )
+    )
+    available_ids = set(
+        session.scalars(
+            select(InstrumentDetail.instrument_id).where(
+                InstrumentDetail.instrument_id.in_(instrument_ids)
+            )
+        ).all()
+    )
+    missing_ids = [
+        instrument_id for instrument_id in instrument_ids if instrument_id not in available_ids
+    ]
+    recalc_repository.requeue_stale_running_jobs(session, timeout_seconds=300)
+    open_ids = set(
+        session.scalars(
+            select(RecalcJob.instrument_id).where(
+                RecalcJob.instrument_id.in_(available_ids),
+                RecalcJob.job_type == payload.job_type,
+                RecalcJob.job_status.in_(("queued", "running")),
+            )
+        ).all()
+    )
+    enqueued_ids: list[str] = []
+    existing_ids: list[str] = []
+    for instrument_id in instrument_ids:
+        if instrument_id not in available_ids:
+            continue
+        if instrument_id in open_ids:
+            existing_ids.append(instrument_id)
+            continue
+        try:
+            with session.begin_nested():
+                recalc_repository.create(
+                    session,
+                    recalc_job_id=make_recalc_job_id(),
+                    job_type=payload.job_type,
+                    instrument_id=instrument_id,
+                    trigger_type=payload.trigger_type,
+                    trigger_ref_type=payload.trigger_ref_type,
+                    trigger_ref_id=payload.trigger_ref_id,
+                    job_status="queued",
+                    priority=100 if payload.job_type == "all" else 85,
+                    dedupe_key=make_recalc_dedupe_key(
+                        job_type=payload.job_type,
+                        instrument_id=instrument_id,
+                    ),
+                    payload_json={"requested_by": payload.trigger_type},
+                )
+            open_ids.add(instrument_id)
+            enqueued_ids.append(instrument_id)
+        except IntegrityError:
+            open_ids.add(instrument_id)
+            existing_ids.append(instrument_id)
+    session.commit()
+    return {
+        "requested_count": len(instrument_ids),
+        "accepted_count": len(enqueued_ids) + len(existing_ids),
+        "enqueued_instrument_ids": enqueued_ids,
+        "existing_instrument_ids": existing_ids,
+        "missing_instrument_ids": missing_ids,
+    }
 
 
 def _ensure_instrument_exists(session: Session, instrument_id: str) -> None:
@@ -35,9 +114,6 @@ def _enqueue_recalc(
         session,
         instrument_id=instrument_id,
         job_type=job_type,
-        trigger_type="manual_api",
-        trigger_ref_type="api_request",
-        trigger_ref_id=None,
     )
     if existing is not None:
         return present_recalc_job(existing)
@@ -45,9 +121,6 @@ def _enqueue_recalc(
     dedupe_key = make_recalc_dedupe_key(
         job_type=job_type,
         instrument_id=instrument_id,
-        trigger_type="manual_api",
-        trigger_ref_type="api_request",
-        trigger_ref_id=None,
     )
     try:
         record = recalc_repository.create(
@@ -70,9 +143,6 @@ def _enqueue_recalc(
             session,
             instrument_id=instrument_id,
             job_type=job_type,
-            trigger_type="manual_api",
-            trigger_ref_type="api_request",
-            trigger_ref_id=None,
         )
         if existing is not None:
             return present_recalc_job(existing)
@@ -133,6 +203,8 @@ def execute_recalc_now(
         if str(error).startswith("Instrument not found:"):
             raise HTTPException(status_code=404, detail=str(error)) from error
         raise
+    except RecalcJobAlreadyRunningError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.get("/jobs")

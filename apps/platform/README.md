@@ -50,14 +50,14 @@ Database Dashboard 的邮件刷新使用显式产品规则匹配发件人、主�
 
 Database Dashboard 也支持 Tushare SDK 兼容刷新。将 instrument 的 `Source Mode` 设为 `API`，`API Profile` 设为 `tushare` 后，后端会用 `tushare` Python SDK 调用，并把 SDK 的 `_DataApi__http_url` 指向 `PORTFOLIO_OPS_PLATFORM_TUSHARE_API_URL`，默认值为 `https://fastapic.stockai888.top`。公募 `.OF` 代码通过 `fund_nav` 写入 `official_nav / total_return_nav`，场内基金 `.SH/.SZ` 通过 `fund_daily` 写入 `price/close`，指数 `.SH/.SZ/.CSI/.CNI` 通过 `index_daily` 写入 `price/close`。Tushare token 读取 Git-ignored backend `.env` 或 shell 环境变量；不要把 token 明文写进 Git、提交信息或聊天记录。
 
-后台定时刷新使用 [backend/scripts/refresh_market_data_scheduled.py](./backend/scripts/refresh_market_data_scheduled.py)。默认依次刷新邮件和 Tushare，成功写入后通知 Watchlist / Portfolio 下游重算。安装每天 08:00 静默刷新 timer：
+后台定时刷新使用 [backend/scripts/refresh_market_data_scheduled.py](./backend/scripts/refresh_market_data_scheduled.py)。默认依次刷新 Tushare 和邮件；成功写入后同步等待 Portfolio 快照刷新，并让 Watchlist 可靠入队后由 worker 异步重算。安装每天 21:00 刷新 timer：
 
 ```bash
 PYTHON_BIN=/home/shaw/miniconda3/envs/us_sector_rotation/bin/python \
   infra/systemd/install_market_data_refresh_timer.sh
 ```
 
-服务器部署时在服务器项目目录执行同一个脚本，并把 `PYTHON_BIN` 指向服务器后端运行环境。timer 默认按 `*-*-* 08:00 Asia/Shanghai` 运行，日志追加到 `~/.local/state/portfolio-ops/logs/market-data-refresh.log`。脚本会先对失败 instrument 做内部重试；默认不会因为单项失败触发 systemd 整批重跑。
+服务器部署时在服务器项目目录执行同一个脚本，并把 `PYTHON_BIN` 指向服务器后端运行环境。timer 默认按 `*-*-* 21:00 Asia/Shanghai` 运行，日志追加到 `~/.local/state/portfolio-ops/logs/market-data-refresh.log`。脚本使用 `fcntl` 锁拒绝重叠运行，原子保存最近一次摘要，并先对失败 instrument 做内部重试；默认把单项失败或下游重算失败报告为非零退出状态，由 systemd 的有界重启策略处理。macOS 使用仓库根目录的 `infra/launchd/install_local_services.sh` 安装同为每日 21:00 的 LaunchAgent。
 
 ## Downstream Refresh
 
@@ -99,7 +99,7 @@ npm run dev
 
 说明：
 
-- Vite 默认监听 `0.0.0.0:5172`；本机访问 `http://127.0.0.1:5172`
+- Vite 默认仅监听 `127.0.0.1:5172`；如需远程访问，请通过受控的反向代理显式开放
 - `/api` 默认代理到 `http://127.0.0.1:8002`
 
 ## Frontend Runtime Config

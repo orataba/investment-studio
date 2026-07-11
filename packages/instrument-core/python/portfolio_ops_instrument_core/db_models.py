@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import Boolean, Date, ForeignKey, JSON, MetaData, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, ForeignKey, Integer, JSON, MetaData, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -24,6 +24,7 @@ class RegistryMetadata(InstrumentRegistryBase):
 
     registry_key: Mapped[str] = mapped_column(String, primary_key=True, default="shared")
     registry_name: Mapped[str] = mapped_column(String, nullable=False)
+    market_data_updated_at: Mapped[str | None] = mapped_column(String)
 
 
 class Instrument(InstrumentRegistryBase):
@@ -53,12 +54,17 @@ class Instrument(InstrumentRegistryBase):
         nullable=False,
         default=dict,
     )
+    market_data_updated_at: Mapped[str | None] = mapped_column(String)
 
     identifiers: Mapped[list["InstrumentIdentifier"]] = relationship(
         back_populates="instrument",
         cascade="all, delete-orphan",
     )
     market_data_points: Mapped[list["InstrumentMarketData"]] = relationship(
+        back_populates="instrument",
+        cascade="all, delete-orphan",
+    )
+    corporate_action_events: Mapped[list["CorporateActionEvent"]] = relationship(
         back_populates="instrument",
         cascade="all, delete-orphan",
     )
@@ -113,3 +119,47 @@ class InstrumentMarketData(InstrumentRegistryBase):
     status: Mapped[str] = mapped_column(String, nullable=False, default="complete")
 
     instrument: Mapped[Instrument] = relationship(back_populates="market_data_points")
+
+
+class CorporateActionEvent(InstrumentRegistryBase):
+    """Canonical security-master event that changes the units in circulation.
+
+    Ratios are stored as decimal text so the ledger can apply the exact
+    provider/issuer ratio without a binary floating-point round trip.  A
+    ``share_split`` uses ``new_units / old_units`` (for example 2 / 1 for a
+    two-for-one split and 1 / 2 for a reverse split).
+    """
+
+    __tablename__ = "corporate_action_event"
+    __table_args__ = (
+        UniqueConstraint(
+            "instrument_id",
+            "action_type",
+            "effective_date",
+            name="uq_corporate_action_instrument_type_effective_date",
+        ),
+    )
+
+    corporate_action_event_id: Mapped[str] = mapped_column(String, primary_key=True)
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instrument.instrument_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    action_type: Mapped[str] = mapped_column(String, nullable=False)
+    announcement_date: Mapped[date | None] = mapped_column(Date)
+    record_date: Mapped[date | None] = mapped_column(Date)
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False)
+    payable_date: Mapped[date | None] = mapped_column(Date)
+    new_units: Mapped[str] = mapped_column(Text, nullable=False)
+    old_units: Mapped[str] = mapped_column(Text, nullable=False)
+    quantity_rounding: Mapped[str] = mapped_column(String, nullable=False, default="exact")
+    quantity_precision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_basis_treatment: Mapped[str] = mapped_column(String, nullable=False, default="carry")
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    external_event_id: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="confirmed")
+    provenance_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    instrument: Mapped[Instrument] = relationship(back_populates="corporate_action_events")

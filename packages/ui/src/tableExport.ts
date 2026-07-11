@@ -1,6 +1,8 @@
 export type TableCell = string | number | boolean | null | undefined
 export type TableExportFormat = 'csv' | 'xlsx'
 
+const SPREADSHEET_FORMULA_PREFIX = /^[\t\r\n ]*[=+\-@]/
+
 const textEncoder = new TextEncoder()
 let crc32Table: number[] | null = null
 
@@ -8,8 +10,17 @@ export function csvEscape(value: TableCell) {
   if (value == null) {
     return ''
   }
-  const text = String(value)
+  const text = typeof value === 'string' ? sanitizeSpreadsheetText(value) : String(value)
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+/**
+ * Keep user-controlled labels and notes as text when an export is opened in a
+ * spreadsheet application. Numeric values remain numeric because callers only
+ * pass strings through this function.
+ */
+export function sanitizeSpreadsheetText(value: string) {
+  return SPREADSHEET_FORMULA_PREFIX.test(value) ? `'${value}` : value
 }
 
 export function downloadCsv(filename: string, rows: TableCell[][]) {
@@ -144,7 +155,7 @@ function buildCellXml(value: TableCell, rowNumber: number, columnIndex: number) 
   if (typeof value === 'boolean') {
     return `<c r="${ref}" t="b"><v>${value ? 1 : 0}</v></c>`
   }
-  const text = String(value)
+  const text = sanitizeSpreadsheetText(String(value))
   const preserveSpace = /^\s|\s$|\n|\r/.test(text) ? ' xml:space="preserve"' : ''
   return `<c r="${ref}" t="inlineStr"><is><t${preserveSpace}>${escapeXmlText(text)}</t></is></c>`
 }

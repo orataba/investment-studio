@@ -27,15 +27,10 @@ npm --prefix apps/portfolio/frontend ci
 npm --prefix apps/portfolio/frontend run build
 ```
 
-Install Python dependencies into the project virtual environment:
+Reproduce the locked Python environment (including test tooling):
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -U pip
-.venv/bin/python -m pip install -e packages/instrument-core/python
-.venv/bin/python -m pip install -e apps/platform/backend
-.venv/bin/python -m pip install -e apps/watchlist/backend
-.venv/bin/python -m pip install -e apps/portfolio/backend
+infra/scripts/sync_python_env.sh
 ```
 
 Install and start the app units:
@@ -44,6 +39,19 @@ Install and start the app units:
 PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
   infra/systemd/install_app_services.sh
 ```
+
+The installer binds both API and web services to `127.0.0.1` by default. Set
+`API_HOST` or `WEB_HOST` explicitly only when a reverse proxy or network policy
+requires another bind address.
+
+Before applying migrations, the installer records and stops every managed
+service, then runs `infra/scripts/migrate_all.sh`. This prevents a worker from
+the previous release from writing across a new fencing migration. The command
+applies the instrument registry, Portfolio, and Watchlist Alembic chains in
+order. If migration or restart fails, the installer restores the services that
+were active before the update.
+`RUN_MIGRATIONS=false` is available only for maintenance workflows that have
+already applied and verified the same release migrations separately.
 
 For production deployments, keep runtime-specific environment files outside the
 Git worktree and point systemd at that directory:
@@ -59,6 +67,15 @@ PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
   infra/systemd/install_app_services.sh
 ```
 
+The same migration entry point can be run independently before another process
+manager deploys the applications:
+
+```bash
+PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
+  ENV_ROOT="$HOME/.config/portfolio-ops/env" \
+  infra/scripts/migrate_all.sh
+```
+
 Install and start the market-data timer:
 
 ```bash
@@ -67,8 +84,11 @@ PROJECT_ROOT="$PWD" BACKEND_ROOT="$PWD/apps/platform/backend" PYTHON_BIN="$PWD/.
   infra/systemd/install_market_data_refresh_timer.sh
 ```
 
-By default, item-level refresh failures are recorded in `refresh_status` without
-forcing systemd to rerun the whole batch.
+The timer defaults to `21:00 Asia/Shanghai`. It uses a non-blocking `fcntl` lock,
+atomically records the latest run summary under `~/.local/state/portfolio-ops`,
+and treats item-level or downstream refresh failures as a failed run. The
+installer's bounded systemd restart policy retries those failures without
+allowing overlapping batches.
 
 ## Ports
 

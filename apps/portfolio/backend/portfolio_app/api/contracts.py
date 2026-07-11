@@ -6,11 +6,18 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from portfolio_ops_instrument_core.models import InstrumentCore as InstrumentCoreContract
+from portfolio_ops_instrument_core.models import CorporateActionEvent as CorporateActionEventContract
 from portfolio_ops_instrument_core.models import InstrumentIdentifier as InstrumentIdentifierContract
-from portfolio_ops_instrument_core.models import InstrumentType, DataStatus as CoverageState, IdentifierType
+from portfolio_ops_instrument_core.models import (
+    DataStatus as CoverageState,
+    IdentifierType,
+    InstrumentType,
+    MetricFamily,
+    QuoteBasis,
+)
 
 
-AccountScopedInstrumentType = Literal["fund", "bond", "equity", "other"]
+AccountScopedInstrumentType = Literal["fund", "etf", "bond", "equity", "other"]
 AccountType = Literal["deposit_account", "securities_account"]
 CostBasisMethod = Literal["moving_average", "fifo"]
 SupportedCurrency = Literal["USD", "HKD", "CNY"]
@@ -54,11 +61,15 @@ PostingRole = Literal[
     "security_reinvestment_position",
     "account_income_cash",
     "account_expense_cash",
+    "corporate_action_position_adjustment",
 ]
 PositionLotStatus = Literal["open", "closed"]
-PositionLotCloseReason = Literal["disposed", "transferred"]
+PositionLotCloseReason = Literal["disposed", "transferred", "corporate_action"]
+LedgerSourceType = TransactionType | Literal["corporate_action"]
+PositionLotOpeningType = TransactionType | Literal["corporate_action"]
 ResearchRunStatus = Literal["running", "completed", "failed"]
 ResearchArtifactPreviewKind = Literal["text", "html", "binary"]
+ResearchAsOfMode = Literal["dynamic", "pinned"]
 ResearchTargetDimension = Literal["scope_default", "weight", "risk_budget"]
 ResearchCapitalMode = Literal["unit_notional", "fixed_gross", "target_volatility", "volatility_cap"]
 ResearchCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
@@ -362,7 +373,7 @@ class LedgerPostingRecord(BaseModel):
     portfolio_id: str
     account_id: str
     posting_role: PostingRole
-    source_transaction_type: TransactionType
+    source_transaction_type: LedgerSourceType
     trade_date: date
     settlement_date: date
     effective_date: date
@@ -374,6 +385,7 @@ class LedgerPostingRecord(BaseModel):
     currency: str
     transfer_group_id: str | None = None
     note: str | None = None
+    corporate_action_event: CorporateActionEventContract | None = None
 
 
 class AccountPositionRecord(BaseModel):
@@ -442,6 +454,21 @@ class InstrumentPriceChartResponse(BaseModel):
     summary: InstrumentPriceChartSummary
 
 
+class TransactionExecutionQuoteResponse(BaseModel):
+    portfolio_id: str
+    instrument_id: str
+    requested_as_of_date: date
+    selection_role: Literal["trading", "valuation"] | None = None
+    value: float | None = None
+    quote_date: date | None = None
+    quote_basis: QuoteBasis | None = None
+    metric_family: MetricFamily | None = None
+    currency: str
+    provider: str | None = None
+    status: CoverageState
+    stale: bool = False
+
+
 class PositionLotRealizationRecord(BaseModel):
     realization_id: str
     transaction_id: str
@@ -467,13 +494,20 @@ class PositionLotRecord(BaseModel):
     currency: str
     cost_basis_method: CostBasisMethod
     opened_by_transaction_id: str
-    opening_transaction_type: TransactionType
+    opening_transaction_type: PositionLotOpeningType
     opened_at: date
     acquisition_date: date
     closed_at: date | None = None
     status: PositionLotStatus
     close_reason: PositionLotCloseReason | None = None
     source_position_lot_id: str | None = None
+    corporate_action_event_id: str | None = None
+    corporate_action_event: CorporateActionEventContract | None = None
+    corporate_action_quantity_out: float | None = None
+    corporate_action_cost_basis_out: float | None = None
+    predecessor_quantity: float | None = None
+    unit_cost_basis_before: float | None = None
+    unit_cost_basis_after: float | None = None
     entry_quantity: float
     remaining_quantity: float
     realized_quantity: float
@@ -549,6 +583,7 @@ class DailySnapshotRecord(BaseModel):
     market_observation_count: int = 0
     return_observation_eligible: bool = False
     cash_balance: float | None = None
+    pending_settlement: float | None = None
     position_market_value: float | None = None
     nav: float | None = None
     open_cost_basis: float | None = None
@@ -602,6 +637,8 @@ class DailySnapshotRefreshResult(BaseModel):
     refreshed_from: date | None = None
     refreshed_to: date | None = None
     refreshed_at: str | None = None
+    source_market_data_updated_at: str | None = None
+    recalculated_from: date | None = None
 
 
 class DailySnapshotRefreshResponse(BaseModel):
@@ -618,6 +655,7 @@ class DailyPerformancePoint(BaseModel):
     return_observation_eligible: bool = False
     beginning_nav: float | None = None
     ending_nav: float | None = None
+    pending_settlement: float | None = None
     realized_pnl: float | None = None
     unrealized_pnl: float | None = None
     income_cash_amount: float | None = None
@@ -674,6 +712,7 @@ class PerformanceSummary(BaseModel):
     max_drawdown: float | None = None
     max_drawdown_days: int | None = None
     drawdown_duration_days: int | None = None
+    quality_warnings: list[str] = Field(default_factory=list)
 
 
 class PerformanceResponse(BaseModel):
@@ -955,7 +994,9 @@ class ResearchSettingsRecord(BaseModel):
     planning_taxonomy_name: str | None = None
     comparator_taxonomy_node_id: str | None = None
     comparator_taxonomy_node_name: str | None = None
+    as_of_mode: ResearchAsOfMode = "dynamic"
     as_of_date: date | None = None
+    pinned_as_of_date: date | None = None
     lookback_days: int = Field(default=90)
     calculation_frequency: ResearchCalculationFrequency = "auto"
     missing_return_policy: ResearchMissingReturnPolicy = "strict"
@@ -980,6 +1021,7 @@ class ResearchSettingsRecord(BaseModel):
 class ResearchSettingsUpdateRequest(BaseModel):
     planning_taxonomy_id: str | None = None
     comparator_taxonomy_node_id: str | None = None
+    as_of_mode: ResearchAsOfMode = "dynamic"
     as_of_date: date | None = None
     lookback_days: int = Field(default=90)
     calculation_frequency: ResearchCalculationFrequency = "auto"
@@ -1022,6 +1064,8 @@ class ResearchSettingsUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_research_settings(self) -> "ResearchSettingsUpdateRequest":
+        if self.as_of_mode == "pinned" and self.as_of_date is None:
+            raise ValueError("pinned research mode requires as_of_date.")
         if self.capital_mode == "unit_notional":
             if (
                 self.gross_exposure is not None
@@ -1157,6 +1201,7 @@ class ResearchCurrentContextRecord(BaseModel):
     chart_currency: str | None = None
     summary: ResearchCurrentContextSummary
     planning_target_summary: ResearchPlanningTargetSummary | None = None
+    quality_warnings: list[str] = Field(default_factory=list)
     chart_points: list[ResearchContextPoint] = Field(default_factory=list)
     top_holdings: list[ResearchHoldingSnapshotRecord] = Field(default_factory=list)
     planning_groups: list[ResearchPlanningGroupSnapshotRecord] = Field(default_factory=list)
@@ -2348,6 +2393,8 @@ class AccountWorkspaceAccount(BaseModel):
     pending_settlement: float = 0.0
     pending_settlement_base: float | None = None
     account_value_base: float | None = None
+    valuation_coverage_state: CoverageState = "complete"
+    valuation_missing_components: list[str] = Field(default_factory=list)
     position_line_count: int
     position_market_value: float | None = None
     position_market_value_currency: SupportedCurrency | None = None
@@ -2359,6 +2406,9 @@ class AccountsWorkspaceSummary(BaseModel):
     securities_account_count: int
     ledger_posting_count: int
     position_line_count: int
+    valuation_coverage_state: CoverageState = "complete"
+    valued_account_count: int = 0
+    unvalued_account_count: int = 0
 
 
 class AccountsWorkspaceResponse(BaseModel):

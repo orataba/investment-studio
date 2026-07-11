@@ -10,6 +10,8 @@ import {
   type WatchlistRecord,
 } from '../lib/api'
 import { buildWatchlistPath, PLATFORM_HOME_URL } from '../lib/navigation'
+import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
 const ALL_COVERAGE_WATCHLIST_ID = 'all-coverage'
 
@@ -31,7 +33,20 @@ export default function WatchlistEntryPage() {
   const [createWatchlistName, setCreateWatchlistName] = useState('')
   const [createWatchlistDescription, setCreateWatchlistDescription] = useState('')
   const [isCreatingWatchlist, setIsCreatingWatchlist] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState<WatchlistRecord | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const menuRef = useRef<HTMLDivElement | null>(null)
+  const createNameRef = useRef<HTMLInputElement | null>(null)
+  const createDialogRef = useModalDialog(
+    createModalOpen,
+    () => {
+      if (!isCreatingWatchlist) {
+        resetCreateWatchlistForm()
+        setCreateModalOpen(false)
+      }
+    },
+    createNameRef,
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -144,6 +159,27 @@ export default function WatchlistEntryPage() {
           : 'Failed to create watchlist.',
       )
       setIsCreatingWatchlist(false)
+    }
+  }
+
+  async function handleDeleteWatchlist() {
+    if (!pendingDelete || deleting) {
+      return
+    }
+    setDeleting(true)
+    try {
+      await deleteWatchlist(pendingDelete.watchlist_id)
+      setWatchlists((current) =>
+        current.filter((item) => item.watchlist_id !== pendingDelete.watchlist_id),
+      )
+      setNotice(`Deleted watchlist "${pendingDelete.name}".`)
+      setPendingDelete(null)
+    } catch (requestError) {
+      setNotice(
+        requestError instanceof Error ? requestError.message : 'Failed to delete watchlist.',
+      )
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -268,22 +304,9 @@ export default function WatchlistEntryPage() {
                       {!systemCoverage ? (
                         <button
                           type="button"
-                          onClick={async () => {
-                            try {
-                              await deleteWatchlist(watchlist.watchlist_id)
-                              setWatchlists((current) =>
-                                current.filter((item) => item.watchlist_id !== watchlist.watchlist_id),
-                              )
-                              setNotice(`Deleted watchlist "${watchlist.name}".`)
-                            } catch (requestError) {
-                              setNotice(
-                                requestError instanceof Error
-                                  ? requestError.message
-                                  : 'Failed to delete watchlist.',
-                              )
-                            } finally {
-                              setMenuOpenId(null)
-                            }
+                          onClick={() => {
+                            setPendingDelete(watchlist)
+                            setMenuOpenId(null)
                           }}
                         >
                           Delete Watchlist
@@ -338,10 +361,18 @@ export default function WatchlistEntryPage() {
             }
           }}
         >
-          <div className="watchlists-modal watchlists-save-modal" onClick={(event) => event.stopPropagation()}>
+          <div
+            ref={createDialogRef}
+            className="watchlists-modal watchlists-save-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-watchlist-title"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="watchlists-modal-header">
               <div>
-                <div className="panel-title">Create Watchlist</div>
+                <div className="panel-title" id="create-watchlist-title">Create Watchlist</div>
                 <div className="section-heading">Create A New List For Instruments And Views</div>
               </div>
               <button
@@ -360,6 +391,7 @@ export default function WatchlistEntryPage() {
               <div className="form-field">
                 <span>Name</span>
                 <input
+                  ref={createNameRef}
                   className="form-input"
                   value={createWatchlistName}
                   onChange={(event) => setCreateWatchlistName(event.target.value)}
@@ -402,6 +434,16 @@ export default function WatchlistEntryPage() {
           </div>
         </div>
       ) : null}
+      <ConfirmDialog
+        open={Boolean(pendingDelete)}
+        title="Delete Watchlist"
+        description="This permanently deletes the watchlist, its saved views, and its list membership. Shared instruments are not deleted. This action cannot be undone."
+        confirmLabel="Delete Watchlist"
+        confirmationText={pendingDelete?.name}
+        busy={deleting}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={handleDeleteWatchlist}
+      />
     </section>
   )
 }

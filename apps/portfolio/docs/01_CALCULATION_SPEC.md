@@ -498,6 +498,11 @@ $$
 - `Events` 是解释层时间轴，用于说明某个资产发生过什么；
 - `Events` 可引用交易或公司行为，但不等于原始账本流水；
 - 改变持仓或成本基础的事件，必须能追溯到底层 `Transaction` 或 `CorporateAction`。
+- `share_split` 在 `effective_date` BOD 生效，ratio 定义为 `new_units / old_units`；账户总量先按公告规则处理碎股，再按 lot 比例分摊，不能逐 lot 截位。
+- 拆分不改变账户总成本基础；旧 lot 关闭并以 lineage 连接到 carry-cost successor lot，单位成本按 ratio 反向变化。
+- provider factor/价格连续性只能生成 `detected` 候选，不能入账；只有 issuer / exchange / CSD 确认事件才可形成数量 posting。
+- 若登记日与生效日之间存在交易而系统没有 due-bill 事实，计算必须 fail closed；`cash_in_lieu` 没有金额/应收事实时也必须 fail closed。
+- 原始 `close / official_nav` 用于交易与市值；`adjusted_close / total_return_nav` 只用于收益、风险、图表和拆分日持仓涨跌解释。
 - `dividend / coupon` 进入 `Events` 时，若已经入账，则必须引用对应 `Transaction`；不得在事件层再次形成独立 ledger posting。
 
 ## 4. FX 口径

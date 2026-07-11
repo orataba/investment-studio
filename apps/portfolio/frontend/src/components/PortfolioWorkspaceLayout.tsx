@@ -21,7 +21,9 @@ import {
   PLATFORM_HOME_URL,
 } from '../lib/navigation'
 import { workspacePrimaryNavigation } from '../lib/portfolioIa'
-import { preloadPortfolioRouteModules, preloadPortfolioTabData } from '../lib/preload'
+import { preloadPortfolioSection } from '../lib/preload'
+import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
 type WorkspaceTab = {
   label: string
@@ -101,6 +103,8 @@ export default function PortfolioWorkspaceLayout({
   const [portfolioOptions, setPortfolioOptions] = useState<PortfolioSelectorOption[]>([])
   const [selectorMenuOpen, setSelectorMenuOpen] = useState(false)
   const [selectorNotice, setSelectorNotice] = useState<string | null>(null)
+  const [pendingPortfolioDelete, setPendingPortfolioDelete] = useState<PortfolioSelectorOption | null>(null)
+  const [deletingPortfolio, setDeletingPortfolio] = useState(false)
   const [riskSettingsOpen, setRiskSettingsOpen] = useState(false)
   const [riskSettingsLoading, setRiskSettingsLoading] = useState(false)
   const [riskSettingsSaving, setRiskSettingsSaving] = useState(false)
@@ -114,6 +118,12 @@ export default function PortfolioWorkspaceLayout({
   const [riskPolicyContributionMode, setRiskPolicyContributionMode] =
     useState<PortfolioRiskContributionMode>('signed')
   const selectorMenuRef = useRef<HTMLDivElement | null>(null)
+  const navigationPreloadTimerRef = useRef<number | null>(null)
+  const riskSettingsDialogRef = useModalDialog(riskSettingsOpen, () => {
+    if (!riskSettingsSaving) {
+      setRiskSettingsOpen(false)
+    }
+  })
 
   useEffect(() => {
     let cancelled = false
@@ -145,12 +155,11 @@ export default function PortfolioWorkspaceLayout({
   }, [portfolioId])
 
   useEffect(() => {
-    if (!portfolioId) {
-      return
+    return () => {
+      if (navigationPreloadTimerRef.current != null) {
+        window.clearTimeout(navigationPreloadTimerRef.current)
+      }
     }
-
-    preloadPortfolioRouteModules()
-    preloadPortfolioTabData(portfolioId)
   }, [portfolioId])
 
   useEffect(() => {
@@ -226,36 +235,76 @@ export default function PortfolioWorkspaceLayout({
         ]
       : portfolioOptions
 
-  async function handleSelectorAction(action: 'copy' | 'delete') {
-    try {
-      if (action === 'copy') {
-        const copied = await copyPortfolio(resolvedPortfolioId)
-        setPortfolioOptions((current) => [
-          ...current,
-          {
-            portfolio_id: copied.portfolio_id,
-            portfolio_name: copied.portfolio_name,
-          },
-        ])
-        setSelectorNotice(`Copied portfolio "${resolvedSummary.portfolio_name}".`)
-        navigate(buildPortfolioSectionPath(copied.portfolio_id, '/overview'))
-        return
-      }
+  function cancelNavigationPreload() {
+    if (navigationPreloadTimerRef.current != null) {
+      window.clearTimeout(navigationPreloadTimerRef.current)
+      navigationPreloadTimerRef.current = null
+    }
+  }
 
-      await deletePortfolio(resolvedPortfolioId)
-      setPortfolioOptions((current) => current.filter((portfolio) => portfolio.portfolio_id !== resolvedPortfolioId))
-      setSelectorNotice(`Deleted portfolio "${resolvedSummary.portfolio_name}".`)
-      navigate('/portfolios')
+  function scheduleNavigationPreload(section: string, immediate = false) {
+    cancelNavigationPreload()
+    if (!resolvedPortfolioId || section === activeSection) {
+      return
+    }
+    if (immediate) {
+      preloadPortfolioSection(section, resolvedPortfolioId)
+      return
+    }
+    navigationPreloadTimerRef.current = window.setTimeout(() => {
+      navigationPreloadTimerRef.current = null
+      preloadPortfolioSection(section, resolvedPortfolioId)
+    }, 140)
+  }
+
+  async function handleSelectorAction(action: 'copy' | 'delete') {
+    if (action === 'delete') {
+      setSelectorMenuOpen(false)
+      setPendingPortfolioDelete({
+        portfolio_id: resolvedPortfolioId,
+        portfolio_name: resolvedSummary.portfolio_name,
+      })
+      return
+    }
+    try {
+      const copied = await copyPortfolio(resolvedPortfolioId)
+      setPortfolioOptions((current) => [
+        ...current,
+        {
+          portfolio_id: copied.portfolio_id,
+          portfolio_name: copied.portfolio_name,
+        },
+      ])
+      setSelectorNotice(`Copied portfolio "${resolvedSummary.portfolio_name}".`)
+      navigate(buildPortfolioSectionPath(copied.portfolio_id, '/overview'))
     } catch (requestError) {
       setSelectorNotice(
-        requestError instanceof Error
-          ? requestError.message
-          : action === 'copy'
-          ? 'Failed to copy portfolio.'
-          : 'Failed to delete portfolio.',
+        requestError instanceof Error ? requestError.message : 'Failed to copy portfolio.',
       )
     } finally {
       setSelectorMenuOpen(false)
+    }
+  }
+
+  async function handleConfirmedDelete() {
+    if (!pendingPortfolioDelete || deletingPortfolio) {
+      return
+    }
+    const target = pendingPortfolioDelete
+    setDeletingPortfolio(true)
+    try {
+      await deletePortfolio(target.portfolio_id)
+      setPortfolioOptions((current) =>
+        current.filter((portfolio) => portfolio.portfolio_id !== target.portfolio_id),
+      )
+      setPendingPortfolioDelete(null)
+      navigate('/portfolios')
+    } catch (requestError) {
+      setSelectorNotice(
+        requestError instanceof Error ? requestError.message : 'Failed to delete portfolio.',
+      )
+    } finally {
+      setDeletingPortfolio(false)
     }
   }
 
@@ -421,7 +470,7 @@ export default function PortfolioWorkspaceLayout({
                   {formatPercent(
                     resolvedSummary.day_change_pct == null
                       ? null
-                      : Math.abs(resolvedSummary.day_change_pct),
+                      : resolvedSummary.day_change_pct,
                   )}
                   )
                 </span>
@@ -457,10 +506,12 @@ export default function PortfolioWorkspaceLayout({
               }}
             >
               <div
+                ref={riskSettingsDialogRef}
                 className="portfolio-settings-modal"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="portfolio-risk-settings-title"
+                tabIndex={-1}
               >
                 <div className="portfolio-settings-modal-header">
                   <div>
@@ -587,6 +638,11 @@ export default function PortfolioWorkspaceLayout({
                 key={item.label}
                 className={`portfolio-tab ${activeSection === item.label ? 'portfolio-tab-active' : ''}`}
                 to={buildPortfolioSectionPath(resolvedPortfolioId, item.href)}
+                onMouseEnter={() => scheduleNavigationPreload(item.label)}
+                onMouseLeave={cancelNavigationPreload}
+                onFocus={() => scheduleNavigationPreload(item.label)}
+                onBlur={cancelNavigationPreload}
+                onPointerDown={() => scheduleNavigationPreload(item.label, true)}
               >
                 {item.label}
               </Link>
@@ -599,6 +655,16 @@ export default function PortfolioWorkspaceLayout({
       </header>
 
       {children}
+      <ConfirmDialog
+        open={Boolean(pendingPortfolioDelete)}
+        title="Delete Portfolio"
+        description="This permanently deletes the portfolio and all of its accounts, transactions, classifications, and snapshots. This action cannot be undone."
+        confirmLabel="Delete Portfolio"
+        confirmationText={pendingPortfolioDelete?.portfolio_name}
+        busy={deletingPortfolio}
+        onCancel={() => setPendingPortfolioDelete(null)}
+        onConfirm={handleConfirmedDelete}
+      />
     </section>
   )
 }

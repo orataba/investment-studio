@@ -19,3 +19,4 @@ apps/portfolio/backend/research_outputs/
 apps/watchlist/backups/
 ref/
 *:Zone.Identifier
+/var/

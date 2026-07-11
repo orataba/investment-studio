@@ -189,6 +189,14 @@ class RecalcExecuteRequest(BaseModel):
     trigger_ref_id: str | None = None
 
 
+class RecalcBulkRequest(BaseModel):
+    instrument_ids: list[str] = Field(min_length=1, max_length=2000)
+    job_type: Literal["performance", "exposure", "ratings", "all"] = "all"
+    trigger_type: str = "market_data_refresh"
+    trigger_ref_type: str | None = "shared_market_data"
+    trigger_ref_id: str | None = None
+
+
 class ManualProfileUpsertRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     updated_by: str | None = None

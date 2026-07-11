@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.orm import defer
 
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
@@ -26,6 +27,8 @@ from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_holdings_report
 from portfolio_app.services.research_solver import (
     RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+    SYSTEM_CASH_TARGET_LABEL,
+    SYSTEM_CASH_TARGET_MEMBER_ID,
     build_research_calculation_frequency_profile,
     build_research_scope_options,
     build_current_target_backtest,
@@ -47,6 +50,8 @@ from portfolio_app.services.risk_model import get_portfolio_risk_policy, normali
 TEXT_SUFFIXES = {".csv", ".json", ".md", ".txt", ".yaml", ".yml"}
 HTML_SUFFIXES = {".html"}
 CURRENT_TARGET_RUN_TEMPLATE = "target_weight_solve"
+RESEARCH_AS_OF_MODE_DYNAMIC = "dynamic"
+RESEARCH_AS_OF_MODE_PINNED = "pinned"
 
 
 def _utc_now() -> datetime:
@@ -196,6 +201,23 @@ def _default_as_of_date(portfolio: dict[str, object]) -> date:
     return date.today()
 
 
+def _research_as_of_mode(record: ResearchSettingsRecordModel) -> str:
+    mode = str(getattr(record, "as_of_mode", RESEARCH_AS_OF_MODE_DYNAMIC) or "").strip().lower()
+    return mode if mode in {RESEARCH_AS_OF_MODE_DYNAMIC, RESEARCH_AS_OF_MODE_PINNED} else RESEARCH_AS_OF_MODE_DYNAMIC
+
+
+def _effective_research_as_of_date(
+    record: ResearchSettingsRecordModel,
+    *,
+    default_as_of_date: date,
+) -> date:
+    if _research_as_of_mode(record) == RESEARCH_AS_OF_MODE_PINNED:
+        if record.as_of_date is None:
+            raise ValueError("Pinned Research settings require an as-of date.")
+        return record.as_of_date
+    return default_as_of_date
+
+
 def _ensure_research_settings_record(
     session,
     portfolio_id: str,
@@ -206,6 +228,11 @@ def _ensure_research_settings_record(
     record = session.get(ResearchSettingsRecordModel, portfolio_id)
     if record is not None:
         changed = False
+        if _research_as_of_mode(record) == RESEARCH_AS_OF_MODE_DYNAMIC and record.as_of_date is not None:
+            # Dynamic mode stores no resolved date.  The latest complete
+            # portfolio date is resolved at read/run time instead.
+            record.as_of_date = None
+            changed = True
         if not record.target_dimension:
             record.target_dimension = "scope_default"
             changed = True
@@ -236,7 +263,8 @@ def _ensure_research_settings_record(
         portfolio_id=portfolio_id,
         planning_taxonomy_id=default_planning_taxonomy_id,
         comparator_taxonomy_node_id=None,
-        as_of_date=default_as_of_date,
+        as_of_mode=RESEARCH_AS_OF_MODE_DYNAMIC,
+        as_of_date=None,
         lookback_days=90,
         calculation_frequency="auto",
         missing_return_policy=RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
@@ -403,9 +431,16 @@ def _serialize_settings_row(
     row: ResearchSettingsRecordModel,
     taxonomy_name_map: dict[str, str],
     scope_name_map: dict[str, str],
+    *,
+    default_as_of_date: date,
 ) -> dict[str, object]:
     planning_taxonomy_id = str(row.planning_taxonomy_id or "").strip() or None
     comparator_taxonomy_node_id = str(row.comparator_taxonomy_node_id or "").strip() or None
+    as_of_mode = _research_as_of_mode(row)
+    effective_as_of_date = _effective_research_as_of_date(
+        row,
+        default_as_of_date=default_as_of_date,
+    )
     return {
         "portfolio_id": row.portfolio_id,
         "planning_taxonomy_id": planning_taxonomy_id,
@@ -414,7 +449,13 @@ def _serialize_settings_row(
         "comparator_taxonomy_node_name": (
             scope_name_map.get(comparator_taxonomy_node_id) if comparator_taxonomy_node_id else None
         ),
-        "as_of_date": _iso_date(row.as_of_date),
+        "as_of_mode": as_of_mode,
+        "as_of_date": _iso_date(effective_as_of_date),
+        "pinned_as_of_date": (
+            _iso_date(row.as_of_date)
+            if as_of_mode == RESEARCH_AS_OF_MODE_PINNED
+            else None
+        ),
         "lookback_days": int(row.lookback_days or 90),
         "calculation_frequency": row.calculation_frequency or "auto",
         "missing_return_policy": row.missing_return_policy or RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
@@ -435,15 +476,19 @@ def _serialize_settings_row(
 def _serialize_run_row(
     row: ResearchRunRecordModel,
     taxonomy_name_map: dict[str, str],
+    *,
+    include_detail: bool = True,
 ) -> dict[str, object]:
     planning_taxonomy_id = str(row.planning_taxonomy_id or "").strip() or None
-    detail = deepcopy(row.detail_json or {})
-    if isinstance(detail.get("top_holdings"), list):
-        detail["top_holdings"] = [
-            _normalize_top_holding_snapshot(item)
-            for item in detail["top_holdings"]
-            if isinstance(item, dict)
-        ]
+    detail = None
+    if include_detail:
+        detail = deepcopy(row.detail_json or {})
+        if isinstance(detail.get("top_holdings"), list):
+            detail["top_holdings"] = [
+                _normalize_top_holding_snapshot(item)
+                for item in detail["top_holdings"]
+                if isinstance(item, dict)
+            ]
     artifacts = deepcopy(row.artifacts_json or [])
     return {
         "research_run_id": row.research_run_id,
@@ -545,6 +590,15 @@ def _build_planning_group_snapshot(
         assignment_key = (target_scope, entity_id)
         assignment_by_entity.setdefault(assignment_key, item)
 
+    if any(_safe_float(position.get("market_value_base")) is None for position in statement_positions):
+        return []
+    if any(
+        str((account_row.get("account") or {}).get("account_type") or "") == "deposit_account"
+        and _safe_float(account_row.get("account_value_base")) is None
+        for account_row in account_rows
+    ):
+        return []
+
     visible_cash_accounts = [
         account_row
         for account_row in account_rows
@@ -555,7 +609,7 @@ def _build_planning_group_snapshot(
         )
     ]
 
-    total_entity_value_base = sum(_safe_float(position.get("market_value_base")) or 0.0 for position in statement_positions)
+    total_entity_value_base = sum(float(position["market_value_base"]) for position in statement_positions)
     total_entity_value_base += sum(
         _safe_float(account_row.get("account_value_base")) or 0.0 for account_row in visible_cash_accounts
     )
@@ -587,7 +641,7 @@ def _build_planning_group_snapshot(
                 "position_count": 0,
             },
         )
-        market_value_base = _safe_float(position.get("market_value_base")) or 0.0
+        market_value_base = float(position["market_value_base"])
         cost_basis_base = _safe_float(position.get("cost_basis_base")) or 0.0
         bucket["end_value_base"] = float(bucket["end_value_base"] or 0.0) + market_value_base
         bucket["total_pnl"] = float(bucket["total_pnl"] or 0.0) + (market_value_base - cost_basis_base)
@@ -598,8 +652,8 @@ def _build_planning_group_snapshot(
         account_id = str(account.get("account_id") or "")
         assignment = assignment_by_entity.get(("cash_bucket", account_id))
         if assignment is None:
-            group_key = "unassigned"
-            group_label = "Unassigned"
+            group_key = SYSTEM_CASH_TARGET_MEMBER_ID
+            group_label = SYSTEM_CASH_TARGET_LABEL
         else:
             group_key = str(assignment.get("taxonomy_node_id") or "unassigned")
             group_label = node_name_by_id.get(group_key) or group_key
@@ -715,6 +769,16 @@ def _build_research_context(
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=as_of_date,
     )
+    quality_warnings: list[str] = []
+    unassigned_group = next(
+        (item for item in planning_groups if str(item.get("group_key") or "") == "unassigned"),
+        None,
+    )
+    if unassigned_group is not None and abs(_safe_float(unassigned_group.get("end_value_base")) or 0.0) > 1e-9:
+        quality_warnings.append(
+            "Research target solve is unavailable until all non-cash holdings are assigned to the selected planning taxonomy "
+            f"({int(unassigned_group.get('position_count') or 0)} unassigned holding(s))."
+        )
     chart_label = None
     chart_note = None
     chart_currency = None
@@ -759,6 +823,7 @@ def _build_research_context(
             "end_nav": resolved_nav_base,
         },
         "planning_target_summary": planning_target_summary,
+        "quality_warnings": quality_warnings,
         "chart_points": daily_points,
         "top_holdings": top_holdings,
         "planning_groups": planning_groups,
@@ -1217,6 +1282,7 @@ def get_research_workbench(
     if portfolio is None:
         return None
 
+    latest_portfolio_as_of_date = _default_as_of_date(portfolio)
     taxonomy_name_map = _taxonomy_name_map(portfolio_id)
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -1224,26 +1290,45 @@ def get_research_workbench(
             session,
             portfolio_id,
             default_planning_taxonomy_id=str(portfolio.get("default_planning_taxonomy_id") or "").strip() or None,
-            default_as_of_date=_default_as_of_date(portfolio),
+            default_as_of_date=latest_portfolio_as_of_date,
         )
         scope_name_map = _scope_name_map(
             portfolio_id,
             planning_taxonomy_id=str(record.planning_taxonomy_id or "").strip() or None,
         )
-        settings_payload = _serialize_settings_row(record, taxonomy_name_map, scope_name_map)
+        settings_payload = _serialize_settings_row(
+            record,
+            taxonomy_name_map,
+            scope_name_map,
+            default_as_of_date=latest_portfolio_as_of_date,
+        )
         production_risk_model = get_portfolio_risk_policy(portfolio_id) or {}
         run_rows = session.scalars(
             select(ResearchRunRecordModel)
             .where(ResearchRunRecordModel.portfolio_id == portfolio_id)
             .order_by(ResearchRunRecordModel.requested_at.desc(), ResearchRunRecordModel.research_run_id.desc())
+            .options(
+                defer(ResearchRunRecordModel.detail_json),
+                defer(ResearchRunRecordModel.request_payload_json),
+            )
         ).all()
-
-    runs = [_serialize_run_row(row, taxonomy_name_map) for row in run_rows]
-    selected_run = None
-    if selected_run_id:
-        selected_run = next((item for item in runs if item["research_run_id"] == selected_run_id), None)
-    if selected_run is None and runs:
-        selected_run = runs[0]
+        runs = [
+            _serialize_run_row(row, taxonomy_name_map, include_detail=False)
+            for row in run_rows
+        ]
+        selected_run_row = None
+        if selected_run_id:
+            selected_run_row = next(
+                (row for row in run_rows if row.research_run_id == selected_run_id),
+                None,
+            )
+        if selected_run_row is None and run_rows:
+            selected_run_row = run_rows[0]
+        selected_run = (
+            _serialize_run_row(selected_run_row, taxonomy_name_map, include_detail=True)
+            if selected_run_row is not None
+            else None
+        )
 
     risk_lookback_days = int(production_risk_model.get("lookback_days") or settings_payload.get("lookback_days") or 90)
     risk_calculation_frequency = str(
@@ -1268,7 +1353,7 @@ def get_research_workbench(
         "portfolio_id": portfolio_id,
         "portfolio_name": str(portfolio.get("portfolio_name") or portfolio_id),
         "base_currency": str(portfolio.get("base_currency") or "USD"),
-        "as_of_date": _iso_date(_default_as_of_date(portfolio)),
+        "as_of_date": _iso_date(latest_portfolio_as_of_date),
         "default_planning_taxonomy_id": str(portfolio.get("default_planning_taxonomy_id") or "").strip() or None,
         "planning_taxonomy_options": _planning_taxonomy_options(portfolio_id),
         "planning_scope_options": build_research_scope_options(
@@ -1290,6 +1375,7 @@ def update_research_settings(
     *,
     planning_taxonomy_id: str | None,
     comparator_taxonomy_node_id: str | None,
+    as_of_mode: str,
     as_of_date: date | None,
     lookback_days: int,
     calculation_frequency: str,
@@ -1311,6 +1397,7 @@ def update_research_settings(
     if portfolio is None:
         return None
 
+    latest_portfolio_as_of_date = _default_as_of_date(portfolio)
     session_factory = get_session_factory()
     with session_factory() as session:
         taxonomy = _validate_planning_taxonomy(session, portfolio_id, planning_taxonomy_id)
@@ -1323,7 +1410,7 @@ def update_research_settings(
             session,
             portfolio_id,
             default_planning_taxonomy_id=str(portfolio.get("default_planning_taxonomy_id") or "").strip() or None,
-            default_as_of_date=_default_as_of_date(portfolio),
+            default_as_of_date=latest_portfolio_as_of_date,
         )
         resolved_planning_taxonomy_id = str(planning_taxonomy_id or "").strip() or None
         existing_planning_taxonomy_id = str(row.planning_taxonomy_id or "").strip() or None
@@ -1357,7 +1444,13 @@ def update_research_settings(
                 bounds=top_sleeve_weight_bounds,
             )
         row.planning_taxonomy_id = resolved_planning_taxonomy_id
-        row.as_of_date = as_of_date or _default_as_of_date(portfolio)
+        resolved_as_of_mode = str(as_of_mode or RESEARCH_AS_OF_MODE_DYNAMIC).strip().lower()
+        if resolved_as_of_mode not in {RESEARCH_AS_OF_MODE_DYNAMIC, RESEARCH_AS_OF_MODE_PINNED}:
+            raise ValueError("Research as-of mode must be dynamic or pinned.")
+        if resolved_as_of_mode == RESEARCH_AS_OF_MODE_PINNED and as_of_date is None:
+            raise ValueError("Pinned Research settings require an as-of date.")
+        row.as_of_mode = resolved_as_of_mode
+        row.as_of_date = as_of_date if resolved_as_of_mode == RESEARCH_AS_OF_MODE_PINNED else None
         row.comparator_taxonomy_node_id = resolved_scope_node_id
         row.lookback_days = int(lookback_days or 90)
         row.calculation_frequency = (calculation_frequency or "auto").strip() or "auto"
@@ -1398,7 +1491,12 @@ def update_research_settings(
             portfolio_id,
             planning_taxonomy_id=str(row.planning_taxonomy_id or "").strip() or None,
         )
-        return _serialize_settings_row(row, taxonomy_name_map, scope_name_map)
+        return _serialize_settings_row(
+            row,
+            taxonomy_name_map,
+            scope_name_map,
+            default_as_of_date=latest_portfolio_as_of_date,
+        )
 
 
 def run_portfolio_research(
@@ -1410,6 +1508,7 @@ def run_portfolio_research(
     if portfolio is None:
         return None
 
+    latest_portfolio_as_of_date = _default_as_of_date(portfolio)
     taxonomy_name_map = _taxonomy_name_map(portfolio_id)
     session_factory = get_session_factory()
     with session_factory() as session:
@@ -1417,7 +1516,7 @@ def run_portfolio_research(
             session,
             portfolio_id,
             default_planning_taxonomy_id=str(portfolio.get("default_planning_taxonomy_id") or "").strip() or None,
-            default_as_of_date=_default_as_of_date(portfolio),
+            default_as_of_date=latest_portfolio_as_of_date,
         )
         taxonomy = _validate_planning_taxonomy(session, portfolio_id, settings_row.planning_taxonomy_id)
         resolved_scope_node_id = _validate_research_scope(
@@ -1427,7 +1526,10 @@ def run_portfolio_research(
         )
         requested_at = _utc_now_iso()
         run_id = _next_research_run_id(portfolio_id)
-        effective_as_of_date = settings_row.as_of_date or _default_as_of_date(portfolio)
+        effective_as_of_date = _effective_research_as_of_date(
+            settings_row,
+            default_as_of_date=latest_portfolio_as_of_date,
+        )
         production_risk_model = get_portfolio_risk_policy(portfolio_id)
         risk_lookback_days = int((production_risk_model or {}).get("lookback_days") or settings_row.lookback_days or 90)
         risk_calculation_frequency = str(
@@ -1463,6 +1565,7 @@ def run_portfolio_research(
                 "planning_taxonomy_id": settings_row.planning_taxonomy_id,
                 "comparator_taxonomy_node_id": resolved_scope_node_id,
                 "as_of_date": _iso_date(effective_as_of_date),
+                "as_of_mode": _research_as_of_mode(settings_row),
                 "lookback_days": risk_lookback_days,
                 "calculation_frequency": risk_calculation_frequency,
                 "missing_return_policy": risk_missing_return_policy,
@@ -1567,6 +1670,21 @@ def run_portfolio_research(
 
         session.refresh(run_row)
         return _serialize_run_row(run_row, taxonomy_name_map)
+
+
+def get_research_run(
+    portfolio_id: str,
+    *,
+    research_run_id: str,
+) -> dict[str, object] | None:
+    """Return one full run without expanding every run in the workbench list."""
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        row = session.get(ResearchRunRecordModel, research_run_id)
+        if row is None or row.portfolio_id != portfolio_id:
+            return None
+        return _serialize_run_row(row, _taxonomy_name_map(portfolio_id))
 
 
 def get_research_backtest_benchmark_comparison(

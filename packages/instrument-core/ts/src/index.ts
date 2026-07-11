@@ -1,4 +1,4 @@
-export type InstrumentType = 'fund' | 'index' | 'bond' | 'equity' | 'cash' | 'fx' | 'other'
+export type InstrumentType = 'fund' | 'etf' | 'index' | 'bond' | 'equity' | 'cash' | 'fx' | 'other'
 export type IdentifierType =
   | 'ticker'
   | 'exchange_ticker'
@@ -17,12 +17,19 @@ export type QuoteBasis =
   | 'adjusted_close'
   | 'official_nav'
   | 'total_return_nav'
+  | 'cumulative_nav'
+  | 'accumulated_nav'
+  | 'cum_nav'
+  | 'dividend_adjusted_nav'
+  | 'reinvested_nav'
   | 'spot'
   | 'clean_price'
   | 'dirty_price'
   | 'par'
 export type QuoteRole = 'trading' | 'valuation' | 'total_return' | 'chart' | 'reference'
 export type DataStatus = 'complete' | 'partial' | 'unavailable'
+export type CorporateActionStatus = 'detected' | 'confirmed' | 'cancelled'
+export type QuantityRounding = 'exact' | 'truncate' | 'round_half_up' | 'cash_in_lieu'
 
 export interface InstrumentIdentifier {
   identifier_type: IdentifierType
@@ -36,6 +43,7 @@ export interface InstrumentCore {
   instrument_type: InstrumentType
   currency: string
   identifiers: InstrumentIdentifier[]
+  market_data_updated_at?: string | null
 }
 
 export interface QuoteSelectionPolicy {
@@ -55,4 +63,25 @@ export interface MarketDataPoint {
   currency: string
   provider?: string | null
   status: DataStatus
+}
+
+export interface CorporateActionEvent {
+  corporate_action_event_id: string
+  instrument_id: string
+  action_type: 'share_split'
+  announcement_date?: string | null
+  record_date?: string | null
+  effective_date: string
+  payable_date?: string | null
+  new_units: string
+  old_units: string
+  quantity_rounding: QuantityRounding
+  quantity_precision: number
+  cost_basis_treatment: 'carry'
+  source: string
+  external_event_id?: string | null
+  status: CorporateActionStatus
+  provenance: Record<string, unknown>
+  created_at: string
+  updated_at: string
 }

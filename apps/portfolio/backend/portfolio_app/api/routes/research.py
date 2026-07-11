@@ -15,6 +15,7 @@ from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.portfolio_store import get_portfolio
 from portfolio_app.services.research import (
     get_research_backtest_benchmark_comparison,
+    get_research_run,
     get_research_workbench,
     read_research_artifact_content,
     run_portfolio_research,
@@ -53,6 +54,7 @@ def update_portfolio_research_settings(
             portfolio_id,
             planning_taxonomy_id=payload.planning_taxonomy_id,
             comparator_taxonomy_node_id=payload.comparator_taxonomy_node_id,
+            as_of_mode=payload.as_of_mode,
             as_of_date=payload.as_of_date,
             lookback_days=payload.lookback_days,
             calculation_frequency=payload.calculation_frequency,
@@ -99,6 +101,20 @@ def create_portfolio_research_run(
         raise HTTPException(status_code=502, detail=str(error)) from error
     if run is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
+    return ResearchRunRecord.model_validate(run)
+
+
+@router.get("/{portfolio_id}/research/runs/{research_run_id}", response_model=ResearchRunRecord)
+def get_portfolio_research_run(
+    portfolio_id: str,
+    research_run_id: str,
+) -> ResearchRunRecord:
+    run = get_research_run(
+        portfolio_id,
+        research_run_id=research_run_id,
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Research run not found")
     return ResearchRunRecord.model_validate(run)
 
 

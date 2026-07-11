@@ -52,6 +52,23 @@ Supported `identifier_type` values:
 - `chart[]`
 - `reference[]`
 
+### `CorporateActionEvent`
+
+- `corporate_action_event_id`
+- `instrument_id`
+- `action_type`（当前为 `share_split`，正拆/反拆由 ratio 表达）
+- `announcement_date`
+- `record_date`（权益登记日 EOD）
+- `effective_date`（生效日 BOD）
+- `payable_date`
+- `new_units / old_units`（每旧份对应的新份额比例）
+- `quantity_rounding / quantity_precision`
+- `cost_basis_treatment`（当前仅 `carry`）
+- `status`（`detected | confirmed | cancelled`）
+- `source / external_event_id / provenance`
+
+`detected` 只用于数据质量提示，绝不能改变 Portfolio 数量。只有发行人、交易所或登记结算证据确认 ratio、日期和碎股处理后，事件才可进入 `confirmed` 并在账本生效。
+
 当前共享层不再暴露一个粗粒度 `metric_code`，而是拆成：
 
 - `metric_family`
@@ -79,11 +96,11 @@ Supported `identifier_type` values:
   - `total_return/chart`: `total_return_nav -> adjusted_close -> official_nav -> close`
 - `equity`
   - `trading`: `last -> close`
-  - `valuation`: `close -> adjusted_close -> last`
+  - `valuation`: `close -> last`
   - `total_return/chart`: `adjusted_close -> close -> last`
 - `index`
   - `trading`: `close -> last`
-  - `valuation`: `close -> adjusted_close -> last`
+  - `valuation`: `close -> last`
   - `total_return/chart`: `adjusted_close -> close -> last`
 - `bond`
   - `trading`: `clean_price -> dirty_price`
@@ -108,5 +125,6 @@ Supported `identifier_type` values:
 
 - `Watchlist` 用它承接 fund identity 和 canonical NAV / market data
 - `Portfolio` 用它承接 instrument identity 和 role-based quote selection
+- `Portfolio` 只把 `confirmed` corporate action 作为份额账本事件；`adjusted_close` 仅用于收益、风险和图表
 
 但两个 app 的派生结果都必须在各自 app 内部完成。

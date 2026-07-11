@@ -22,6 +22,7 @@ from watchlist_app.api.presenters import (
     present_watchlist,
     present_watchlist_view,
 )
+from watchlist_app.db.models.watchlists import Watchlist
 from watchlist_app.db.session import get_db_session
 from watchlist_app.repositories.sqlalchemy.instruments import SQLAlchemyInstrumentRepository
 from watchlist_app.repositories.sqlalchemy.field_registry import SQLAlchemyFieldRegistryRepository
@@ -48,6 +49,7 @@ from watchlist_app.services.instrument_resolution import resolve_watchlist_instr
 from watchlist_app.services.shared_instrument_registry import (
     SharedInstrumentRegistryError,
     get_shared_instrument,
+    list_shared_active_instrument_ids,
     list_shared_instruments,
 )
 
@@ -61,7 +63,7 @@ read_model_repository = SQLAlchemyReadModelRepository()
 taxonomy_repository = SQLAlchemyTaxonomyRepository()
 canonical_recalc_service = CanonicalRecalcService()
 MAX_WATCHLIST_ID_ATTEMPTS = 10
-LOCAL_DETAIL_VIEW_TYPES = {"fund", "index"}
+LOCAL_DETAIL_INSTRUMENT_TYPES = {"fund", "etf", "index"}
 
 
 def _is_all_coverage_watchlist(watchlist_id: str) -> bool:
@@ -172,7 +174,9 @@ def _primary_shared_identifier(
 
 def _local_detail_view_type(shared_instrument: dict[str, object]) -> str | None:
     instrument_type = str(shared_instrument.get("instrument_type") or "").strip().lower()
-    return instrument_type if instrument_type in LOCAL_DETAIL_VIEW_TYPES else None
+    if instrument_type == "etf":
+        return "fund"
+    return instrument_type if instrument_type in {"fund", "index"} else None
 
 
 def _supports_local_detail(shared_instrument: dict[str, object]) -> bool:
@@ -205,7 +209,7 @@ def _ensure_local_instrument_detail(
 def _list_shared_local_detail_instruments() -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
     seen_ids: set[str] = set()
-    for instrument_type in sorted(LOCAL_DETAIL_VIEW_TYPES):
+    for instrument_type in sorted(LOCAL_DETAIL_INSTRUMENT_TYPES):
         for shared_instrument in list_shared_instruments(instrument_type=instrument_type, limit=None):
             instrument_id = str(shared_instrument.get("instrument_id") or "").strip()
             if not instrument_id or instrument_id in seen_ids:
@@ -516,79 +520,136 @@ def _materialize_watchlist_rows(
         )
 
 
-def _sync_all_coverage_watchlist(session: Session, *, force: bool = True):
-    record = watchlist_repository.ensure_all_coverage_watchlist(session)
-    if not force and record.items:
-        return record
-
-    try:
-        shared_funds = _list_shared_local_detail_instruments()
-    except SharedInstrumentRegistryError:
-        return record
-
-    active_instrument_ids: list[str] = []
-    for shared_instrument in shared_funds:
-        detail_instrument_id = _ensure_local_instrument_detail(session, shared_instrument)
-        if detail_instrument_id and detail_instrument_id not in active_instrument_ids:
-            active_instrument_ids.append(detail_instrument_id)
-
-    refreshed_record = watchlist_repository.get(session, ALL_COVERAGE_WATCHLIST_ID) or record
-    existing_instrument_ids = {
-        str(item.instrument_id).strip()
-        for item in refreshed_record.items
-        if str(item.instrument_id).strip()
-    }
-    active_instrument_id_set = set(active_instrument_ids)
-    stale_instrument_ids = [
-        instrument_id for instrument_id in existing_instrument_ids if instrument_id not in active_instrument_id_set
-    ]
-    if stale_instrument_ids:
-        watchlist_repository.delete_items(
-            session,
-            watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
-            instrument_ids=stale_instrument_ids,
-        )
-        read_model_repository.delete_watchlist_rows(
-            session,
-            watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
-            instrument_ids=stale_instrument_ids,
-        )
-
-    created = watchlist_repository.add_items(
-        session,
-        watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
-        instrument_ids=active_instrument_ids,
-        added_by="system",
+def _sync_all_coverage_watchlist(
+    session: Session,
+    *,
+    force: bool = False,
+    existing_record: Watchlist | None = None,
+) -> Watchlist:
+    record = (
+        existing_record
+        if existing_record is not None
+        else watchlist_repository.get(session, ALL_COVERAGE_WATCHLIST_ID)
     )
-    existing_rows = {
-        row.instrument_id
-        for row in read_model_repository.list_watchlist_rows(
-            session,
-            ALL_COVERAGE_WATCHLIST_ID,
-        )
-    }
-    created_instrument_ids = {item.instrument_id for item in created}
-    materialize_instrument_ids = [
-        instrument_id
-        for instrument_id in active_instrument_ids
-        if instrument_id not in existing_rows or instrument_id in created_instrument_ids
-    ]
+    if record is None:
+        record = watchlist_repository.ensure_all_coverage_watchlist(session)
+
+    if not force:
+        existing_instrument_ids = {
+            str(item.instrument_id).strip()
+            for item in record.items
+            if str(item.instrument_id).strip()
+        }
+        try:
+            active_instrument_ids = set(
+                list_shared_active_instrument_ids(
+                    instrument_types=LOCAL_DETAIL_INSTRUMENT_TYPES,
+                )
+            )
+        except SharedInstrumentRegistryError:
+            return record
+        if existing_instrument_ids == active_instrument_ids:
+            return record
+
     try:
-        _materialize_watchlist_rows(
-            session,
-            watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
-            instrument_ids=materialize_instrument_ids,
-        )
+        shared_instruments = _list_shared_local_detail_instruments()
     except SharedInstrumentRegistryError:
         return record
-    return watchlist_repository.get(session, ALL_COVERAGE_WATCHLIST_ID) or record
+
+    try:
+        with session.begin_nested():
+            active_instrument_ids: list[str] = []
+            for shared_instrument in shared_instruments:
+                detail_instrument_id = _ensure_local_instrument_detail(
+                    session,
+                    shared_instrument,
+                )
+                if (
+                    detail_instrument_id
+                    and detail_instrument_id not in active_instrument_ids
+                ):
+                    active_instrument_ids.append(detail_instrument_id)
+
+            refreshed_record = (
+                watchlist_repository.get(session, ALL_COVERAGE_WATCHLIST_ID)
+                or record
+            )
+            existing_instrument_ids = {
+                str(item.instrument_id).strip()
+                for item in refreshed_record.items
+                if str(item.instrument_id).strip()
+            }
+            active_instrument_id_set = set(active_instrument_ids)
+            stale_instrument_ids = [
+                instrument_id
+                for instrument_id in existing_instrument_ids
+                if instrument_id not in active_instrument_id_set
+            ]
+            if stale_instrument_ids:
+                watchlist_repository.delete_items(
+                    session,
+                    watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
+                    instrument_ids=stale_instrument_ids,
+                )
+                read_model_repository.delete_watchlist_rows(
+                    session,
+                    watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
+                    instrument_ids=stale_instrument_ids,
+                )
+
+            created = watchlist_repository.add_items(
+                session,
+                watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
+                instrument_ids=active_instrument_ids,
+                added_by="system",
+            )
+            existing_rows = {
+                row.instrument_id
+                for row in read_model_repository.list_watchlist_rows(
+                    session,
+                    ALL_COVERAGE_WATCHLIST_ID,
+                )
+            }
+            created_instrument_ids = {item.instrument_id for item in created}
+            materialize_instrument_ids = [
+                instrument_id
+                for instrument_id in active_instrument_ids
+                if instrument_id not in existing_rows
+                or instrument_id in created_instrument_ids
+            ]
+            _materialize_watchlist_rows(
+                session,
+                watchlist_id=ALL_COVERAGE_WATCHLIST_ID,
+                instrument_ids=materialize_instrument_ids,
+            )
+    except SharedInstrumentRegistryError:
+        # Roll back the savepoint as one unit. In particular, never persist a
+        # membership addition/deletion without its matching read-model row;
+        # otherwise the ID probe would consider the broken state reconciled.
+        session.expire(record, ["items"])
+        return record
+    # The session deliberately keeps objects alive across commits. Expire the
+    # loaded collection after bulk membership reconciliation so the response
+    # cannot report a stale item count after additions or archival removals.
+    session.expire(refreshed_record, ["items"])
+    return refreshed_record
 
 
 @router.get("")
 def list_watchlists(session: Session = Depends(get_db_session)) -> list[dict[str, object]]:
-    _sync_all_coverage_watchlist(session, force=False)
+    records = list(watchlist_repository.list(session))
+    all_coverage_record = next(
+        (
+            record
+            for record in records
+            if record.watchlist_id == ALL_COVERAGE_WATCHLIST_ID
+        ),
+        None,
+    )
+    _sync_all_coverage_watchlist(session, existing_record=all_coverage_record)
     session.commit()
-    records = watchlist_repository.list(session)
+    if all_coverage_record is None:
+        records = list(watchlist_repository.list(session))
     return [present_watchlist(item) for item in records]
 
 
@@ -787,7 +848,7 @@ def add_items_to_watchlist(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Watchlist currently supports fund and index instruments only: {unsupported_label}. "
+                f"Watchlist currently supports fund, ETF, and index instruments only: {unsupported_label}. "
                 "Use Database Dashboard for shared master data, then add supported instruments here."
             ),
         )

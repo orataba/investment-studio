@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
 export type PortfolioTableViewOption = {
   id: string
@@ -39,6 +41,15 @@ export default function PortfolioTableViewControls({
   const [draftDescription, setDraftDescription] = useState('')
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const draftNameRef = useRef<HTMLInputElement | null>(null)
+
+  function closeSaveAsDialog() {
+    if (!saving) {
+      setSaveAsOpen(false)
+    }
+  }
+
+  const saveDialogRef = useModalDialog(saveAsOpen, closeSaveAsDialog, draftNameRef)
   const deleteEnabled = canDelete && Boolean(onDelete)
   const busy = saving || deleting
   const activeViewLabel = `View\u00A0: ${activeView?.name ?? 'Default'}${edited ? ' (Edited)' : ''}`
@@ -260,51 +271,33 @@ export default function PortfolioTableViewControls({
         ) : null}
       </div>
 
-      {pendingDeleteView ? (
-        <div
-          className="portfolio-table-view-modal-backdrop"
-          onClick={() => {
-            if (!deleting) {
-              setPendingDeleteView(null)
-            }
-          }}
-        >
-          <div className="portfolio-table-view-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="portfolio-table-view-modal-header">
-              <div>
-                <div className="panel-title">Delete View</div>
-                <div className="section-heading">Remove Saved Table Layout</div>
-              </div>
-              <button type="button" disabled={deleting} onClick={() => setPendingDeleteView(null)}>
-                Close
-              </button>
-            </div>
-            <div className="portfolio-table-view-modal-body">
-              <p className="portfolio-table-view-warning">
-                Delete "{pendingDeleteView.name}"?
-              </p>
-            </div>
-            <div className="portfolio-table-view-modal-actions">
-              <button type="button" disabled={deleting} onClick={() => setPendingDeleteView(null)}>
-                Cancel
-              </button>
-              <button type="button" className="portfolio-table-view-danger-button" disabled={deleting} onClick={handleDelete}>
-                {deleting ? 'Deleting...' : 'Delete View'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ConfirmDialog
+        open={Boolean(pendingDeleteView)}
+        title="Delete View"
+        description={`Delete "${pendingDeleteView?.name ?? ''}"? This removes the saved table layout.`}
+        confirmLabel="Delete View"
+        busy={deleting}
+        onCancel={() => setPendingDeleteView(null)}
+        onConfirm={handleDelete}
+      />
 
       {saveAsOpen ? (
-        <div className="portfolio-table-view-modal-backdrop" onClick={() => setSaveAsOpen(false)}>
-          <div className="portfolio-table-view-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="portfolio-table-view-modal-backdrop" onClick={closeSaveAsDialog}>
+          <div
+            ref={saveDialogRef}
+            className="portfolio-table-view-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="portfolio-create-view-title"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="portfolio-table-view-modal-header">
               <div>
-                <div className="panel-title">Create View</div>
+                <div className="panel-title" id="portfolio-create-view-title">Create View</div>
                 <div className="section-heading">Save Current Table Layout</div>
               </div>
-              <button type="button" onClick={() => setSaveAsOpen(false)}>
+              <button type="button" disabled={saving} onClick={closeSaveAsDialog}>
                 Close
               </button>
             </div>
@@ -312,6 +305,7 @@ export default function PortfolioTableViewControls({
               <label className="portfolio-table-view-field">
                 <span>View Name</span>
                 <input
+                  ref={draftNameRef}
                   className="transaction-filter-input"
                   value={draftName}
                   onChange={(event) => setDraftName(event.target.value)}
@@ -328,7 +322,7 @@ export default function PortfolioTableViewControls({
               </label>
             </div>
             <div className="portfolio-table-view-modal-actions">
-              <button type="button" onClick={() => setSaveAsOpen(false)}>
+              <button type="button" disabled={saving} onClick={closeSaveAsDialog}>
                 Cancel
               </button>
               <button type="button" className="button-primary" disabled={!draftName.trim() || saving} onClick={handleSaveAs}>

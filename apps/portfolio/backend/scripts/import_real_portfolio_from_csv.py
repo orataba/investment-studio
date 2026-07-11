@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
-from sqlalchemy import Integer, cast, func, select, text
+from sqlalchemy import func, select, text
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -18,7 +18,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from portfolio_app.db.models import AccountRecordModel, PortfolioRecordModel, TransactionRecordModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.performance import build_holdings_report
-from portfolio_app.services.portfolio_store import resolve_trade_timing
+from portfolio_app.services.portfolio_store import _allocate_transaction_ids, resolve_trade_timing
 
 DEFAULT_VALUATION_DATE = date.today()
 PRICE_DISPLAY_QUANTUM = Decimal("0.0001")
@@ -160,15 +160,6 @@ def resolve_instrument(row: ParsedTradeRow, instrument_lookup: dict[str, Instrum
         if instrument is not None:
             return instrument
     raise ValueError(f"Instrument not found in shared registry: {row.instrument_name}")
-
-
-def next_transaction_number(session) -> int:
-    max_suffix = session.scalar(
-        select(func.max(cast(func.substr(TransactionRecordModel.transaction_id, 5), Integer))).where(
-            TransactionRecordModel.transaction_id.like("txn-%")
-        )
-    )
-    return int(max_suffix or 0) + 1
 
 
 def decimal_to_float(value: Decimal | None) -> float | None:
@@ -327,7 +318,7 @@ def main() -> None:
             institution="Imported from CSV",
             default_settlement_cash_account_id=cash_account_id,
             cost_basis_method="fifo",
-            allowed_instrument_types_json=["fund"],
+            allowed_instrument_types_json=["fund", "etf"],
             opened_at=min(row.trade_date for row in rows),
             closed_at=None,
             status="active",
@@ -359,21 +350,21 @@ def main() -> None:
                 "institution": securities_account.institution,
                 "default_settlement_cash_account_id": securities_account.default_settlement_cash_account_id,
                 "cost_basis_method": securities_account.cost_basis_method,
-                "allowed_instrument_types": ["fund"],
+                "allowed_instrument_types": ["fund", "etf"],
                 "opened_at": securities_account.opened_at.isoformat() if securities_account.opened_at else None,
                 "closed_at": None,
                 "status": securities_account.status,
             },
         ]
 
-        transaction_number = next_transaction_number(session)
+        transaction_ids = iter(_allocate_transaction_ids(session, len(rows) + 1))
         current_created_at = datetime.now(UTC).replace(microsecond=0)
         transaction_payloads: list[dict[str, object]] = []
         imported_trade_date = min(row.trade_date for row in rows)
         total_gross_amount = sum(row.gross_amount for row in rows)
 
         deposit_record, deposit_payload = trade_payload(
-            transaction_id=f"txn-{transaction_number:04d}",
+            transaction_id=next(transaction_ids),
             portfolio_id=args.portfolio_id,
             transaction_type="deposit",
             trade_date=imported_trade_date,
@@ -392,8 +383,6 @@ def main() -> None:
         )
         session.add(deposit_record)
         transaction_payloads.append(deposit_payload)
-        transaction_number += 1
-
         for index, row in enumerate(rows, start=1):
             instrument = resolve_instrument(row, instrument_lookup)
             if row.instrument_type and row.instrument_type != instrument.instrument_type:
@@ -424,7 +413,7 @@ def main() -> None:
                 f"authoritative quantity/gross_amount preserved."
             )
             transaction_record, transaction_payload = trade_payload(
-                transaction_id=f"txn-{transaction_number:04d}",
+                transaction_id=next(transaction_ids),
                 portfolio_id=args.portfolio_id,
                 transaction_type=row.transaction_type,
                 trade_date=row.trade_date,
@@ -449,8 +438,6 @@ def main() -> None:
             )
             session.add(transaction_record)
             transaction_payloads.append(transaction_payload)
-            transaction_number += 1
-
         portfolio_payload = {
             "portfolio_id": args.portfolio_id,
             "portfolio_name": portfolio_name,
@@ -472,17 +459,19 @@ def main() -> None:
         )
         current_nav = current_report.get("total_market_value_base")
         previous_nav = previous_report.get("total_market_value_base")
-        resolved_current_nav = float(current_nav) if current_nav is not None else 0.0
+        resolved_current_nav = float(current_nav) if current_nav is not None else None
         resolved_previous_nav = float(previous_nav) if previous_nav is not None else None
         day_change_value = (
             resolved_current_nav - resolved_previous_nav
-            if resolved_previous_nav is not None
-            else 0.0
+            if resolved_current_nav is not None and resolved_previous_nav is not None
+            else None
         )
         day_change_pct = (
             day_change_value / resolved_previous_nav
-            if resolved_previous_nav is not None and abs(resolved_previous_nav) > 1e-9
-            else 0.0
+            if day_change_value is not None
+            and resolved_previous_nav is not None
+            and abs(resolved_previous_nav) > 1e-9
+            else None
         )
 
         portfolio_record.as_of_date = args.valuation_date
@@ -498,8 +487,12 @@ def main() -> None:
     print(f"Transactions imported: {len(rows) + 1}")
     print(f"Seed cash: {float(total_gross_amount):,.2f} CNY")
     print(f"As of: {args.valuation_date.isoformat()}")
-    print(f"NAV: {resolved_current_nav:,.2f} CNY")
-    print(f"Day change: {day_change_value:,.2f} CNY ({day_change_pct:.4%})")
+    print(f"NAV: {resolved_current_nav:,.2f} CNY" if resolved_current_nav is not None else "NAV: unavailable")
+    print(
+        f"Day change: {day_change_value:,.2f} CNY ({day_change_pct:.4%})"
+        if day_change_value is not None and day_change_pct is not None
+        else "Day change: unavailable"
+    )
 
 
 if __name__ == "__main__":

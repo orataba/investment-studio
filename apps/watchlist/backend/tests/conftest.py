@@ -57,7 +57,7 @@ TEST_SHARED_INSTRUMENTS = {
         "market_data": [
             {
                 "metric_family": "nav",
-                "quote_basis": "cumulative_nav",
+                "quote_basis": "total_return_nav",
                 "as_of_date": "2025-12-31",
                 "value": "97.500000",
                 "currency": "USD",
@@ -65,7 +65,7 @@ TEST_SHARED_INSTRUMENTS = {
             },
             {
                 "metric_family": "nav",
-                "quote_basis": "cumulative_nav",
+                "quote_basis": "total_return_nav",
                 "as_of_date": "2026-03-14",
                 "value": "99.000000",
                 "currency": "USD",
@@ -73,7 +73,7 @@ TEST_SHARED_INSTRUMENTS = {
             },
             {
                 "metric_family": "nav",
-                "quote_basis": "cumulative_nav",
+                "quote_basis": "total_return_nav",
                 "as_of_date": "2026-04-07",
                 "value": "100.000000",
                 "currency": "USD",
@@ -81,7 +81,7 @@ TEST_SHARED_INSTRUMENTS = {
             },
             {
                 "metric_family": "nav",
-                "quote_basis": "cumulative_nav",
+                "quote_basis": "total_return_nav",
                 "as_of_date": "2026-04-14",
                 "value": "101.236476",
                 "currency": "USD",
@@ -101,7 +101,7 @@ TEST_SHARED_INSTRUMENTS = {
         "market_data": [
             {
                 "metric_family": "nav",
-                "quote_basis": "cumulative_nav",
+                "quote_basis": "total_return_nav",
                 "as_of_date": "2026-04-14",
                 "value": "99.870000",
                 "currency": "USD",

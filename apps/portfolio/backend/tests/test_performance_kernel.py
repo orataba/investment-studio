@@ -22,6 +22,21 @@ def _write_store(store: dict[str, object]) -> None:
     portfolio_store.reset_store(store)
 
 
+def test_holding_day_change_uses_adjusted_return_but_raw_market_value_across_split() -> None:
+    change_pct, change_value = performance._holding_day_change_metrics(
+        quantity=200.0,
+        current_price=0.905,
+        previous_price=1.945,
+        current_return_price=0.905,
+        previous_return_price=0.9730108306861102,
+        instrument_ref={"instrument_type": "etf"},
+    )
+    expected_return = 0.905 / 0.9730108306861102 - 1.0
+    assert change_pct == pytest.approx(expected_return)
+    assert change_value == pytest.approx(200.0 * 0.905 - 200.0 * 0.905 / (1.0 + expected_return))
+    assert change_pct > -0.10
+
+
 def _test_instrument_detail(
     *,
     instrument_id: str,
@@ -206,6 +221,43 @@ def test_valuation_quote_selection_rejects_reference_and_total_return_fallbacks(
     )
     assert total_return_point is not None
     assert total_return_point["quote_basis"] == "adjusted_close"
+
+    misconfigured_detail = deepcopy(detail)
+    misconfigured_detail["quote_selection_policy"]["valuation"] = ["adjusted_close", "close"]
+    misconfigured_detail["market_data"].append(
+        {
+            "metric_family": "price",
+            "quote_basis": "close",
+            "as_of_date": "2026-01-02",
+            "value": "50.00",
+            "currency": "USD",
+            "status": "complete",
+        }
+    )
+    misconfigured_detail["latest_market_data"].append(
+        deepcopy(misconfigured_detail["market_data"][-1])
+    )
+
+    # A registry policy containing any total-return valuation basis is invalid.
+    # Fail closed instead of silently valuing with it or degrading to a later
+    # candidate; this makes the snapshot incomplete and surfaces the bad policy.
+    assert (
+        performance._select_market_point_as_of(
+            detail=deepcopy(misconfigured_detail),
+            role="valuation",
+            as_of_date=date(2026, 1, 2),
+        )
+        is None
+    )
+    assert (
+        ledger._select_quote_value(
+            deepcopy(misconfigured_detail),
+            role="valuation",
+            as_of_date=date(2026, 1, 2),
+        )
+        is None
+    )
+    assert ledger._select_quote_value(deepcopy(misconfigured_detail), role="valuation") is None
 
 
 def test_quote_selection_uses_only_complete_market_data():
@@ -429,15 +481,28 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
     def fail_dynamic_contribution(*_args, **_kwargs):
         raise AssertionError("materialized contribution slices should satisfy this read")
 
-    def fail_live_market_profile(*_args, **_kwargs):
-        raise AssertionError("materialized holdings should include market profile fields")
-
     monkeypatch.setattr(workspace_routes, "build_holdings_report", fail_live_holdings)
-    monkeypatch.setattr(workspace_routes, "build_instrument_holdings_market_profile", fail_live_market_profile)
     monkeypatch.setattr(performance_routes, "build_contribution_report", fail_dynamic_contribution)
 
     holdings_response = client.get("/api/workspace/holdings?portfolio_id=portfolio-ops")
     assert holdings_response.status_code == 200
+    assert all("instrument_return_series_all" not in row for row in holdings_response.json()["rows"])
+
+    full_holdings_response = client.get(
+        "/api/workspace/holdings?portfolio_id=portfolio-ops&include_return_series=true"
+    )
+    assert full_holdings_response.status_code == 200
+    assert all("instrument_return_series_all" in row for row in full_holdings_response.json()["rows"])
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        persisted_payloads = [
+            row.holding_json
+            for row in session.query(PortfolioDailyHoldingSnapshotModel).all()
+        ]
+    assert persisted_payloads
+    assert all("price_chart_6m" not in payload for payload in persisted_payloads)
+    assert all("instrument_return_series_all" not in payload for payload in persisted_payloads)
     holdings_payload = holdings_response.json()
     holdings_rows = holdings_payload["rows"]
     assert holdings_rows
@@ -628,6 +693,166 @@ def test_daily_twr_neutralizes_external_deposit(client, monkeypatch):
     assert by_date["2026-01-02"]["ending_nav"] == 160.0
     assert by_date["2026-01-02"]["external_cash_in"] == 50.0
     assert by_date["2026-01-02"]["daily_twr"] == 0.06666666666666665
+
+
+def test_inception_day_twr_includes_bod_funding_and_first_day_pnl(client, monkeypatch):
+    instrument_detail = _test_instrument_detail(
+        instrument_id="equity-us-inception",
+        instrument_name="Inception Equity",
+        history=[("2026-01-01", "110.00")],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-inception" else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+    instrument_ref = {
+        "instrument_id": "equity-us-inception",
+        "instrument_name": "Inception Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+    store = _minimal_store(
+        portfolio_id="inception-return-test",
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": "inception-return-test",
+                "transaction_type": "deposit",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-usd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-01T08:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": "inception-return-test",
+                "transaction_type": "buy",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "instrument_id": "equity-us-inception",
+                "instrument_ref": instrument_ref,
+                "quantity": 1.0,
+                "price": 100.0,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-01T09:00:00Z",
+            },
+        ],
+    )
+    _write_store(store)
+
+    payload = client.get("/api/portfolios/inception-return-test/performance").json()
+    first_day = payload["daily_series"][0]
+    assert first_day["beginning_nav"] == pytest.approx(0.0)
+    assert first_day["ending_nav"] == pytest.approx(110.0)
+    assert first_day["daily_twr"] == pytest.approx(0.10)
+    assert payload["summary"]["start_nav"] == pytest.approx(0.0)
+    assert payload["summary"]["external_cash_in"] == pytest.approx(100.0)
+    assert payload["summary"]["delta"] == pytest.approx(10.0)
+    assert payload["summary"]["cumulative_twr"] == pytest.approx(0.10)
+
+
+def test_dividend_receivable_is_accrued_on_entitlement_date(client, monkeypatch):
+    instrument_detail = _test_instrument_detail(
+        instrument_id="equity-us-dividend",
+        instrument_name="Dividend Equity",
+        history=[
+            ("2026-01-01", "100.00"),
+            ("2026-01-02", "90.00"),
+            ("2026-01-03", "90.00"),
+        ],
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_registry_instrument_detail",
+        lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-dividend" else None,
+    )
+    monkeypatch.setattr(
+        performance,
+        "get_platform_fx_rates",
+        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
+    )
+    instrument_ref = {
+        "instrument_id": "equity-us-dividend",
+        "instrument_name": "Dividend Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+    store = _minimal_store(
+        portfolio_id="dividend-receivable-test",
+        transactions=[
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": "dividend-receivable-test",
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": None,
+                "instrument_id": "equity-us-dividend",
+                "instrument_ref": instrument_ref,
+                "quantity": 1.0,
+                "price": None,
+                "gross_amount": 100.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-01T09:00:00Z",
+            },
+            {
+                "transaction_id": "txn-0002",
+                "portfolio_id": "dividend-receivable-test",
+                "transaction_type": "dividend",
+                "trade_date": "2026-01-03",
+                "entitlement_date": "2026-01-02",
+                "settlement_date": "2026-01-03",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": "cash-usd-main",
+                "instrument_id": "equity-us-dividend",
+                "instrument_ref": instrument_ref,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 10.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-03T09:00:00Z",
+            },
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-03"
+    _write_store(store)
+
+    snapshots = client.get("/api/portfolios/dividend-receivable-test/snapshots/daily").json()["snapshots"]
+    by_date = {item["as_of_date"]: item for item in snapshots}
+    assert by_date["2026-01-02"]["position_market_value"] == pytest.approx(90.0)
+    assert by_date["2026-01-02"]["pending_settlement"] == pytest.approx(10.0)
+    assert by_date["2026-01-02"]["nav"] == pytest.approx(100.0)
+    assert by_date["2026-01-02"]["daily_twr"] == pytest.approx(0.0)
+    assert by_date["2026-01-03"]["pending_settlement"] == pytest.approx(0.0)
+    assert by_date["2026-01-03"]["nav"] == pytest.approx(100.0)
+    assert by_date["2026-01-03"]["daily_twr"] == pytest.approx(0.0)
 
 
 def test_explicit_performance_period_uses_beginning_nav_boundary(client, monkeypatch):
@@ -2594,8 +2819,15 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
     )
     monkeypatch.setattr(
         ledger,
-        "get_registry_instrument_detail",
-        lambda requested_instrument_id: deepcopy(instrument_detail) if requested_instrument_id == instrument_id else None,
+        "get_registry_instrument_details",
+        lambda requested_instrument_ids: {
+            requested_instrument_id: (
+                deepcopy(instrument_detail)
+                if requested_instrument_id == instrument_id
+                else None
+            )
+            for requested_instrument_id in requested_instrument_ids
+        },
     )
     monkeypatch.setattr(
         workspace_routes,
@@ -7957,12 +8189,8 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert hkd_cash_row["day_change_value"] is None
     assert isclose(hkd_cash_row["day_change_value_base"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(hkd_cash_row["allocation"], 1.0, rel_tol=0.0, abs_tol=1e-12)
-    assert hkd_cash_row["price_chart_1m"][0]["date"] == "2026-01-01"
-    assert isclose(hkd_cash_row["price_chart_1m"][0]["value"], 1 / 7.8, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(hkd_cash_row["price_chart_1m"][-1]["value"], 1 / 7.5, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(hkd_cash_row["instrument_return_mtd"], 0.04, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(hkd_cash_row["instrument_return_ytd"], 0.04, rel_tol=0.0, abs_tol=1e-12)
-    assert hkd_cash_row["instrument_volatility_1m"] is None
+    assert hkd_cash_row["price_chart_1m"] == []
+    assert "instrument_return_series_all" not in hkd_cash_row
     assert isclose(holdings_payload["totals"]["market_value"], 104.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(holdings_payload["totals"]["day_change_value"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(holdings_payload["totals"]["day_change_pct"], 0.04, rel_tol=0.0, abs_tol=1e-12)

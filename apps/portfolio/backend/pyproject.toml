@@ -19,11 +19,17 @@ dependencies = [
   "uvicorn[standard]>=0.34,<1.0",
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0,<10.0",
+  "httpx2>=2.5,<3.0",
+]
+
 [tool.setuptools.packages.find]
 include = ["portfolio_app*"]
 
 [tool.pytest.ini_options]
-addopts = "--capture=no tests"
+addopts = "-ra"
 testpaths = ["tests"]
 markers = [
   "postgresql_integration: exercises PostgreSQL-only schema and constraint behavior",

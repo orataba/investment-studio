@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 UNIT_PREFIX="${UNIT_PREFIX:-portfolio-ops}"
-HOST="${HOST:-0.0.0.0}"
+HOST="${HOST:-127.0.0.1}"
 API_HOST="${API_HOST:-$HOST}"
 WEB_HOST="${WEB_HOST:-$HOST}"
 PLATFORM_API_PORT="${PLATFORM_API_PORT:-8102}"
@@ -14,7 +14,16 @@ PLATFORM_WEB_PORT="${PLATFORM_WEB_PORT:-3100}"
 WATCHLIST_WEB_PORT="${WATCHLIST_WEB_PORT:-3101}"
 PORTFOLIO_WEB_PORT="${PORTFOLIO_WEB_PORT:-3102}"
 START_SERVICES="${START_SERVICES:-true}"
+RUN_MIGRATIONS="${RUN_MIGRATIONS:-true}"
 ENV_ROOT="${ENV_ROOT:-}"
+MANAGED_UNITS=(
+  "$UNIT_PREFIX-platform-api.service"
+  "$UNIT_PREFIX-watchlist-api.service"
+  "$UNIT_PREFIX-portfolio-api.service"
+  "$UNIT_PREFIX-platform-web.service"
+  "$UNIT_PREFIX-watchlist-web.service"
+  "$UNIT_PREFIX-portfolio-web.service"
+)
 
 DEFAULT_PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
 if [[ ! -x "$DEFAULT_PYTHON_BIN" ]]; then
@@ -40,6 +49,11 @@ fi
 
 if [[ ! -f "$PROJECT_ROOT/deploy/serve_spa_proxy.mjs" ]]; then
   echo "Cannot find deploy/serve_spa_proxy.mjs under PROJECT_ROOT: $PROJECT_ROOT" >&2
+  exit 1
+fi
+
+if [[ ! -x "$PROJECT_ROOT/infra/scripts/migrate_all.sh" ]]; then
+  echo "Cannot find executable infra/scripts/migrate_all.sh under PROJECT_ROOT: $PROJECT_ROOT" >&2
   exit 1
 fi
 
@@ -127,6 +141,41 @@ write_web_service "platform" "apps/platform/frontend" "$PLATFORM_WEB_PORT" "$PLA
 write_web_service "watchlist" "apps/watchlist/frontend" "$WATCHLIST_WEB_PORT" "$WATCHLIST_API_PORT"
 write_web_service "portfolio" "apps/portfolio/frontend" "$PORTFOLIO_WEB_PORT" "$PORTFOLIO_API_PORT"
 
+SERVICE_STATE_FILE="$(mktemp "${TMPDIR:-/tmp}/portfolio-ops-systemd-install-state.XXXXXX")"
+services_stopped=false
+restore_previous_services_on_failure() {
+  local exit_code=$?
+  trap - EXIT
+  if [[ $exit_code -ne 0 && "$services_stopped" == "true" ]]; then
+    echo "Install failed; restoring the previously active systemd services." >&2
+    while IFS= read -r unit || [[ -n "$unit" ]]; do
+      [[ -n "$unit" ]] || continue
+      systemctl --user start "$unit" || true
+    done < "$SERVICE_STATE_FILE"
+  fi
+  rm -f "$SERVICE_STATE_FILE"
+  exit "$exit_code"
+}
+trap restore_previous_services_on_failure EXIT
+
+if [[ "$RUN_MIGRATIONS" == "true" ]]; then
+  : > "$SERVICE_STATE_FILE"
+  chmod 600 "$SERVICE_STATE_FILE"
+  for unit in "${MANAGED_UNITS[@]}"; do
+    if systemctl --user is-active --quiet "$unit"; then
+      printf '%s\n' "$unit" >> "$SERVICE_STATE_FILE"
+    fi
+  done
+  services_stopped=true
+  while IFS= read -r unit || [[ -n "$unit" ]]; do
+    [[ -n "$unit" ]] || continue
+    systemctl --user stop "$unit"
+  done < "$SERVICE_STATE_FILE"
+  echo "Managed services stopped; applying release migrations."
+  PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="$ENV_ROOT" \
+    "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
+fi
+
 systemctl --user daemon-reload
 systemctl --user enable \
   "$UNIT_PREFIX-platform-api.service" \
@@ -137,19 +186,11 @@ systemctl --user enable \
   "$UNIT_PREFIX-portfolio-web.service"
 
 if [[ "$START_SERVICES" == "true" ]]; then
-  systemctl --user restart \
-    "$UNIT_PREFIX-platform-api.service" \
-    "$UNIT_PREFIX-watchlist-api.service" \
-    "$UNIT_PREFIX-portfolio-api.service" \
-    "$UNIT_PREFIX-platform-web.service" \
-    "$UNIT_PREFIX-watchlist-web.service" \
-    "$UNIT_PREFIX-portfolio-web.service"
+  systemctl --user restart "${MANAGED_UNITS[@]}"
 fi
 
-systemctl --user --no-pager --plain status \
-  "$UNIT_PREFIX-platform-api.service" \
-  "$UNIT_PREFIX-watchlist-api.service" \
-  "$UNIT_PREFIX-portfolio-api.service" \
-  "$UNIT_PREFIX-platform-web.service" \
-  "$UNIT_PREFIX-watchlist-web.service" \
-  "$UNIT_PREFIX-portfolio-web.service" || true
+services_stopped=false
+rm -f "$SERVICE_STATE_FILE"
+trap - EXIT
+
+systemctl --user --no-pager --plain status "${MANAGED_UNITS[@]}" || true

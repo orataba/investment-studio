@@ -9,6 +9,7 @@ import statistics
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from watchlist_app.db.models.instruments import InstrumentDetail
@@ -68,6 +69,15 @@ DEFAULT_TABS = [
     "monitoring",
 ]
 
+
+class RecalcJobLeaseLostError(RuntimeError):
+    """Raised when an obsolete worker tries to publish a recalculation."""
+
+
+class RecalcJobAlreadyRunningError(RuntimeError):
+    """Raised when synchronous work would overlap an active instrument job."""
+
+
 ORDINARY_NAV_QUOTE_BASIS_PRIORITY = (
     "official_nav",
     "nav",
@@ -79,9 +89,6 @@ ORDINARY_NAV_QUOTE_BASIS_PRIORITY = (
 TOTAL_RETURN_NAV_QUOTE_BASIS_PRIORITY = (
     "total_return_nav",
     "nav_with_dividend",
-    "cumulative_nav",
-    "accumulated_nav",
-    "cum_nav",
     "dividend_adjusted_nav",
     "reinvested_nav",
     "adjusted_close",
@@ -97,9 +104,6 @@ ORDINARY_NAV_QUOTE_BASES = {
 TOTAL_RETURN_NAV_QUOTE_BASES = {
     "total_return_nav",
     "nav_with_dividend",
-    "cumulative_nav",
-    "accumulated_nav",
-    "cum_nav",
     "dividend_adjusted_nav",
     "reinvested_nav",
     "adjusted_close",
@@ -113,9 +117,6 @@ QUOTE_BASIS_ROW_SLOT = {
     "last": "nav",
     "total_return_nav": "nav_with_dividend",
     "nav_with_dividend": "nav_with_dividend",
-    "cumulative_nav": "nav_with_dividend",
-    "accumulated_nav": "nav_with_dividend",
-    "cum_nav": "nav_with_dividend",
     "dividend_adjusted_nav": "nav_with_dividend",
     "reinvested_nav": "nav_with_dividend",
     "adjusted_close": "nav_with_dividend",
@@ -391,6 +392,18 @@ def _coerce_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
+def _parse_source_watermark(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return _coerce_utc(value)
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    try:
+        return _coerce_utc(datetime.fromisoformat(normalized.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
 def _safe_decimal(value: object) -> Decimal | None:
     if value is None:
         return None
@@ -434,14 +447,15 @@ def _active_fund_instrument_ids(session: Session) -> set[str]:
         str(instrument_id)
         for instrument_id in session.scalars(
             select(InstrumentDetail.instrument_id).where(
-                InstrumentDetail.instrument_type == "fund",
+                InstrumentDetail.instrument_type.in_(("fund", "etf")),
                 InstrumentDetail.is_active.is_(True),
             )
         ).all()
     }
     shared_active_instrument_ids = {
         str(item.get("instrument_id"))
-        for item in list_shared_instruments(instrument_type="fund", limit=None)
+        for instrument_type in ("fund", "etf")
+        for item in list_shared_instruments(instrument_type=instrument_type, limit=None)
         if str(item.get("instrument_id") or "").strip()
     }
     return local_active_instrument_ids & shared_active_instrument_ids
@@ -1590,6 +1604,11 @@ class CanonicalRecalcService:
         nav_rows = _rows_with_selected_series(nav_rows, selection)
         selection["rows"] = nav_rows
         frequency_context = build_calculation_frequency_context(selection["points"])
+        calculation_dates = {
+            point["as_of_date"]
+            for point in frequency_context["points"]
+            if isinstance(point, dict) and isinstance(point.get("as_of_date"), date)
+        }
         return {
             "instrument_id": instrument_id,
             "count": len(selection["rows"]),
@@ -1624,7 +1643,6 @@ class CanonicalRecalcService:
                         if row.get("adopted_at") is not None
                         else None
                     ),
-                    "basis_metadata": row.get("basis_metadata") or {},
                     "selected_basis_type": selection.get("nav_basis_type"),
                     "selected_value": (
                         float(row.get(selection["nav_basis_type"]))
@@ -1632,34 +1650,9 @@ class CanonicalRecalcService:
                         and row.get(selection["nav_basis_type"]) is not None
                         else None
                     ),
-                    "selected_metric_family": selection.get("selected_metric_family"),
-                    "selected_quote_basis": selection.get("selected_quote_basis"),
-                    "selected_series_type": selection.get("selected_series_type"),
-                    "selected_series_label": selection.get("selected_series_label"),
+                    "calculation_included": row["as_of_date"] in calculation_dates,
                 }
                 for row in selection["rows"]
-            ],
-            "series": [
-                {
-                    "date": point["as_of_date"].isoformat(),
-                    "value": round(point["value"], 8),
-                    "nav": round(point["value"], 8),
-                    "metric_family": point.get("metric_family"),
-                    "quote_basis": point.get("quote_basis"),
-                    "series_type": selection.get("selected_series_type"),
-                }
-                for point in selection["points"]
-            ],
-            "calculation_series": [
-                {
-                    "date": point["as_of_date"].isoformat(),
-                    "value": round(point["value"], 8),
-                    "nav": round(point["value"], 8),
-                    "metric_family": point.get("metric_family"),
-                    "quote_basis": point.get("quote_basis"),
-                    "series_type": selection.get("selected_series_type"),
-                }
-                for point in frequency_context["points"]
             ],
         }
 
@@ -1725,29 +1718,75 @@ class CanonicalRecalcService:
         trigger_ref_id: str | None,
         commit: bool = False,
     ) -> dict[str, object]:
-        record = self.recalc_repository.create(
-            session,
-            recalc_job_id=make_recalc_job_id(),
-            job_type=job_type,
-            instrument_id=instrument_id,
-            trigger_type=trigger_type,
-            trigger_ref_type=trigger_ref_type,
-            trigger_ref_id=trigger_ref_id,
-            job_status="queued",
-            priority=100 if job_type == "all" else 90,
-            dedupe_key=make_recalc_dedupe_key(
-                job_type=job_type,
-                instrument_id=instrument_id,
-                trigger_type=trigger_type,
-                trigger_ref_type=trigger_ref_type,
-                trigger_ref_id=trigger_ref_id,
-            ),
-            payload_json={"requested_by": trigger_type},
-        )
-        self.recalc_repository.mark_running(session, record)
         try:
-            result = self._execute_recalc_job(session, instrument_id=instrument_id, job_type=job_type)
-            self.recalc_repository.mark_completed(session, record, payload_json=result)
+            with session.begin_nested():
+                self.recalc_repository.acquire_instrument_lock(
+                    session,
+                    instrument_id=instrument_id,
+                    wait=True,
+                )
+                running = self.recalc_repository.find_running_job(
+                    session,
+                    instrument_id=instrument_id,
+                    for_update=True,
+                )
+                if running is not None:
+                    raise RecalcJobAlreadyRunningError(
+                        f"Instrument {instrument_id} already has running recalc job "
+                        f"{running.recalc_job_id}."
+                    )
+                record = self.recalc_repository.find_open_job(
+                    session,
+                    instrument_id=instrument_id,
+                    job_type=job_type,
+                    for_update=True,
+                )
+                if record is None:
+                    record = self.recalc_repository.create(
+                        session,
+                        recalc_job_id=make_recalc_job_id(),
+                        job_type=job_type,
+                        instrument_id=instrument_id,
+                        trigger_type=trigger_type,
+                        trigger_ref_type=trigger_ref_type,
+                        trigger_ref_id=trigger_ref_id,
+                        job_status="queued",
+                        priority=100 if job_type == "all" else 90,
+                        dedupe_key=make_recalc_dedupe_key(
+                            job_type=job_type,
+                            instrument_id=instrument_id,
+                        ),
+                        payload_json={"requested_by": trigger_type},
+                    )
+                else:
+                    record.payload_json = {
+                        **(record.payload_json or {}),
+                        "executed_by": trigger_type,
+                    }
+                self.recalc_repository.mark_running(session, record)
+        except IntegrityError as error:
+            raise RecalcJobAlreadyRunningError(
+                f"Instrument {instrument_id} acquired a concurrent recalc job."
+            ) from error
+
+        lease_token = str(record.lease_token or "")
+        try:
+            with session.begin_nested():
+                result = self._execute_recalc_job(
+                    session,
+                    instrument_id=instrument_id,
+                    job_type=job_type,
+                )
+                if not self.recalc_repository.mark_completed(
+                    session,
+                    record,
+                    lease_token=lease_token,
+                    payload_json=result,
+                ):
+                    raise RecalcJobLeaseLostError(
+                        f"Recalc lease lost before completion: {record.recalc_job_id}"
+                    )
+                self._enqueue_source_change_follow_up(session, record=record, result=result)
             if commit:
                 session.commit()
             else:
@@ -1757,8 +1796,20 @@ class CanonicalRecalcService:
                 "job_status": "completed",
                 "result": result,
             }
+        except RecalcJobLeaseLostError:
+            session.rollback()
+            raise
         except Exception as exc:
-            self.recalc_repository.mark_failed(session, record, error_message=str(exc))
+            if not self.recalc_repository.mark_failed(
+                session,
+                record,
+                lease_token=lease_token,
+                error_message=str(exc),
+            ):
+                session.rollback()
+                raise RecalcJobLeaseLostError(
+                    f"Recalc lease lost while recording failure: {record.recalc_job_id}"
+                ) from exc
             if commit:
                 session.commit()
             else:
@@ -1772,13 +1823,24 @@ class CanonicalRecalcService:
         record,
         commit: bool = False,
     ) -> dict[str, object]:
+        lease_token = str(record.lease_token or "")
         try:
-            result = self._execute_recalc_job(
-                session,
-                instrument_id=record.instrument_id,
-                job_type=record.job_type,
-            )
-            self.recalc_repository.mark_completed(session, record, payload_json=result)
+            with session.begin_nested():
+                result = self._execute_recalc_job(
+                    session,
+                    instrument_id=record.instrument_id,
+                    job_type=record.job_type,
+                )
+                if not self.recalc_repository.mark_completed(
+                    session,
+                    record,
+                    lease_token=lease_token,
+                    payload_json=result,
+                ):
+                    raise RecalcJobLeaseLostError(
+                        f"Recalc lease lost before completion: {record.recalc_job_id}"
+                    )
+                self._enqueue_source_change_follow_up(session, record=record, result=result)
             if commit:
                 session.commit()
             else:
@@ -1788,13 +1850,64 @@ class CanonicalRecalcService:
                 "job_status": "completed",
                 "result": result,
             }
+        except RecalcJobLeaseLostError:
+            session.rollback()
+            raise
         except Exception as exc:
-            self.recalc_repository.mark_failed(session, record, error_message=str(exc))
+            if not self.recalc_repository.mark_failed(
+                session,
+                record,
+                lease_token=lease_token,
+                error_message=str(exc),
+            ):
+                session.rollback()
+                raise RecalcJobLeaseLostError(
+                    f"Recalc lease lost while recording failure: {record.recalc_job_id}"
+                ) from exc
             if commit:
                 session.commit()
             else:
                 session.flush()
             raise
+
+    def _enqueue_source_change_follow_up(
+        self,
+        session: Session,
+        *,
+        record,
+        result: dict[str, object],
+    ) -> None:
+        if not bool(result.get("source_changed_during_recalc")):
+            return
+        source_watermark = str(result.get("source_watermark_at_end") or "").strip() or None
+        existing = self.recalc_repository.find_open_job(
+            session,
+            instrument_id=record.instrument_id,
+            job_type="all",
+        )
+        if existing is not None:
+            return
+        try:
+            with session.begin_nested():
+                self.recalc_repository.create(
+                    session,
+                    recalc_job_id=make_recalc_job_id(),
+                    job_type="all",
+                    instrument_id=record.instrument_id,
+                    trigger_type="source_changed_during_recalc",
+                    trigger_ref_type="market_data_updated_at",
+                    trigger_ref_id=source_watermark,
+                    job_status="queued",
+                    priority=100,
+                    dedupe_key=make_recalc_dedupe_key(
+                        job_type="all",
+                        instrument_id=record.instrument_id,
+                    ),
+                    payload_json={"requested_by": "source_changed_during_recalc"},
+                )
+        except IntegrityError:
+            # Another scheduler observed the same watermark concurrently.
+            return
 
     def _execute_recalc_job(
         self,
@@ -1808,6 +1921,9 @@ class CanonicalRecalcService:
             raise ValueError(f"Instrument not found: {instrument_id}")
 
         shared_instrument = get_shared_instrument(instrument_id)
+        source_watermark_at_start = _parse_source_watermark(
+            (shared_instrument or {}).get("market_data_updated_at")
+        )
         shared_instrument_type = (
             str(shared_instrument.get("instrument_type") or "").strip().lower()
             if isinstance(shared_instrument, dict)
@@ -1815,7 +1931,7 @@ class CanonicalRecalcService:
         )
         if (
             shared_instrument is not None
-            and shared_instrument_type in {"fund", "index"}
+            and shared_instrument_type in {"fund", "etf", "index"}
         ):
             instrument = self.instrument_repository.upsert_from_shared_instrument(
                 session,
@@ -1834,14 +1950,14 @@ class CanonicalRecalcService:
         nav_settings = _normalize_nav_settings(
             manual_profile.nav_settings_json if manual_profile is not None else None
         )
-        nav_rows = (
-            _group_shared_nav_rows(list((shared_instrument or {}).get("market_data", [])))
-            or _group_local_nav_rows(nav_facts)
-        )
+        shared_market_data = list((shared_instrument or {}).get("market_data", []))
+        shared_nav_rows = _group_shared_nav_rows(shared_market_data)
+        shared_quote_points_by_basis = _shared_quote_points_by_basis(shared_market_data)
+        nav_rows = shared_nav_rows or _group_local_nav_rows(nav_facts)
         quote_points_by_basis = (
-            _shared_quote_points_by_basis(list((shared_instrument or {}).get("market_data", [])))
-            or _local_quote_points_by_basis(nav_facts)
+            shared_quote_points_by_basis or _local_quote_points_by_basis(nav_facts)
         )
+        uses_shared_market_data = bool(shared_quote_points_by_basis)
         nav_basis_preference = str(nav_settings.get("nav_basis_preference", "auto"))
         nav_selection = _select_quote_series(
             quote_points_by_basis,
@@ -1867,6 +1983,21 @@ class CanonicalRecalcService:
                 _allows_ordinary_return_basis(instrument.instrument_type)
                 or _quote_policy_prefers_ordinary_nav(shared_instrument, role="chart")
             ),
+        )
+        local_source_cutoffs = [
+            cutoff
+            for cutoff in (
+                _coerce_utc(point.get("adopted_at"))
+                for points in quote_points_by_basis.values()
+                for point in points
+                if isinstance(point.get("adopted_at"), datetime)
+            )
+            if cutoff is not None
+        ]
+        market_data_source_cutoff = (
+            source_watermark_at_start
+            if uses_shared_market_data and source_watermark_at_start is not None
+            else max(local_source_cutoffs, default=now)
         )
         holding_snapshot = self.facts_repository.get_current_holding_snapshot(
             session,
@@ -1902,6 +2033,7 @@ class CanonicalRecalcService:
                     instrument_id=instrument_id,
                     nav_points=calculation_nav_points,
                     calculation_frequency_profile=calculation_frequency_profile,
+                    source_cutoff_at=market_data_source_cutoff,
                     now=now,
                 )
                 risk_snapshot = self._replace_risk_snapshot(
@@ -1909,6 +2041,7 @@ class CanonicalRecalcService:
                     instrument_id=instrument_id,
                     nav_points=calculation_nav_points,
                     calculation_frequency_profile=calculation_frequency_profile,
+                    source_cutoff_at=market_data_source_cutoff,
                     now=now,
                 )
             else:
@@ -1925,6 +2058,12 @@ class CanonicalRecalcService:
                 now=now,
             )
 
+        materialized_market_source_cutoff = (
+            _coerce_utc(getattr(performance_snapshot, "source_cutoff_at", None))
+            or _coerce_utc(getattr(risk_snapshot, "source_cutoff_at", None))
+            or market_data_source_cutoff
+        )
+
         if job_type in {"ratings", "performance", "exposure", "all"}:
             score_snapshot = self._replace_score_snapshot(
                 session,
@@ -1932,6 +2071,7 @@ class CanonicalRecalcService:
                 performance_snapshot=performance_snapshot,
                 risk_snapshot=risk_snapshot,
                 exposure_snapshot=exposure_snapshot,
+                source_cutoff_at=materialized_market_source_cutoff,
                 now=now,
             )
 
@@ -1944,6 +2084,7 @@ class CanonicalRecalcService:
             score_snapshot=score_snapshot,
             attributes=raw_attributes,
             taxonomy_context=taxonomy_context,
+            source_cutoff_at=materialized_market_source_cutoff,
             now=now,
         )
         chart_payload = _build_chart_payload(
@@ -1985,11 +2126,6 @@ class CanonicalRecalcService:
             (InstrumentExposureHoldingsReadModel, holdings_payload),
             (InstrumentRatingReadModel, rating_payload),
         ):
-            source_cutoff_at = (
-                _coerce_utc(getattr(exposure_snapshot, "source_cutoff_at", None))
-                or _coerce_utc(getattr(performance_snapshot, "source_cutoff_at", None))
-                or now
-            )
             self.read_model_repository.upsert_payload_read_model(
                 session,
                 model_class=model_class,
@@ -1997,7 +2133,7 @@ class CanonicalRecalcService:
                 payload_json=payload,
                 data_freshness_status=summary_payload["freshness"]["data_freshness_status"],
                 last_recalculated_at=now,
-                source_cutoff_at=source_cutoff_at,
+                source_cutoff_at=materialized_market_source_cutoff,
             )
 
         self._refresh_watchlist_rows(
@@ -2013,6 +2149,16 @@ class CanonicalRecalcService:
             now=now,
         )
 
+        shared_instrument_at_end = (
+            get_shared_instrument(instrument_id) if uses_shared_market_data else shared_instrument
+        )
+        source_watermark_at_end = _parse_source_watermark(
+            (shared_instrument_at_end or {}).get("market_data_updated_at")
+        )
+        source_changed_during_recalc = bool(
+            uses_shared_market_data and source_watermark_at_end != source_watermark_at_start
+        )
+
         return {
             "instrument_id": instrument_id,
             "job_type": job_type,
@@ -2020,6 +2166,17 @@ class CanonicalRecalcService:
             "risk_snapshot_id": getattr(risk_snapshot, "snapshot_id", None),
             "exposure_snapshot_id": getattr(exposure_snapshot, "snapshot_id", None),
             "score_snapshot_id": getattr(score_snapshot, "snapshot_id", None),
+            "source_watermark_at_start": (
+                source_watermark_at_start.isoformat().replace("+00:00", "Z")
+                if source_watermark_at_start is not None
+                else None
+            ),
+            "source_watermark_at_end": (
+                source_watermark_at_end.isoformat().replace("+00:00", "Z")
+                if source_watermark_at_end is not None
+                else None
+            ),
+            "source_changed_during_recalc": source_changed_during_recalc,
             "completed_at": now.isoformat(),
         }
 
@@ -2030,6 +2187,7 @@ class CanonicalRecalcService:
         instrument_id: str,
         nav_points: list[dict[str, Any]],
         calculation_frequency_profile: dict[str, object],
+        source_cutoff_at: datetime,
         now: datetime,
     ):
         latest = nav_points[-1]
@@ -2089,7 +2247,7 @@ class CanonicalRecalcService:
             instrument_id=instrument_id,
             data={
                 "as_of_date": as_of_date,
-                "source_cutoff_at": _coerce_utc(latest.get("adopted_at")) or now,
+                "source_cutoff_at": source_cutoff_at,
                 "methodology_version": "canonical-performance/v3",
                 "input_hash": _hash_payload(
                     {
@@ -2123,6 +2281,7 @@ class CanonicalRecalcService:
         instrument_id: str,
         nav_points: list[dict[str, Any]],
         calculation_frequency_profile: dict[str, object],
+        source_cutoff_at: datetime,
         now: datetime,
     ):
         latest = nav_points[-1]
@@ -2136,7 +2295,7 @@ class CanonicalRecalcService:
             instrument_id=instrument_id,
             data={
                 "as_of_date": latest["as_of_date"],
-                "source_cutoff_at": _coerce_utc(latest.get("adopted_at")) or now,
+                "source_cutoff_at": source_cutoff_at,
                 "methodology_version": "canonical-risk/v3",
                 "input_hash": _hash_payload(
                     {
@@ -2227,6 +2386,7 @@ class CanonicalRecalcService:
         performance_snapshot,
         risk_snapshot,
         exposure_snapshot,
+        source_cutoff_at: datetime,
         now: datetime,
     ):
         scores = [
@@ -2257,7 +2417,7 @@ class CanonicalRecalcService:
             instrument_id=instrument_id,
             data={
                 "as_of_date": now.date(),
-                "source_cutoff_at": now,
+                "source_cutoff_at": source_cutoff_at,
                 "methodology_version": "canonical-score/v2",
                 "input_hash": _hash_payload({"score": overall_score}),
                 "calculated_at": now,
@@ -2288,6 +2448,7 @@ class CanonicalRecalcService:
         score_snapshot,
         attributes: dict[str, object],
         taxonomy_context: dict[str, object],
+        source_cutoff_at: datetime,
         now: datetime,
     ) -> dict[str, object]:
         last_nav_date = (
@@ -2362,11 +2523,7 @@ class CanonicalRecalcService:
             ],
             "freshness": {
                 "data_freshness_status": freshness_status,
-                "last_fact_update_at": (
-                    _coerce_utc(getattr(exposure_snapshot, "source_cutoff_at", None))
-                    or _coerce_utc(getattr(performance_snapshot, "source_cutoff_at", None))
-                    or now
-                ).isoformat().replace("+00:00", "Z"),
+                "last_fact_update_at": source_cutoff_at.isoformat().replace("+00:00", "Z"),
                 "last_recalculated_at": now.isoformat().replace("+00:00", "Z"),
                 "last_successful_snapshot_at": now.isoformat().replace("+00:00", "Z"),
                 "staleness_reason": None if nav_selection["points"] else "No canonical series available.",

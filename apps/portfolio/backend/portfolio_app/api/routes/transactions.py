@@ -22,6 +22,7 @@ from portfolio_app.api.contracts import (
     TransactionBatchResponse,
     TransactionCreateRequest,
     TransactionDeleteResponse,
+    TransactionExecutionQuoteResponse,
     TransactionListResponse,
     TransactionListSummary,
     TransactionPositionPreviewResponse,
@@ -43,6 +44,7 @@ from portfolio_app.services.instrument_registry import (
     list_registry_instruments,
 )
 from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
+from portfolio_app.services.execution_quotes import get_execution_quote_on_or_before
 from portfolio_app.services.portfolio_store import (
     create_transaction,
     create_transactions,
@@ -59,13 +61,13 @@ from portfolio_app.services.portfolio_store import (
 
 router = APIRouter()
 
-POSITION_ASSET_TYPES = {"fund", "bond", "equity", "other"}
+POSITION_ASSET_TYPES = {"fund", "etf", "bond", "equity", "other"}
 ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = {"buy", "dividend_reinvestment", "opening_balance"}
 INCOME_ASSET_TYPES: dict[str, set[str]] = {
-    "dividend": {"fund", "equity"},
-    "dividend_reinvestment": {"fund", "equity"},
+    "dividend": {"fund", "etf", "equity"},
+    "dividend_reinvestment": {"fund", "etf", "equity"},
     "coupon": {"bond"},
-    "return_of_capital": {"fund", "equity"},
+    "return_of_capital": {"fund", "etf", "equity"},
     "maturity_redemption": {"bond"},
 }
 
@@ -656,6 +658,7 @@ def get_transaction_position_preview(
         account_id=account_id,
         instrument_id=instrument_id,
         account_cost_methods=_account_cost_methods(portfolio_id),
+        as_of_date=as_of_date,
     )
     return TransactionPositionPreviewResponse(
         portfolio_id=portfolio_id,
@@ -664,6 +667,41 @@ def get_transaction_position_preview(
         as_of_date=as_of_date,
         trade_at=str(resolved_trade_timing["trade_at"]),
         quantity=quantity,
+    )
+
+
+@router.get(
+    "/{portfolio_id}/transactions/execution-quote",
+    response_model=TransactionExecutionQuoteResponse,
+)
+def get_transaction_execution_quote(
+    portfolio_id: str,
+    instrument_id: str,
+    as_of_date: date = Query(...),
+) -> TransactionExecutionQuoteResponse:
+    """Resolve an unadjusted price for a transaction form on or before a date.
+
+    Trading policy takes precedence over valuation policy. Performance/chart
+    series such as adjusted_close and total_return_nav are never eligible.
+    """
+
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    try:
+        quote = get_execution_quote_on_or_before(
+            instrument_id,
+            as_of_date=as_of_date,
+        )
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    if quote is None:
+        raise HTTPException(status_code=404, detail="Instrument not found in shared registry.")
+
+    return TransactionExecutionQuoteResponse.model_validate(
+        {
+            "portfolio_id": portfolio_id,
+            **quote,
+        }
     )
 
 
@@ -918,72 +956,53 @@ def _persist_transaction_record(
         instrument_ref=instrument_ref,
     )
 
-    persisted_record = (
-        update_transaction(
-            portfolio_id,
-            str(existing_transaction.get("transaction_id") or ""),
-            transaction_type=transaction_type,
-            trade_date=payload.trade_date,
-            trade_time=payload.trade_time,
-            settlement_date=settlement_date,
-            entitlement_date=payload.entitlement_date,
-            acquisition_date=payload.acquisition_date,
-            account_id=payload.account_id,
-            settlement_cash_account_id=settlement_cash_account_id or None,
-            instrument_id=instrument_id,
-            instrument_ref=instrument_ref,
-            quantity=payload.quantity,
-            price=payload.price,
-            gross_amount=payload.gross_amount,
-            counter_amount=payload.counter_amount,
-            fx_rate=payload.fx_rate,
-            fees=payload.fees,
-            taxes=payload.taxes,
-            currency=payload.currency,
-            transfer_scope=payload.transfer_scope,
-            transfer_object_type=payload.transfer_object_type,
-            transfer_group_id=payload.transfer_group_id,
-            counterparty_account_id=(
-                str(fx_conversion_target_account.get("account_id") or "")
-                if fx_conversion_target_account is not None
-                else payload.counterparty_account_id
-            ),
-            note=payload.note,
-            created_at=pending_created_at,
-        )
-        if existing_transaction is not None
-        else create_transaction(
-            portfolio_id=portfolio_id,
-            transaction_type=transaction_type,
-            trade_date=payload.trade_date,
-            trade_time=payload.trade_time,
-            settlement_date=settlement_date,
-            entitlement_date=payload.entitlement_date,
-            acquisition_date=payload.acquisition_date,
-            account_id=payload.account_id,
-            settlement_cash_account_id=settlement_cash_account_id or None,
-            instrument_id=instrument_id,
-            instrument_ref=instrument_ref,
-            quantity=payload.quantity,
-            price=payload.price,
-            gross_amount=payload.gross_amount,
-            counter_amount=payload.counter_amount,
-            fx_rate=payload.fx_rate,
-            fees=payload.fees,
-            taxes=payload.taxes,
-            currency=payload.currency,
-            transfer_scope=payload.transfer_scope,
-            transfer_object_type=payload.transfer_object_type,
-            transfer_group_id=payload.transfer_group_id,
-            counterparty_account_id=(
-                str(fx_conversion_target_account.get("account_id") or "")
-                if fx_conversion_target_account is not None
-                else payload.counterparty_account_id
-            ),
-            note=payload.note,
-            created_at=pending_created_at,
-        )
-    )
+    transaction_values = {
+        "transaction_type": transaction_type,
+        "trade_date": payload.trade_date,
+        "trade_time": payload.trade_time,
+        "settlement_date": settlement_date,
+        "entitlement_date": payload.entitlement_date,
+        "acquisition_date": payload.acquisition_date,
+        "account_id": payload.account_id,
+        "settlement_cash_account_id": settlement_cash_account_id or None,
+        "instrument_id": instrument_id,
+        "instrument_ref": instrument_ref,
+        "quantity": payload.quantity,
+        "price": payload.price,
+        "gross_amount": payload.gross_amount,
+        "counter_amount": payload.counter_amount,
+        "fx_rate": payload.fx_rate,
+        "fees": payload.fees,
+        "taxes": payload.taxes,
+        "currency": payload.currency,
+        "transfer_scope": payload.transfer_scope,
+        "transfer_object_type": payload.transfer_object_type,
+        "transfer_group_id": payload.transfer_group_id,
+        "counterparty_account_id": (
+            str(fx_conversion_target_account.get("account_id") or "")
+            if fx_conversion_target_account is not None
+            else payload.counterparty_account_id
+        ),
+        "note": payload.note,
+        "created_at": pending_created_at,
+    }
+    try:
+        if existing_transaction is not None:
+            persisted_record = update_transaction(
+                portfolio_id,
+                str(existing_transaction.get("transaction_id") or ""),
+                **transaction_values,
+            )
+        else:
+            persisted_record = create_transaction(
+                portfolio_id=portfolio_id,
+                **transaction_values,
+            )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Transaction history changed; reload and retry. {error}",
+        ) from error
     if persisted_record is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
     _queue_daily_snapshot_refresh(background_tasks, portfolio_id)
@@ -1048,10 +1067,16 @@ def delete_transaction_record(
         if transfer_group_id
         else [transaction_id]
     )
-    deleted_records = delete_transactions(
-        portfolio_id,
-        transaction_ids=transaction_ids,
-    )
+    try:
+        deleted_records = delete_transactions(
+            portfolio_id,
+            transaction_ids=transaction_ids,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Deleting this fact would invalidate later position history. {error}",
+        ) from error
     _queue_daily_snapshot_refresh(background_tasks, portfolio_id)
     return TransactionDeleteResponse(
         portfolio_id=portfolio_id,
@@ -1174,63 +1199,69 @@ def create_internal_transfer_records(
     transfer_group_id = payload.transfer_group_id or f"trf-{uuid4().hex[:12]}"
     trade_date = payload.trade_date
 
-    created_records = create_transactions(
-        portfolio_id=portfolio_id,
-        records=[
-            {
-                "transaction_type": "transfer_out",
-                "trade_date": trade_date,
-                "trade_time": payload.trade_time,
-                "settlement_date": settlement_date,
-                "entitlement_date": None,
-                "acquisition_date": None,
-                "account_id": payload.from_account_id,
-                "settlement_cash_account_id": None,
-                "instrument_id": instrument_id,
-                "instrument_ref": instrument_ref,
-                "quantity": payload.quantity,
-                "price": None,
-                "gross_amount": float(transferred_amount or 0.0),
-                "counter_amount": None,
-                "fx_rate": None,
-                "fees": 0,
-                "taxes": 0,
-                "currency": transfer_currency,
-                "transfer_scope": "internal_portfolio",
-                "transfer_object_type": transfer_object_type,
-                "transfer_group_id": transfer_group_id,
-                "counterparty_account_id": payload.to_account_id,
-                "note": payload.note,
-                "created_at": pending_created_at,
-            },
-            {
-                "transaction_type": "transfer_in",
-                "trade_date": trade_date,
-                "trade_time": payload.trade_time,
-                "settlement_date": settlement_date,
-                "entitlement_date": None,
-                "acquisition_date": None,
-                "account_id": payload.to_account_id,
-                "settlement_cash_account_id": None,
-                "instrument_id": instrument_id,
-                "instrument_ref": instrument_ref,
-                "quantity": payload.quantity,
-                "price": None,
-                "gross_amount": float(transferred_amount or 0.0),
-                "counter_amount": None,
-                "fx_rate": None,
-                "fees": 0,
-                "taxes": 0,
-                "currency": transfer_currency,
-                "transfer_scope": "internal_portfolio",
-                "transfer_object_type": transfer_object_type,
-                "transfer_group_id": transfer_group_id,
-                "counterparty_account_id": payload.from_account_id,
-                "note": payload.note,
-                "created_at": pending_created_at,
-            },
-        ],
-    )
+    try:
+        created_records = create_transactions(
+            portfolio_id=portfolio_id,
+            records=[
+                {
+                    "transaction_type": "transfer_out",
+                    "trade_date": trade_date,
+                    "trade_time": payload.trade_time,
+                    "settlement_date": settlement_date,
+                    "entitlement_date": None,
+                    "acquisition_date": None,
+                    "account_id": payload.from_account_id,
+                    "settlement_cash_account_id": None,
+                    "instrument_id": instrument_id,
+                    "instrument_ref": instrument_ref,
+                    "quantity": payload.quantity,
+                    "price": None,
+                    "gross_amount": float(transferred_amount or 0.0),
+                    "counter_amount": None,
+                    "fx_rate": None,
+                    "fees": 0,
+                    "taxes": 0,
+                    "currency": transfer_currency,
+                    "transfer_scope": "internal_portfolio",
+                    "transfer_object_type": transfer_object_type,
+                    "transfer_group_id": transfer_group_id,
+                    "counterparty_account_id": payload.to_account_id,
+                    "note": payload.note,
+                    "created_at": pending_created_at,
+                },
+                {
+                    "transaction_type": "transfer_in",
+                    "trade_date": trade_date,
+                    "trade_time": payload.trade_time,
+                    "settlement_date": settlement_date,
+                    "entitlement_date": None,
+                    "acquisition_date": None,
+                    "account_id": payload.to_account_id,
+                    "settlement_cash_account_id": None,
+                    "instrument_id": instrument_id,
+                    "instrument_ref": instrument_ref,
+                    "quantity": payload.quantity,
+                    "price": None,
+                    "gross_amount": float(transferred_amount or 0.0),
+                    "counter_amount": None,
+                    "fx_rate": None,
+                    "fees": 0,
+                    "taxes": 0,
+                    "currency": transfer_currency,
+                    "transfer_scope": "internal_portfolio",
+                    "transfer_object_type": transfer_object_type,
+                    "transfer_group_id": transfer_group_id,
+                    "counterparty_account_id": payload.from_account_id,
+                    "note": payload.note,
+                    "created_at": pending_created_at,
+                },
+            ],
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Transaction history changed; reload and retry. {error}",
+        ) from error
     _queue_daily_snapshot_refresh(background_tasks, portfolio_id)
     account_lookup = {item["account_id"]: item for item in list_accounts(portfolio_id)}
     return TransactionBatchResponse(

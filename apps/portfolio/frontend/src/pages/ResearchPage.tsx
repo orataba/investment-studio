@@ -4,6 +4,13 @@ import { useParams } from 'react-router-dom'
 import BenchmarkSearchBox, { benchmarkInstrumentLabel } from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
+import QualityWarningsNotice from '../components/QualityWarningsNotice'
+import {
+  beginRequest,
+  invalidateRequests,
+  isRequestCurrent,
+} from '../../../../../packages/ui/src/requestIdentity'
+import { SerialTaskQueue } from '../../../../../packages/ui/src/serialTaskQueue'
 import {
   createPortfolioResearchRun,
   getPortfolioResearchBacktestBenchmarkComparison,
@@ -19,6 +26,7 @@ import {
   type PortfolioResearchBacktestRebalanceFrequency,
   type PortfolioResearchBacktestRelativeMetricsRecord,
   type PortfolioResearchBacktestSleevePointRecord,
+  type PortfolioResearchAsOfMode,
   type PortfolioResearchCapitalMode,
   type PortfolioResearchPlanningScopeOption,
   type PortfolioResearchRunRecord,
@@ -33,6 +41,7 @@ import {
   formatNumber,
   formatPercent,
 } from '../lib/format'
+import { resolveResearchAsOfDraft, serializeResearchAsOf } from '../lib/researchAsOf'
 
 const CAPITAL_MODE_OPTIONS = [
   { value: 'unit_notional', label: 'Unit' },
@@ -48,6 +57,8 @@ const REBALANCE_OPTIONS: Array<{ value: PortfolioResearchBacktestRebalanceFreque
 ]
 
 type ResearchRunSetupDraft = {
+  asOfMode: PortfolioResearchAsOfMode
+  asOfDate: string
   capitalMode: PortfolioResearchCapitalMode
   grossExposure: string
   targetVolatilityPct: string
@@ -757,7 +768,14 @@ export default function ResearchPage() {
   const frozenMenuRef = useRef<HTMLDivElement | null>(null)
   const boundsMenuRef = useRef<HTMLDivElement | null>(null)
   const autoSaveTimeoutRef = useRef<number | null>(null)
+  const autoSaveQueueRef = useRef(new SerialTaskQueue())
+  const workbenchRequestSequenceRef = useRef(0)
+  const runRequestSequenceRef = useRef(0)
+  const currentPortfolioIdRef = useRef(portfolioId)
+  const draftPortfolioIdRef = useRef('')
   const runSetupDraftRef = useRef<ResearchRunSetupDraft>({
+    asOfMode: 'dynamic',
+    asOfDate: '',
     capitalMode: 'unit_notional',
     grossExposure: '',
     targetVolatilityPct: '',
@@ -769,6 +787,7 @@ export default function ResearchPage() {
   })
 
   const [planningTaxonomyId, setPlanningTaxonomyId] = useState('')
+  const [asOfMode, setAsOfMode] = useState<PortfolioResearchAsOfMode>('dynamic')
   const [asOfDate, setAsOfDate] = useState('')
   const [capitalMode, setCapitalMode] = useState<PortfolioResearchCapitalMode>('unit_notional')
   const [grossExposure, setGrossExposure] = useState('')
@@ -779,8 +798,14 @@ export default function ResearchPage() {
   const [backtestRebalanceFrequency, setBacktestRebalanceFrequency] = useState<PortfolioResearchBacktestRebalanceFrequency>('1m')
   const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
 
-  async function reloadWorkbench() {
-    if (!portfolioId) {
+  currentPortfolioIdRef.current = portfolioId
+
+  async function reloadWorkbench(targetPortfolioId = portfolioId) {
+    if (targetPortfolioId && currentPortfolioIdRef.current !== targetPortfolioId) {
+      return
+    }
+    const request = beginRequest(workbenchRequestSequenceRef, targetPortfolioId)
+    if (!targetPortfolioId) {
       setWorkbench(null)
       setLoading(false)
       setWorkspaceError(null)
@@ -788,19 +813,56 @@ export default function ResearchPage() {
     }
     setLoading(true)
     try {
-      const response = await getPortfolioResearchWorkbench(portfolioId)
+      const response = await getPortfolioResearchWorkbench(targetPortfolioId)
+      if (
+        !isRequestCurrent(
+          workbenchRequestSequenceRef,
+          request,
+          currentPortfolioIdRef.current,
+          response.portfolio_id,
+        )
+      ) {
+        return
+      }
       setWorkbench(response)
       setWorkspaceError(null)
     } catch (error) {
+      if (!isRequestCurrent(workbenchRequestSequenceRef, request, currentPortfolioIdRef.current)) {
+        return
+      }
       setWorkbench(null)
       setWorkspaceError(extractErrorMessage(error))
     } finally {
-      setLoading(false)
+      if (isRequestCurrent(workbenchRequestSequenceRef, request, currentPortfolioIdRef.current)) {
+        setLoading(false)
+      }
     }
   }
 
   useEffect(() => {
-    void reloadWorkbench()
+    if (autoSaveTimeoutRef.current != null) {
+      window.clearTimeout(autoSaveTimeoutRef.current)
+      autoSaveTimeoutRef.current = null
+    }
+    invalidateRequests(workbenchRequestSequenceRef)
+    invalidateRequests(runRequestSequenceRef)
+    draftPortfolioIdRef.current = ''
+    setWorkbench(null)
+    setWorkspaceError(null)
+    setActionPending(null)
+    setActionError(null)
+    setNotice(null)
+    setFrozenMenuOpen(false)
+    setBoundsMenuOpen(false)
+    void reloadWorkbench(portfolioId)
+    return () => {
+      invalidateRequests(workbenchRequestSequenceRef)
+      invalidateRequests(runRequestSequenceRef)
+      if (autoSaveTimeoutRef.current != null) {
+        window.clearTimeout(autoSaveTimeoutRef.current)
+        autoSaveTimeoutRef.current = null
+      }
+    }
   }, [portfolioId])
 
   useEffect(() => {
@@ -844,14 +906,6 @@ export default function ResearchPage() {
     return () => window.clearTimeout(timeoutId)
   }, [notice])
 
-  useEffect(() => {
-    return () => {
-      if (autoSaveTimeoutRef.current != null) {
-        window.clearTimeout(autoSaveTimeoutRef.current)
-      }
-    }
-  }, [])
-
     useEffect(() => {
       function handleClick(event: MouseEvent) {
         const target = event.target as Node | null
@@ -867,18 +921,21 @@ export default function ResearchPage() {
     }, [boundsMenuOpen, frozenMenuOpen])
 
   useEffect(() => {
-    if (!workbench) {
+    if (!workbench || workbench.portfolio_id !== portfolioId) {
       return
     }
-      const nextBenchmarkInstrumentId = workbench.settings.backtest_benchmark_instrument_id ?? ''
-      const nextCapitalMode = workbench.settings.capital_mode
-      const nextTopSleeveBounds = (workbench.settings.top_sleeve_weight_bounds ?? []).map((item) => ({
-        taxonomyNodeId: item.taxonomy_node_id,
-        minWeightPct: formatBoundInput(item.min_weight),
-        maxWeightPct: formatBoundInput(item.max_weight),
-      }))
-      const nextDraft: ResearchRunSetupDraft = {
-        capitalMode: nextCapitalMode,
+    draftPortfolioIdRef.current = portfolioId
+    const nextAsOf = resolveResearchAsOfDraft(workbench.settings, workbench.as_of_date)
+    const nextBenchmarkInstrumentId = workbench.settings.backtest_benchmark_instrument_id ?? ''
+    const nextCapitalMode = workbench.settings.capital_mode
+    const nextTopSleeveBounds = (workbench.settings.top_sleeve_weight_bounds ?? []).map((item) => ({
+      taxonomyNodeId: item.taxonomy_node_id,
+      minWeightPct: formatBoundInput(item.min_weight),
+      maxWeightPct: formatBoundInput(item.max_weight),
+    }))
+    const nextDraft: ResearchRunSetupDraft = {
+      ...nextAsOf,
+      capitalMode: nextCapitalMode,
       grossExposure: workbench.settings.gross_exposure != null ? String(workbench.settings.gross_exposure) : '',
       targetVolatilityPct:
         workbench.settings.target_volatility != null ? String(workbench.settings.target_volatility * 100) : '',
@@ -888,20 +945,21 @@ export default function ResearchPage() {
           : nextCapitalMode === 'target_volatility'
             ? '1'
             : '',
-        frozenNodeIds: workbench.settings.frozen_taxonomy_node_ids ?? [],
-        topSleeveBounds: nextTopSleeveBounds,
-        backtestRebalanceFrequency: workbench.settings.backtest_rebalance_frequency ?? '1m',
+      frozenNodeIds: workbench.settings.frozen_taxonomy_node_ids ?? [],
+      topSleeveBounds: nextTopSleeveBounds,
+      backtestRebalanceFrequency: workbench.settings.backtest_rebalance_frequency ?? '1m',
       benchmarkInstrumentId: nextBenchmarkInstrumentId,
     }
     setPlanningTaxonomyId(workbench.default_planning_taxonomy_id ?? workbench.settings.planning_taxonomy_id ?? '')
-    setAsOfDate(workbench.as_of_date)
+    setAsOfMode(nextAsOf.asOfMode)
+    setAsOfDate(nextAsOf.asOfDate)
     setCapitalMode(nextDraft.capitalMode)
     setGrossExposure(nextDraft.grossExposure)
     setTargetVolatilityPct(nextDraft.targetVolatilityPct)
-      setMaxGrossExposure(nextDraft.maxGrossExposure)
-      setFrozenNodeIds(nextDraft.frozenNodeIds)
-      setTopSleeveBounds(nextTopSleeveBounds)
-      setBacktestRebalanceFrequency(nextDraft.backtestRebalanceFrequency)
+    setMaxGrossExposure(nextDraft.maxGrossExposure)
+    setFrozenNodeIds(nextDraft.frozenNodeIds)
+    setTopSleeveBounds(nextTopSleeveBounds)
+    setBacktestRebalanceFrequency(nextDraft.backtestRebalanceFrequency)
     setBenchmarkInstrumentId(nextBenchmarkInstrumentId)
     runSetupDraftRef.current = nextDraft
   }, [workbench])
@@ -1058,16 +1116,36 @@ export default function ResearchPage() {
     )
 
   function scheduleAutoSave(nextDraft: ResearchRunSetupDraft) {
+    const targetPortfolioId = draftPortfolioIdRef.current
+    if (!targetPortfolioId || targetPortfolioId !== portfolioId) {
+      return
+    }
     runSetupDraftRef.current = nextDraft
     if (autoSaveTimeoutRef.current != null) {
       window.clearTimeout(autoSaveTimeoutRef.current)
     }
     autoSaveTimeoutRef.current = window.setTimeout(() => {
       autoSaveTimeoutRef.current = null
-      void persistSettings({
-        draft: nextDraft,
-        analysisDate: workbench?.as_of_date ?? null,
-      }).catch(() => undefined)
+      if (
+        currentPortfolioIdRef.current !== targetPortfolioId ||
+        draftPortfolioIdRef.current !== targetPortfolioId
+      ) {
+        return
+      }
+      void autoSaveQueueRef.current
+        .enqueue(() => {
+          if (
+            currentPortfolioIdRef.current !== targetPortfolioId ||
+            draftPortfolioIdRef.current !== targetPortfolioId
+          ) {
+            return null
+          }
+          return persistSettings({
+            draft: nextDraft,
+            targetPortfolioId,
+          })
+        })
+        .catch(() => undefined)
     }, 450)
   }
 
@@ -1130,28 +1208,35 @@ export default function ResearchPage() {
         .filter((item) => item.min_weight != null || item.max_weight != null)
     }
 
-    async function persistSettings({
+  async function persistSettings({
     draft = runSetupDraftRef.current,
-    analysisDate = asOfDate,
+    targetPortfolioId = portfolioId,
   }: {
     draft?: ResearchRunSetupDraft
-    analysisDate?: string | null
+    targetPortfolioId?: string
   } = {}) {
-    if (!portfolioId) {
+    if (!targetPortfolioId || currentPortfolioIdRef.current !== targetPortfolioId) {
       return null
     }
     const parsedGrossExposure = draft.grossExposure.trim() ? Number(draft.grossExposure) : null
     const parsedTargetVolatility = draft.targetVolatilityPct.trim() ? Number(draft.targetVolatilityPct) / 100 : null
     const parsedMaxGrossExposure = draft.maxGrossExposure.trim() ? Number(draft.maxGrossExposure) : null
     const volatilityMode = isVolatilityCapitalMode(draft.capitalMode)
-      const riskPolicy = await getPortfolioRiskPolicy(portfolioId)
-      const validFrozenNodeIds = new Set(selectableFrozenScopes.map((item) => item.taxonomy_node_id ?? ''))
-      const frozenTaxonomyNodeIds = draft.frozenNodeIds.filter((nodeId) => validFrozenNodeIds.has(nodeId))
-      const topSleeveWeightBounds = serializeTopSleeveBounds(draft.topSleeveBounds)
-      return updatePortfolioResearchSettings(portfolioId, {
+    const riskPolicy = await getPortfolioRiskPolicy(targetPortfolioId)
+    if (currentPortfolioIdRef.current !== targetPortfolioId) {
+      return null
+    }
+    const validFrozenNodeIds = new Set(selectableFrozenScopes.map((item) => item.taxonomy_node_id ?? ''))
+    const frozenTaxonomyNodeIds = draft.frozenNodeIds.filter((nodeId) => validFrozenNodeIds.has(nodeId))
+    const topSleeveWeightBounds = serializeTopSleeveBounds(draft.topSleeveBounds)
+    const researchAsOf = serializeResearchAsOf(draft)
+    if (researchAsOf.as_of_mode === 'pinned' && !researchAsOf.as_of_date) {
+      throw new Error('Select a pinned analysis date.')
+    }
+    return updatePortfolioResearchSettings(targetPortfolioId, {
       planning_taxonomy_id: planningTaxonomyId || null,
       comparator_taxonomy_node_id: null,
-      as_of_date: analysisDate || null,
+      ...researchAsOf,
       lookback_days: riskPolicy.lookback_days,
       calculation_frequency: riskPolicy.calculation_frequency,
       missing_return_policy: riskPolicy.missing_return_policy,
@@ -1161,22 +1246,25 @@ export default function ResearchPage() {
       capital_mode: draft.capitalMode,
       gross_exposure: draft.capitalMode === 'fixed_gross' ? parsedGrossExposure : null,
       target_volatility: volatilityMode ? parsedTargetVolatility : null,
-        max_gross_exposure:
-          draft.capitalMode === 'target_volatility'
-            ? parsedMaxGrossExposure ?? 1
-            : null,
-        frozen_taxonomy_node_ids: frozenTaxonomyNodeIds,
-        top_sleeve_weight_bounds: topSleeveWeightBounds,
-        backtest_rebalance_frequency: draft.backtestRebalanceFrequency,
+      max_gross_exposure:
+        draft.capitalMode === 'target_volatility'
+          ? parsedMaxGrossExposure ?? 1
+          : null,
+      frozen_taxonomy_node_ids: frozenTaxonomyNodeIds,
+      top_sleeve_weight_bounds: topSleeveWeightBounds,
+      backtest_rebalance_frequency: draft.backtestRebalanceFrequency,
       backtest_benchmark_instrument_id: draft.benchmarkInstrumentId || null,
       notes: null,
     })
   }
 
   async function handleRunResearch() {
-    if (!portfolioId) {
+    const targetPortfolioId = portfolioId
+    if (!targetPortfolioId) {
       return
     }
+    const runRequest = beginRequest(runRequestSequenceRef, targetPortfolioId)
+    const runDraft = runSetupDraftRef.current
     if (autoSaveTimeoutRef.current != null) {
       window.clearTimeout(autoSaveTimeoutRef.current)
       autoSaveTimeoutRef.current = null
@@ -1184,23 +1272,38 @@ export default function ResearchPage() {
     setActionPending('run')
     setActionError(null)
     setNotice(null)
+    setFrozenMenuOpen(false)
+    setBoundsMenuOpen(false)
     try {
-      await persistSettings({
-        draft: runSetupDraftRef.current,
-        analysisDate: asOfDate,
+      await autoSaveQueueRef.current.enqueue(async () => {
+        await persistSettings({
+          draft: runDraft,
+          targetPortfolioId,
+        })
+        if (!isRequestCurrent(runRequestSequenceRef, runRequest, currentPortfolioIdRef.current)) {
+          return
+        }
+        await createPortfolioResearchRun(targetPortfolioId, { requested_by: 'workspace-ui' })
       })
-      await createPortfolioResearchRun(portfolioId, { requested_by: 'workspace-ui' })
+      if (!isRequestCurrent(runRequestSequenceRef, runRequest, currentPortfolioIdRef.current)) {
+        return
+      }
       setNotice('Research run completed.')
-      await reloadWorkbench()
+      await reloadWorkbench(targetPortfolioId)
     } catch (error) {
+      if (!isRequestCurrent(runRequestSequenceRef, runRequest, currentPortfolioIdRef.current)) {
+        return
+      }
       setActionError(extractErrorMessage(error))
       try {
-        await reloadWorkbench()
+        await reloadWorkbench(targetPortfolioId)
       } catch {
         // Keep the original run error visible if the follow-up refresh also fails.
       }
     } finally {
-      setActionPending(null)
+      if (isRequestCurrent(runRequestSequenceRef, runRequest, currentPortfolioIdRef.current)) {
+        setActionPending(null)
+      }
     }
   }
 
@@ -1224,6 +1327,7 @@ export default function ResearchPage() {
       {notice ? <div className="inline-notice inline-notice-success">{notice}</div> : null}
       {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
       {actionError ? <div className="inline-notice inline-notice-error">{actionError}</div> : null}
+      <QualityWarningsNotice warnings={workbench?.current_context.quality_warnings} />
       {loading && !workbench ? <CalculationStatus /> : null}
 
       {!loading && !workbench && !workspaceError ? <div className="empty-state">No data.</div> : null}
@@ -1233,13 +1337,42 @@ export default function ResearchPage() {
           <section className="panel">
             <form
               className="transaction-form taxonomy-form-compact research-run-form"
+              aria-busy={actionPending === 'run'}
               onSubmit={(event) => event.preventDefault()}
             >
-              <div className="research-settings-bar">
+              <fieldset className="research-settings-fieldset" disabled={actionPending === 'run'}>
+                <div className="research-settings-bar">
                 <div className="taxonomy-form-grid taxonomy-form-grid-wide research-settings-grid">
                   <label>
+                    <span>Date Mode</span>
+                    <select
+                      value={asOfMode}
+                      onChange={(event) => {
+                        const nextMode = event.target.value as PortfolioResearchAsOfMode
+                        const nextDate =
+                          nextMode === 'dynamic'
+                            ? workbench.as_of_date
+                            : asOfDate || workbench.as_of_date
+                        setAsOfMode(nextMode)
+                        setAsOfDate(nextDate)
+                        updateRunSetupDraft({ asOfMode: nextMode, asOfDate: nextDate })
+                      }}
+                    >
+                      <option value="dynamic">Latest available</option>
+                      <option value="pinned">Pinned date</option>
+                    </select>
+                  </label>
+                  <label>
                     <span>Analysis Date</span>
-                    <input type="date" value={asOfDate} onChange={(event) => setAsOfDate(event.target.value)} />
+                    <input
+                      type="date"
+                      value={asOfDate}
+                      disabled={asOfMode === 'dynamic'}
+                      onChange={(event) => {
+                        setAsOfDate(event.target.value)
+                        updateRunSetupDraft({ asOfDate: event.target.value })
+                      }}
+                    />
                   </label>
                   <label>
                     <span>Capital Mode</span>
@@ -1442,8 +1575,9 @@ export default function ResearchPage() {
                     {actionPending === 'run' ? 'Running...' : 'Run'}
                   </button>
                 </div>
-              </div>
-              {scopeOptionsError ? <div className="inline-notice inline-notice-error">{scopeOptionsError}</div> : null}
+                </div>
+                {scopeOptionsError ? <div className="inline-notice inline-notice-error">{scopeOptionsError}</div> : null}
+              </fieldset>
             </form>
           </section>
 

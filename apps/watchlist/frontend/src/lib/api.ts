@@ -193,6 +193,23 @@ export type InstrumentResolveResponse = {
   detail_subject_id: string | null
   detail_supported: boolean
   support_reason: string
+  corporate_actions: CorporateActionEvent[]
+}
+
+export type CorporateActionEvent = {
+  corporate_action_event_id: string
+  action_type: 'share_split'
+  announcement_date: string | null
+  record_date: string | null
+  effective_date: string
+  payable_date: string | null
+  new_units: string | number
+  old_units: string | number
+  quantity_rounding: 'exact' | 'truncate' | 'round_half_up' | 'cash_in_lieu'
+  quantity_precision: number
+  source: string
+  status: 'detected' | 'confirmed' | 'cancelled'
+  provenance?: Record<string, unknown>
 }
 
 export type InstrumentAttributeDefinitionCreatePayload = {
@@ -241,6 +258,7 @@ export type ScreenerResponse = {
   groups: ScreenerGroup[]
   total_rows: number
   stale_row_count: number
+  sparklines?: Record<string, FundChartPoint[]>
   snapshot_metadata: ScreenerSnapshotMetadata
 }
 
@@ -619,12 +637,12 @@ export type FundNavSeriesResponse = {
     selected_quote_basis?: string | null
     selected_series_type?: string | null
     selected_series_label?: string | null
+    calculation_included?: boolean
     cumulative_distribution: number | null
     distribution_amount: number | null
     currency: string | null
     frequency: string | null
     adopted_at: string | null
-    basis_metadata?: Record<string, SelectedQuoteSeriesMetadata>
   }>
 }
 
@@ -653,8 +671,8 @@ type RawFundNavSeriesResponse = {
     requested_by: string | null
     mode: string
   }
-  series: Array<Partial<SelectedQuotePoint> & { date: string; nav?: number; value?: number }>
-  calculation_series: Array<Partial<SelectedQuotePoint> & { date: string; nav?: number; value?: number }>
+  series?: Array<Partial<SelectedQuotePoint> & { date: string; nav?: number; value?: number }>
+  calculation_series?: Array<Partial<SelectedQuotePoint> & { date: string; nav?: number; value?: number }>
   rows: Array<{
     date: string
     nav: number | null
@@ -665,12 +683,12 @@ type RawFundNavSeriesResponse = {
     selected_quote_basis?: string | null
     selected_series_type?: string | null
     selected_series_label?: string | null
+    calculation_included?: boolean
     cumulative_distribution?: number | null
     distribution_amount?: number | null
     currency: string | null
     frequency: string | null
     adopted_at: string | null
-    basis_metadata?: Record<string, SelectedQuoteSeriesMetadata>
   }>
 }
 
@@ -680,6 +698,10 @@ export type ManualProfileUpdatePayload = {
 }
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+const referenceGetCache = new Map<
+  string,
+  { expiresAt: number; promise: Promise<unknown> }
+>()
 
 async function fetchJson<T>(
   path: string,
@@ -699,6 +721,22 @@ async function fetchJson<T>(
   }
 
   return (await response.json()) as T
+}
+
+function fetchReferenceJson<T>(path: string, ttlMs: number = 5 * 60_000): Promise<T> {
+  const now = Date.now()
+  const cached = referenceGetCache.get(path)
+  if (cached && cached.expiresAt > now) {
+    return cached.promise as Promise<T>
+  }
+  const promise = fetchJson<T>(path).catch((error) => {
+    if (referenceGetCache.get(path)?.promise === promise) {
+      referenceGetCache.delete(path)
+    }
+    throw error
+  })
+  referenceGetCache.set(path, { expiresAt: now + ttlMs, promise })
+  return promise
 }
 
 async function fetchForm<T>(
@@ -740,6 +778,48 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
       }
     })
 
+  const rows: FundNavSeriesResponse['rows'] = response.rows.map((row) => ({
+    as_of_date: row.date,
+    nav: row.nav,
+    nav_with_dividend: row.nav_with_dividend,
+    selected_basis_type: row.selected_basis_type,
+    selected_value: row.selected_value,
+    selected_metric_family: row.selected_metric_family,
+    selected_quote_basis: row.selected_quote_basis,
+    selected_series_type: row.selected_series_type,
+    selected_series_label: row.selected_series_label,
+    calculation_included: row.calculation_included,
+    cumulative_distribution: row.cumulative_distribution ?? null,
+    distribution_amount: row.distribution_amount ?? null,
+    currency: row.currency,
+    frequency: row.frequency,
+    adopted_at: row.adopted_at,
+  }))
+  const pointsFromRows = (calculationOnly: boolean): SelectedQuotePoint[] =>
+    rows.flatMap((row) => {
+      if (calculationOnly && row.calculation_included === false) {
+        return []
+      }
+      const fallbackValue =
+        row.selected_basis_type === 'nav'
+          ? row.nav
+          : row.selected_basis_type === 'nav_with_dividend'
+            ? row.nav_with_dividend
+            : null
+      const value = row.selected_value ?? fallbackValue
+      if (value == null) {
+        return []
+      }
+      return [{
+        date: row.as_of_date,
+        value,
+        nav: value,
+        metric_family: response.selected_metric_family ?? undefined,
+        quote_basis: response.selected_quote_basis ?? undefined,
+        series_type: response.selected_series_type ?? undefined,
+      }]
+    })
+
   return {
     fund_id: response.instrument_id,
     count: response.count,
@@ -756,25 +836,11 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
     calculation_frequency_profile: response.calculation_frequency_profile,
     compare_settings: response.compare_settings,
     refresh_status: response.refresh_status,
-    series: normalizeQuotePoints(response.series),
-    calculation_series: normalizeQuotePoints(response.calculation_series),
-    rows: response.rows.map((row) => ({
-      as_of_date: row.date,
-      nav: row.nav,
-      nav_with_dividend: row.nav_with_dividend,
-      selected_basis_type: row.selected_basis_type,
-      selected_value: row.selected_value,
-      selected_metric_family: row.selected_metric_family,
-      selected_quote_basis: row.selected_quote_basis,
-      selected_series_type: row.selected_series_type,
-      selected_series_label: row.selected_series_label,
-      cumulative_distribution: row.cumulative_distribution ?? null,
-      distribution_amount: row.distribution_amount ?? null,
-      currency: row.currency,
-      frequency: row.frequency,
-      adopted_at: row.adopted_at,
-      basis_metadata: row.basis_metadata,
-    })),
+    series: response.series ? normalizeQuotePoints(response.series) : pointsFromRows(false),
+    calculation_series: response.calculation_series
+      ? normalizeQuotePoints(response.calculation_series)
+      : pointsFromRows(true),
+    rows,
   }
 }
 
@@ -967,7 +1033,7 @@ export function getFieldRegistry(options?: {
     params.set('search', options.search.trim())
   }
   const query = params.toString()
-  return fetchJson<FieldRegistryResponse>(`/api/field-registry${query ? `?${query}` : ''}`)
+  return fetchReferenceJson<FieldRegistryResponse>(`/api/field-registry${query ? `?${query}` : ''}`)
 }
 
 export function getInstrumentAttributeDefinitions() {
@@ -990,7 +1056,7 @@ export function getInstrumentAttributes(instrumentId: string) {
 }
 
 export function getFundTaxonomyTree() {
-  return fetchJson<FundTaxonomyTreeResponse>('/api/taxonomies/fund-taxonomy')
+  return fetchReferenceJson<FundTaxonomyTreeResponse>('/api/taxonomies/fund-taxonomy')
 }
 
 export function updateFundTaxonomy(
@@ -1038,7 +1104,7 @@ export function getInstrumentSummary(instrumentId: string) {
 }
 
 export function getInstrumentLibrary() {
-  return fetchJson<RawFundLibraryItem[]>('/api/instruments/library').then((items) =>
+  return fetchReferenceJson<RawFundLibraryItem[]>('/api/instruments/library').then((items) =>
     items.map(normalizeFundLibraryItem),
   )
 }

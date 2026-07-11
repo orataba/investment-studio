@@ -11,7 +11,7 @@ for (let index = 2; index < process.argv.length; index += 2) {
 
 const distRoot = resolve(args.get('--dist') || 'dist')
 const port = Number(args.get('--port') || process.env.PORT || 3100)
-const host = args.get('--host') || '0.0.0.0'
+const host = args.get('--host') || '127.0.0.1'
 const apiTarget = new URL(args.get('--api-target') || 'http://127.0.0.1:8000')
 const indexPath = join(distRoot, 'index.html')
 
@@ -37,7 +37,12 @@ function sendFile(response, filePath) {
 }
 
 function resolveStaticPath(pathname) {
-  const decoded = decodeURIComponent(pathname.split('?')[0])
+  let decoded
+  try {
+    decoded = decodeURIComponent(pathname.split('?')[0])
+  } catch {
+    return null
+  }
   const normalized = normalize(decoded).replace(/^([.][.][/\\])+/, '')
   const candidate = resolve(join(distRoot, normalized))
   if (candidate !== distRoot && !candidate.startsWith(distRoot + sep)) {
@@ -78,7 +83,13 @@ createServer((request, response) => {
     proxyApi(request, response)
     return
   }
-  sendFile(response, resolveStaticPath(request.url || '/'))
+  const staticPath = resolveStaticPath(request.url || '/')
+  if (staticPath === null) {
+    response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
+    response.end('Malformed request path')
+    return
+  }
+  sendFile(response, staticPath)
 }).listen(port, host, () => {
   console.log(`Serving ${distRoot} on http://${host}:${port}, proxying /api to ${apiTarget.href}`)
 })

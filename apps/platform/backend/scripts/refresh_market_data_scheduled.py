@@ -1,26 +1,101 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
+import os
 import sys
+import tempfile
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import IO, Iterable, Iterator
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = BACKEND_ROOT.parents[2]
 sys.path.insert(0, str(BACKEND_ROOT))
 
-from platform_app.services.downstream_notifications import notify_market_data_downstream_refresh  # noqa: E402
-from platform_app.services.market_data_ops import refresh_market_data, refresh_market_data_batch  # noqa: E402
+from platform_app.services.downstream_notifications import (  # noqa: E402
+    DownstreamRequestFailure,
+    DownstreamRefreshError,
+    DownstreamRefreshResult,
+    notify_market_data_downstream_refresh,
+)
+from platform_app.services.market_data_ops import (  # noqa: E402
+    refresh_market_data_batch,
+    refresh_market_data_with_timeout,
+)
 
 
 LOGGER = logging.getLogger("portfolio_ops.market_data_refresh")
 UPDATED_STATUSES = {"imported", "refreshed"}
 FAILED_STATUSES = {"failed", "blocked"}
 RETRYABLE_STATUSES = {"failed"}
+ALREADY_RUNNING_EXIT_CODE = 75
+
+
+class RefreshAlreadyRunningError(RuntimeError):
+    pass
+
+
+@contextmanager
+def _exclusive_refresh_lock(lock_file: Path) -> Iterator[IO[str]]:
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_file.open("a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RefreshAlreadyRunningError(
+                f"Another market data refresh owns lock {lock_file}."
+            ) from error
+        handle.seek(0)
+        handle.truncate()
+        handle.write(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "acquired_at": datetime.now().astimezone().isoformat(),
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        handle.flush()
+        os.fsync(handle.fileno())
+        yield handle
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def _write_json_atomic(target: Path, payload: dict[str, object]) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(payload, output, ensure_ascii=False, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_path, target)
+        directory_descriptor = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -38,6 +113,26 @@ def _parse_args() -> argparse.Namespace:
         "--no-downstream-refresh",
         action="store_true",
         help="Do not notify Watchlist/Portfolio after market data changes.",
+    )
+    parser.add_argument(
+        "--require-downstream-success",
+        action="store_true",
+        help=(
+            "Require the Portfolio refresh response and Watchlist recalc enqueue "
+            "acknowledgement; this does not wait for Watchlist workers to finish."
+        ),
+    )
+    parser.add_argument(
+        "--downstream-timeout-seconds",
+        type=float,
+        default=900.0,
+        help="Timeout used for the synchronous downstream Portfolio refresh.",
+    )
+    parser.add_argument(
+        "--watchlist-downstream-timeout-seconds",
+        type=float,
+        default=15.0,
+        help="Per-request timeout used while enqueueing downstream Watchlist recalculations.",
     )
     parser.add_argument(
         "--fail-on-item-failure",
@@ -58,6 +153,18 @@ def _parse_args() -> argparse.Namespace:
         help="Refresh only these instrument ids. Repeat or use comma-separated values.",
     )
     parser.add_argument("--json", action="store_true", help="Emit a JSON summary in addition to logs.")
+    parser.add_argument(
+        "--lock-file",
+        type=Path,
+        default=PROJECT_ROOT / "var" / "market-data-refresh.lock",
+        help="fcntl lock file used to reject overlapping scheduled runs.",
+    )
+    parser.add_argument(
+        "--summary-file",
+        type=Path,
+        default=PROJECT_ROOT / "var" / "market-data-refresh-summary.json",
+        help="Latest run summary, atomically replaced after each acquired run.",
+    )
     return parser.parse_args()
 
 
@@ -133,7 +240,7 @@ def _refresh_selected_instruments(
             len(instrument_ids),
             instrument_id,
         )
-        record = refresh_market_data(
+        record = refresh_market_data_with_timeout(
             instrument_id=instrument_id,
             updated_by=updated_by,
             full_history=full_history,
@@ -189,7 +296,7 @@ def _retry_failed_results(
             break
         LOGGER.info("retrying failed items channel=%s attempt=%s count=%s", channel, attempt, len(retry_ids))
         for instrument_id in retry_ids:
-            record = refresh_market_data(
+            record = refresh_market_data_with_timeout(
                 instrument_id=instrument_id,
                 updated_by=updated_by,
                 full_history=full_history,
@@ -209,14 +316,12 @@ def _retry_failed_results(
     return list(by_instrument_id.values())
 
 
-def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        stream=sys.stdout,
-    )
-    args = _parse_args()
-    started_at = datetime.now().astimezone()
+def _run_refresh(
+    args: argparse.Namespace,
+    *,
+    started_at: datetime | None = None,
+) -> tuple[int, dict[str, object]]:
+    started_at = started_at or datetime.now().astimezone()
     requested_instrument_ids = _requested_instrument_ids(args.instrument_ids)
     LOGGER.info(
         "scheduled market data refresh started channel=%s selected_count=%s",
@@ -265,19 +370,17 @@ def main() -> int:
             if instrument_id not in seen_updated_ids:
                 seen_updated_ids.add(instrument_id)
                 all_updated_ids.append(instrument_id)
-        if updated_ids and not args.no_downstream_refresh:
-            LOGGER.info(
-                "notifying downstream refresh channel=%s instrument_count=%s",
-                channel,
-                len(updated_ids),
-            )
-            notify_market_data_downstream_refresh(instrument_ids=updated_ids)
 
         counts = _status_counts(results)
+        final_refreshed_count = sum(
+            1
+            for item in results
+            if str(item.get("status") or "") in UPDATED_STATUSES
+        )
         channel_summaries.append(
             {
                 "channel": channel,
-                "refreshed_count": response.get("refreshed_count", 0),
+                "refreshed_count": final_refreshed_count,
                 "skipped_count": response.get("skipped_count", 0),
                 "result_count": len(results),
                 "status_counts": counts,
@@ -286,7 +389,7 @@ def main() -> int:
         LOGGER.info(
             "channel=%s refreshed=%s checked=%s skipped=%s statuses=%s",
             channel,
-            response.get("refreshed_count", 0),
+            final_refreshed_count,
             len(results),
             response.get("skipped_count", 0),
             counts,
@@ -301,23 +404,129 @@ def main() -> int:
             item.get("message"),
         )
 
+    downstream_result = DownstreamRefreshResult()
+    should_notify_downstream = bool(all_updated_ids and not args.no_downstream_refresh)
+    refresh_all_portfolios = any(
+        str(item.get("status") or "") in UPDATED_STATUSES
+        and (
+            str(item.get("instrument_type") or "").strip().lower() == "fx"
+            or str(item.get("instrument_id") or "").strip().lower().startswith("fx-")
+        )
+        for item in all_results
+    )
+    if should_notify_downstream:
+        LOGGER.info(
+            "requesting Portfolio refresh and Watchlist recalc enqueue instrument_count=%s refresh_all_portfolios=%s",
+            len(all_updated_ids),
+            refresh_all_portfolios,
+        )
+        try:
+            downstream_result = notify_market_data_downstream_refresh(
+                instrument_ids=all_updated_ids,
+                refresh_all_portfolios=refresh_all_portfolios,
+                request_timeout_seconds=args.downstream_timeout_seconds,
+                watchlist_request_timeout_seconds=args.watchlist_downstream_timeout_seconds,
+                raise_on_error=args.require_downstream_success,
+            )
+        except DownstreamRefreshError as error:
+            downstream_result = error.result
+            LOGGER.error("Scheduled downstream refresh failed: %s", error)
+
+    exit_code = 0
+    if args.fail_on_item_failure and failures:
+        exit_code = 1
+    if args.require_downstream_success and downstream_result.failures:
+        exit_code = 1
+
     summary = {
+        "status": "succeeded" if exit_code == 0 else "failed",
         "started_at": started_at.isoformat(),
         "finished_at": datetime.now().astimezone().isoformat(),
         "channel": args.channel,
         "channels": channel_summaries,
         "selected_instrument_count": len(requested_instrument_ids),
         "updated_instrument_count": len(all_updated_ids),
+        "updated_instrument_ids": all_updated_ids,
         "failed_item_count": len(failures),
-        "downstream_refresh": bool(all_updated_ids and not args.no_downstream_refresh),
+        "failed_items": [
+            {
+                "instrument_id": str(item.get("instrument_id") or ""),
+                "status": str(item.get("status") or "unknown"),
+                "message": str(item.get("message") or ""),
+            }
+            for item in failures
+        ],
+        "downstream_refresh": should_notify_downstream,
+        "downstream_delivery_semantics": (
+            "portfolio_refresh_response_and_watchlist_recalc_enqueue_acknowledgement"
+            if should_notify_downstream
+            else "not_requested"
+        ),
+        "watchlist_recalc_completed": False,
+        "downstream_request_count": downstream_result.request_count,
+        "downstream_failure_count": len(downstream_result.failures),
+        "downstream_failures": [
+            {"url": item.url, "message": item.message}
+            for item in downstream_result.failures
+        ],
+        "refresh_all_portfolios": refresh_all_portfolios,
     }
-    LOGGER.info("scheduled market data refresh finished summary=%s", summary)
-    if args.json:
-        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    return exit_code, summary
 
-    if args.fail_on_item_failure and failures:
-        return 1
-    return 0
+
+def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stdout,
+    )
+    args = _parse_args()
+    if args.downstream_timeout_seconds <= 0:
+        LOGGER.error("--downstream-timeout-seconds must be positive.")
+        return 2
+    if args.watchlist_downstream_timeout_seconds <= 0:
+        LOGGER.error("--watchlist-downstream-timeout-seconds must be positive.")
+        return 2
+    if args.retry_failed_attempts < 0:
+        LOGGER.error("--retry-failed-attempts must not be negative.")
+        return 2
+
+    try:
+        with _exclusive_refresh_lock(args.lock_file):
+            started_at = datetime.now().astimezone()
+            try:
+                exit_code, summary = _run_refresh(args, started_at=started_at)
+            except Exception as error:
+                finished_at = datetime.now().astimezone().isoformat()
+                summary = {
+                    "status": "failed",
+                    "exit_code": 1,
+                    "started_at": started_at.isoformat(),
+                    "finished_at": finished_at,
+                    "channel": args.channel,
+                    "error_type": type(error).__name__,
+                    "error_message": str(error),
+                }
+                exit_code = 1
+                LOGGER.exception("Scheduled market data refresh failed unexpectedly.")
+
+            summary["exit_code"] = exit_code
+            try:
+                _write_json_atomic(args.summary_file, summary)
+            except Exception:
+                LOGGER.exception("Failed to write market data refresh summary: %s", args.summary_file)
+                exit_code = 1
+                summary["status"] = "failed"
+                summary["exit_code"] = exit_code
+                summary["summary_write_failed"] = True
+
+            LOGGER.info("scheduled market data refresh finished summary=%s", summary)
+            if args.json:
+                print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+            return exit_code
+    except RefreshAlreadyRunningError as error:
+        LOGGER.warning("%s", error)
+        return ALREADY_RUNNING_EXIT_CODE
 
 
 if __name__ == "__main__":

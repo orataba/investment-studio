@@ -6,9 +6,11 @@ from math import sqrt
 import numpy as np
 import pandas as pd
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from portfolio_app.db.models import ResearchRunRecordModel
 from portfolio_app.db.session import get_session_factory
+from portfolio_app.services import research as research_service
 from portfolio_app.services.instrument_charts import (
     _annualized_volatility,
     _candidate_chart_bases,
@@ -27,6 +29,7 @@ from portfolio_app.services.research_solver import (
     TARGET_MEMBER_INSTRUMENT,
     TARGET_MEMBER_NODE,
     ScopeMemberRecord,
+    TaxonomyResearchState,
     _align_member_series,
     _backtest_rebalance_dates,
     _build_backtest_metrics,
@@ -40,6 +43,7 @@ from portfolio_app.services.research_solver import (
     _resolve_active_top_sleeve_bound_vectors,
     _selected_price_points,
     _selected_target_risk_share,
+    _current_scope_actuals,
     _series_to_nav,
     _resolve_volatility_overlay_gross_exposure,
     _solve_risk_budget_problem,
@@ -117,6 +121,101 @@ def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "w
     )
     assert default_response.status_code == 200
     return taxonomy_id, node_ids
+
+
+def test_current_target_solve_fails_closed_for_unassigned_non_cash_holding(monkeypatch):
+    state = TaxonomyResearchState(
+        portfolio_id="portfolio-unassigned-test",
+        planning_taxonomy_id="taxonomy-test",
+        taxonomy_name="Planning",
+        root_default_target_dimension="weight",
+        base_currency="USD",
+        as_of_date=date(2026, 1, 2),
+        node_by_id={
+            "node-risk": {
+                "node_name": "Risk",
+                "parent_taxonomy_node_id": None,
+                "default_target_dimension": "weight",
+            }
+        },
+        children_by_parent={None: ["node-risk"]},
+        node_path_by_id={"node-risk": "Portfolio / Risk"},
+        node_depth_by_id={"node-risk": 1},
+        node_subtree_by_id={"node-risk": {"node-risk"}},
+        direct_assignments_by_node={},
+        target_sets_by_scope_type={},
+        target_lines_by_set_id={},
+        account_name_by_id={},
+        instrument_detail_cache={},
+        direct_fx_instruments={},
+        frozen_taxonomy_node_ids=frozenset(),
+        top_sleeve_weight_bounds={},
+    )
+    monkeypatch.setattr(
+        "portfolio_app.services.research_solver.get_portfolio",
+        lambda _portfolio_id: {"portfolio_id": "portfolio-unassigned-test", "base_currency": "USD"},
+    )
+    monkeypatch.setattr("portfolio_app.services.research_solver.list_accounts", lambda _portfolio_id: [])
+    monkeypatch.setattr("portfolio_app.services.research_solver.list_transactions", lambda _portfolio_id: [])
+    monkeypatch.setattr(
+        "portfolio_app.services.research_solver.build_holdings_report",
+        lambda *_args, **_kwargs: {
+            "positions": [
+                {
+                    "instrument_id": "instrument-unassigned",
+                    "market_value_base": 100.0,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        "portfolio_app.services.research_solver.build_account_workspace",
+        lambda *_args, **_kwargs: {"accounts": []},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="complete planning-taxonomy coverage.*instrument-unassigned",
+    ):
+        _current_scope_actuals(
+            state,
+            scope_node_id=None,
+            as_of_date=date(2026, 1, 2),
+        )
+
+
+def test_planning_group_snapshot_does_not_count_system_cash_as_unassigned(monkeypatch):
+    monkeypatch.setattr(research_service, "list_taxonomy_nodes", lambda _portfolio_id: [])
+    monkeypatch.setattr(research_service, "list_taxonomy_assignments", lambda _portfolio_id: [])
+
+    groups = research_service._build_planning_group_snapshot(
+        [
+            {
+                "instrument_id": "instrument-unassigned",
+                "market_value_base": 100.0,
+                "cost_basis_base": 90.0,
+            }
+        ],
+        account_rows=[
+            {
+                "account": {
+                    "account_id": "cash-account",
+                    "account_type": "deposit_account",
+                },
+                "account_value_base": 20.0,
+            }
+        ],
+        portfolio_id="portfolio-unassigned-test",
+        planning_taxonomy_id="taxonomy-test",
+        as_of_date=date(2026, 1, 2),
+    )
+
+    unassigned_group = next(item for item in groups if item["group_key"] == "unassigned")
+    cash_group = next(item for item in groups if item["group_key"] == SYSTEM_CASH_TARGET_MEMBER_ID)
+    assert unassigned_group["position_count"] == 1
+    assert unassigned_group["end_value_base"] == 100.0
+    assert cash_group["group_label"] == SYSTEM_CASH_TARGET_LABEL
+    assert cash_group["end_value_base"] == 20.0
 
 
 def _create_target_sets(client, taxonomy_id: str, node_ids: dict[str, str]) -> None:
@@ -282,6 +381,34 @@ def test_production_risk_window_min_observations_scale_with_calendar_window() ->
 def test_production_risk_policy_rejects_unsupported_windows() -> None:
     with pytest.raises(ValueError, match="Risk window must be one of 1M, 3M, 6M, 12M, 24M"):
         normalize_portfolio_risk_policy({"lookback_days": 7})
+
+
+def test_database_rejects_unsupported_historical_research_window(client) -> None:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        session.add(
+            ResearchRunRecordModel(
+                research_run_id="unsupported-window-run",
+                portfolio_id="portfolio-ops",
+                job_type="target_weight_solve",
+                status="completed",
+                requested_at="2026-04-15T10:00:00Z",
+                started_at="2026-04-15T10:00:00Z",
+                finished_at="2026-04-15T10:01:00Z",
+                as_of_date=date(2026, 4, 15),
+                planning_taxonomy_id=None,
+                lookback_days=8,
+                requested_by="test",
+                headline="Unsupported legacy run",
+                detail_json={},
+                artifacts_json=[],
+                request_payload_json={"lookback_days": 8},
+                error_message=None,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.commit()
+        session.rollback()
 
 
 def test_research_window_dates_use_calendar_months() -> None:
@@ -541,11 +668,53 @@ def test_research_workbench_reads_canonical_run_top_holdings(client):
     response = client.get("/api/portfolios/portfolio-ops/research/workbench")
     assert response.status_code == 200
     payload = response.json()
-    top_holding = payload["runs"][0]["detail"]["top_holdings"][0]
+    assert payload["runs"][0]["detail"] is None
+    top_holding = payload["selected_run"]["detail"]["top_holdings"][0]
     assert top_holding["instrument_id"] == "equity-us-abbv"
     assert top_holding["instrument_name"] == "AbbVie Inc"
     assert top_holding["instrument_type"] == "equity"
     assert payload["selected_run"]["detail"]["top_holdings"][0]["instrument_id"] == "equity-us-abbv"
+
+    run_response = client.get("/api/portfolios/portfolio-ops/research/runs/canonical-run")
+    assert run_response.status_code == 200
+    assert run_response.json()["detail"]["top_holdings"][0]["instrument_id"] == "equity-us-abbv"
+
+
+def test_research_dynamic_as_of_tracks_latest_portfolio_date(client):
+    response = client.get("/api/portfolios/portfolio-ops/research/workbench")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["settings"]["as_of_mode"] == "dynamic"
+    assert payload["settings"]["pinned_as_of_date"] is None
+    assert payload["settings"]["as_of_date"] == payload["as_of_date"]
+    assert payload["current_context"]["as_of_date"] == payload["as_of_date"]
+
+
+def test_research_pinned_as_of_requires_explicit_mode(client):
+    settings = client.get("/api/portfolios/portfolio-ops/research/workbench").json()["settings"]
+    response = client.put(
+        "/api/portfolios/portfolio-ops/research/settings",
+        json={
+            "planning_taxonomy_id": settings["planning_taxonomy_id"],
+            "comparator_taxonomy_node_id": settings["comparator_taxonomy_node_id"],
+            "as_of_mode": "pinned",
+            "as_of_date": "2026-04-01",
+            "lookback_days": settings["lookback_days"],
+            "calculation_frequency": settings["calculation_frequency"],
+            "missing_return_policy": settings["missing_return_policy"],
+            "target_dimension": settings["target_dimension"],
+            "capital_mode": settings["capital_mode"],
+            "backtest_rebalance_frequency": settings["backtest_rebalance_frequency"],
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["as_of_mode"] == "pinned"
+    assert payload["as_of_date"] == "2026-04-01"
+    assert payload["pinned_as_of_date"] == "2026-04-01"
+
+    refreshed = client.get("/api/portfolios/portfolio-ops/research/workbench").json()
+    assert refreshed["current_context"]["as_of_date"] == "2026-04-01"
 
 
 def test_research_series_prefers_total_return_nav_for_funds() -> None:

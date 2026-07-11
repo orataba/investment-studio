@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, JSON, Numeric
+from sqlalchemy import Date, DateTime, ForeignKey, Index, JSON, Numeric, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from watchlist_app.db.base import Base
@@ -11,7 +11,16 @@ from watchlist_app.db.base import Base
 
 class PerformanceSnapshot(Base):
     __tablename__ = "performance_snapshot"
-    __table_args__ = (Index("idx_performance_snapshot_current", "instrument_id", "is_current"),)
+    __table_args__ = (
+        Index("idx_performance_snapshot_current", "instrument_id", "is_current"),
+        Index(
+            "uq_performance_snapshot_current_instrument",
+            "instrument_id",
+            unique=True,
+            sqlite_where=text("is_current = 1"),
+            postgresql_where=text("is_current IS TRUE"),
+        ),
+    )
 
     snapshot_id: Mapped[str] = mapped_column(primary_key=True)
     instrument_id: Mapped[str] = mapped_column(
@@ -42,7 +51,16 @@ class PerformanceSnapshot(Base):
 
 class RiskSnapshot(Base):
     __tablename__ = "risk_snapshot"
-    __table_args__ = (Index("idx_risk_snapshot_current", "instrument_id", "is_current"),)
+    __table_args__ = (
+        Index("idx_risk_snapshot_current", "instrument_id", "is_current"),
+        Index(
+            "uq_risk_snapshot_current_instrument",
+            "instrument_id",
+            unique=True,
+            sqlite_where=text("is_current = 1"),
+            postgresql_where=text("is_current IS TRUE"),
+        ),
+    )
 
     snapshot_id: Mapped[str] = mapped_column(primary_key=True)
     instrument_id: Mapped[str] = mapped_column(
@@ -71,7 +89,16 @@ class RiskSnapshot(Base):
 
 class ExposureAnalyticsSnapshot(Base):
     __tablename__ = "exposure_analytics_snapshot"
-    __table_args__ = (Index("idx_exposure_snapshot_current", "instrument_id", "is_current"),)
+    __table_args__ = (
+        Index("idx_exposure_snapshot_current", "instrument_id", "is_current"),
+        Index(
+            "uq_exposure_snapshot_current_instrument",
+            "instrument_id",
+            unique=True,
+            sqlite_where=text("is_current = 1"),
+            postgresql_where=text("is_current IS TRUE"),
+        ),
+    )
 
     snapshot_id: Mapped[str] = mapped_column(primary_key=True)
     instrument_id: Mapped[str] = mapped_column(

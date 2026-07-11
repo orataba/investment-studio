@@ -3096,17 +3096,24 @@ def _current_scope_actuals(
     for position in list(statement.get("positions") or []):
         instrument_id = str(position.get("instrument_id") or "")
         if instrument_id:
-            position_value_by_instrument[instrument_id] = float(_safe_float(position.get("market_value_base")) or 0.0)
+            market_value_base = _safe_float(position.get("market_value_base"))
+            if market_value_base is None:
+                raise ValueError(
+                    "Current allocation valuation is incomplete; refresh price and FX coverage before solving."
+                )
+            position_value_by_instrument[instrument_id] = market_value_base
 
     visible_cash_accounts = [
         account_row
         for account_row in list(account_workspace.get("accounts") or [])
         if str((account_row.get("account") or {}).get("account_type") or "") == "deposit_account"
     ]
-    cash_value_by_account = {
-        str((account_row.get("account") or {}).get("account_id") or ""): float(
-            _safe_float(account_row.get("account_value_base")) or 0.0
+    if any(_safe_float(account_row.get("account_value_base")) is None for account_row in visible_cash_accounts):
+        raise ValueError(
+            "Current cash valuation is incomplete; refresh FX coverage before solving."
         )
+    cash_value_by_account = {
+        str((account_row.get("account") or {}).get("account_id") or ""): float(account_row["account_value_base"])
         for account_row in visible_cash_accounts
         if str((account_row.get("account") or {}).get("account_id") or "")
     }
@@ -3122,11 +3129,13 @@ def _current_scope_actuals(
 
     node_value_map: dict[str, float] = {node_id: 0.0 for node_id in state.node_by_id}
     unassigned_value = 0.0
+    unassigned_instrument_ids: list[str] = []
 
     for instrument_id, market_value_base in position_value_by_instrument.items():
         node_id = direct_position_membership.get(instrument_id)
         if not node_id:
             unassigned_value += market_value_base
+            unassigned_instrument_ids.append(instrument_id)
             continue
         current_node_id = node_id
         while current_node_id:
@@ -3141,6 +3150,13 @@ def _current_scope_actuals(
     )
     if abs(scope_total_value) <= 1e-9:
         scope_total_value = 0.0
+
+    if scope_node_id is None and abs(unassigned_value) > 1e-9:
+        rendered_ids = ", ".join(sorted(unassigned_instrument_ids))
+        raise ValueError(
+            "Research target solve requires complete planning-taxonomy coverage; "
+            f"unassigned non-cash holdings: {rendered_ids}."
+        )
 
     rendered_rows: list[dict[str, object]] = []
     warnings: list[str] = []
@@ -3161,18 +3177,6 @@ def _current_scope_actuals(
                 "label": member.label,
                 "current_weight": actual_weight,
                 "current_value_base": actual_value,
-            }
-        )
-
-    if scope_node_id is None and abs(unassigned_value) > 1e-9:
-        warnings.append("Current portfolio still has unassigned holdings outside the selected planning taxonomy.")
-        rendered_rows.append(
-            {
-                "member_type": "unassigned",
-                "member_id": "unassigned",
-                "label": "Unassigned",
-                "current_weight": (unassigned_value / scope_total_value) if abs(scope_total_value) > 1e-9 else None,
-                "current_value_base": unassigned_value,
             }
         )
 

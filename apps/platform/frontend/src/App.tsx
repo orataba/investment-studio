@@ -1,5 +1,10 @@
-import { ChangeEvent, FormEvent, Fragment, useEffect, useMemo, useState } from 'react'
+import { ChangeEvent, FormEvent, Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { LanguageSelector } from '../../../../packages/ui/src/i18n'
+import {
+  beginRequest,
+  invalidateRequests,
+  isRequestCurrent,
+} from '../../../../packages/ui/src/requestIdentity'
 import type {
   InstrumentIdentifier as PlatformInstrumentIdentifier,
   InstrumentType,
@@ -10,21 +15,9 @@ import type {
   QuoteRole,
   QuoteSelectionPolicy as PlatformQuoteSelectionPolicy,
 } from '../../../../packages/instrument-core/ts/src'
+import { detailForSelection, instrumentsForVisibility } from './instrumentVisibility'
+import DataOperationsDashboard from './DataOperationsDashboard'
 
-type PlatformAppCard = {
-  app_id: string
-  name: string
-  url: string
-  api_url?: string | null
-  eyebrow: string
-  description: string
-  availability: string
-}
-
-type PlatformAppsResponse = {
-  platform_name: string
-  apps: PlatformAppCard[]
-}
 type SourceMode = 'manual' | 'email' | 'api'
 type RefreshChannel = 'configured' | 'email' | 'tushare' | 'all'
 type InstrumentLifecycleStatus = 'active' | 'archived'
@@ -43,6 +36,7 @@ type PlatformLifecycleState = {
   status: InstrumentLifecycleStatus
   changed_at: string | null
   changed_by: string | null
+  canonical_instrument_id?: string | null
 }
 
 type PlatformInstrumentRecord = {
@@ -66,6 +60,7 @@ type PlatformInstrumentRecord = {
     requested_at: string | null
     requested_by: string | null
     mode: SourceMode
+    last_successful_requested_at: string | null
   }
   lifecycle_state: PlatformLifecycleState
 }
@@ -127,6 +122,7 @@ type PlatformFxRatesResponse = {
 type PlatformNavImportPreviewRow = {
   as_of_date: string
   nav?: string | null
+  cumulative_nav?: string | null
   nav_with_dividend?: string | null
   currency: string
   frequency: string
@@ -139,11 +135,8 @@ type PlatformNavImportPreviewResponse = {
   rows: PlatformNavImportPreviewRow[]
 }
 
-const PLATFORM_NAME_FALLBACK =
-  (import.meta.env.VITE_PLATFORM_NAME || 'Portfolio Operations Workbench').trim() ||
-  'Portfolio Operations Workbench'
 const PLATFORM_API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
-const DATABASE_DASHBOARD_PATH = '/database-dashboard'
+const INSTRUMENT_REGISTRY_PATH = '/instruments'
 const FX_PANEL_PAIRS: Array<[SupportedCurrency, SupportedCurrency]> = [
   ['USD', 'HKD'],
   ['USD', 'CNY'],
@@ -179,100 +172,6 @@ const ROLE_LABELS: Record<QuoteRole, string> = {
   reference: 'Reference',
 }
 
-function normalizeConfiguredUrl(value: string | null | undefined): string | null {
-  const normalized = (value || '').trim().replace(/\/$/, '')
-  return normalized || null
-}
-
-function isLoopbackUrl(value: string) {
-  try {
-    const url = new URL(value)
-    return (
-      url.hostname === '127.0.0.1' ||
-      url.hostname === 'localhost' ||
-      url.hostname === '::1' ||
-      url.hostname === '[::1]'
-    )
-  } catch {
-    return false
-  }
-}
-
-function buildSiblingAppUrl(port: string) {
-  const hostname = window.location.hostname.includes(':')
-    ? `[${window.location.hostname}]`
-    : window.location.hostname
-  return `${window.location.protocol}//${hostname}:${port}`
-}
-
-function normalizeAppUrl(value: string | null | undefined, port: string) {
-  const normalized = normalizeConfiguredUrl(value)
-  if (!normalized || isLoopbackUrl(normalized)) {
-    return buildSiblingAppUrl(port)
-  }
-  return normalized
-}
-
-function normalizeAppCardsForCurrentHost(apps: PlatformAppCard[]) {
-  return apps.map((app) => {
-    if (app.app_id === 'watchlist') {
-      return { ...app, url: normalizeAppUrl(app.url, '5173') }
-    }
-    if (app.app_id === 'portfolio') {
-      return { ...app, url: normalizeAppUrl(app.url, '5174') }
-    }
-    return app
-  })
-}
-
-function buildFallbackApps(): PlatformAppCard[] {
-  const apps: PlatformAppCard[] = [
-    {
-      app_id: 'database_dashboard',
-      name: 'Database Dashboard',
-      url: DATABASE_DASHBOARD_PATH,
-      api_url: '/api/instruments',
-      eyebrow: 'Shared database ops',
-      description:
-        'Shared instruments, FX, NAV imports, email refresh rules, and other shared market data operations.',
-      availability: 'ready',
-    },
-  ]
-  const watchlistUrl = normalizeAppUrl(import.meta.env.VITE_WATCHLIST_URL, '5173')
-  const watchlistApiUrl = normalizeConfiguredUrl(import.meta.env.VITE_WATCHLIST_API_URL)
-  const portfolioUrl = normalizeAppUrl(import.meta.env.VITE_PORTFOLIO_URL, '5174')
-  const portfolioApiUrl = normalizeConfiguredUrl(import.meta.env.VITE_PORTFOLIO_API_URL)
-
-  if (watchlistUrl) {
-    apps.push({
-      app_id: 'watchlist',
-      name: 'Watchlist',
-      url: watchlistUrl,
-      api_url: watchlistApiUrl,
-      eyebrow: 'Fund and index research',
-      description:
-        'Fund and index watchlists, local detail pages, facts ingest, read models, and monitoring workflows.',
-      availability: 'ready',
-    })
-  }
-  if (portfolioUrl) {
-    apps.push({
-      app_id: 'portfolio',
-      name: 'Portfolio',
-      url: portfolioUrl,
-      api_url: portfolioApiUrl,
-      eyebrow: 'Portfolio management',
-      description:
-        'Portfolio, account, transaction, performance, risk, and research workflows built on top of the shared instrument core.',
-      availability: 'ready',
-    })
-  }
-  return apps
-}
-
-const fallbackApps: PlatformAppCard[] = buildFallbackApps()
-const fallbackSourceLabel = fallbackApps.length > 0 ? 'frontend env fallback' : 'backend unavailable'
-
 function normalizePath(pathname: string) {
   const normalized = pathname.replace(/\/+$/, '')
   return normalized || '/'
@@ -290,7 +189,7 @@ function allowedFamiliesForInstrument(instrumentType: InstrumentType): MetricFam
   if (instrumentType === 'fx') {
     return ['fx']
   }
-  if (instrumentType === 'cash' || instrumentType === 'bond' || instrumentType === 'equity' || instrumentType === 'index') {
+  if (instrumentType === 'cash' || instrumentType === 'bond' || instrumentType === 'equity' || instrumentType === 'etf' || instrumentType === 'index') {
     return ['price']
   }
   if (instrumentType === 'fund') {
@@ -311,6 +210,9 @@ function defaultQuoteInput(instrumentType: InstrumentType): { metric_family: Met
   }
   if (instrumentType === 'fund') {
     return { metric_family: 'nav', quote_basis: 'official_nav' }
+  }
+  if (instrumentType === 'etf') {
+    return { metric_family: 'price', quote_basis: 'close' }
   }
   if (instrumentType === 'index') {
     return { metric_family: 'price', quote_basis: 'close' }
@@ -544,93 +446,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
-function HomePage({
-  platformName,
-  apps,
-  sourceLabel,
-  instrumentCount,
-  completeCount,
-}: {
-  platformName: string
-  apps: PlatformAppCard[]
-  sourceLabel: string
-  instrumentCount: number
-  completeCount: number
-}) {
-  return (
-    <main className="platform-shell">
-      <header className="platform-masthead">
-        <a className="platform-nav-link platform-nav-link-active" href="/">
-          Home
-        </a>
-        <a className="platform-nav-link" href={DATABASE_DASHBOARD_PATH}>
-          Database Dashboard
-        </a>
-        <LanguageSelector />
-      </header>
-
-      <section className="hero">
-        <div className="hero-kicker">{platformName}</div>
-        <h1>Platform is the entry. Database Dashboard owns shared data operations.</h1>
-        <p className="hero-copy">
-          Platform currently exposes three entry points: Database Dashboard, Watchlist, and
-          Portfolio. Shared instruments, FX, email refresh rules, and NAV imports belong to
-          Database Dashboard, which notifies downstream read models after market data changes.
-        </p>
-        <div className="hero-meta">Registry source: {sourceLabel}</div>
-      </section>
-
-      <section className="app-grid" aria-label="Portfolio Operations app switcher">
-        {apps.map((app) => (
-          <article className="app-card" key={app.app_id}>
-            <div className="app-eyebrow">{app.eyebrow}</div>
-            <h2>{app.name}</h2>
-            <p>{app.description}</p>
-            <div className="app-actions">
-              <a className="app-link" href={app.url}>
-                Open {app.name}
-              </a>
-              {app.api_url ? (
-                <a className="app-link secondary" href={app.api_url}>
-                  API
-                </a>
-              ) : null}
-            </div>
-          </article>
-        ))}
-      </section>
-
-      <section className="registry-panel">
-        <div className="registry-panel-header">
-          <div>
-            <div className="registry-kicker">Database Dashboard</div>
-            <h2>Shared Data Operations</h2>
-          </div>
-          <a className="app-link" href={DATABASE_DASHBOARD_PATH}>
-            Open Database Dashboard
-          </a>
-        </div>
-        <div className="registry-stats">
-          <div className="registry-stat">
-            <span className="registry-stat-label">Instruments</span>
-            <strong>{instrumentCount}</strong>
-          </div>
-          <div className="registry-stat">
-            <span className="registry-stat-label">Complete Coverage</span>
-            <strong>{completeCount}</strong>
-          </div>
-          <div className="registry-stat">
-            <span className="registry-stat-label">Use Case</span>
-            <strong>Shared instrument / FX / NAV ops</strong>
-          </div>
-        </div>
-      </section>
-    </main>
-  )
-}
-
 function InstrumentsPage({
-  registryName,
   instruments,
   registrySummary,
   fxRates,
@@ -650,7 +466,6 @@ function InstrumentsPage({
   onArchiveInstrument,
   onRestoreInstrument,
 }: {
-  registryName: string
   instruments: PlatformInstrumentRecord[]
   registrySummary: PlatformRegistrySummary
   fxRates: PlatformFxRatesResponse | null
@@ -755,7 +570,12 @@ function InstrumentsPage({
   const [quoteFilter, setQuoteFilter] = useState<'all' | 'has_quote' | 'missing_quote'>('all')
   const [sortMode, setSortMode] = useState<'name_asc' | 'quote_desc' | 'identifier_asc' | 'coverage'>('name_asc')
   const [refreshChannel, setRefreshChannel] = useState<RefreshChannel>('all')
+  const [registryPage, setRegistryPage] = useState(1)
   const [selectionPrimed, setSelectionPrimed] = useState(false)
+  const detailRequestSequenceRef = useRef(0)
+  const selectedInstrumentIdRef = useRef(selectedInstrumentId)
+
+  selectedInstrumentIdRef.current = selectedInstrumentId
 
   const selectedEditableFxPair = useMemo(() => {
     const [baseCurrency = 'USD', quoteCurrency = 'HKD'] = editableFxPair.split('/')
@@ -809,6 +629,7 @@ function InstrumentsPage({
     () => (selectedInstrument ? latestQuoteSnapshot(selectedInstrument) : null),
     [selectedInstrument],
   )
+  const currentSelectedInstrumentDetail = detailForSelection(selectedInstrumentDetail, selectedInstrumentId)
   const selectedInstrumentNavHistory = useMemo(
     () => {
       const merged = new Map<
@@ -816,13 +637,14 @@ function InstrumentsPage({
         {
           as_of_date: string
           nav: string | null
+          cumulative_nav: string | null
           nav_with_dividend: string | null
           currency: string
           status: DataStatus
           provider: string | null
         }
       >()
-      for (const point of selectedInstrumentDetail?.market_data || []) {
+      for (const point of currentSelectedInstrumentDetail?.market_data || []) {
         if (point.metric_family !== 'nav') {
           continue
         }
@@ -831,6 +653,7 @@ function InstrumentsPage({
           {
             as_of_date: point.as_of_date,
             nav: null,
+            cumulative_nav: null,
             nav_with_dividend: null,
             currency: point.currency,
             status: point.status,
@@ -842,6 +665,9 @@ function InstrumentsPage({
         if (point.quote_basis === 'total_return_nav') {
           existing.nav_with_dividend = point.value
         }
+        if (point.quote_basis === 'cumulative_nav') {
+          existing.cumulative_nav = point.value
+        }
         existing.currency = point.currency
         existing.status = point.status
         existing.provider = point.provider || existing.provider
@@ -849,11 +675,11 @@ function InstrumentsPage({
       }
       return [...merged.values()].sort((left, right) => right.as_of_date.localeCompare(left.as_of_date))
     },
-    [selectedInstrumentDetail],
+    [currentSelectedInstrumentDetail],
   )
   const selectedInstrumentMarketHistory = useMemo(
     () =>
-      [...(selectedInstrumentDetail?.market_data || [])].sort((left, right) => {
+      [...(currentSelectedInstrumentDetail?.market_data || [])].sort((left, right) => {
         if (left.as_of_date === right.as_of_date) {
           return `${left.metric_family}:${left.quote_basis}`.localeCompare(
             `${right.metric_family}:${right.quote_basis}`,
@@ -861,7 +687,7 @@ function InstrumentsPage({
         }
         return right.as_of_date.localeCompare(left.as_of_date)
       }),
-    [selectedInstrumentDetail],
+    [currentSelectedInstrumentDetail],
   )
   const filteredInstruments = useMemo(() => {
     const searchNeedle = searchText.trim().toLowerCase()
@@ -936,8 +762,31 @@ function InstrumentsPage({
       !filteredInstruments.some((item) => item.instrument_id === selectedInstrument.instrument_id),
     [filteredInstruments, selectedInstrument],
   )
+  const registryPageSize = 50
+  const registryPageCount = Math.max(1, Math.ceil(filteredInstruments.length / registryPageSize))
+  const effectiveRegistryPage = Math.min(registryPage, registryPageCount)
+  const pagedInstruments = useMemo(
+    () =>
+      filteredInstruments.slice(
+        (effectiveRegistryPage - 1) * registryPageSize,
+        effectiveRegistryPage * registryPageSize,
+      ),
+    [effectiveRegistryPage, filteredInstruments],
+  )
+
+  useEffect(() => {
+    setRegistryPage(1)
+  }, [coverageFilter, instrumentTypeFilter, quoteFilter, searchText, sortMode, sourceFilter])
 
   function syncSelectedInstrument(instrumentId: string) {
+    const selectionChanged = instrumentId !== selectedInstrumentIdRef.current
+    if (selectionChanged) {
+      invalidateRequests(detailRequestSequenceRef)
+      setSelectedInstrumentDetail(null)
+      setSelectedInstrumentDetailError(null)
+      setSelectedInstrumentDetailLoading(Boolean(instrumentId))
+    }
+    selectedInstrumentIdRef.current = instrumentId
     setSelectedInstrumentId(instrumentId)
     setSelectionPrimed(true)
     const selected = instruments.find((item) => item.instrument_id === instrumentId)
@@ -951,6 +800,10 @@ function InstrumentsPage({
   }
 
   async function refreshSelectedInstrumentDetail(instrumentId: string) {
+    if (instrumentId !== selectedInstrumentIdRef.current) {
+      return
+    }
+    const request = beginRequest(detailRequestSequenceRef, instrumentId)
     if (!instrumentId) {
       setSelectedInstrumentDetailLoading(false)
       setSelectedInstrumentDetail(null)
@@ -963,8 +816,21 @@ function InstrumentsPage({
       const detail = await fetchJson<PlatformInstrumentDetail>(
         `/api/instruments/${encodeURIComponent(instrumentId)}`,
       )
+      if (
+        !isRequestCurrent(
+          detailRequestSequenceRef,
+          request,
+          selectedInstrumentIdRef.current,
+          detail.instrument_id,
+        )
+      ) {
+        return
+      }
       setSelectedInstrumentDetail(detail)
     } catch (requestError) {
+      if (!isRequestCurrent(detailRequestSequenceRef, request, selectedInstrumentIdRef.current)) {
+        return
+      }
       setSelectedInstrumentDetail(null)
       setSelectedInstrumentDetailError(
         requestError instanceof Error
@@ -972,14 +838,16 @@ function InstrumentsPage({
           : 'Failed to load selected instrument detail.',
       )
     } finally {
-      setSelectedInstrumentDetailLoading(false)
+      if (isRequestCurrent(detailRequestSequenceRef, request, selectedInstrumentIdRef.current)) {
+        setSelectedInstrumentDetailLoading(false)
+      }
     }
   }
 
   useEffect(() => {
     if (!instruments.length) {
       if (selectedInstrumentId) {
-        setSelectedInstrumentId('')
+        clearSelectedInstrument()
       }
       setSelectionPrimed(false)
       return
@@ -995,6 +863,13 @@ function InstrumentsPage({
   useEffect(() => {
     void refreshSelectedInstrumentDetail(selectedInstrumentId)
   }, [selectedInstrumentId])
+
+  useEffect(
+    () => () => {
+      invalidateRequests(detailRequestSequenceRef)
+    },
+    [],
+  )
 
   useEffect(() => {
     if (!selectedInstrument) {
@@ -1020,6 +895,9 @@ function InstrumentsPage({
 
   useEffect(() => {
     if (!selectedEditableFxRate) {
+      setFxRateValue('')
+      setFxRateDate(currentLocalDate())
+      setFxRateStatus('complete')
       return
     }
     setFxRateValue(selectedEditableFxRate.rate)
@@ -1216,6 +1094,8 @@ function InstrumentsPage({
   }
 
   function clearSelectedInstrument() {
+    invalidateRequests(detailRequestSequenceRef)
+    selectedInstrumentIdRef.current = ''
     setSelectedInstrumentId('')
     setSelectedInstrumentDetail(null)
     setSelectedInstrumentDetailError(null)
@@ -1253,27 +1133,29 @@ function InstrumentsPage({
   return (
     <main className="platform-shell">
       <header className="platform-masthead">
-        <a className="platform-nav-link" href="/">
-          Home
+        <a className="data-ops-brand" href="/">
+          <span>Portfolio Operations</span>
+          <strong>Data Operations</strong>
         </a>
-        <a className="platform-nav-link platform-nav-link-active" href={DATABASE_DASHBOARD_PATH}>
-          Database Dashboard
-        </a>
+        <nav className="data-ops-nav" aria-label="Data operations navigation">
+          <a className="platform-nav-link" href="/">Overview</a>
+          <a className="platform-nav-link platform-nav-link-active" href={INSTRUMENT_REGISTRY_PATH}>Instrument Registry</a>
+        </nav>
         <LanguageSelector />
       </header>
 
       <section className="registry-pagehead">
         <div className="registry-breadcrumbs">
-          <a href="/">Home</a>
+          <a href="/">Data Operations</a>
           <span>/</span>
-          <span>Database Dashboard</span>
+          <span>Instrument Registry</span>
         </div>
-        <div className="registry-kicker">Database Dashboard</div>
-        <h1>{registryName}</h1>
+        <div className="registry-kicker">Shared data workspace</div>
+        <h1>Instrument Registry</h1>
         <p className="hero-copy">
-          This workspace owns shared instruments, FX, NAV imports, email refresh rules, and
-          typed market data. Watchlist and Portfolio consume this layer and refresh their
-          materialized views after shared market data changes.
+          Search and maintain canonical identifiers, quote policies, source rules, FX, NAV,
+          and typed market data. Watchlist and Portfolio consume this registry; they do not
+          own duplicate copies of these records.
         </p>
         <div className="registry-pagehead-actions">
           <div className="registry-table-meta">
@@ -1324,6 +1206,7 @@ function InstrumentsPage({
                   <option value="equity">Equity</option>
                   <option value="index">Index</option>
                   <option value="fund">Fund</option>
+                  <option value="etf">ETF</option>
                   <option value="bond">Bond</option>
                   <option value="cash">Cash</option>
                   <option value="fx">FX</option>
@@ -1568,6 +1451,7 @@ function InstrumentsPage({
                       <option value="equity">Equity</option>
                       <option value="index">Index</option>
                       <option value="fund">Fund</option>
+                      <option value="etf">ETF</option>
                       <option value="bond">Bond</option>
                       <option value="cash">Cash</option>
                       <option value="fx">FX</option>
@@ -1785,7 +1669,7 @@ function InstrumentsPage({
                           }
                           setNavImportText(event.target.value)
                         }}
-                        placeholder={`date,nav,nav_with_dividend,currency\nYYYY-MM-DD,12.84,18.12,USD\nYYYY-MM-DD,12.81,18.07,USD`}
+                        placeholder={`date,nav,cumulative_nav,nav_with_dividend,currency\nYYYY-MM-DD,12.84,18.12,18.46,USD`}
                       />
                     </label>
                   </div>
@@ -1827,6 +1711,7 @@ function InstrumentsPage({
                             <tr>
                               <th>Date</th>
                               <th>NAV</th>
+                              <th>Cash Cumulative NAV</th>
                               <th>Total Return NAV</th>
                               <th>Currency</th>
                               <th>Code</th>
@@ -1838,6 +1723,7 @@ function InstrumentsPage({
                               <tr key={`${row.as_of_date}-${row.nav || ''}-${row.nav_with_dividend || ''}`}>
                                 <td>{row.as_of_date}</td>
                                 <td>{row.nav || '—'}</td>
+                                <td>{row.cumulative_nav || '—'}</td>
                                 <td>{row.nav_with_dividend || '—'}</td>
                                 <td>{row.currency}</td>
                                 <td>{row.instrument_code || '—'}</td>
@@ -1970,8 +1856,9 @@ function InstrumentsPage({
                   </td>
                 </tr>
               ) : null}
-              {filteredInstruments.map((item) => {
+              {pagedInstruments.map((item) => {
                 const isSelected = item.instrument_id === selectedInstrumentId
+                const detailRowId = `registry-detail-${encodeURIComponent(item.instrument_id)}`
                 const quoteSummary = summaryQuoteChips(item)
                 const { officialNav, totalReturnNav, selectedQuote, latestQuoteDate } = latestQuoteSnapshot(item)
                 const primaryQuote = selectedQuote ?? officialNav ?? totalReturnNav
@@ -1986,6 +1873,9 @@ function InstrumentsPage({
                         <button
                           type="button"
                           className={`registry-row-toggle${isSelected ? ' registry-row-toggle-active' : ''}`}
+                          aria-expanded={isSelected}
+                          aria-controls={detailRowId}
+                          aria-label={`${isSelected ? 'Close' : 'Open'} details for ${item.instrument_name}`}
                           onClick={() => toggleSelectedInstrument(item.instrument_id)}
                         >
                           {isSelected ? 'Close' : 'Open'}
@@ -2083,7 +1973,7 @@ function InstrumentsPage({
                       </td>
                     </tr>
                     {isSelected ? (
-                      <tr className="registry-row-detail">
+                      <tr className="registry-row-detail" id={detailRowId}>
                         <td colSpan={12}>
                           <div className="registry-detail-panel">
                             <div className="registry-detail-toolbar">
@@ -2213,6 +2103,7 @@ function InstrumentsPage({
                                       <tr>
                                         <th>Date</th>
                                         <th>Official NAV</th>
+                                        <th>Cash Cumulative NAV</th>
                                         <th>Total Return NAV</th>
                                         <th>Currency</th>
                                         <th>Status</th>
@@ -2225,6 +2116,7 @@ function InstrumentsPage({
                                           <tr key={`${point.as_of_date}-${point.currency}`}>
                                             <td>{point.as_of_date}</td>
                                             <td>{point.nav || '—'}</td>
+                                            <td>{point.cumulative_nav || '—'}</td>
                                             <td>{point.nav_with_dividend || '—'}</td>
                                             <td>{point.currency}</td>
                                             <td>{point.status}</td>
@@ -2233,7 +2125,7 @@ function InstrumentsPage({
                                         ))
                                       ) : (
                                         <tr>
-                                          <td colSpan={6}>No NAV history loaded for this instrument.</td>
+                                          <td colSpan={7}>No NAV history loaded for this instrument.</td>
                                         </tr>
                                       )}
                                     </tbody>
@@ -2298,6 +2190,31 @@ function InstrumentsPage({
             </tbody>
           </table>
         </div>
+        {filteredInstruments.length > registryPageSize ? (
+          <div className="registry-pagination">
+            <span>
+              Page {effectiveRegistryPage} of {registryPageCount} · {filteredInstruments.length} instruments
+            </span>
+            <div>
+              <button
+                type="button"
+                className="registry-submit secondary"
+                disabled={effectiveRegistryPage <= 1}
+                onClick={() => setRegistryPage((current) => Math.max(1, current - 1))}
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                className="registry-submit secondary"
+                disabled={effectiveRegistryPage >= registryPageCount}
+                onClick={() => setRegistryPage((current) => Math.min(registryPageCount, current + 1))}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        ) : null}
       </section>
     </main>
   )
@@ -2305,10 +2222,6 @@ function InstrumentsPage({
 
 export default function App() {
   const currentPath = normalizePath(window.location.pathname)
-  const [platformName, setPlatformName] = useState(PLATFORM_NAME_FALLBACK)
-  const [apps, setApps] = useState<PlatformAppCard[]>(fallbackApps)
-  const [sourceLabel, setSourceLabel] = useState(fallbackSourceLabel)
-  const [registryName, setRegistryName] = useState('Portfolio Operations Shared Instruments')
   const [instruments, setInstruments] = useState<PlatformInstrumentRecord[]>([])
   const [allInstruments, setAllInstruments] = useState<PlatformInstrumentRecord[]>([])
   const [fxRates, setFxRates] = useState<PlatformFxRatesResponse | null>(null)
@@ -2316,55 +2229,36 @@ export default function App() {
   const [registryError, setRegistryError] = useState<string | null>(null)
   const [registryNotice, setRegistryNotice] = useState<string | null>(null)
   const [showInactive, setShowInactive] = useState(false)
+  const fxWriteQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const registryReadSequenceRef = useRef(0)
+  const showInactiveRef = useRef(showInactive)
+
+  showInactiveRef.current = showInactive
 
   useEffect(() => {
-    let cancelled = false
-
-    async function loadApps() {
-      try {
-        const payload = await fetchJson<PlatformAppsResponse>('/api/apps')
-        if (!cancelled) {
-          setPlatformName(payload.platform_name)
-          setApps(normalizeAppCardsForCurrentHost(payload.apps))
-          setSourceLabel('platform backend')
-        }
-      } catch {
-        if (!cancelled) {
-          setPlatformName(PLATFORM_NAME_FALLBACK)
-          setApps(fallbackApps)
-          setSourceLabel(fallbackSourceLabel)
-        }
-      }
+    if (currentPath !== INSTRUMENT_REGISTRY_PATH) {
+      return undefined
     }
-
-    void loadApps()
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  useEffect(() => {
     let cancelled = false
+    const requestSequence = ++registryReadSequenceRef.current
     setLoadingInstruments(true)
-    const visibleInstrumentPath = showInactive ? '/api/instruments?include_inactive=true' : '/api/instruments'
 
     Promise.all([
-      fetchJson<PlatformInstrumentsResponse>(visibleInstrumentPath),
       fetchJson<PlatformInstrumentsResponse>('/api/instruments?include_inactive=true'),
       fetchJson<PlatformFxRatesResponse>('/api/fx-rates'),
     ])
-      .then(([visibleInstrumentPayload, allInstrumentPayload, fxPayload]) => {
-        if (!cancelled) {
-          setRegistryName(visibleInstrumentPayload.registry_name)
-          setInstruments(visibleInstrumentPayload.instruments)
+      .then(([allInstrumentPayload, fxPayload]) => {
+        if (!cancelled && requestSequence === registryReadSequenceRef.current) {
+          setInstruments(
+            instrumentsForVisibility(allInstrumentPayload.instruments, showInactiveRef.current),
+          )
           setAllInstruments(allInstrumentPayload.instruments)
           setFxRates(fxPayload)
           setRegistryError(null)
         }
       })
       .catch((requestError) => {
-        if (!cancelled) {
+        if (!cancelled && requestSequence === registryReadSequenceRef.current) {
           setRegistryError(
             requestError instanceof Error
               ? requestError.message
@@ -2373,7 +2267,7 @@ export default function App() {
         }
       })
       .finally(() => {
-        if (!cancelled) {
+        if (!cancelled && requestSequence === registryReadSequenceRef.current) {
           setLoadingInstruments(false)
         }
       })
@@ -2381,7 +2275,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [showInactive])
+  }, [currentPath])
 
   const registrySummary = useMemo<PlatformRegistrySummary>(() => {
     const base = allInstruments.length ? allInstruments : instruments
@@ -2398,14 +2292,6 @@ export default function App() {
       fund_with_quote_count: fundsWithQuoteCount,
     }
   }, [allInstruments, instruments])
-
-  const completeCount = useMemo(
-    () => {
-      const base = allInstruments.length ? allInstruments : instruments
-      return base.filter((item) => item.coverage_state === 'complete').length
-    },
-    [allInstruments, instruments],
-  )
 
   async function handleCreateInstrument(payload: {
     instrument_name: string
@@ -2437,17 +2323,29 @@ export default function App() {
     provider?: string | null
     status: DataStatus
   }) {
+    const previousWrite = fxWriteQueueRef.current
+    let finishWrite: () => void = () => undefined
+    fxWriteQueueRef.current = new Promise<void>((resolve) => {
+      finishWrite = resolve
+    })
+    await previousWrite.catch(() => undefined)
     try {
-      const instrumentPath = showInactive ? '/api/instruments?include_inactive=true' : '/api/instruments'
-      const [updated, refreshedInstruments, refreshedFxRates] = await Promise.all([
-        fetchJson<PlatformFxRateRecord>('/api/fx-rates', {
-          method: 'POST',
-          body: JSON.stringify(payload),
-        }),
-        fetchJson<PlatformInstrumentsResponse>(instrumentPath),
+      const updated = await fetchJson<PlatformFxRateRecord>('/api/fx-rates', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      const refreshSequence = ++registryReadSequenceRef.current
+      const [refreshedAllInstruments, refreshedFxRates] = await Promise.all([
+        fetchJson<PlatformInstrumentsResponse>('/api/instruments?include_inactive=true'),
         fetchJson<PlatformFxRatesResponse>('/api/fx-rates'),
       ])
-      setInstruments(refreshedInstruments.instruments)
+      if (refreshSequence !== registryReadSequenceRef.current) {
+        return
+      }
+      setInstruments(
+        instrumentsForVisibility(refreshedAllInstruments.instruments, showInactiveRef.current),
+      )
+      setAllInstruments(refreshedAllInstruments.instruments)
       setFxRates(refreshedFxRates)
       setRegistryNotice(
         `Updated ${formatFxPairLabel(updated.base_currency, updated.quote_currency)} to ${updated.rate}.`,
@@ -2457,6 +2355,8 @@ export default function App() {
       setRegistryError(
         requestError instanceof Error ? requestError.message : 'Failed to update FX rate.',
       )
+    } finally {
+      finishWrite()
     }
   }
 
@@ -2549,13 +2449,17 @@ export default function App() {
         method: 'POST',
         body: JSON.stringify(payload),
       })
-      const instrumentPath = showInactive ? '/api/instruments?include_inactive=true' : '/api/instruments'
-      const [refreshedInstruments, refreshedAllInstruments, refreshedFxRates] = await Promise.all([
-        fetchJson<PlatformInstrumentsResponse>(instrumentPath),
+      const refreshSequence = ++registryReadSequenceRef.current
+      const [refreshedAllInstruments, refreshedFxRates] = await Promise.all([
         fetchJson<PlatformInstrumentsResponse>('/api/instruments?include_inactive=true'),
         fetchJson<PlatformFxRatesResponse>('/api/fx-rates'),
       ])
-      setInstruments(refreshedInstruments.instruments)
+      if (refreshSequence !== registryReadSequenceRef.current) {
+        return
+      }
+      setInstruments(
+        instrumentsForVisibility(refreshedAllInstruments.instruments, showInactiveRef.current),
+      )
       setAllInstruments(refreshedAllInstruments.instruments)
       setFxRates(refreshedFxRates)
       setRegistryNotice(
@@ -2662,10 +2566,9 @@ export default function App() {
     }
   }
 
-  if (currentPath === DATABASE_DASHBOARD_PATH) {
+  if (currentPath === INSTRUMENT_REGISTRY_PATH) {
     return (
       <InstrumentsPage
-        registryName={registryName}
         instruments={instruments}
         registrySummary={registrySummary}
         fxRates={fxRates}
@@ -2673,7 +2576,13 @@ export default function App() {
         error={registryError}
         notice={registryNotice}
         showInactive={showInactive}
-        onToggleShowInactive={() => setShowInactive((current) => !current)}
+        onToggleShowInactive={() =>
+          setShowInactive((current) => {
+            const next = !current
+            setInstruments(instrumentsForVisibility(allInstruments, next))
+            return next
+          })
+        }
         onCreateInstrument={handleCreateInstrument}
         onUpsertFxRate={handleUpsertFxRate}
         onUpsertMarketData={handleUpsertMarketData}
@@ -2688,13 +2597,5 @@ export default function App() {
     )
   }
 
-  return (
-    <HomePage
-      platformName={platformName}
-      apps={apps}
-      sourceLabel={sourceLabel}
-      instrumentCount={registrySummary.total_count}
-      completeCount={completeCount}
-    />
-  )
+  return <DataOperationsDashboard />
 }

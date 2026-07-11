@@ -18,6 +18,8 @@
    WSL 到 Mac 迁移冻结清单：Git 承载范围、数据 dump、NAV 附件和服务重建边界。
 7. [NEW_MACHINE_RESTORE.md](./NEW_MACHINE_RESTORE.md)
    新电脑从私有 GitHub 仓库恢复项目、数据库、运行环境和定时任务的步骤参考。
+8. [LOCAL_MACOS_SERVICE.md](./LOCAL_MACOS_SERVICE.md)
+   在 macOS 上安装、检查和移除本地 `launchd` 常驻服务与每日 21:00 刷新/重算任务。
 
 按 app 深入时：
 

@@ -10,6 +10,7 @@ import PerformanceNavChart from '../components/PerformanceNavChart'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import RiskRankedBars from '../components/RiskRankedBars'
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import {
   getHoldingsWorkspace,
   getPortfolioInstrumentPriceChart,
@@ -608,6 +609,10 @@ export default function OverviewPage() {
   const [topHoldingColumns, setTopHoldingColumns] = useState<TopHoldingColumnKey[]>(DEFAULT_TOP_HOLDING_COLUMNS)
   const [topHoldingColumnDraft, setTopHoldingColumnDraft] = useState<TopHoldingColumnKey[]>(DEFAULT_TOP_HOLDING_COLUMNS)
   const [topHoldingColumnsOpen, setTopHoldingColumnsOpen] = useState(false)
+  const topHoldingColumnsDialogRef = useModalDialog(
+    topHoldingColumnsOpen,
+    () => setTopHoldingColumnsOpen(false),
+  )
 
   useEffect(() => {
     if (!portfolioId) {
@@ -1334,7 +1339,15 @@ export default function OverviewPage() {
 
         {topHoldingColumnsOpen ? (
           <div className="overview-columns-modal-backdrop" onClick={() => setTopHoldingColumnsOpen(false)}>
-            <div className="overview-columns-modal" onClick={(event) => event.stopPropagation()}>
+            <div
+              ref={topHoldingColumnsDialogRef}
+              className="overview-columns-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Choose top holdings columns"
+              tabIndex={-1}
+              onClick={(event) => event.stopPropagation()}
+            >
               <div className="overview-columns-modal-header">
                 <div>
                   <div className="panel-title">Data Columns</div>

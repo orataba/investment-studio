@@ -6,7 +6,9 @@ from datetime import UTC, date, datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Integer, and_, cast, delete, func, or_, select
+from sqlalchemy import Integer, and_, cast, delete, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from portfolio_ops_instrument_core.db_models import InstrumentMarketData
 
 from portfolio_app.core.settings import get_settings
@@ -24,10 +26,15 @@ from portfolio_app.db.models import (
     TaxonomyAssignmentRecordModel,
     TaxonomyNodeRecordModel,
     TaxonomyRecordModel,
+    TransactionIdAllocatorModel,
     TransactionRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.ledger import build_account_workspace, build_position_lots
+from portfolio_app.services.ledger import (
+    build_account_workspace,
+    build_position_lots,
+    validate_transaction_position_history,
+)
 from portfolio_app.services.snapshot_selection import default_portfolio_snapshot
 
 EMPTY_STORE: dict[str, list[dict[str, Any]]] = {
@@ -218,6 +225,10 @@ def reset_store(data: dict[str, object] | None = None) -> None:
     session_factory = get_session_factory()
     with session_factory() as session:
         _save_store_to_db(session, normalized)
+        _ensure_transaction_id_allocator(
+            session,
+            minimum_next_value=_next_transaction_number_from_history(session),
+        )
         session.commit()
 
 
@@ -934,7 +945,17 @@ def _build_live_portfolio_rollup(
     )
     base_payload["as_of_date"] = as_of_date.isoformat()
     if not accounts and not transactions:
-        return base_payload
+        return {
+            **base_payload,
+            "nav": 0.0,
+            "coverage_state": "complete",
+            "valuation_coverage": {
+                "account_count": 0,
+                "valued_account_count": 0,
+                "unvalued_account_count": 0,
+                "missing_account_ids": [],
+            },
+        }
 
     workspace = build_account_workspace(
         item.portfolio_id,
@@ -945,15 +966,31 @@ def _build_live_portfolio_rollup(
         as_of_date=as_of_date,
     )
     account_rollups = workspace.get("accounts", [])
-    nav = sum(
-        _safe_float(account.get("account_value_base")) or 0.0
+    account_rollups = [account for account in account_rollups if isinstance(account, dict)]
+    valued_accounts = [
+        account for account in account_rollups if _safe_float(account.get("account_value_base")) is not None
+    ]
+    missing_account_ids = [
+        str((account.get("account") or {}).get("account_id") or "")
         for account in account_rollups
-        if isinstance(account, dict)
+        if _safe_float(account.get("account_value_base")) is None
+    ]
+    nav = (
+        sum(float(account["account_value_base"]) for account in valued_accounts)
+        if len(valued_accounts) == len(account_rollups)
+        else None
     )
     summary = workspace.get("summary", {})
     return {
         **base_payload,
         "nav": nav,
+        "coverage_state": str(summary.get("valuation_coverage_state") or "unavailable"),
+        "valuation_coverage": {
+            "account_count": len(account_rollups),
+            "valued_account_count": len(valued_accounts),
+            "unvalued_account_count": len(account_rollups) - len(valued_accounts),
+            "missing_account_ids": [account_id for account_id in missing_account_ids if account_id],
+        },
         "securities_count": int(summary.get("position_line_count") or 0),
     }
 
@@ -988,13 +1025,18 @@ def _serialize_portfolio_row_with_materialized_summary(
     payload = _serialize_portfolio_row(item)
     latest_snapshot = default_portfolio_snapshot(session, item.portfolio_id)
     if latest_snapshot is None:
+        payload["nav"] = None
+        payload["day_change_value"] = None
+        payload["day_change_pct"] = None
+        payload["coverage_state"] = "unavailable"
         return payload
 
     snapshot = latest_snapshot.snapshot_json if isinstance(latest_snapshot.snapshot_json, dict) else {}
     payload["as_of_date"] = latest_snapshot.as_of_date.isoformat()
-    payload["nav"] = _safe_float(snapshot.get("nav")) or 0.0
-    payload["day_change_value"] = _safe_float(snapshot.get("absolute_change")) or 0.0
-    payload["day_change_pct"] = _safe_float(snapshot.get("daily_twr")) or 0.0
+    payload["nav"] = _safe_float(snapshot.get("nav"))
+    payload["day_change_value"] = _safe_float(snapshot.get("absolute_change"))
+    payload["day_change_pct"] = _safe_float(snapshot.get("daily_twr"))
+    payload["coverage_state"] = str(snapshot.get("coverage_state") or "unavailable")
     payload["securities_count"] = int(snapshot.get("total_position_count") or 0)
     return payload
 
@@ -1319,26 +1361,114 @@ def _slugify(value: str) -> str:
     return slug or "portfolio"
 
 
-def _next_transaction_id_from_values(transaction_ids: list[str]) -> str:
+TRANSACTION_ID_ALLOCATOR_KEY = "transaction"
+
+
+def _next_transaction_number_from_history(session) -> int:
     next_number = 1
-    for transaction_id in transaction_ids:
-        if not transaction_id.startswith("txn-"):
-            continue
-        try:
-            next_number = max(next_number, int(transaction_id.split("-", 1)[1]) + 1)
-        except ValueError:
-            continue
-    return f"txn-{next_number:04d}"
-
-
-def _next_transaction_id(session) -> str:
-    max_suffix = session.scalar(
-        select(func.max(cast(func.substr(TransactionRecordModel.transaction_id, 5), Integer))).where(
+    for transaction_id in session.scalars(
+        select(TransactionRecordModel.transaction_id).where(
             TransactionRecordModel.transaction_id.like("txn-%")
         )
+    ):
+        normalized = str(transaction_id or "")
+        try:
+            next_number = max(next_number, int(normalized.split("-", 1)[1]) + 1)
+        except (IndexError, ValueError):
+            continue
+    return next_number
+
+
+def _ensure_transaction_id_allocator(session, *, minimum_next_value: int = 1) -> None:
+    values = {
+        "allocator_key": TRANSACTION_ID_ALLOCATOR_KEY,
+        "next_value": max(int(minimum_next_value), 1),
+    }
+    dialect_name = session.get_bind().dialect.name
+    if dialect_name == "postgresql":
+        statement = postgresql_insert(TransactionIdAllocatorModel).values(**values)
+        session.execute(
+            statement.on_conflict_do_nothing(
+                index_elements=[TransactionIdAllocatorModel.allocator_key],
+            )
+        )
+    elif dialect_name == "sqlite":
+        statement = sqlite_insert(TransactionIdAllocatorModel).values(**values)
+        session.execute(
+            statement.on_conflict_do_nothing(
+                index_elements=[TransactionIdAllocatorModel.allocator_key],
+            )
+        )
+    elif session.get(TransactionIdAllocatorModel, TRANSACTION_ID_ALLOCATOR_KEY) is None:
+        session.add(TransactionIdAllocatorModel(**values))
+        session.flush()
+
+    session.execute(
+        update(TransactionIdAllocatorModel)
+        .where(TransactionIdAllocatorModel.allocator_key == TRANSACTION_ID_ALLOCATOR_KEY)
+        .where(TransactionIdAllocatorModel.next_value < values["next_value"])
+        .values(next_value=values["next_value"])
     )
-    next_number = int(max_suffix or 0) + 1
-    return f"txn-{next_number:04d}"
+
+
+def _allocate_transaction_ids(session, count: int) -> list[str]:
+    if count <= 0:
+        return []
+    _ensure_transaction_id_allocator(
+        session,
+        minimum_next_value=_next_transaction_number_from_history(session),
+    )
+    next_value = session.scalar(
+        update(TransactionIdAllocatorModel)
+        .where(TransactionIdAllocatorModel.allocator_key == TRANSACTION_ID_ALLOCATOR_KEY)
+        .values(next_value=TransactionIdAllocatorModel.next_value + count)
+        .returning(TransactionIdAllocatorModel.next_value)
+    )
+    if next_value is None:  # pragma: no cover - allocator corruption guard
+        raise RuntimeError("Transaction id allocator is unavailable.")
+    first_value = int(next_value) - count
+    return [f"txn-{number:04d}" for number in range(first_value, int(next_value))]
+
+
+def _lock_portfolio_for_transaction_mutation(session, portfolio_id: str) -> bool:
+    """Serialize transaction mutations per portfolio on PostgreSQL and SQLite."""
+
+    if session.get_bind().dialect.name == "sqlite":
+        result = session.execute(
+            update(PortfolioRecordModel)
+            .where(PortfolioRecordModel.portfolio_id == portfolio_id)
+            .values(portfolio_id=PortfolioRecordModel.portfolio_id)
+        )
+        return int(result.rowcount or 0) > 0
+
+    portfolio_key = session.scalar(
+        select(PortfolioRecordModel.portfolio_id)
+        .where(PortfolioRecordModel.portfolio_id == portfolio_id)
+        .with_for_update()
+    )
+    return portfolio_key is not None
+
+
+def _validate_portfolio_transaction_history(session, portfolio_id: str) -> None:
+    accounts = list(
+        session.scalars(
+            select(AccountRecordModel).where(AccountRecordModel.portfolio_id == portfolio_id)
+        ).all()
+    )
+    transactions = list(
+        session.scalars(
+            select(TransactionRecordModel).where(TransactionRecordModel.portfolio_id == portfolio_id)
+        ).all()
+    )
+    validate_transaction_position_history(
+        portfolio_id,
+        [_serialize_transaction_row(record) for record in transactions],
+        account_cost_methods={
+            account.account_id: str(account.cost_basis_method or "fifo")
+            for account in accounts
+            if account.account_type == "securities_account"
+        },
+    )
 
 
 def _next_account_id(existing_ids: list[str], account_name: str, account_type: str) -> str:
@@ -3080,19 +3210,27 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                 )
             )
 
-        all_transactions = [
-            _serialize_transaction_row(item)
-            for item in session.scalars(select(TransactionRecordModel)).all()
-        ]
         source_transactions = [
-            item for item in all_transactions if item.get("portfolio_id") == portfolio_id
+            _serialize_transaction_row(item)
+            for item in session.scalars(
+                select(TransactionRecordModel)
+                .where(TransactionRecordModel.portfolio_id == portfolio_id)
+                .order_by(
+                    TransactionRecordModel.trade_date,
+                    TransactionRecordModel.trade_at,
+                    TransactionRecordModel.created_at,
+                    TransactionRecordModel.transaction_id,
+                )
+            ).all()
         ]
-        existing_transactions = list(all_transactions)
-        for transaction in source_transactions:
+        copied_transaction_ids = _allocate_transaction_ids(session, len(source_transactions))
+        for transaction, copied_transaction_id in zip(
+            source_transactions,
+            copied_transaction_ids,
+            strict=True,
+        ):
             copied_transaction = deepcopy(transaction)
-            copied_transaction["transaction_id"] = _next_transaction_id_from_values(
-                [str(item.get("transaction_id") or "") for item in existing_transactions]
-            )
+            copied_transaction["transaction_id"] = copied_transaction_id
             copied_transaction["portfolio_id"] = candidate
             if isinstance(copied_transaction.get("account_id"), str):
                 copied_transaction["account_id"] = account_id_map.get(
@@ -3194,7 +3332,6 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     ),
                 )
             )
-            existing_transactions.append(copied_transaction)
 
         session.flush()
         _refresh_portfolio_instrument_universe_records(session, candidate)
@@ -3342,6 +3479,8 @@ def create_account(
 ) -> dict[str, object]:
     session_factory = get_session_factory()
     with session_factory() as session:
+        if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
+            raise ValueError("Portfolio no longer exists.")
         base = _slugify(account_name)
         prefix = "cash" if account_type == "deposit_account" else "broker"
         existing_account_ids = session.scalars(
@@ -3364,8 +3503,12 @@ def create_account(
             status=(status or "active").strip() or "active",
         )
         session.add(record)
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=opened_at,
+            session=session,
+        )
         session.commit()
-        _mark_daily_snapshots_stale(portfolio_id, dirty_from=opened_at)
         return _serialize_account_row(record)
 
 
@@ -3384,6 +3527,8 @@ def update_account(
 ) -> dict[str, object] | None:
     session_factory = get_session_factory()
     with session_factory() as session:
+        if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
+            return None
         record = session.scalar(
             select(AccountRecordModel).where(
                 AccountRecordModel.portfolio_id == portfolio_id,
@@ -3419,7 +3564,6 @@ def update_account(
         record.opened_at = opened_at
         record.closed_at = closed_at
         record.status = (status or "active").strip() or "active"
-        session.commit()
         dirty_from = min(
             (
                 candidate
@@ -3428,7 +3572,12 @@ def update_account(
             ),
             default=None,
         )
-        _mark_daily_snapshots_stale(portfolio_id, dirty_from=dirty_from)
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=dirty_from,
+            session=session,
+        )
+        session.commit()
         return _serialize_account_row(record)
 
 
@@ -3475,10 +3624,19 @@ def list_transactions(
         return [_serialize_transaction_row(item) for item in records]
 
 
-def _mark_daily_snapshots_stale(portfolio_id: str, *, dirty_from: date | None = None) -> None:
+def _mark_daily_snapshots_stale(
+    portfolio_id: str,
+    *,
+    dirty_from: date | None = None,
+    session=None,
+) -> None:
     from portfolio_app.services.daily_snapshots import mark_portfolio_daily_snapshots_stale
 
-    mark_portfolio_daily_snapshots_stale(portfolio_id, dirty_from=dirty_from)
+    mark_portfolio_daily_snapshots_stale(
+        portfolio_id,
+        dirty_from=dirty_from,
+        session=session,
+    )
 
 
 def create_transaction(
@@ -3553,10 +3711,13 @@ def create_transactions(
 
     session_factory = get_session_factory()
     with session_factory() as session:
+        if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
+            raise ValueError("Portfolio no longer exists.")
+        transaction_ids = _allocate_transaction_ids(session, len(records))
         created: list[TransactionRecordModel] = []
-        for values in records:
+        for values, transaction_id in zip(records, transaction_ids, strict=True):
             record = TransactionRecordModel(
-                transaction_id=_next_transaction_id(session),
+                transaction_id=transaction_id,
                 portfolio_id=portfolio_id,
             )
             _apply_transaction_record(
@@ -3603,6 +3764,7 @@ def create_transactions(
             session.add(record)
             session.flush()
             created.append(record)
+        _validate_portfolio_transaction_history(session, portfolio_id)
         dirty_from = min((record.trade_date for record in created), default=None)
         affected_instrument_ids = {
             str(record.instrument_id or "").strip()
@@ -3610,8 +3772,12 @@ def create_transactions(
             if str(record.instrument_id or "").strip()
         }
         _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=dirty_from,
+            session=session,
+        )
         session.commit()
-        _mark_daily_snapshots_stale(portfolio_id, dirty_from=dirty_from)
         return [_serialize_transaction_row(record) for record in created]
 
 
@@ -3646,6 +3812,8 @@ def update_transaction(
 ) -> dict[str, object] | None:
     session_factory = get_session_factory()
     with session_factory() as session:
+        if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
+            return None
         record = session.scalar(
             select(TransactionRecordModel).where(
                 TransactionRecordModel.portfolio_id == portfolio_id,
@@ -3692,9 +3860,15 @@ def update_transaction(
             for instrument_id in {previous_instrument_id, str(record.instrument_id or "").strip()}
             if instrument_id
         }
+        session.flush()
+        _validate_portfolio_transaction_history(session, portfolio_id)
         _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=dirty_from,
+            session=session,
+        )
         session.commit()
-        _mark_daily_snapshots_stale(portfolio_id, dirty_from=dirty_from)
         return _serialize_transaction_row(record)
 
 
@@ -3709,6 +3883,8 @@ def delete_transactions(
 
     session_factory = get_session_factory()
     with session_factory() as session:
+        if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
+            return []
         records = session.scalars(
             select(TransactionRecordModel).where(
                 TransactionRecordModel.portfolio_id == portfolio_id,
@@ -3724,6 +3900,7 @@ def delete_transactions(
         for record in records:
             session.delete(record)
         session.flush()
+        _validate_portfolio_transaction_history(session, portfolio_id)
         _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
         deleted_dates = [
             parsed_date
@@ -3731,8 +3908,12 @@ def delete_transactions(
             if parsed_date is not None
         ]
         dirty_from = min(deleted_dates, default=None)
+        _mark_daily_snapshots_stale(
+            portfolio_id,
+            dirty_from=dirty_from,
+            session=session,
+        )
         session.commit()
-        _mark_daily_snapshots_stale(portfolio_id, dirty_from=dirty_from)
         return serialized
 
 

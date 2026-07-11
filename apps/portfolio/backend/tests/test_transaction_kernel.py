@@ -8,10 +8,87 @@ import pytest
 from tests.store_fixture import TEST_PORTFOLIO_STORE
 
 from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
+from portfolio_app.api.contracts import LedgerPostingRecord, PositionLotRecord
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import daily_snapshots, portfolio_store
 from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
 from portfolio_app.services.ledger import _build_position_state, build_position_lots, derive_ledger_postings
+
+
+def _share_split_event(
+    *,
+    effective_date: str = "2026-07-10",
+    record_date: str = "2026-07-09",
+    new_units: str = "2",
+    old_units: str = "1",
+    quantity_rounding: str = "exact",
+    status: str = "confirmed",
+) -> dict[str, object]:
+    return {
+        "corporate_action_event_id": f"ca-equity-us-abbv-share-split-{effective_date}",
+        "instrument_id": "equity-us-abbv",
+        "action_type": "share_split",
+        "announcement_date": "2026-07-06",
+        "record_date": record_date,
+        "effective_date": effective_date,
+        "payable_date": effective_date,
+        "new_units": new_units,
+        "old_units": old_units,
+        "quantity_rounding": quantity_rounding,
+        "quantity_precision": 0,
+        "cost_basis_treatment": "carry",
+        "source": "issuer_announcement",
+        "external_event_id": None,
+        "status": status,
+        "provenance": {},
+        "created_at": "2026-07-06T00:00:00Z",
+        "updated_at": "2026-07-06T00:00:00Z",
+    }
+
+
+def _split_test_transaction(
+    transaction_id: str,
+    transaction_type: str,
+    trade_date: str,
+    quantity: float,
+    gross_amount: float,
+    *,
+    trade_time: str = "10:00",
+) -> dict[str, object]:
+    return {
+        "transaction_id": transaction_id,
+        "portfolio_id": "p",
+        "transaction_type": transaction_type,
+        "trade_date": trade_date,
+        "trade_at": f"{trade_date}T{trade_time}:00Z",
+        "created_at": f"{trade_date}T{trade_time}:00Z",
+        "settlement_date": trade_date,
+        "account_id": "acct",
+        "settlement_cash_account_id": "cash",
+        "instrument_id": "equity-us-abbv",
+        "instrument_ref": {
+            "instrument_id": "equity-us-abbv",
+            "instrument_name": "Split Security",
+            "instrument_type": "equity",
+            "currency": "USD",
+            "identifiers": [],
+        },
+        "quantity": quantity,
+        "gross_amount": gross_amount,
+        "fees": 0.0,
+        "taxes": 0.0,
+        "currency": "USD",
+    }
+
+
+def _split_test_accounts() -> list[dict[str, object]]:
+    return [
+        {
+            "account_id": "acct",
+            "account_type": "securities_account",
+            "cost_basis_method": "fifo",
+        }
+    ]
 
 
 def test_store_reset_rejects_legacy_asset_references():
@@ -1719,6 +1796,191 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
     assert open_lot["income_cash_amount"] == pytest.approx(50.0)
 
 
+def test_entitlement_bod_excludes_same_day_buy_from_income_allocation():
+    instrument_ref = {
+        "instrument_id": "equity-entitlement-test",
+        "instrument_name": "Entitlement Test Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+    account = {
+        "account_id": "broker-entitlement-test",
+        "account_type": "securities_account",
+        "cost_basis_method": "fifo",
+    }
+    common = {
+        "portfolio_id": "portfolio-entitlement-test",
+        "account_id": account["account_id"],
+        "instrument_id": instrument_ref["instrument_id"],
+        "instrument_ref": instrument_ref,
+        "currency": "USD",
+        "fees": 0.0,
+        "taxes": 0.0,
+    }
+    lots = build_position_lots(
+        "portfolio-entitlement-test",
+        [account],
+        [
+            {
+                **common,
+                "transaction_id": "txn-prior-buy",
+                "transaction_type": "buy",
+                "trade_date": "2026-04-09",
+                "settlement_date": "2026-04-09",
+                "quantity": 10.0,
+                "gross_amount": 1000.0,
+                "created_at": "2026-04-09T09:00:00Z",
+            },
+            {
+                **common,
+                "transaction_id": "txn-ex-date-buy",
+                "transaction_type": "buy",
+                "trade_date": "2026-04-10",
+                "settlement_date": "2026-04-10",
+                "quantity": 10.0,
+                "gross_amount": 1000.0,
+                "created_at": "2026-04-10T09:00:00Z",
+            },
+            {
+                **common,
+                "transaction_id": "txn-dividend",
+                "transaction_type": "dividend",
+                "trade_date": "2026-04-15",
+                "entitlement_date": "2026-04-10",
+                "settlement_date": "2026-04-15",
+                "quantity": None,
+                "gross_amount": 100.0,
+                "created_at": "2026-04-15T09:00:00Z",
+            },
+        ],
+    )
+
+    by_opening_transaction = {lot["opened_by_transaction_id"]: lot for lot in lots}
+    assert by_opening_transaction["txn-prior-buy"]["income_cash_amount"] == pytest.approx(100.0)
+    assert by_opening_transaction["txn-ex-date-buy"]["income_cash_amount"] == pytest.approx(0.0)
+
+
+def test_entitlement_bod_keeps_same_day_sale_in_income_allocation():
+    instrument_ref = {
+        "instrument_id": "equity-entitlement-test",
+        "instrument_name": "Entitlement Test Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+    account = {
+        "account_id": "broker-entitlement-test",
+        "account_type": "securities_account",
+        "cost_basis_method": "fifo",
+    }
+    common = {
+        "portfolio_id": "portfolio-entitlement-test",
+        "account_id": account["account_id"],
+        "instrument_id": instrument_ref["instrument_id"],
+        "instrument_ref": instrument_ref,
+        "currency": "USD",
+        "fees": 0.0,
+        "taxes": 0.0,
+    }
+    lots = build_position_lots(
+        "portfolio-entitlement-test",
+        [account],
+        [
+            {
+                **common,
+                "transaction_id": "txn-prior-buy",
+                "transaction_type": "buy",
+                "trade_date": "2026-04-09",
+                "settlement_date": "2026-04-09",
+                "quantity": 10.0,
+                "gross_amount": 1000.0,
+                "created_at": "2026-04-09T09:00:00Z",
+            },
+            {
+                **common,
+                "transaction_id": "txn-ex-date-sell",
+                "transaction_type": "sell",
+                "trade_date": "2026-04-10",
+                "settlement_date": "2026-04-10",
+                "quantity": 10.0,
+                "gross_amount": 1100.0,
+                "created_at": "2026-04-10T09:00:00Z",
+            },
+            {
+                **common,
+                "transaction_id": "txn-dividend",
+                "transaction_type": "dividend",
+                "trade_date": "2026-04-15",
+                "entitlement_date": "2026-04-10",
+                "settlement_date": "2026-04-15",
+                "quantity": None,
+                "gross_amount": 100.0,
+                "created_at": "2026-04-15T09:00:00Z",
+            },
+        ],
+    )
+
+    assert len(lots) == 1
+    assert lots[0]["status"] == "closed"
+    assert lots[0]["income_cash_amount"] == pytest.approx(100.0)
+
+
+def test_entitlement_bod_accepts_same_day_opening_balance_with_prior_acquisition():
+    instrument_ref = {
+        "instrument_id": "equity-entitlement-test",
+        "instrument_name": "Entitlement Test Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [],
+    }
+    account = {
+        "account_id": "broker-entitlement-test",
+        "account_type": "securities_account",
+        "cost_basis_method": "fifo",
+    }
+    common = {
+        "portfolio_id": "portfolio-entitlement-test",
+        "account_id": account["account_id"],
+        "instrument_id": instrument_ref["instrument_id"],
+        "instrument_ref": instrument_ref,
+        "currency": "USD",
+        "fees": 0.0,
+        "taxes": 0.0,
+    }
+    lots = build_position_lots(
+        "portfolio-entitlement-test",
+        [account],
+        [
+            {
+                **common,
+                "transaction_id": "txn-opening",
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-04-10",
+                "acquisition_date": "2026-04-01",
+                "settlement_date": "2026-04-10",
+                "quantity": 10.0,
+                "gross_amount": 1000.0,
+                "created_at": "2026-04-10T08:00:00Z",
+            },
+            {
+                **common,
+                "transaction_id": "txn-dividend",
+                "transaction_type": "dividend",
+                "trade_date": "2026-04-15",
+                "entitlement_date": "2026-04-10",
+                "settlement_date": "2026-04-15",
+                "quantity": None,
+                "gross_amount": 100.0,
+                "created_at": "2026-04-15T09:00:00Z",
+            },
+        ],
+    )
+
+    assert len(lots) == 1
+    assert lots[0]["income_cash_amount"] == pytest.approx(100.0)
+
+
 def test_rejects_late_paid_dividend_reinvestment_and_preserves_workspace_reads(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
@@ -2263,6 +2525,184 @@ def test_transaction_list_sorts_same_day_by_trade_time_not_creation_order(client
     transactions = transactions_response.json()["transactions"]
     assert transactions[0]["trade_time"] == "15:00"
     assert transactions[1]["trade_time"] == "09:00"
+
+
+def test_confirmed_share_split_applies_at_effective_bod_before_same_day_buy() -> None:
+    transactions = [
+        _split_test_transaction("buy-before", "buy", "2026-07-08", 100.0, 1000.0),
+        _split_test_transaction("sell-record", "sell", "2026-07-09", 20.0, 240.0),
+        _split_test_transaction("buy-effective", "buy", "2026-07-10", 10.0, 100.0),
+    ]
+    event = _share_split_event()
+
+    state = _build_position_state(
+        transactions,
+        account_cost_methods={"acct": "fifo"},
+        corporate_actions=[event],
+        as_of_date=date(2026, 7, 10),
+    )
+    bucket = state[("acct", "equity-us-abbv")]
+    assert bucket["quantity"] == pytest.approx(170.0)
+    assert bucket["cost_basis"] == pytest.approx(900.0)
+
+    postings = derive_ledger_postings(
+        "p",
+        transactions,
+        account_cost_methods={"acct": "fifo"},
+        corporate_actions=[event],
+        as_of_date=date(2026, 7, 10),
+    )
+    split_posting = next(
+        posting
+        for posting in postings
+        if posting["posting_role"] == "corporate_action_position_adjustment"
+    )
+    assert split_posting["quantity_delta"] == pytest.approx(80.0)
+    assert split_posting["cost_basis_delta"] == 0.0
+    assert split_posting["effective_date"] == "2026-07-10"
+    LedgerPostingRecord.model_validate(split_posting)
+
+
+def test_share_split_record_date_buys_and_sells_define_entitled_eod_quantity() -> None:
+    transactions = [
+        _split_test_transaction("buy-before", "buy", "2026-07-08", 100.0, 1000.0),
+        _split_test_transaction("buy-record", "buy", "2026-07-09", 20.0, 220.0, trade_time="09:30"),
+        _split_test_transaction("sell-record", "sell", "2026-07-09", 10.0, 120.0, trade_time="14:30"),
+        _split_test_transaction("buy-effective", "buy", "2026-07-10", 5.0, 50.0),
+    ]
+    state = _build_position_state(
+        transactions,
+        account_cost_methods={"acct": "fifo"},
+        corporate_actions=[_share_split_event()],
+        as_of_date=date(2026, 7, 10),
+    )
+    # Record-date EOD owns 110 units -> 220 at effective BOD; the effective-day
+    # buy is already expressed in post-split units and must not be multiplied.
+    assert state[("acct", "equity-us-abbv")]["quantity"] == pytest.approx(225.0)
+
+
+def test_share_split_truncates_once_at_account_total_then_allocates_lots() -> None:
+    transactions = [
+        _split_test_transaction("lot-a", "buy", "2026-07-08", 10.2, 102.0, trade_time="09:30"),
+        _split_test_transaction("lot-b", "buy", "2026-07-08", 5.3, 53.0, trade_time="14:30"),
+    ]
+    event = _share_split_event(
+        new_units="3",
+        old_units="2",
+        quantity_rounding="truncate",
+    )
+    lots = build_position_lots(
+        "p",
+        _split_test_accounts(),
+        transactions,
+        as_of_date=date(2026, 7, 10),
+        corporate_actions=[event],
+    )
+    open_lots = [lot for lot in lots if lot["status"] == "open"]
+    assert sum(lot["remaining_quantity"] for lot in open_lots) == pytest.approx(23.0)
+    assert sum(lot["remaining_cost_basis"] for lot in open_lots) == pytest.approx(155.0)
+    assert len(open_lots) == 2
+    assert all(lot["opening_transaction_type"] == "corporate_action" for lot in open_lots)
+    assert all(lot["unit_cost_basis_after"] < lot["unit_cost_basis_before"] for lot in open_lots)
+    for lot in lots:
+        PositionLotRecord.model_validate(lot)
+
+
+def test_share_split_rejects_unmodeled_due_bill_interval_trades() -> None:
+    transactions = [
+        _split_test_transaction("buy-record", "buy", "2026-07-09", 100.0, 1000.0),
+        _split_test_transaction("sell-between", "sell", "2026-07-10", 10.0, 110.0),
+    ]
+    event = _share_split_event(effective_date="2026-07-11", record_date="2026-07-09")
+    with pytest.raises(ValueError, match="due-bill processing"):
+        _build_position_state(
+            transactions,
+            account_cost_methods={"acct": "fifo"},
+            corporate_actions=[event],
+            as_of_date=date(2026, 7, 11),
+        )
+
+
+def test_provider_detected_split_never_changes_portfolio_quantity() -> None:
+    transactions = [
+        _split_test_transaction("buy-before", "buy", "2026-07-08", 100.0, 1000.0),
+    ]
+    state = _build_position_state(
+        transactions,
+        account_cost_methods={"acct": "fifo"},
+        corporate_actions=[_share_split_event(status="detected")],
+        as_of_date=date(2026, 7, 10),
+    )
+    assert state[("acct", "equity-us-abbv")]["quantity"] == pytest.approx(100.0)
+
+
+def test_confirmed_cash_in_lieu_split_fails_closed_without_cash_fact() -> None:
+    transactions = [
+        _split_test_transaction("buy-before", "buy", "2026-07-08", 101.0, 1010.0),
+    ]
+    event = _share_split_event(new_units="1", old_units="2")
+    event["quantity_rounding"] = "cash_in_lieu"
+    with pytest.raises(ValueError, match="cash-in-lieu valuation and receivable"):
+        _build_position_state(
+            transactions,
+            account_cost_methods={"acct": "fifo"},
+            corporate_actions=[event],
+            as_of_date=date(2026, 7, 10),
+        )
+
+
+def test_transaction_execution_quote_uses_raw_valuation_basis_not_adjusted_chart(
+    client,
+    monkeypatch,
+) -> None:
+    from portfolio_app.services import execution_quotes
+
+    monkeypatch.setattr(
+        execution_quotes,
+        "get_registry_instrument_detail",
+        lambda instrument_id: {
+            "instrument_id": instrument_id,
+            "instrument_name": "Split ETF",
+            "instrument_type": "etf",
+            "currency": "CNY",
+            "identifiers": [],
+            "quote_selection_policy": {
+                "valuation": ["close", "last"],
+                "chart": ["adjusted_close", "close"],
+            },
+            "market_data": [
+                {
+                    "metric_family": "price",
+                    "quote_basis": "close",
+                    "as_of_date": "2026-03-27",
+                    "value": "1.66",
+                    "currency": "CNY",
+                    "provider": "tushare:fund_daily",
+                    "status": "complete",
+                },
+                {
+                    "metric_family": "price",
+                    "quote_basis": "adjusted_close",
+                    "as_of_date": "2026-03-27",
+                    "value": "0.4152179894",
+                    "currency": "CNY",
+                    "provider": "tushare:fund_adj",
+                    "status": "complete",
+                },
+            ],
+        },
+    )
+
+    response = client.get(
+        "/api/portfolios/portfolio-ops/transactions/execution-quote",
+        params={"instrument_id": "159516-sz", "as_of_date": "2026-03-27"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["quote_basis"] == "close"
+    assert payload["value"] == pytest.approx(1.66)
+    assert payload["quote_date"] == "2026-03-27"
+    assert payload["stale"] is False
 
 
 def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):

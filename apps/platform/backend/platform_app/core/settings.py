@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     tushare_token: str | None = None
     tushare_api_url: str = "https://fastapic.stockai888.top"
     tushare_timeout_seconds: int = 30
+    tushare_batch_max_workers: int = 4
+    tushare_batch_timeout_seconds: int = 3600
 
     model_config = SettingsConfigDict(
         env_prefix="PORTFOLIO_OPS_PLATFORM_",
@@ -62,6 +64,22 @@ class Settings(BaseSettings):
                 raise ValueError("database_schema must be a valid SQL identifier.")
             return normalized
         return value
+
+    @field_validator("tushare_batch_max_workers", mode="before")
+    @classmethod
+    def _coerce_tushare_batch_workers(cls, value: object) -> int:
+        workers = int(value)
+        if workers < 1 or workers > 8:
+            raise ValueError("tushare_batch_max_workers must be between 1 and 8.")
+        return workers
+
+    @field_validator("tushare_batch_timeout_seconds", mode="before")
+    @classmethod
+    def _coerce_tushare_batch_timeout(cls, value: object) -> int:
+        timeout = int(value)
+        if timeout < 60 or timeout > 21600:
+            raise ValueError("tushare_batch_timeout_seconds must be between 60 and 21600.")
+        return timeout
 
     @model_validator(mode="after")
     def _validate_cors_policy(self) -> "Settings":

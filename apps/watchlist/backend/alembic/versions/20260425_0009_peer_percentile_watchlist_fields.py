@@ -64,7 +64,7 @@ def _upsert_field_registry_rows(bind, field_registry_table, rows: list[dict[str,
 
 
 def upgrade() -> None:
-    from watchlist_app.reference_data.watchlist_fields import FIELD_REGISTRY
+    from watchlist_migration_snapshots.watchlist_fields import FIELD_REGISTRY
 
     bind = op.get_bind()
     field_registry_table = sa.table(

@@ -10,7 +10,7 @@ This repository is the durable project handoff for moving `Portfolio Operations 
 
 - `apps/`: Platform, Watchlist, and Portfolio backend/frontend source, tests, Alembic migrations, and app docs.
 - `packages/`: shared Python and frontend packages.
-- `infra/`: PostgreSQL schema bootstrap, instrument-registry migrations, and the Linux user-systemd market-data timer installer.
+- `infra/`: PostgreSQL schema bootstrap, instrument-registry migrations, macOS user-LaunchAgent services, and the Linux user-systemd market-data timer installer.
 - `docs/`: operating docs, design baseline, database workflow, and this migration note.
 - `.env.example`: local-development configuration templates.
 - `nav/`: NAV attachment image data captured for migration.
@@ -83,11 +83,14 @@ shasum -a 256 -c data/migration/portfolio_ops_2026-07-09_current.sha256
 Restore the data into the local database:
 
 ```bash
-PGPASSWORD=portfolio_ops \
-pg_restore --clean --if-exists --no-owner --no-acl \
-  -h 127.0.0.1 -U portfolio_ops -d portfolio_ops \
-  data/migration/portfolio_ops_2026-07-09_current.pgdump
+CONFIRM_RESTORE=portfolio_ops infra/postgres/restore_project_dump.sh
 ```
+
+The wrapper stops the installed local launchd jobs before taking a private
+pre-restore backup. It restores only the three project schemas, runs all current
+migrations, and restarts the jobs after success. Any restore or migration
+failure automatically replaces the partial database with the safety backup
+before the jobs are restarted. The retained backup path is printed at the end.
 
 Check that the restored schemas are populated:
 
@@ -134,13 +137,8 @@ The local development database defaults are:
 One shared virtual environment is enough for local migration validation:
 
 ```bash
-python3 -m venv .venv
+infra/scripts/sync_python_env.sh
 source .venv/bin/activate
-python -m pip install -U pip
-pip install -e packages/instrument-core/python
-pip install -e apps/platform/backend
-pip install -e apps/watchlist/backend
-pip install -e apps/portfolio/backend
 ```
 
 ### 6. Install Frontend Dependencies
@@ -166,10 +164,12 @@ Run these in three terminals with the virtual environment active:
 Run these in three more terminals:
 
 ```bash
-npm --prefix apps/platform/frontend run dev -- --host 0.0.0.0 --port 5172
-npm --prefix apps/watchlist/frontend run dev -- --host 0.0.0.0 --port 5173
-npm --prefix apps/portfolio/frontend run dev -- --host 0.0.0.0 --port 5174
+npm --prefix apps/platform/frontend run dev -- --host 127.0.0.1 --port 5172
+npm --prefix apps/watchlist/frontend run dev -- --host 127.0.0.1 --port 5173
+npm --prefix apps/portfolio/frontend run dev -- --host 127.0.0.1 --port 5174
 ```
+
+The Vite development servers are loopback-only by default. Use an authenticated reverse proxy for any deliberate remote access.
 
 Then open:
 
@@ -187,7 +187,9 @@ curl --noproxy '*' http://127.0.0.1:8000/api/health
 curl --noproxy '*' http://127.0.0.1:8001/api/health
 ```
 
-Then run the validation commands from `README.md`. On macOS, recreate background jobs later with foreground dev commands, `launchd`, Homebrew services, or Docker-managed processes; do not copy Linux `systemd --user` unit files blindly.
+Then run the validation commands from `README.md`. On macOS, install the current
+user LaunchAgents with `infra/launchd/install_local_services.sh`; do not copy the
+historical Linux `systemd --user` unit files.
 
 ## Services
 
@@ -196,12 +198,18 @@ The WSL runtime had these user-systemd services active at freeze time. Older ins
 - platform backend on `127.0.0.1:8002`
 - watchlist backend on `127.0.0.1:8000`
 - portfolio backend on `127.0.0.1:8001`
-- platform frontend on `0.0.0.0:5172`
-- watchlist frontend on `0.0.0.0:5173`
-- portfolio frontend on `0.0.0.0:5174`
+- platform frontend on `127.0.0.1:5172`
+- watchlist frontend on `127.0.0.1:5173`
+- portfolio frontend on `127.0.0.1:5174`
 - `portfolio-ops-market-data-refresh.timer` scheduled at `08:00 Asia/Shanghai`
 
-On macOS, recreate these as foreground dev commands, `launchd` jobs, Homebrew services, or Docker-managed processes. Do not copy Linux unit files blindly.
+The `08:00` entry above records the frozen WSL state only. The current installers
+use `21:00`: macOS registers
+`com.orataba.portfolio-ops.market-data-refresh` through
+`infra/launchd/install_local_services.sh`, and the Linux/systemd installer also
+defaults to `21:00 Asia/Shanghai`. The macOS job is a one-shot calendar task with
+`KeepAlive=false`, so installing or restoring services does not trigger it
+immediately.
 
 ## Configuration And Secrets
 

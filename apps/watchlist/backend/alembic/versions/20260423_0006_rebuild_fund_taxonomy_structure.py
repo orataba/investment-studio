@@ -136,8 +136,8 @@ def _map_node_id(node_id: str | None, new_node_ids: set[str]) -> str | None:
 
 
 def upgrade() -> None:
-    from watchlist_app.reference_data.fund_taxonomy import fund_taxonomy_nodes
-    from watchlist_app.services.fund_taxonomy import (
+    from watchlist_migration_snapshots.fund_taxonomy import fund_taxonomy_nodes
+    from watchlist_migration_snapshots.fund_taxonomy_ops import (
         build_taxonomy_context,
         merge_taxonomy_attributes,
     )

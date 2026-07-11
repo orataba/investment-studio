@@ -28,6 +28,30 @@ def get_registry_instrument_detail(instrument_id: str) -> dict[str, object] | No
     return get_registry_instrument(instrument_id)
 
 
+def get_registry_instrument_details(
+    instrument_ids: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, dict[str, object] | None]:
+    try:
+        return shared_store.get_instrument_details(get_session_factory(), instrument_ids)
+    except Exception as error:  # pragma: no cover - defensive wrapper
+        raise InstrumentRegistryError("Failed to query shared instrument registry.") from error
+
+
+def list_registry_corporate_actions(
+    instrument_ids: list[str] | set[str] | tuple[str, ...],
+    *,
+    effective_on_or_before=None,
+) -> list[dict[str, object]]:
+    try:
+        return shared_store.list_corporate_actions(
+            get_session_factory(),
+            instrument_ids,
+            effective_on_or_before=effective_on_or_before,
+        )
+    except Exception as error:  # pragma: no cover - defensive wrapper
+        raise InstrumentRegistryError("Failed to query shared corporate actions.") from error
+
+
 def get_platform_fx_rates() -> dict[str, object]:
     try:
         return shared_fx_rates.get_fx_payload(get_session_factory())

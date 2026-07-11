@@ -51,6 +51,7 @@ export default function App() {
             <Route path="/taxonomies" element={<Navigate replace to="/portfolios" />} />
             <Route path="/x-ray" element={<Navigate replace to="/portfolios" />} />
             <Route path="/stock-intersection" element={<Navigate replace to="/portfolios" />} />
+            <Route path="*" element={<Navigate replace to="/portfolios" />} />
           </Routes>
         </Suspense>
       </main>

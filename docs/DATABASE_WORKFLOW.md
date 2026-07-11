@@ -14,6 +14,9 @@
 (cd infra/postgres && docker compose up -d)
 ```
 
+The compose port is bound to `127.0.0.1:5432` by default; opt into a broader
+network exposure only through an explicit, reviewed deployment override.
+
 Local connection values come from Git-ignored backend `.env` links to `~/.config/orataba/secrets/portfolio-operations-workbench/`, or from shell environment variables. Do not paste credential-bearing URLs into docs, issues, PR text, commit messages, or chat transcripts.
 
 - host: `127.0.0.1`
@@ -28,6 +31,36 @@ Local connection values come from Git-ignored backend `.env` links to `~/.config
 (cd apps/portfolio/backend && PYTHONPATH=. alembic upgrade head)
 (cd apps/watchlist/backend && PYTHONPATH=. alembic upgrade head)
 ```
+
+For release automation, use the fail-fast shared entry point instead of running
+the three commands independently:
+
+```bash
+PROJECT_ROOT="$PWD" PYTHON_BIN="$PWD/.venv/bin/python" \
+  ENV_ROOT="$HOME/.config/portfolio-ops/env" \
+  infra/scripts/migrate_all.sh
+```
+
+`ENV_ROOT` is optional. When it is set, it must contain `platform.env`,
+`portfolio.env`, and `watchlist.env`. Without it, the script uses each backend's
+local `.env` when present or the already-exported process environment. The
+instrument registry migration reuses the Platform database connection unless a
+dedicated `PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL` is provided.
+Already-exported process variables always take precedence over every `.env`
+entry; this prevents a release or restore command from being silently redirected
+to another database by a repository-local file.
+
+The destructive dump restore wrapper performs a checksum/archive/target
+preflight, stops managed local services, retains a pre-restore schema backup,
+and automatically rolls back on restore, validation, or migration failure:
+
+```bash
+CONFIRM_RESTORE=portfolio_ops infra/postgres/restore_project_dump.sh
+```
+
+By default it accepts only loopback or Unix-socket database hosts. Safety
+backups live under
+`${XDG_STATE_HOME:-~/.local/state}/portfolio-operations-workbench/postgres-backups/`.
 
 数据库结构只由 Alembic migration 管理。运行时不再保留任何 SQLite bootstrap、迁运或镜像脚本。
 

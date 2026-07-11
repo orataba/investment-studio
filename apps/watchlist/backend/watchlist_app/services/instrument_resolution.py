@@ -12,12 +12,14 @@ from watchlist_app.services.shared_instrument_registry import (
 
 instrument_repository = SQLAlchemyInstrumentRepository()
 read_model_repository = SQLAlchemyReadModelRepository()
-LOCAL_DETAIL_VIEW_TYPES = {"fund", "index"}
+LOCAL_DETAIL_INSTRUMENT_TYPES = {"fund", "etf", "index"}
 
 
 def _local_detail_view_type(instrument_type: str) -> str | None:
     normalized = instrument_type.strip().lower()
-    return normalized if normalized in LOCAL_DETAIL_VIEW_TYPES else None
+    if normalized == "etf":
+        return "fund"
+    return normalized if normalized in {"fund", "index"} else None
 
 
 def _primary_identifier(shared_record: dict[str, object] | None) -> str | None:
@@ -51,6 +53,7 @@ def _build_supported_detail_response(
     primary_identifier: str | None,
     detail_view_type: str,
     support_reason: str = "detail_ready",
+    corporate_actions: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
         "requested_instrument_id": requested_instrument_id,
@@ -62,6 +65,7 @@ def _build_supported_detail_response(
         "detail_subject_id": canonical_instrument_id,
         "detail_supported": True,
         "support_reason": support_reason,
+        "corporate_actions": corporate_actions or [],
     }
 
 
@@ -73,6 +77,7 @@ def _build_stub_detail_response(
     instrument_type: str,
     primary_identifier: str | None,
     support_reason: str,
+    corporate_actions: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
         "requested_instrument_id": requested_instrument_id,
@@ -84,6 +89,7 @@ def _build_stub_detail_response(
         "detail_subject_id": None,
         "detail_supported": False,
         "support_reason": support_reason,
+        "corporate_actions": corporate_actions or [],
     }
 
 
@@ -150,6 +156,11 @@ def resolve_watchlist_instrument(
                 instrument_type=instrument_type,
                 primary_identifier=_primary_identifier(shared_record) or local_asset.primary_identifier_value,
                 detail_view_type=local_asset.detail_view_type,
+                corporate_actions=(
+                    list(shared_record.get("corporate_actions", []))
+                    if isinstance(shared_record.get("corporate_actions"), list)
+                    else []
+                ),
             )
         cached_row = watchlist_row
         if cached_row is None and canonical_instrument_id != requested_instrument_id:
@@ -168,6 +179,11 @@ def resolve_watchlist_instrument(
             primary_identifier=_primary_identifier(shared_record)
             or (cached_row.ticker_or_isin if cached_row is not None else None),
             support_reason="instrument_detail_missing_local_overlay",
+            corporate_actions=(
+                list(shared_record.get("corporate_actions", []))
+                if isinstance(shared_record.get("corporate_actions"), list)
+                else []
+            ),
         )
 
     if local_asset is not None:

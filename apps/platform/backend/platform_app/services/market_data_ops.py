@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
+from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from email import policy
@@ -8,10 +10,11 @@ from email.utils import parseaddr
 from io import BytesIO
 import imaplib
 import logging
+import multiprocessing
 import re
 import signal
-import socket
 import threading
+import time
 from typing import Any
 
 from platform_app.core.settings import get_settings
@@ -21,7 +24,8 @@ from platform_app.services.instrument_store import (
     replace_nav_history,
     update_refresh_status,
     upsert_quote_selection_policy,
-    upsert_market_data,
+    upsert_corporate_action_event,
+    upsert_market_data_points,
 )
 
 try:
@@ -43,7 +47,7 @@ except ImportError:  # pragma: no cover - optional dependency
 LOGGER = logging.getLogger("portfolio_ops.market_data_ops")
 
 
-class _MarketDataBatchItemTimeout(TimeoutError):
+class MarketDataItemTimeout(TimeoutError):
     pass
 
 
@@ -78,9 +82,14 @@ class _BatchItemTimeout:
             signal.setitimer(signal.ITIMER_REAL, previous_delay, previous_interval)
 
     def _raise_timeout(self, signum: int, frame: object) -> None:
-        raise _MarketDataBatchItemTimeout(
+        raise MarketDataItemTimeout(
             f"Market data refresh timed out after {self.seconds} seconds for {self.instrument_id}."
         )
+
+
+def market_data_item_timeout(instrument_id: str) -> AbstractContextManager[None]:
+    settings = get_settings()
+    return _BatchItemTimeout(settings.market_data_batch_item_timeout_seconds, instrument_id)
 
 NAV_IMPORT_HEADER_MAP = {
     "date": "as_of_date",
@@ -102,13 +111,18 @@ NAV_IMPORT_HEADER_MAP = {
     "实际净值": "nav",
     "navwithdividend": "nav_with_dividend",
     "nav_with_dividend": "nav_with_dividend",
-    "累计净值": "nav_with_dividend",
-    "累计净值元": "nav_with_dividend",
-    "累计单位净值": "nav_with_dividend",
-    "累计单位净值元": "nav_with_dividend",
-    "累计单位净值元份": "nav_with_dividend",
-    "资产份额累计净值元": "nav_with_dividend",
-    "实际累计净值": "nav_with_dividend",
+    "累计净值": "cumulative_nav",
+    "累计净值元": "cumulative_nav",
+    "累计单位净值": "cumulative_nav",
+    "累计单位净值元": "cumulative_nav",
+    "累计单位净值元份": "cumulative_nav",
+    "资产份额累计净值元": "cumulative_nav",
+    "实际累计净值": "cumulative_nav",
+    "复权净值": "nav_with_dividend",
+    "复权单位净值": "nav_with_dividend",
+    "分红再投资净值": "nav_with_dividend",
+    "分红再投资单位净值": "nav_with_dividend",
+    "复利净值": "nav_with_dividend",
     "currency": "currency",
     "ccy": "currency",
     "币种": "currency",
@@ -133,16 +147,8 @@ NAV_IMPORT_HEADER_MAP = {
 LABEL_SNAPSHOT_FIELD_ALIASES = {
     "as_of_date": ("日期", "净值日期"),
     "nav": ("单位净值",),
-    "nav_with_dividend": ("累计单位净值",),
-}
-
-REINVESTED_TOTAL_RETURN_INSTRUMENT_IDS = {
-    "anz73a",
-    "bvk42b",
-    "savf63",
-    "sgs754",
-    "yunsheng-shicheng-arbitrage-1-b",
-    "zb945a",
+    "cumulative_nav": ("累计单位净值",),
+    "nav_with_dividend": ("复权单位净值", "分红再投资净值", "复利净值"),
 }
 
 TOTAL_RETURN_NAV_DECIMAL_PLACES = Decimal("0.0000000000000001")
@@ -151,17 +157,13 @@ TUSHARE_PROFILE_ALIASES = {"tushare", "tushare_pro", "tushare-pro"}
 TUSHARE_PRICE_SUFFIXES = {"SH", "SZ"}
 TUSHARE_INDEX_SUFFIXES = {"SH", "SZ", "CSI", "CNI"}
 TUSHARE_HISTORY_START_DATE = date(2024, 1, 1)
-TUSHARE_LISTED_FUND_QUOTE_SELECTION_POLICY: dict[str, list[str]] = {
-    "trading": ["close", "last", "official_nav"],
-    "valuation": ["close", "last", "official_nav"],
-    "total_return": ["close", "adjusted_close", "total_return_nav", "official_nav"],
-    "chart": ["close", "adjusted_close", "total_return_nav", "official_nav"],
-    "reference": ["close", "last", "official_nav"],
+TUSHARE_LISTED_SECURITY_QUOTE_SELECTION_POLICY: dict[str, list[str]] = {
+    "trading": ["last", "close"],
+    "valuation": ["close", "last"],
+    "total_return": ["adjusted_close", "close", "last"],
+    "chart": ["adjusted_close", "close", "last"],
+    "reference": ["close", "last"],
 }
-
-
-def _is_reinvested_total_return_instrument(instrument_id: str) -> bool:
-    return str(instrument_id or "").strip().lower() in REINVESTED_TOTAL_RETURN_INSTRUMENT_IDS
 
 
 def _normalize_nav_header(value: str) -> str:
@@ -315,7 +317,9 @@ def _parse_nav_rows_from_matrix(matrix: list[list[object]]) -> list[dict[str, ob
     start_index = 0
     for idx, row in enumerate(matrix[:12]):
         mapped = [NAV_IMPORT_HEADER_MAP.get(_normalize_nav_header(str(cell)), "") for cell in row]
-        if "as_of_date" in mapped and any(key in mapped for key in ("nav", "nav_with_dividend")):
+        if "as_of_date" in mapped and any(
+            key in mapped for key in ("nav", "cumulative_nav", "nav_with_dividend")
+        ):
             header = mapped
             start_index = idx + 1
             break
@@ -339,7 +343,7 @@ def _parse_nav_rows_from_matrix(matrix: list[list[object]]) -> list[dict[str, ob
                 parsed_date = _parse_nav_date(cell)
                 if parsed_date is not None:
                     row_data["as_of_date"] = parsed_date.isoformat()
-            elif column in {"nav", "nav_with_dividend"}:
+            elif column in {"nav", "cumulative_nav", "nav_with_dividend"}:
                 parsed_value = _parse_nav_decimal(cell)
                 if parsed_value is not None:
                     row_data[column] = parsed_value
@@ -350,7 +354,8 @@ def _parse_nav_rows_from_matrix(matrix: list[list[object]]) -> list[dict[str, ob
             elif column in {"instrument_code", "instrument_name"} and cell:
                 row_data[column] = cell
         if row_data.get("as_of_date") and any(
-            row_data.get(key) is not None for key in ("nav", "nav_with_dividend")
+            row_data.get(key) is not None
+            for key in ("nav", "cumulative_nav", "nav_with_dividend")
         ):
             rows.append(row_data)
     rows.sort(key=lambda item: str(item["as_of_date"]))
@@ -363,6 +368,7 @@ def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> li
 
     found_date: date | None = None
     found_nav: Decimal | None = None
+    found_cumulative_nav: Decimal | None = None
     found_total_return_nav: Decimal | None = None
     normalized_aliases = {
         field: tuple(_normalize_nav_header(alias) for alias in aliases)
@@ -382,6 +388,11 @@ def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> li
             if found_nav is None and normalized_cell in normalized_aliases["nav"]:
                 found_nav = _parse_nav_decimal(next_value)
             if (
+                found_cumulative_nav is None
+                and normalized_cell in normalized_aliases["cumulative_nav"]
+            ):
+                found_cumulative_nav = _parse_nav_decimal(next_value)
+            if (
                 found_total_return_nav is None
                 and normalized_cell in normalized_aliases["nav_with_dividend"]
             ):
@@ -393,8 +404,13 @@ def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> li
                 )
             if found_nav is None:
                 found_nav = _extract_numeric_from_text("单位净值", cell)
+            if found_cumulative_nav is None:
+                found_cumulative_nav = _extract_numeric_from_text("累计单位净值", cell)
             if found_total_return_nav is None:
-                found_total_return_nav = _extract_numeric_from_text("累计单位净值", cell)
+                for label in ("复权单位净值", "分红再投资净值", "复利净值"):
+                    found_total_return_nav = _extract_numeric_from_text(label, cell)
+                    if found_total_return_nav is not None:
+                        break
 
     if found_date is None or found_nav is None:
         return []
@@ -405,6 +421,8 @@ def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> li
         "currency": "CNY",
         "frequency": "daily",
     }
+    if found_cumulative_nav is not None:
+        row["cumulative_nav"] = found_cumulative_nav
     if found_total_return_nav is not None:
         row["nav_with_dividend"] = found_total_return_nav
     return [row]
@@ -490,6 +508,9 @@ def _extract_email_body_text(message) -> str:
 
 
 def _fetch_message_bytes(mailbox, uid: int, request: str) -> bytes | None:
+    cached_fetch = getattr(mailbox, "fetch_message_bytes", None)
+    if callable(cached_fetch):
+        return cached_fetch(uid, request)
     fetch_status, fetch_data = mailbox.uid("fetch", str(uid), request)
     if fetch_status != "OK":
         return None
@@ -668,7 +689,7 @@ def _merge_rows_by_date(rows: list[dict[str, object]]) -> list[dict[str, object]
         as_of_date = str(row.get("as_of_date") or "").strip()
         if not as_of_date:
             continue
-        merged[as_of_date] = row
+        merged[as_of_date] = {**merged.get(as_of_date, {}), **row}
     return [merged[key] for key in sorted(merged.keys())]
 
 
@@ -692,6 +713,8 @@ def _existing_nav_history_by_date(instrument_id: str) -> dict[date, dict[str, De
             history.setdefault(point_date, {})["nav"] = point_value
         elif quote_basis == "total_return_nav":
             history.setdefault(point_date, {})["nav_with_dividend"] = point_value
+        elif quote_basis in {"cumulative_nav", "accumulated_nav", "cum_nav"}:
+            history.setdefault(point_date, {})["cumulative_nav"] = point_value
     return history
 
 
@@ -700,7 +723,14 @@ def _apply_reinvested_total_return_correction(
     instrument_id: str,
     rows: list[dict[str, object]],
 ) -> tuple[list[dict[str, object]], bool]:
-    if not _is_reinvested_total_return_instrument(instrument_id) or not rows:
+    """Derive a reinvested total-return NAV from unit and cash-cumulative NAV.
+
+    `cumulative_nav` is unit NAV plus cash distributions per original share; it
+    is not itself a reinvested series. An explicit `nav_with_dividend` always
+    wins. Otherwise the reinvestment factor is rolled forward whenever the
+    cumulative cash-distribution balance changes.
+    """
+    if not rows:
         return rows, False
 
     existing_history = _existing_nav_history_by_date(instrument_id)
@@ -709,20 +739,58 @@ def _apply_reinvested_total_return_correction(
     reinvested_factor: Decimal | None = None
     applied = False
 
+    first_row_date = min(
+        (
+            parsed
+            for row in rows
+            if (parsed := _parse_nav_date(row.get("as_of_date"))) is not None
+        ),
+        default=None,
+    )
+    if first_row_date is not None:
+        anchor_dates = [
+            point_date
+            for point_date, values in existing_history.items()
+            if point_date < first_row_date
+            and values.get("nav") not in {None, Decimal("0")}
+            and values.get("nav_with_dividend") is not None
+            and values.get("cumulative_nav") is not None
+        ]
+        if anchor_dates:
+            anchor = existing_history[max(anchor_dates)]
+            reinvested_factor = anchor["nav_with_dividend"] / anchor["nav"]
+            recognized_cash_distribution = anchor["cumulative_nav"] - anchor["nav"]
+
     for row in sorted(rows, key=lambda item: str(item.get("as_of_date") or "")):
         corrected_row = dict(row)
         row_date = _parse_nav_date(row.get("as_of_date"))
         row_nav = _parse_nav_decimal(row.get("nav"))
-        row_cash_total_nav = _parse_nav_decimal(row.get("nav_with_dividend"))
-        if row_date is None or row_nav is None or row_cash_total_nav is None:
+        row_cumulative_nav = _parse_nav_decimal(row.get("cumulative_nav"))
+        explicit_total_return_nav = _parse_nav_decimal(row.get("nav_with_dividend"))
+        if row_date is None or row_nav is None:
+            corrected_rows.append(corrected_row)
+            continue
+
+        cash_distribution = (
+            row_cumulative_nav - row_nav
+            if row_cumulative_nav is not None
+            else None
+        )
+        if explicit_total_return_nav is not None:
+            if row_nav != 0:
+                reinvested_factor = explicit_total_return_nav / row_nav
+            if cash_distribution is not None:
+                recognized_cash_distribution = cash_distribution
+            corrected_rows.append(corrected_row)
+            continue
+        if row_cumulative_nav is None:
             corrected_rows.append(corrected_row)
             continue
 
         existing_same_day = existing_history.get(row_date, {})
         existing_same_day_total = existing_same_day.get("nav_with_dividend")
-        cash_distribution = row_cash_total_nav - row_nav
         if reinvested_factor is None:
-            reinvested_total_nav = existing_same_day_total or row_cash_total_nav
+            reinvested_total_nav = existing_same_day_total or row_cumulative_nav
             reinvested_factor = reinvested_total_nav / row_nav if row_nav != 0 else None
             recognized_cash_distribution = cash_distribution
         else:
@@ -734,7 +802,7 @@ def _apply_reinvested_total_return_correction(
             if abs(cash_dividend) <= CASH_DISTRIBUTION_EVENT_THRESHOLD:
                 cash_dividend = Decimal("0")
             if row_nav == 0 or reinvested_factor is None:
-                reinvested_total_nav = row_cash_total_nav
+                reinvested_total_nav = row_cumulative_nav
             else:
                 if cash_dividend != 0:
                     reinvested_factor = reinvested_factor * (
@@ -744,8 +812,7 @@ def _apply_reinvested_total_return_correction(
                 reinvested_total_nav = row_nav * reinvested_factor
 
         formatted_total_nav = _format_total_return_nav_decimal(reinvested_total_nav)
-        if formatted_total_nav != row_cash_total_nav:
-            applied = True
+        applied = True
         corrected_row["nav_with_dividend"] = formatted_total_nav
         corrected_rows.append(corrected_row)
 
@@ -759,14 +826,21 @@ def _requires_reinvested_incremental_anchor(
     full_history: bool,
     nav_since_date: date | None,
 ) -> bool:
-    if (
-        full_history
-        or nav_since_date is None
-        or not _is_reinvested_total_return_instrument(instrument_id)
+    if full_history or nav_since_date is None:
+        return False
+    if not any(
+        row.get("cumulative_nav") is not None and row.get("nav_with_dividend") is None
+        for row in rows
     ):
         return False
     row_dates = {_parse_nav_date(row.get("as_of_date")) for row in rows}
-    return nav_since_date not in row_dates
+    if nav_since_date in row_dates:
+        return False
+    anchor = _existing_nav_history_by_date(instrument_id).get(nav_since_date, {})
+    return not all(
+        anchor.get(key) is not None
+        for key in ("nav", "cumulative_nav", "nav_with_dividend")
+    )
 
 
 def _filter_rows_for_instrument(
@@ -829,7 +903,12 @@ def _prepare_nav_rows_for_instrument(
             )
         raise ValueError("No NAV rows detected.")
 
-    return instrument, _merge_rows_by_date(filtered_rows)
+    merged_rows = _merge_rows_by_date(filtered_rows)
+    prepared_rows, _ = _apply_reinvested_total_return_correction(
+        instrument_id=instrument_id,
+        rows=merged_rows,
+    )
+    return instrument, prepared_rows
 
 
 def _search_uids_for_rule(
@@ -939,7 +1018,7 @@ def _policy_role_values(policy: dict[str, object], role: str) -> list[str]:
     return values
 
 
-def _ensure_tushare_listed_fund_quote_policy(
+def _ensure_tushare_listed_security_quote_policy(
     *,
     instrument_id: str,
     instrument: dict[str, object],
@@ -949,7 +1028,7 @@ def _ensure_tushare_listed_fund_quote_policy(
         current_policy = {}
     target_policy = {
         role: list(values)
-        for role, values in TUSHARE_LISTED_FUND_QUOTE_SELECTION_POLICY.items()
+        for role, values in TUSHARE_LISTED_SECURITY_QUOTE_SELECTION_POLICY.items()
     }
     if all(
         _policy_role_values(current_policy, role) == values
@@ -987,18 +1066,16 @@ def _call_tushare_api(
     if ts is None:
         raise TushareRefreshError("Tushare SDK is not installed. Install the backend dependency first.")
 
-    previous_socket_timeout = socket.getdefaulttimeout()
     try:
-        socket.setdefaulttimeout(getattr(settings, "tushare_timeout_seconds", 30))
-        ts.set_token(settings.tushare_token)
-        pro = ts.pro_api()
+        pro = ts.pro_api(
+            settings.tushare_token,
+            timeout=getattr(settings, "tushare_timeout_seconds", 30),
+        )
         setattr(pro, "_DataApi__http_url", settings.tushare_api_url)
         api_method = getattr(pro, api_name)
         frame = api_method(**params, fields=fields)
     except Exception as exc:
         raise TushareRefreshError(f"Tushare SDK request failed: {exc}") from exc
-    finally:
-        socket.setdefaulttimeout(previous_socket_timeout)
 
     if frame is None:
         return []
@@ -1026,6 +1103,7 @@ def _call_tushare_api(
 def _tushare_nav_rows(
     rows: list[dict[str, object]],
     *,
+    instrument_id: str,
     latest_date: date | None,
 ) -> list[dict[str, object]]:
     prepared_rows: list[dict[str, object]] = []
@@ -1035,24 +1113,35 @@ def _tushare_nav_rows(
             continue
         if point_date < TUSHARE_HISTORY_START_DATE:
             continue
-        if latest_date is not None and point_date <= latest_date:
+        # Keep the current anchor date so cash-cumulative NAV can roll a
+        # reinvested total-return series forward without discontinuity.
+        if latest_date is not None and point_date < latest_date:
             continue
         nav = _parse_nav_decimal(row.get("unit_nav"))
-        total_return_nav = _parse_nav_decimal(row.get("accum_nav"))
-        if total_return_nav is None:
-            total_return_nav = _parse_nav_decimal(row.get("adj_nav"))
-        if nav is None and total_return_nav is None:
+        cumulative_nav = _parse_nav_decimal(row.get("accum_nav"))
+        total_return_nav = _parse_nav_decimal(row.get("adj_nav"))
+        if nav is None and cumulative_nav is None and total_return_nav is None:
             continue
         prepared_rows.append(
             {
                 "as_of_date": point_date.isoformat(),
                 "nav": nav,
+                "cumulative_nav": cumulative_nav,
                 "nav_with_dividend": total_return_nav,
                 "currency": "CNY",
                 "frequency": "daily",
             }
         )
-    return _merge_rows_by_date(prepared_rows)
+    merged_rows = _merge_rows_by_date(prepared_rows)
+    corrected_rows, _ = _apply_reinvested_total_return_correction(
+        instrument_id=instrument_id,
+        rows=merged_rows,
+    )
+    return _changed_nav_rows_since_date(
+        instrument_id=instrument_id,
+        rows=corrected_rows,
+        nav_since_date=latest_date,
+    )
 
 
 def _tushare_price_rows(
@@ -1081,6 +1170,156 @@ def _tushare_price_rows(
     return sorted(prepared_rows, key=lambda item: item["as_of_date"])
 
 
+def _tushare_adjustment_factors(
+    rows: list[dict[str, object]],
+) -> dict[date, Decimal]:
+    factors: dict[date, Decimal] = {}
+    for row in rows:
+        point_date = _parse_nav_date(row.get("trade_date"))
+        factor = _parse_nav_decimal(row.get("adj_factor"))
+        if point_date is None or factor is None or factor <= 0:
+            continue
+        if point_date < TUSHARE_HISTORY_START_DATE:
+            continue
+        factors[point_date] = factor
+    return factors
+
+
+# Cash distributions also move Tushare adjustment factors, so a factor change
+# by itself is not a share-split event.  We accept only conventional rational
+# share ratios whose inverse mechanical move is visible in raw close while the
+# adjusted series remains continuous.  Provider inference is never sufficient
+# authority to change portfolio units: every candidate remains ``detected``
+# until an issuer/exchange/CSD announcement confirms ratio and rounding.
+TUSHARE_SHARE_SPLIT_RATIOS: tuple[tuple[Decimal, Decimal], ...] = (
+    (Decimal("10"), Decimal("1")),
+    (Decimal("5"), Decimal("1")),
+    (Decimal("4"), Decimal("1")),
+    (Decimal("3"), Decimal("1")),
+    (Decimal("2"), Decimal("1")),
+    (Decimal("3"), Decimal("2")),
+    (Decimal("5"), Decimal("4")),
+    (Decimal("4"), Decimal("5")),
+    (Decimal("2"), Decimal("3")),
+    (Decimal("1"), Decimal("2")),
+    (Decimal("1"), Decimal("3")),
+    (Decimal("1"), Decimal("4")),
+    (Decimal("1"), Decimal("5")),
+    (Decimal("1"), Decimal("10")),
+)
+
+
+def _detect_tushare_share_splits(
+    *,
+    factors: dict[date, Decimal],
+    close_by_date: dict[date, Decimal],
+) -> list[dict[str, object]]:
+    if len(factors) < 2 or len(close_by_date) < 2:
+        return []
+    factor_dates = sorted(factors)
+    close_dates = sorted(close_by_date)
+    candidates: list[dict[str, object]] = []
+    for index, effective_date in enumerate(factor_dates[1:], start=1):
+        prior_factor_date = factor_dates[index - 1]
+        factor_before = factors[prior_factor_date]
+        factor_after = factors[effective_date]
+        if factor_before <= 0 or factor_after <= 0:
+            continue
+        observed_ratio = factor_after / factor_before
+        nearest_new, nearest_old = min(
+            TUSHARE_SHARE_SPLIT_RATIOS,
+            key=lambda ratio: abs(observed_ratio - (ratio[0] / ratio[1])),
+        )
+        canonical_ratio = nearest_new / nearest_old
+        relative_ratio_error = abs(observed_ratio / canonical_ratio - Decimal("1"))
+        if relative_ratio_error > Decimal("0.005"):
+            continue
+
+        prior_close_dates = [point_date for point_date in close_dates if point_date < effective_date]
+        if effective_date not in close_by_date or not prior_close_dates:
+            continue
+        prior_close_date = prior_close_dates[-1]
+        close_before = close_by_date[prior_close_date]
+        close_after = close_by_date[effective_date]
+        if close_before <= 0 or close_after <= 0:
+            continue
+        raw_return = close_after / close_before - Decimal("1")
+        adjusted_return = (close_after * observed_ratio) / close_before - Decimal("1")
+        if abs(raw_return) < Decimal("0.15") or abs(adjusted_return) > Decimal("0.25"):
+            continue
+
+        candidates.append(
+            {
+                "effective_date": effective_date,
+                "new_units": _decimal_text(nearest_new),
+                "old_units": _decimal_text(nearest_old),
+                "status": "detected",
+                "quantity_rounding": "exact",
+                "quantity_precision": 0,
+                "provenance": {
+                    "detection_method": "tushare_factor_price_continuity/v1",
+                    "factor_before_date": prior_factor_date.isoformat(),
+                    "factor_before": _decimal_text(factor_before),
+                    "factor_after": _decimal_text(factor_after),
+                    "observed_factor_ratio": _decimal_text(observed_ratio),
+                    "canonical_ratio": f"{_decimal_text(nearest_new)}:{_decimal_text(nearest_old)}",
+                    "relative_ratio_error": _decimal_text(relative_ratio_error),
+                    "prior_close_date": prior_close_date.isoformat(),
+                    "close_before": _decimal_text(close_before),
+                    "close_after": _decimal_text(close_after),
+                    "raw_return": _decimal_text(raw_return),
+                    "adjusted_return": _decimal_text(adjusted_return),
+                },
+            }
+        )
+    return candidates
+
+
+def _existing_price_values(
+    instrument: dict[str, object],
+    *,
+    quote_basis: str,
+) -> dict[date, Decimal]:
+    values: dict[date, Decimal] = {}
+    for point in list(instrument.get("market_data", [])):
+        if not isinstance(point, dict):
+            continue
+        if str(point.get("metric_family") or "").strip() != "price":
+            continue
+        if str(point.get("quote_basis") or "").strip() != quote_basis:
+            continue
+        point_date = _parse_nav_date(point.get("as_of_date"))
+        value = _parse_nav_decimal(point.get("value"))
+        if point_date is not None and value is not None:
+            values[point_date] = value
+    return values
+
+
+QFQ_FACTOR_PATTERN = re.compile(r"(?:^|:)latest_factor=([0-9]+(?:\.[0-9]+)?)$")
+
+
+def _stored_qfq_latest_factor(instrument: dict[str, object]) -> Decimal | None:
+    latest_point: tuple[date, Decimal] | None = None
+    for point in list(instrument.get("market_data", [])):
+        if not isinstance(point, dict):
+            continue
+        if str(point.get("quote_basis") or "").strip() != "adjusted_close":
+            continue
+        provider = str(point.get("provider") or "")
+        match = QFQ_FACTOR_PATTERN.search(provider)
+        point_date = _parse_nav_date(point.get("as_of_date"))
+        if match is None or point_date is None:
+            continue
+        factor = _parse_nav_decimal(match.group(1))
+        if factor is not None and (latest_point is None or point_date > latest_point[0]):
+            latest_point = (point_date, factor)
+    return latest_point[1] if latest_point is not None else None
+
+
+def _decimal_text(value: Decimal) -> str:
+    return format(value.normalize(), "f")
+
+
 def _format_imap_since_date(value: date) -> str:
     month = (
         "Jan",
@@ -1099,6 +1338,54 @@ def _format_imap_since_date(value: date) -> str:
     return f"{value.day:02d}-{month}-{value.year}"
 
 
+def _latest_successful_email_refresh_date(instrument: dict[str, object]) -> date | None:
+    refresh_status = instrument.get("refresh_status", {})
+    if not isinstance(refresh_status, dict):
+        return None
+    raw_requested_at = str(
+        refresh_status.get("last_successful_requested_at") or ""
+    ).strip()
+    if not raw_requested_at:
+        refresh_mode = str(refresh_status.get("mode") or "").strip().lower()
+        if refresh_mode not in {"", "email"}:
+            return None
+        if str(refresh_status.get("status") or "").strip().lower() not in {
+            "imported",
+            "no_match",
+            "no_new_data",
+        }:
+            return None
+        raw_requested_at = str(refresh_status.get("requested_at") or "").strip()
+    if not raw_requested_at:
+        return None
+    try:
+        requested_at = datetime.fromisoformat(raw_requested_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    # IMAP SINCE is day-granular. Keep a one-day overlap so timezone differences
+    # and late mailbox delivery cannot make a successful cursor skip a message.
+    return min(requested_at.date(), date.today()) - timedelta(days=1)
+
+
+def _email_search_since_date(
+    *,
+    instrument: dict[str, object],
+    nav_since_date: date | None,
+    full_history: bool,
+) -> date | None:
+    if full_history:
+        return None
+    candidates = [
+        candidate
+        for candidate in (
+            nav_since_date,
+            _latest_successful_email_refresh_date(instrument),
+        )
+        if candidate is not None
+    ]
+    return max(candidates) if candidates else None
+
+
 def _filter_rows_since_nav_date(
     rows: list[dict[str, object]],
     *,
@@ -1114,6 +1401,41 @@ def _filter_rows_since_nav_date(
     return filtered_rows
 
 
+def _changed_nav_rows_since_date(
+    *,
+    instrument_id: str,
+    rows: list[dict[str, object]],
+    nav_since_date: date | None,
+) -> list[dict[str, object]]:
+    if nav_since_date is None:
+        return rows
+    existing_history = _existing_nav_history_by_date(instrument_id)
+    changed_rows: list[dict[str, object]] = []
+    for row in rows:
+        row_date = _parse_nav_date(row.get("as_of_date"))
+        if row_date is None or row_date < nav_since_date:
+            continue
+        if row_date > nav_since_date:
+            changed_rows.append(row)
+            continue
+        existing_row = existing_history.get(row_date, {})
+        incoming_nav = _parse_nav_decimal(row.get("nav"))
+        incoming_cumulative_nav = _parse_nav_decimal(row.get("cumulative_nav"))
+        incoming_total_nav = _parse_nav_decimal(row.get("nav_with_dividend"))
+        nav_changed = incoming_nav is not None and incoming_nav != existing_row.get("nav")
+        cumulative_nav_changed = (
+            incoming_cumulative_nav is not None
+            and incoming_cumulative_nav != existing_row.get("cumulative_nav")
+        )
+        total_nav_changed = (
+            incoming_total_nav is not None
+            and incoming_total_nav != existing_row.get("nav_with_dividend")
+        )
+        if nav_changed or cumulative_nav_changed or total_nav_changed:
+            changed_rows.append(row)
+    return changed_rows
+
+
 def _import_rows_from_email_rules(
     *,
     instrument_id: str,
@@ -1124,6 +1446,7 @@ def _import_rows_from_email_rules(
     full_history: bool,
     nav_since_date: date | None = None,
     search_criteria: tuple[str, ...] = ("ALL",),
+    use_server_rule_search: bool = True,
 ) -> dict[str, object] | None:
     matched_rows: list[dict[str, object]] = []
     matched_batches: list[tuple[str, str, list[dict[str, object]]]] = []
@@ -1131,11 +1454,15 @@ def _import_rows_from_email_rules(
 
     for rule in rules:
         parser_profile = str(rule.get("parser_profile") or "generic_nav_table")
-        rule_uids = _search_uids_for_rule(
-            mailbox,
-            rule=rule,
-            fallback_uids=ordered_uids,
-            search_criteria=search_criteria,
+        rule_uids = (
+            _search_uids_for_rule(
+                mailbox,
+                rule=rule,
+                fallback_uids=ordered_uids,
+                search_criteria=search_criteria,
+            )
+            if use_server_rule_search
+            else ordered_uids
         )
         for uid in rule_uids:
             header_bytes = _fetch_message_bytes(
@@ -1166,10 +1493,20 @@ def _import_rows_from_email_rules(
                     attachment_text=attachment_text,
                 ):
                     continue
-                rows = _parse_nav_rows_from_attachment(
-                    attachment_name=attachment_name,
-                    attachment_bytes=attachment_bytes,
-                    parser_profile=parser_profile,
+                cached_parser = getattr(mailbox, "parse_attachment_rows", None)
+                rows = (
+                    cached_parser(
+                        uid=uid,
+                        attachment_name=attachment_name,
+                        attachment_bytes=attachment_bytes,
+                        parser_profile=parser_profile,
+                    )
+                    if callable(cached_parser)
+                    else _parse_nav_rows_from_attachment(
+                        attachment_name=attachment_name,
+                        attachment_bytes=attachment_bytes,
+                        parser_profile=parser_profile,
+                    )
                 )
                 rows = _filter_rows_for_rule(rule=rule, rows=rows)
                 if not rows:
@@ -1181,6 +1518,20 @@ def _import_rows_from_email_rules(
     merged_rows = _merge_rows_by_date(matched_rows)
     if not merged_rows:
         return None
+    if not full_history and nav_since_date is not None and not _filter_rows_since_nav_date(
+        merged_rows,
+        nav_since_date=nav_since_date,
+    ):
+        return update_refresh_status(
+            instrument_id=instrument_id,
+            status="no_new_data",
+            message=(
+                "Matched email NAV rows, but none were newer than "
+                f"{nav_since_date.isoformat()}."
+            ),
+            updated_by=updated_by,
+            mode="email",
+        )
     if _requires_reinvested_incremental_anchor(
         instrument_id=instrument_id,
         rows=merged_rows,
@@ -1203,16 +1554,40 @@ def _import_rows_from_email_rules(
         rows=merged_rows,
     )
     if not full_history:
-        merged_rows = _filter_rows_since_nav_date(merged_rows, nav_since_date=nav_since_date)
+        merged_rows = _changed_nav_rows_since_date(
+            instrument_id=instrument_id,
+            rows=merged_rows,
+            nav_since_date=nav_since_date,
+        )
     if not merged_rows:
-        return None
+        return update_refresh_status(
+            instrument_id=instrument_id,
+            status="no_new_data",
+            message=(
+                "Matched email NAV rows, but none were newer or changed since "
+                f"{nav_since_date.isoformat()}."
+                if nav_since_date is not None
+                else "Matched email NAV rows, but none contained importable NAV data."
+            ),
+            updated_by=updated_by,
+            mode="email",
+        )
+    imported_dates = {
+        row_date
+        for row in merged_rows
+        if (row_date := _parse_nav_date(row.get("as_of_date"))) is not None
+    }
     used_provider_refs: list[str] = []
     used_attachment_names: list[str] = []
     for provider_ref, attachment_name, batch_rows in matched_batches:
         used_rows = (
             batch_rows
             if full_history
-            else _filter_rows_since_nav_date(batch_rows, nav_since_date=nav_since_date)
+            else [
+                row
+                for row in batch_rows
+                if _parse_nav_date(row.get("as_of_date")) in imported_dates
+            ]
         )
         if not used_rows:
             continue
@@ -1385,6 +1760,226 @@ def refresh_market_data(
     )
 
 
+def refresh_market_data_with_timeout(
+    *,
+    instrument_id: str,
+    updated_by: str | None,
+    full_history: bool = False,
+    source: str = "configured",
+) -> dict[str, object] | None:
+    try:
+        with market_data_item_timeout(instrument_id):
+            return refresh_market_data(
+                instrument_id=instrument_id,
+                updated_by=updated_by,
+                full_history=full_history,
+                source=source,
+            )
+    except MarketDataItemTimeout as exc:
+        normalized_source = str(source or "configured").strip().lower()
+        refresh_mode = (
+            "email"
+            if normalized_source == "email"
+            else "api" if normalized_source == "tushare" else None
+        )
+        LOGGER.warning(
+            "market data item timed out instrument_id=%s source=%s message=%s",
+            instrument_id,
+            normalized_source,
+            exc,
+        )
+        return update_refresh_status(
+            instrument_id=instrument_id,
+            status="failed",
+            message=str(exc),
+            updated_by=updated_by,
+            mode=refresh_mode,
+        )
+
+
+def _refresh_tushare_listed_security(
+    *,
+    instrument_id: str,
+    instrument: dict[str, object],
+    ts_code: str,
+    price_api_name: str,
+    factor_api_name: str,
+    updated_by: str | None,
+    full_history: bool,
+) -> dict[str, object] | None:
+    """Refresh raw close and a latest-date-normalized forward-adjusted close.
+
+    adjusted_close[t] = close[t] * factor[t] / factor[latest]. The latest
+    adjusted close therefore equals the tradable close, while historical total
+    returns reflect distributions and share adjustments. If the latest factor
+    changes, all available history is recomputed from canonical raw closes.
+    """
+    _ensure_tushare_listed_security_quote_policy(
+        instrument_id=instrument_id,
+        instrument=instrument,
+    )
+    today = date.today()
+    latest_close_date = _latest_market_data_date_from_instrument(
+        instrument,
+        metric_family="price",
+        quote_bases={"close"},
+    )
+    if full_history or latest_close_date is None:
+        query_start = TUSHARE_HISTORY_START_DATE
+    else:
+        query_start = max(
+            TUSHARE_HISTORY_START_DATE,
+            min(latest_close_date, today) - timedelta(days=7),
+        )
+    params: dict[str, object] = {
+        "ts_code": ts_code,
+        "start_date": _format_tushare_date(query_start),
+        "end_date": _format_tushare_date(today),
+    }
+    close_rows = _tushare_price_rows(
+        _call_tushare_api(
+            api_name=price_api_name,
+            params=params,
+            fields="ts_code,trade_date,close",
+        ),
+        latest_date=None,
+    )
+    factor_rows = _call_tushare_api(
+        api_name=factor_api_name,
+        params=params,
+        fields="ts_code,trade_date,adj_factor",
+    )
+    factors = _tushare_adjustment_factors(factor_rows)
+    previous_latest_factor = _stored_qfq_latest_factor(instrument)
+    current_latest_factor = factors[max(factors)] if factors else previous_latest_factor
+    factor_changed = (
+        current_latest_factor is not None
+        and (
+            previous_latest_factor is None
+            or current_latest_factor != previous_latest_factor
+        )
+    )
+    if current_latest_factor is not None and (full_history or factor_changed) and query_start > TUSHARE_HISTORY_START_DATE:
+        full_factor_rows = _call_tushare_api(
+            api_name=factor_api_name,
+            params={
+                "ts_code": ts_code,
+                "start_date": _format_tushare_date(TUSHARE_HISTORY_START_DATE),
+                "end_date": _format_tushare_date(today),
+            },
+            fields="ts_code,trade_date,adj_factor",
+        )
+        factors = _tushare_adjustment_factors(full_factor_rows)
+        if factors:
+            current_latest_factor = factors[max(factors)]
+
+    close_by_date = _existing_price_values(instrument, quote_basis="close")
+    fetched_close_by_date = {
+        row["as_of_date"]: Decimal(str(row["value"]))
+        for row in close_rows
+        if isinstance(row.get("as_of_date"), date)
+    }
+    close_by_date.update(fetched_close_by_date)
+    points: list[dict[str, object]] = [
+        {
+            "metric_family": "price",
+            "quote_basis": "close",
+            "as_of_date": point_date,
+            "value": value,
+            "currency": "CNY",
+            "provider": f"tushare:{price_api_name}",
+            "status": "complete",
+        }
+        for point_date, value in fetched_close_by_date.items()
+    ]
+    if current_latest_factor is not None:
+        adjusted_dates = (
+            sorted(close_by_date)
+            if full_history or factor_changed
+            else sorted(fetched_close_by_date)
+        )
+        factor_text = _decimal_text(current_latest_factor)
+        for point_date in adjusted_dates:
+            factor = factors.get(point_date)
+            close_value = close_by_date.get(point_date)
+            if factor is None or close_value is None:
+                continue
+            adjusted_close = close_value * factor / current_latest_factor
+            points.append(
+                {
+                    "metric_family": "price",
+                    "quote_basis": "adjusted_close",
+                    "as_of_date": point_date,
+                    "value": _decimal_text(adjusted_close),
+                    "currency": "CNY",
+                    "provider": (
+                        f"tushare:{factor_api_name}:qfq:latest_factor={factor_text}"
+                    ),
+                    "status": "complete",
+                }
+            )
+
+    changed_count = upsert_market_data_points(
+        instrument_id=instrument_id,
+        rows=points,
+    )
+    if changed_count is None:
+        return None
+    detected_actions = _detect_tushare_share_splits(
+        factors=factors,
+        close_by_date=close_by_date,
+    )
+    persisted_actions: list[dict[str, object]] = []
+    for action in detected_actions:
+        persisted_action = upsert_corporate_action_event(
+            instrument_id=instrument_id,
+            action_type="share_split",
+            effective_date=action["effective_date"],
+            new_units=action["new_units"],
+            old_units=action["old_units"],
+            source=f"tushare:{factor_api_name}",
+            status=str(action["status"]),
+            quantity_rounding=str(action["quantity_rounding"]),
+            quantity_precision=int(action["quantity_precision"]),
+            external_event_id=(
+                f"{ts_code}:{action['effective_date'].isoformat()}:share_split"
+            ),
+            provenance=dict(action["provenance"]),
+        )
+        if isinstance(persisted_action, dict):
+            persisted_actions.append(persisted_action)
+    if changed_count == 0:
+        return update_refresh_status(
+            instrument_id=instrument_id,
+            status="no_new_data",
+            message=f"Tushare returned no changed listed-security rows for {ts_code}.",
+            updated_by=updated_by,
+            mode="api",
+        )
+    adjusted_count = sum(
+        1 for point in points if point.get("quote_basis") == "adjusted_close"
+    )
+    confirmed_action_count = sum(
+        1 for action in persisted_actions if action.get("status") == "confirmed"
+    )
+    detected_action_count = sum(
+        1 for action in persisted_actions if action.get("status") == "detected"
+    )
+    return update_refresh_status(
+        instrument_id=instrument_id,
+        status="refreshed",
+        message=(
+            f"Updated {changed_count} market-data points for {ts_code}: "
+            f"raw close for valuation/trading and {adjusted_count} qfq adjusted closes "
+            "for charts and total return; "
+            f"{confirmed_action_count} confirmed and {detected_action_count} review-required "
+            "share-adjustment event(s)."
+        ),
+        updated_by=updated_by,
+        mode="api",
+    )
+
+
 def _refresh_from_tushare(
     *,
     instrument_id: str,
@@ -1412,7 +2007,11 @@ def _refresh_from_tushare(
                 params={"ts_code": ts_code},
                 fields="ts_code,ann_date,end_date,nav_date,unit_nav,accum_nav,adj_nav,update_flag",
             )
-            nav_rows = _tushare_nav_rows(rows, latest_date=latest_date)
+            nav_rows = _tushare_nav_rows(
+                rows,
+                instrument_id=instrument_id,
+                latest_date=latest_date,
+            )
             if not nav_rows:
                 since_text = f" since {latest_date.isoformat()}" if latest_date else ""
                 return update_refresh_status(
@@ -1433,32 +2032,26 @@ def _refresh_from_tushare(
                 mode="api",
             )
 
-        if instrument_type == "fund" and suffix in TUSHARE_PRICE_SUFFIXES:
-            _ensure_tushare_listed_fund_quote_policy(
+        if instrument_type in {"fund", "etf"} and suffix in TUSHARE_PRICE_SUFFIXES:
+            return _refresh_tushare_listed_security(
                 instrument_id=instrument_id,
                 instrument=instrument,
-            )
-            latest_date = None if full_history else _latest_market_data_date_from_instrument(
-                instrument,
-                metric_family="price",
-                quote_bases={"close"},
-            )
-            params: dict[str, object] = {"ts_code": ts_code}
-            params["start_date"] = _format_tushare_date(
-                _tushare_query_start_date(latest_date=latest_date, full_history=full_history)
-            )
-            params["end_date"] = _format_tushare_date(date.today())
-            rows = _call_tushare_api(
-                api_name="fund_daily",
-                params=params,
-                fields="ts_code,trade_date,close",
-            )
-            return _upsert_tushare_price_rows(
-                instrument_id=instrument_id,
                 ts_code=ts_code,
-                api_name="fund_daily",
-                rows=_tushare_price_rows(rows, latest_date=latest_date),
+                price_api_name="fund_daily",
+                factor_api_name="fund_adj",
                 updated_by=updated_by,
+                full_history=full_history,
+            )
+
+        if instrument_type == "equity" and suffix in TUSHARE_PRICE_SUFFIXES:
+            return _refresh_tushare_listed_security(
+                instrument_id=instrument_id,
+                instrument=instrument,
+                ts_code=ts_code,
+                price_api_name="daily",
+                factor_api_name="adj_factor",
+                updated_by=updated_by,
+                full_history=full_history,
             )
 
         if instrument_type == "index" and suffix in TUSHARE_INDEX_SUFFIXES:
@@ -1519,25 +2112,36 @@ def _upsert_tushare_price_rows(
             mode="api",
         )
 
-    refreshed: dict[str, object] | None = None
-    for row in rows:
-        refreshed = upsert_market_data(
+    changed_count = upsert_market_data_points(
+        instrument_id=instrument_id,
+        rows=[
+            {
+                "metric_family": "price",
+                "quote_basis": "close",
+                "as_of_date": row["as_of_date"],
+                "value": row["value"],
+                "currency": "CNY",
+                "provider": f"tushare:{api_name}",
+                "status": "complete",
+            }
+            for row in rows
+        ],
+    )
+    if changed_count == 0:
+        return update_refresh_status(
             instrument_id=instrument_id,
-            metric_family="price",
-            quote_basis="close",
-            as_of_date=row["as_of_date"],
-            value=str(row["value"]),
-            currency="CNY",
-            provider=f"tushare:{api_name}",
-            status="complete",
+            status="no_new_data",
+            message=f"Tushare {api_name} returned no changed close rows for {ts_code}.",
+            updated_by=updated_by,
+            mode="api",
         )
     return update_refresh_status(
         instrument_id=instrument_id,
         status="refreshed",
-        message=f"Imported {len(rows)} close rows from Tushare {api_name} for {ts_code}.",
+        message=f"Imported {changed_count} close rows from Tushare {api_name} for {ts_code}.",
         updated_by=updated_by,
         mode="api",
-    ) or refreshed
+    )
 
 
 def _matches_batch_source(instrument: dict[str, object], source: str) -> bool:
@@ -1551,6 +2155,365 @@ def _matches_batch_source(instrument: dict[str, object], source: str) -> bool:
     if normalized_source == "all":
         return source_mode == "email" or (source_mode == "api" and _tushare_profile_enabled(source_settings))
     return False
+
+
+class _EmailMailboxConnectionError(RuntimeError):
+    pass
+
+
+class _EmailMailboxFolderError(RuntimeError):
+    pass
+
+
+def _imap_status_ok(status: object) -> bool:
+    if isinstance(status, bytes):
+        return status.upper() == b"OK"
+    return str(status or "").upper() == "OK"
+
+
+class _EmailMailboxSession:
+    """Own one IMAP login and safely reuse it across an email refresh batch."""
+
+    def __init__(self, settings: Any) -> None:
+        self.settings = settings
+        self._mailbox: imaplib.IMAP4 | imaplib.IMAP4_SSL | None = None
+        self._selected_folder: str | None = None
+        self._search_cache: dict[tuple[str, tuple[object, ...]], tuple[object, object]] = {}
+        self._message_cache: OrderedDict[tuple[str, int, str], bytes | None] = OrderedDict()
+        self._message_cache_bytes = 0
+        self._message_cache_limit_bytes = 64 * 1024 * 1024
+        self._attachment_rows_cache: dict[
+            tuple[str, int, str, str], list[dict[str, object]]
+        ] = {}
+
+    @staticmethod
+    def _discard_mailbox(mailbox: object) -> None:
+        shutdown = getattr(mailbox, "shutdown", None)
+        if callable(shutdown):
+            try:
+                shutdown()
+                return
+            except Exception:
+                pass
+        logout = getattr(mailbox, "logout", None)
+        if callable(logout):
+            try:
+                logout()
+            except Exception:
+                pass
+
+    def _connect(self) -> imaplib.IMAP4 | imaplib.IMAP4_SSL:
+        mailbox_cls = imaplib.IMAP4_SSL if self.settings.email_imap_use_ssl else imaplib.IMAP4
+        mailbox = mailbox_cls(
+            self.settings.email_imap_host,
+            self.settings.email_imap_port,
+            timeout=self.settings.email_imap_timeout_seconds,
+        )
+        try:
+            login_status, _ = mailbox.login(
+                self.settings.email_imap_username,
+                self.settings.email_imap_password,
+            )
+            if not _imap_status_ok(login_status):
+                raise _EmailMailboxConnectionError("IMAP login failed.")
+        except Exception:
+            self._discard_mailbox(mailbox)
+            raise
+        self._mailbox = mailbox
+        self._selected_folder = None
+        return mailbox
+
+    def open_folder(self, preferred_folder: str) -> "_EmailMailboxSession":
+        mailbox = self._mailbox or self._connect()
+        folders = list(
+            dict.fromkeys(
+                folder
+                for folder in (preferred_folder, self.settings.email_imap_folder)
+                if folder
+            )
+        )
+        for folder in folders:
+            if folder == self._selected_folder:
+                return self
+            select_status, _ = mailbox.select(
+                folder,
+                readonly=not self.settings.email_imap_mark_seen,
+            )
+            if _imap_status_ok(select_status):
+                self._selected_folder = folder
+                return self
+            # Do not assume the previous mailbox remains selected after a failed SELECT.
+            self._selected_folder = None
+        raise _EmailMailboxFolderError("unable to open the configured mailbox folder.")
+
+    def uid(self, command: str, *args: object):
+        mailbox = self._mailbox
+        if mailbox is None:
+            raise _EmailMailboxConnectionError("IMAP session is not connected.")
+        normalized_command = command.strip().lower()
+        if normalized_command != "search" or self._selected_folder is None:
+            return mailbox.uid(command, *args)
+        cache_key = (self._selected_folder, tuple(args))
+        cached = self._search_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = mailbox.uid(command, *args)
+        if _imap_status_ok(result[0]):
+            self._search_cache[cache_key] = result
+        return result
+
+    def fetch_message_bytes(self, uid: int, request: str) -> bytes | None:
+        folder = self._selected_folder
+        mailbox = self._mailbox
+        if folder is None or mailbox is None:
+            raise _EmailMailboxConnectionError("IMAP folder is not selected.")
+        cache_key = (folder, uid, request)
+        if cache_key in self._message_cache:
+            cached = self._message_cache.pop(cache_key)
+            self._message_cache[cache_key] = cached
+            return cached
+        fetch_status, fetch_data = mailbox.uid("fetch", str(uid), request)
+        payload = None
+        if _imap_status_ok(fetch_status):
+            payload = next(
+                (
+                    bytes(item[1])
+                    for item in fetch_data
+                    if isinstance(item, tuple)
+                    and len(item) >= 2
+                    and isinstance(item[1], (bytes, bytearray))
+                ),
+                None,
+            )
+        payload_size = len(payload) if payload is not None else 0
+        while self._message_cache and (
+            self._message_cache_bytes + payload_size > self._message_cache_limit_bytes
+        ):
+            _, evicted = self._message_cache.popitem(last=False)
+            self._message_cache_bytes -= len(evicted) if evicted is not None else 0
+        if payload_size <= self._message_cache_limit_bytes:
+            self._message_cache[cache_key] = payload
+            self._message_cache_bytes += payload_size
+        return payload
+
+    def parse_attachment_rows(
+        self,
+        *,
+        uid: int,
+        attachment_name: str,
+        attachment_bytes: bytes,
+        parser_profile: str,
+    ) -> list[dict[str, object]]:
+        folder = self._selected_folder or ""
+        cache_key = (folder, uid, attachment_name, parser_profile)
+        cached = self._attachment_rows_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        rows = _parse_nav_rows_from_attachment(
+            attachment_name=attachment_name,
+            attachment_bytes=attachment_bytes,
+            parser_profile=parser_profile,
+        )
+        self._attachment_rows_cache[cache_key] = rows
+        return rows
+
+    def invalidate(self) -> None:
+        mailbox = self._mailbox
+        self._mailbox = None
+        self._selected_folder = None
+        self._search_cache.clear()
+        if mailbox is not None:
+            self._discard_mailbox(mailbox)
+
+    def close(self) -> None:
+        mailbox = self._mailbox
+        selected_folder = self._selected_folder
+        self._mailbox = None
+        self._selected_folder = None
+        if mailbox is None:
+            return
+        if selected_folder is not None:
+            try:
+                mailbox.close()
+            except Exception:
+                pass
+        try:
+            mailbox.logout()
+        except Exception:
+            pass
+
+
+def _tushare_refresh_process_worker(
+    send_connection: Any,
+    instrument_id: str,
+    updated_by: str | None,
+    full_history: bool,
+) -> None:
+    """Run one refresh in a killable process, isolating a stuck SDK request."""
+    try:
+        record = refresh_market_data(
+            instrument_id=instrument_id,
+            updated_by=updated_by,
+            full_history=full_history,
+            source="configured",
+        )
+        send_connection.send({"ok": True, "record": record})
+    except BaseException as exc:  # pragma: no cover - defensive process boundary
+        send_connection.send(
+            {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        )
+    finally:
+        send_connection.close()
+
+
+def _stop_refresh_process(process: multiprocessing.Process) -> None:
+    if not process.is_alive():
+        process.join(timeout=0.1)
+        return
+    process.terminate()
+    process.join(timeout=2)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=2)
+
+
+def _run_tushare_refresh_process_batch(
+    *,
+    targets: list[dict[str, object]],
+    updated_by: str | None,
+    full_history: bool,
+    settings: Any,
+) -> list[dict[str, object] | None]:
+    """Refresh Tushare targets concurrently with hard item and batch deadlines.
+
+    Threads cannot be cancelled safely while blocked inside requests. A fresh,
+    daemon child process per instrument gives the scheduler a real termination
+    boundary and also releases database/network resources if the provider hangs.
+    """
+    if not targets:
+        return []
+    context = multiprocessing.get_context("spawn")
+    max_workers = min(max(1, int(getattr(settings, "tushare_batch_max_workers", 4))), len(targets))
+    configured_item_timeout = int(
+        getattr(settings, "market_data_batch_item_timeout_seconds", 300) or 0
+    )
+    request_timeout = max(1, int(getattr(settings, "tushare_timeout_seconds", 30) or 30))
+    item_timeout = (
+        configured_item_timeout
+        if configured_item_timeout > 0
+        else max(60, request_timeout * 4)
+    )
+    configured_batch_timeout = int(
+        getattr(settings, "tushare_batch_timeout_seconds", 3600) or 0
+    )
+    batch_timeout = (
+        configured_batch_timeout
+        if configured_batch_timeout > 0
+        else item_timeout * ((len(targets) + max_workers - 1) // max_workers) + 60
+    )
+    batch_started = time.monotonic()
+    ordered_results: list[dict[str, object] | None] = [None] * len(targets)
+    pending_indexes = list(range(len(targets)))
+    running: dict[int, tuple[multiprocessing.Process, Any, float]] = {}
+
+    def failed_record(index: int, message: str) -> dict[str, object] | None:
+        instrument_id = str(targets[index].get("instrument_id") or "")
+        return update_refresh_status(
+            instrument_id=instrument_id,
+            status="failed",
+            message=message,
+            updated_by=updated_by,
+            mode="api",
+        )
+
+    def start_one(index: int) -> None:
+        instrument_id = str(targets[index].get("instrument_id") or "")
+        receive_connection, send_connection = context.Pipe(duplex=False)
+        process = context.Process(
+            target=_tushare_refresh_process_worker,
+            args=(send_connection, instrument_id, updated_by, full_history),
+            name=f"tushare-refresh-{instrument_id}",
+            daemon=True,
+        )
+        try:
+            process.start()
+        except Exception as exc:
+            receive_connection.close()
+            send_connection.close()
+            ordered_results[index] = failed_record(
+                index,
+                f"Unable to start isolated Tushare refresh: {exc}",
+            )
+            return
+        send_connection.close()
+        running[index] = (process, receive_connection, time.monotonic())
+
+    while pending_indexes or running:
+        now = time.monotonic()
+        batch_expired = now - batch_started >= batch_timeout
+        if not batch_expired:
+            while pending_indexes and len(running) < max_workers:
+                start_one(pending_indexes.pop(0))
+
+        completed_indexes: list[int] = []
+        for index, (process, receive_connection, started_at) in list(running.items()):
+            payload: dict[str, object] | None = None
+            try:
+                if receive_connection.poll():
+                    candidate = receive_connection.recv()
+                    payload = candidate if isinstance(candidate, dict) else None
+                elif not process.is_alive():
+                    payload = {
+                        "ok": False,
+                        "error": f"worker exited with code {process.exitcode} without a result",
+                    }
+            except (EOFError, OSError) as exc:
+                payload = {"ok": False, "error": f"worker channel failed: {exc}"}
+
+            timed_out = now - started_at >= item_timeout
+            if payload is None and not timed_out and not batch_expired:
+                continue
+
+            if payload is not None and payload.get("ok") is True:
+                record = payload.get("record")
+                ordered_results[index] = record if isinstance(record, dict) else None
+            else:
+                instrument_id = str(targets[index].get("instrument_id") or "")
+                if batch_expired:
+                    message = (
+                        f"Tushare batch deadline exceeded after {batch_timeout} seconds "
+                        f"while refreshing {instrument_id}."
+                    )
+                elif timed_out:
+                    message = (
+                        f"Tushare refresh timed out after {item_timeout} seconds for "
+                        f"{instrument_id}; the isolated worker was terminated."
+                    )
+                else:
+                    message = f"Tushare refresh worker failed for {instrument_id}: {payload.get('error') if payload else 'unknown error'}"
+                ordered_results[index] = failed_record(index, message)
+            _stop_refresh_process(process)
+            receive_connection.close()
+            completed_indexes.append(index)
+
+        for index in completed_indexes:
+            running.pop(index, None)
+
+        if batch_expired:
+            for index in pending_indexes:
+                instrument_id = str(targets[index].get("instrument_id") or "")
+                ordered_results[index] = failed_record(
+                    index,
+                    f"Tushare batch deadline exceeded after {batch_timeout} seconds before {instrument_id} could start.",
+                )
+            pending_indexes.clear()
+        if pending_indexes or running:
+            time.sleep(0.05)
+
+    return ordered_results
 
 
 def refresh_market_data_batch(
@@ -1572,70 +2535,225 @@ def refresh_market_data_batch(
         len(targets),
         len(instruments) - len(targets),
     )
+    if normalized_source == "tushare" and targets:
+        max_workers = min(getattr(settings, "tushare_batch_max_workers", 4), len(targets))
+        LOGGER.info(
+            "tushare batch executing in isolated processes target_count=%s max_workers=%s item_timeout=%s batch_timeout=%s",
+            len(targets),
+            max_workers,
+            getattr(settings, "market_data_batch_item_timeout_seconds", 300),
+            getattr(settings, "tushare_batch_timeout_seconds", 3600),
+        )
+        ordered_results = _run_tushare_refresh_process_batch(
+            targets=targets,
+            updated_by=updated_by,
+            full_history=full_history,
+            settings=settings,
+        )
+        results = []
+        for refreshed in ordered_results:
+            if refreshed is None:
+                continue
+            source_settings = dict(refreshed.get("source_settings", {}))
+            refresh_status = dict(refreshed.get("refresh_status", {}))
+            results.append(
+                {
+                    "instrument_id": refreshed["instrument_id"],
+                    "instrument_name": refreshed["instrument_name"],
+                    "instrument_type": refreshed["instrument_type"],
+                    "source_mode": source_settings.get("source_mode") or "manual",
+                    "source_api_profile": source_settings.get("source_api_profile") or "",
+                    "status": refresh_status.get("status") or "idle",
+                    "message": refresh_status.get("message") or "",
+                }
+            )
+        return {
+            "source": normalized_source,
+            "refreshed_count": sum(
+                1 for item in results if item["status"] in {"imported", "refreshed"}
+            ),
+            "skipped_count": len(instruments) - len(targets),
+            "results": results,
+        }
     results: list[dict[str, object]] = []
-    for index, instrument in enumerate(targets, start=1):
-        instrument_id = str(instrument.get("instrument_id") or "")
-        LOGGER.info(
-            "market data batch item started source=%s index=%s/%s instrument_id=%s",
-            normalized_source,
-            index,
-            len(targets),
-            instrument_id,
-        )
-        try:
-            with _BatchItemTimeout(settings.market_data_batch_item_timeout_seconds, instrument_id):
-                refreshed = refresh_market_data(
-                    instrument_id=instrument_id,
-                    updated_by=updated_by,
-                    full_history=full_history,
-                    source="configured",
+    has_email_targets = any(
+        str(dict(item.get("source_settings", {})).get("source_mode") or "").strip().lower()
+        == "email"
+        for item in targets
+    )
+    email_session = _EmailMailboxSession(settings) if has_email_targets else None
+    email_target_details: dict[str, dict[str, object]] = {}
+    email_batch_uids_by_folder: dict[str, list[int]] = {}
+    if email_session is not None:
+        earliest_cursor_by_folder: dict[str, date | None] = {}
+        for target in targets:
+            target_settings = dict(target.get("source_settings", {}))
+            if str(target_settings.get("source_mode") or "").strip().lower() != "email":
+                continue
+            instrument_id = str(target.get("instrument_id") or "")
+            detail = get_instrument(instrument_id)
+            if detail is None:
+                continue
+            email_target_details[instrument_id] = detail
+            detail_settings = dict(detail.get("source_settings", {}))
+            folder = str(
+                detail_settings.get("source_location") or settings.email_imap_folder
+            ).strip() or settings.email_imap_folder
+            cursor = _email_search_since_date(
+                instrument=detail,
+                nav_since_date=(
+                    None if full_history else _latest_nav_date_from_instrument(detail)
+                ),
+                full_history=full_history,
+            )
+            if folder not in earliest_cursor_by_folder:
+                earliest_cursor_by_folder[folder] = cursor
+            elif cursor is None:
+                earliest_cursor_by_folder[folder] = None
+            elif earliest_cursor_by_folder[folder] is not None:
+                earliest_cursor_by_folder[folder] = min(
+                    cursor,
+                    earliest_cursor_by_folder[folder],
                 )
-        except _MarketDataBatchItemTimeout as exc:
-            LOGGER.warning(
-                "market data batch item timed out source=%s index=%s/%s instrument_id=%s timeout_seconds=%s",
-                normalized_source,
-                index,
-                len(targets),
-                instrument_id,
-                settings.market_data_batch_item_timeout_seconds,
-            )
-            refreshed = update_refresh_status(
-                instrument_id=instrument_id,
-                status="failed",
-                message=str(exc),
-                updated_by=updated_by,
-                mode=normalized_source,
-            )
-        if refreshed is None:
+        for folder, earliest_cursor in earliest_cursor_by_folder.items():
+            try:
+                mailbox = email_session.open_folder(folder)
+                criteria = (
+                    ("ALL",)
+                    if earliest_cursor is None
+                    else ("SINCE", _format_imap_since_date(earliest_cursor))
+                )
+                search_status, search_data = mailbox.uid("search", None, *criteria)
+                if not _imap_status_ok(search_status):
+                    continue
+                raw_uid_list = search_data[0] if search_data and search_data[0] else b""
+                available_uids = [int(item) for item in raw_uid_list.split() if item]
+                pending_uids = (
+                    available_uids
+                    if earliest_cursor is not None
+                    else available_uids[-settings.email_imap_max_messages :]
+                )
+                email_batch_uids_by_folder[folder] = pending_uids
+                if email_session._selected_folder:
+                    email_batch_uids_by_folder[email_session._selected_folder] = pending_uids
+                LOGGER.info(
+                    "email batch snapshot folder=%s cursor=%s uid_count=%s",
+                    folder,
+                    earliest_cursor.isoformat() if earliest_cursor else "all-limited",
+                    len(pending_uids),
+                )
+            except Exception:
+                LOGGER.exception("email batch snapshot failed folder=%s", folder)
+                email_session.invalidate()
+    try:
+        for index, instrument in enumerate(targets, start=1):
+            instrument_id = str(instrument.get("instrument_id") or "")
+            target_source_mode = str(
+                dict(instrument.get("source_settings", {})).get("source_mode") or "manual"
+            ).strip().lower()
             LOGGER.info(
-                "market data batch item skipped source=%s index=%s/%s instrument_id=%s",
+                "market data batch item started source=%s index=%s/%s instrument_id=%s",
                 normalized_source,
                 index,
                 len(targets),
                 instrument_id,
             )
-            continue
-        source_settings = dict(refreshed.get("source_settings", {}))
-        refresh_status = dict(refreshed.get("refresh_status", {}))
-        LOGGER.info(
-            "market data batch item finished source=%s index=%s/%s instrument_id=%s status=%s",
-            normalized_source,
-            index,
-            len(targets),
-            refreshed["instrument_id"],
-            refresh_status.get("status") or "idle",
-        )
-        results.append(
-            {
-                "instrument_id": refreshed["instrument_id"],
-                "instrument_name": refreshed["instrument_name"],
-                "instrument_type": refreshed["instrument_type"],
-                "source_mode": source_settings.get("source_mode") or "manual",
-                "source_api_profile": source_settings.get("source_api_profile") or "",
-                "status": refresh_status.get("status") or "idle",
-                "message": refresh_status.get("message") or "",
-            }
-        )
+            try:
+                with market_data_item_timeout(instrument_id):
+                    if target_source_mode == "email" and email_session is not None:
+                        current_instrument = email_target_details.get(instrument_id) or get_instrument(instrument_id)
+                        if current_instrument is None:
+                            refreshed = None
+                        else:
+                            current_source_settings = dict(
+                                current_instrument.get("source_settings", {})
+                            )
+                            if (
+                                str(current_source_settings.get("source_mode") or "manual")
+                                .strip()
+                                .lower()
+                                == "email"
+                            ):
+                                refreshed = _refresh_from_email(
+                                    instrument_id=instrument_id,
+                                    instrument=current_instrument,
+                                    source_settings=current_source_settings,
+                                    updated_by=updated_by,
+                                    full_history=full_history,
+                                    mailbox_session=email_session,
+                                    batch_pending_uids=email_batch_uids_by_folder.get(
+                                        str(
+                                            current_source_settings.get("source_location")
+                                            or settings.email_imap_folder
+                                        ).strip()
+                                        or settings.email_imap_folder
+                                    ),
+                                )
+                            else:
+                                refreshed = refresh_market_data(
+                                    instrument_id=instrument_id,
+                                    updated_by=updated_by,
+                                    full_history=full_history,
+                                    source="configured",
+                                )
+                    else:
+                        refreshed = refresh_market_data(
+                            instrument_id=instrument_id,
+                            updated_by=updated_by,
+                            full_history=full_history,
+                            source="configured",
+                        )
+            except MarketDataItemTimeout as exc:
+                if email_session is not None:
+                    email_session.invalidate()
+                LOGGER.warning(
+                    "market data batch item timed out source=%s index=%s/%s instrument_id=%s timeout_seconds=%s",
+                    normalized_source,
+                    index,
+                    len(targets),
+                    instrument_id,
+                    settings.market_data_batch_item_timeout_seconds,
+                )
+                refreshed = update_refresh_status(
+                    instrument_id=instrument_id,
+                    status="failed",
+                    message=str(exc),
+                    updated_by=updated_by,
+                    mode=target_source_mode,
+                )
+            if refreshed is None:
+                LOGGER.info(
+                    "market data batch item skipped source=%s index=%s/%s instrument_id=%s",
+                    normalized_source,
+                    index,
+                    len(targets),
+                    instrument_id,
+                )
+                continue
+            source_settings = dict(refreshed.get("source_settings", {}))
+            refresh_status = dict(refreshed.get("refresh_status", {}))
+            LOGGER.info(
+                "market data batch item finished source=%s index=%s/%s instrument_id=%s status=%s",
+                normalized_source,
+                index,
+                len(targets),
+                refreshed["instrument_id"],
+                refresh_status.get("status") or "idle",
+            )
+            results.append(
+                {
+                    "instrument_id": refreshed["instrument_id"],
+                    "instrument_name": refreshed["instrument_name"],
+                    "instrument_type": refreshed["instrument_type"],
+                    "source_mode": source_settings.get("source_mode") or "manual",
+                    "source_api_profile": source_settings.get("source_api_profile") or "",
+                    "status": refresh_status.get("status") or "idle",
+                    "message": refresh_status.get("message") or "",
+                }
+            )
+    finally:
+        if email_session is not None:
+            email_session.close()
     return {
         "source": normalized_source,
         "refreshed_count": sum(1 for item in results if item["status"] in {"imported", "refreshed"}),
@@ -1651,6 +2769,8 @@ def _refresh_from_email(
     source_settings: dict[str, object],
     updated_by: str | None,
     full_history: bool,
+    mailbox_session: _EmailMailboxSession | None = None,
+    batch_pending_uids: list[int] | None = None,
 ) -> dict[str, object] | None:
     settings = get_settings()
     if not settings.email_sync_enabled:
@@ -1670,7 +2790,6 @@ def _refresh_from_email(
             mode="email",
         )
 
-    mailbox: imaplib.IMAP4 | imaplib.IMAP4_SSL | None = None
     preferred_folder = str(source_settings.get("source_location", "")).strip()
     email_rules = _normalized_email_rules(source_settings)
     if not email_rules:
@@ -1681,100 +2800,109 @@ def _refresh_from_email(
             updated_by=updated_by,
             mode="email",
         )
+
+    owns_session = mailbox_session is None
+    session = mailbox_session or _EmailMailboxSession(settings)
     try:
-        mailbox_cls = imaplib.IMAP4_SSL if settings.email_imap_use_ssl else imaplib.IMAP4
-        mailbox = mailbox_cls(
-            settings.email_imap_host,
-            settings.email_imap_port,
-            timeout=settings.email_imap_timeout_seconds,
-        )
-        login_status, _ = mailbox.login(settings.email_imap_username, settings.email_imap_password)
-        if login_status != "OK":
-            return update_refresh_status(
-                instrument_id=instrument_id,
-                status="failed",
-                message="Email refresh failed: IMAP login failed.",
-                updated_by=updated_by,
-                mode="email",
-            )
+        for attempt in range(2):
+            try:
+                mailbox = session.open_folder(preferred_folder)
+                nav_since_date = None if full_history else _latest_nav_date_from_instrument(instrument)
+                search_since_date = _email_search_since_date(
+                    instrument=instrument,
+                    nav_since_date=nav_since_date,
+                    full_history=full_history,
+                )
+                search_criteria = (
+                    ("ALL",)
+                    if search_since_date is None
+                    else ("SINCE", _format_imap_since_date(search_since_date))
+                )
+                if batch_pending_uids is None:
+                    search_status, search_data = mailbox.uid("search", None, *search_criteria)
+                    if not _imap_status_ok(search_status):
+                        raise _EmailMailboxConnectionError("unable to list mailbox messages.")
+                    raw_uid_list = search_data[0] if search_data and search_data[0] else b""
+                    available_uids = [int(item) for item in raw_uid_list.split() if item]
+                    pending_uids = (
+                        available_uids
+                        if search_since_date is not None
+                        else available_uids[-settings.email_imap_max_messages :]
+                    )
+                else:
+                    pending_uids = batch_pending_uids
 
-        selected_folder = None
-        for folder in [preferred_folder, settings.email_imap_folder]:
-            if not folder or folder == selected_folder:
-                continue
-            select_status, _ = mailbox.select(folder, readonly=not settings.email_imap_mark_seen)
-            if select_status == "OK":
-                selected_folder = folder
-                break
-        if selected_folder is None:
-            return update_refresh_status(
-                instrument_id=instrument_id,
-                status="blocked",
-                message="Email refresh failed: unable to open the configured mailbox folder.",
-                updated_by=updated_by,
-                mode="email",
-            )
+                record = _import_rows_from_email_rules(
+                    instrument_id=instrument_id,
+                    rules=email_rules,
+                    mailbox=mailbox,
+                    pending_uids=pending_uids,
+                    updated_by=updated_by,
+                    full_history=full_history,
+                    nav_since_date=nav_since_date,
+                    search_criteria=search_criteria,
+                    use_server_rule_search=batch_pending_uids is None,
+                )
+                if record is not None:
+                    return record
 
-        nav_since_date = None if full_history else _latest_nav_date_from_instrument(instrument)
-        search_criteria = (
-            ("ALL",)
-            if full_history or nav_since_date is None
-            else ("SINCE", _format_imap_since_date(nav_since_date))
-        )
-        search_status, search_data = mailbox.uid("search", None, *search_criteria)
-        if search_status != "OK":
-            return update_refresh_status(
-                instrument_id=instrument_id,
-                status="failed",
-                message="Email refresh failed: unable to list mailbox messages.",
-                updated_by=updated_by,
-                mode="email",
-            )
-        raw_uid_list = search_data[0] if search_data and search_data[0] else b""
-        available_uids = [int(item) for item in raw_uid_list.split() if item]
-        pending_uids = (
-            available_uids
-            if full_history or nav_since_date is not None
-            else available_uids[-settings.email_imap_max_messages :]
-        )
-
-        if email_rules:
-            record = _import_rows_from_email_rules(
-                instrument_id=instrument_id,
-                rules=email_rules,
-                mailbox=mailbox,
-                pending_uids=pending_uids,
-                updated_by=updated_by,
-                full_history=full_history,
-                nav_since_date=nav_since_date,
-                search_criteria=search_criteria,
-            )
-            if record is not None:
-                return record
-
-        since_text = f" since {nav_since_date.isoformat()}" if nav_since_date else ""
-        return update_refresh_status(
-            instrument_id=instrument_id,
-            status="no_match",
-            message=f"No email attachment matched the explicit product rules{since_text}.",
-            updated_by=updated_by,
-            mode="email",
-        )
-    except Exception as exc:
-        return update_refresh_status(
-            instrument_id=instrument_id,
-            status="failed",
-            message=f"Email refresh failed: {exc}",
-            updated_by=updated_by,
-            mode="email",
-        )
+                since_text = (
+                    f" received since {search_since_date.isoformat()}"
+                    if search_since_date
+                    else ""
+                )
+                return update_refresh_status(
+                    instrument_id=instrument_id,
+                    status="no_match",
+                    message=(
+                        "No email attachment matched the explicit product rules"
+                        f"{since_text}."
+                    ),
+                    updated_by=updated_by,
+                    mode="email",
+                )
+            except MarketDataItemTimeout:
+                session.invalidate()
+                raise
+            except _EmailMailboxFolderError as exc:
+                return update_refresh_status(
+                    instrument_id=instrument_id,
+                    status="blocked",
+                    message=f"Email refresh failed: {exc}",
+                    updated_by=updated_by,
+                    mode="email",
+                )
+            except (
+                _EmailMailboxConnectionError,
+                imaplib.IMAP4.abort,
+                imaplib.IMAP4.error,
+                OSError,
+                EOFError,
+            ) as exc:
+                session.invalidate()
+                if attempt == 0:
+                    LOGGER.warning(
+                        "email refresh IMAP session failed; reconnecting instrument_id=%s error=%s",
+                        instrument_id,
+                        exc,
+                    )
+                    continue
+                return update_refresh_status(
+                    instrument_id=instrument_id,
+                    status="failed",
+                    message=f"Email refresh failed: {exc}",
+                    updated_by=updated_by,
+                    mode="email",
+                )
+            except Exception as exc:
+                session.invalidate()
+                return update_refresh_status(
+                    instrument_id=instrument_id,
+                    status="failed",
+                    message=f"Email refresh failed: {exc}",
+                    updated_by=updated_by,
+                    mode="email",
+                )
     finally:
-        if mailbox is not None:
-            try:
-                mailbox.close()
-            except Exception:
-                pass
-            try:
-                mailbox.logout()
-            except Exception:
-                pass
+        if owns_session:
+            session.close()

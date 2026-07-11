@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     recalc_worker_poll_interval_seconds: float = 1.0
     recalc_worker_shutdown_timeout_seconds: float = 5.0
     recalc_worker_running_job_timeout_seconds: float = 300.0
+    recalc_worker_heartbeat_interval_seconds: float = 30.0
     document_storage_root: Path = WORKSPACE_ROOT / "var" / "watchlist-documents"
+    document_upload_max_bytes: int = 25 * 1024 * 1024
     copilot_provider: str = "stub"
     copilot_openai_model: str = "gpt-5.4"
     copilot_openai_api_key: str | None = None
@@ -58,6 +60,7 @@ class Settings(BaseSettings):
         "recalc_worker_poll_interval_seconds",
         "recalc_worker_shutdown_timeout_seconds",
         "recalc_worker_running_job_timeout_seconds",
+        "recalc_worker_heartbeat_interval_seconds",
         mode="before",
     )
     @classmethod
@@ -69,11 +72,21 @@ class Settings(BaseSettings):
             raise ValueError("worker timing values must be positive.")
         return numeric
 
+    @field_validator("document_upload_max_bytes", mode="before")
+    @classmethod
+    def _coerce_positive_bytes(cls, value: object) -> object:
+        numeric = int(value)
+        if numeric <= 0:
+            raise ValueError("document_upload_max_bytes must be positive.")
+        return numeric
+
     @model_validator(mode="after")
     def _validate_cors_policy(self) -> "Settings":
         environment = self.environment.strip().lower()
         if environment not in {"development", "dev", "local", "test"} and "*" in self.cors_origins:
             raise ValueError("cors_origins must not contain '*' outside development/test.")
+        if self.recalc_worker_heartbeat_interval_seconds >= self.recalc_worker_running_job_timeout_seconds:
+            raise ValueError("recalc worker heartbeat interval must be shorter than the running-job timeout.")
         return self
 
     @property

@@ -125,6 +125,87 @@ def build_latest_quote_overrides(
     return overrides
 
 
+CHART_FIELD_POINT_LIMITS = {
+    "price_chart_1d": 10,
+    "price_chart_1w": 20,
+    "price_chart_1m": 40,
+    "price_chart_1y": 64,
+}
+DEFAULT_SPARKLINE_POINT_LIMIT = 40
+
+
+def _is_chart_field(field_key: object) -> bool:
+    normalized = str(field_key or "").strip().lower()
+    return normalized.startswith("price_chart_") or "sparkline" in normalized
+
+
+def _sparkline_point_limit(selected_fields: Sequence[object]) -> int:
+    chart_fields = [str(field) for field in selected_fields if _is_chart_field(field)]
+    if not chart_fields:
+        return 0
+    return max(
+        CHART_FIELD_POINT_LIMITS.get(field, DEFAULT_SPARKLINE_POINT_LIMIT)
+        for field in chart_fields
+    )
+
+
+def _extract_sparkline_points(
+    payload: object,
+    *,
+    point_limit: int,
+) -> list[dict[str, object]]:
+    if point_limit <= 0 or not isinstance(payload, dict):
+        return []
+    series = payload.get("series")
+    if not isinstance(series, list):
+        return []
+    for candidate in series:
+        if not isinstance(candidate, dict):
+            continue
+        points = candidate.get("points")
+        if not isinstance(points, list):
+            continue
+        normalized: list[dict[str, object]] = []
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            value = point.get("value")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            normalized.append(
+                {
+                    "date": point.get("date"),
+                    "value": float(value),
+                }
+            )
+        if normalized:
+            return normalized[-point_limit:]
+    return []
+
+
+def build_sparkline_payload(
+    charts: Sequence[InstrumentChartReadModel] | None,
+    *,
+    instrument_ids: Sequence[str],
+    selected_fields: Sequence[object],
+) -> dict[str, list[dict[str, object]]]:
+    point_limit = _sparkline_point_limit(selected_fields)
+    if point_limit <= 0:
+        return {}
+    requested_ids = set(instrument_ids)
+    payload: dict[str, list[dict[str, object]]] = {}
+    for chart in charts or []:
+        if chart.instrument_id not in requested_ids:
+            continue
+        points = _extract_sparkline_points(
+            chart.payload_json,
+            point_limit=point_limit,
+        )
+        if points:
+            payload[chart.instrument_id] = points
+    return payload
+
+
 def build_watchlist_row_materialization(
     *,
     watchlist_id: str,
@@ -514,11 +595,19 @@ def execute_watchlist_query(
         1 for row in filtered_rows if row.get("data_freshness_status") in stale_statuses
     )
 
+    page_rows = projected_rows[start:end]
+    page_instrument_ids = [str(row["instrument_id"]) for row in page_rows]
+
     return {
-        "rows": projected_rows[start:end],
+        "rows": page_rows,
         "groups": groups,
         "total_rows": len(projected_rows),
         "stale_row_count": stale_row_count,
+        "sparklines": build_sparkline_payload(
+            charts,
+            instrument_ids=page_instrument_ids,
+            selected_fields=selected_fields,
+        ),
         "snapshot_metadata": {
             "as_of_date": _serialize_scalar(_latest_date(filtered_rows)),
             "methodology_version": "watchlist-row/v1",

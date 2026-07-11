@@ -71,6 +71,30 @@ def _instrument_document_download_url(instrument_id: str, stored_file_name: str)
     return f"/api/instruments/{instrument_id}/documents/files/{stored_file_name}"
 
 
+async def _persist_uploaded_document(file: UploadFile, stored_path: Path) -> int:
+    temporary_path = stored_path.with_name(f".{stored_path.name}.uploading")
+    total_bytes = 0
+    try:
+        with temporary_path.open("xb") as output:
+            while chunk := await file.read(1024 * 1024):
+                total_bytes += len(chunk)
+                if total_bytes > settings.document_upload_max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            "Uploaded file exceeds the configured "
+                            f"{settings.document_upload_max_bytes}-byte limit."
+                        ),
+                    )
+                output.write(chunk)
+        if total_bytes == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+        temporary_path.replace(stored_path)
+        return total_bytes
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
 def _schedule_instrument_refresh(
     session: Session,
     *,
@@ -84,6 +108,11 @@ def _schedule_instrument_refresh(
         local_latest_date=latest_local_market_data_date(
             chart_payload=chart_record.payload_json if chart_record is not None else None,
             fallback_values=((source_row.last_nav_date if source_row is not None else None),),
+        ),
+        local_source_cutoff_at=(
+            chart_record.source_cutoff_at
+            if chart_record is not None
+            else (source_row.last_recalculated_at if source_row is not None else None)
         ),
         trigger_ref_type=trigger_ref_type,
         trigger_ref_id=instrument_id,
@@ -499,66 +528,67 @@ async def upload_fund_document(
 ) -> dict[str, object]:
     _ensure_instrument_exists(session, instrument_id)
     original_file_name = _safe_file_segment(file.filename, fallback="uploaded-document")
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-
     instrument_dir = _instrument_document_dir(instrument_id)
     instrument_dir.mkdir(parents=True, exist_ok=True)
     stored_file_name = f"{uuid4().hex}-{original_file_name}"
     stored_path = instrument_dir / stored_file_name
-    stored_path.write_bytes(content)
+    file_size = await _persist_uploaded_document(file, stored_path)
 
-    uploaded_at = datetime.now(timezone.utc).isoformat()
-    download_url = _instrument_document_download_url(instrument_id, stored_file_name)
-    record = manual_profile_repository.get(session, instrument_id)
-    payload = serialize_payload(record.documents_payload_json) if record is not None else _default_documents_payload()
+    try:
+        uploaded_at = datetime.now(timezone.utc).isoformat()
+        download_url = _instrument_document_download_url(instrument_id, stored_file_name)
+        record = manual_profile_repository.get(session, instrument_id)
+        payload = serialize_payload(record.documents_payload_json) if record is not None else _default_documents_payload()
 
-    current_documents = list(payload.get("current_documents") or [])
-    recent_imports = list(payload.get("recent_imports") or [])
-    extraction_reviews = list(payload.get("extraction_reviews") or [])
-    profile_notes = list(payload.get("notes") or [])
+        current_documents = list(payload.get("current_documents") or [])
+        recent_imports = list(payload.get("recent_imports") or [])
+        extraction_reviews = list(payload.get("extraction_reviews") or [])
+        profile_notes = list(payload.get("notes") or [])
 
-    document_row = {
-        "title": (title or "").strip() or original_file_name,
-        "document_type": (document_type or "").strip(),
-        "as_of_date": (as_of_date or "").strip() or None,
-        "source": (source or "").strip() or "manual_upload",
-        "status": (status or "").strip() or "uploaded",
-        "version_label": (version_label or "").strip(),
-        "file_name": original_file_name,
-        "stored_file_name": stored_file_name,
-        "download_url": download_url,
-        "file_size": len(content),
-        "content_type": file.content_type or "",
-        "uploaded_at": uploaded_at,
-        "notes": (notes or "").strip(),
-    }
-    current_documents.insert(0, document_row)
-    recent_imports.insert(
-        0,
-        {
-            "import_type": "upload",
-            "received_at": uploaded_at,
-            "source": document_row["source"],
-            "status": document_row["status"],
+        document_row = {
+            "title": (title or "").strip() or original_file_name,
+            "document_type": (document_type or "").strip(),
+            "as_of_date": (as_of_date or "").strip() or None,
+            "source": (source or "").strip() or "manual_upload",
+            "status": (status or "").strip() or "uploaded",
+            "version_label": (version_label or "").strip(),
             "file_name": original_file_name,
-        },
-    )
+            "stored_file_name": stored_file_name,
+            "download_url": download_url,
+            "file_size": file_size,
+            "content_type": file.content_type or "",
+            "uploaded_at": uploaded_at,
+            "notes": (notes or "").strip(),
+        }
+        current_documents.insert(0, document_row)
+        recent_imports.insert(
+            0,
+            {
+                "import_type": "upload",
+                "received_at": uploaded_at,
+                "source": document_row["source"],
+                "status": document_row["status"],
+                "file_name": original_file_name,
+            },
+        )
 
-    next_payload: dict[str, object] = {
-        "current_documents": current_documents,
-        "recent_imports": recent_imports,
-        "extraction_reviews": extraction_reviews,
-        "notes": profile_notes,
-    }
-    updated_record = manual_profile_repository.upsert(
-        session,
-        instrument_id=instrument_id,
-        documents_payload_json=next_payload,
-        updated_by=updated_by,
-    )
-    session.commit()
+        next_payload: dict[str, object] = {
+            "current_documents": current_documents,
+            "recent_imports": recent_imports,
+            "extraction_reviews": extraction_reviews,
+            "notes": profile_notes,
+        }
+        updated_record = manual_profile_repository.upsert(
+            session,
+            instrument_id=instrument_id,
+            documents_payload_json=next_payload,
+            updated_by=updated_by,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        stored_path.unlink(missing_ok=True)
+        raise
     return serialize_payload(updated_record.documents_payload_json)
 
 

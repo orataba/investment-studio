@@ -1,110 +1,80 @@
 import {
   getHoldingsWorkspace,
-  getPortfolioAccounts,
   getPortfolioAccountsWorkspace,
-  getPortfolioFxRates,
-  getPortfolioInstruments,
   getPortfolioPerformance,
-  getPortfolioPerformanceBoundaryHoldings,
-  getPortfolioPerformanceCalculation,
-  getPortfolioPerformanceCalculationGroups,
-  getPortfolioPerformanceContribution,
   getPortfolioResearchWorkbench,
   getPortfolioTaxonomyCatalog,
   getPortfolioTransactionsWorkspace,
-  getPortfolios,
-  getWorkspaceSummaryForPortfolio,
-  preloadPortfolioWorkspace,
 } from './api'
 
+export type PortfolioPreloadSection =
+  | 'Overview'
+  | 'Holdings'
+  | 'Performance'
+  | 'Risk'
+  | 'Transactions'
+  | 'Accounts'
+  | 'Taxonomies'
+  | 'Research'
+
 type PreloadTask = () => Promise<unknown>
-type IdleCallback = () => void
-type IdleWindow = Window & {
-  requestIdleCallback?: (callback: IdleCallback, options?: { timeout: number }) => number
+
+const routeModulePreloaders: Record<PortfolioPreloadSection, PreloadTask> = {
+  Overview: () => import('../pages/OverviewPage'),
+  Holdings: () => import('../pages/PortfolioHomePage'),
+  Performance: () => import('../pages/PerformancePage'),
+  Risk: () => import('../pages/RiskPage'),
+  Transactions: () => import('../pages/TransactionsPage'),
+  Accounts: () => import('../pages/AccountsPage'),
+  Taxonomies: () => import('../pages/TaxonomiesPage'),
+  Research: () => import('../pages/ResearchPage'),
 }
 
-let routeModulesPreloaded = false
-const dataPreloadPortfolioIds = new Set<string>()
+const dataPreloaders: Record<PortfolioPreloadSection, (portfolioId: string) => Promise<unknown>> = {
+  Overview: (portfolioId) => getPortfolioPerformance(portfolioId),
+  Holdings: (portfolioId) => getHoldingsWorkspace(portfolioId),
+  Performance: (portfolioId) => getPortfolioPerformance(portfolioId),
+  Risk: (portfolioId) => getHoldingsWorkspace(portfolioId, { include_return_series: true }),
+  Transactions: (portfolioId) => getPortfolioTransactionsWorkspace(portfolioId),
+  Accounts: (portfolioId) => getPortfolioAccountsWorkspace(portfolioId),
+  Taxonomies: (portfolioId) => getPortfolioTaxonomyCatalog(portfolioId),
+  Research: (portfolioId) => getPortfolioResearchWorkbench(portfolioId),
+}
 
-export function preloadPortfolioRouteModules() {
-  if (routeModulesPreloaded) {
+const loadedRouteModules = new Set<PortfolioPreloadSection>()
+const loadedDataIntents = new Set<string>()
+
+export const PORTFOLIO_PRELOAD_SECTIONS = Object.freeze(
+  Object.keys(routeModulePreloaders) as PortfolioPreloadSection[],
+)
+
+export function isPortfolioPreloadSection(value: string): value is PortfolioPreloadSection {
+  return PORTFOLIO_PRELOAD_SECTIONS.includes(value as PortfolioPreloadSection)
+}
+
+/**
+ * Warm only the route the user has shown intent to open. The previous global
+ * idle fan-out fetched every portfolio surface (including multi-megabyte
+ * holdings/contribution payloads) and competed with the foreground route.
+ */
+export function preloadPortfolioSection(section: string, portfolioId: string) {
+  if (!portfolioId || !isPortfolioPreloadSection(section)) {
     return
   }
 
-  routeModulesPreloaded = true
-  void Promise.allSettled([
-    import('../pages/AccountsPage'),
-    import('../pages/OverviewPage'),
-    import('../pages/PerformancePage'),
-    import('../pages/PortfolioHomePage'),
-    import('../pages/PortfolioSecurityDetailPage'),
-    import('../pages/ResearchPage'),
-    import('../pages/RiskPage'),
-    import('../pages/TaxonomiesPage'),
-    import('../pages/TransactionsPage'),
-  ])
-}
-
-function schedulePortfolioPreload(callback: () => void) {
-  if (typeof window === 'undefined') {
-    callback()
-    return
+  if (!loadedRouteModules.has(section)) {
+    loadedRouteModules.add(section)
+    void routeModulePreloaders[section]().catch(() => {
+      loadedRouteModules.delete(section)
+    })
   }
 
-  const idleWindow = window as IdleWindow
-  if (typeof idleWindow.requestIdleCallback === 'function') {
-    idleWindow.requestIdleCallback(callback, { timeout: 2_000 })
+  const dataIntentKey = `${portfolioId}:${section}`
+  if (loadedDataIntents.has(dataIntentKey)) {
     return
   }
-
-  window.setTimeout(callback, 250)
-}
-
-async function runPreloadQueue(tasks: PreloadTask[], concurrency = 3) {
-  let nextIndex = 0
-  const workerCount = Math.min(concurrency, tasks.length)
-  const workers = Array.from({ length: workerCount }, async () => {
-    while (nextIndex < tasks.length) {
-      const task = tasks[nextIndex]
-      nextIndex += 1
-      try {
-        await task()
-      } catch {
-        // Preload failures should not affect the foreground route.
-      }
-    }
-  })
-  await Promise.all(workers)
-}
-
-export function preloadPortfolioTabData(portfolioId: string) {
-  if (!portfolioId || dataPreloadPortfolioIds.has(portfolioId)) {
-    return
-  }
-
-  dataPreloadPortfolioIds.add(portfolioId)
-  void preloadPortfolioWorkspace(portfolioId).catch(() => undefined)
-
-  schedulePortfolioPreload(() => {
-    const tasks: PreloadTask[] = [
-      () => getPortfolios(),
-      () => getWorkspaceSummaryForPortfolio(portfolioId),
-      () => getHoldingsWorkspace(portfolioId),
-      () => getPortfolioTaxonomyCatalog(portfolioId),
-      () => getPortfolioPerformance(portfolioId),
-      () => getPortfolioPerformanceCalculation(portfolioId),
-      () => getPortfolioPerformanceContribution(portfolioId, { axis: 'instrument' }),
-      () => getPortfolioPerformanceContribution(portfolioId, { axis: 'account' }),
-      () => getPortfolioPerformanceCalculationGroups(portfolioId, { axis: 'instrument' }),
-      () => getPortfolioPerformanceBoundaryHoldings(portfolioId),
-      () => getPortfolioAccounts(portfolioId),
-      () => getPortfolioAccountsWorkspace(portfolioId),
-      () => getPortfolioInstruments(portfolioId),
-      () => getPortfolioFxRates(portfolioId),
-      () => getPortfolioTransactionsWorkspace(portfolioId),
-      () => getPortfolioResearchWorkbench(portfolioId),
-    ]
-
-    void runPreloadQueue(tasks)
+  loadedDataIntents.add(dataIntentKey)
+  void dataPreloaders[section](portfolioId).catch(() => {
+    loadedDataIntents.delete(dataIntentKey)
   })
 }

@@ -243,6 +243,13 @@ def _get_registry_instrument_detail(instrument_id: str):
     return deepcopy(next((item for item in REGISTRY_INSTRUMENT_DETAILS if item["instrument_id"] == instrument_id), None))
 
 
+def _get_registry_instrument_details(instrument_ids):
+    return {
+        instrument_id: _get_registry_instrument_detail(instrument_id)
+        for instrument_id in instrument_ids
+    }
+
+
 @pytest.fixture(autouse=True)
 def isolated_portfolio_store(request, tmp_path, monkeypatch):
     if request.node.get_closest_marker("postgresql_integration") is not None:
@@ -278,7 +285,7 @@ def isolated_portfolio_store(request, tmp_path, monkeypatch):
     monkeypatch.setattr(transaction_routes, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))
     monkeypatch.setattr(instrument_charts, "get_registry_instrument_detail", _get_registry_instrument_detail)
     monkeypatch.setattr(ledger, "list_registry_instruments", lambda: deepcopy(REGISTRY_INSTRUMENTS))
-    monkeypatch.setattr(ledger, "get_registry_instrument_detail", _get_registry_instrument_detail)
+    monkeypatch.setattr(ledger, "get_registry_instrument_details", _get_registry_instrument_details)
     monkeypatch.setattr(ledger, "get_platform_fx_rates", lambda: deepcopy(FX_PAYLOAD))
     monkeypatch.setattr(performance, "get_registry_instrument_detail", _get_registry_instrument_detail)
     monkeypatch.setattr(performance, "get_platform_fx_rates", lambda: deepcopy(FX_PAYLOAD))

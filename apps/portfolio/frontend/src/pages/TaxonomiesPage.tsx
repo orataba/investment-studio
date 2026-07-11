@@ -36,6 +36,8 @@ import {
   type TaxonomyAssignmentScope,
 } from '../lib/api'
 import { formatCurrency, formatLabel, formatPercent } from '../lib/format'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
+import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
 
 type TreeRow = PortfolioTaxonomyNodeRecord & {
   depth: number
@@ -57,6 +59,33 @@ type CoverageEntity = {
   instrument_state_label: string | null
   coverage_state: 'unassigned' | 'ambiguous' | 'selected' | 'other'
 }
+
+type PendingTaxonomyDelete =
+  | {
+      kind: 'target-set'
+      portfolioId: string
+      targetKind: 'saa' | 'taa'
+      taxonomyId: string
+      targetSet: PortfolioTargetSetRecord
+      scopeLabel: string
+    }
+  | {
+      kind: 'taxonomy'
+      portfolioId: string
+      taxonomy: PortfolioTaxonomyRecord
+      wasSelected: boolean
+    }
+  | {
+      kind: 'node'
+      portfolioId: string
+      taxonomyId: string
+      node: PortfolioTaxonomyNodeRecord
+    }
+  | {
+      kind: 'observed-instrument'
+      portfolioId: string
+      entity: CoverageEntity
+    }
 
 type NodeAggregate = {
   current_entity_count: number
@@ -263,6 +292,7 @@ function TaxonomyModal({
   children: ReactNode
   modalClassName?: string
 }) {
+  const dialogRef = useModalDialog(open, onClose)
   if (!open) {
     return null
   }
@@ -270,10 +300,12 @@ function TaxonomyModal({
   return (
     <div className="taxonomy-modal-overlay" role="presentation" onClick={onClose}>
       <div
+        ref={dialogRef}
         className={['taxonomy-modal', modalClassName].filter(Boolean).join(' ')}
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="taxonomy-modal-header">
@@ -546,6 +578,7 @@ async function fetchWorkspace(portfolioId: string): Promise<WorkspaceFetchResult
 
 export default function TaxonomiesPage() {
   const { portfolioId = '' } = useParams()
+  const currentPortfolioIdRef = useRef(portfolioId)
   const [searchParams, setSearchParams] = useSearchParams()
   const [catalog, setCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
   const [holdingsWorkspace, setHoldingsWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
@@ -557,6 +590,7 @@ export default function TaxonomiesPage() {
   const [notice, setNotice] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionPending, setActionPending] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<PendingTaxonomyDelete | null>(null)
 
   const [taxonomyName, setTaxonomyName] = useState('')
   const [taxonomyScope, setTaxonomyScope] = useState<TaxonomyAssignmentScope>('instrument')
@@ -593,7 +627,13 @@ export default function TaxonomiesPage() {
   const [contextMenuState, setContextMenuState] = useState<TaxonomyContextMenuState | null>(null)
   const [dragTargetNodeId, setDragTargetNodeId] = useState<string | null>(null)
 
+  currentPortfolioIdRef.current = portfolioId
+
   useEffect(() => {
+    setPendingDelete(null)
+    setActionPending(null)
+    setActionError(null)
+    setNotice(null)
     if (!portfolioId) {
       setCatalog(null)
       setHoldingsWorkspace(null)
@@ -2123,7 +2163,7 @@ export default function TaxonomiesPage() {
     }
   }
 
-  async function handleDeleteTargetSet(kind: 'saa' | 'taa') {
+  function handleDeleteTargetSet(kind: 'saa' | 'taa') {
     if (!portfolioId || !selectedTaxonomy) {
       return
     }
@@ -2131,21 +2171,16 @@ export default function TaxonomiesPage() {
     if (!existingTargetSet) {
       return
     }
-    if (!window.confirm(`Delete ${kind.toUpperCase()} target set "${existingTargetSet.name}"?`)) {
-      return
-    }
-    setActionPending(`target-${kind}-delete`)
     setActionError(null)
     setNotice(null)
-    try {
-      await deletePortfolioTargetSet(portfolioId, selectedTaxonomy.taxonomy_id, existingTargetSet.target_set_id)
-      setNotice(`Deleted ${kind.toUpperCase()} targets for ${currentScopeLabel}.`)
-      await reloadWorkspace()
-    } catch (error) {
-      setActionError(extractErrorMessage(error))
-    } finally {
-      setActionPending(null)
-    }
+    setPendingDelete({
+      kind: 'target-set',
+      portfolioId,
+      targetKind: kind,
+      taxonomyId: selectedTaxonomy.taxonomy_id,
+      targetSet: existingTargetSet,
+      scopeLabel: currentScopeLabel,
+    })
   }
 
   async function handleCreateTaxonomy(event: FormEvent<HTMLFormElement>) {
@@ -2235,30 +2270,19 @@ export default function TaxonomiesPage() {
     }
   }
 
-  async function handleDeleteTaxonomy(taxonomy: PortfolioTaxonomyRecord) {
+  function handleDeleteTaxonomy(taxonomy: PortfolioTaxonomyRecord) {
     if (!portfolioId) {
       return
     }
-    if (!window.confirm(`Delete taxonomy "${taxonomy.name}"?`)) {
-      return
-    }
-    setActionPending(`taxonomy-delete-${taxonomy.taxonomy_id}`)
     setActionError(null)
     setNotice(null)
-    try {
-      await deletePortfolioTaxonomy(portfolioId, taxonomy.taxonomy_id)
-      if (resolvedSelectedTaxonomyId === taxonomy.taxonomy_id) {
-        updateSearchParam('taxonomy_id', null)
-      }
-      setContextMenuState(null)
-      setTaxonomyPickerOpen(false)
-      setNotice(`Deleted taxonomy "${taxonomy.name}".`)
-      await reloadWorkspace()
-    } catch (error) {
-      setActionError(extractErrorMessage(error))
-    } finally {
-      setActionPending(null)
-    }
+    setContextMenuState(null)
+    setPendingDelete({
+      kind: 'taxonomy',
+      portfolioId,
+      taxonomy,
+      wasSelected: resolvedSelectedTaxonomyId === taxonomy.taxonomy_id,
+    })
   }
 
   async function handleCreateNode(event: FormEvent<HTMLFormElement>) {
@@ -2316,26 +2340,19 @@ export default function TaxonomiesPage() {
     }
   }
 
-  async function handleDeleteNode(node: PortfolioTaxonomyNodeRecord) {
+  function handleDeleteNode(node: PortfolioTaxonomyNodeRecord) {
     if (!portfolioId || !selectedTaxonomy) {
       return
     }
-    if (!window.confirm(`Delete node "${node.node_name}"?`)) {
-      return
-    }
-    setActionPending(`node-delete-${node.taxonomy_node_id}`)
     setActionError(null)
     setNotice(null)
-    try {
-      await deletePortfolioTaxonomyNode(portfolioId, selectedTaxonomy.taxonomy_id, node.taxonomy_node_id)
-      setSelectedNodeId(node.parent_taxonomy_node_id ?? null)
-      setNotice(`Deleted node "${node.node_name}".`)
-      await reloadWorkspace()
-    } catch (error) {
-      setActionError(extractErrorMessage(error))
-    } finally {
-      setActionPending(null)
-    }
+    setContextMenuState(null)
+    setPendingDelete({
+      kind: 'node',
+      portfolioId,
+      taxonomyId: selectedTaxonomy.taxonomy_id,
+      node,
+    })
   }
 
   async function assignEntitiesToNode(targetNode: PortfolioTaxonomyNodeRecord, entityIds: string[]) {
@@ -2433,7 +2450,7 @@ export default function TaxonomiesPage() {
     }
   }
 
-  async function handleDeleteObservedInstrument(entity: CoverageEntity) {
+  function handleDeleteObservedInstrument(entity: CoverageEntity) {
     if (!portfolioId || entity.target_scope !== 'instrument' || entity.instrument_state !== 'observe') {
       return
     }
@@ -2442,26 +2459,81 @@ export default function TaxonomiesPage() {
       setNotice(null)
       return
     }
-    if (!window.confirm(`Remove observed instrument "${entity.label}"?`)) {
-      return
-    }
-    setActionPending(`instrument-observe-delete-${entity.entity_id}`)
     setActionError(null)
     setNotice(null)
+    setContextMenuState(null)
+    setPendingDelete({ kind: 'observed-instrument', portfolioId, entity })
+  }
+
+  async function handleConfirmedDelete() {
+    const target = pendingDelete
+    if (!target || actionPending) {
+      return
+    }
+
+    const actionKey =
+      target.kind === 'target-set'
+        ? `target-${target.targetKind}-delete`
+        : target.kind === 'taxonomy'
+          ? `taxonomy-delete-${target.taxonomy.taxonomy_id}`
+          : target.kind === 'node'
+            ? `node-delete-${target.node.taxonomy_node_id}`
+            : `instrument-observe-delete-${target.entity.entity_id}`
+    setActionPending(actionKey)
+    setActionError(null)
+    setNotice(null)
+
     try {
-      await deletePortfolioInstrumentUniverseRecord(portfolioId, entity.entity_id)
-      setContextMenuState(null)
-      setSelectedEntityIds((current) => {
-        const next = new Set(current)
-        next.delete(entity.entity_id)
-        return next
-      })
-      setNotice(`Removed observed instrument "${entity.label}".`)
-      await reloadWorkspace()
+      let successNotice = ''
+      if (target.kind === 'target-set') {
+        await deletePortfolioTargetSet(
+          target.portfolioId,
+          target.taxonomyId,
+          target.targetSet.target_set_id,
+        )
+        successNotice = `Deleted ${target.targetKind.toUpperCase()} targets for ${target.scopeLabel}.`
+      } else if (target.kind === 'taxonomy') {
+        await deletePortfolioTaxonomy(target.portfolioId, target.taxonomy.taxonomy_id)
+        if (target.wasSelected && currentPortfolioIdRef.current === target.portfolioId) {
+          updateSearchParam('taxonomy_id', null)
+        }
+        setTaxonomyPickerOpen(false)
+        successNotice = `Deleted taxonomy "${target.taxonomy.name}".`
+      } else if (target.kind === 'node') {
+        await deletePortfolioTaxonomyNode(
+          target.portfolioId,
+          target.taxonomyId,
+          target.node.taxonomy_node_id,
+        )
+        if (currentPortfolioIdRef.current === target.portfolioId) {
+          setSelectedNodeId(target.node.parent_taxonomy_node_id ?? null)
+        }
+        successNotice = `Deleted node "${target.node.node_name}".`
+      } else {
+        await deletePortfolioInstrumentUniverseRecord(target.portfolioId, target.entity.entity_id)
+        if (currentPortfolioIdRef.current === target.portfolioId) {
+          setSelectedEntityIds((current) => {
+            const next = new Set(current)
+            next.delete(target.entity.entity_id)
+            return next
+          })
+        }
+        successNotice = `Removed observed instrument "${target.entity.label}".`
+      }
+
+      setPendingDelete(null)
+      if (currentPortfolioIdRef.current === target.portfolioId) {
+        setNotice(successNotice)
+        await reloadWorkspace()
+      }
     } catch (error) {
-      setActionError(extractErrorMessage(error))
+      if (currentPortfolioIdRef.current === target.portfolioId) {
+        setActionError(extractErrorMessage(error))
+      }
     } finally {
-      setActionPending(null)
+      if (currentPortfolioIdRef.current === target.portfolioId) {
+        setActionPending(null)
+      }
     }
   }
 
@@ -2670,6 +2742,36 @@ export default function TaxonomiesPage() {
     })
     return rows
   }
+
+  const pendingDeleteDialog = pendingDelete
+    ? pendingDelete.kind === 'target-set'
+      ? {
+          title: `Delete ${pendingDelete.targetKind.toUpperCase()} Target Set`,
+          description: `This permanently deletes the target set for ${pendingDelete.scopeLabel}. This action cannot be undone.`,
+          label: 'Delete Target Set',
+          confirmationText: pendingDelete.targetSet.name,
+        }
+      : pendingDelete.kind === 'taxonomy'
+        ? {
+            title: 'Delete Taxonomy',
+            description: 'This permanently deletes the taxonomy, its nodes, assignments, and target sets. This action cannot be undone.',
+            label: 'Delete Taxonomy',
+            confirmationText: pendingDelete.taxonomy.name,
+          }
+        : pendingDelete.kind === 'node'
+          ? {
+              title: 'Delete Taxonomy Node',
+              description: 'This permanently deletes the node and may affect its descendants and assignments. This action cannot be undone.',
+              label: 'Delete Node',
+              confirmationText: pendingDelete.node.node_name,
+            }
+          : {
+              title: 'Remove Observed Instrument',
+              description: 'This removes the instrument from the portfolio observation universe. The shared instrument is not deleted.',
+              label: 'Remove Instrument',
+              confirmationText: pendingDelete.entity.label,
+            }
+    : null
 
     return (
       <PortfolioWorkspaceLayout activeSection="Taxonomies" toolbarLabel="Page: Taxonomies">
@@ -3248,6 +3350,17 @@ export default function TaxonomiesPage() {
         </>
       ) : null}
       </div>
+      <ConfirmDialog
+        open={Boolean(pendingDeleteDialog)}
+        title={pendingDeleteDialog?.title ?? 'Confirm Delete'}
+        description={pendingDeleteDialog?.description ?? ''}
+        confirmLabel={pendingDeleteDialog?.label ?? 'Delete'}
+        confirmationText={pendingDeleteDialog?.confirmationText}
+        error={actionError}
+        busy={Boolean(actionPending)}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={handleConfirmedDelete}
+      />
     </PortfolioWorkspaceLayout>
   )
 }
