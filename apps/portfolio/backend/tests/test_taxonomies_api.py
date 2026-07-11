@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from portfolio_app.db.models import TaxonomyAssignmentRecordModel
+from portfolio_app.db.session import get_session_factory
+
 
 def test_taxonomy_create_node_assignment_round_trip(client):
     taxonomy_response = client.post(
@@ -54,6 +57,65 @@ def test_taxonomy_create_node_assignment_round_trip(client):
     assert len(catalog_payload["taxonomy_nodes"]) == 1
     assert len(catalog_payload["taxonomy_assignments"]) == 1
     assert catalog_payload["taxonomy_assignments"][0]["assignment_id"] == assignment_payload["assignment_id"]
+
+
+def test_taxonomy_assignment_create_ignores_descriptive_imported_ids(client):
+    taxonomy_response = client.post(
+        "/api/portfolios/portfolio-ops/taxonomies",
+        json={
+            "name": "Imported Assignment IDs",
+            "taxonomy_type": "custom",
+            "primary_assignment_scope": "instrument",
+        },
+    )
+    assert taxonomy_response.status_code == 200
+    taxonomy_id = taxonomy_response.json()["taxonomy_id"]
+
+    node_response = client.post(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/nodes",
+        json={"node_name": "Core", "sort_order": 0},
+    )
+    assert node_response.status_code == 200
+    node_id = node_response.json()["taxonomy_node_id"]
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        session.add_all(
+            [
+                TaxonomyAssignmentRecordModel(
+                    assignment_id="assign-tax-portfolio-010737-of",
+                    taxonomy_id=taxonomy_id,
+                    target_scope="instrument",
+                    target_entity_id="fund-us-agg",
+                    taxonomy_node_id=node_id,
+                    status="active",
+                ),
+                # A numeric-leading descriptive suffix makes SQLite exercise
+                # the same semantic bug: the old CAST-based allocator treated
+                # this as sequence number 9999 instead of ignoring it.
+                TaxonomyAssignmentRecordModel(
+                    assignment_id="assign-9999-imported",
+                    taxonomy_id=taxonomy_id,
+                    target_scope="instrument",
+                    target_entity_id="fund-us-watch",
+                    taxonomy_node_id=node_id,
+                    status="active",
+                ),
+            ]
+        )
+        session.commit()
+
+    assignment_response = client.post(
+        f"/api/portfolios/portfolio-ops/taxonomies/{taxonomy_id}/assignments",
+        json={
+            "target_scope": "instrument",
+            "target_entity_id": "equity-us-abbv",
+            "taxonomy_node_id": node_id,
+        },
+    )
+
+    assert assignment_response.status_code == 200
+    assert assignment_response.json()["assignment_id"] == "assign-0001"
 
 
 def test_taxonomy_catalog_includes_portfolio_instrument_universe(client):

@@ -1516,13 +1516,31 @@ def _next_taxonomy_node_id(session, taxonomy_id: str, node_name: str) -> str:
 
 
 def _next_taxonomy_assignment_id(session) -> str:
-    max_suffix = session.scalar(
-        select(func.max(cast(func.substr(TaxonomyAssignmentRecordModel.assignment_id, 8), Integer))).where(
-            TaxonomyAssignmentRecordModel.assignment_id.like("assign-%")
-        )
-    )
-    next_number = int(max_suffix or 0) + 1
-    return f"assign-{next_number:04d}"
+    # Imported/bootstrap assignments may use descriptive identifiers such as
+    # ``assign-tax-portfolio-010737-of``.  Casting every value after the shared
+    # prefix to an integer makes one such identifier poison all future creates
+    # on PostgreSQL.  Only canonical numeric identifiers participate in the
+    # sequence; descriptive identifiers remain valid records but are ignored by
+    # the allocator.
+    existing_ids = {
+        str(assignment_id)
+        for assignment_id in session.scalars(
+            select(TaxonomyAssignmentRecordModel.assignment_id).where(
+                TaxonomyAssignmentRecordModel.assignment_id.like("assign-%")
+            )
+        ).all()
+    }
+    numeric_suffixes = [
+        int(match.group(1))
+        for assignment_id in existing_ids
+        if (match := re.fullmatch(r"assign-(\d+)", assignment_id)) is not None
+    ]
+    next_number = max(numeric_suffixes, default=0) + 1
+    candidate = f"assign-{next_number:04d}"
+    while candidate in existing_ids:
+        next_number += 1
+        candidate = f"assign-{next_number:04d}"
+    return candidate
 
 
 def _next_target_set_id(session, taxonomy_id: str, target_set_type: str, name: str) -> str:
