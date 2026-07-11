@@ -910,6 +910,16 @@ def test_same_day_inception_cash_flows_have_no_money_weighted_return(client, mon
     assert calculation_summary["delta"] == pytest.approx(0.0)
     assert calculation_summary["capital_gains"] == pytest.approx(0.0)
 
+    daily_snapshots.refresh_portfolio_daily_snapshots(portfolio_id)
+    portfolios_response = client.get("/api/portfolios")
+    assert portfolios_response.status_code == 200
+    portfolio_summary = next(
+        item for item in portfolios_response.json() if item["portfolio_id"] == portfolio_id
+    )
+    assert portfolio_summary["nav"] == pytest.approx(200_000.0)
+    assert portfolio_summary["day_change_value"] == pytest.approx(0.0)
+    assert portfolio_summary["day_change_pct"] == pytest.approx(0.0)
+
 
 def test_xirr_rejects_zero_duration_even_when_same_day_flows_do_not_net_to_zero():
     assert performance._solve_xirr(

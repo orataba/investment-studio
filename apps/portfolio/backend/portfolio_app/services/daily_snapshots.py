@@ -34,7 +34,7 @@ _LOCAL_REFRESH_LOCKS_GUARD = Lock()
 _RUNNING_REFRESH_WAIT_SECONDS = 30.0
 _RUNNING_REFRESH_POLL_SECONDS = 0.1
 _RUNNING_REFRESH_LEASE_SECONDS = 900.0
-DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260712-flow-aligned-contribution"
+DAILY_SNAPSHOT_CALCULATION_VERSION = "portfolio-daily-v20260712-flow-aligned-performance"
 
 
 def _current_utc_timestamp() -> str:
@@ -625,7 +625,11 @@ def _refresh_portfolio_daily_snapshots_once(
             portfolio_record.as_of_date = resolved_end_date
             if latest_snapshot is not None:
                 portfolio_record.nav = _safe_float(latest_snapshot.get("nav"))
-                portfolio_record.day_change_value = _safe_float(latest_snapshot.get("absolute_change"))
+                # Portfolio day change is investment P&L, not the raw NAV
+                # movement.  Using absolute_change would report subscriptions
+                # and inception funding as investment gains even though the
+                # paired daily TWR is cash-flow neutral.
+                portfolio_record.day_change_value = _safe_float(latest_snapshot.get("delta"))
                 portfolio_record.day_change_pct = _safe_float(latest_snapshot.get("daily_twr"))
                 portfolio_record.securities_count = int(latest_snapshot.get("total_position_count") or 0)
             else:

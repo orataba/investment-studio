@@ -1034,7 +1034,9 @@ def _serialize_portfolio_row_with_materialized_summary(
     snapshot = latest_snapshot.snapshot_json if isinstance(latest_snapshot.snapshot_json, dict) else {}
     payload["as_of_date"] = latest_snapshot.as_of_date.isoformat()
     payload["nav"] = _safe_float(snapshot.get("nav"))
-    payload["day_change_value"] = _safe_float(snapshot.get("absolute_change"))
+    # Day change is cash-flow-neutral investment P&L.  Raw NAV movement would
+    # misclassify subscriptions, withdrawals, and inception funding as return.
+    payload["day_change_value"] = _safe_float(snapshot.get("delta"))
     payload["day_change_pct"] = _safe_float(snapshot.get("daily_twr"))
     payload["coverage_state"] = str(snapshot.get("coverage_state") or "unavailable")
     payload["securities_count"] = int(snapshot.get("total_position_count") or 0)
