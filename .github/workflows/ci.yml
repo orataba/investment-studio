@@ -1,0 +1,200 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  application-tests:
+    name: Application tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version-file: .python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version-file: uv.toml
+          enable-cache: true
+          cache-dependency-glob: requirements/python.lock
+
+      - name: Synchronize locked Python environment
+        run: infra/scripts/sync_python_env.sh
+
+      - name: Run backend fast suites
+        run: infra/scripts/verify_repository.sh backend-fast all
+
+      - name: Run portable infrastructure tests
+        run: infra/scripts/verify_repository.sh infra-portable
+
+  frontend-tests:
+    name: Frontend tests and builds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            apps/platform/frontend/package-lock.json
+            apps/portfolio/frontend/package-lock.json
+            apps/watchlist/frontend/package-lock.json
+
+      - name: Install locked frontend dependencies
+        run: |
+          npm --prefix apps/platform/frontend ci
+          npm --prefix apps/portfolio/frontend ci
+          npm --prefix apps/watchlist/frontend ci
+
+      - name: Run frontend suites and production builds
+        run: infra/scripts/verify_repository.sh frontend all
+
+  postgresql-tests:
+    name: PostgreSQL migrations, integration, and recovery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17.10-bookworm
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGPASSWORD: postgres
+      PYTHONUNBUFFERED: "1"
+      PORTFOLIO_OPS_TEST_POSTGRES_URL: postgresql+psycopg://portfolio_ops_test:portfolio_ops_test@127.0.0.1:5432/postgres
+      PORTFOLIO_OPS_TEST_DB_HOST: 127.0.0.1
+      PORTFOLIO_OPS_TEST_DB_PORT: "5432"
+      PORTFOLIO_OPS_TEST_DB_USER: portfolio_ops_test
+      PORTFOLIO_OPS_TEST_DB_PASSWORD: portfolio_ops_test
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version-file: .python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version-file: uv.toml
+          enable-cache: true
+          cache-dependency-glob: requirements/python.lock
+
+      - name: Install PostgreSQL 17 client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes curl ca-certificates
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl --fail --silent --show-error \
+            --output /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          . /etc/os-release
+          architecture="$(dpkg --print-architecture)"
+          printf '%s\n' \
+            'Types: deb' \
+            'URIs: https://apt.postgresql.org/pub/repos/apt' \
+            "Suites: ${VERSION_CODENAME}-pgdg" \
+            "Architectures: ${architecture}" \
+            'Components: main' \
+            'Signed-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc' \
+            | sudo tee /etc/apt/sources.list.d/pgdg.sources >/dev/null
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client-17
+          /usr/lib/postgresql/17/bin/psql --version | grep -Eq 'PostgreSQL\) 17\.'
+          echo '/usr/lib/postgresql/17/bin' >> "$GITHUB_PATH"
+
+      - name: Synchronize locked Python environment
+        run: infra/scripts/sync_python_env.sh
+
+      - name: Create least-privilege CI roles and migration database
+        run: |
+          psql --host 127.0.0.1 --username postgres --dbname postgres --set ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE portfolio_ops
+            LOGIN NOCREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS
+            PASSWORD 'portfolio_ops';
+          CREATE ROLE portfolio_ops_test
+            LOGIN CREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS
+            PASSWORD 'portfolio_ops_test';
+          SQL
+          createdb --host 127.0.0.1 --username postgres \
+            --owner portfolio_ops portfolio_ops_ci
+
+      - name: Upgrade every migration chain to head
+        env:
+          PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE: portfolio_ops_ci
+          PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA: instrument_registry
+          PORTFOLIO_OPS_PLATFORM_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA: instrument_registry
+          PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA: portfolio
+          PORTFOLIO_OPS_WATCHLIST_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA: watchlist
+        run: infra/scripts/verify_repository.sh migration-heads
+
+      - name: Run PostgreSQL integration suites with zero skips
+        run: infra/scripts/verify_repository.sh postgres-integration all
+
+      - name: Run database release and restore lifecycle tests
+        run: infra/scripts/verify_repository.sh database-lifecycle
+
+  quality-gate:
+    name: Required quality gate
+    if: always()
+    needs:
+      - application-tests
+      - frontend-tests
+      - postgresql-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every CI area to pass
+        env:
+          APPLICATION_RESULT: ${{ needs.application-tests.result }}
+          FRONTEND_RESULT: ${{ needs.frontend-tests.result }}
+          POSTGRESQL_RESULT: ${{ needs.postgresql-tests.result }}
+        run: |
+          test "$APPLICATION_RESULT" = success
+          test "$FRONTEND_RESULT" = success
+          test "$POSTGRESQL_RESULT" = success

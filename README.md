@@ -39,6 +39,10 @@ portfolio-operations-workbench/
 
 - [docs/REFACTORING_BLUEPRINT.md](./docs/REFACTORING_BLUEPRINT.md)
   面向基金经理个人及小型协作团队的目标架构与不兼容重构计划，明确基金研究、人工评级、Allocation Research、外部 ETF Live 集成和交易纠错边界。
+- [docs/CALCULATION_PUBLICATION_SPEC.md](./docs/CALCULATION_PUBLICATION_SPEC.md)
+  Phase 3B 的精确 Decimal 计算、sealed input manifest、durable worker 与原子 publication 实施契约。
+- [docs/CI.md](./docs/CI.md)
+  统一质量门禁、本地复现命令与 PostgreSQL 零跳过集成测试规范。
 - [docs/MARKET_DATA_RELIABILITY_SPEC.md](./docs/MARKET_DATA_RELIABILITY_SPEC.md)
   Phase 2 的 canonical quote series、append-only observation revision、freshness/reliability 与 TWR fail-closed 唯一规范。
 - [docs/README.md](./docs/README.md)
@@ -157,6 +161,19 @@ infra/scripts/sync_python_env.sh
 
 - 上面这组测试主要是快速 SQLite / isolated path。
 - `instrument_registry` 的 cross-schema FK 和 search_path 需要额外用 PostgreSQL integration tests 验证，命令见 [docs/DATABASE_WORKFLOW.md](./docs/DATABASE_WORKFLOW.md)。
+
+### 统一质量门禁
+
+CI 与本地验证共用同一个入口，避免工作流和开发命令逐渐分叉：
+
+```bash
+infra/scripts/verify_repository.sh backend-fast all
+infra/scripts/verify_repository.sh infra-portable
+infra/scripts/verify_repository.sh frontend all
+```
+
+PostgreSQL integration、空库 migration heads 和数据库发布/恢复生命周期的环境要求及命令见
+[docs/CI.md](./docs/CI.md)。CI 中任何 PostgreSQL 测试 skip 或零收集都会失败。
 
 ### 前端构建
 

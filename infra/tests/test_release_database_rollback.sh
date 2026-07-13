@@ -11,6 +11,10 @@ TARGET_DATABASE="portfolio_ops_release_target_$$"
 PYTHON_BIN="${PYTHON_BIN:-$REPOSITORY_ROOT/.venv/bin/python}"
 
 export PGPASSWORD="$DATABASE_PASSWORD"
+PGPASSFILE="$TEST_ROOT/empty-pgpass"
+: > "$PGPASSFILE"
+chmod 600 "$PGPASSFILE"
+export PGPASSFILE
 
 cleanup() {
   dropdb --if-exists --host "$DATABASE_HOST" --port "$DATABASE_PORT" \

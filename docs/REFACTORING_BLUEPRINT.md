@@ -2,6 +2,7 @@
 
 状态：已批准执行
 基线日期：2026-07-13
+当前优先级修订：2026-07-14
 目标用户：基金经理本人，以及未来少量基金经理同事
 
 ## 1. 产品定位
@@ -49,7 +50,10 @@
 
 - 用户可以修改录错的历史交易，前端不要求使用复杂的会计冲销操作。
 - 每次修改和删除在底层必须形成修订记录，保留修改前内容、修改后内容、操作者、时间和原因。
-- 组合计算只读取当前生效版本；审计与复盘可以还原任意修订前状态。
+- 组合当前态计算只读取当前生效 revision；任何已发布计算必须绑定当时 sealed input manifest，
+  并能按该 manifest 与方法版本确定性复算。
+- 修订历史必须完整保留；面向任意 revision cut-off 的通用历史重建、跨版本差异界面与任意时点回放
+  属于 Phase 3C，不是当前 Calculation Publication Spine 的前置条件。
 - “可修改”不等于原地覆盖或无痕物理删除。
 
 ## 3. 第一性原则
@@ -113,16 +117,16 @@ Workbench API
 
 Durable Worker
   ├── market data ingestion
-  ├── materialization and invalidation
+  ├── durable calculation jobs and invalidation
   ├── valuation/performance/risk calculations
   └── backup and restore verification
 
 PostgreSQL
   ├── immutable/revisioned facts
   ├── versioned research and decisions
-  ├── calculation runs and manifests
+  ├── calculation runs, sealed manifests and immutable publications
   ├── replaceable read models
-  └── jobs, audit and outbox
+  └── durable jobs, audit and outbox
 ```
 
 部署保持简单：一个前端入口、一个 API 进程、一个 worker、一个 PostgreSQL 和一个备份任务。不引入微服务、Kafka 或分布式基础设施。
@@ -158,10 +162,14 @@ Portfolio 中名为 `Research` 的能力，业务含义严格限定为 `Allocati
   append-only 保存每次 baseline、create、amend 和 delete；payload hash 与前序 revision 形成可验证链。
 - `transaction_current`
   面向日常读取和当前计算的只读视图，只投影每个稳定身份的最新非 tombstone revision。
+- `CalculationRun` / `CalculationInputManifest` / `CalculationPublication`
+  通用计算注册表；冻结精确输入、方法版本、requested/effective as-of 和不可变发布，第一条生产链为
+  Portfolio Daily，属于不可后置的 Phase 3B。
+- `CalculationJob`
+  持久化任务、去重、租约、心跳、fencing token 与重试；不得继续以请求内等待或进程内后台任务
+  承担发布一致性。
 - `ReconciliationRun`
-  对账批次、差异和处理状态；尚未实现，属于 Phase 3B。
-- `ValuationRun` / `PerformanceRun`
-  固化输入 manifest、方法版本、估值日期和可靠性状态；通用 run / manifest registry 尚未实现，属于下一阶段。
+  导入批次差异、处理状态和复杂对账工作流；尚未实现，属于后置的 Phase 3C。
 
 第一轮不强制把用户操作改成会计式 reversal；审计模型必须先于复杂会计工作流。
 
@@ -184,12 +192,14 @@ Portfolio 中名为 `Research` 的能力，业务含义严格限定为 `Allocati
 不创建通用 `StrategyResearch`、全局 `strategy_type` 或包含大量 nullable 字段的策略表。
 不同研究模块只共享身份、证据来源、as-of、版本、作者和决策追踪等稳定基础语义。
 
-当前 Portfolio 数据模型尚无可审计的组合策略分类字段，因此本阶段不在运行时代码中实现
-“ETF 组合自动豁免”分支。系统不得根据组合名称、组合 ID、持仓品种或 `instrument_type=etf`
-推断豁免；普通组合持有 ETF 时仍完整使用 taxonomy。现有 ETF 轮动组合暂由人工运营边界
-管理，不把其无 planning taxonomy 的现状泛化为规则。未来只有在需要自动执行该边界时，
-才引入一个最小、显式、人工维护并可审计的 portfolio operating profile；它只表达组合运营
-类型和适用能力，不承载策略参数，也不演变成通用策略研究模型。
+Phase 4 引入一个最小、显式、人工维护并可审计的 portfolio operating profile：
+`standard_taxonomy` 与 `external_etf_rotation`。它只表达组合运营类型和适用能力，不承载策略参数，
+也不演变成通用策略研究模型。系统不得根据组合名称、组合 ID、持仓品种或
+`instrument_type=etf` 推断 profile；普通组合持有 ETF 时仍完整使用 taxonomy。现有数据迁移时
+显式回填为 `standard_taxonomy`，运行时不提供隐式默认；需要豁免的外部 ETF 轮动组合由用户明确修改。
+`external_etf_rotation` 仍使用账本、持仓、绩效、滚动风险和相关性分析，只将 allocation planning
+taxonomy、`TargetSet`、风险预算与 `Allocation Policy Drift` 标记为不适用。该 profile 不保存
+ETF Live 的信号、目标或参数。
 
 ### 5.4 ETF Strategy Live 的未来集成边界
 
@@ -230,6 +240,9 @@ portfolio/account/transaction linkage。策略内容保持 strategy-native，不
 
 ## 6. 计算准确性与可靠性规范
 
+计算部分不以“先跑起来”为理由简化，数值口径、输入版本和发布一致性必须在主干阶段一次定型。
+后续可以增加新指标或新方法版本，但不能再靠替换数据模型、修复隐式输入或改变同名指标含义来补债。
+
 所有面向投资决策的指标返回统一 envelope：
 
 ```text
@@ -252,6 +265,22 @@ reliability_reasons[]
 - 任何事实修订都通过依赖 manifest 精确失效相关结果；
 - 后端是财务计算唯一真源，前端只负责展示和交互。
 
+数值与方法不变量：
+
+- 交易数量、价格、金额、费用和 FX 使用明确 scale 的 Decimal/NUMERIC；禁止 binary float 进入账本、
+  现金流、估值聚合或持久化结果。统计矩阵允许在方法规范中显式使用浮点线性代数，但输入转换、
+  缺失值、正定性处理、容差和输出舍入必须版本化并有 golden tests。
+- 每个指标定义现金流时点、估值时点、时区、交易日历、币种、FX 路径、收益频率、年化因子、
+  费用与税费处理、符号约定、最低样本和 fail-closed 条件；同名指标不得根据调用页面改变口径。
+- manifest 必须引用计算实际读取的 exact transaction revision、quote observation revision、FX leg、
+  selection-policy revision、组合/账户配置快照和 methodology version，不能只保存日期、latest id 或散列摘要。
+- run 一旦 sealed，计算器只能读取 manifest 固定的输入；运行中事实变化不得混入结果。相同 sealed manifest
+  与方法版本必须产生相同 output hash。
+- 结果先写入不可变版本，再在同一事务中发布 current pointer；失败、超时、租约丢失或输入已 superseded
+  的 run 不得成为 current。旧的 last-good 只能带 `stale` 状态返回，不能伪装为当前计算。
+- 每类核心计算必须同时具备手算/独立参考 golden case、边界条件、随机性质测试、修订失效测试、
+  并发发布测试和 PostgreSQL 精度往返测试；只验证“接口有数字”不构成验收。
+
 ## 7. 性能与稳定性目标
 
 不以缓存掩盖错误数据模型。优先顺序为正确索引、批量读取、预计算 read model，最后才是短期缓存。
@@ -267,6 +296,22 @@ reliability_reasons[]
 - API readiness 同时检查数据库、迁移版本和 worker 心跳。
 
 ## 8. 执行计划
+
+### 8.0 当前推进顺序（2026-07-14）
+
+当前目标是先建立不会再次推倒的计算与模块骨架，再快速推进 Phase 4 和 Phase 5：
+
+1. **Phase 5A 稳定性门禁先行：** 固定 Python/Node/lock file，建立 GitHub CI、PostgreSQL 空库迁移、
+   专属约束测试零 skip 门禁，以及发布/恢复回滚测试。
+2. **Phase 2B / Phase 3B 精确计算主干：** 建立 Calculation Run、sealed Input Manifest、持久任务与
+   原子 Publication；第一个生产者是 Portfolio Daily，GET 路径只读已发布结果。
+3. **Phase 4 语义收窄：** 先抽离共享 market/risk math，再一次性完成 Allocation Research / Policy Replay /
+   Allocation Policy Drift 命名与 operating profile，不保留双轨别名。
+4. **Phase 5B 架构收敛：** 在上述稳定 contract 上收敛模块边界、worker/outbox 和少量同事使用所需的身份基础。
+5. **Phase 3C 后置增强：** 复杂 reconciliation workflow、严格历史审计 UI 和任意历史时点交互式 replay
+   后续补充；它们不得阻塞当前稳定主干，也不得反向改变已定型的计算输入和发布模型。
+
+严格审计的交互深度可以后置，计算本身的准确度、可复现性、失效边界和并发一致性不后置。
 
 ### Phase 1：删除误导性评级并建立人工评级修订链（已完成，2026-07-13）
 
@@ -304,9 +349,10 @@ taxonomy、基金 NAV 表现与风险分析均保持不变；普通组合持有 
 `total_return` role、canonical FX identity / resolver、显式币种约束和三套 consumer policy
 已上线；正式库迁移到 Instrument `0011` 并通过真实数据审计。
 
-#### Phase 2B：Calculation Run 与不可变发布
+#### Phase 2B：Calculation Run、Manifest 与不可变发布（规范已锁定，实现并入 Phase 3B）
 
-- 新建 calculation run 和 input manifest，保存 exact series/revision、policy revision、FX legs 和方法版本。
+- 新建 calculation run、sealed input manifest、durable job 和 immutable publication，保存 exact
+  transaction/config/series/revision、policy revision、FX legs、方法版本和 output hash。
 - 拆分 observation、ingestion、calculation freshness；旧的 last-good 结果只能明确标为 stale，不能伪装 current。
 - 修复 stale valuation + external flow 的 TWR：现金流边界没有 fresh complete valuation 时整段 fail closed，
   经过 fresh re-anchor 后新窗口才可恢复计算。
@@ -314,8 +360,14 @@ taxonomy、基金 NAV 表现与风险分析均保持不变；普通组合持有 
 
 当前进度：Portfolio daily snapshot 已保存 quote / FX dependency manifest、独立
 NAV / book-P&L / TWR 状态并支持全量确定性重建；Watchlist performance/risk pair 已有
-一致 fingerprint 和两轮 cohort convergence。通用的 versioned calculation-run 表、跨领域
-input-manifest registry，以及所有 GET 读路径彻底移除同步 materialization，仍属于下一批工作。
+一致 fingerprint 和两轮 cohort convergence。现有 snapshot fingerprint 和 dependency JSON 只是
+过渡事实，不是完整 provenance。通用 registry、immutable publication、durable job，以及所有 GET
+读路径彻底移除同步 materialization，由 Phase 3B 一次性完成，不保留双轨实现。
+
+首个垂直切片固定为 Portfolio Daily：命令端创建 run 并冻结输入，worker 只读取 sealed manifest，
+计算结果写入新版本后原子切换 publication。事实若在运行中修订，该 run 标记 superseded 且不能发布；
+同一 manifest 的重试必须幂等。完成后删除现有进程内锁、请求内等待、GET 隐式 ensure、后台 task
+和 live fallback，不保留兼容路径。
 
 #### Phase 2C：Contract Convergence
 
@@ -341,7 +393,7 @@ DTO 的统一仍未完成，不以手写兼容 alias 作为过渡方案。
 验收：不满足数据条件时明确 unavailable；同一输入只有一个后端结果；同日修订、晚到旧日期修订、policy-only
 变更、计算竞态和方法升级均能产生可解释的 revision/manifest/state 变化。
 
-### Phase 3：交易修订、计算 manifest 与对账（3A 已部署；3B 下一阶段）
+### Phase 3：交易修订、精确计算依赖与对账（3A 已部署；3B 当前主干；3C 后置）
 
 #### Phase 3A：版本化 Decimal 交易账本（已实现）
 
@@ -366,38 +418,96 @@ DTO 的统一仍未完成，不以手写兼容 alias 作为过渡方案。
 Phase 3A 验收已完成：API/UI 可以修改历史事实并查看 History；旧 revision、actor、原因、变更字段和
 mutation group 可追溯；并发修改不会静默覆盖，删除不会物理抹除历史。
 
-#### Phase 3B：Calculation input manifest 与 reconciliation（下一阶段）
+#### Phase 3B：Calculation Publication Spine（当前最高领域优先级）
 
-- 建立 valuation / performance / risk calculation run 与统一 input manifest，保存采用的 transaction
-  revision、quote/FX revision、policy revision 和 methodology version。
-- 用 manifest 依赖替代粗粒度 stale 范围，在事实修订后精确定位、失效和重建受影响结果。
-- 增加导入批次、reconciliation run、差异分类、处理状态和可重复回放。
-- 把现有 snapshot 与 Research 的局部 dependency payload 收敛到可查询的跨领域 manifest registry；
-  在该 registry 完成前，不把现有 fingerprint 描述为完整 calculation provenance。
+建立跨领域可复用、先由 Portfolio Daily 投产的计算主干：
 
-Phase 3B 验收：可以解释某个历史绩效数字采用了哪些交易、行情、FX、policy 和方法版本，并能通过
-reconciliation 证明导入前后与重算前后差异已处理。
+- `calculation_run` 保存 calculation kind、scope、requested/effective as-of、methodology version、
+  状态、发起者、attempt 与运行元数据。
+- `calculation_input_manifest` 在计算开始前冻结并 seal，之后数据库禁止修改。依赖使用规范化 typed rows，
+  精确记录 transaction revision/payload hash、portfolio/account/instrument/currency/benchmark/taxonomy
+  配置快照、quote series/observation/revision/status/selection-policy revision、精确 FX legs、cut-off/time
+  policy，以及增量计算明确依赖的 prior publication；仅保存聚合 fingerprint 或 latest id 不构成 manifest。
+- 配置尚无 revision chain 时，manifest 保存规范化 immutable configuration snapshot 及 canonical hash，
+  计算器不得回查可变 current row。
+- `calculation_job` 提供 durable queue、dedupe key、lease、heartbeat、retry 与 fencing token；崩溃恢复、
+  重复投递和陈旧 worker 均不得产生第二个 active publication。
+- calculator 只能读取 sealed manifest 固定的输入，不得在运行中重新查询 current facts。
+- 结果按 run/version 不可变保存；`calculation_publication` 保存 canonical financial output hash，并在单一
+  数据库事务中切换 scope 的唯一 active publication。
+- 运行期间若 fact、policy、配置或方法变化，旧 run 可以保留为取证记录，但必须标记 superseded，
+  不能成为 current；系统为新 manifest 创建新 run。
+- 相同 sealed manifest 与 methodology 的重试必须得到相同 canonical financial output hash。
+- GET 只读取已发布结果，不同步写库、不等待计算、不启动进程内后台任务，也不以 live fallback
+  伪装 materialization 成功；命令端返回 `202 + run_id`，并提供 run status 查询。
+- 事实写入在同一事务中记录精确失效或重算意图；迁移完成后删除 `PortfolioCalculationStateModel`、
+  粗粒度 dirty/status 双轨、请求内 ensure、进程内锁和派生 header 状态，不留兼容路径。
 
-### Phase 4：Allocation Research 语义收窄（暂缓）
+第一条端到端 producer 是 Portfolio Daily valuation/performance。registry、状态机、typed dependency
+与 publication contract 从第一天支持后续 risk、Watchlist 和 Allocation producer 接入；增加 producer
+只能增加 dependency/output 类型，不得修改主干生命周期或另建计算引擎。
 
-当前不改数据库、路由或 UI，避免在更高优先级的账本与数据可靠性重构期间扩大变更面。
-未来以一次不兼容重构完成：
+该首个 producer 必须在同一垂直切片消除当前 `ledger.py`、`performance.py`、canonical quote/FX
+转换与日频物化表中的 binary-float 会计链：账本、lot、现金、估值、损益、费用、税费、FX、TWR
+和 contribution 全程使用版本化 Decimal context；日频财务输出使用明确 scale 的 NUMERIC，JSON 使用
+canonical decimal string。只有统计/风险矩阵边界允许按正式方法契约转换为有序 float64 array。
 
-- 将 Portfolio 当前泛化的 `Research` 明确重命名为 `Allocation Research / Allocation Lab`。
-- 将现有 backtest 明确重命名为 `Policy Replay`。
-- 将 `Current Drift` 收窄为 `Allocation Policy Drift`，只对绑定有效 allocation policy 的组合出现。
-- UI、API、DTO、表和文档一次性改名，不保留 `research` 双轨别名。
+Phase 3B 验收：
 
-验收：普通组合继续用 taxonomy 跟踪；ETF 轮动组合不被强制配置 taxonomy、风险预算、目标和 policy drift。
+- 任一已发布数字可以列出精确交易、行情、FX、配置、policy 和方法依赖；
+- 同一 manifest 重试结果确定，canonical output hash 一致；
+- mid-run fact change、重复任务、worker 崩溃、lease 超时与 fencing 争抢不会发布错误 current；
+- GET 全部纯读，命令提交与状态查询语义稳定；
+- 核心财务结果通过 golden、边界、性质、并发和 PostgreSQL 精度/约束测试；
+- 旧 calculation state 与同步/live fallback 路径全部删除。
 
-### Phase 5：架构收敛与多用户基础
+#### Phase 3C：Reconciliation 与严格历史审计（后置）
+
+- 增加导入批次、reconciliation run、差异分类和处理状态。
+- 增加任意 transaction revision cut-off 的通用历史状态重建、跨 run/导入/修订的差异解释、
+  批量回放与严格审计 UI。
+- 复用 Phase 3B 已冻结的 manifest 与 publication，不创建第二套审计计算引擎。
+
+Phase 3C 不阻塞 Phase 4/5，也不得改变 Phase 3B 的数值口径或数据库主干。按 sealed manifest
+精确复算某个已发布 run 属于 Phase 3B，不得借 Phase 3C 名义后置。
+
+### Phase 4：Allocation Research 语义收窄（Phase 3B 首个垂直切片后立即推进）
+
+先消除当前 `research_solver.py` 中 market/risk math 与 allocation solver 混合、Portfolio Risk
+反向依赖 Allocation 实现的问题：
+
+- 提取共享 `portfolio_market_data.py` 与 `risk_math.py`；
+- 拆分 `allocation_solver.py`、`allocation_policy_replay.py` 与 `allocation_research.py`；
+- Portfolio Risk 只能依赖共享市场数据与风险数学模块，不能依赖 Allocation Research。
+
+随后以一次不兼容重构完成：
+
+- 后端领域名统一为 `allocation_research`，UI 使用 `Allocation Lab`。
+- 将现有 backtest 统一重命名为 `Policy Replay`。
+- 将 `Current Drift` 统一重命名为 `Allocation Policy Drift`，只对绑定有效 allocation policy 的组合出现。
+- 增加必填 portfolio operating profile：`standard_taxonomy / external_etf_rotation`；不根据名称或持仓推断。
+- 数据库、模型、API、DTO、路由、UI、测试和文档同时改名，不保留 `research` alias 或双轨接口。
+
+验收：普通组合继续用 taxonomy 跟踪；`external_etf_rotation` 只豁免 allocation planning 能力，
+仍保留真实组合账本、绩效与风险跟踪；ETF Live 模型不进入本项目。
+
+### Phase 5A：自动化质量与运行稳定性（当前批次）
+
+- 建立固定运行环境、统一验证入口、GitHub CI required gate、PostgreSQL 零 skip 集成测试与恢复演练；
+  这是所有后续不兼容重构的先决门禁。
+- CI 覆盖三个后端、三个前端、生产构建、空库全迁移链和数据库发布/恢复生命周期；依赖全部锁定，
+  PostgreSQL 测试 skip、零收集或 JUnit 无法读取时直接失败。
+- `Required quality gate` 通过前不得合并。
+
+### Phase 5B：架构收敛与多用户基础（Phase 4 后）
 
 - 统一 Web shell 和 API contract，逐步淘汰 app 间重复骨架。
 - OpenAPI 生成 TypeScript client，禁止手写重复 DTO。
 - 在已落地的交易 optimistic concurrency 与 client-asserted 本地 actor 基础上，加入认证身份、RBAC，
   并把审计查询扩展到其他关键事实；本地 actor 不能冒充认证主体。
 - 使用 transactional outbox 处理重算和通知。
-- 建立 PostgreSQL CI、关键 E2E、加密异地备份和恢复演练。
+- 在精确计算 publication 路径稳定后补关键 E2E；建立加密异地备份和定期恢复演练。
+- 保持模块化单体；共享模块只能按领域依赖方向引用，不拆微服务，不用共享工具包绕过 bounded context。
 
 验收：可以安全开放给少量同事，且并发修改不会静默覆盖。
 
@@ -421,5 +531,11 @@ reconciliation 证明导入前后与重算前后差异已处理。
 3. 后端单元测试、PostgreSQL 集成测试和前端测试通过。
 4. 三个现有前端在收敛完成前均可生产构建。
 5. 关键计算含确定性 golden tests 和边界条件测试。
+   账本/现金流/估值使用 Decimal 精确往返；统计计算还必须固定容差、正定性处理和方法版本。
 6. 删除被替代的表、接口、字段、文档和前端路径，不留下双轨实现。
 7. 记录性能基线，禁止出现无法解释的显著退化。
+8. PostgreSQL 专属测试不得 skip；CI 必须拒绝 skipped、empty 或不可读取的 test suite。
+9. Calculation publication 必须通过 manifest seal、确定性 output hash、mid-run supersede、lease fencing
+   和原子 active-publication 并发测试。
+10. 关键公式的数值精度、舍入、误差阈值和 unavailable 边界必须成为正式契约测试，不接受
+    “后续再提高精度”的临时实现。

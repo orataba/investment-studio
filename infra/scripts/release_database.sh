@@ -26,8 +26,11 @@ if not all(values[:4]):
 print("|".join(values))
 PY
   )"
-  IFS='|' read -r DATABASE_HOST DATABASE_PORT DATABASE_NAME DATABASE_USER DATABASE_PASSWORD \
+  IFS='|' read -r DATABASE_HOST DATABASE_PORT DATABASE_NAME DATABASE_USER URL_DATABASE_PASSWORD \
     <<< "$parsed_database_target"
+  # A URL may intentionally omit credentials so they never appear in process
+  # arguments or logs. In that case, honor the separately supplied secret.
+  DATABASE_PASSWORD="${URL_DATABASE_PASSWORD:-${PORTFOLIO_OPS_DB_PASSWORD:-}}"
 else
   DATABASE_HOST="${PORTFOLIO_OPS_DB_HOST:-127.0.0.1}"
   DATABASE_PORT="${PORTFOLIO_OPS_DB_PORT:-5432}"

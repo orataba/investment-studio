@@ -158,6 +158,9 @@ Each backend sets PostgreSQL `search_path` from its own `database_schema` settin
 
 Tests override the database URL to temporary SQLite databases. That path exists only for fast isolated tests; the repository default runtime target is PostgreSQL.
 
+仓库统一验证入口是 `infra/scripts/verify_repository.sh`；CI 运行方式和固定版本见
+[CI.md](./CI.md)。依赖安装与验证分离，脚本不会在测试中修改锁文件或安装未锁定依赖。
+
 Each backend should run tests from its own `backend/` directory:
 
 ```bash
@@ -167,11 +170,10 @@ Each backend should run tests from its own `backend/` directory:
 ```
 
 SQLite fast tests 不会覆盖 PostgreSQL 专属的 cross-schema FK / search_path 行为。
-共享资产存储边界的回归验证需要额外跑这两条 PostgreSQL integration tests：
+共享资产存储边界、append-only 行情修订和交易账本约束的回归验证使用：
 
 ```bash
-(cd apps/portfolio/backend && pytest tests/test_postgres_instrument_registry_constraints.py -q)
-(cd apps/watchlist/backend && pytest tests/test_postgres_instrument_registry_constraints.py -q)
+infra/scripts/verify_repository.sh postgres-integration all
 ```
 
 这些测试默认使用仅供本地测试的
@@ -188,7 +190,8 @@ backend runtime `.env`，也不要让 API 使用测试角色。
 infra/launchd/bootstrap_local_database.sh
 ```
 
-连接不可用时测试会跳过；角色缺失或权限错误会直接失败，不能作为“环境不可用”静默跳过。
+单独运行 pytest 时，连接不可用可能按测试夹具语义跳过；统一验证入口会解析 JUnit 报告，任何
+skip 或零收集都直接失败。角色缺失或权限错误也不能作为“环境不可用”静默通过。
 
 ## Repository Hygiene
 
