@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     sql_echo: bool = False
     default_trade_timezone: str = "Asia/Shanghai"
     default_trade_time: str = "12:00"
+    daily_market_valuation_quote_max_age_days: int = 5
+    fund_valuation_quote_max_age_days: int = 45
     cors_origins: list[str] = ["http://127.0.0.1:5174", "http://localhost:5174"]
 
     model_config = SettingsConfigDict(
@@ -62,6 +64,17 @@ class Settings(BaseSettings):
         except ValueError as exc:
             raise ValueError("default_trade_time must use HH:MM format.") from exc
         return f"{parsed.hour:02d}:{parsed.minute:02d}"
+
+    @field_validator(
+        "daily_market_valuation_quote_max_age_days",
+        "fund_valuation_quote_max_age_days",
+    )
+    @classmethod
+    def _validate_valuation_quote_max_age_days(cls, value: int) -> int:
+        resolved = int(value)
+        if not 1 <= resolved <= 366:
+            raise ValueError("valuation quote max age must be between 1 and 366 days.")
+        return resolved
 
     @field_validator("database_schema", mode="before")
     @classmethod

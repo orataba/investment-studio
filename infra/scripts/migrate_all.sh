@@ -10,6 +10,7 @@ if [[ ! -x "$DEFAULT_PYTHON_BIN" ]]; then
   DEFAULT_PYTHON_BIN="$(command -v python3 || true)"
 fi
 PYTHON_BIN="${PYTHON_BIN:-$DEFAULT_PYTHON_BIN}"
+CALLER_EXPECTED_DATABASE="${PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE:-}"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "PYTHON_BIN is not executable: $PYTHON_BIN" >&2
@@ -74,6 +75,15 @@ for app in platform portfolio watchlist; do
     load_env_file "$PROJECT_ROOT/apps/$app/backend/.env" false
   fi
 done
+
+# This authorization must come from the invoking process.  A repository or
+# runtime .env file may contain connection settings, but it must never be able
+# to authorize a PostgreSQL migration by itself.
+if [[ -z "$CALLER_EXPECTED_DATABASE" ]]; then
+  echo "Set PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE in the invoking process." >&2
+  exit 64
+fi
+export PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE="$CALLER_EXPECTED_DATABASE"
 
 if [[ -z "${PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL:-}" ]]; then
   if [[ -z "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" ]]; then

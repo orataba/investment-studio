@@ -1,6 +1,7 @@
 import type { TableCell } from '../../../../../packages/ui/src/tableExport'
 
 import type { PortfolioTransactionRecord } from './api'
+import { toFiniteNumber } from './format'
 
 export const TRANSACTION_EXPORT_HEADERS: TableCell[] = [
   'Transaction ID',
@@ -37,16 +38,60 @@ export function buildTransactionExportRows(transactions: PortfolioTransactionRec
       transaction.account.account_name,
       transaction.instrument_id ?? '',
       transaction.instrument_ref?.instrument_name ?? '',
-      transaction.quantity,
-      transaction.price,
-      transaction.gross_amount,
-      transaction.fees,
-      transaction.taxes,
-      transaction.net_cash_effect,
+      toFiniteNumber(transaction.quantity),
+      toFiniteNumber(transaction.price),
+      toFiniteNumber(transaction.gross_amount),
+      toFiniteNumber(transaction.fees),
+      toFiniteNumber(transaction.taxes),
+      toFiniteNumber(transaction.net_cash_effect),
       transaction.currency,
       transaction.note ?? '',
     ]),
   ]
+}
+
+const TRANSACTION_DECIMAL_DRAFT_FIELDS = new Set([
+  'quantity',
+  'price',
+  'gross_amount',
+  'counter_amount',
+  'fx_rate',
+  'fees',
+  'taxes',
+])
+
+export function normalizeTransactionDecimalDraft(value: string): string {
+  const normalized = value.trim()
+  const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(normalized)
+  if (!match) {
+    return normalized
+  }
+  const sign = match[1] === '-' ? '-' : ''
+  const integer = match[2].replace(/^0+(?=\d)/, '')
+  const fraction = (match[3] ?? '').replace(/0+$/, '')
+  if (integer === '0' && !fraction) {
+    return '0'
+  }
+  return `${sign}${integer}${fraction ? `.${fraction}` : ''}`
+}
+
+export function transactionDraftHasChanges(
+  current: Record<string, string>,
+  base: Record<string, string>,
+): boolean {
+  const keys = new Set([...Object.keys(current), ...Object.keys(base)])
+  keys.delete('instrument_search')
+  for (const key of keys) {
+    const currentValue = current[key] ?? ''
+    const baseValue = base[key] ?? ''
+    const normalize = TRANSACTION_DECIMAL_DRAFT_FIELDS.has(key)
+      ? normalizeTransactionDecimalDraft
+      : (value: string) => value.trim()
+    if (normalize(currentValue) !== normalize(baseValue)) {
+      return true
+    }
+  }
+  return false
 }
 
 export function countActiveTransactionFilters(filters: {

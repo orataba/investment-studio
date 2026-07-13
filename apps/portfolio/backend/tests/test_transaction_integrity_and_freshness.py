@@ -6,11 +6,20 @@ from datetime import UTC, date, datetime, timedelta
 from threading import Barrier
 
 import pytest
+from portfolio_ops_instrument_core import instrument_store as shared_store
 from portfolio_ops_instrument_core.db_models import Instrument
 
 from portfolio_app.db.models import PortfolioCalculationStateModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services import daily_snapshots, ledger, portfolio_store
+
+
+TEST_ACTOR = {
+    "actor_type": "user",
+    "actor_id": "pm:integrity-test",
+    "display_name": "Integrity Test Manager",
+    "actor_source": "client_asserted",
+}
 
 
 def _create_deposit(note: str) -> dict[str, object]:
@@ -28,17 +37,19 @@ def _create_deposit(note: str) -> dict[str, object]:
         instrument_ref=None,
         quantity=None,
         price=None,
-        gross_amount=100.0,
+        gross_amount="100.00000000",
         counter_amount=None,
         fx_rate=None,
-        fees=0.0,
-        taxes=0.0,
+        fees="0.00000000",
+        taxes="0.00000000",
         currency="USD",
         transfer_scope=None,
         transfer_object_type=None,
         transfer_group_id=None,
         counterparty_account_id=None,
         note=note,
+        actor=TEST_ACTOR,
+        change_reason=f"Create integrity-test deposit: {note}",
     )
 
 
@@ -57,42 +68,50 @@ def _create_abbv_sale(quantity: float, note: str) -> dict[str, object]:
         settlement_cash_account_id="cash-usd-main",
         instrument_id="equity-us-abbv",
         instrument_ref=deepcopy(source["instrument_ref"]),
-        quantity=quantity,
-        price=200.0,
-        gross_amount=quantity * 200.0,
+        quantity=str(quantity),
+        price="200.000000000000",
+        gross_amount=str(quantity * 200.0),
         counter_amount=None,
         fx_rate=None,
-        fees=0.0,
-        taxes=0.0,
+        fees="0.00000000",
+        taxes="0.00000000",
         currency="USD",
         transfer_scope=None,
         transfer_object_type=None,
         transfer_group_id=None,
         counterparty_account_id=None,
         note=note,
+        actor=TEST_ACTOR,
+        change_reason=f"Create integrity-test sale: {note}",
     )
 
 
-def test_live_portfolio_nav_is_unavailable_when_an_account_cannot_be_valued(monkeypatch) -> None:
-    detail_loader = ledger.get_registry_instrument_details
-    monkeypatch.setattr(
-        ledger,
-        "get_registry_instrument_details",
-        lambda instrument_ids: {
-            instrument_id: (
-                None
-                if instrument_id == "equity-us-abbv"
-                else deepcopy(detail_loader({instrument_id}).get(instrument_id))
-            )
-            for instrument_id in instrument_ids
-        },
+def test_live_portfolio_nav_is_unavailable_when_an_account_cannot_be_valued() -> None:
+    changed_count = shared_store.upsert_market_data_points(
+        get_session_factory(),
+        instrument_id="equity-us-abbv",
+        rows=[
+            {
+                "metric_family": "price",
+                "quote_basis": "close",
+                "as_of_date": date(2026, 4, 15),
+                "value": "206.47",
+                "currency": "USD",
+                "source_ref": "test:partial-current-quote",
+                "status": "partial",
+            }
+        ],
     )
+    assert changed_count == 1
 
     portfolio = portfolio_store.get_portfolio_live_summary("portfolio-ops")
 
     assert portfolio is not None
     assert portfolio["nav"] is None
-    assert portfolio["coverage_state"] == "partial"
+    assert portfolio["nav_coverage_state"] == "partial"
+    assert portfolio["nav_coverage_reason_codes"] == [
+        "account_valuation_incomplete"
+    ]
     assert "broker-us-core" in portfolio["valuation_coverage"]["missing_account_ids"]
 
 
@@ -154,10 +173,20 @@ def test_transaction_and_snapshot_invalidation_roll_back_together(monkeypatch) -
 
 
 def test_deleting_a_position_source_fact_cannot_invalidate_later_sales() -> None:
+    source = portfolio_store.get_transaction("portfolio-ops", "txn-0003")
+    assert source is not None
     with pytest.raises(ValueError, match="exceeds account position"):
         portfolio_store.delete_transactions(
             "portfolio-ops",
             transaction_ids=["txn-0003"],
+            expected_revisions={
+                "txn-0003": (
+                    str(source["revision_id"]),
+                    int(source["revision_number"]),
+                )
+            },
+            actor=TEST_ACTOR,
+            change_reason="Attempt removal of a consumed source fact",
         )
 
     assert portfolio_store.get_transaction("portfolio-ops", "txn-0003") is not None

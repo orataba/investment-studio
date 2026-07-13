@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, JSON, Numeric, text
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from watchlist_app.db.base import Base
@@ -28,7 +28,9 @@ class PerformanceSnapshot(Base):
         nullable=False,
     )
     as_of_date: Mapped[date] = mapped_column(Date, nullable=False)
-    source_cutoff_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    market_data_input_watermark_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     methodology_version: Mapped[str] = mapped_column(nullable=False)
     input_hash: Mapped[str] = mapped_column(nullable=False)
     calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -68,7 +70,9 @@ class RiskSnapshot(Base):
         nullable=False,
     )
     as_of_date: Mapped[date] = mapped_column(Date, nullable=False)
-    source_cutoff_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    market_data_input_watermark_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     methodology_version: Mapped[str] = mapped_column(nullable=False)
     input_hash: Mapped[str] = mapped_column(nullable=False)
     calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -85,83 +89,3 @@ class RiskSnapshot(Base):
     down_capture: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     tracking_error: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     information_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
-
-
-class ExposureAnalyticsSnapshot(Base):
-    __tablename__ = "exposure_analytics_snapshot"
-    __table_args__ = (
-        Index("idx_exposure_snapshot_current", "instrument_id", "is_current"),
-        Index(
-            "uq_exposure_snapshot_current_instrument",
-            "instrument_id",
-            unique=True,
-            sqlite_where=text("is_current = 1"),
-            postgresql_where=text("is_current IS TRUE"),
-        ),
-    )
-
-    snapshot_id: Mapped[str] = mapped_column(primary_key=True)
-    instrument_id: Mapped[str] = mapped_column(
-        ForeignKey("instrument_detail.instrument_id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    as_of_date: Mapped[date] = mapped_column(Date, nullable=False)
-    source_cutoff_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    methodology_version: Mapped[str] = mapped_column(nullable=False)
-    input_hash: Mapped[str] = mapped_column(nullable=False)
-    calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    is_current: Mapped[bool] = mapped_column(nullable=False, default=True)
-    asset_allocation_json: Mapped[list[dict[str, object]]] = mapped_column(
-        JSON,
-        nullable=False,
-        default=list,
-    )
-    sector_allocation_json: Mapped[list[dict[str, object]]] = mapped_column(
-        JSON,
-        nullable=False,
-        default=list,
-    )
-    country_allocation_json: Mapped[list[dict[str, object]]] = mapped_column(
-        JSON,
-        nullable=False,
-        default=list,
-    )
-    currency_allocation_json: Mapped[list[dict[str, object]]] = mapped_column(
-        JSON,
-        nullable=False,
-        default=list,
-    )
-    credit_rating_allocation_json: Mapped[list[dict[str, object]]] = mapped_column(
-        JSON,
-        nullable=False,
-        default=list,
-    )
-    duration_bucket_json: Mapped[list[dict[str, object]]] = mapped_column(
-        JSON,
-        nullable=False,
-        default=list,
-    )
-    maturity_bucket_json: Mapped[list[dict[str, object]]] = mapped_column(
-        JSON,
-        nullable=False,
-        default=list,
-    )
-    yield_bucket_json: Mapped[list[dict[str, object]]] = mapped_column(
-        JSON,
-        nullable=False,
-        default=list,
-    )
-    top10_concentration: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
-    holding_count: Mapped[int | None]
-    bond_count: Mapped[int | None]
-    equity_count: Mapped[int | None]
-    other_count: Mapped[int | None]
-    cash_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
-    leverage_ratio: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
-    weighted_duration: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
-    weighted_maturity: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
-    weighted_yield_to_worst: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
-    avg_credit_rating: Mapped[str | None]
-    reported_turnover: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
-    style_box_code: Mapped[str | None]

@@ -1,13 +1,24 @@
 from base64 import b64decode
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 import binascii
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from portfolio_ops_instrument_core.models import InstrumentIdentifier as PlatformInstrumentIdentifier
 from portfolio_ops_instrument_core.models import CorporateActionEvent as PlatformCorporateActionEvent
-from portfolio_ops_instrument_core.models import InstrumentType, DataStatus, IdentifierType, MetricFamily, QuoteBasis, QuoteRole
+from portfolio_ops_instrument_core.models import (
+    CanonicalCurrencyCode,
+    CanonicalQuoteResolution,
+    DataStatus,
+    IdentifierType,
+    InstrumentType,
+    MetricFamily,
+    QuoteBasis,
+    QuoteRole,
+    QuoteFreshnessPolicy,
+    SourceObservationStatus,
+)
 from portfolio_ops_instrument_core.models import QuoteSelectionPolicy as PlatformQuoteSelectionPolicy
 
 
@@ -41,13 +52,77 @@ MAX_NAV_IMPORT_BASE64_CHARS = ((MAX_NAV_IMPORT_BYTES + 2) // 3) * 4
 
 
 class PlatformMarketDataPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    quote_series_id: str = Field(min_length=1)
+    observation_id: str = Field(min_length=1)
+    revision_id: str = Field(min_length=1)
+    revision_number: int = Field(ge=1)
     metric_family: MetricFamily
     quote_basis: QuoteBasis
     as_of_date: date
     value: Decimal
-    currency: str = Field(min_length=1, max_length=8)
-    provider: str | None = None
-    status: DataStatus = "complete"
+    currency: CanonicalCurrencyCode
+    source_ref: str | None = None
+    status: Literal["complete"] = "complete"
+    source_published_at: datetime | None = None
+    ingested_at: datetime | None = None
+    payload_hash: str = Field(min_length=1)
+
+
+class PlatformQuoteObservationRevision(BaseModel):
+    instrument_id: str = Field(min_length=1)
+    quote_series_id: str = Field(min_length=1)
+    metric_family: MetricFamily
+    quote_basis: QuoteBasis
+    currency: CanonicalCurrencyCode
+    observation_id: str = Field(min_length=1)
+    as_of_date: date
+    revision_id: str = Field(min_length=1)
+    revision_number: int = Field(ge=1)
+    value: Decimal | None = None
+    source_ref: str | None = None
+    status: Literal["complete", "partial", "rejected", "withdrawn"]
+    source_published_at: datetime | None = None
+    ingested_at: datetime | None = None
+    payload_hash: str = Field(min_length=1)
+    is_current: bool
+    superseded_at: datetime | None = None
+
+
+class PlatformQuoteObservationRevisionsResponse(BaseModel):
+    instrument_id: str = Field(min_length=1)
+    limit: int = Field(ge=1, le=5000)
+    truncated: bool
+    revisions: list[PlatformQuoteObservationRevision]
+
+
+class PlatformExplicitQuoteResolveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resolver_strategy_version: Literal["canonical_quote_resolver.v1"]
+    instrument_id: str = Field(min_length=1)
+    metric_family: MetricFamily
+    quote_basis: QuoteBasis
+    currency: CanonicalCurrencyCode
+    requested_as_of_date: date
+    freshness_policy: QuoteFreshnessPolicy
+
+
+class PlatformRoleQuoteResolveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resolver_strategy_version: Literal["canonical_quote_resolver.v1"]
+    quote_selection_policy_version: Literal["quote_selection_policy.v1"]
+    instrument_id: str = Field(min_length=1)
+    role: QuoteRole
+    currency: CanonicalCurrencyCode
+    requested_as_of_date: date
+    freshness_policy: QuoteFreshnessPolicy
+
+
+class PlatformCanonicalQuoteResolution(CanonicalQuoteResolution):
+    pass
 
 
 class PlatformEmailRule(BaseModel):
@@ -132,10 +207,12 @@ class PlatformInstrumentRecord(BaseModel):
     instrument_id: str
     instrument_name: str
     instrument_type: InstrumentType
-    currency: str
+    currency: CanonicalCurrencyCode
     identifiers: list[PlatformInstrumentIdentifier]
     latest_market_data: list[PlatformMarketDataPoint]
     quote_selection_policy: PlatformQuoteSelectionPolicy
+    quote_selection_policy_version: Literal["quote_selection_policy.v1"]
+    quote_selection_policy_revision: str = Field(min_length=1)
     coverage_state: DataStatus
     source_settings: PlatformSourceSettings
     refresh_status: PlatformRefreshStatus
@@ -156,7 +233,7 @@ class PlatformInstrumentsResponse(BaseModel):
 class PlatformInstrumentCreateRequest(BaseModel):
     instrument_name: str = Field(min_length=1)
     instrument_type: InstrumentType
-    currency: str = Field(min_length=1, max_length=8)
+    currency: CanonicalCurrencyCode
     identifiers: list[PlatformInstrumentIdentifier] = Field(min_length=1)
     quote_selection_policy: PlatformQuoteSelectionPolicy | None = None
 
@@ -192,13 +269,16 @@ class PlatformQuoteSelectionPolicyUpdateRequest(BaseModel):
 
 
 class PlatformMarketDataUpsertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     metric_family: MetricFamily
     quote_basis: QuoteBasis
     as_of_date: date
     value: Decimal
-    currency: str = Field(min_length=1, max_length=8)
-    provider: str | None = None
-    status: DataStatus = "complete"
+    currency: CanonicalCurrencyCode
+    source_ref: str | None = None
+    status: SourceObservationStatus = "complete"
+    source_published_at: datetime | None = None
 
     @model_validator(mode="after")
     def validate_quote_basis(self) -> "PlatformMarketDataUpsertRequest":
@@ -220,7 +300,7 @@ class PlatformFxRateRecord(BaseModel):
     source_kind: FxRateSourceKind
     instrument_id: str | None = None
     source_instrument_ids: list[str] = Field(default_factory=list)
-    provider: str | None = None
+    source_ref: str | None = None
     status: DataStatus = "complete"
 
 
@@ -231,11 +311,13 @@ class PlatformFxRatesResponse(BaseModel):
 
 
 class PlatformFxRateUpsertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     base_currency: SupportedCurrency
     quote_currency: SupportedCurrency
     rate: Decimal = Field(gt=0)
     as_of_date: date
-    provider: str | None = None
+    source_ref: str | None = None
     status: DataStatus = "complete"
 
     @field_validator("base_currency", "quote_currency", mode="before")
@@ -295,19 +377,23 @@ class PlatformLifecycleTransitionRequest(BaseModel):
 
 
 class PlatformNavImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     raw_text: str = Field(min_length=1, max_length=MAX_NAV_IMPORT_BYTES)
-    provider: str | None = None
+    source_ref: str | None = None
     status: DataStatus = "complete"
     updated_by: str | None = None
 
 
 class PlatformNavImportFileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     file_name: str = Field(min_length=1, max_length=255)
     file_content_base64: str = Field(
         min_length=1,
         max_length=MAX_NAV_IMPORT_BASE64_CHARS,
     )
-    provider: str | None = None
+    source_ref: str | None = None
     status: DataStatus = "complete"
     updated_by: str | None = None
 
@@ -370,7 +456,7 @@ class PlatformNavImportPreviewRow(BaseModel):
     nav: Decimal | None = None
     cumulative_nav: Decimal | None = None
     nav_with_dividend: Decimal | None = None
-    currency: str = Field(min_length=1, max_length=8)
+    currency: CanonicalCurrencyCode
     frequency: str = Field(min_length=1)
     instrument_code: str | None = None
     instrument_name: str | None = None

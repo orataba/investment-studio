@@ -1,5 +1,12 @@
 # PMS 正式版计算口径规格
 
+> Scope note: 本文中的 `Research` 专指 `Allocation Research / Allocation Lab`。planning
+> taxonomy 仍是普通组合分类、归因和跟踪的标准主轴；其 planning 扩展、TargetSet、风险预算、
+> target solve 与 policy drift 是资产配置领域概念，不能作为显式 ETF 轮动策略组合的通用接口；
+> 仅持有 ETF 的普通组合仍使用 taxonomy。
+> 文中的 research backtest 后续统一更名为
+> `Policy Replay`；在完成一次性不兼容命名重构前，现有代码名暂时保留。
+
 关联文档：
 
 - [`02_GIPS_ALIGNMENT.md`](./02_GIPS_ALIGNMENT.md)
@@ -78,6 +85,67 @@
 - `Snapshots` 是由 Analytics 从事实层生成的派生产物；
 - 页面展示不得绕过这些输入直接手填结果字段。
 
+### 1.2.1 Transaction 版本化事实契约
+
+Portfolio migration `20260713_0036` 已把交易事实从 mutable current-state row 切换为稳定身份、
+append-only revision 和只读 current projection。canonical 契约如下：
+
+- `transaction_identity_record` 持有稳定 `transaction_id + portfolio_id`。同一业务交易的 amend/delete
+  不创建新身份，已删除身份也不会释放或复用。
+- `transaction_revision_group_record` 是一次业务 mutation 的原子边界。它保存 `source_kind`、
+  `change_reason`、actor type/id/display/source、`recorded_at`，以及可选 request/idempotency/source ref；
+  一个 group 可以包含多笔 revision，但同一 transaction 在一个 group 中最多变更一次。
+- `transaction_revision_record` 只追加 `baseline / create / amend / delete`。revision number 从 1 连续递增，
+  amend/delete 必须声明紧邻的 predecessor；identity、group 和 revision 行都禁止原地 update/delete。
+- 每个非 tombstone revision 保存 canonical payload hash。相同 payload 的 amend 被视为 no-op 并拒绝，
+  不能通过生成无意义版本伪造修改历史。
+- `transaction_current` 是只读数据库 view：每个 identity 只投影最新且非 tombstone 的 revision，并携带
+  当前 revision/group、actor、reason 和 payload hash。Positions、lots、ledger postings、snapshots、
+  performance 与 risk 的当前态计算只读取该投影，不扫描旧 revision 叠加经济事实。
+
+交易数值在数据库与 API 边界保持 Decimal，不以 binary float 作为账本事实：
+
+| 字段 | 数据库类型 | API quantum |
+|---|---|---|
+| `quantity`, `price` | `NUMERIC(38,12)` | `0.000000000001` |
+| `gross_amount`, `counter_amount`, `fees`, `taxes` | `NUMERIC(38,8)` | `0.00000001` |
+| `fx_rate` | `NUMERIC(38,18)` | `0.000000000000000001` |
+
+HTTP create/update/internal-transfer 请求必须用 plain-decimal JSON string 传入这些字段；JSON number、科学计数法、
+非有限值或超过相应 scale 而需要舍入的值都拒绝。响应和 History snapshot 同样序列化为普通十进制字符串。
+计算服务可以在明确的数值计算边界转换类型，但不得把转换后的 float 回写为交易事实。
+
+审计与并发规则：
+
+- 每次写入都必须形成带 actor 和非空 reason 的 revision group。当前人工 API 要求
+  `actor_type=user`、`actor_source=client_asserted`；create/internal-transfer 未填写 reason 时使用明确的初始记录原因，
+  amend/delete 必须由调用方填写至少 3 个字符的原因。service/migration actor 只允许可信内部路径使用。
+- amend/delete 必须同时提交读取时的 `expected_revision_id` 与 `expected_revision_number`。任一不匹配即返回
+  `409 transaction_revision_conflict`，并提供 actual revision；调用方必须重新读取 current/history、人工复核后重试，
+  不能 last-write-wins。事实未改变的 amend 返回 `422 transaction_revision_no_op`。
+- delete 追加 canonical tombstone revision，tombstone 不带经济事实 payload；`transaction_current` 随即不再投影该身份，
+  但 identity、此前所有 revision、actor、reason 和 deletion revision 永久保留。tombstone 后不能恢复或继续 amend。
+- internal transfer 的 `transfer_out` 与 `transfer_in` 共用 `transfer_group_id`，在同一个 revision group 内原子创建；
+  不能单腿 edit。删除任一腿时必须把完整 pair 在同一 mutation 中追加 delete revisions，不能留下半笔转账。
+- PostgreSQL migration `20260713_0037` 把上述两项从 service 约定提升为数据库提交约束：数据库从落库 facts
+  按 canonical v1 规则重算并核验 payload hash；deferred transfer constraint 在 commit 检查一进一出、账户互惠、
+  镜像字段、同组创建/删除、禁止 amend 和历史 group 不复用。SQLite 仍是本地/测试后端，由同一 service batch
+  guard 执行这些跨行规则，不被表述为生产账本的独立写入权威。
+- migration `20260713_0038` 规定 actor source 只有 `client_asserted / authenticated_principal /
+  trusted_service / migration` 四种，并与 `user / service / migration` actor type 严格配对。0036 基线组的
+  `alembic` 实现名只在迁移内按完整来源指纹改正为 `migration`；运行时、API 和视图均不接受或映射旧值。
+
+`20260713_0036` 将旧 `transaction_record` 的每一行捕获为 revision 1 `baseline`，按 portfolio 建立 migration
+group，验证数量、链元数据和 payload hash 后删除旧表并创建 `transaction_current`。迁移只会把旧 API 自动填入、
+且恰好等于 `trade_date` 的不适用 entitlement/acquisition date 归一化为 `NULL`。旧列是 binary float 时，迁移会
+显式使用 round-half-even 归一化到上表声明的 Decimal scale，并把每个受影响字段的数量和 transaction ids 写入
+migration group `source_ref`；这项历史迁移规则不放宽新 API 的“禁止隐式舍入”边界。其他不安全差异 fail closed。
+该迁移有意不可逆，恢复必须依赖迁移前备份，不能把 revision/tombstone 压回 mutable row。
+
+0036 已保证交易修订后把相关组合计算状态标记为 stale；精确记录每次 valuation/performance/risk 采用哪些
+transaction revision 的通用 calculation input manifest，以及 reconciliation run，仍是下一阶段，不能从当前
+dirty boundary 或 snapshot fingerprint 推断为已实现。
+
 ### 1.3 正确性与失败策略
 
 计算层不保留为了“让结果看起来可用”的兼容分支。任何 canonical 指标必须满足其输入、配置、覆盖率和数学条件；条件不满足时，结果应显式进入 `partial`、`unavailable`、`comparator missing`、`insufficient-history` 或失败状态。
@@ -110,7 +178,7 @@
 - 单个资产优先使用其本地市场在该 `as_of_date` 的最新官方收盘价或该日最终可用估值；
 - 组合绝对口径快照只有在该 `as_of_date` 所需市场和 FX 数据满足覆盖率阈值后，才能标记为 `complete`；
 - benchmark 相关区块的 `complete / partial / unavailable` 由 benchmark coverage 单独决定，不反向阻塞绝对口径 snapshot；
-- 组合 summary、Overview 和未显式指定日期的 Holdings 默认展示 latest fresh complete `as_of_date`，而不是当前本地时钟下尚未收齐数据的“今天”。fresh complete 表示 `coverage_state = complete`、`nav` 存在且 `stale_price_flag = false`；它要求当前持仓资产价格/NAV 都没有 stale carry-forward。`stale_fx_flag` 是独立质量标记，不单独把资产新鲜度日期向前推，也不能作为资产新鲜度兜底。
+- 组合 summary、Overview 和未显式指定日期的 Holdings 默认展示 latest fresh complete `as_of_date`，而不是当前本地时钟下尚未收齐数据的“今天”。fresh complete 只读取 `nav_coverage_state = complete`、`nav` 存在且 `stale_price_flag = false`；book P&L coverage 与 TWR reliability 不参与日期选择。它要求当前持仓资产价格/NAV 都没有 stale carry-forward。`stale_fx_flag` 是独立质量标记，不单独把资产新鲜度日期向前推，也不能作为资产新鲜度兜底。
 
 示例：
 
@@ -120,7 +188,7 @@
 
 在同一个 `as_of_date` 的快照中，若需要计算 benchmark-relative 结果：
 
-- FX 必须使用同一 provider / cut 的 EOD 数据；
+- FX 必须使用同一 `source_ref` / cut 的 EOD 数据；
 - benchmark 必须对齐到同一个 `as_of_date`；
 - 系统不得把 `T` 日股票收盘与 `T+1` 日 FX 或 benchmark 静默混用。
 
@@ -134,14 +202,27 @@
 这里必须区分两种用途：
 
 - `valuation` role：服务组合 statement、持仓市值、NAV、ledger-driven performance
-- `total_return` / `chart` role：服务 research target solve、资产风险序列与图表
+- `total_return` role：只服务 return-labelled 指标、波动率、回撤、相关性、协方差、risk contribution 与 calculation-frequency 推断
+- `chart` role：只服务价格/NAV 图表与 sparkline 展示，不得进入任何收益或风险计算
 
 规范如下：
 
 - 组合账面估值不得静默切到 total-return basis；若分红或派息已作为交易/现金流入账，再用复权价会造成双算；
-- fund 的 research/risk 序列使用 `total_return_nav`；若改用 `official_nav`，必须在结果中标记 quote basis，且不得把分红/派息收益伪装成已复权 total return；
-- equity 的 research/risk 序列使用 `adjusted_close`；若改用 `close`，必须在结果中标记 quote basis，且不得把除权除息导致的机械跳空当成真实损失；
-- chart / sparkline 必须展示实际采用的 quote basis。basis 缺失时，图表可以降级为 `partial / unavailable`，不能静默换基准。
+- fund 的 return/risk 序列只允许 policy 选中的 canonical `total_return_nav` 等真实 total-return basis；缺失时必须 unavailable，不得改用 `official_nav`；
+- equity 的 return/risk 序列只允许 policy 选中的 canonical `adjusted_close` 等真实 total-return basis；缺失时必须 unavailable，不得改用 `close`；
+- total-return 的当前点与前一点必须来自同一个 locked `quote_series_id`、相同 basis、币种和 complete revision；preferred series 历史不足、当前 revision 为 partial/rejected/withdrawn、或任一点缺失时，return-labelled 字段必须为空，不能从低优先级 series、valuation 或 chart 拼接；
+- chart / sparkline 必须只解析 policy 的 canonical `chart` role 并展示实际采用的 quote basis；不能优先读取 total-return、valuation、reference，也不能在 chart series 失败后扫描其他 basis；
+- Holdings、Taxonomy 和 instrument chart API 对同一 instrument set 在一个数据库 Session 内锁定所需角色窗口，再批量派生各区间图表和 risk basis。窗口内出现任何 current partial/rejected/withdrawn revision，或期末超过显式 freshness 上限时，对应角色整段 fail closed；另一个角色只有在自身窗口完整时才可继续使用；
+- calculation-frequency 只根据 fully usable canonical `total_return` observation dates 推断。任一参与风险计算的 instrument 不存在、少于两个观察或窗口不完整时，`risk_basis.coverage_status = incomplete` 并列出 instrument 与 reason，不得由 chart/valuation/reference 或默认 daily 隐去缺口；
+- 图表下采样只发生在 canonical chart window 已锁定之后；收益、波动率和回撤始终使用未下采样的 canonical total-return points。历史长度只能影响返回行数，不能使 SQL 查询次数按 calendar day 线性增长。
+
+Portfolio valuation consumer 对 carry-forward 采用按 canonical `instrument_type` 分组的显式时效政策：
+
+- `fund` 的官方 NAV 允许最多 45 calendar days，以覆盖月频披露；
+- `equity / etf / index / bond / fx / cash / other` 归入 daily-market policy，最多允许 5 calendar days；
+- policy type、consumer policy version、canonical instrument type 与 resolver dependency 的 `max_age_days` 必须随 valuation quote 返回；
+- 类型只读取 canonical instrument record，不根据 ticker、taxonomy、持仓用途或行情形状推断；
+- 超过上限的观察保留 series / observation / revision lineage，但估值 value、market value 与 NAV 必须 fail closed。长假超过 5 天而系统又没有交易日历时宁可 unavailable，不得把缺数静默解释为休市。
 
 ### 2.2 组合基准货币
 
@@ -207,6 +288,9 @@
 - 若 `transfer_object_type = cash`，只更新 `deposit_account` 现金账本；若 `transfer_object_type = position`，只更新 `securities_account` 持仓账本。
 - account-level cash / position ledger 必须通过 `Transaction -> LedgerPosting` 的确定性展开生成；`deposit_account` 账本是派生视图，不要求用户为同一结算再录入第二条现金交易。
 - 证券现金腿的 settled cash 进入账户账本的业务日期是 `LedgerPosting.effective_date = settlement_date`；证券头寸 posting 的 `effective_date = trade_date`。
+- `deposit` / `withdrawal` 的组合资本边界固定为 cash value date，即 `settlement_date`。该日期缺失时必须 fail closed，不能回退到 `trade_date`。在 value date 之前，该 external flow 不进入 settled cash、pending settlement、NAV、TWR、IRR、contribution、calendar bucket 或 period bridge；原始 `trade_date` 只作为指令/录入日期保留。
+- 外部资本流的输入边界同样 fail closed：HTTP create / update 请求必须显式提交非空 `settlement_date`；批量写入的每条事实和导入流程也必须显式提供该字段。普通证券交易与内部转账继续遵循各自的成交、结算规则。
+- 上述规则只约束组合边界 external flow。证券交易仍在 `trade_date` 确认头寸，并在结算前通过 pending receivable/payable 留在 NAV 中。
 - `opening_balance` 是 bootstrap event，不属于正常运行期的 external / internal recurring flow。
 
 ### 2.4.1 opening_balance 处理
@@ -256,10 +340,10 @@ Risk 与 Research 的 covariance / correlation / risk contribution 必须先确�
 - Missing-return policy：默认 `strict`，任何 active member 在目标 period 缺失都使该风险/研究样本不可解。Research 可以由用户显式选择 `complete_case_drop`，但只能删除含缺失成员的整行，并受缺失行比例 `10%`、latest complete row 尾部新鲜度上限（日频 `5` 天、周频 `14` 天、月频 `62` 天）和最小完整观测数约束；结果必须暴露 rows before / after、dropped rows、latest complete date 与 trailing staleness。
 - 周频 period end 使用自然周五；若 as-of date 落在周中，则最后一个未完整周以 as-of date 作为 capped period end。月频使用自然月末，同样以 as-of date cap 最后一个 period。
 - 若未来传入显式交易日日历，日频对齐应以日历校验 holiday vs missing：共同非交易日不生成样本；日历交易日缺价必须进入 coverage / missing 诊断，而不是隐式填值。
-- Portfolio Risk 页的 `risk_basis` 来自 Holdings workspace，是当前 active non-cash holdings 的 return alignment 元数据，不是一个风险指标。它必须能覆盖全部参与风险计算的非现金持仓，并且 `resolved_frequency` 只能是 `daily` / `weekly` / `monthly`；缺失、非法或来源频率不完整时，Risk 页面进入 basis unavailable / incomplete，不得临时从 calculation groups 或默认 daily 兜底。
+- Portfolio Risk 的 production `risk_basis` 由后端 Risk Workspace 在自己的 canonical `total_return` + FX Session lock 中解析，不消费 Holdings 浏览器 payload。它必须覆盖全部参与风险计算的非现金持仓，并且 `resolved_frequency` 只能是 `daily` / `weekly` / `monthly`；缺失、非法或来源频率不完整时，Risk section 进入 unavailable，不得从 Holdings profile、calculation groups 或默认 daily 兜底。Holdings response 中同名 `risk_basis` 仅服务 Holdings 自身展示。
 - Holdings `Forward RC` 和 Risk 页 Current Drift 是当前权重口径：用当前持仓权重与资产自身历史收益窗口估计当前组合风险，语义上等同于“当前组合如果在历史窗口内一直以当前权重持有”。因此这些指标不得被 portfolio inception、holding start date 或 materialized contribution slices 截断。真实成立以来/真实持仓期间的 realized attribution 留在 Performance `Calculation`。Risk 页不再提供单独的 point-in-time Risk Contribution 表；风险预算偏离只在 Current Drift 中展示。
-- Risk 页 Rolling Risk 是窗口内 sample volatility / sample Sharpe 展示层，只受 rolling lookback、calculation frequency 和 coverage 影响；不提供 EWMA / shrinkage 等 covariance model 选择。凡是用于 risk-budget drift、rebalance trigger、Research solve 或 Holdings Forward RC 的 RC 相关指标，必须使用组合级 `Production Risk Model`，不能在不同页面各自硬编码 decay、shrinkage、lookback 或 contribution mode。
-- Risk 页 Correlation Matrix 是窗口内 sample correlation 展示层，只受 lookback、calculation frequency、coverage 和 scope 影响；不提供 EWMA、vol shrinkage 或 correlation shrinkage 方法选择。EWMA / shrinkage 是 forward covariance 估计模型，应保留在 Production Risk Model 驱动的 Current Drift risk gap、Research solve 和 Holdings Forward RC 中。
+- Risk 页 Rolling Risk 使用所选 rolling lookback，但 covariance model、calculation frequency、missing-return policy 和年化约定来自组合级 `Production Risk Model` / Research 数学内核；浏览器不提供另一套 sample/EWMA/shrinkage 公式。凡是用于 risk-budget drift、rebalance trigger、Research solve 或 Holdings Forward RC 的 RC 相关指标继续使用同一生产模型，不能在页面内硬编码 decay、shrinkage、lookback 或 contribution mode。
+- Risk 页 Correlation Matrix 由同一 Production Risk Model covariance snapshot 归一化得到，只额外接受 lookback、scope 和 matrix as-of 参数；因此 sample / EWMA / shrinkage model 会一致地影响 covariance、correlation 和 RC。浏览器不得另算 sample correlation，后端也不得使用 pairwise dates 拼矩阵。
 - Risk 页 instrument-scope planning taxonomy 的 Current Drift 用非现金 Holdings rows 与 Accounts workspace 现金账户值合成当前 NAV；现金 exposure 来自 Accounts 的 cash bucket/account value，Holdings cash rows 不得再作为 instrument leg 参与分母或分组。
 - Taxonomy 页 instrument-scope planning taxonomy 的当前覆盖视图使用同一现金口径：当前实体池由非现金 Holdings rows 加 Accounts cash bucket 组成，不把 Holdings 的 `cash:{currency}` 行再作为 instrument 实体展示或计入分母。根行 `Actual Weight` 表示当前实体池整体，必须约等于 100%；各 node 行表示已分类实体，`Without Classification` 只表示未分类残差。
 - Risk 页 rolling metrics 与 correlation matrix 必须进一步校验 lookback window 覆盖率：按 resolved frequency 使用最小收益样本数、窗口起点最大偏离和至少 80% elapsed-day 覆盖。覆盖不足时结果为 insufficient-history / unavailable，不用更短窗口、pairwise dates、0 return 或前向填充替代。
@@ -268,7 +352,7 @@ Risk 与 Research 的 covariance / correlation / risk contribution 必须先确�
 
 如果某一估值日存在缺失数据：
 
-- 价格缺失时，状态型 NAV / holdings 可以使用最近可用价格维持账面连续性，但必须记录 `stale_price_flag`，且该日不得作为正常市场收益观察进入 return/risk 样本；
+- 价格缺失时，状态型 NAV / holdings 只能在对应 typed freshness policy 上限内使用同一 locked quote series 的最近完整观察，并记录 carry / age / policy / lineage；超过上限后 NAV 与 holdings valuation unavailable。carry 日不得被伪装为新的市场观察进入 return/risk 样本；
 - benchmark 缺失时，benchmark-relative 指标只在重叠日期上计算，但不影响绝对口径 snapshot 的 `complete` 状态；
 - 若重叠覆盖率低于配置阈值，结果标记为 `partial` 或 `unavailable`；
 - 风控和 period analytics 页面必须显示 coverage ratio，前端不得把缺失数据伪装成正常结果。
@@ -307,6 +391,7 @@ MVP 中：
 
 - `SettledCash_t^{base}` 表示截至 `t` 已经按 `effective_date` 生效的现金 posting；
 - `PendingSettlementNet_t^{base}` 表示 trade date 已确认、但 cash leg 尚未到 `effective_date` 的证券结算应收 / 应付款；该值在 settlement 前继续留在 NAV 中，settlement 当日转入 `SettledCash_t^{base}`；
+- `deposit` / `withdrawal` 不是证券结算应收应付：它们在 `settlement_date` 前完全不进入本公式，在该 value date 同时进入 settled cash 与 external-flow adjustment；
 - `Accounts` workspace、account-axis contribution、Research current context / actual rows 在任意 `as_of_date = t` 都必须复用同一条 settled-vs-pending 口径；不能出现 settled cash 已按 `effective_date` 截断，但 ending value / actual rows 又漏掉 pending settlement 的情况；
 - `OtherAssets_t` 可先默认为 `0`，除非显式支持应收项；
 - `Liabilities_t` 可先包含费用、税费、应付款等可识别项目；
@@ -386,13 +471,13 @@ Holdings 中的现金行按 settled cash ledger 逐币种生成，`instrument_id
 
 `Market Value Base` 是任意 holding row 的 base-currency fair value。对非现金资产，它等于 `quantity * selected valuation quote` 再按 as-of date FX 转换；对现金，它等于 settled cash amount 的 base-currency value。Holdings `Portfolio Total` 的 market value 包含非现金市值与 settled cash，不包含 pending settlement；NAV 另行等于 market value 加 pending settlement。
 
-`Day Change` / `Day Return` 是 as-of date 当前持仓规模上的一天市场变动，不是区间绩效：
+`Day Change` / `Day Return` 是 as-of date 当前持仓规模上的一天 total-return 变动，不是账面估值价格变动或区间组合绩效：
 
-- 非现金资产使用当前 selected valuation quote 与同一 quote basis 的上一可用 quote，`day_return = current_quote / previous_quote - 1`；
-- 非现金资产的 `day_change_value` 使用当前 quantity 乘以 quote 变动；`day_change_value_base` 再按 as-of date FX 转 base currency；
+- 非现金资产只使用 canonical `total_return` role 的同一 locked series 前后 complete 点，`day_return = current_total_return_quote / previous_total_return_quote - 1`；valuation role 只计算当前 market value，不能替代 total return；
+- 非现金资产把该 total return 作用于当前 valuation market value：`day_change_value = current_market_value - current_market_value / (1 + day_return)`；`day_change_value_base` 再按 as-of date FX 转 base currency；
 - base-currency cash 的 day change 为 `0`；
-- non-base cash 的 day return 使用当前 FX 与上一可用 FX，`day_change_value_base = cash_amount * (current_fx - previous_fx)`；
-- 若缺少当前点、上一点或 FX，相关字段必须为空，不得用 0 或 chart sample 补齐。
+- non-base cash 的 day return 使用当前日与上一 calendar day 在同一 locked canonical FX book 中解析的汇率，二者都必须满足五个 calendar day policy；`day_change_value_base = cash_amount * (current_fx - previous_fx)`；
+- 若缺少当前 total-return 点、同 series 上一点或 FX，相关字段必须为空，不得用 valuation、chart、低优先级 series 或 0 补齐。
 
 Holdings 可以展示 quote-derived instrument market trend 指标，作为扫描当前持仓标的自身近期市场表现的辅助列：
 
@@ -417,7 +502,7 @@ Holdings `Forward RC` 是当前持仓的组合级 forward risk contribution：
 Holdings group rows 不是后端 period-performance group：
 
 - market value、cost basis、day change、open lots 等绝对量按组内 rows 汇总；
-- unrealized return 使用组内非现金 `unrealized P&L / cost basis`，不是成员百分比的加权平均；若任一 group / subtotal / `Portfolio Total` 同时包含非现金 row 与 cash row，则 cash 以 0 unrealized P&L、cash market value 作为分母的一部分稀释该比例；纯 cash group 因 cost basis 不适用而为空；
+- unrealized return 使用覆盖完整的组内非现金 `unrealized P&L / abs(cost basis)`，不是成员百分比的加权平均；现金既不进入分子也不进入成本分母，纯 cash group 为空。任一参与聚合的非现金 row 缺少 local/base market value 或 cost basis 时，对应 subtotal / `Portfolio Total` fail closed 为 `null`，不得只汇总有值成员；
 - `1W / MTD / YTD / 1Y Return` 使用 as-of date base-currency market value 权重对成员自身 return 加权；覆盖不足时为空；
 - group volatility / drawdown 用组内成员 return series 在共同 period 上组成当前权重的组 return series 后计算，包含协方差效果，不等于成员 volatility 或 drawdown 的加权平均；
 - base-currency cash 可作为 0-return 成员参与覆盖；non-base cash 使用其 FX return series；
@@ -426,8 +511,18 @@ Holdings group rows 不是后端 period-performance group：
 #### Unrealized P&L
 
 $$
-UnrealizedPnL_i = MV_i^{base} - PurchaseValue_i^{open}
+UnrealizedPnL_i^{local} = MV_i^{local} - CostBasis_i^{local}
 $$
+
+$$
+UnrealizedPnL_i^{base} = MV_i^{base} - CostBasis_i^{base}
+$$
+
+$$
+UnrealizedReturn_i = \frac{UnrealizedPnL_i^{local}}{|CostBasis_i^{local}|}
+$$
+
+`unrealized_pnl`、`unrealized_pnl_base`、`unrealized_return` 是后端 authoritative 字段。market value 或 cost basis 不完整时对应结果为 `null`；成本绝对值小于等于数值容差时 return 为 `null`。现金行三个字段全部为 `null`，不得把 FX gain 或现金余额伪装成 unrealized P&L。
 
 #### Realized P&L
 
@@ -500,7 +595,7 @@ $$
 - 改变持仓或成本基础的事件，必须能追溯到底层 `Transaction` 或 `CorporateAction`。
 - `share_split` 在 `effective_date` BOD 生效，ratio 定义为 `new_units / old_units`；账户总量先按公告规则处理碎股，再按 lot 比例分摊，不能逐 lot 截位。
 - 拆分不改变账户总成本基础；旧 lot 关闭并以 lineage 连接到 carry-cost successor lot，单位成本按 ratio 反向变化。
-- provider factor/价格连续性只能生成 `detected` 候选，不能入账；只有 issuer / exchange / CSD 确认事件才可形成数量 posting。
+- source factor/价格连续性只能生成 `detected` 候选，不能入账；只有 issuer / exchange / CSD 确认事件才可形成数量 posting。
 - 若登记日与生效日之间存在交易而系统没有 due-bill 事实，计算必须 fail closed；`cash_in_lieu` 没有金额/应收事实时也必须 fail closed。
 - 原始 `close / official_nav` 用于交易与市值；`adjusted_close / total_return_nav` 只用于收益、风险、图表和拆分日持仓涨跌解释。
 - `dividend / coupon` 进入 `Events` 时，若已经入账，则必须引用对应 `Transaction`；不得在事件层再次形成独立 ledger posting。
@@ -558,7 +653,8 @@ Overview 的组合收益、benchmark 对比、1M / 3M VOL 和 drawdown 使用组
 
 Performance 页面使用用户选择的区间作为唯一窗口。UI 的主要结构为：
 
-- `Return & Risk Metrics`：组合级 TWR / annualized TWR、IRR / MWR、risk、drawdown。return / risk 类指标可选择 benchmark price series 做 period return、annualized return、volatility、drawdown 的轻量对比；
+- `Return & Risk Metrics`：组合级 TWR / annualized TWR、IRR / MWR、risk、drawdown。benchmark compare 只能使用 canonical `total_return` role 的真实 total-return basis；price / chart / valuation basis 不得冒充 benchmark total return。benchmark、difference 与 relative metrics 由后端统一输出，前端只格式化和绘图；
+- `PerformanceSummary.history_reliability` 是年化发布资格的唯一权威：后端从响应窗口的 start/end 计算 elapsed days 与 inclusive calendar span，以 365 elapsed days 为最低门槛，并返回 `annualized_return_eligible`、reason codes、sample label 和 message；不合格时响应中的 annualized TWR、IRR / MWRR 与依赖年化收益的 Calmar 必须为 `null`。UI 仍必须读取该字段 fail closed；浏览器不得用 `Date.parse`、毫秒差或本地阈值重复计算。Benchmark comparison 使用实际 comparison start boundary 与 last aligned date 构造区间级 `history_reliability`，并按该资格约束组合、基准与差异的 annualized return / Calmar。
 - `Calculation`：合并 realized risk attribution、initial value、group rows、external flow、portfolio total 与 final value。表格有和 Holdings 一致的 view selector；系统默认视图命名为 `Default`，展示区间期初权重、平均权重、期末权重、区间收益、收益贡献、标的自身风险、相关性和风险贡献；`Beta to Portfolio` 保留为高级可选列，不进入默认视图。Group By 默认是 `None`，语义是直接展示 instrument lines，不做额外分组；也可按 instrument type / currency / account / default planning taxonomy 聚合。instrument type 与 currency 是底层 contribution axis，不允许仅在前端把 instrument rows 相加；taxonomy 聚合用于期间复盘时优先使用区间期末 assignment 并保留 cash 独立组，不把 reclassification residual 当成真实 P&L；若 instrument 期末已清仓且期末不再有 active assignment，则使用其区间内有效 assignment 承接历史 P&L，不归入 Unassigned。`TWR` 来自对应 group 的 daily return slices；`Contribution` 来自 daily contribution 聚合。表格采用 `Initial Value + Deposits - Withdrawals + Period P&L = Final Value` 的桥接口径。
 - Performance group daily return 使用组内 `total_pnl / (beginning_value + period capital flow in)`；直接 axis、taxonomy regroup 与 calculation detail 聚合必须沿用同一分母，不能在聚合后退化成只除以 beginning value。
 - Calculation 底层的 `Capital Gain` 使用期间绩效成本，而不是账户 book cost；它是 reconciliation 派生值，不作为默认表格列展示。期初已有持仓按 start date 的 beginning market value 重置为期间成本，区间内买入按成交 gross amount 建立期间成本，期末未卖出的持仓用 end date market value 计算 `Unrealized Gain`。
@@ -587,9 +683,58 @@ $$
 
 - 外部流入放在分母，视作在当日开始投入；
 - 外部流出加回分子，视作在当日结束取出；
+- `t` 对 external flow 指 cash value / `settlement_date`，不是较早的录入 `trade_date`；daily NAV、TWR、IRR、contribution、calendar bucket 与 Calculation bridge 必须共用该日期；
 - 这样可以把 external flows 从业绩中中性化。
 - 当前 daily snapshot engine 对每个 `as_of_date` 估值，因此外部现金流发生日天然有估值；若未来支持非日频估值，必须引入 large cash flow policy 与子期间收益几何链接，不能静默改用近似 MWR 方法。
 - 对显式区间 `2026-04-01` 到 `2026-04-20`，`initial value` 是 `2026-04-01` 的 `MVB / beginning_nav`，即 `2026-03-31` EOD；`final value` 是 `2026-04-20` 的 `MVE / ending_nav`。区间 TWR 几何链接 `2026-04-01` 至 `2026-04-20` 的 daily returns。
+
+#### 5.2.1 估值覆盖与 TWR 可靠性边界
+
+计算层必须分开表达三类事实，不能用一个笼统的 `coverage_state` 互相替代：
+
+- **current fair-value NAV coverage**：当前现金、pending settlement、持仓数量、估值价格和关键 FX 是否足以得到当日 NAV；
+- **book P&L coverage**：成本基础、realized P&L、历史 FX 分解是否完整。它影响 P&L 解释，但不得阻止已经完整的 fair-value NAV 和 TWR；
+- **TWR link reliability**：当日 NAV、外部现金流边界及上一有效 anchor 是否足以形成可链接子期间收益。
+
+物化 snapshot 与 contribution slice 的契约固定为：
+
+- `nav_coverage_state` + `nav_coverage_reason_codes` 只描述 current fair-value NAV；latest complete date、complete/partial/unavailable counts 和默认 snapshot 选择只读取该状态；
+- `book_pnl_coverage_state` + `book_pnl_coverage_reason_codes` 只描述 realized/total P&L、income/expense、cash/instrument currency gains 与 return of capital 的可解释性。book coverage 不是 complete 时这些 book 输出必须为 `null`，但不得改写 NAV coverage；
+- `twr_state`、`twr_reliability_status`、`twr_reliability_reasons` 独立运行；book cost 或历史 FX attribution 缺失本身不能打断 fair-value TWR；
+- `complete` 必须配空 reason list，`partial` / `unavailable` 必须配至少一个稳定 reason code；物理列与 JSON payload 必须逐项相等；
+- 每个 snapshot 保存本次 locked FX window 的 dependency manifest 与确定性 fingerprint，使 FX source leg、revision 与反向/交叉路径可审计。
+
+`stale_price_flag` / `stale_fx_flag` 是宽口径数据质量标记，可能包含成本、历史 P&L 或日历日期 carry，不可直接用于打断 TWR。TWR 断链只读取当前估值 resolver 明示的 reliability stale、当前估值不完整以及外部现金流边界；原始行情日期早于 `as_of_date` 本身不是 stale 的充分证据，因为周末、节假日和周频/月频基金 NAV 都会合法复用最近一次官方观察。
+
+每日状态机固定为：
+
+| 当日条件 | `twr_state` | reliability | 日收益与后续处理 |
+| --- | --- | --- | --- |
+| fresh complete valuation，无外部流 | `linked` | `reliable` | 正常计算并链接 |
+| fresh complete valuation，有 deposit / withdrawal | `linked` | `reliable` | 用外部流调整分母/分子后链接 |
+| 仅日历 carry，无外部流 | `carry_forward` | `qualified` | 可保持收益链，reason 为 `carried_forward_valuation_without_external_flow` |
+| resolver 明示 current price / FX stale，无外部流 | `carry_forward` | `qualified` | 可保持收益链，reason 为 `stale_valuation_without_external_flow`，不得进入风险样本 |
+| 任意 carry 且有 deposit / withdrawal | `broken` | `unavailable` | 不计算当日 TWR，reason 为 `carried_forward_valuation_on_external_flow` |
+| resolver 明示 stale 且有 deposit / withdrawal | `broken` | `unavailable` | 不计算当日 TWR，reason 为 `stale_valuation_on_external_flow` |
+| current valuation 或 flow conversion 不完整且有外部流 | `broken` | `unavailable` | 不计算当日 TWR，reason 为 `incomplete_valuation_on_external_flow` |
+| 已断链且尚无 fresh complete valuation | `broken` | `unavailable` | reason 包含 `awaiting_fresh_valuation_anchor` |
+| 断链后的第一笔 fresh complete valuation | `reanchor` | `qualified` | 只建立新 anchor，不生成跨断点收益，reason 为 `fresh_valuation_reanchor` |
+| re-anchor 后的下一有效子期间 | `linked` | `reliable` | 从新 anchor 恢复计算 |
+
+风险样本遵守以下不变量：
+
+- resolver 明示 stale price / FX、`broken` 边界和 unavailable link 一律排除；
+- 纯 carry 日因 `market_observation_count = 0` 排除；
+- 混合频率组合中，如果日频 sleeve 有真实新观察而周频/月频 sleeve 仅按既定 cadence carry，该组合日可以进入 realized risk 样本。calendar carry 是可见的质量限定，不等于 stale；
+- 窗口 reason 必须从 daily snapshot 的稳定 reason 聚合。不得看到任意 `carry_forward` 就统一改写成 stale；若窗口同时包含 calendar carry 与 resolver-explicit stale，两类 reason 都要按稳定顺序返回。
+
+查询和归因必须 fail closed：
+
+- 任何跨越 `broken`，或在窗口中段遇到 `reanchor` 的窗口，`cumulative_twr`、`annualized_twr`、drawdown 和依赖收益序列的风险指标均为 `null`，reason 为 `crosses_broken_twr_boundary`；
+- 从 re-anchor 开始且只包含其后有效子期间的新窗口可以恢复计算；
+- contribution、taxonomy regroup、calendar bucket 和 bucket drilldown 使用同一窗口 gate。不可用的 portfolio TWR 不能被当作 `0`，line contribution、total contribution 与 residual 都必须为 `null`；P&L 绝对额仍可保留用于账务解释；
+- API 的 `twr_state`、`twr_reliability_status`、`twr_reliability_reasons` 是必填契约，所有 empty / unavailable 分支必须显式构造，不允许依靠模型默认值隐藏漏传；
+- materialized snapshot payload 口径变化通过 `DAILY_SNAPSHOT_CALCULATION_VERSION` 整体失效重建，不新增事实表 schema，也不保留旧 JSON 兼容层。增量刷新若历史前缀已经包含 `broken` / `reanchor`，必须退回全历史重建，不能从断点后伪造连续 seed。
 
 ### 5.3 Cumulative TWR
 
@@ -775,7 +920,7 @@ $$
 
 benchmark 必须先转化到组合基准货币，并对齐到组合估值日期。
 
-当前 Performance 页的手动 `Compare benchmark` 是轻量对比：仅在 benchmark chart currency 与 portfolio base currency 一致、存在 period start boundary 之前或当日的 benchmark level，且每个组合 eligible return date 都有同日 benchmark level 时输出比较值；若币种不同、起点锚点缺失或 benchmark 覆盖不完整，在未接入后端 benchmark FX conversion / coverage reporting 前不得输出 raw-currency、stale-filled 或半截区间相对指标。
+当前 Performance 页的手动 `Compare benchmark` 调用独立的后端 comparison contract。服务在同一个数据库 Session 内读取权威物化 TWR 与锁定的 benchmark canonical `total_return` window，要求 portfolio TWR 与 benchmark reliability 均为 `reliable`、benchmark 与 portfolio base currency 一致、period start boundary 锚点没有超过按数据频率确定的最大间隔，并且每个 portfolio eligible return date 都有 benchmark 同日 level。服务统一计算 portfolio / benchmark metrics、difference、tracking error、information ratio、beta、up/down capture、CAP ratio 与归一化图形点，并携带 coverage、resolver status、quote lineage fingerprint 和 method version。任一条件失败时整组相对结果为 null；在未接入后端 benchmark FX conversion 前不得输出 raw-currency、stale-filled 或半截区间结果。
 
 若 benchmark 提供的是 NAV / index level：
 
@@ -1179,9 +1324,24 @@ Research current target solve 使用 planning taxonomy 的层级 scope 做递归
 
 Research backtest 使用同一 Production Risk Model、planning taxonomy、TargetSet、frozen sleeves、top sleeve bounds 和 capital overlay 逐个 rebalance date 重算目标。支持 `1m` 与 `3m` rebalance；benchmark 历史只影响 benchmark 曲线和相对指标，不得推迟或阻断组合自身 backtest 起点。若组合成员共同历史不足完整 risk window，backtest 返回空 points 和 warning，不生成晚于 as-of 的 rebalance 日期，不用更短风险窗口替代。
 
+Policy Replay 的 metrics schema 固定为 `research-backtest-metrics.v2.history-gated-arithmetic-sharpe`，Portfolio、Benchmark 与 Relative 三组各自携带后端 `history_reliability`。少于 365 elapsed days 时，geometric `annualized_return` 与依赖它的 Calmar 必须为 `null`；period / YTD return、drawdown、按实际观察密度年化的 volatility 仍可发布。Sharpe 使用同频 periodic returns 的 arithmetic mean × empirical periods per year 作为年化分子，再除以同频年化波动率；不能用 geometric annualized return 作 Sharpe 分子。浏览器不计算日期跨度或 365 日阈值，只按每组 eligibility fail closed 展示。
+
 每次 run 必须输出 root `solve_event` 和完整 `scope_solve_events`，用于复核每层 scope 的默认维度、实际维度、solver、RC mode、risk gap 与成员数。
 
 每次 run 还必须输出 `calculation_frequency` profile，包括用户请求频率、最终解析频率、可选频率、源数据频率计数和状态文案；同时输出 missing-return policy、rows before / after、missing rows、dropped rows、latest complete date 与 trailing staleness，便于复核样本是否被严格保留或显式 complete-case 删除。组合 workspace 的组合名状态栏展示当前组合的默认 risk basis，方便用户确认当前是 daily / weekly / monthly 口径。
+
+### 10.8 Allocation Research canonical market-data boundary
+
+Allocation Research 的收益、风险和回测输入固定采用共享 registry 的 canonical `total_return` role：基金只能采用 `total_return_nav`、`dividend_adjusted_nav`、`reinvested_nav` 等真实总回报口径，股票/ETF 采用 `adjusted_close`。估值、chart、reference 或未调整 `close` 不得在 `total_return` 缺失时替代。
+
+每次 current solve 或 backtest 必须先收集 scope 内全部 instrument ids、canonical currencies、组合本币与所需 FX pairs，并在同一个 SQLAlchemy Session 内锁定完整 quote windows 和 canonical FX book。锁定完成后，频率识别、递归 scope solve、各 rebalance date 与 benchmark sampling 只能读取该内存快照；日期数量和 rebalance 次数不得增加 SQL 查询。
+
+- quote window 只接受显式 `role=total_return`，并保留 series policy revision、current revision ids、excluded revision lineage 与 dependency fingerprint；
+- FX 固定使用 `portfolio_fx_consumer.v1` 的五个自然日 freshness policy，支持 identity/direct/inverse/USD-cross，cross 必须保留有序两腿 dependency；
+- adopted quote 与 FX 值在进入 pandas 前保持 `Decimal`，只在 pandas/NumPy 数值计算边界转换为 `float64`；
+- latest applicable revision 为 `partial`、`rejected`、`withdrawn`，或 endpoint/任一 FX leg 为 late、missing、unavailable 时，active dependency 必须 fail closed，并返回 reason codes 与 calculation dependency；不得采用更早 complete revision；
+- 明确配置为 0% target 且不受正下限重新激活的成员可以不读取收益历史，但仍保留在结果中；任何正权重/正风险预算成员都不能以“排除资产”或 warning 方式绕过 canonical dependency 失败；
+- successful solve/backtest 返回 `allocation_research_market_data.v1` manifest，列出锁定窗口、instrument set 以及实际采用的 quote/FX dependencies，用于复算和数据修订影响分析。
 
 ## 11. Scenario P&L 口径
 
@@ -1265,6 +1425,8 @@ daily snapshot、holding snapshot、contribution slice 是可重建的读模型�
 - 交易、账户、共享行情或 FX 变化先写入源事实，再把受影响组合标记为 `stale`；
 - 每次 stale 标记生成新的 `refresh_request_id`，用于表示“至少需要覆盖到这次事实更新之后”；
 - 物化 payload schema 或核心计算口径改变时必须提升 `calculation_version`，让旧 read model 自动失效并重建；不能在 daily snapshot、contribution regroup 或 calculation detail 聚合中长期保留旧字段兼容逻辑。
+- migration `20260713_0034` 以不可逆 breaking change 删除旧 mixed `coverage_state`，将既有 snapshot / contribution slice 标记为 `coverage_contract_rebuild_required` 并把 calculation state 置为 stale；升级后必须运行 canonical rebuild。旧 payload 不允许被读路径翻译或兜底为新契约。
+- migration `20260713_0035` 不可逆地失效没有 metrics method version 的历史 Research 回测指标与该 run 的全部旧工件引用；它保留 run 请求、求解详情和回测路径，不在运行时翻译旧年化或旧 Sharpe，也不继续暴露无法随数据库备份验证的历史文件路径。需要新指标或工件时必须按 v2 方法重跑。
 - 组合 summary、Overview 与默认 Holdings 的 as-of 选择必须复用同一套 latest fresh complete snapshot 规则；不得在不同读路径各自实现日期兜底，也不得因浏览器日期、服务器当前日期或部分资产已更新而改变组合层窗口终点。
 - 同一组合的物化刷新串行执行；如果刷新期间又收到新的 `refresh_request_id`，当前计算结果不得把状态置为 `current` 或清空 `dirty_from`，必须继续按最新事实再计算一轮；
 - 邮件、文件或批量行情导入完成后按资产/组合去重触发刷新，不应在单个数据点写入过程中反复启动组合重建；

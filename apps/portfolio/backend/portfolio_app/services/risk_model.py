@@ -17,6 +17,7 @@ from portfolio_app.services.research_solver import (
     RESEARCH_RISK_CONTRIBUTION_MODE,
     SUPPORTED_RESEARCH_LOOKBACK_DAYS,
     estimate_covariance,
+    infer_periods_per_year,
     normalize_missing_return_policy,
     prepare_return_window_for_covariance,
     research_covariance_parameters_for_window,
@@ -151,6 +152,123 @@ def portfolio_risk_model_snapshot(
             frequency: risk_policy_covariance_parameters(frequency, lookback_days)
             for frequency in ("daily", "weekly", "monthly")
         },
+    }
+
+
+def estimate_risk_statistics(
+    returns: pd.DataFrame,
+    *,
+    as_of_date: date,
+    calculation_frequency: CalculationFrequency,
+    risk_policy: dict[str, object],
+    label: str,
+) -> dict[str, object]:
+    """Estimate one authoritative covariance/correlation/statistics snapshot."""
+
+    snapshot = portfolio_risk_model_snapshot(
+        risk_policy,
+        calculation_frequency=calculation_frequency,
+    )
+    parameters = dict(
+        snapshot.get("parameters")
+        if isinstance(snapshot.get("parameters"), dict)
+        else {}
+    )
+    coverage = prepare_return_window_for_covariance(
+        returns,
+        lookback_days=int(snapshot["lookback_days"]),
+        min_observations=int(parameters.get("min_observations", 2)),
+        label=label,
+        missing_return_policy=str(snapshot["missing_return_policy"]),
+        calculation_frequency=calculation_frequency,
+        as_of_date=as_of_date,
+    )
+    covariance = estimate_covariance(
+        returns,
+        model_id=str(snapshot["covariance_model_id"]),
+        lookback_days=int(snapshot["lookback_days"]),
+        parameters=parameters,
+        missing_return_policy=str(snapshot["missing_return_policy"]),
+        calculation_frequency=calculation_frequency,
+        as_of_date=as_of_date,
+    )
+    diagonal = np.diag(covariance.to_numpy(dtype="float64"))
+    volatilities = np.sqrt(np.clip(diagonal, 0.0, None))
+    denominator = np.outer(volatilities, volatilities)
+    covariance_values = covariance.to_numpy(dtype="float64")
+    correlation_values = np.divide(
+        covariance_values,
+        denominator,
+        out=np.full_like(covariance_values, np.nan),
+        where=denominator > 1e-18,
+    )
+    for index, volatility in enumerate(volatilities):
+        if volatility > 1e-12:
+            correlation_values[index, index] = 1.0
+    correlation = pd.DataFrame(
+        correlation_values,
+        index=covariance.index,
+        columns=covariance.columns,
+    )
+    complete = coverage.returns.dropna(how="any")
+    annualization = infer_periods_per_year(
+        [pd.Timestamp(item).date() for item in complete.index]
+    )
+    annualized_mean = complete.mean(axis=0) * annualization
+    sharpe = pd.Series(index=covariance.index, dtype="float64")
+    for index, column in enumerate(covariance.index):
+        volatility = float(volatilities[index])
+        sharpe.loc[column] = (
+            float(annualized_mean.loc[column]) / volatility
+            if volatility > 1e-12
+            else np.nan
+        )
+    return {
+        "risk_model": snapshot,
+        "coverage": coverage,
+        "covariance": covariance,
+        "correlation": correlation,
+        "annualized_volatility": pd.Series(
+            volatilities,
+            index=covariance.index,
+            dtype="float64",
+        ),
+        "annualized_mean_return": annualized_mean,
+        "sharpe_ratio": sharpe,
+    }
+
+
+def weighted_risk_contribution(
+    covariance: pd.DataFrame,
+    weights: np.ndarray,
+    *,
+    contribution_mode: str,
+) -> dict[str, object]:
+    """Apply the shared marginal/component-risk convention to one covariance."""
+
+    covariance_values = covariance.to_numpy(dtype="float64")
+    vector = np.asarray(weights, dtype="float64")
+    if covariance_values.shape != (len(vector), len(vector)):
+        raise ValueError("Risk contribution covariance and weight dimensions do not match.")
+    if not np.isfinite(covariance_values).all() or not np.isfinite(vector).all():
+        raise ValueError("Risk contribution requires finite covariance and weights.")
+    marginal = covariance_values @ vector
+    signed_contributions = vector * marginal
+    variance = float(vector @ marginal)
+    if not np.isfinite(variance) or variance <= 1e-12:
+        raise ValueError("Risk contribution requires positive finite portfolio variance.")
+    shares = risk_contribution_shares(
+        covariance_values,
+        vector,
+        contribution_mode=contribution_mode,
+    )
+    return {
+        "covariance_values": covariance_values,
+        "marginal_contribution": marginal,
+        "signed_contribution_to_variance": signed_contributions,
+        "portfolio_variance": variance,
+        "portfolio_volatility": sqrt(variance),
+        "risk_shares": shares,
     }
 
 
@@ -307,50 +425,33 @@ def enrich_holdings_forward_risk(
     returns = pd.DataFrame({key: series for key, _row, series in active}).sort_index()
     weights = np.asarray([_safe_float(row.get("allocation")) or 0.0 for _key, row, _series in active], dtype="float64")
     try:
-        parameters = dict(snapshot.get("parameters") if isinstance(snapshot.get("parameters"), dict) else {})
-        coverage = prepare_return_window_for_covariance(
+        statistics = estimate_risk_statistics(
             returns,
-            lookback_days=int(snapshot["lookback_days"]),
-            min_observations=int(parameters.get("min_observations", 2)),
+            as_of_date=as_of_date,
+            calculation_frequency=calculation_frequency,
+            risk_policy=snapshot,
             label="Forward risk contribution",
-            missing_return_policy=str(snapshot["missing_return_policy"]),
-            calculation_frequency=calculation_frequency,
-            as_of_date=as_of_date,
         )
-        covariance = estimate_covariance(
-            returns,
-            model_id=str(snapshot["covariance_model_id"]),
-            lookback_days=int(snapshot["lookback_days"]),
-            parameters=parameters,
-            missing_return_policy=str(snapshot["missing_return_policy"]),
-            calculation_frequency=calculation_frequency,
-            as_of_date=as_of_date,
-        )
-        covariance_matrix = covariance.to_numpy(dtype="float64")
-        marginal = covariance_matrix @ weights
-        signed_contributions = weights * marginal
-        variance = float(weights @ marginal)
-        shares = risk_contribution_shares(
-            covariance_matrix,
+        coverage = statistics["coverage"]
+        covariance = statistics["covariance"]
+        contribution = weighted_risk_contribution(
+            covariance,
             weights,
             contribution_mode=str(snapshot["contribution_mode"]),
         )
+        covariance_matrix = np.asarray(contribution["covariance_values"], dtype="float64")
+        signed_contributions = np.asarray(
+            contribution["signed_contribution_to_variance"],
+            dtype="float64",
+        )
+        variance = float(contribution["portfolio_variance"])
+        shares = np.asarray(contribution["risk_shares"], dtype="float64")
     except ValueError as error:
         for _key, row, _series in active:
             _clear_forward_risk_fields(row)
         workspace["forward_risk"] = {
             "status": "unavailable",
             "errors": [str(error)],
-            "risk_model": snapshot,
-        }
-        return workspace
-
-    if not np.isfinite(variance) or variance <= 1e-12:
-        for _key, row, _series in active:
-            _clear_forward_risk_fields(row)
-        workspace["forward_risk"] = {
-            "status": "unavailable",
-            "errors": ["Forward RC requires positive finite portfolio variance."],
             "risk_model": snapshot,
         }
         return workspace

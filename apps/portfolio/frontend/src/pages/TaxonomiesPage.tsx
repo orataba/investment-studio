@@ -339,7 +339,7 @@ function extractErrorMessage(error: unknown) {
 const PLANNING_BUDGETING_LEVEL = 'weight_and_risk_budget'
 
 function percentInputFromDecimal(value?: number | null) {
-  if (value == null || Number.isNaN(value)) {
+  if (value == null || !Number.isFinite(value)) {
     return ''
   }
   return String(Number((value * 100).toFixed(2)))
@@ -493,7 +493,7 @@ function validateTargetSetDraft(
       const parsedWeight = parsePercentInput(lineDraft.target_weight)
       if (parsedWeight == null) {
         errors.push(`Missing target weight for ${member.label}.`)
-      } else if (Number.isNaN(parsedWeight) || parsedWeight < 0) {
+      } else if (!Number.isFinite(parsedWeight) || parsedWeight < 0) {
         errors.push(`Invalid target weight for ${member.label}.`)
       } else {
         weightSum += parsedWeight
@@ -504,7 +504,7 @@ function validateTargetSetDraft(
       const parsedRisk = parsePercentInput(lineDraft.target_risk_share)
       if (parsedRisk == null) {
         errors.push(`Missing target risk budget for ${member.label}.`)
-      } else if (Number.isNaN(parsedRisk) || parsedRisk < 0) {
+      } else if (!Number.isFinite(parsedRisk) || parsedRisk < 0) {
         errors.push(`Invalid target risk budget for ${member.label}.`)
       } else if (isSyntheticCashTargetMember(member)) {
         if (Math.abs(parsedRisk) > 0.0005) {

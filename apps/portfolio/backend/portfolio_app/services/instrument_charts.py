@@ -1,12 +1,25 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, timedelta
 from math import sqrt
+from typing import Iterable, Literal
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
+
+from portfolio_ops_instrument_core import (
+    CANONICAL_QUOTE_RESOLVER_STRATEGY_VERSION,
+    QUOTE_SELECTION_POLICY_VERSION,
+    CanonicalQuoteSeriesResolution,
+    resolve_role_quote_series_in_session,
+)
+from portfolio_ops_instrument_core.db_models import Instrument
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency, period_end_date
-from portfolio_app.services.instrument_registry import get_registry_instrument_detail
-from portfolio_app.services.market_data import is_usable_market_data_point
+from portfolio_app.services.canonical_quotes import valuation_freshness_profile
+from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.instrument_registry import InstrumentRegistryError
 
 SUPPORTED_CHART_RANGE_KEYS: tuple[str, ...] = ("1m", "3m", "6m", "ytd", "1y", "all")
 HOLDINGS_PRICE_CHART_RANGE_KEYS: tuple[str, ...] = ("1m", "3m", "6m", "1y")
@@ -43,6 +56,228 @@ ASSET_RISK_MAX_START_GAP_DAYS: dict[CalculationFrequency, int] = {
 }
 ASSET_RISK_MIN_WINDOW_COVERAGE_RATIO = 0.8
 DAYS_PER_YEAR = 365.25
+CanonicalMarketDataRole = Literal["chart", "total_return"]
+_BLOCKING_SERIES_REASON_CODES = frozenset(
+    {
+        "partial_series",
+        "rejected_observation",
+        "withdrawn_observation",
+        "late_observation",
+        "freshness_limit_exceeded",
+    }
+)
+
+
+@dataclass(frozen=True)
+class CanonicalInstrumentMarketData:
+    """One-session, role-locked market-data input for chart and risk consumers."""
+
+    as_of_date: date
+    instrument_core_by_id: dict[str, dict[str, object]]
+    windows_by_role: dict[
+        CanonicalMarketDataRole,
+        dict[str, CanonicalQuoteSeriesResolution],
+    ]
+    requested_instrument_ids: tuple[str, ...]
+    missing_instrument_ids: frozenset[str]
+
+
+def _normalized_instrument_ids(instrument_ids: Iterable[str]) -> list[str]:
+    return sorted(
+        {
+            normalized
+            for raw_instrument_id in instrument_ids
+            if (normalized := str(raw_instrument_id or "").strip())
+        }
+    )
+
+
+def _normalized_roles(
+    roles: Iterable[CanonicalMarketDataRole],
+) -> tuple[CanonicalMarketDataRole, ...]:
+    normalized: list[CanonicalMarketDataRole] = []
+    for role in roles:
+        if role not in {"chart", "total_return"}:
+            raise ValueError("Canonical instrument market data supports chart and total_return roles only.")
+        if role not in normalized:
+            normalized.append(role)
+    if not normalized:
+        raise ValueError("At least one canonical market-data role is required.")
+    return tuple(normalized)
+
+
+def _instrument_core(instrument: Instrument) -> dict[str, object]:
+    return {
+        "instrument_id": str(instrument.instrument_id),
+        "instrument_name": str(instrument.instrument_name),
+        "instrument_type": str(instrument.instrument_type),
+        "currency": str(instrument.currency).strip().upper(),
+        "identifiers": [
+            {
+                "identifier_type": str(identifier.identifier_type),
+                "identifier_value": str(identifier.identifier_value),
+                "is_primary": bool(identifier.is_primary),
+            }
+            for identifier in sorted(
+                instrument.identifiers,
+                key=lambda item: (
+                    not bool(item.is_primary),
+                    str(item.identifier_type),
+                    str(item.identifier_value),
+                ),
+            )
+        ],
+    }
+
+
+def lock_instrument_market_data_in_session(
+    session: Session,
+    *,
+    instrument_ids: Iterable[str],
+    as_of_date: date,
+    roles: Iterable[CanonicalMarketDataRole] = ("chart", "total_return"),
+) -> CanonicalInstrumentMarketData:
+    """Lock canonical series without provider, flat-detail, or cross-role fallback.
+
+    Each role is resolved since inception so all chart and drawdown windows come
+    from a single selected series. Query growth depends on the instrument/role
+    set, never on the number of calendar days in the requested history.
+    """
+
+    normalized_ids = _normalized_instrument_ids(instrument_ids)
+    normalized_roles = _normalized_roles(roles)
+    instruments = session.scalars(
+        select(Instrument)
+        .options(selectinload(Instrument.identifiers))
+        .where(Instrument.instrument_id.in_(normalized_ids))
+        .order_by(Instrument.instrument_id)
+    ).all() if normalized_ids else []
+    instruments_by_id = {
+        str(instrument.instrument_id): instrument
+        for instrument in instruments
+    }
+    instrument_core_by_id = {
+        instrument_id: _instrument_core(instrument)
+        for instrument_id, instrument in instruments_by_id.items()
+    }
+    windows_by_role: dict[
+        CanonicalMarketDataRole,
+        dict[str, CanonicalQuoteSeriesResolution],
+    ] = {}
+    for role in normalized_roles:
+        role_windows: dict[str, CanonicalQuoteSeriesResolution] = {}
+        for instrument_id in normalized_ids:
+            instrument = instruments_by_id.get(instrument_id)
+            if instrument is None:
+                continue
+            freshness_policy = valuation_freshness_profile(
+                str(instrument.instrument_type)
+            ).resolver_policy
+            role_windows[instrument_id] = resolve_role_quote_series_in_session(
+                session,
+                resolver_strategy_version=CANONICAL_QUOTE_RESOLVER_STRATEGY_VERSION,
+                quote_selection_policy_version=QUOTE_SELECTION_POLICY_VERSION,
+                instrument_id=instrument_id,
+                role=role,
+                currency=str(instrument.currency).strip().upper(),
+                range_mode="since_inception",
+                start_date=None,
+                end_date=as_of_date,
+                freshness_policy=freshness_policy,
+            )
+        windows_by_role[role] = role_windows
+    return CanonicalInstrumentMarketData(
+        as_of_date=as_of_date,
+        instrument_core_by_id=instrument_core_by_id,
+        windows_by_role=windows_by_role,
+        requested_instrument_ids=tuple(normalized_ids),
+        missing_instrument_ids=frozenset(
+            set(normalized_ids).difference(instruments_by_id)
+        ),
+    )
+
+
+def lock_instrument_market_data(
+    instrument_ids: Iterable[str],
+    *,
+    as_of_date: date,
+    roles: Iterable[CanonicalMarketDataRole] = ("chart", "total_return"),
+) -> CanonicalInstrumentMarketData:
+    try:
+        with get_session_factory()() as session:
+            return lock_instrument_market_data_in_session(
+                session,
+                instrument_ids=instrument_ids,
+                as_of_date=as_of_date,
+                roles=roles,
+            )
+    except InstrumentRegistryError:
+        raise
+    except Exception as error:
+        raise InstrumentRegistryError(
+            "Failed to lock canonical instrument market data."
+        ) from error
+
+
+def canonical_series_points(
+    market_data: CanonicalInstrumentMarketData,
+    *,
+    instrument_id: str,
+    role: CanonicalMarketDataRole,
+) -> list[dict[str, object]]:
+    """Return adopted points only when the locked role window is fully usable."""
+
+    window = market_data.windows_by_role.get(role, {}).get(
+        str(instrument_id or "").strip()
+    )
+    if (
+        window is None
+        or window.role != role
+        or window.end_date != market_data.as_of_date
+        or window.resolution_status != "resolved"
+        or window.coverage_status != "complete"
+        or window.freshness_status != "current"
+        or _BLOCKING_SERIES_REASON_CODES.intersection(window.reason_codes)
+    ):
+        return []
+    return [
+        {
+            "date": point.observation_date,
+            "date_iso": point.observation_date.isoformat(),
+            "value": float(point.value),
+            "currency": window.currency,
+            "metric_family": window.metric_family,
+            "quote_basis": window.quote_basis,
+        }
+        for point in window.points
+        if point.observation_date <= market_data.as_of_date
+    ]
+
+
+def canonical_series_failure_reasons(
+    market_data: CanonicalInstrumentMarketData,
+    *,
+    instrument_id: str,
+    role: CanonicalMarketDataRole,
+) -> list[str]:
+    normalized_id = str(instrument_id or "").strip()
+    if normalized_id in market_data.missing_instrument_ids:
+        return ["instrument_not_found"]
+    window = market_data.windows_by_role.get(role, {}).get(normalized_id)
+    if window is None:
+        return ["role_not_locked"]
+    if canonical_series_points(
+        market_data,
+        instrument_id=normalized_id,
+        role=role,
+    ):
+        return []
+    reasons = list(window.reason_codes)
+    if window.coverage_status != "complete" and "incomplete_coverage" not in reasons:
+        reasons.append("incomplete_coverage")
+    if window.freshness_status != "current" and "non_current_endpoint" not in reasons:
+        reasons.append("non_current_endpoint")
+    return reasons or ["insufficient_history"]
 
 
 def empty_instrument_trend_metrics(
@@ -102,20 +337,6 @@ def _safe_float(value: object) -> float | None:
         return None
 
 
-def _parse_iso_date(value: object) -> date | None:
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip()
-        if not normalized:
-            return None
-        try:
-            return date.fromisoformat(normalized[:10])
-        except ValueError:
-            return None
-    return None
-
-
 def normalize_chart_range_key(value: str | None) -> str:
     normalized = str(value or "").strip().lower()
     return normalized if normalized in SUPPORTED_CHART_RANGE_KEYS else "6m"
@@ -135,65 +356,6 @@ def _range_start_date(*, as_of_date: date, range_key: str) -> date | None:
     return None
 
 
-def _normalized_policy_bases(detail: dict[str, object], role: str) -> list[str]:
-    policy = detail.get("quote_selection_policy", {})
-    if not isinstance(policy, dict):
-        return []
-    raw_values = policy.get(role)
-    if not isinstance(raw_values, list):
-        return []
-    normalized_values: list[str] = []
-    for raw_value in raw_values:
-        quote_basis = str(raw_value or "").strip()
-        if quote_basis and quote_basis not in normalized_values:
-            normalized_values.append(quote_basis)
-    return normalized_values
-
-
-def _basis_points(detail: dict[str, object]) -> dict[str, list[dict[str, object]]]:
-    points_by_basis: dict[str, list[dict[str, object]]] = defaultdict(list)
-    market_data = detail.get("market_data", [])
-    if not isinstance(market_data, list):
-        return points_by_basis
-
-    for raw_point in market_data:
-        if not is_usable_market_data_point(raw_point):
-            continue
-        quote_basis = str(raw_point.get("quote_basis") or "").strip()
-        point_date = _parse_iso_date(raw_point.get("as_of_date"))
-        value = _safe_float(raw_point.get("value"))
-        if not quote_basis or point_date is None or value is None:
-            continue
-        points_by_basis[quote_basis].append(
-            {
-                "date": point_date,
-                "date_iso": point_date.isoformat(),
-                "value": value,
-                "currency": str(raw_point.get("currency") or detail.get("currency") or "USD"),
-                "metric_family": str(raw_point.get("metric_family") or ""),
-                "quote_basis": quote_basis,
-            }
-        )
-
-    for points in points_by_basis.values():
-        points.sort(key=lambda item: item["date_iso"])
-    return points_by_basis
-
-
-def _candidate_chart_bases(detail: dict[str, object]) -> list[str]:
-    candidate_bases = [
-        *_normalized_policy_bases(detail, "total_return"),
-        *_normalized_policy_bases(detail, "chart"),
-        *_normalized_policy_bases(detail, "valuation"),
-        *_normalized_policy_bases(detail, "reference"),
-    ]
-    normalized: list[str] = []
-    for quote_basis in candidate_bases:
-        if quote_basis not in normalized:
-            normalized.append(quote_basis)
-    return normalized
-
-
 def _downsample_points(points: list[dict[str, object]], max_points: int | None) -> list[dict[str, object]]:
     if max_points is None or max_points <= 0 or len(points) <= max_points:
         return points
@@ -205,41 +367,6 @@ def _downsample_points(points: list[dict[str, object]], max_points: int | None) 
         raw_index = round(sample_index * (len(points) - 1) / (max_points - 1))
         sampled_indices.add(raw_index)
     return [points[index] for index in sorted(sampled_indices)]
-
-
-def _selected_chart_points(
-    detail: dict[str, object],
-    *,
-    as_of_date: date,
-) -> tuple[list[dict[str, object]], str | None]:
-    points_by_basis = _basis_points(detail)
-    candidate_bases = _candidate_chart_bases(detail)
-
-    selected_points: list[dict[str, object]] = []
-    selected_basis: str | None = None
-    for quote_basis in candidate_bases:
-        eligible_points = [point for point in points_by_basis.get(quote_basis, []) if point["date"] <= as_of_date]
-        if eligible_points:
-            selected_basis = quote_basis
-            selected_points = eligible_points
-            break
-
-    if selected_points:
-        return selected_points, selected_basis
-    if not candidate_bases:
-        fallback_candidates: list[tuple[date, str, list[dict[str, object]]]] = []
-        for quote_basis, points in points_by_basis.items():
-            eligible_points = [point for point in points if point["date"] <= as_of_date]
-            if not eligible_points:
-                continue
-            latest_date = eligible_points[-1].get("date")
-            if isinstance(latest_date, date):
-                fallback_candidates.append((latest_date, quote_basis, eligible_points))
-        if fallback_candidates:
-            _, selected_basis, selected_points = max(fallback_candidates, key=lambda item: (item[0], item[1]))
-            return selected_points, selected_basis
-
-    return [], None
 
 
 def _latest_point_on_or_before(
@@ -559,22 +686,19 @@ def _period_return(
     *,
     end_point: dict[str, object] | None,
     anchor_date: date,
-    fallback_start_date: date | None = None,
 ) -> float | None:
     start_point = _latest_point_on_or_before(points, anchor_date)
-    if start_point is None and fallback_start_date is not None:
-        start_point = _first_point_on_or_after(points, fallback_start_date)
     return _return_between_points(start_point, end_point)
 
 
-def build_instrument_trend_metrics_from_detail(
-    detail: dict[str, object],
+def build_instrument_trend_metrics_from_points(
+    selected_points: list[dict[str, object]],
     *,
     as_of_date: date,
+    selected_basis: str | None,
     holding_start_date: date | None = None,
     calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
-    selected_points, selected_basis = _selected_chart_points(detail, as_of_date=as_of_date)
     if not selected_points:
         return empty_instrument_trend_metrics(
             selected_basis=selected_basis,
@@ -601,13 +725,11 @@ def build_instrument_trend_metrics_from_detail(
             selected_points,
             end_point=end_point,
             anchor_date=month_start - timedelta(days=1),
-            fallback_start_date=month_start,
         ),
         "instrument_return_ytd": _period_return(
             selected_points,
             end_point=end_point,
             anchor_date=year_start - timedelta(days=1),
-            fallback_start_date=year_start,
         ),
         "instrument_return_1y": _period_return(
             selected_points,
@@ -683,6 +805,30 @@ def build_instrument_trend_metrics_from_detail(
     }
 
 
+def build_instrument_trend_metrics_from_market_data(
+    market_data: CanonicalInstrumentMarketData,
+    *,
+    instrument_id: str,
+    holding_start_date: date | None = None,
+    calculation_frequency: CalculationFrequency = "daily",
+) -> dict[str, object]:
+    window = market_data.windows_by_role.get("total_return", {}).get(
+        str(instrument_id or "").strip()
+    )
+    selected_points = canonical_series_points(
+        market_data,
+        instrument_id=instrument_id,
+        role="total_return",
+    )
+    return build_instrument_trend_metrics_from_points(
+        selected_points,
+        as_of_date=market_data.as_of_date,
+        selected_basis=(window.quote_basis if window is not None else None),
+        holding_start_date=holding_start_date,
+        calculation_frequency=calculation_frequency,
+    )
+
+
 def build_instrument_trend_metrics(
     instrument_id: str,
     *,
@@ -690,30 +836,41 @@ def build_instrument_trend_metrics(
     holding_start_date: date | None = None,
     calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
-    detail = get_registry_instrument_detail(instrument_id)
-    if not isinstance(detail, dict):
-        return empty_instrument_trend_metrics(
-            holding_start_date=holding_start_date,
-            calculation_frequency=calculation_frequency,
-        )
-    return build_instrument_trend_metrics_from_detail(
-        detail,
+    market_data = lock_instrument_market_data(
+        [instrument_id],
         as_of_date=as_of_date,
+        roles=("total_return",),
+    )
+    return build_instrument_trend_metrics_from_market_data(
+        market_data,
+        instrument_id=instrument_id,
         holding_start_date=holding_start_date,
         calculation_frequency=calculation_frequency,
     )
 
 
-def build_instrument_price_chart_from_detail(
-    detail: dict[str, object],
+def build_instrument_price_chart_from_market_data(
+    market_data: CanonicalInstrumentMarketData,
     *,
     instrument_id: str,
-    as_of_date: date,
     range_key: str | None = None,
     max_points: int | None = None,
 ) -> dict[str, object] | None:
+    instrument_core = market_data.instrument_core_by_id.get(
+        str(instrument_id or "").strip()
+    )
+    if instrument_core is None:
+        return None
+    as_of_date = market_data.as_of_date
     normalized_range_key = normalize_chart_range_key(range_key)
-    selected_points, selected_basis = _selected_chart_points(detail, as_of_date=as_of_date)
+    selected_points = canonical_series_points(
+        market_data,
+        instrument_id=instrument_id,
+        role="chart",
+    )
+    window = market_data.windows_by_role.get("chart", {}).get(
+        str(instrument_id or "").strip()
+    )
 
     range_start_date = _range_start_date(as_of_date=as_of_date, range_key=normalized_range_key)
     visible_points = (
@@ -740,26 +897,14 @@ def build_instrument_price_chart_from_detail(
     )
 
     return {
-        "instrument_core": {
-            "instrument_id": str(detail.get("instrument_id") or instrument_id),
-            "instrument_name": str(detail.get("instrument_name") or instrument_id),
-            "instrument_type": str(detail.get("instrument_type") or "other"),
-            "currency": str(detail.get("currency") or "USD"),
-            "identifiers": list(detail.get("identifiers", [])) if isinstance(detail.get("identifiers"), list) else [],
-        },
+        "instrument_core": instrument_core,
         "as_of_date": as_of_date.isoformat(),
         "range_key": normalized_range_key,
-        "chart_basis": selected_basis,
+        "chart_basis": window.quote_basis if window is not None else None,
         "metric_family": (
-            str(visible_points[-1].get("metric_family") or "")
-            if visible_points
-            else None
+            window.metric_family if window is not None else None
         ),
-        "currency": (
-            str(visible_points[-1].get("currency") or detail.get("currency") or "USD")
-            if visible_points
-            else str(detail.get("currency") or "USD")
-        ),
+        "currency": str(instrument_core["currency"]),
         "points": [
             {
                 "date": point["date_iso"],
@@ -784,30 +929,29 @@ def build_instrument_price_chart(
     range_key: str | None = None,
     max_points: int | None = None,
 ) -> dict[str, object] | None:
-    detail = get_registry_instrument_detail(instrument_id)
-    if not isinstance(detail, dict):
-        return None
-    return build_instrument_price_chart_from_detail(
-        detail,
-        instrument_id=instrument_id,
+    market_data = lock_instrument_market_data(
+        [instrument_id],
         as_of_date=as_of_date,
+        roles=("chart",),
+    )
+    return build_instrument_price_chart_from_market_data(
+        market_data,
+        instrument_id=instrument_id,
         range_key=range_key,
         max_points=max_points,
     )
 
 
-def build_instrument_sparkline_from_detail(
-    detail: dict[str, object],
+def build_instrument_sparkline_from_market_data(
+    market_data: CanonicalInstrumentMarketData,
     *,
     instrument_id: str,
-    as_of_date: date,
     range_key: str | None = "6m",
     max_points: int = 48,
 ) -> list[dict[str, object]]:
-    chart = build_instrument_price_chart_from_detail(
-        detail,
+    chart = build_instrument_price_chart_from_market_data(
+        market_data,
         instrument_id=instrument_id,
-        as_of_date=as_of_date,
         range_key=range_key,
         max_points=max_points,
     )
@@ -833,25 +977,17 @@ def build_instrument_sparkline(
     range_key: str | None = "6m",
     max_points: int = 48,
 ) -> list[dict[str, object]]:
-    chart = build_instrument_price_chart(
-        instrument_id,
+    market_data = lock_instrument_market_data(
+        [instrument_id],
         as_of_date=as_of_date,
+        roles=("chart",),
+    )
+    return build_instrument_sparkline_from_market_data(
+        market_data,
+        instrument_id=instrument_id,
         range_key=range_key,
         max_points=max_points,
     )
-    if not isinstance(chart, dict):
-        return []
-    points = chart.get("points", [])
-    if not isinstance(points, list):
-        return []
-    return [
-        {
-            "date": str(point.get("date") or ""),
-            "value": float(point.get("value")),
-        }
-        for point in points
-        if isinstance(point, dict) and _safe_float(point.get("value")) is not None
-    ]
 
 
 def _chart_points_payload(chart: dict[str, object] | None) -> list[dict[str, object]]:
@@ -868,21 +1004,19 @@ def _chart_points_payload(chart: dict[str, object] | None) -> list[dict[str, obj
     ]
 
 
-def build_instrument_holdings_market_profile_from_detail(
-    detail: dict[str, object],
+def build_instrument_holdings_market_profile_from_market_data(
+    market_data: CanonicalInstrumentMarketData,
     *,
     instrument_id: str,
-    as_of_date: date,
     holding_start_date: date | None = None,
     max_points: int = 48,
     calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
     charts = {
         f"price_chart_{range_key}": _chart_points_payload(
-            build_instrument_price_chart_from_detail(
-                detail,
+            build_instrument_price_chart_from_market_data(
+                market_data,
                 instrument_id=instrument_id,
-                as_of_date=as_of_date,
                 range_key=range_key,
                 max_points=max_points,
             )
@@ -891,12 +1025,39 @@ def build_instrument_holdings_market_profile_from_detail(
     }
     return {
         **charts,
-        **build_instrument_trend_metrics_from_detail(
-            detail,
-            as_of_date=as_of_date,
+        **build_instrument_trend_metrics_from_market_data(
+            market_data,
+            instrument_id=instrument_id,
             holding_start_date=holding_start_date,
             calculation_frequency=calculation_frequency,
         ),
+    }
+
+
+def build_instrument_holdings_market_profiles(
+    market_data: CanonicalInstrumentMarketData,
+    *,
+    instrument_ids: Iterable[str] | None = None,
+    holding_start_dates: dict[str, date] | None = None,
+    max_points: int = 48,
+    calculation_frequency: CalculationFrequency = "daily",
+) -> dict[str, dict[str, object]]:
+    resolved_ids = _normalized_instrument_ids(
+        instrument_ids
+        if instrument_ids is not None
+        else market_data.requested_instrument_ids
+    )
+    start_dates = holding_start_dates or {}
+    return {
+        instrument_id: build_instrument_holdings_market_profile_from_market_data(
+            market_data,
+            instrument_id=instrument_id,
+            holding_start_date=start_dates.get(instrument_id),
+            max_points=max_points,
+            calculation_frequency=calculation_frequency,
+        )
+        for instrument_id in resolved_ids
+        if instrument_id in market_data.instrument_core_by_id
     }
 
 
@@ -908,17 +1069,44 @@ def build_instrument_holdings_market_profile(
     max_points: int = 48,
     calculation_frequency: CalculationFrequency = "daily",
 ) -> dict[str, object]:
-    detail = get_registry_instrument_detail(instrument_id)
-    if not isinstance(detail, dict):
+    market_data = lock_instrument_market_data(
+        [instrument_id],
+        as_of_date=as_of_date,
+        roles=("chart", "total_return"),
+    )
+    if instrument_id not in market_data.instrument_core_by_id:
         return empty_instrument_holdings_market_profile(
             holding_start_date=holding_start_date,
             calculation_frequency=calculation_frequency,
         )
-    return build_instrument_holdings_market_profile_from_detail(
-        detail,
+    return build_instrument_holdings_market_profile_from_market_data(
+        market_data,
         instrument_id=instrument_id,
-        as_of_date=as_of_date,
         holding_start_date=holding_start_date,
         max_points=max_points,
         calculation_frequency=calculation_frequency,
     )
+
+
+__all__ = [
+    "CanonicalInstrumentMarketData",
+    "HOLDINGS_PRICE_CHART_RANGE_KEYS",
+    "SUPPORTED_CHART_RANGE_KEYS",
+    "build_instrument_holdings_market_profile",
+    "build_instrument_holdings_market_profile_from_market_data",
+    "build_instrument_holdings_market_profiles",
+    "build_instrument_price_chart",
+    "build_instrument_price_chart_from_market_data",
+    "build_instrument_sparkline",
+    "build_instrument_sparkline_from_market_data",
+    "build_instrument_trend_metrics",
+    "build_instrument_trend_metrics_from_market_data",
+    "build_instrument_trend_metrics_from_points",
+    "canonical_series_failure_reasons",
+    "canonical_series_points",
+    "empty_instrument_holdings_market_profile",
+    "empty_instrument_trend_metrics",
+    "lock_instrument_market_data",
+    "lock_instrument_market_data_in_session",
+    "normalize_chart_range_key",
+]

@@ -5,7 +5,9 @@ import type { PortfolioTransactionRecord, SharedInstrumentRecord } from './lib/a
 import {
   buildTransactionExportRows,
   countActiveTransactionFilters,
+  normalizeTransactionDecimalDraft,
   TRANSACTION_EXPORT_HEADERS,
+  transactionDraftHasChanges,
   transactionDateLabels,
 } from './lib/transactionPresentation'
 
@@ -74,14 +76,25 @@ describe('transaction presentation', () => {
         currency: 'CNY',
         identifiers: [],
       },
-      quantity: 100,
-      price: 1.25,
-      gross_amount: 125,
-      fees: 1,
-      taxes: 0,
+      quantity: '100.00',
+      price: '1.2500',
+      gross_amount: '125.00',
+      fees: '1.00',
+      taxes: '0.00',
       currency: 'CNY',
-      net_cash_effect: -126,
+      net_cash_effect: '-126.00',
       note: '=unsafe',
+      revision_id: 'revision-1',
+      revision_number: 1,
+      lifecycle_status: 'active',
+      last_mutation_id: 'mutation-1',
+      last_changed_at: '2026-07-01T04:00:00Z',
+      last_actor: {
+        actor_id: 'local-user:test',
+        display_name: 'Test User',
+        actor_type: 'user',
+        actor_source: 'client_asserted',
+      },
     } as PortfolioTransactionRecord
 
     const rows = buildTransactionExportRows([transaction])
@@ -90,6 +103,23 @@ describe('transaction presentation', () => {
     expect(rows[1][10]).toBe(100)
     expect(rows[1][12]).toBe(125)
     expect(rows[1][17]).toBe('=unsafe')
+  })
+
+  it('compares decimal drafts without treating formatting-only edits as changes', () => {
+    expect(normalizeTransactionDecimalDraft('001.2500')).toBe('1.25')
+    expect(normalizeTransactionDecimalDraft('-0.00')).toBe('0')
+    expect(
+      transactionDraftHasChanges(
+        { gross_amount: '125.0', note: ' Original ', instrument_search: 'ignored' },
+        { gross_amount: '125.00', note: 'Original', instrument_search: '' },
+      ),
+    ).toBe(false)
+    expect(
+      transactionDraftHasChanges(
+        { gross_amount: '126.00', note: 'Original' },
+        { gross_amount: '125.00', note: 'Original' },
+      ),
+    ).toBe(true)
   })
 
   it('counts only populated URL filters', () => {

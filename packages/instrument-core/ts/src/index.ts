@@ -61,7 +61,7 @@ export interface MarketDataPoint {
   as_of_date: string
   value: string
   currency: string
-  provider?: string | null
+  source_ref?: string | null
   status: DataStatus
 }
 

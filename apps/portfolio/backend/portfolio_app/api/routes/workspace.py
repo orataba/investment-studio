@@ -15,10 +15,11 @@ from portfolio_app.services.daily_snapshots import (
     project_instrument_holding_row,
 )
 from portfolio_app.services.instrument_charts import (
+    CanonicalInstrumentMarketData,
     HOLDINGS_PRICE_CHART_RANGE_KEYS,
-    build_instrument_holdings_market_profile,
-    build_instrument_holdings_market_profile_from_detail,
+    build_instrument_holdings_market_profiles,
     empty_instrument_holdings_market_profile,
+    lock_instrument_market_data,
 )
 from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
 from portfolio_app.services.workspace_cache import (
@@ -29,10 +30,7 @@ from portfolio_app.services.ledger import (
     build_position_lots,
     summarize_position_lots,
 )
-from portfolio_app.services.instrument_registry import (
-    InstrumentRegistryError,
-    get_registry_instrument_details,
-)
+from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.performance import (
     build_holdings_report,
     corporate_action_quality_warnings,
@@ -169,52 +167,23 @@ def _instrument_ids_from_holdings_workspace(workspace: dict[str, object]) -> lis
     return instrument_ids
 
 
-def _holdings_workspace_has_market_profile(
-    workspace: dict[str, object],
-    *,
-    calculation_frequency: CalculationFrequency,
-) -> bool:
-    rows = workspace.get("rows")
-    if not isinstance(rows, list):
-        return False
-    for row in rows:
-        if not isinstance(row, dict):
-            return False
-        for range_key in HOLDINGS_PRICE_CHART_RANGE_KEYS:
-            if not isinstance(row.get(f"price_chart_{range_key}"), list):
-                return False
-        for field_name in _HOLDINGS_TREND_FIELD_NAMES:
-            if field_name not in row:
-                return False
-        if str(row.get("instrument_risk_frequency") or "") != calculation_frequency:
-            return False
-    return True
-
-
-def _materialized_holdings_workspace_response(
-    workspace: dict[str, object],
-    *,
-    risk_basis_profile: dict[str, object],
-) -> dict[str, object]:
-    response = deepcopy(workspace)
-    response.pop("price_chart_range", None)
-    response["risk_basis"] = risk_basis_profile
-    return response
-
-
 def _enrich_holdings_workspace_market_data(
     workspace: dict[str, object],
     *,
-    as_of_date: date,
     position_lots: list[dict[str, object]],
     risk_basis_profile: dict[str, object],
-    instrument_details: dict[str, dict[str, object] | None],
+    market_data: CanonicalInstrumentMarketData,
 ) -> dict[str, object]:
     enriched_workspace = deepcopy(workspace)
     enriched_workspace.pop("price_chart_range", None)
     enriched_workspace["risk_basis"] = risk_basis_profile
     calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
     holding_start_dates = _holding_start_dates_by_instrument(position_lots)
+    market_profiles = build_instrument_holdings_market_profiles(
+        market_data,
+        holding_start_dates=holding_start_dates,
+        calculation_frequency=calculation_frequency,
+    )
     rows = enriched_workspace.get("rows")
     if not isinstance(rows, list):
         return enriched_workspace
@@ -245,17 +214,8 @@ def _enrich_holdings_workspace_market_data(
             continue
         holding_start_date = holding_start_dates.get(instrument_id)
         row.pop("price_chart", None)
-        detail = instrument_details.get(instrument_id)
-        if isinstance(detail, dict):
-            row.update(
-                build_instrument_holdings_market_profile_from_detail(
-                    detail,
-                    instrument_id=instrument_id,
-                    as_of_date=as_of_date,
-                    holding_start_date=holding_start_date,
-                    calculation_frequency=calculation_frequency,
-                )
-            )
+        if instrument_id in market_profiles:
+            row.update(market_profiles[instrument_id])
         else:
             row.update(
                 empty_instrument_holdings_market_profile(
@@ -329,6 +289,7 @@ def _portfolio_calculation_frequency_profile(portfolio: dict[str, object], *, as
             accounts,
             list_transactions(portfolio_id, end_date=as_of_date),
             as_of_date=as_of_date,
+            include_market_valuation=False,
         )
         for position_lot in position_lots:
             if str(position_lot.get("status") or "") != "open":
@@ -352,7 +313,7 @@ def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
     return {
         "portfolio_id": resolved_portfolio["portfolio_id"],
         "portfolio_name": resolved_portfolio["portfolio_name"],
-        "base_currency": resolved_portfolio.get("base_currency", "USD"),
+        "base_currency": resolved_portfolio["base_currency"],
         "as_of_date": as_of_date,
         "nav": resolved_portfolio.get("nav", 0.0),
         "day_change_value": resolved_portfolio.get("day_change_value", 0.0),
@@ -417,45 +378,31 @@ def holdings_workspace(
     if materialized_workspace is not None:
         try:
             instrument_ids = _instrument_ids_from_holdings_workspace(materialized_workspace)
-            instrument_details = get_registry_instrument_details(instrument_ids)
+            market_data = lock_instrument_market_data(
+                instrument_ids,
+                as_of_date=resolved_as_of_date,
+                roles=("chart", "total_return"),
+            )
             risk_basis_profile = calculation_frequency_profile_for_instruments(
                 instrument_ids,
                 end_date=resolved_as_of_date,
                 requested_frequency=requested_risk_frequency,
-                detail_loader=instrument_details.get,
+                market_data=market_data,
             )
             calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
-            if _holdings_workspace_has_market_profile(
-                materialized_workspace,
-                calculation_frequency=calculation_frequency,
-            ):
-                response = _materialized_holdings_workspace_response(
-                    materialized_workspace,
-                    risk_basis_profile=risk_basis_profile,
-                )
-                enriched_response = enrich_holdings_forward_risk(
-                    response,
-                    as_of_date=resolved_as_of_date,
-                    calculation_frequency=calculation_frequency,
-                    risk_policy=risk_policy or {},
-                )
-                return _public_holdings_workspace_response(
-                    enriched_response,
-                    include_return_series=include_return_series,
-                )
             accounts = list_accounts(resolved_portfolio_id)
             position_lots = build_position_lots(
                 resolved_portfolio_id,
                 accounts,
                 list_transactions(resolved_portfolio_id, end_date=resolved_as_of_date),
                 as_of_date=resolved_as_of_date,
+                include_market_valuation=False,
             )
             response = _enrich_holdings_workspace_market_data(
                 materialized_workspace,
-                as_of_date=resolved_as_of_date,
                 position_lots=position_lots,
                 risk_basis_profile=risk_basis_profile,
-                instrument_details=instrument_details,
+                market_data=market_data,
             )
             enriched_response = enrich_holdings_forward_risk(
                 response,
@@ -478,6 +425,7 @@ def holdings_workspace(
             accounts,
             list_transactions(resolved_portfolio_id, end_date=resolved_as_of_date),
             as_of_date=resolved_as_of_date,
+            include_market_valuation=False,
         )
         holding_start_dates = _holding_start_dates_by_instrument(position_lots)
         instrument_ids = []
@@ -487,12 +435,16 @@ def holdings_workspace(
             instrument_id = str(position_lot.get("instrument_id") or "").strip()
             if instrument_id and instrument_id not in instrument_ids:
                 instrument_ids.append(instrument_id)
-        instrument_details = get_registry_instrument_details(instrument_ids)
+        market_data = lock_instrument_market_data(
+            instrument_ids,
+            as_of_date=resolved_as_of_date,
+            roles=("chart", "total_return"),
+        )
         risk_basis_profile = calculation_frequency_profile_for_instruments(
             instrument_ids,
             end_date=resolved_as_of_date,
             requested_frequency=requested_risk_frequency,
-            detail_loader=instrument_details.get,
+            market_data=market_data,
         )
         calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
         statement = build_holdings_report(
@@ -502,25 +454,18 @@ def holdings_workspace(
             as_of_date=resolved_as_of_date,
             include_cash_rows=True,
             calculation_frequency=calculation_frequency,
-            instrument_detail_cache={
-                instrument_id: detail
-                for instrument_id, detail in instrument_details.items()
-                if isinstance(detail, dict)
-            },
         )
-        market_profile_by_instrument = {
-            instrument_id: build_instrument_holdings_market_profile_from_detail(
-                detail,
-                instrument_id=instrument_id,
-                as_of_date=resolved_as_of_date,
-                holding_start_date=holding_start_dates.get(instrument_id),
-                calculation_frequency=calculation_frequency,
-            )
-            for position in statement.get("positions", [])
-            if (instrument_id := str(position.get("instrument_id") or ""))
-            and not is_cash_holding_instrument_id(instrument_id)
-            and isinstance((detail := instrument_details.get(instrument_id)), dict)
-        }
+        market_profile_by_instrument = build_instrument_holdings_market_profiles(
+            market_data,
+            instrument_ids=[
+                instrument_id
+                for position in statement.get("positions", [])
+                if (instrument_id := str(position.get("instrument_id") or ""))
+                and not is_cash_holding_instrument_id(instrument_id)
+            ],
+            holding_start_dates=holding_start_dates,
+            calculation_frequency=calculation_frequency,
+        )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     positions = list(statement["positions"])
@@ -562,8 +507,9 @@ def holdings_workspace(
             "quote_as_of_date": position.get("quote_as_of_date"),
             "quote_metric_family": position.get("quote_metric_family"),
             "quote_basis": position.get("quote_basis"),
-            "quote_provider": position.get("quote_provider"),
+            "quote_source_ref": position.get("quote_source_ref"),
             "quote_status": position.get("quote_status"),
+            "valuation_quote": position.get("valuation_quote"),
             "market_value": position.get("market_value"),
             "market_value_base": position.get("market_value_base"),
             "day_change_pct": position.get("day_change_pct"),
@@ -572,6 +518,9 @@ def holdings_workspace(
             "cost_basis_method": position.get("cost_basis_method"),
             "cost_basis": position.get("cost_basis"),
             "cost_basis_base": position.get("cost_basis_base"),
+            "unrealized_pnl": position.get("unrealized_pnl"),
+            "unrealized_pnl_base": position.get("unrealized_pnl_base"),
+            "unrealized_return": position.get("unrealized_return"),
             "allocation": position.get("portfolio_weight"),
             **market_profile_for_position(position),
             "coverage_status": position.get("coverage_status")
@@ -603,6 +552,21 @@ def holdings_workspace(
         if cost_basis_rows and all(row.get("cost_basis_base") is not None for row in cost_basis_rows)
         else 0.0
         if not cost_basis_rows
+        else None
+    )
+    total_unrealized_pnl_base = (
+        sum(float(row["unrealized_pnl_base"]) for row in cost_basis_rows)
+        if cost_basis_rows
+        and all(row.get("unrealized_pnl_base") is not None for row in cost_basis_rows)
+        else 0.0
+        if not cost_basis_rows
+        else None
+    )
+    total_unrealized_return = (
+        total_unrealized_pnl_base / abs(total_cost_basis_base)
+        if total_unrealized_pnl_base is not None
+        and total_cost_basis_base is not None
+        and abs(total_cost_basis_base) > 1e-9
         else None
     )
 
@@ -641,6 +605,8 @@ def holdings_workspace(
             "day_change_pct": day_change_totals["day_change_pct"],
             "day_change_value": day_change_totals["day_change_value"],
             "cost_basis": total_cost_basis_base,
+            "unrealized_pnl_base": total_unrealized_pnl_base,
+            "unrealized_return": total_unrealized_return,
             "allocation": (
                 total_market_value_base / total_nav_base
                 if total_market_value_base is not None and total_nav_base is not None and total_nav_base > 1e-9

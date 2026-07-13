@@ -57,7 +57,9 @@ until pg_isready -h 127.0.0.1 -p 5432 -U portfolio_ops -d portfolio_ops; do
 done
 ```
 
-这个本地 Docker profile 会创建 `portfolio_ops` 数据库和同名用户。不要把 `.local-pg/` raw data directory 放入 Git。
+这个本地 Docker profile 会创建 `portfolio_ops` 数据库、非超级运行角色 `portfolio_ops`
+以及独立测试角色；镜像初始化使用的 bootstrap 管理员不会被应用连接。不要把 `.local-pg/`
+raw data directory 放入 Git。
 
 ## 4. 恢复数据库快照
 
@@ -78,13 +80,23 @@ shasum -a 256 -c data/migration/portfolio_ops_2026-07-09_current.sha256
 恢复：
 
 ```bash
-CONFIRM_RESTORE=portfolio_ops infra/postgres/restore_project_dump.sh
+PORTFOLIO_OPS_DB_HOST=127.0.0.1 \
+PORTFOLIO_OPS_DB_PORT=5432 \
+PORTFOLIO_OPS_DB_NAME=portfolio_ops \
+PORTFOLIO_OPS_DB_USER=portfolio_ops \
+CONFIRM_RESTORE=portfolio_ops \
+PORTFOLIO_OPS_RESTORE_AS_OF_DATE=YYYY-MM-DD \
+  infra/postgres/restore_project_dump.sh
 ```
+
+恢复包装器不接受数据库 URL；它从上述 `PORTFOLIO_OPS_DB_*` 参数构造连接，并再次核对
+实际 `current_database()`。本地默认密码为 `portfolio_ops`；使用其他密码时，从受保护的
+进程环境导出 `PORTFOLIO_OPS_DB_PASSWORD`，不要把值写入文档或 Git。
 
 恢复脚本会再次校验 checksum 和目标数据库，停止已安装的 launchd/systemd
 应用服务，断开残留连接，并在破坏性操作前把当前三个 schema 备份到
 `${XDG_STATE_HOME:-~/.local/state}/portfolio-operations-workbench/postgres-backups/`。
-恢复或 Alembic 升级任一步失败时，脚本会自动清理半恢复状态、还原该备份，
+恢复、Alembic 升级、Portfolio/Watchlist 全量重建或零告警审计任一步失败时，脚本会自动清理半恢复状态、还原该备份，
 然后再启动原先运行的服务。若自动回滚本身失败，服务会保持停止，且日志会
 打印需要人工恢复的备份路径。
 
@@ -166,7 +178,7 @@ curl --noproxy '*' http://127.0.0.1:8000/api/health
 curl --noproxy '*' http://127.0.0.1:8001/api/health
 ```
 
-如果健康检查失败，先看对应 backend 的 `.env`、数据库连接和 venv 依赖。
+如果健康检查失败，先看外部秘密目录中的对应运行时配置、数据库连接和 venv 依赖。
 
 ## 10. 刷新快照之后的新数据
 
@@ -192,9 +204,18 @@ macOS 在仓库根目录执行统一安装器。它会安装六个常驻 LaunchA
 本地时间 `21:00` 的独立行情刷新/自动重算任务；安装过程不会立即触发定时任务：
 
 ```bash
-infra/launchd/install_local_services.sh
+CONFIRM_RELEASE='portfolio_ops@127.0.0.1:5432' \
+PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+PORTFOLIO_OPS_RELEASE_AS_OF_DATE=YYYY-MM-DD \
+  infra/launchd/install_local_services.sh
 infra/launchd/status_local_services.sh
 ```
+
+统一安装器会再次执行安全发布门禁：停止全部应用与刷新 writer，创建已校验的发布前备份，
+确认迁移 head，按显式日期重建 Portfolio/Watchlist，通过零失败零告警审计并创建发布后备份，
+之后才生成并启动 LaunchAgent。服务停止后的任一步失败都会保持托管服务停止。数据库发布
+门禁本身若在变更后失败，会先尝试回滚到发布前备份；门禁已通过、随后前端构建或
+LaunchAgent 启动失败时，保留已审计的新数据库并继续停服。
 
 安装器会直接、安全地解析权限为 `0600` 的
 `~/.config/orataba/secrets/portfolio-operations-workbench/platform.env`，同时供

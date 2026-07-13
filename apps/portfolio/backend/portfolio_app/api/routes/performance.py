@@ -55,6 +55,7 @@ from portfolio_app.api.contracts import (
     PeriodCalculationGroupsSummary,
     PeriodCalculationResponse,
     PeriodCalculationSummary,
+    PerformanceComparisonResponse,
     PerformanceResponse,
     PerformanceSummary,
     ReturnCalendarBucket,
@@ -74,6 +75,7 @@ from portfolio_app.services.workspace_cache import (
 from portfolio_app.services.performance import (
     CONTRIBUTION_AXES,
     CONTRIBUTION_AXIS_ERROR,
+    PerformanceDataIntegrityError,
     build_period_boundary_groups_report,
     build_contribution_bucket_calendar_report,
     build_contribution_bucket_report,
@@ -92,6 +94,13 @@ from portfolio_app.services.performance import (
     build_taxonomy_contribution_report_from_base_report,
     build_return_calendar_report,
     summarize_daily_snapshots,
+)
+from portfolio_app.services.performance_comparison import (
+    authoritative_calmar_ratio,
+    build_performance_comparison,
+)
+from portfolio_app.services.performance_reliability import (
+    apply_performance_history_reliability,
 )
 from portfolio_app.services.portfolio_store import get_portfolio, list_accounts, list_transactions
 from portfolio_app.services.portfolio_store import (
@@ -152,6 +161,8 @@ def refresh_daily_snapshots(
                 instrument_ids=payload.instrument_ids,
                 dirty_from=payload.dirty_from,
             )
+    except PerformanceDataIntegrityError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
@@ -177,12 +188,14 @@ def list_daily_snapshots(
             start_date=start_date,
             end_date=end_date,
         )
+    except PerformanceDataIntegrityError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
     return DailySnapshotListResponse(
         portfolio_id=portfolio_id,
-        base_currency=str(portfolio.get("base_currency") or "USD"),
+        base_currency=str(portfolio["base_currency"]),
         valuation_timezone=str(portfolio.get("valuation_timezone") or ""),
         valuation_cutoff_policy=str(portfolio.get("valuation_cutoff_policy") or "latest_complete_eod"),
         summary=DailySnapshotListSummary.model_validate(summarize_daily_snapshots(snapshots)),
@@ -206,19 +219,59 @@ def get_portfolio_performance(
             start_date=start_date,
             end_date=end_date,
         )
+    except PerformanceDataIntegrityError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     if report is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
+    try:
+        summary_payload = apply_performance_history_reliability(report["summary"])
+        summary_payload["calmar_ratio"] = authoritative_calmar_ratio(
+            summary_payload.get("annualized_twr"),
+            summary_payload.get("max_drawdown"),
+        )
+    except PerformanceDataIntegrityError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     return PerformanceResponse(
         portfolio_id=portfolio_id,
         base_currency=report["base_currency"],
         valuation_timezone=report["valuation_timezone"],
         valuation_cutoff_policy=report["valuation_cutoff_policy"],
-        summary=PerformanceSummary.model_validate(report["summary"]),
+        summary=PerformanceSummary.model_validate(summary_payload),
         daily_series=[DailyPerformancePoint.model_validate(item) for item in report["daily_series"]],
     )
+
+
+@router.get(
+    "/{portfolio_id}/performance/comparison",
+    response_model=PerformanceComparisonResponse,
+)
+def get_portfolio_performance_comparison(
+    portfolio_id: str,
+    benchmark_instrument_id: str,
+    start_date: date,
+    end_date: date,
+    as_of_date: date,
+) -> PerformanceComparisonResponse:
+    try:
+        report = build_performance_comparison(
+            portfolio_id=portfolio_id,
+            benchmark_instrument_id=benchmark_instrument_id,
+            start_date=start_date,
+            end_date=end_date,
+            as_of_date=as_of_date,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except PerformanceDataIntegrityError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except InstrumentRegistryError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    if report is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return PerformanceComparisonResponse.model_validate(report)
 
 
 @router.get("/{portfolio_id}/performance/calculation", response_model=PeriodCalculationResponse)
@@ -239,6 +292,8 @@ def get_portfolio_period_calculation(
             start_date=start_date,
             end_date=end_date,
         )
+    except PerformanceDataIntegrityError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
@@ -726,6 +781,8 @@ def get_portfolio_return_calendar(
             end_date=end_date,
             frequency=frequency,
         )
+    except PerformanceDataIntegrityError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 

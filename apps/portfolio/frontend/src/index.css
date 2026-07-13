@@ -319,6 +319,7 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.portfolio-settings-grid input,
 .portfolio-settings-grid select {
   width: 100%;
   min-height: 32px;
@@ -329,6 +330,7 @@ button:disabled {
   color: var(--portfolio-ink);
 }
 
+.portfolio-settings-grid input:focus,
 .portfolio-settings-grid select:focus {
   border-color: var(--portfolio-accent);
   outline: none;
@@ -4444,6 +4446,7 @@ input[type='checkbox'] {
 .transaction-form input,
 .transaction-form select,
 .transaction-picker-search input,
+.transaction-notes-field input,
 .transaction-notes-field textarea {
   min-height: 32px;
   width: 100%;
@@ -4460,6 +4463,7 @@ input[type='checkbox'] {
 .transaction-form input:focus,
 .transaction-form select:focus,
 .transaction-picker-search input:focus,
+.transaction-notes-field input:focus,
 .transaction-notes-field textarea:focus {
   border-color: var(--portfolio-accent);
   outline: none;
@@ -4469,6 +4473,12 @@ input[type='checkbox'] {
 .transaction-notes-field textarea {
   min-height: 88px;
   resize: vertical;
+}
+
+.transaction-notes-field small {
+  color: var(--portfolio-muted);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .transaction-filter-actions {
@@ -5407,6 +5417,24 @@ input[type='checkbox'] {
 .research-metric-table .research-metric-period-row td {
   color: var(--portfolio-ink);
   text-align: left;
+}
+
+.research-metric-table .research-metric-history-row td {
+  text-align: left;
+}
+
+.research-metric-history-note {
+  display: grid;
+  gap: 2px;
+  min-width: 160px;
+  color: var(--portfolio-ink);
+  font-size: 12px;
+}
+
+.research-metric-history-note small {
+  color: var(--portfolio-muted);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .research-scope-solver-table td:first-child {
@@ -9172,7 +9200,7 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .transaction-inspector-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   border-top: 1px solid var(--portfolio-line);
   border-bottom: 1px solid var(--portfolio-line-strong);
 }
@@ -9320,6 +9348,60 @@ input[type='date']::-webkit-calendar-picker-indicator {
 
 .transaction-inspector-card-metrics > div {
   min-width: 0;
+}
+
+.transaction-history-card {
+  border-left: 3px solid var(--portfolio-line-strong);
+}
+
+.transaction-history-reason {
+  margin: 9px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.transaction-revision-conflict {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid #f59e0b;
+  background: #fffbeb;
+  color: #78350f;
+  font-size: 12px;
+}
+
+.transaction-revision-conflict p {
+  margin: 4px 0 0;
+  line-height: 1.45;
+}
+
+.transaction-delete-review {
+  display: grid;
+  gap: 12px;
+}
+
+.transaction-delete-review p {
+  margin: 0;
+}
+
+.transaction-delete-review label {
+  display: grid;
+  gap: 6px;
+}
+
+.transaction-delete-review input,
+.transaction-delete-review textarea {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--portfolio-line-strong);
+  padding: 7px 9px;
+  background: #ffffff;
+  color: var(--portfolio-ink);
+  font: inherit;
+}
+
+.transaction-delete-review textarea {
+  resize: vertical;
 }
 
 .transaction-inspector-empty {

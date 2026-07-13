@@ -4,6 +4,8 @@ set -euo pipefail
 DATABASE_NAME="${PORTFOLIO_OPS_LOCAL_DATABASE_NAME:-portfolio_ops}"
 DATABASE_ROLE="${PORTFOLIO_OPS_LOCAL_DATABASE_ROLE:-portfolio_ops}"
 DATABASE_PASSWORD="${PORTFOLIO_OPS_LOCAL_DATABASE_PASSWORD:-portfolio_ops}"
+TEST_DATABASE_ROLE="${PORTFOLIO_OPS_LOCAL_TEST_DATABASE_ROLE:-portfolio_ops_test}"
+TEST_DATABASE_PASSWORD="${PORTFOLIO_OPS_LOCAL_TEST_DATABASE_PASSWORD:-portfolio_ops_test}"
 
 if [[ ! "$DATABASE_NAME" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
   echo "Invalid local database name: $DATABASE_NAME" >&2
@@ -13,8 +15,17 @@ if [[ ! "$DATABASE_ROLE" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
   echo "Invalid local database role: $DATABASE_ROLE" >&2
   exit 64
 fi
-if [[ "$DATABASE_PASSWORD" == *"'"* || "$DATABASE_PASSWORD" == *$'\n'* ]]; then
-  echo "Local database password must not contain quotes or newlines." >&2
+if [[ ! "$TEST_DATABASE_ROLE" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+  echo "Invalid local test database role: $TEST_DATABASE_ROLE" >&2
+  exit 64
+fi
+if [[ "$DATABASE_ROLE" == "$TEST_DATABASE_ROLE" ]]; then
+  echo "Runtime and test database roles must be different." >&2
+  exit 64
+fi
+if [[ "$DATABASE_PASSWORD" == *"'"* || "$DATABASE_PASSWORD" == *$'\n'* ||
+      "$TEST_DATABASE_PASSWORD" == *"'"* || "$TEST_DATABASE_PASSWORD" == *$'\n'* ]]; then
+  echo "Local database passwords must not contain quotes or newlines." >&2
   exit 64
 fi
 
@@ -52,16 +63,37 @@ role_exists="$($PSQL_BIN --host 127.0.0.1 --port 5432 --dbname postgres --no-pas
   --command "SELECT 1 FROM pg_roles WHERE rolname = '$DATABASE_ROLE'")"
 if [[ "$role_exists" != "1" ]]; then
   "$PSQL_BIN" --host 127.0.0.1 --port 5432 --dbname postgres --no-password \
-    --command "CREATE ROLE $DATABASE_ROLE LOGIN PASSWORD '$DATABASE_PASSWORD'"
+    --command "CREATE ROLE $DATABASE_ROLE LOGIN NOCREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '$DATABASE_PASSWORD'"
 else
   "$PSQL_BIN" --host 127.0.0.1 --port 5432 --dbname postgres --no-password \
-    --command "ALTER ROLE $DATABASE_ROLE WITH LOGIN PASSWORD '$DATABASE_PASSWORD'" >/dev/null
+    --command "ALTER ROLE $DATABASE_ROLE WITH LOGIN NOCREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '$DATABASE_PASSWORD'" >/dev/null
+fi
+
+test_role_exists="$($PSQL_BIN --host 127.0.0.1 --port 5432 --dbname postgres --no-password --tuples-only --no-align \
+  --command "SELECT 1 FROM pg_roles WHERE rolname = '$TEST_DATABASE_ROLE'")"
+if [[ "$test_role_exists" != "1" ]]; then
+  "$PSQL_BIN" --host 127.0.0.1 --port 5432 --dbname postgres --no-password \
+    --command "CREATE ROLE $TEST_DATABASE_ROLE LOGIN CREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '$TEST_DATABASE_PASSWORD'"
+else
+  "$PSQL_BIN" --host 127.0.0.1 --port 5432 --dbname postgres --no-password \
+    --command "ALTER ROLE $TEST_DATABASE_ROLE WITH LOGIN CREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '$TEST_DATABASE_PASSWORD'" >/dev/null
 fi
 
 database_exists="$($PSQL_BIN --host 127.0.0.1 --port 5432 --dbname postgres --no-password --tuples-only --no-align \
   --command "SELECT 1 FROM pg_database WHERE datname = '$DATABASE_NAME'")"
 if [[ "$database_exists" != "1" ]]; then
   "$CREATEDB_BIN" --host 127.0.0.1 --port 5432 --owner "$DATABASE_ROLE" "$DATABASE_NAME"
+else
+  "$PSQL_BIN" --host 127.0.0.1 --port 5432 --dbname postgres --no-password \
+    --command "ALTER DATABASE $DATABASE_NAME OWNER TO $DATABASE_ROLE" >/dev/null
 fi
 
-echo "Local PostgreSQL database '$DATABASE_NAME' is ready."
+"$PSQL_BIN" --host 127.0.0.1 --port 5432 --dbname "$DATABASE_NAME" --no-password \
+  --command "CREATE SCHEMA IF NOT EXISTS instrument_registry AUTHORIZATION $DATABASE_ROLE;
+CREATE SCHEMA IF NOT EXISTS portfolio AUTHORIZATION $DATABASE_ROLE;
+CREATE SCHEMA IF NOT EXISTS watchlist AUTHORIZATION $DATABASE_ROLE;
+ALTER SCHEMA instrument_registry OWNER TO $DATABASE_ROLE;
+ALTER SCHEMA portfolio OWNER TO $DATABASE_ROLE;
+ALTER SCHEMA watchlist OWNER TO $DATABASE_ROLE" >/dev/null
+
+echo "Local PostgreSQL database '$DATABASE_NAME' and isolated test role '$TEST_DATABASE_ROLE' are ready."

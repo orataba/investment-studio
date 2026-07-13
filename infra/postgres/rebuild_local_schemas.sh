@@ -3,8 +3,29 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PSQL_URL="${PORTFOLIO_OPS_LOCAL_POSTGRES_URL:-postgresql://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops}"
+SQLALCHEMY_URL="${PORTFOLIO_OPS_LOCAL_SQLALCHEMY_URL:-${PSQL_URL/postgresql:\/\//postgresql+psycopg:\/\/}}"
+PYTHON_BIN="${PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 
-echo "Rebuilding local schemas in ${PSQL_URL}"
+CONNECTED_DATABASE="$(psql "$PSQL_URL" -X -v ON_ERROR_STOP=1 -Atc 'SELECT current_database()')"
+if [[ -z "${CONFIRM_REBUILD_DATABASE:-}" || "$CONFIRM_REBUILD_DATABASE" != "$CONNECTED_DATABASE" ]]; then
+  echo "Refusing destructive rebuild. Set CONFIRM_REBUILD_DATABASE=$CONNECTED_DATABASE explicitly." >&2
+  exit 64
+fi
+
+export PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE="$CONNECTED_DATABASE"
+export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="$SQLALCHEMY_URL"
+export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL="$SQLALCHEMY_URL"
+export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA=instrument_registry
+export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="$SQLALCHEMY_URL"
+export PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
+export PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="$SQLALCHEMY_URL"
+export PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL="$SQLALCHEMY_URL"
+export PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA=portfolio
+export PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="$SQLALCHEMY_URL"
+export PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL="$SQLALCHEMY_URL"
+export PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA=watchlist
+
+echo "Rebuilding local schemas in explicitly confirmed database '$CONNECTED_DATABASE'."
 
 psql "${PSQL_URL}" <<'SQL'
 DROP SCHEMA IF EXISTS watchlist CASCADE;
@@ -12,19 +33,7 @@ DROP SCHEMA IF EXISTS portfolio CASCADE;
 DROP SCHEMA IF EXISTS instrument_registry CASCADE;
 SQL
 
-(
-  cd "${ROOT_DIR}/infra/instrument_registry"
-  alembic upgrade head
-)
-
-(
-  cd "${ROOT_DIR}/apps/portfolio/backend"
-  PYTHONPATH=. alembic upgrade head
-)
-
-(
-  cd "${ROOT_DIR}/apps/watchlist/backend"
-  PYTHONPATH=. alembic upgrade head
-)
+PROJECT_ROOT="$ROOT_DIR" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="" \
+  "$ROOT_DIR/infra/scripts/migrate_all.sh"
 
 echo "Local schemas rebuilt successfully."

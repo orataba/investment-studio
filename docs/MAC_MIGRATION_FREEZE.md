@@ -83,14 +83,25 @@ shasum -a 256 -c data/migration/portfolio_ops_2026-07-09_current.sha256
 Restore the data into the local database:
 
 ```bash
-CONFIRM_RESTORE=portfolio_ops infra/postgres/restore_project_dump.sh
+PORTFOLIO_OPS_DB_HOST=127.0.0.1 \
+PORTFOLIO_OPS_DB_PORT=5432 \
+PORTFOLIO_OPS_DB_NAME=portfolio_ops \
+PORTFOLIO_OPS_DB_USER=portfolio_ops \
+CONFIRM_RESTORE=portfolio_ops \
+PORTFOLIO_OPS_RESTORE_AS_OF_DATE=YYYY-MM-DD \
+  infra/postgres/restore_project_dump.sh
 ```
 
-The wrapper stops the installed local launchd jobs before taking a private
-pre-restore backup. It restores only the three project schemas, runs all current
-migrations, and restarts the jobs after success. Any restore or migration
-failure automatically replaces the partial database with the safety backup
-before the jobs are restarted. The retained backup path is printed at the end.
+The restore wrapper does not accept a database URL; it constructs one from the
+explicit `PORTFOLIO_OPS_DB_*` target above and verifies `current_database()`
+before destructive work. It stops the installed local jobs, validates the dump
+checksum/archive, and takes a private pre-restore backup. It restores only the
+three project schemas, runs all current migrations, rebuilds Portfolio and
+Watchlist for the explicit as-of date, and requires a zero-failure/zero-warning
+audit before restarting the jobs. A restore, migration, rebuild, or audit
+failure first rolls the database back; a successful rollback restores the
+previous jobs, while a rollback failure leaves them stopped and prints the
+retained recovery-artifact path.
 
 Check that the restored schemas are populated:
 
@@ -108,12 +119,15 @@ Exact row counts can change after later refreshes, but these tables should not b
 
 ### 4. Verify Local Backend Configuration
 
-The repository carries only `.env.example`. Restore the three real backend `.env` files from the protected machine-local secret store:
+The repository carries only `.env.example`. Restore runtime values to the
+protected external secret directory, not to the backend directories. The macOS
+service installer rejects backend `.env` files and symlinks:
 
 ```bash
-test -f apps/platform/backend/.env
-test -f apps/watchlist/backend/.env
-test -f apps/portfolio/backend/.env
+SECRET_ROOT="$HOME/.config/orataba/secrets/portfolio-operations-workbench"
+install -d -m 700 "$SECRET_ROOT"
+test -f "$SECRET_ROOT/platform.env"
+chmod 600 "$SECRET_ROOT"/*.env
 ```
 
 Review them locally if the new machine uses different endpoints:
@@ -188,8 +202,24 @@ curl --noproxy '*' http://127.0.0.1:8001/api/health
 ```
 
 Then run the validation commands from `README.md`. On macOS, install the current
-user LaunchAgents with `infra/launchd/install_local_services.sh`; do not copy the
-historical Linux `systemd --user` unit files.
+user LaunchAgents only with the explicitly confirmed target and rebuild date; do
+not copy the historical Linux `systemd --user` unit files:
+
+```bash
+CONFIRM_RELEASE='portfolio_ops@127.0.0.1:5432' \
+PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+PORTFOLIO_OPS_RELEASE_AS_OF_DATE=YYYY-MM-DD \
+  infra/launchd/install_local_services.sh
+```
+
+The installer fences every app and refresh writer, creates verified pre/post
+backups, rebuilds Portfolio and Watchlist, and requires the same zero-warning
+audit before starting the new services. Any installer failure after fencing
+leaves managed services stopped for operator review. A failure inside the
+database-release workflow after mutation first attempts to restore the
+pre-release backup. If that workflow has already passed and a later frontend
+build or LaunchAgent start fails, the audited new database remains in place and
+the services remain stopped.
 
 ## Services
 

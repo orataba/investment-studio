@@ -12,6 +12,8 @@ DATABASE_USER="${PORTFOLIO_OPS_DB_USER:-portfolio_ops}"
 DATABASE_PASSWORD="${PORTFOLIO_OPS_DB_PASSWORD:-portfolio_ops}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
 MIGRATION_RUNNER="${PORTFOLIO_OPS_RESTORE_MIGRATION_RUNNER:-$PROJECT_ROOT/infra/scripts/migrate_all.sh}"
+POST_MIGRATION_GATE="${PORTFOLIO_OPS_RESTORE_POST_MIGRATION_GATE:-$PROJECT_ROOT/infra/scripts/post_migration_gate.sh}"
+RESTORE_AS_OF_DATE="${PORTFOLIO_OPS_RESTORE_AS_OF_DATE:-}"
 BACKUP_ROOT="${PORTFOLIO_OPS_RESTORE_BACKUP_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/portfolio-operations-workbench/postgres-backups}"
 SERVICE_MANAGER_REQUESTED="${PORTFOLIO_OPS_RESTORE_SERVICE_MANAGER:-auto}"
 ALLOW_UNVERIFIED_RESTORE="${ALLOW_UNVERIFIED_RESTORE:-false}"
@@ -287,6 +289,14 @@ if [[ ! -x "$MIGRATION_RUNNER" ]]; then
   echo "Migration runner is not executable: $MIGRATION_RUNNER" >&2
   exit 1
 fi
+if [[ ! -x "$POST_MIGRATION_GATE" ]]; then
+  echo "Post-migration gate is not executable: $POST_MIGRATION_GATE" >&2
+  exit 1
+fi
+if [[ -z "$RESTORE_AS_OF_DATE" ]]; then
+  echo "Set PORTFOLIO_OPS_RESTORE_AS_OF_DATE to an explicit YYYY-MM-DD." >&2
+  exit 64
+fi
 
 PSQL_BIN="$(find_postgres_binary psql || true)"
 PG_DUMP_BIN="$(find_postgres_binary pg_dump || true)"
@@ -510,9 +520,16 @@ export PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA=portfolio
 export PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA=watchlist
+export PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE="$DATABASE_NAME"
+export PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL"
 
 PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="" \
   "$MIGRATION_RUNNER"
+
+restore_gate_timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+export PORTFOLIO_OPS_RELEASE_AUDIT_OUTPUT_PATH="$BACKUP_ROOT/${DATABASE_NAME}-restore-audit-${restore_gate_timestamp}-$$.json"
+PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" \
+  "$POST_MIGRATION_GATE" "$RESTORE_AS_OF_DATE"
 
 schema_count="$(
   "$PSQL_BIN" "${PSQL_CONNECTION_ARGS[@]}" \

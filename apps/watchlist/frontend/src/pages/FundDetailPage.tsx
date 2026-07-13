@@ -12,38 +12,43 @@ import { Link, useParams } from 'react-router-dom'
 
 import LoadingOverlay from '../components/LoadingOverlay'
 import {
+  ApiRequestError,
   type CalculationFrequencyProfile,
   type CorporateActionEvent,
   type FundChartPoint,
   type FundDocumentsResponse,
   type FundLibraryItem,
+  type FundInvestmentAnalytics,
+  type InvestmentAnalyticsMetricQuality,
   type FundNavSeriesResponse,
   type FundPeopleResponse,
   type FundPerformanceResponse,
   type FundPriceResponse,
-  type FundRatingsResponse,
   type FundResearchResponse,
   type FundRiskResponse,
   type FundStrategyResponse,
   type FundSummaryResponse,
   type FundTaxonomyTreeNode,
   type FundTaxonomyTreeResponse,
-  type FundExposureHoldingsResponse as FundPortfolioHoldingsResponse,
-  type FundExposureResponse as FundPortfolioResponse,
   type InstrumentAttributeValuesResponse,
   type InstrumentAttributeDefinition,
+  type PerformanceMetricPeriodKey,
+  type PerformanceMetricSnapshot,
+  type PerformanceRelativeSnapshot,
+  type ResearchRatingConfidence,
+  type ResearchRatingRecord,
+  type ResearchRatingResponse,
   getFundTaxonomyTree,
   getInstrumentAttributes,
   getInstrumentDocuments,
-  getInstrumentExposureHoldings as getInstrumentPortfolioHoldings,
-  getInstrumentExposureSummary as getInstrumentPortfolioSummary,
   getInstrumentLibrary,
   getInstrumentNavSeries,
   getInstrumentPeople,
   getInstrumentPerformance,
   getInstrumentPrice,
-  getInstrumentRatings,
   getInstrumentResearch,
+  getInstrumentResearchRating,
+  getInstrumentResearchRatings,
   getInstrumentRisk,
   getInstrumentSummary,
   getInstrumentStrategy,
@@ -54,11 +59,11 @@ import {
   updateInstrumentPeople,
   updateInstrumentPrice,
   updateInstrumentResearch,
+  updateInstrumentResearchRating,
   updateInstrumentStrategy,
 } from '../lib/api'
 import {
   formatBoolean,
-  formatCompactCurrency,
   formatDate,
   formatDateTime,
   formatLabel,
@@ -80,9 +85,8 @@ type FundDetailBundle = {
   library: FundLibraryItem[]
   performance: FundPerformanceResponse
   risk: FundRiskResponse
-  portfolio: FundPortfolioResponse
-  holdings: FundPortfolioHoldingsResponse
-  ratings: FundRatingsResponse
+  researchRating: ResearchRatingRecord | null
+  researchRatingHistory: ResearchRatingResponse[]
   people: FundPeopleResponse
   strategy: FundStrategyResponse
   price: FundPriceResponse
@@ -217,6 +221,16 @@ type ResearchDraft = {
   overviewRows: EditableKeyValueRow[]
 }
 
+type ResearchRatingDraft = {
+  ratingValue: number | null
+  confidence: ResearchRatingConfidence | 'unassessed' | ''
+  asOfDate: string
+  rationale: string
+  author: string
+  nextReviewDate: string
+  expectedRevisionId: string | null
+}
+
 type ChartTimelineNoteContextMenu = {
   clientX: number
   clientY: number
@@ -230,7 +244,6 @@ type DetailTab =
   | 'performance'
   | 'risk'
   | 'price'
-  | 'exposure'
   | 'people'
   | 'strategy'
   | 'documents'
@@ -254,7 +267,6 @@ type ChartAxisTick = {
   xRatio: number
 }
 
-type PerformanceMetricPeriodKey = '1W' | 'MTD' | 'YTD' | '1Y' | '2Y' | '3Y' | '5Y' | 'SI'
 type PerformanceMatrixMode = 'values' | 'peer_percentile' | 'peer_rank' | 'peer_median_delta'
 type PerformanceMatrixRowKey =
   | 'period_return'
@@ -272,33 +284,6 @@ type PerformanceMatrixRowKey =
   | 'upside_capture'
   | 'downside_capture'
 type RollingRiskWindowMonths = 1 | 3 | 6 | 12
-type PerformanceMetricSnapshot = {
-  periodReturn: number | null
-  annualizedReturn: number | null
-  annualizedVolatility: number | null
-  annualizedDownsideDeviation: number | null
-  sharpe: number | null
-  sortino: number | null
-  calmar: number | null
-  maxDrawdown: number | null
-  recoveryDays: number | null
-  recoveryOpen: boolean
-}
-
-type PerformanceRelativeSnapshot = {
-  informationRatio: number | null
-  trackingError: number | null
-  beta: number | null
-  upsideCapture: number | null
-  downsideCapture: number | null
-}
-
-type PeriodicReturnPoint = {
-  startDate: string
-  endDate: string
-  value: number
-}
-
 const PERFORMANCE_METRIC_PERIODS: Array<{
   key: PerformanceMetricPeriodKey
   label: string
@@ -396,7 +381,6 @@ const TAB_ORDER: DetailTab[] = [
   'performance',
   'risk',
   'price',
-  'exposure',
   'people',
   'strategy',
   'documents',
@@ -404,7 +388,7 @@ const TAB_ORDER: DetailTab[] = [
   'monitoring',
 ]
 
-const CORE_TABS: DetailTab[] = ['overview', 'performance', 'risk', 'price', 'exposure', 'people', 'strategy']
+const CORE_TABS: DetailTab[] = ['overview', 'performance', 'risk', 'price', 'people', 'strategy']
 const INDEX_TABS: DetailTab[] = ['overview', 'performance', 'risk']
 
 type LocalizedText = {
@@ -417,7 +401,6 @@ const TAB_LABELS: Record<DetailTab, LocalizedText> = {
   performance: { en: 'Performance', zh: '业绩' },
   risk: { en: 'Risk', zh: '风险' },
   price: { en: 'Price', zh: '费用' },
-  exposure: { en: 'Exposure', zh: '持仓' },
   people: { en: 'People', zh: '团队' },
   strategy: { en: 'Strategy', zh: '策略' },
   documents: { en: 'Documents', zh: '文档' },
@@ -490,7 +473,6 @@ const QUOTE_BASIS_LABELS: Record<QuoteBasis, LocalizedText> = {
 }
 
 const SYSTEM_LABELS: Record<string, LocalizedText> = {
-  analystStance: { en: 'Analyst Stance', zh: '投研观点' },
   basis: { en: 'Basis', zh: '口径' },
   cancel: { en: 'Cancel', zh: '取消' },
   classificationPath: { en: 'Classification Path', zh: '分类路径' },
@@ -679,9 +661,6 @@ function localizeTaxonomyPath(value: string, language: string) {
 }
 
 const MONTH_SHORT_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-const ROLLING_WINDOW_MONTHS = 12
-const MIN_ROLLING_RETURN_OBSERVATIONS = 3
-const ROLLING_CHART_MAX_POINTS = 520
 
 const PRIMARY_CHART_GEOMETRY: ChartGeometry = {
   width: 900,
@@ -731,9 +710,21 @@ type RollingRiskMetricChartProps = {
   points: FundChartPoint[]
   benchmarkPoints?: FundChartPoint[]
   benchmarkLabel?: string | null
+  quality: InvestmentAnalyticsMetricQuality
+  benchmarkQuality?: InvestmentAnalyticsMetricQuality | null
   displayStyle: ChartDisplayStyle
   formatValue: (value: number | null | undefined) => string
   emptyLabel: string
+}
+
+function formatRollingRiskQuality(quality: InvestmentAnalyticsMetricQuality) {
+  const windowCounts =
+    quality.used_window_count > 0 || quality.excluded_window_count > 0
+      ? `${quality.used_window_count} used / ${quality.excluded_window_count} excluded`
+      : null
+  return [formatLabel(quality.status), windowCounts, quality.reason ? formatLabel(quality.reason) : null]
+    .filter(Boolean)
+    .join(' · ')
 }
 
 function buildRollingRiskLinePath(points: Array<{ x: number; y: number }>) {
@@ -806,6 +797,8 @@ function WatchlistRollingRiskMetricChart({
   points,
   benchmarkPoints = [],
   benchmarkLabel = null,
+  quality,
+  benchmarkQuality = null,
   displayStyle,
   formatValue,
   emptyLabel,
@@ -870,10 +863,21 @@ function WatchlistRollingRiskMetricChart({
           <div className="instrument-series-legend">
             <div className="instrument-series-label">
               <strong>{title}</strong>
+              {sortedPoints[0] ? <em>{formatValue(sortedPoints[0].value)}</em> : null}
             </div>
           </div>
+          <div className="instrument-rolling-risk-quality" aria-label={`${title} data quality`}>
+            <span>Fund: {formatRollingRiskQuality(quality)}</span>
+            {benchmarkLabel && benchmarkQuality ? (
+              <span>{benchmarkLabel}: {formatRollingRiskQuality(benchmarkQuality)}</span>
+            ) : null}
+          </div>
         </div>
-        <div className="instrument-risk-chart-empty">{emptyLabel}</div>
+        <div className="instrument-risk-chart-empty">
+          {sortedPoints[0]
+            ? `One qualified window as of ${sortedPoints[0].date}; two points are required to draw the trend.`
+            : emptyLabel}
+        </div>
       </section>
     )
   }
@@ -919,6 +923,12 @@ function WatchlistRollingRiskMetricChart({
               <strong>{benchmarkLabel}</strong>
               <em>{formatValue(activeBenchmarkPoint?.value)}</em>
             </div>
+          ) : null}
+        </div>
+        <div className="instrument-rolling-risk-quality" aria-label={`${title} data quality`}>
+          <span>Fund: {formatRollingRiskQuality(quality)}</span>
+          {benchmarkLabel && benchmarkQuality ? (
+            <span>{benchmarkLabel}: {formatRollingRiskQuality(benchmarkQuality)}</span>
           ) : null}
         </div>
       </div>
@@ -1168,15 +1178,35 @@ function formatStarRating(rating: number | null | undefined) {
   return `${'★'.repeat(normalizedRating)}${'☆'.repeat(5 - normalizedRating)}`
 }
 
-function parseManualRating(value: unknown) {
+function normalizeResearchRating(value: unknown) {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return null
   }
   return Math.max(1, Math.min(5, Math.round(value)))
 }
 
+function localIsoDate() {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function toResearchRatingDraft(rating: ResearchRatingRecord | null): ResearchRatingDraft {
+  return {
+    ratingValue: normalizeResearchRating(rating?.rating),
+    confidence: rating?.confidence || '',
+    asOfDate: rating?.as_of_date || localIsoDate(),
+    rationale: rating?.rationale || '',
+    author: rating?.author || '',
+    nextReviewDate: rating?.next_review_date || '',
+    expectedRevisionId: rating?.rating_revision_id || null,
+  }
+}
+
 function getNumber(value: unknown) {
-  return typeof value === 'number' && !Number.isNaN(value) ? value : null
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 function getString(value: unknown) {
@@ -1300,10 +1330,6 @@ function formatRiskComparisonValue(value: unknown) {
   return value && typeof value === 'string' ? toTitleCase(value.replace(/_/g, ' ')) : '—'
 }
 
-function getRows(value: unknown) {
-  return Array.isArray(value) ? value : []
-}
-
 function getDisplayValue(value: unknown) {
   if (typeof value === 'boolean') {
     return formatBoolean(value)
@@ -1326,7 +1352,8 @@ function formatPriceOverviewValue(key: string, value: unknown) {
       return `${formatNumber(value, 2)} %`
     }
     if (key.includes('investment')) {
-      return formatCompactCurrency(value)
+      // Price terms currently carry no currency dimension; do not invent one in presentation.
+      return '—'
     }
     return formatNumber(value)
   }
@@ -1601,39 +1628,13 @@ function normalizeTabs(sourceTabs: string[], detailKind: DetailKind = 'fund'): D
   const set = new Set<DetailTab>(CORE_TABS)
 
   sourceTabs.forEach((tab) => {
-    const normalizedTab = tab === 'quote' || tab === 'summary' ? 'overview' : tab === 'portfolio' ? 'exposure' : tab
+    const normalizedTab = tab === 'quote' || tab === 'summary' ? 'overview' : tab
     if (TAB_ORDER.includes(normalizedTab as DetailTab)) {
       set.add(normalizedTab as DetailTab)
     }
   })
 
   return TAB_ORDER.filter((tab) => set.has(tab))
-}
-
-function defaultFundPortfolioResponse(): FundPortfolioResponse {
-  return {
-    allocation_blocks: {},
-    style_box: null,
-    liquidity_leverage: null,
-    valuation_statistics: null,
-    holdings_summary: null,
-    snapshot_metadata: null,
-  }
-}
-
-function defaultFundPortfolioHoldingsResponse(): FundPortfolioHoldingsResponse {
-  return { rows: [], page: 1, page_size: 0, total_rows: 0 }
-}
-
-function defaultFundRatingsResponse(summary: FundSummaryResponse): FundRatingsResponse {
-  return {
-    overall_rating: summary.overall_rating ?? null,
-    overall_score: null,
-    analyst_stance: summary.analyst_stance || 'Unrated',
-    methodology_version: 'instrument-rating/v1',
-    dimension_scores: [],
-    override_info: null,
-  }
 }
 
 function defaultFundPeopleResponse(): FundPeopleResponse {
@@ -1653,14 +1654,14 @@ function defaultFundDocumentsResponse(): FundDocumentsResponse {
 }
 
 function defaultFundResearchResponse(): FundResearchResponse {
-  return { overview: {}, manual_rating: null, timeline_notes: [] }
+  return { overview: {}, timeline_notes: [] }
 }
 
 function defaultCalculationFrequencyProfile(): CalculationFrequencyProfile {
   return {
     requested_frequency: 'auto',
-    resolved_frequency: 'daily',
-    inferred_frequency: 'daily',
+    resolved_frequency: null,
+    inferred_frequency: null,
     source_frequency_counts: { daily: 0, weekly: 0, monthly: 0, unknown: 0 },
     raw_observation_count: 0,
     observation_count: 0,
@@ -1669,8 +1670,110 @@ function defaultCalculationFrequencyProfile(): CalculationFrequencyProfile {
     annualization_periods_per_year: null,
     largest_gap_days: null,
     gap_count: 0,
-    gap_status: 'aligned',
+    gap_status: 'unresolved',
     status_label: 'Unavailable',
+  }
+}
+
+function defaultFundInvestmentAnalytics(): FundInvestmentAnalytics {
+  const emptySummary = {
+    latest: null,
+    median: null,
+    percentile: null,
+    maximum: null,
+    minimum: null,
+  }
+  const unavailableQuality = {
+    status: 'unavailable' as const,
+    reason: 'insufficient_history',
+    observation_count: 0,
+    excluded_observation_count: 0,
+    used_window_count: 0,
+    excluded_window_count: 0,
+  }
+  return {
+    methodology_version: 'canonical-investment-analytics/v2',
+    methodology: {
+      annualized_return: 'geometric_minimum_365_calendar_days',
+      calmar_ratio: 'annualized_return_over_max_drawdown_minimum_1096_calendar_days',
+      annualized_risk: 'minimum_12_same_frequency_returns',
+      sharpe_ratio: 'arithmetic_mean_excess_return_risk_free_rate_zero',
+      downside_deviation: 'lower_partial_moment_mar_zero_all_observations',
+      sortino_ratio: 'arithmetic_mean_excess_return_mar_zero',
+      relative_alignment: 'exact_fund_observation_boundaries',
+      monthly_volatility_annualization: 'fixed_same_frequency_annualization_252_52_12',
+      rolling_beta_frequency: 'exact_contiguous_calendar_months',
+      capture_ratio: 'minimum_3_exact_same_frequency_returns_per_regime',
+    },
+    as_of_date: null,
+    benchmark_instrument_id: null,
+    rolling_window_months: 12,
+    periods: [],
+    monthly_return_matrix: [],
+    series: {
+      drawdown: [],
+      benchmark_drawdown: [],
+      monthly_drawdown: [],
+      monthly_annualized_volatility: [],
+      rolling_annualized_volatility: [],
+      benchmark_rolling_annualized_volatility: [],
+      rolling_sharpe_ratio: [],
+      benchmark_rolling_sharpe_ratio: [],
+      rolling_beta: [],
+    },
+    statistics: {
+      current_drawdown: null,
+      monthly_return: { ...emptySummary },
+      monthly_drawdown: { ...emptySummary },
+      rolling_annualized_volatility: { ...emptySummary },
+      rolling_beta: { ...emptySummary },
+      trailing_negative_month_count: null,
+    },
+    source_observation_count: 0,
+    benchmark_observation_count: 0,
+    source_input_observation_count: 0,
+    benchmark_input_observation_count: 0,
+    quality: {
+      fund_status: 'unavailable',
+      fund_reason: 'empty_series',
+      benchmark_status: 'not_requested',
+      benchmark_reason: null,
+      series: {
+        monthly_annualized_volatility: { ...unavailableQuality },
+        rolling_annualized_volatility: { ...unavailableQuality },
+        benchmark_rolling_annualized_volatility: {
+          ...unavailableQuality,
+          status: 'not_requested',
+          reason: 'benchmark_not_requested',
+        },
+        rolling_sharpe_ratio: { ...unavailableQuality },
+        benchmark_rolling_sharpe_ratio: {
+          ...unavailableQuality,
+          status: 'not_requested',
+          reason: 'benchmark_not_requested',
+        },
+        rolling_beta: {
+          ...unavailableQuality,
+          status: 'not_requested',
+          reason: 'benchmark_not_requested',
+        },
+      },
+    },
+  }
+}
+
+function emptyPerformanceMetricSnapshot(): PerformanceMetricSnapshot {
+  return {
+    period_return: null,
+    annualized_return: null,
+    annualized_volatility: null,
+    annualized_downside_deviation: null,
+    sharpe_ratio: null,
+    sortino_ratio: null,
+    calmar_ratio: null,
+    max_drawdown: null,
+    recovery_days: null,
+    recovery_open: false,
   }
 }
 
@@ -1683,6 +1786,7 @@ function defaultFundPerformanceResponse(): FundPerformanceResponse {
     peer_comparison: null,
     calculation_frequency_profile: null,
     snapshot_metadata: null,
+    analytics: defaultFundInvestmentAnalytics(),
   }
 }
 
@@ -1700,12 +1804,27 @@ function defaultFundRiskResponse(): FundRiskResponse {
 function defaultFundNavSeriesResponse(fundId: string): FundNavSeriesResponse {
   return {
     fund_id: fundId,
+    valuation_date: null,
     count: 0,
-    nav_basis_preference: 'auto',
     nav_basis_type: null,
     nav_basis_source: 'unavailable',
     nav_basis_status: 'unavailable',
+    resolution: null,
     calculation_frequency_profile: defaultCalculationFrequencyProfile(),
+    basis_statistics: {
+      nav: {
+        latest_date: null,
+        latest_value: null,
+        latest_change: null,
+        latest_change_percent: null,
+      },
+      nav_with_dividend: {
+        latest_date: null,
+        latest_value: null,
+        latest_change: null,
+        latest_change_percent: null,
+      },
+    },
     series: [],
     calculation_series: [],
     rows: [],
@@ -2077,21 +2196,6 @@ function resolvePreferredQuoteBasis(value: string | null | undefined): QuoteBasi
   return value === 'nav' || value === 'nav_with_dividend' ? value : null
 }
 
-function resolveReturnQuoteBasis(
-  rows: FundNavSeriesResponse['rows'],
-  preferredBasis: string | null | undefined,
-) {
-  const availableBases = getAvailableQuoteBases(rows)
-  const preferred = resolvePreferredQuoteBasis(preferredBasis)
-  if (preferred === 'nav_with_dividend' && availableBases.includes(preferred)) {
-    return preferred
-  }
-  if (availableBases.includes('nav_with_dividend')) {
-    return 'nav_with_dividend'
-  }
-  return null
-}
-
 function buildQuoteSeriesContext(
   rows: FundNavSeriesResponse['rows'],
   {
@@ -2310,44 +2414,6 @@ function applyChartScale(points: FundChartPoint[], scale: ChartScale) {
   return points
 }
 
-function buildDrawdownSeries(points: FundChartPoint[]) {
-  let runningMax = 0
-  return points.map((point) => {
-    runningMax = Math.max(runningMax, point.value)
-    const drawdown = runningMax > 0 ? ((point.value / runningMax) - 1) * 100 : 0
-    return {
-      date: point.date,
-      value: drawdown,
-    }
-  })
-}
-
-function getSeriesChangeStats(points: FundChartPoint[]) {
-  if (points.length < 2) {
-    return { change: null, changePct: null }
-  }
-  const first = points[0]
-  const last = points[points.length - 1]
-  const change = last.value - first.value
-  return {
-    change,
-    changePct: first.value !== 0 ? (change / first.value) * 100 : null,
-  }
-}
-
-function getLatestPointChangeStats(points: FundChartPoint[]) {
-  if (points.length < 2) {
-    return { change: null, changePct: null }
-  }
-  const latest = points[points.length - 1]
-  const previous = points[points.length - 2]
-  const change = latest.value - previous.value
-  return {
-    change,
-    changePct: previous.value !== 0 ? (change / previous.value) * 100 : null,
-  }
-}
-
 function getRangeWindow(points: FundChartPoint[], range: ChartRange) {
   if (!points.length) {
     return { start: '', end: '' }
@@ -2403,38 +2469,6 @@ function filterSeriesByDateWindow(
     }
     return true
   })
-}
-
-function getMonthBucket(value: string) {
-  return value.slice(0, 7)
-}
-
-function getPreviousMonthBucket(monthBucket: string) {
-  const year = Number(monthBucket.slice(0, 4))
-  const month = Number(monthBucket.slice(5, 7))
-  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
-    return null
-  }
-  const previousYear = month === 1 ? year - 1 : year
-  const previousMonth = month === 1 ? 12 : month - 1
-  return `${previousYear}-${String(previousMonth).padStart(2, '0')}`
-}
-
-function buildMonthlyCloseSeries(points: FundChartPoint[]) {
-  const sortedPoints = [...points].sort((left, right) => left.date.localeCompare(right.date))
-  const monthlyPoints: FundChartPoint[] = []
-
-  sortedPoints.forEach((point) => {
-    const currentBucket = getMonthBucket(point.date)
-    const previousPoint = monthlyPoints[monthlyPoints.length - 1]
-    if (!previousPoint || getMonthBucket(previousPoint.date) !== currentBucket) {
-      monthlyPoints.push(point)
-      return
-    }
-    monthlyPoints[monthlyPoints.length - 1] = point
-  })
-
-  return monthlyPoints
 }
 
 function rebaseSeries(points: FundChartPoint[], baseValue = 100) {
@@ -2607,320 +2641,6 @@ function getPointAtOrNearestDate(points: FundChartPoint[], targetDate: string | 
   return getPointAtDate(points, targetDate) || findNearestChartPoint(points, targetDate)
 }
 
-function buildMonthlyReturnSeries(points: FundChartPoint[]) {
-  const monthlyCloses = buildMonthlyCloseSeries(points)
-  const monthlyCloseByBucket = new Map(monthlyCloses.map((point) => [getMonthBucket(point.date), point] as const))
-  const monthlyReturns: FundChartPoint[] = []
-
-  for (const currentPoint of monthlyCloses) {
-    const previousBucket = getPreviousMonthBucket(getMonthBucket(currentPoint.date))
-    const previousPoint = previousBucket ? monthlyCloseByBucket.get(previousBucket) : null
-    if (!previousPoint) {
-      continue
-    }
-    if (previousPoint.value === 0) {
-      continue
-    }
-    monthlyReturns.push({
-      date: currentPoint.date,
-      value: ((currentPoint.value / previousPoint.value) - 1) * 100,
-    })
-  }
-
-  return monthlyReturns
-}
-
-function getRollingWindowPoints(
-  sortedPoints: FundChartPoint[],
-  endIndex: number,
-  windowMonths: number,
-) {
-  if (endIndex <= 0 || endIndex >= sortedPoints.length) {
-    return []
-  }
-
-  const endPoint = sortedPoints[endIndex]
-  const targetStartDate = shiftIsoDate(endPoint.date, { months: -windowMonths })
-  if (!targetStartDate) {
-    return []
-  }
-
-  const startIndex = findLastPointIndexOnOrBefore(sortedPoints, targetStartDate)
-  if (startIndex < 0 || startIndex >= endIndex) {
-    return []
-  }
-
-  const targetDays = getDateDifferenceInDays(targetStartDate, endPoint.date)
-  const actualDays = getDateDifferenceInDays(sortedPoints[startIndex].date, endPoint.date)
-  if (targetDays == null || actualDays == null || targetDays <= 0 || actualDays <= 0) {
-    return []
-  }
-
-  const maxActualDays = targetDays * 1.35 + 14
-  if (actualDays > maxActualDays) {
-    return []
-  }
-
-  return sortedPoints.slice(startIndex, endIndex + 1)
-}
-
-function buildRollingAnnualizedReturnSeries(points: FundChartPoint[], windowMonths = ROLLING_WINDOW_MONTHS) {
-  const sortedPoints = sortSeriesByDate(points)
-  const rollingReturns: FundChartPoint[] = []
-
-  for (let index = 1; index < sortedPoints.length; index += 1) {
-    const windowPoints = getRollingWindowPoints(sortedPoints, index, windowMonths)
-    if (windowPoints.length < 2) {
-      continue
-    }
-    const basePoint = windowPoints[0]
-    const currentPoint = windowPoints[windowPoints.length - 1]
-    const dayCount = getDateDifferenceInDays(basePoint.date, currentPoint.date)
-    if (basePoint.value <= 0 || currentPoint.value <= 0 || dayCount == null || dayCount <= 0) {
-      continue
-    }
-    rollingReturns.push({
-      date: currentPoint.date,
-      value: (Math.pow(currentPoint.value / basePoint.value, 365.25 / dayCount) - 1) * 100,
-    })
-  }
-
-  return rollingReturns
-}
-
-function buildRollingAnnualizedVolatilitySeries(points: FundChartPoint[], windowMonths = ROLLING_WINDOW_MONTHS) {
-  const sortedPoints = sortSeriesByDate(points)
-  const rollingVolatility: FundChartPoint[] = []
-
-  for (let index = 1; index < sortedPoints.length; index += 1) {
-    const windowPoints = getRollingWindowPoints(sortedPoints, index, windowMonths)
-    const windowReturns = buildPeriodicReturnSeries(windowPoints).map((point) => point.value)
-    if (windowReturns.length < MIN_ROLLING_RETURN_OBSERVATIONS) {
-      continue
-    }
-    const stdev = getSampleStandardDeviation(windowReturns)
-    const periodsPerYear = inferAnnualizationPeriodsPerYear(windowPoints, windowReturns.length)
-    if (stdev == null || periodsPerYear == null || periodsPerYear <= 0) {
-      continue
-    }
-    rollingVolatility.push({
-      date: sortedPoints[index].date,
-      value: stdev * Math.sqrt(periodsPerYear) * 100,
-    })
-  }
-
-  return rollingVolatility
-}
-
-function buildRollingSharpeSeries(points: FundChartPoint[], windowMonths = ROLLING_WINDOW_MONTHS) {
-  const sortedPoints = sortSeriesByDate(points)
-  const rollingSharpe: FundChartPoint[] = []
-
-  for (let index = 1; index < sortedPoints.length; index += 1) {
-    const windowPoints = getRollingWindowPoints(sortedPoints, index, windowMonths)
-    const windowReturns = buildPeriodicReturnSeries(windowPoints).map((point) => point.value)
-    if (windowReturns.length < MIN_ROLLING_RETURN_OBSERVATIONS) {
-      continue
-    }
-    const stdev = getSampleStandardDeviation(windowReturns)
-    const periodsPerYear = inferAnnualizationPeriodsPerYear(windowPoints, windowReturns.length)
-    if (stdev == null || stdev === 0 || periodsPerYear == null || periodsPerYear <= 0) {
-      continue
-    }
-    const mean = windowReturns.reduce((sum, value) => sum + value, 0) / windowReturns.length
-    rollingSharpe.push({
-      date: sortedPoints[index].date,
-      value: (mean / stdev) * Math.sqrt(periodsPerYear),
-    })
-  }
-
-  return rollingSharpe
-}
-
-function alignMonthlyReturnPairs(leftPoints: FundChartPoint[], rightPoints: FundChartPoint[]) {
-  const leftMonthlyReturns = buildMonthlyReturnSeries(leftPoints)
-  const rightMonthlyReturns = buildMonthlyReturnSeries(rightPoints)
-  const rightMap = new Map(
-    rightMonthlyReturns.map((point) => [getMonthBucket(point.date), { date: point.date, value: point.value / 100 }] as const),
-  )
-
-  return leftMonthlyReturns
-    .map((point) => {
-      const bucket = getMonthBucket(point.date)
-      const rightPoint = rightMap.get(bucket)
-      if (!rightPoint) {
-        return null
-      }
-      return {
-        date: point.date,
-        left: point.value / 100,
-        right: rightPoint.value,
-      }
-    })
-    .filter(
-      (point): point is { date: string; left: number; right: number } => point !== null,
-    )
-}
-
-function getSampleCovariance(left: number[], right: number[]) {
-  if (left.length < 2 || right.length < 2 || left.length !== right.length) {
-    return null
-  }
-  const leftMean = left.reduce((sum, value) => sum + value, 0) / left.length
-  const rightMean = right.reduce((sum, value) => sum + value, 0) / right.length
-  const covariance =
-    left.reduce((sum, value, index) => sum + ((value - leftMean) * (right[index] - rightMean)), 0) /
-    (left.length - 1)
-  return covariance
-}
-
-function buildRollingBetaSeries(
-  points: FundChartPoint[],
-  benchmarkPoints: FundChartPoint[],
-  windowMonths = ROLLING_WINDOW_MONTHS,
-) {
-  const alignedPairs = alignMonthlyReturnPairs(points, benchmarkPoints)
-  const rollingBeta: FundChartPoint[] = []
-
-  for (let index = windowMonths - 1; index < alignedPairs.length; index += 1) {
-    const windowPairs = alignedPairs.slice(index - windowMonths + 1, index + 1)
-    const leftReturns = windowPairs.map((point) => point.left)
-    const rightReturns = windowPairs.map((point) => point.right)
-    const covariance = getSampleCovariance(leftReturns, rightReturns)
-    const variance = getSampleStandardDeviation(rightReturns)
-    if (covariance == null || variance == null || variance === 0) {
-      continue
-    }
-    rollingBeta.push({
-      date: windowPairs[windowPairs.length - 1].date,
-      value: covariance / (variance ** 2),
-    })
-  }
-
-  return rollingBeta
-}
-
-function buildMonthlyMinimumSeries(points: FundChartPoint[]) {
-  const sortedPoints = [...points].sort((left, right) => left.date.localeCompare(right.date))
-  const monthlyMinimums: FundChartPoint[] = []
-
-  sortedPoints.forEach((point) => {
-    const currentBucket = getMonthBucket(point.date)
-    const previousPoint = monthlyMinimums[monthlyMinimums.length - 1]
-    if (!previousPoint || getMonthBucket(previousPoint.date) !== currentBucket) {
-      monthlyMinimums.push(point)
-      return
-    }
-    if (point.value <= previousPoint.value) {
-      monthlyMinimums[monthlyMinimums.length - 1] = point
-    }
-  })
-
-  return monthlyMinimums
-}
-
-function inferAnnualizationPeriodsPerYear(points: FundChartPoint[], returnCount?: number) {
-  const sortedPoints = sortSeriesByDate(points)
-  const realizedReturnCount = returnCount ?? Math.max(sortedPoints.length - 1, 0)
-  if (sortedPoints.length < 2 || realizedReturnCount < 1) {
-    return null
-  }
-  const elapsedDays = getDateDifferenceInDays(
-    sortedPoints[0].date,
-    sortedPoints[sortedPoints.length - 1].date,
-  )
-  if (elapsedDays == null || elapsedDays <= 0) {
-    return null
-  }
-  return (realizedReturnCount / elapsedDays) * 365.25
-}
-
-function getSampleStandardDeviation(values: number[]) {
-  if (values.length < 2) {
-    return null
-  }
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length
-  const variance =
-    values.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / (values.length - 1)
-  return Math.sqrt(Math.max(variance, 0))
-}
-
-function buildMonthlyAnnualizedVolatilitySeries(points: FundChartPoint[]) {
-  const sortedPoints = [...points].sort((left, right) => left.date.localeCompare(right.date))
-  const returnCount = buildPeriodicReturnSeries(sortedPoints).length
-  const periodsPerYear = inferAnnualizationPeriodsPerYear(sortedPoints, returnCount)
-  if (periodsPerYear == null || periodsPerYear <= 0) {
-    return []
-  }
-  const returnsByMonth = new Map<string, { date: string; returns: number[] }>()
-
-  for (let index = 1; index < sortedPoints.length; index += 1) {
-    const previousPoint = sortedPoints[index - 1]
-    const currentPoint = sortedPoints[index]
-    if (previousPoint.value === 0) {
-      continue
-    }
-    const monthlyKey = getMonthBucket(currentPoint.date)
-    const bucket = returnsByMonth.get(monthlyKey) || { date: currentPoint.date, returns: [] }
-    bucket.date = currentPoint.date
-    bucket.returns.push((currentPoint.value / previousPoint.value) - 1)
-    returnsByMonth.set(monthlyKey, bucket)
-  }
-
-  return Array.from(returnsByMonth.entries())
-    .sort((left, right) => left[0].localeCompare(right[0]))
-    .map(([, bucket]) => {
-      const stdev = getSampleStandardDeviation(bucket.returns)
-      if (stdev == null) {
-        return null
-      }
-      return {
-        date: bucket.date,
-        value: stdev * Math.sqrt(periodsPerYear) * 100,
-      }
-    })
-    .filter((point): point is FundChartPoint => point !== null)
-}
-
-function buildMonthlyReturnMatrix(points: FundChartPoint[]) {
-  const monthlyReturns = buildMonthlyReturnSeries(points)
-  const monthlyCloses = buildMonthlyCloseSeries(points)
-  const monthlyCloseByBucket = new Map(monthlyCloses.map((point) => [getMonthBucket(point.date), point] as const))
-  const rows = new Map<number, { year: string; months: Array<number | null>; ytd: number | null }>()
-  const latestCloseByYear = new Map<number, FundChartPoint>()
-
-  monthlyReturns.forEach((point) => {
-    const year = Number(point.date.slice(0, 4))
-    const monthIndex = Number(point.date.slice(5, 7)) - 1
-    const row = rows.get(year) || {
-      year: String(year),
-      months: Array.from({ length: 12 }, () => null),
-      ytd: null,
-    }
-    row.months[monthIndex] = point.value
-    rows.set(year, row)
-  })
-
-  monthlyCloses.forEach((point) => {
-    latestCloseByYear.set(Number(point.date.slice(0, 4)), point)
-  })
-
-  return Array.from(rows.entries())
-    .sort((left, right) => right[0] - left[0])
-    .map(([year, row]) => {
-      const previousYearClose = monthlyCloseByBucket.get(`${year - 1}-12`)
-      const currentYearClose = latestCloseByYear.get(year)
-      const ytd =
-        previousYearClose && currentYearClose && previousYearClose.value !== 0
-          ? ((currentYearClose.value / previousYearClose.value) - 1) * 100
-          : null
-      return {
-        ...row,
-        ytd,
-      }
-    })
-}
-
 function sortSeriesByDate(points: FundChartPoint[]) {
   return [...points].sort((left, right) => left.date.localeCompare(right.date))
 }
@@ -2965,349 +2685,6 @@ function findLastPointIndexOnOrBefore(points: FundChartPoint[], targetDate: stri
   return -1
 }
 
-function findLastPointIndexBefore(points: FundChartPoint[], targetDate: string) {
-  for (let index = points.length - 1; index >= 0; index -= 1) {
-    if (points[index].date < targetDate) {
-      return index
-    }
-  }
-  return -1
-}
-
-function getAnchoredWindow(
-  points: FundChartPoint[],
-  periodKey: PerformanceMetricPeriodKey,
-  referenceEndDate?: string | null,
-) {
-  const sortedPoints = sortSeriesByDate(points)
-  if (!sortedPoints.length) {
-    return []
-  }
-
-  const requestedEndDate = referenceEndDate || sortedPoints[sortedPoints.length - 1]?.date || ''
-  const endIndex = findLastPointIndexOnOrBefore(sortedPoints, requestedEndDate)
-  if (endIndex < 0) {
-    return []
-  }
-
-  if (periodKey === 'SI') {
-    return sortedPoints.slice(0, endIndex + 1)
-  }
-
-  const endPoint = sortedPoints[endIndex]
-  const targetStartDate =
-    periodKey === 'YTD'
-      ? `${endPoint.date.slice(0, 4)}-01-01`
-      : periodKey === 'MTD'
-        ? `${endPoint.date.slice(0, 7)}-01`
-      : periodKey === '1W'
-        ? shiftIsoDate(endPoint.date, { days: -7 })
-        : periodKey === '1Y'
-          ? shiftIsoDate(endPoint.date, { years: -1 })
-          : periodKey === '2Y'
-            ? shiftIsoDate(endPoint.date, { years: -2 })
-            : periodKey === '3Y'
-              ? shiftIsoDate(endPoint.date, { years: -3 })
-              : shiftIsoDate(endPoint.date, { years: -5 })
-
-  if (!targetStartDate) {
-    return []
-  }
-
-  const startIndex =
-    periodKey === 'YTD' || periodKey === 'MTD'
-      ? findLastPointIndexBefore(sortedPoints, targetStartDate)
-      : findLastPointIndexOnOrBefore(sortedPoints, targetStartDate)
-  if (startIndex < 0 || startIndex >= endIndex) {
-    return []
-  }
-  return sortedPoints.slice(startIndex, endIndex + 1)
-}
-
-function getPeriodReturnFromPoints(points: FundChartPoint[]) {
-  if (points.length < 2 || points[0].value === 0) {
-    return null
-  }
-  return ((points[points.length - 1].value / points[0].value) - 1) * 100
-}
-
-function getAnnualizedReturnFromPoints(points: FundChartPoint[]) {
-  if (points.length < 2 || points[0].value <= 0 || points[points.length - 1].value <= 0) {
-    return null
-  }
-  const dayCount = getDateDifferenceInDays(points[0].date, points[points.length - 1].date)
-  if (dayCount == null || dayCount <= 0) {
-    return null
-  }
-  return (Math.pow(points[points.length - 1].value / points[0].value, 365.25 / dayCount) - 1) * 100
-}
-
-function getDownsideDeviation(values: number[]) {
-  const downside = values.filter((value) => value < 0)
-  if (!downside.length) {
-    return null
-  }
-  const variance = downside.reduce((sum, value) => sum + (value ** 2), 0) / downside.length
-  return Math.sqrt(Math.max(variance, 0))
-}
-
-function buildPeriodicReturnSeries(points: FundChartPoint[]) {
-  const sortedPoints = sortSeriesByDate(points)
-  const periodicReturns: PeriodicReturnPoint[] = []
-
-  for (let index = 1; index < sortedPoints.length; index += 1) {
-    const previousPoint = sortedPoints[index - 1]
-    const currentPoint = sortedPoints[index]
-    if (previousPoint.value === 0) {
-      continue
-    }
-    periodicReturns.push({
-      startDate: previousPoint.date,
-      endDate: currentPoint.date,
-      value: (currentPoint.value / previousPoint.value) - 1,
-    })
-  }
-
-  return periodicReturns
-}
-
-function getAnnualizedVolatilityFromPoints(points: FundChartPoint[]) {
-  const periodicReturns = buildPeriodicReturnSeries(points).map((point) => point.value)
-  if (periodicReturns.length < 2) {
-    return null
-  }
-  const stdev = getSampleStandardDeviation(periodicReturns)
-  if (stdev == null) {
-    return null
-  }
-  const periodsPerYear = inferAnnualizationPeriodsPerYear(points, periodicReturns.length)
-  if (periodsPerYear == null || periodsPerYear <= 0) {
-    return null
-  }
-  return stdev * Math.sqrt(periodsPerYear) * 100
-}
-
-function getAnnualizedDownsideDeviationFromPoints(points: FundChartPoint[]) {
-  const periodicReturns = buildPeriodicReturnSeries(points).map((point) => point.value)
-  if (periodicReturns.length < 2) {
-    return null
-  }
-  const downsideDeviation = getDownsideDeviation(periodicReturns)
-  if (downsideDeviation == null) {
-    return null
-  }
-  const periodsPerYear = inferAnnualizationPeriodsPerYear(points, periodicReturns.length)
-  if (periodsPerYear == null || periodsPerYear <= 0) {
-    return null
-  }
-  return downsideDeviation * Math.sqrt(periodsPerYear) * 100
-}
-
-function getSharpeRatioFromPoints(points: FundChartPoint[]) {
-  const periodicReturns = buildPeriodicReturnSeries(points).map((point) => point.value)
-  if (periodicReturns.length < 2) {
-    return null
-  }
-  const stdev = getSampleStandardDeviation(periodicReturns)
-  if (stdev == null || stdev === 0) {
-    return null
-  }
-  const mean = periodicReturns.reduce((sum, value) => sum + value, 0) / periodicReturns.length
-  const periodsPerYear = inferAnnualizationPeriodsPerYear(points, periodicReturns.length)
-  if (periodsPerYear == null || periodsPerYear <= 0) {
-    return null
-  }
-  return (mean / stdev) * Math.sqrt(periodsPerYear)
-}
-
-function getSortinoRatioFromPoints(points: FundChartPoint[]) {
-  const periodicReturns = buildPeriodicReturnSeries(points).map((point) => point.value)
-  if (periodicReturns.length < 2) {
-    return null
-  }
-  const downsideDeviation = getDownsideDeviation(periodicReturns)
-  if (downsideDeviation == null || downsideDeviation === 0) {
-    return null
-  }
-  const mean = periodicReturns.reduce((sum, value) => sum + value, 0) / periodicReturns.length
-  const periodsPerYear = inferAnnualizationPeriodsPerYear(points, periodicReturns.length)
-  if (periodsPerYear == null || periodsPerYear <= 0) {
-    return null
-  }
-  return (mean / downsideDeviation) * Math.sqrt(periodsPerYear)
-}
-
-function alignPeriodicReturnPairs(
-  points: FundChartPoint[],
-  benchmarkPoints: FundChartPoint[],
-) {
-  const periodicReturns = buildPeriodicReturnSeries(points)
-  const sortedBenchmarkPoints = sortSeriesByDate(benchmarkPoints)
-
-  return periodicReturns
-    .map((point) => {
-      const benchmarkStartIndex = findLastPointIndexOnOrBefore(sortedBenchmarkPoints, point.startDate)
-      const benchmarkEndIndex = findLastPointIndexOnOrBefore(sortedBenchmarkPoints, point.endDate)
-      if (
-        benchmarkStartIndex < 0 ||
-        benchmarkEndIndex <= benchmarkStartIndex ||
-        sortedBenchmarkPoints[benchmarkStartIndex].value === 0
-      ) {
-        return null
-      }
-      return {
-        startDate: point.startDate,
-        date: point.endDate,
-        left: point.value,
-        right:
-          (sortedBenchmarkPoints[benchmarkEndIndex].value /
-            sortedBenchmarkPoints[benchmarkStartIndex].value) -
-          1,
-      }
-    })
-    .filter(
-      (
-        point,
-      ): point is {
-        startDate: string
-        date: string
-        left: number
-        right: number
-      } => point !== null,
-    )
-}
-
-function getAnnualizedReturnFromPeriodicValues(values: number[], periodsPerYear: number) {
-  if (!values.length || periodsPerYear <= 0) {
-    return null
-  }
-  const cumulative = values.reduce((product, value) => product * (1 + value), 1)
-  if (!Number.isFinite(cumulative) || cumulative <= 0) {
-    return null
-  }
-  return (Math.pow(cumulative, periodsPerYear / values.length) - 1) * 100
-}
-
-function getMedianValue(values: number[]) {
-  if (!values.length) {
-    return null
-  }
-  const sortedValues = [...values].sort((left, right) => left - right)
-  const middleIndex = Math.floor(sortedValues.length / 2)
-  if (sortedValues.length % 2 === 0) {
-    return (sortedValues[middleIndex - 1] + sortedValues[middleIndex]) / 2
-  }
-  return sortedValues[middleIndex]
-}
-
-function getPercentileRank(values: number[], targetValue: number) {
-  if (!values.length) {
-    return null
-  }
-  const belowOrEqualCount = values.filter((value) => value <= targetValue).length
-  return (belowOrEqualCount / values.length) * 100
-}
-
-function getTrailingNegativeMonthCount(points: FundChartPoint[]) {
-  let count = 0
-  for (let index = points.length - 1; index >= 0; index -= 1) {
-    if (points[index].value >= 0) {
-      break
-    }
-    count += 1
-  }
-  return count
-}
-
-function buildPerformanceRelativeSnapshot(
-  points: FundChartPoint[],
-  benchmarkPoints: FundChartPoint[],
-): PerformanceRelativeSnapshot {
-  const alignedPairs = alignPeriodicReturnPairs(points, benchmarkPoints)
-  if (alignedPairs.length < 2) {
-    return {
-      informationRatio: null,
-      trackingError: null,
-      beta: null,
-      upsideCapture: null,
-      downsideCapture: null,
-    }
-  }
-
-  const annualizationPoints = [
-    { date: alignedPairs[0].startDate, value: 1 },
-    ...alignedPairs.map((point) => ({ date: point.date, value: 1 })),
-  ]
-  const periodsPerYear = inferAnnualizationPeriodsPerYear(annualizationPoints, alignedPairs.length)
-  const activeReturns = alignedPairs.map((point) => point.left - point.right)
-  const activeReturnStdev = getSampleStandardDeviation(activeReturns)
-  const activeReturnMean = activeReturns.reduce((sum, value) => sum + value, 0) / activeReturns.length
-  const trackingError =
-    activeReturnStdev == null || periodsPerYear == null || periodsPerYear <= 0
-      ? null
-      : activeReturnStdev * Math.sqrt(periodsPerYear) * 100
-  const informationRatio =
-    activeReturnStdev == null || activeReturnStdev === 0 || periodsPerYear == null || periodsPerYear <= 0
-      ? null
-      : (activeReturnMean / activeReturnStdev) * Math.sqrt(periodsPerYear)
-
-  const benchmarkReturns = alignedPairs.map((point) => point.right)
-  const benchmarkVolatility = getSampleStandardDeviation(benchmarkReturns)
-  const beta =
-    benchmarkVolatility == null || benchmarkVolatility === 0
-      ? null
-      : (getSampleCovariance(
-          alignedPairs.map((point) => point.left),
-          benchmarkReturns,
-        ) ?? NaN) /
-        (benchmarkVolatility ** 2)
-
-  const upPairs = alignedPairs.filter((point) => point.right > 0)
-  const downPairs = alignedPairs.filter((point) => point.right < 0)
-  const upsideBenchmarkReturn =
-    periodsPerYear == null
-      ? null
-      : getAnnualizedReturnFromPeriodicValues(
-          upPairs.map((point) => point.right),
-          periodsPerYear,
-        )
-  const upsideFundReturn =
-    periodsPerYear == null
-      ? null
-      : getAnnualizedReturnFromPeriodicValues(
-          upPairs.map((point) => point.left),
-          periodsPerYear,
-        )
-  const downsideBenchmarkReturn =
-    periodsPerYear == null
-      ? null
-      : getAnnualizedReturnFromPeriodicValues(
-          downPairs.map((point) => point.right),
-          periodsPerYear,
-        )
-  const downsideFundReturn =
-    periodsPerYear == null
-      ? null
-      : getAnnualizedReturnFromPeriodicValues(
-          downPairs.map((point) => point.left),
-          periodsPerYear,
-        )
-
-  return {
-    informationRatio: Number.isFinite(informationRatio) ? informationRatio : null,
-    trackingError: Number.isFinite(trackingError) ? trackingError : null,
-    beta: Number.isFinite(beta) ? beta : null,
-    upsideCapture:
-      upsideFundReturn == null || upsideBenchmarkReturn == null || upsideBenchmarkReturn === 0
-        ? null
-        : (upsideFundReturn / upsideBenchmarkReturn) * 100,
-    downsideCapture:
-      downsideFundReturn == null || downsideBenchmarkReturn == null || downsideBenchmarkReturn === 0
-        ? null
-        : (downsideFundReturn / downsideBenchmarkReturn) * 100,
-  }
-}
-
 function getDateDifferenceInDays(startDate: string, endDate: string) {
   const start = new Date(`${startDate}T00:00:00`)
   const end = new Date(`${endDate}T00:00:00`)
@@ -3315,108 +2692,6 @@ function getDateDifferenceInDays(startDate: string, endDate: string) {
     return null
   }
   return Math.max(Math.round((end.getTime() - start.getTime()) / 86_400_000), 0)
-}
-
-function getMaxDrawdownStatsFromPoints(points: FundChartPoint[]) {
-  if (points.length < 2) {
-    return {
-      maxDrawdown: null,
-      recoveryDays: null,
-      recoveryOpen: false,
-    }
-  }
-
-  let runningPeakValue = points[0].value
-  let runningPeakIndex = 0
-  let worstDrawdown = 0
-  let worstPeakIndex = 0
-  let worstTroughIndex: number | null = null
-
-  for (let index = 1; index < points.length; index += 1) {
-    const point = points[index]
-    if (point.value > runningPeakValue) {
-      runningPeakValue = point.value
-      runningPeakIndex = index
-    }
-    const drawdown = runningPeakValue > 0 ? ((point.value / runningPeakValue) - 1) * 100 : 0
-    if (drawdown < worstDrawdown) {
-      worstDrawdown = drawdown
-      worstPeakIndex = runningPeakIndex
-      worstTroughIndex = index
-    }
-  }
-
-  if (worstTroughIndex == null) {
-    return {
-      maxDrawdown: 0,
-      recoveryDays: 0,
-      recoveryOpen: false,
-    }
-  }
-
-  const recoveryTargetValue = points[worstPeakIndex]?.value ?? null
-  let recoveryDays: number | null = null
-  let recoveryOpen = true
-
-  if (recoveryTargetValue != null) {
-    for (let index = worstTroughIndex + 1; index < points.length; index += 1) {
-      if (points[index].value >= recoveryTargetValue) {
-        recoveryDays = getDateDifferenceInDays(points[worstTroughIndex].date, points[index].date)
-        recoveryOpen = false
-        break
-      }
-    }
-  }
-
-  return {
-    maxDrawdown: worstDrawdown,
-    recoveryDays,
-    recoveryOpen,
-  }
-}
-
-function buildPerformanceMetricSnapshot(points: FundChartPoint[]): PerformanceMetricSnapshot {
-  if (points.length < 2) {
-    return {
-      periodReturn: null,
-      annualizedReturn: null,
-      annualizedVolatility: null,
-      annualizedDownsideDeviation: null,
-      sharpe: null,
-      sortino: null,
-      calmar: null,
-      maxDrawdown: null,
-      recoveryDays: null,
-      recoveryOpen: false,
-    }
-  }
-
-  const periodReturn = getPeriodReturnFromPoints(points)
-  const annualizedReturn = getAnnualizedReturnFromPoints(points)
-  const annualizedVolatility = getAnnualizedVolatilityFromPoints(points)
-  const annualizedDownsideDeviation = getAnnualizedDownsideDeviationFromPoints(points)
-  const sharpe = getSharpeRatioFromPoints(points)
-  const sortino = getSortinoRatioFromPoints(points)
-  const drawdownStats = getMaxDrawdownStatsFromPoints(points)
-  const calmar =
-    annualizedReturn != null &&
-    drawdownStats.maxDrawdown != null &&
-    drawdownStats.maxDrawdown !== 0
-      ? annualizedReturn / Math.abs(drawdownStats.maxDrawdown)
-      : null
-
-  return {
-    periodReturn,
-    annualizedReturn,
-    annualizedVolatility,
-    annualizedDownsideDeviation,
-    sharpe,
-    sortino,
-    calmar,
-    maxDrawdown: drawdownStats.maxDrawdown,
-    recoveryDays: drawdownStats.recoveryDays,
-    recoveryOpen: drawdownStats.recoveryOpen,
-  }
 }
 
 function getHeatmapCellStyle(value: number | null, maxAbsValue: number) {
@@ -3462,12 +2737,6 @@ function resampleSeries(points: FundChartPoint[], frequency: ChartFrequency) {
   })
 
   return Array.from(buckets.values()).sort((left, right) => left.date.localeCompare(right.date))
-}
-
-function buildCalculationPointSeries(series: FundNavSeriesResponse['calculation_series']) {
-  return series
-    .map((point) => ({ date: point.date, value: point.value ?? point.nav }))
-    .sort((left, right) => left.date.localeCompare(right.date))
 }
 
 function getChartTickValues(points: FundChartPoint[], count = 5) {
@@ -3779,15 +3048,6 @@ function findNearestChartPoint(points: FundChartPoint[], targetDate: string | un
   }, null)
 }
 
-function renderStackRows(items: Record<string, unknown>) {
-  return Object.entries(items).map(([key, value]) => (
-    <div key={key} className="stack-item">
-      <span>{formatLabel(key)}</span>
-      <strong>{getDisplayValue(value)}</strong>
-    </div>
-  ))
-}
-
 function getFrameworkValueList(values: Record<string, unknown>, key: string) {
   const value = values[key]
   if (Array.isArray(value)) {
@@ -4048,7 +3308,7 @@ export default function FundDetailPage({
   const [chartRange, setChartRange] = useState<ChartRange>('3Y')
   const [quoteBasis, setQuoteBasis] = useState<QuoteBasis>('nav_with_dividend')
   const [chartFrequency, setChartFrequency] = useState<ChartFrequency>('daily')
-  const [selectedCurrency, setSelectedCurrency] = useState('USD')
+  const [selectedCurrency, setSelectedCurrency] = useState('')
   const [benchmarkFundId, setBenchmarkFundId] = useState('')
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkSearchFocused, setBenchmarkSearchFocused] = useState(false)
@@ -4102,8 +3362,10 @@ export default function FundDetailPage({
   const [documentUploadNotes, setDocumentUploadNotes] = useState('')
   const [uploadingDocument, setUploadingDocument] = useState(false)
   const [researchDraft, setResearchDraft] = useState<ResearchDraft | null>(null)
-  const [manualRatingDraft, setManualRatingDraft] = useState<number | null>(null)
-  const [manualRatingDirty, setManualRatingDirty] = useState(false)
+  const [researchRatingDraft, setResearchRatingDraft] = useState<ResearchRatingDraft>(() =>
+    toResearchRatingDraft(null),
+  )
+  const [researchRatingDirty, setResearchRatingDirty] = useState(false)
   const [savingSection, setSavingSection] = useState<string | null>(null)
   const [sectionNotice, setSectionNotice] = useState<string | null>(null)
   const [sectionError, setSectionError] = useState<string | null>(null)
@@ -4196,15 +3458,23 @@ export default function FundDetailPage({
           getInstrumentSummary(fundId),
           getInstrumentLibrary(),
           getInstrumentNavSeries(fundId),
+          getInstrumentPerformance(fundId),
+          getInstrumentRisk(fundId),
           detailKind === 'index'
             ? Promise.resolve(defaultFundResearchResponse())
             : getInstrumentResearch(fundId),
+          getInstrumentResearchRating(fundId),
+          getInstrumentResearchRatings(fundId),
         ] as const)
         const [
           summaryResult,
           libraryResult,
           navSeriesResult,
+          performanceResult,
+          riskResult,
           researchResult,
+          researchRatingResult,
+          researchRatingHistoryResult,
         ] = results
 
         if (cancelled) {
@@ -4223,7 +3493,11 @@ export default function FundDetailPage({
           'summary',
           'library',
           'NAV series',
+          'performance analytics',
+          'risk analytics',
           'research timeline',
+          'research rating',
+          'research rating history',
         ])
 
         const nextTabs = normalizeTabs(summary.tabs || [], detailKind)
@@ -4232,11 +3506,24 @@ export default function FundDetailPage({
         setBundle({
           summary: { ...summary, tabs: nextTabs },
           library: settledValue(libraryResult, previousBundle?.library ?? []),
-          performance: previousBundle?.performance ?? defaultFundPerformanceResponse(),
-          risk: previousBundle?.risk ?? defaultFundRiskResponse(),
-          portfolio: previousBundle?.portfolio ?? defaultFundPortfolioResponse(),
-          holdings: previousBundle?.holdings ?? defaultFundPortfolioHoldingsResponse(),
-          ratings: previousBundle?.ratings ?? defaultFundRatingsResponse(summary),
+          performance: settledValue(
+            performanceResult,
+            previousBundle?.performance ?? defaultFundPerformanceResponse(),
+          ),
+          risk: settledValue(
+            riskResult,
+            previousBundle?.risk ?? defaultFundRiskResponse(),
+          ),
+          researchRating:
+            researchRatingResult.status === 'fulfilled'
+              ? researchRatingResult.value.rating_revision_id
+                ? researchRatingResult.value
+                : null
+              : summary.research_rating ?? previousBundle?.researchRating ?? null,
+          researchRatingHistory:
+            researchRatingHistoryResult.status === 'fulfilled'
+              ? researchRatingHistoryResult.value.items
+              : previousBundle?.researchRatingHistory ?? [],
           people: previousBundle?.people ?? defaultFundPeopleResponse(),
           strategy: previousBundle?.strategy ?? defaultFundStrategyResponse(),
           price: previousBundle?.price ?? defaultFundPriceResponse(),
@@ -4305,16 +3592,18 @@ export default function FundDetailPage({
     }
     let requests: LazyRequest[] = []
     if (activeTab === 'performance') {
-      requests = [{ key: 'performance', label: 'performance', load: () => getInstrumentPerformance(fundId) }]
+      requests = [{
+        key: 'performance',
+        label: 'performance',
+        load: () => getInstrumentPerformance(fundId, {
+          benchmarkInstrumentId: benchmarkFundId || null,
+          rollingWindowMonths: rollingRiskWindowMonths,
+        }),
+      }]
     } else if (activeTab === 'risk') {
       requests = [{ key: 'risk', label: 'risk', load: () => getInstrumentRisk(fundId) }]
     } else if (activeTab === 'price') {
       requests = [{ key: 'price', label: 'price', load: () => getInstrumentPrice(fundId) }]
-    } else if (activeTab === 'exposure') {
-      requests = [
-        { key: 'portfolio', label: 'exposure summary', load: () => getInstrumentPortfolioSummary(fundId) },
-        { key: 'holdings', label: 'holdings', load: () => getInstrumentPortfolioHoldings(fundId) },
-      ]
     } else if (activeTab === 'people') {
       requests = [{ key: 'people', label: 'people', load: () => getInstrumentPeople(fundId) }]
     } else if (activeTab === 'strategy') {
@@ -4323,10 +3612,15 @@ export default function FundDetailPage({
       requests = [{ key: 'documents', label: 'documents', load: () => getInstrumentDocuments(fundId) }]
     } else if (activeTab === 'monitoring') {
       requests = [
-        { key: 'performance', label: 'performance', load: () => getInstrumentPerformance(fundId) },
+        {
+          key: 'performance',
+          label: 'performance',
+          load: () => getInstrumentPerformance(fundId, {
+            benchmarkInstrumentId: benchmarkFundId || null,
+            rollingWindowMonths: rollingRiskWindowMonths,
+          }),
+        },
         { key: 'risk', label: 'risk', load: () => getInstrumentRisk(fundId) },
-        { key: 'portfolio', label: 'exposure summary', load: () => getInstrumentPortfolioSummary(fundId) },
-        { key: 'ratings', label: 'ratings', load: () => getInstrumentRatings(fundId) },
       ]
     }
     if (!requests.length) {
@@ -4398,7 +3692,16 @@ export default function FundDetailPage({
       }
     })
     return undefined
-  }, [activeTab, detailBundleKey, detailKind, fundId, refreshToken, sectionRetryToken])
+  }, [
+    activeTab,
+    benchmarkFundId,
+    detailBundleKey,
+    detailKind,
+    fundId,
+    refreshToken,
+    rollingRiskWindowMonths,
+    sectionRetryToken,
+  ])
 
   useEffect(() => {
     setTimelineNoteDraft(null)
@@ -4482,10 +3785,10 @@ export default function FundDetailPage({
     setResearchDraft((current) =>
       editingResearchOverview && current ? current : toEditableResearchDraft(bundle.research),
     )
-    if (!manualRatingDirty) {
-      setManualRatingDraft(parseManualRating(bundle.research.manual_rating))
+    if (!researchRatingDirty) {
+      setResearchRatingDraft(toResearchRatingDraft(bundle.researchRating))
     }
-  }, [bundle, editingResearchOverview, manualRatingDirty])
+  }, [bundle, editingResearchOverview, researchRatingDirty])
 
   useEffect(() => {
     setDocumentUploadFile(null)
@@ -4493,7 +3796,7 @@ export default function FundDetailPage({
     setDocumentUploadType('')
     setDocumentUploadAsOfDate('')
     setDocumentUploadNotes('')
-    setManualRatingDirty(false)
+    setResearchRatingDirty(false)
   }, [fundId])
 
   useEffect(() => {
@@ -4508,7 +3811,7 @@ export default function FundDetailPage({
       ),
     )
     const effectiveCurrency =
-      currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || 'USD'
+      currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || ''
     const quoteContext = buildQuoteSeriesContext(bundle.navSeries.rows, {
       currency: effectiveCurrency,
       requestedBasis: quoteBasis,
@@ -4552,8 +3855,8 @@ export default function FundDetailPage({
     if (currencies.length && !currencies.includes(selectedCurrency)) {
       setSelectedCurrency(currencies[0])
     }
-    if (!currencies.length && selectedCurrency !== 'USD') {
-      setSelectedCurrency('USD')
+    if (!currencies.length && selectedCurrency) {
+      setSelectedCurrency('')
     }
   }, [bundle, selectedCurrency])
 
@@ -4586,6 +3889,58 @@ export default function FundDetailPage({
   }, [benchmarkFundId, fundId])
 
   useEffect(() => {
+    if (!bundle || bundle.summary.fund_id !== fundId) {
+      return undefined
+    }
+    const expectedBenchmarkId = benchmarkFundId || null
+    const currentAnalytics = bundle.performance.analytics
+    if (
+      currentAnalytics.benchmark_instrument_id === expectedBenchmarkId &&
+      currentAnalytics.rolling_window_months === rollingRiskWindowMonths
+    ) {
+      return undefined
+    }
+
+    let cancelled = false
+    async function loadAuthoritativeAnalytics() {
+      try {
+        const response = await getInstrumentPerformance(fundId, {
+          benchmarkInstrumentId: expectedBenchmarkId,
+          rollingWindowMonths: rollingRiskWindowMonths,
+        })
+        if (!cancelled) {
+          setBundle((current) => current ? { ...current, performance: response } : current)
+          setSectionLoadErrors((current) => {
+            if (!current.performance && !current.risk) {
+              return current
+            }
+            const next = { ...current }
+            delete next.performance
+            delete next.risk
+            return next
+          })
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          const message = loadError instanceof Error
+            ? loadError.message
+            : 'Could not load authoritative investment analytics.'
+          setSectionLoadErrors((current) => ({
+            ...current,
+            performance: message,
+            risk: message,
+          }))
+        }
+      }
+    }
+
+    void loadAuthoritativeAnalytics()
+    return () => {
+      cancelled = true
+    }
+  }, [benchmarkFundId, bundle, fundId, rollingRiskWindowMonths])
+
+  useEffect(() => {
     setBenchmarkFundId('')
     setBenchmarkSearch('')
     setBenchmarkSearchFocused(false)
@@ -4608,7 +3963,7 @@ export default function FundDetailPage({
       ),
     )
     const effectiveCurrency =
-      currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || 'USD'
+      currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || ''
     const quoteContext = buildQuoteSeriesContext(bundle.navSeries.rows, {
       currency: effectiveCurrency,
       requestedBasis: quoteBasis,
@@ -4846,7 +4201,6 @@ export default function FundDetailPage({
               .map((row) => [row.key.trim(), row.value.trim()] as const)
               .filter(([key, value]) => key && value),
           ),
-          manual_rating: parseManualRating(bundle.research.manual_rating),
           timeline_notes: normalizeResearchTimelineNotes(bundle.research.timeline_notes),
         },
         updated_by: 'terminal_ui',
@@ -4862,32 +4216,143 @@ export default function FundDetailPage({
     }
   }
 
-  async function handleSaveManualRating() {
+  async function refreshResearchRatingBundle(
+    fallbackCurrent?: ResearchRatingRecord | null,
+  ) {
+    const previousCurrent = bundle?.researchRating ?? null
+    const previousHistory = bundle?.researchRatingHistory ?? []
+    const [currentResult, historyResult] = await Promise.allSettled([
+      getInstrumentResearchRating(fundId),
+      getInstrumentResearchRatings(fundId),
+    ] as const)
+    const currentRefreshed = currentResult.status === 'fulfilled'
+    const historyRefreshed = historyResult.status === 'fulfilled'
+    const currentRating = currentRefreshed
+      ? currentResult.value.rating_revision_id
+        ? currentResult.value
+        : null
+      : fallbackCurrent !== undefined
+        ? fallbackCurrent
+        : previousCurrent
+    const ratingHistory = historyRefreshed ? historyResult.value.items : previousHistory
+
+    setBundle((current) =>
+      current
+        ? {
+            ...current,
+            researchRating: currentRating,
+            researchRatingHistory: ratingHistory,
+            summary: { ...current.summary, research_rating: currentRating },
+          }
+        : current,
+    )
+
+    return {
+      currentRating,
+      currentRefreshed,
+      historyRefreshed,
+      failedSections: [
+        ...(currentRefreshed ? [] : ['current rating']),
+        ...(historyRefreshed ? [] : ['rating history']),
+      ],
+    }
+  }
+
+  async function handleResetResearchRating() {
     if (!bundle) {
       return
     }
-    setSavingSection('manual_rating')
+    setSavingSection('research_rating')
     setSectionError(null)
     setSectionNotice(null)
     try {
-      const response = await updateInstrumentResearch(fundId, {
-        payload: {
-          overview: bundle.research.overview || {},
-          manual_rating: manualRatingDraft,
-          timeline_notes: normalizeResearchTimelineNotes(bundle.research.timeline_notes),
-        },
-        updated_by: 'terminal_ui',
-      })
-      const normalizedRating = parseManualRating(response.manual_rating)
-      setBundle((current) => (current ? { ...current, research: response } : current))
-      setManualRatingDraft(normalizedRating)
-      setManualRatingDirty(false)
-      if (!editingResearchOverview) {
-        setResearchDraft(toEditableResearchDraft(response))
+      const refreshed = await refreshResearchRatingBundle()
+      if (!refreshed.currentRefreshed) {
+        setSectionError(
+          'The latest current rating could not be refreshed, so your draft was preserved. Try Reset again after the connection recovers.',
+        )
+        return
       }
-      setSectionNotice('Rating saved.')
+      setResearchRatingDraft(toResearchRatingDraft(refreshed.currentRating))
+      setResearchRatingDirty(false)
+      setSectionNotice('Draft reset to the latest current rating.')
+      if (!refreshed.historyRefreshed) {
+        setSectionError('The draft was reset, but rating history could not be refreshed.')
+      }
+    } catch (resetError) {
+      setSectionError(
+        resetError instanceof Error
+          ? resetError.message
+          : 'Failed to refresh the latest research rating.',
+      )
+    } finally {
+      setSavingSection(null)
+    }
+  }
+
+  async function handleSaveResearchRating() {
+    if (!bundle) {
+      return
+    }
+    const rationale = researchRatingDraft.rationale.trim()
+    if (!researchRatingDraft.asOfDate) {
+      setSectionError('Rating as-of date is required.')
+      return
+    }
+    if (!rationale) {
+      setSectionError('Rating rationale is required. Record the evidence and judgement behind this revision.')
+      return
+    }
+    const author = researchRatingDraft.author.trim()
+    if (!author) {
+      setSectionError('Rating author is required.')
+      return
+    }
+    const confidence = researchRatingDraft.confidence
+    if (confidence !== 'low' && confidence !== 'medium' && confidence !== 'high') {
+      setSectionError('Select low, medium or high confidence before saving this rating revision.')
+      return
+    }
+    setSavingSection('research_rating')
+    setSectionError(null)
+    setSectionNotice(null)
+    try {
+      const response = await updateInstrumentResearchRating(fundId, {
+        rating: researchRatingDraft.ratingValue,
+        confidence,
+        as_of_date: researchRatingDraft.asOfDate,
+        rationale,
+        author,
+        next_review_date: researchRatingDraft.nextReviewDate || null,
+        expected_current_revision_id: researchRatingDraft.expectedRevisionId,
+      })
+      const refreshed = await refreshResearchRatingBundle(response)
+      setResearchRatingDraft(toResearchRatingDraft(refreshed.currentRating))
+      setResearchRatingDirty(false)
+      setSectionNotice('Research rating revision saved.')
+      if (refreshed.failedSections.length) {
+        setSectionError(
+          `The revision was saved, but ${refreshed.failedSections.join(' and ')} could not be refreshed. The displayed current rating uses the confirmed save response.`,
+        )
+      }
     } catch (saveError) {
-      setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save rating.')
+      if (saveError instanceof ApiRequestError && saveError.status === 409) {
+        const refreshed = await refreshResearchRatingBundle()
+        if (refreshed.currentRefreshed) {
+          setResearchRatingDraft((current) => ({
+            ...current,
+            expectedRevisionId: refreshed.currentRating?.rating_revision_id ?? null,
+          }))
+        }
+        const refreshMessage = refreshed.failedSections.length
+          ? ` ${refreshed.failedSections.join(' and ')} could not be refreshed.`
+          : ' The latest current rating and history are now displayed.'
+        setSectionError(
+          `A newer rating revision was saved after you opened this instrument.${refreshMessage} Your draft inputs were preserved; review the latest revision before saving again.`,
+        )
+      } else {
+        setSectionError(saveError instanceof Error ? saveError.message : 'Failed to save research rating.')
+      }
     } finally {
       setSavingSection(null)
     }
@@ -4896,7 +4361,6 @@ export default function FundDetailPage({
   function buildResearchPayloadWithTimelineNotes(nextTimelineNotes: ResearchTimelineNote[]) {
     return {
       overview: bundle?.research.overview || {},
-      manual_rating: bundle?.research.manual_rating ?? null,
       timeline_notes: nextTimelineNotes,
     }
   }
@@ -5120,7 +4584,19 @@ export default function FundDetailPage({
     )
   }
 
-  const { summary, performance, risk, portfolio, holdings, ratings, people, strategy, price, documents, research, navSeries } = bundle
+  const {
+    summary,
+    performance,
+    risk,
+    researchRating,
+    researchRatingHistory,
+    people,
+    strategy,
+    price,
+    documents,
+    research,
+    navSeries,
+  } = bundle
   const timelineNotes = normalizeResearchTimelineNotes(research.timeline_notes)
   const availableCurrencies = Array.from(
     new Set(
@@ -5131,7 +4607,7 @@ export default function FundDetailPage({
   )
   const effectiveCurrency = availableCurrencies.includes(selectedCurrency)
     ? selectedCurrency
-    : availableCurrencies[0] || 'USD'
+    : availableCurrencies[0] || ''
   const quoteSeriesContext = buildQuoteSeriesContext(navSeries.rows, {
     currency: effectiveCurrency,
     requestedBasis: quoteBasis,
@@ -5140,14 +4616,11 @@ export default function FundDetailPage({
   const currencyFilteredRows = quoteSeriesContext.rows
   const availableQuoteBases = quoteSeriesContext.availableBases
   const activeQuoteBasis = quoteSeriesContext.activeBasis || resolvePreferredQuoteBasis(navSeries.nav_basis_type) || 'nav'
-  const returnQuoteBasis = resolveReturnQuoteBasis(currencyFilteredRows, navSeries.nav_basis_type)
   const latestQuoteRow = quoteSeriesContext.latestRow || navSeries.rows[navSeries.rows.length - 1]
   const navBasisSeries = quoteSeriesContext.basisSeries
-  const returnBasisSeries = returnQuoteBasis ? buildBasisSeries(currencyFilteredRows, returnQuoteBasis) : []
   const calculationFrequencyProfile = navSeries.calculation_frequency_profile
   const calculationFrequencyStatus = calculationFrequencyProfile.status_label
-  // Metrics use the backend-selected calculation series, never the zoomed or downsampled chart display series.
-  const calculationBasisSeries = buildCalculationPointSeries(navSeries.calculation_series)
+  const authoritativeAnalytics = performance.analytics
   const defaultWindow = getRangeWindow(navBasisSeries, chartRange)
   const effectiveStartDate = chartRange === 'CUSTOM' ? chartStartDate : defaultWindow.start
   const effectiveEndDate = chartRange === 'CUSTOM' ? chartEndDate : defaultWindow.end
@@ -5178,9 +4651,6 @@ export default function FundDetailPage({
     ? activeQuoteBasis
     : benchmarkAvailableBases[0] || null
   const benchmarkNavBasisSeries = activeBenchmarkBasis ? buildBasisSeries(benchmarkSourceRows, activeBenchmarkBasis) : []
-  const benchmarkCalculationSeries = benchmarkNavSeries
-    ? buildCalculationPointSeries(benchmarkNavSeries.calculation_series)
-    : []
   const hasBenchmarkSelection = Boolean(selectedBenchmark)
   const rawCompareDateWindow = hasBenchmarkSelection
     ? buildCommonDateWindow(navBasisSeries, benchmarkNavBasisSeries)
@@ -5224,29 +4694,31 @@ export default function FundDetailPage({
         start: visibleNavSeries[0]?.date || effectiveStartDate,
         end: visibleNavSeries[visibleNavSeries.length - 1]?.date || effectiveEndDate,
       }
-  const drawdownSourceSeries =
-    shouldIndexCompareSeries && compareDateWindow
-      ? buildCommonWindowSeries(visibleNavSeries, compareDateWindow)
-      : visibleNavSeries
-  const benchmarkDrawdownSourceSeries =
-    shouldIndexCompareSeries && compareDateWindow
-      ? buildCommonWindowSeries(benchmarkVisibleNavSeries, compareDateWindow)
-      : benchmarkVisibleNavSeries
-  const drawdownSeries = buildDrawdownSeries(drawdownSourceSeries)
-  const benchmarkDrawdownSeries = buildDrawdownSeries(benchmarkDrawdownSourceSeries)
+  const drawdownSeries = resampleSeriesPreservingBounds(
+    filterSeriesByDateWindow(
+      authoritativeAnalytics.series.drawdown,
+      chartDateWindow.start,
+      chartDateWindow.end,
+    ),
+    chartFrequency,
+  )
+  const benchmarkDrawdownSeries = resampleSeriesPreservingBounds(
+    filterSeriesByDateWindow(
+      authoritativeAnalytics.series.benchmark_drawdown,
+      chartDateWindow.start,
+      chartDateWindow.end,
+    ),
+    chartFrequency,
+  )
   const latestPoint = visibleNavSeries.length ? visibleNavSeries[visibleNavSeries.length - 1] : undefined
   const periodLow =
     visibleNavSeries.length > 0 ? Math.min(...visibleNavSeries.map((point) => point.value)) : null
   const periodHigh =
     visibleNavSeries.length > 0 ? Math.max(...visibleNavSeries.map((point) => point.value)) : null
-  const maxDrawdown =
-    drawdownSeries.length > 0 ? Math.min(...drawdownSeries.map((point) => point.value)) : null
-  const chartQuotePeriodStats = getSeriesChangeStats(chartNavSeries)
-  const chartBenchmarkPeriodStats = getSeriesChangeStats(chartBenchmarkSeries)
   const latestSeriesPoint = navBasisSeries[navBasisSeries.length - 1]
-  const quoteLatestStats = getLatestPointChangeStats(navBasisSeries)
-  const quoteChange = quoteLatestStats.change
-  const quoteChangePct = quoteLatestStats.changePct
+  const quoteLatestStats = navSeries.basis_statistics[activeQuoteBasis]
+  const quoteChange = quoteLatestStats.latest_change
+  const quoteChangePct = quoteLatestStats.latest_change_percent
   const availableTabs = normalizeTabs(summary.tabs || [], detailKind)
   const detailPageLabel = localize(
     language,
@@ -6047,12 +5519,19 @@ export default function FundDetailPage({
       value: getString(summary.instrument_attributes.coverage_status),
       tone: 'status-attribute',
     },
-    { label: 'Last Fact Update', value: formatDateTime(summary.freshness.last_fact_update_at), tone: null },
     { label: 'Last Recalculated', value: formatDateTime(summary.freshness.last_recalculated_at), tone: null },
     {
       label: 'Last Snapshot',
       value: formatDateTime(summary.freshness.last_successful_snapshot_at),
       tone: null,
+    },
+    {
+      label: 'Market Input Watermark',
+      value: formatDateTime(summary.freshness.market_data_input_watermark_at),
+      tone:
+        summary.freshness.market_data_input_watermark_status === 'known'
+          ? null
+          : 'status-pending',
     },
     {
       label: selectedDateLabel,
@@ -6074,7 +5553,8 @@ export default function FundDetailPage({
     {
       domain: `${quoteBasisLabel} Series`,
       asOf: formatDate(latestNavRecord?.as_of_date || null),
-      cutoff: formatDateTime(navRefreshStatus?.requested_at || latestNavRecord?.adopted_at || summary.freshness.last_fact_update_at),
+      updatedAt: formatDateTime(navRefreshStatus?.requested_at || latestNavRecord?.adopted_at || summary.freshness.last_recalculated_at),
+      inputWatermark: formatDateTime(summary.freshness.market_data_input_watermark_at),
       methodology: formatNavBasisSource(navSeries.nav_basis_source),
       status: formatMonitoringStatus(navRefreshStatus?.status || navSeries.nav_basis_status || summary.freshness.data_freshness_status),
       tone: getMonitoringStatusTone(navRefreshStatus?.status || navSeries.nav_basis_status || summary.freshness.data_freshness_status),
@@ -6082,7 +5562,8 @@ export default function FundDetailPage({
     {
       domain: 'Performance Snapshot',
       asOf: formatDate(performance.snapshot_metadata?.as_of_date || null),
-      cutoff: formatDateTime(performance.snapshot_metadata?.source_cutoff_at || null),
+      updatedAt: formatDateTime(performance.snapshot_metadata?.calculated_at || null),
+      inputWatermark: formatDateTime(performance.snapshot_metadata?.market_data_input_watermark_at || null),
       methodology: getString(performance.snapshot_metadata?.methodology_version),
       status: performance.snapshot_metadata?.as_of_date ? 'Current' : 'Pending',
       tone: performance.snapshot_metadata?.as_of_date ? 'status-fresh' : 'status-pending',
@@ -6090,26 +5571,20 @@ export default function FundDetailPage({
     {
       domain: 'Risk Snapshot',
       asOf: formatDate(risk.snapshot_metadata?.as_of_date || null),
-      cutoff: formatDateTime(risk.snapshot_metadata?.source_cutoff_at || null),
+      updatedAt: formatDateTime(risk.snapshot_metadata?.calculated_at || null),
+      inputWatermark: formatDateTime(risk.snapshot_metadata?.market_data_input_watermark_at || null),
       methodology: getString(risk.snapshot_metadata?.methodology_version),
       status: risk.snapshot_metadata?.as_of_date ? 'Current' : 'Pending',
       tone: risk.snapshot_metadata?.as_of_date ? 'status-fresh' : 'status-pending',
     },
     {
-      domain: 'Portfolio Snapshot',
-      asOf: formatDate(portfolio.snapshot_metadata?.as_of_date || null),
-      cutoff: formatDateTime(portfolio.snapshot_metadata?.source_cutoff_at || null),
-      methodology: getString(portfolio.snapshot_metadata?.methodology_version),
-      status: portfolio.snapshot_metadata?.as_of_date ? 'Current' : 'Pending',
-      tone: portfolio.snapshot_metadata?.as_of_date ? 'status-fresh' : 'status-pending',
-    },
-    {
-      domain: 'Ratings',
-      asOf: formatDate(summary.rating_as_of),
-      cutoff: '—',
-      methodology: getString(ratings.methodology_version),
-      status: summary.rating_as_of ? 'Current' : 'Pending',
-      tone: summary.rating_as_of ? 'status-fresh' : 'status-pending',
+      domain: 'Research Rating',
+      asOf: formatDate(researchRating?.as_of_date || null),
+      updatedAt: formatDateTime(researchRating?.created_at || null),
+      inputWatermark: 'Not applicable',
+      methodology: 'Human judgement',
+      status: researchRating ? 'Current' : 'Pending',
+      tone: researchRating ? 'status-fresh' : 'status-pending',
     },
   ]
   const productFrameworkSections = buildAttributeFrameworkSections(productFrameworkAttributes)
@@ -6141,7 +5616,7 @@ export default function FundDetailPage({
     { label: 'Basis Source', value: formatNavBasisSource(navSeries.nav_basis_source) },
     { label: 'Series Count', value: String(navSeries.count || navSeries.rows.length || 0) },
     { label: selectedDateLabel.replace(/^Last\\s+/, ''), value: formatDate(latestQuoteRow?.as_of_date || navSeries.rows[navSeries.rows.length - 1]?.as_of_date) },
-    { label: 'Currency', value: getString(navSeries.rows[navSeries.rows.length - 1]?.currency || 'USD') },
+    { label: 'Currency', value: getString(navSeries.rows[navSeries.rows.length - 1]?.currency) },
   ]
   const distributionRowsSummary = [
     {
@@ -6161,23 +5636,19 @@ export default function FundDetailPage({
       value: latestDistribution ? formatDateTime(latestDistribution.adopted_at) : '—',
     },
   ]
-  const performanceReferenceEndDate = calculationBasisSeries[calculationBasisSeries.length - 1]?.date || null
+  const authoritativePeriodByKey = new Map(
+    authoritativeAnalytics.periods.map((period) => [period.period, period]),
+  )
   const performancePeriodSnapshots = PERFORMANCE_METRIC_PERIODS.map((period) => {
-    const fundWindow = getAnchoredWindow(calculationBasisSeries, period.key, performanceReferenceEndDate)
-    const benchmarkWindow = getAnchoredWindow(
-      benchmarkCalculationSeries,
-      period.key,
-      performanceReferenceEndDate,
-    )
+    const authoritativePeriod = authoritativePeriodByKey.get(period.key)
     return {
       ...period,
-      fund: buildPerformanceMetricSnapshot(fundWindow),
-      benchmark: benchmarkWindow.length >= 2 ? buildPerformanceMetricSnapshot(benchmarkWindow) : null,
-      relative:
-        benchmarkWindow.length >= 2 ? buildPerformanceRelativeSnapshot(fundWindow, benchmarkWindow) : null,
+      fund: authoritativePeriod?.fund ?? emptyPerformanceMetricSnapshot(),
+      benchmark: authoritativePeriod?.benchmark ?? null,
+      relative: authoritativePeriod?.relative ?? null,
     }
   })
-  const monthlyReturnMatrixRows = buildMonthlyReturnMatrix(calculationBasisSeries)
+  const monthlyReturnMatrixRows = authoritativeAnalytics.monthly_return_matrix
   const monthlyReturnMatrixMaxAbs = monthlyReturnMatrixRows.reduce((maxAbs, row) => {
     const rowMax = Math.max(
       ...[...row.months, row.ytd]
@@ -6197,19 +5668,19 @@ export default function FundDetailPage({
   )
   const activePerformanceMatrixMode = peerComparison ? performanceMatrixMode : 'values'
   const formatRecoveryValue = (snapshot: PerformanceMetricSnapshot | null) => {
-    if (!snapshot || snapshot.maxDrawdown == null) {
+    if (!snapshot || snapshot.max_drawdown == null) {
       return null
     }
-    if (snapshot.maxDrawdown === 0) {
+    if (snapshot.max_drawdown === 0) {
       return '0 d'
     }
-    if (snapshot.recoveryOpen) {
+    if (snapshot.recovery_open) {
       return 'Open'
     }
-    if (snapshot.recoveryDays == null) {
+    if (snapshot.recovery_days == null) {
       return '—'
     }
-    return `${formatNumber(snapshot.recoveryDays, 0)} d`
+    return `${formatNumber(snapshot.recovery_days, 0)} d`
   }
   const benchmarkMetricPrefix = selectedBenchmark ? 'BM' : null
   const buildBenchmarkNote = (value: string | null) =>
@@ -6257,10 +5728,10 @@ export default function FundDetailPage({
       label: 'Period Return',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
-        primary: fund.periodReturn == null ? '—' : formatPercent(fund.periodReturn),
+        primary: fund.period_return == null ? '—' : formatPercent(fund.period_return),
         secondary:
-          benchmark?.periodReturn == null ? null : buildBenchmarkNote(formatPercent(benchmark.periodReturn)),
-        tone: getSignedMetricTone(fund.periodReturn),
+          benchmark?.period_return == null ? null : buildBenchmarkNote(formatPercent(benchmark.period_return)),
+        tone: getSignedMetricTone(fund.period_return),
       })),
     },
     {
@@ -6268,12 +5739,12 @@ export default function FundDetailPage({
       label: 'Ann. Return',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
-        primary: fund.annualizedReturn == null ? '—' : formatPercent(fund.annualizedReturn),
+        primary: fund.annualized_return == null ? '—' : formatPercent(fund.annualized_return),
         secondary:
-          benchmark?.annualizedReturn == null
+          benchmark?.annualized_return == null
             ? null
-            : buildBenchmarkNote(formatPercent(benchmark.annualizedReturn)),
-        tone: getSignedMetricTone(fund.annualizedReturn),
+            : buildBenchmarkNote(formatPercent(benchmark.annualized_return)),
+        tone: getSignedMetricTone(fund.annualized_return),
       })),
     },
     {
@@ -6281,27 +5752,21 @@ export default function FundDetailPage({
       label: 'Ann. Volatility',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
-        primary: fund.annualizedVolatility == null ? '—' : formatPercent(fund.annualizedVolatility),
+        primary: fund.annualized_volatility == null ? '—' : formatPercent(fund.annualized_volatility),
         secondary:
-          benchmark?.annualizedVolatility == null
+          benchmark?.annualized_volatility == null
             ? null
-            : buildBenchmarkNote(formatPercent(benchmark.annualizedVolatility)),
+            : buildBenchmarkNote(formatPercent(benchmark.annualized_volatility)),
       })),
     },
     {
       key: 'excess_return' as const,
       label: 'Excess Return',
       supportsBenchmark: false,
-      cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
-        primary:
-          fund.periodReturn == null || benchmark?.periodReturn == null
-            ? '—'
-            : formatPercent(fund.periodReturn - benchmark.periodReturn),
+      cells: performancePeriodSnapshots.map(({ relative }) => ({
+        primary: relative?.excess_return == null ? '—' : formatPercent(relative.excess_return),
         secondary: null,
-        tone:
-          fund.periodReturn == null || benchmark?.periodReturn == null
-            ? 'empty'
-            : getSignedMetricTone(fund.periodReturn - benchmark.periodReturn),
+        tone: getSignedMetricTone(relative?.excess_return ?? null),
       })),
     },
     {
@@ -6309,8 +5774,8 @@ export default function FundDetailPage({
       label: 'Sharpe Ratio',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
-        primary: fund.sharpe == null ? '—' : formatNumber(fund.sharpe, 2),
-        secondary: benchmark?.sharpe == null ? null : buildBenchmarkNote(formatNumber(benchmark.sharpe, 2)),
+        primary: fund.sharpe_ratio == null ? '—' : formatNumber(fund.sharpe_ratio, 2),
+        secondary: benchmark?.sharpe_ratio == null ? null : buildBenchmarkNote(formatNumber(benchmark.sharpe_ratio, 2)),
       })),
     },
     {
@@ -6318,9 +5783,9 @@ export default function FundDetailPage({
       label: 'Sortino Ratio',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
-        primary: fund.sortino == null ? '—' : formatNumber(fund.sortino, 2),
+        primary: fund.sortino_ratio == null ? '—' : formatNumber(fund.sortino_ratio, 2),
         secondary:
-          benchmark?.sortino == null ? null : buildBenchmarkNote(formatNumber(benchmark.sortino, 2)),
+          benchmark?.sortino_ratio == null ? null : buildBenchmarkNote(formatNumber(benchmark.sortino_ratio, 2)),
       })),
     },
     {
@@ -6328,8 +5793,8 @@ export default function FundDetailPage({
       label: 'Calmar Ratio',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
-        primary: fund.calmar == null ? '—' : formatNumber(fund.calmar, 2),
-        secondary: benchmark?.calmar == null ? null : buildBenchmarkNote(formatNumber(benchmark.calmar, 2)),
+        primary: fund.calmar_ratio == null ? '—' : formatNumber(fund.calmar_ratio, 2),
+        secondary: benchmark?.calmar_ratio == null ? null : buildBenchmarkNote(formatNumber(benchmark.calmar_ratio, 2)),
       })),
     },
     {
@@ -6337,7 +5802,7 @@ export default function FundDetailPage({
       label: 'Information Ratio',
       supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
-        primary: relative?.informationRatio == null ? '—' : formatNumber(relative.informationRatio, 2),
+        primary: relative?.information_ratio == null ? '—' : formatNumber(relative.information_ratio, 2),
         secondary: null,
       })),
     },
@@ -6346,7 +5811,7 @@ export default function FundDetailPage({
       label: 'Tracking Error',
       supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
-        primary: relative?.trackingError == null ? '—' : formatPercent(relative.trackingError),
+        primary: relative?.tracking_error == null ? '—' : formatPercent(relative.tracking_error),
         secondary: null,
       })),
     },
@@ -6364,12 +5829,12 @@ export default function FundDetailPage({
       label: 'Max DD',
       supportsBenchmark: true,
       cells: performancePeriodSnapshots.map(({ fund, benchmark }) => ({
-        primary: fund.maxDrawdown == null ? '—' : formatPercent(fund.maxDrawdown),
+        primary: fund.max_drawdown == null ? '—' : formatPercent(fund.max_drawdown),
         secondary:
-          benchmark?.maxDrawdown == null
+          benchmark?.max_drawdown == null
             ? null
-            : buildBenchmarkNote(formatPercent(benchmark.maxDrawdown)),
-        tone: getSignedMetricTone(fund.maxDrawdown),
+            : buildBenchmarkNote(formatPercent(benchmark.max_drawdown)),
+        tone: getSignedMetricTone(fund.max_drawdown),
       })),
     },
     {
@@ -6386,7 +5851,7 @@ export default function FundDetailPage({
       label: 'Upside Capture',
       supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
-        primary: relative?.upsideCapture == null ? '—' : formatPercent(relative.upsideCapture, 0),
+        primary: relative?.upside_capture == null ? '—' : formatPercent(relative.upside_capture, 0),
         secondary: null,
       })),
     },
@@ -6395,7 +5860,7 @@ export default function FundDetailPage({
       label: 'Downside Capture',
       supportsBenchmark: false,
       cells: performancePeriodSnapshots.map(({ relative }) => ({
-        primary: relative?.downsideCapture == null ? '—' : formatPercent(relative.downsideCapture, 0),
+        primary: relative?.downside_capture == null ? '—' : formatPercent(relative.downside_capture, 0),
         secondary: null,
       })),
     },
@@ -6463,20 +5928,20 @@ export default function FundDetailPage({
     : 'Not selected'
   const riskMatrixSnapshots = performancePeriodSnapshots.filter(({ key }) => RISK_MATRIX_PERIOD_KEYS.has(key))
   const lifetimeRiskSnapshot =
-    riskMatrixSnapshots.find(({ key }) => key === 'SI')?.fund || buildPerformanceMetricSnapshot(calculationBasisSeries)
-  const returnDrawdownSeries = buildDrawdownSeries(calculationBasisSeries)
+    riskMatrixSnapshots.find(({ key }) => key === 'SI')?.fund ?? emptyPerformanceMetricSnapshot()
+  const returnDrawdownSeries = authoritativeAnalytics.series.drawdown
   const formatRecoveryStatus = (snapshot: PerformanceMetricSnapshot | null) => {
-    if (!snapshot || snapshot.maxDrawdown == null) {
+    if (!snapshot || snapshot.max_drawdown == null) {
       return '—'
     }
-    if (snapshot.maxDrawdown === 0) {
+    if (snapshot.max_drawdown === 0) {
       return 'At high watermark'
     }
-    return snapshot.recoveryOpen ? 'In drawdown' : 'Recovered'
+    return snapshot.recovery_open ? 'In drawdown' : 'Recovered'
   }
   const riskProfileSeries = resampleSeries(
     returnDrawdownSeries,
-    calculationBasisSeries.length > 260 ? 'weekly' : 'daily',
+    returnDrawdownSeries.length > 260 ? 'weekly' : 'daily',
   )
   const riskProfileBounds = getDrawdownAxisBounds(riskProfileSeries)
   const riskProfileTickValues = getLinearTickValues(riskProfileBounds.min, riskProfileBounds.max, 4)
@@ -6494,7 +5959,7 @@ export default function FundDetailPage({
     riskProfileBounds.min,
     riskProfileBounds.max,
   )
-  const monthlyDrawdownSeries = buildMonthlyMinimumSeries(returnDrawdownSeries).slice(-36)
+  const monthlyDrawdownSeries = authoritativeAnalytics.series.monthly_drawdown
   const monthlyDrawdownBounds = getDrawdownAxisBounds(monthlyDrawdownSeries)
   const monthlyDrawdownTickValues = getLinearTickValues(monthlyDrawdownBounds.min, monthlyDrawdownBounds.max, 4)
   const monthlyDrawdownTickDates = getChartTickDates(monthlyDrawdownSeries, 6)
@@ -6511,7 +5976,7 @@ export default function FundDetailPage({
     monthlyDrawdownBounds.min,
     monthlyDrawdownBounds.max,
   )
-  const monthlyVolatilitySeries = buildMonthlyAnnualizedVolatilitySeries(calculationBasisSeries).slice(-36)
+  const monthlyVolatilitySeries = authoritativeAnalytics.series.monthly_annualized_volatility
   const monthlyVolatilityBounds = monthlyVolatilitySeries.length
     ? getPaddedAxisBounds(
         Math.min(0, ...monthlyVolatilitySeries.map((point) => point.value)),
@@ -6569,9 +6034,9 @@ export default function FundDetailPage({
     {
       label: 'Max DD',
       value:
-        lifetimeRiskSnapshot.maxDrawdown == null
+        lifetimeRiskSnapshot.max_drawdown == null
           ? '—'
-          : formatPercent(lifetimeRiskSnapshot.maxDrawdown),
+          : formatPercent(lifetimeRiskSnapshot.max_drawdown),
     },
     {
       label: 'Recovery Status',
@@ -6585,50 +6050,33 @@ export default function FundDetailPage({
   const rollingRiskWindowLabel =
     ROLLING_RISK_WINDOW_OPTIONS.find((option) => option.months === rollingRiskWindowMonths)?.label ||
     `${rollingRiskWindowMonths}M`
-  const rollingVolatilitySeries = buildRollingAnnualizedVolatilitySeries(
-    calculationBasisSeries,
-    rollingRiskWindowMonths,
-  ).slice(-ROLLING_CHART_MAX_POINTS)
+  const rollingVolatilitySeries = authoritativeAnalytics.series.rolling_annualized_volatility
   const benchmarkRollingVolatilitySeries =
-    selectedBenchmark && benchmarkCalculationSeries.length > 0
-      ? buildRollingAnnualizedVolatilitySeries(
-          benchmarkCalculationSeries,
-          rollingRiskWindowMonths,
-        ).slice(-ROLLING_CHART_MAX_POINTS)
-      : []
-  const rollingSharpeSeries = buildRollingSharpeSeries(calculationBasisSeries, rollingRiskWindowMonths).slice(
-    -ROLLING_CHART_MAX_POINTS,
-  )
+    authoritativeAnalytics.series.benchmark_rolling_annualized_volatility
+  const rollingSharpeSeries = authoritativeAnalytics.series.rolling_sharpe_ratio
   const benchmarkRollingSharpeSeries =
-    selectedBenchmark && benchmarkCalculationSeries.length > 0
-      ? buildRollingSharpeSeries(benchmarkCalculationSeries, rollingRiskWindowMonths).slice(
-          -ROLLING_CHART_MAX_POINTS,
-        )
-      : []
-  const rollingBetaSeries =
-    selectedBenchmark && benchmarkCalculationSeries.length > 0
-      ? buildRollingBetaSeries(calculationBasisSeries, benchmarkCalculationSeries).slice(-60)
-      : []
+    authoritativeAnalytics.series.benchmark_rolling_sharpe_ratio
+  const rollingBetaSeries = authoritativeAnalytics.series.rolling_beta
   const rollingRiskFactRows = [
     {
       label: 'Latest Rolling Ann. Vol',
       value:
-        rollingVolatilitySeries.length > 0
-          ? formatPercent(rollingVolatilitySeries[rollingVolatilitySeries.length - 1].value)
+        authoritativeAnalytics.statistics.rolling_annualized_volatility.latest != null
+          ? formatPercent(authoritativeAnalytics.statistics.rolling_annualized_volatility.latest)
           : '—',
     },
     {
       label: 'Peak Rolling Ann. Vol',
       value:
-        rollingVolatilitySeries.length > 0
-          ? formatPercent(Math.max(...rollingVolatilitySeries.map((point) => point.value)))
+        authoritativeAnalytics.statistics.rolling_annualized_volatility.maximum != null
+          ? formatPercent(authoritativeAnalytics.statistics.rolling_annualized_volatility.maximum)
           : '—',
     },
     {
       label: 'Latest Rolling Beta',
       value:
-        rollingBetaSeries.length > 0
-          ? formatNumber(rollingBetaSeries[rollingBetaSeries.length - 1].value, 2)
+        authoritativeAnalytics.statistics.rolling_beta.latest != null
+          ? formatNumber(authoritativeAnalytics.statistics.rolling_beta.latest, 2)
           : selectedBenchmark
             ? 'Insufficient overlap'
             : 'No benchmark selected',
@@ -6638,170 +6086,33 @@ export default function FundDetailPage({
       value: riskBenchmarkLabel,
     },
   ]
-  const monthlyReturnSeries = buildMonthlyReturnSeries(calculationBasisSeries)
-  const latestMonthlyReturnValue =
-    monthlyReturnSeries.length > 0 ? monthlyReturnSeries[monthlyReturnSeries.length - 1].value : null
-  const medianMonthlyReturnValue = getMedianValue(monthlyReturnSeries.map((point) => point.value))
-  const trailingNegativeMonthCount = getTrailingNegativeMonthCount(monthlyReturnSeries)
-  const latestMonthlyDrawdownValue =
-    monthlyDrawdownSeries.length > 0 ? monthlyDrawdownSeries[monthlyDrawdownSeries.length - 1].value : null
-  const worstMonthlyDrawdownValue =
-    monthlyDrawdownSeries.length > 0 ? Math.min(...monthlyDrawdownSeries.map((point) => point.value)) : null
-  const currentDrawdownValue =
-    returnDrawdownSeries.length > 0 ? returnDrawdownSeries[returnDrawdownSeries.length - 1].value : null
-  const latestRollingVolValue =
-    rollingVolatilitySeries.length > 0 ? rollingVolatilitySeries[rollingVolatilitySeries.length - 1].value : null
-  const rollingVolMedianValue = getMedianValue(rollingVolatilitySeries.map((point) => point.value))
-  const rollingVolPercentile =
-    latestRollingVolValue == null
-      ? null
-      : getPercentileRank(
-          rollingVolatilitySeries.map((point) => point.value),
-          latestRollingVolValue,
-        )
-  const latestRollingBetaValue =
-    rollingBetaSeries.length > 0 ? rollingBetaSeries[rollingBetaSeries.length - 1].value : null
-  const rollingBetaMedianValue = getMedianValue(rollingBetaSeries.map((point) => point.value))
-  const rollingBetaPercentile =
-    latestRollingBetaValue == null
-      ? null
-      : getPercentileRank(
-          rollingBetaSeries.map((point) => point.value),
-          latestRollingBetaValue,
-        )
-  const latest1WReturn = performancePeriodSnapshots.find(({ key }) => key === '1W')?.fund.periodReturn ?? null
-  const latestMtdReturn = performancePeriodSnapshots.find(({ key }) => key === 'MTD')?.fund.periodReturn ?? null
-  const structuralRiskSnapshot =
-    riskMatrixSnapshots.find(({ key }) => key === '3Y') ??
-    riskMatrixSnapshots.find(({ key }) => key === 'SI') ??
-    null
-  const structuralRiskLabel = structuralRiskSnapshot?.label || 'SI'
-  const structuralFundSnapshot = structuralRiskSnapshot?.fund ?? null
-  const structuralRelativeSnapshot = structuralRiskSnapshot?.relative ?? null
-  const buildWatchReading = (level: string, detail: string) => `${level} · ${detail}`
-  const scoreWatchLevel = (level: string) => (level === 'High' ? 2 : level === 'Elevated' ? 1 : 0)
-  const volatilityWatch = (() => {
-    if (latestRollingVolValue == null || rollingVolMedianValue == null || rollingVolPercentile == null) {
-      return {
-        level: 'N/A',
-        reading: 'N/A · Need more 12M rolling history',
-      }
-    }
-    const multiple =
-      rollingVolMedianValue === 0 ? null : latestRollingVolValue / rollingVolMedianValue
-    const level =
-      rollingVolPercentile >= 90 || (multiple != null && multiple >= 1.4)
-        ? 'High'
-        : rollingVolPercentile >= 75 || (multiple != null && multiple >= 1.2)
-          ? 'Elevated'
-          : 'Normal'
-    return {
-      level,
-      reading: buildWatchReading(
-        level,
-        `${formatPercent(latestRollingVolValue)} vs median ${formatPercent(rollingVolMedianValue)} (${formatNumber(rollingVolPercentile, 0)}th pct)`,
-      ),
-    }
-  })()
-  const drawdownPressureWatch = (() => {
-    if (currentDrawdownValue == null) {
-      return {
-        level: 'N/A',
-        reading: 'N/A · No drawdown history',
-      }
-    }
-    const worstAbs = lifetimeRiskSnapshot.maxDrawdown == null ? null : Math.abs(lifetimeRiskSnapshot.maxDrawdown)
-    const ratio = worstAbs && worstAbs > 0 ? Math.abs(currentDrawdownValue) / worstAbs : 0
-    const level =
-      currentDrawdownValue <= -8 || ratio >= 0.6
-        ? 'High'
-        : currentDrawdownValue <= -4 || ratio >= 0.35
-          ? 'Elevated'
-          : 'Normal'
-    return {
-      level,
-      reading: buildWatchReading(
-        level,
-        `${formatPercent(currentDrawdownValue)} current${worstAbs ? `, ${formatNumber(ratio * 100, 0)}% of worst` : ''}`,
-      ),
-    }
-  })()
-  const recentLossPressureWatch = (() => {
-    if (latestMonthlyReturnValue == null && latest1WReturn == null && latestMtdReturn == null) {
-      return {
-        level: 'N/A',
-        reading: 'N/A · Need recent return history',
-      }
-    }
-    const level =
-      trailingNegativeMonthCount >= 3 ||
-      (latestMonthlyReturnValue != null && latestMonthlyReturnValue <= -3) ||
-      (latest1WReturn != null && latest1WReturn <= -2)
-        ? 'High'
-        : trailingNegativeMonthCount >= 2 ||
-            (latestMonthlyReturnValue != null && latestMonthlyReturnValue <= -1.5) ||
-            (latestMtdReturn != null && latestMtdReturn <= -3)
-          ? 'Elevated'
-          : 'Normal'
-    const recentMonthlyLabel =
-      latestMonthlyReturnValue == null ? '—' : formatPercent(latestMonthlyReturnValue)
-    return {
-      level,
-      reading: buildWatchReading(
-        level,
-        `1W ${latest1WReturn == null ? '—' : formatPercent(latest1WReturn)}, MTD ${latestMtdReturn == null ? '—' : formatPercent(latestMtdReturn)}, latest month ${recentMonthlyLabel}, ${String(trailingNegativeMonthCount)} down month(s)`,
-      ),
-    }
-  })()
-  const betaDriftWatch = (() => {
-    if (!selectedBenchmark) {
-      return {
-        level: 'N/A',
-        reading: 'N/A · Select a benchmark',
-      }
-    }
-    if (latestRollingBetaValue == null || rollingBetaMedianValue == null || rollingBetaPercentile == null) {
-      return {
-        level: 'N/A',
-        reading: 'N/A · Need enough overlapping 12M windows',
-      }
-    }
-    const absoluteDelta = Math.abs(latestRollingBetaValue - rollingBetaMedianValue)
-    const level =
-      absoluteDelta >= 0.35 || rollingBetaPercentile >= 90
-        ? 'High'
-        : absoluteDelta >= 0.2 || rollingBetaPercentile >= 75
-          ? 'Elevated'
-          : 'Normal'
-    return {
-      level,
-      reading: buildWatchReading(
-        level,
-        `${formatNumber(latestRollingBetaValue, 2)} vs median ${formatNumber(rollingBetaMedianValue, 2)} (${formatNumber(rollingBetaPercentile, 0)}th pct)`,
-      ),
-    }
-  })()
-  const watchScore =
-    scoreWatchLevel(volatilityWatch.level) +
-    scoreWatchLevel(drawdownPressureWatch.level) +
-    scoreWatchLevel(recentLossPressureWatch.level) +
-    scoreWatchLevel(betaDriftWatch.level)
-  const overallWatchLevel =
-    watchScore >= 5 ? 'High' : watchScore >= 2 ? 'Elevated' : watchScore >= 0 ? 'Normal' : 'N/A'
-  const latestYtdReturn = performancePeriodSnapshots.find(({ key }) => key === 'YTD')?.fund.periodReturn ?? null
+  const worstMonthlyDrawdownValue = authoritativeAnalytics.statistics.monthly_drawdown.minimum
+  const currentDrawdownValue = authoritativeAnalytics.statistics.current_drawdown
+  const latest1WReturn = performancePeriodSnapshots.find(({ key }) => key === '1W')?.fund.period_return ?? null
+  const latestMtdReturn = performancePeriodSnapshots.find(({ key }) => key === 'MTD')?.fund.period_return ?? null
+  const overallWatchLevel = risk.current_watch?.overall_level || 'N/A'
+  const overallWatchReading = getString(
+    risk.current_watch?.rows.find((row) => row.signal === 'Overall Watch')?.reading,
+  )
+  const drawdownPressureLevel = getString(
+    risk.current_watch?.rows.find((row) => row.signal === 'Drawdown Pressure')?.level,
+  )
+  const latestYtdReturn = performancePeriodSnapshots.find(({ key }) => key === 'YTD')?.fund.period_return ?? null
   const lifetimePerformanceSnapshot =
-    performancePeriodSnapshots.find(({ key }) => key === 'SI')?.fund || buildPerformanceMetricSnapshot(calculationBasisSeries)
+    performancePeriodSnapshots.find(({ key }) => key === 'SI')?.fund ?? emptyPerformanceMetricSnapshot()
   const overviewRatingValue =
-    ratings.overall_rating == null ? '—' : formatStarRating(ratings.overall_rating)
+    researchRating?.rating == null ? '—' : formatStarRating(researchRating.rating)
   const overviewRatingNote =
-    ratings.overall_rating == null
+    researchRating?.rating == null
       ? 'Pending research'
-      : summary.rating_as_of
-        ? `As of ${formatDate(summary.rating_as_of)}`
+      : researchRating.as_of_date
+        ? `As of ${formatDate(researchRating.as_of_date)} · ${
+            researchRating.confidence === 'unassessed'
+              ? 'Confidence review required'
+              : `${formatLabel(researchRating.confidence || 'Unknown')} confidence`
+          }`
         : 'Research rating'
-  const researchManualRating = parseManualRating(research.manual_rating)
-  const displayedManualRating = manualRatingDirty ? manualRatingDraft : researchManualRating
-  const manualRatingHasChanges = manualRatingDirty && displayedManualRating !== researchManualRating
+  const displayedResearchRating = researchRatingDraft.ratingValue
   const overviewRankingValue =
     performance.ranking
       ? [
@@ -6835,33 +6146,33 @@ export default function FundDetailPage({
     {
       label: 'Ann. Return',
       value:
-        lifetimePerformanceSnapshot.annualizedReturn == null
+        lifetimePerformanceSnapshot.annualized_return == null
           ? '—'
-          : formatPercent(lifetimePerformanceSnapshot.annualizedReturn),
+          : formatPercent(lifetimePerformanceSnapshot.annualized_return),
       note: 'SI',
     },
     {
       label: 'Ann. Vol',
       value:
-        lifetimePerformanceSnapshot.annualizedVolatility == null
+        lifetimePerformanceSnapshot.annualized_volatility == null
           ? '—'
-          : formatPercent(lifetimePerformanceSnapshot.annualizedVolatility),
+          : formatPercent(lifetimePerformanceSnapshot.annualized_volatility),
       note: 'SI',
     },
     {
       label: 'Max DD',
       value:
-        lifetimeRiskSnapshot.maxDrawdown == null ? '—' : formatPercent(lifetimeRiskSnapshot.maxDrawdown),
+        lifetimeRiskSnapshot.max_drawdown == null ? '—' : formatPercent(lifetimeRiskSnapshot.max_drawdown),
       note: 'SI',
     },
     {
       label: 'Current DD',
       value: currentDrawdownValue == null ? '—' : formatPercent(currentDrawdownValue),
-      note: drawdownPressureWatch.level,
+      note: drawdownPressureLevel === '—' ? 'N/A' : drawdownPressureLevel,
     },
     {
       label: 'SI Sharpe',
-      value: lifetimePerformanceSnapshot.sharpe == null ? '—' : formatNumber(lifetimePerformanceSnapshot.sharpe, 2),
+      value: lifetimePerformanceSnapshot.sharpe_ratio == null ? '—' : formatNumber(lifetimePerformanceSnapshot.sharpe_ratio, 2),
       note: 'rf = 0',
     },
     {
@@ -6872,7 +6183,7 @@ export default function FundDetailPage({
     {
       label: 'Watch Level',
       value: overallWatchLevel,
-      note: `${String(watchScore)} signal point(s)`,
+      note: overallWatchReading,
     },
   ]
   const rawTaxonomyPathLabel =
@@ -6918,101 +6229,6 @@ export default function FundDetailPage({
 
     return selectors
   })()
-  const localCurrentRiskWatchRows = [
-    {
-      label: 'Overall Watch',
-      value: buildWatchReading(overallWatchLevel, `${String(watchScore)} signal point(s)`),
-    },
-    {
-      label: 'Volatility Regime',
-      value: volatilityWatch.reading,
-    },
-    {
-      label: 'Drawdown Pressure',
-      value: drawdownPressureWatch.reading,
-    },
-    {
-      label: 'Recent Loss Pressure',
-      value: recentLossPressureWatch.reading,
-    },
-    {
-      label: 'Benchmark Sensitivity',
-      value: betaDriftWatch.reading,
-    },
-    {
-      label: 'Methodology',
-      value: 'Heuristic watch flags based on current drawdown, rolling vol, recent losses, and beta drift.',
-    },
-  ]
-  const localRiskFallbackFacts = localCurrentRiskWatchRows.filter((row) => row.value !== '—').slice(0, 4)
-  const localRiskStructureRows = [
-    {
-      characteristic: 'Risk Style',
-      reading:
-        structuralFundSnapshot?.annualizedVolatility == null && structuralFundSnapshot?.maxDrawdown == null
-          ? '—'
-          : `${structuralRiskLabel} vol ${structuralFundSnapshot?.annualizedVolatility == null ? '—' : formatPercent(structuralFundSnapshot.annualizedVolatility)} · max DD ${structuralFundSnapshot?.maxDrawdown == null ? '—' : formatPercent(structuralFundSnapshot.maxDrawdown)}`,
-      interpretation:
-        structuralFundSnapshot?.annualizedVolatility == null || structuralFundSnapshot?.maxDrawdown == null
-          ? 'Insufficient history to classify the long-run risk amplitude.'
-          : structuralFundSnapshot.annualizedVolatility < 8 && Math.abs(structuralFundSnapshot.maxDrawdown) < 10
-            ? 'Low-amplitude path. Capital preservation matters more than benchmark capture.'
-            : structuralFundSnapshot.annualizedVolatility < 15 && Math.abs(structuralFundSnapshot.maxDrawdown) < 20
-              ? 'Balanced amplitude. Drawdowns matter, but the path is still broadly manageable.'
-              : 'High-amplitude path. Position sizing and liquidity discipline matter.'
-    },
-    {
-      characteristic: 'Benchmark Dependence',
-      reading:
-        structuralRelativeSnapshot?.beta == null && structuralRelativeSnapshot?.trackingError == null
-          ? '—'
-          : `${structuralRiskLabel} beta ${structuralRelativeSnapshot?.beta == null ? '—' : formatNumber(structuralRelativeSnapshot.beta, 2)} · TE ${structuralRelativeSnapshot?.trackingError == null ? '—' : formatPercent(structuralRelativeSnapshot.trackingError)}`,
-      interpretation:
-        !selectedBenchmark
-          ? 'No benchmark selected, so benchmark dependence is not fully specified.'
-          : structuralRelativeSnapshot?.beta == null || structuralRelativeSnapshot?.trackingError == null
-            ? 'Need more overlap with the current benchmark to characterize sensitivity.'
-            : structuralRelativeSnapshot.beta < 0.35 && structuralRelativeSnapshot.trackingError < 5
-              ? 'Low benchmark dependence. Risk is driven more by manager path than market beta.'
-              : structuralRelativeSnapshot.beta < 0.8 && structuralRelativeSnapshot.trackingError < 10
-                ? 'Moderate benchmark dependence. Market moves matter, but are not the whole story.'
-                : 'High benchmark dependence. Benchmark direction and factor conditions matter a lot.'
-    },
-    {
-      characteristic: 'Downside Shape',
-      reading:
-        structuralRelativeSnapshot?.upsideCapture == null && structuralRelativeSnapshot?.downsideCapture == null
-          ? '—'
-          : `${structuralRiskLabel} up ${structuralRelativeSnapshot?.upsideCapture == null ? '—' : formatPercent(structuralRelativeSnapshot.upsideCapture, 0)} · down ${structuralRelativeSnapshot?.downsideCapture == null ? '—' : formatPercent(structuralRelativeSnapshot.downsideCapture, 0)}`,
-      interpretation:
-        !selectedBenchmark
-          ? '—'
-          : structuralRelativeSnapshot?.upsideCapture == null || structuralRelativeSnapshot?.downsideCapture == null
-            ? 'Capture profile needs a longer overlapping benchmark history.'
-            : structuralRelativeSnapshot.downsideCapture < structuralRelativeSnapshot.upsideCapture - 15
-              ? 'Downside participation is meaningfully lighter than upside participation.'
-              : structuralRelativeSnapshot.downsideCapture > structuralRelativeSnapshot.upsideCapture + 15
-                ? 'Downside participation is heavy relative to upside capture.'
-                : 'Upside and downside participation are broadly balanced.'
-    },
-    {
-      characteristic: 'Recovery Profile',
-      reading:
-        lifetimeRiskSnapshot.maxDrawdown == null
-          ? '—'
-          : `SI max DD ${formatPercent(lifetimeRiskSnapshot.maxDrawdown)} · recovery ${formatRecoveryValue(lifetimeRiskSnapshot) || '—'}`,
-      interpretation:
-        lifetimeRiskSnapshot.maxDrawdown == null
-          ? 'Insufficient history to classify recovery behavior.'
-          : lifetimeRiskSnapshot.recoveryOpen
-            ? 'The fund is still below its prior high watermark.'
-            : lifetimeRiskSnapshot.recoveryDays != null && lifetimeRiskSnapshot.recoveryDays <= 120
-              ? 'Historically, major drawdowns have healed relatively quickly.'
-              : lifetimeRiskSnapshot.recoveryDays != null && lifetimeRiskSnapshot.recoveryDays > 365
-                ? 'Drawdowns can take a long time to repair.'
-                : 'Recovery profile is moderate rather than fast.'
-    },
-  ]
   const drawdownSummaryRows = [
     {
       label: 'Peak Date',
@@ -7032,73 +6248,9 @@ export default function FundDetailPage({
     {
       label: 'Worst Monthly Drawdown',
       value:
-        monthlyDrawdownSeries.length > 0
-          ? formatPercent(Math.min(...monthlyDrawdownSeries.map((point) => point.value)))
+        worstMonthlyDrawdownValue != null
+          ? formatPercent(worstMonthlyDrawdownValue)
           : '—',
-    },
-  ]
-  const localRiskChangeRows = [
-    {
-      signal: 'Rolling Ann. Vol',
-      current: latestRollingVolValue == null ? '—' : formatPercent(latestRollingVolValue),
-      baseline: rollingVolMedianValue == null ? '—' : `Median ${formatPercent(rollingVolMedianValue)}`,
-      change:
-        latestRollingVolValue == null || rollingVolMedianValue == null
-          ? '—'
-          : `${latestRollingVolValue >= rollingVolMedianValue ? '+' : ''}${formatPercent(latestRollingVolValue - rollingVolMedianValue)}`,
-      watch: volatilityWatch.level,
-    },
-    {
-      signal: 'Rolling Beta',
-      current:
-        latestRollingBetaValue == null
-          ? (selectedBenchmark ? '—' : 'No benchmark selected')
-          : formatNumber(latestRollingBetaValue, 2),
-      baseline:
-        rollingBetaMedianValue == null
-          ? '—'
-          : `Median ${formatNumber(rollingBetaMedianValue, 2)}`,
-      change:
-        latestRollingBetaValue == null || rollingBetaMedianValue == null
-          ? '—'
-          : `${latestRollingBetaValue >= rollingBetaMedianValue ? '+' : ''}${formatNumber(latestRollingBetaValue - rollingBetaMedianValue, 2)}`,
-      watch: betaDriftWatch.level,
-    },
-    {
-      signal: 'Current DD',
-      current: currentDrawdownValue == null ? '—' : formatPercent(currentDrawdownValue),
-      baseline:
-        lifetimeRiskSnapshot.maxDrawdown == null
-          ? '—'
-          : `Worst ${formatPercent(lifetimeRiskSnapshot.maxDrawdown)}`,
-      change:
-        currentDrawdownValue == null || lifetimeRiskSnapshot.maxDrawdown == null || lifetimeRiskSnapshot.maxDrawdown === 0
-          ? '—'
-          : `${formatNumber((Math.abs(currentDrawdownValue) / Math.abs(lifetimeRiskSnapshot.maxDrawdown)) * 100, 0)}% of worst`,
-      watch: drawdownPressureWatch.level,
-    },
-    {
-      signal: 'Latest Monthly Drawdown',
-      current: latestMonthlyDrawdownValue == null ? '—' : formatPercent(latestMonthlyDrawdownValue),
-      baseline:
-        worstMonthlyDrawdownValue == null
-          ? '—'
-          : `Worst ${formatPercent(worstMonthlyDrawdownValue)}`,
-      change:
-        latestMonthlyDrawdownValue == null || worstMonthlyDrawdownValue == null || worstMonthlyDrawdownValue === 0
-          ? '—'
-          : `${formatNumber((Math.abs(latestMonthlyDrawdownValue) / Math.abs(worstMonthlyDrawdownValue)) * 100, 0)}% of worst`,
-      watch: recentLossPressureWatch.level,
-    },
-    {
-      signal: 'Recent Return Pressure',
-      current: `1W ${latest1WReturn == null ? '—' : formatPercent(latest1WReturn)} · MTD ${latestMtdReturn == null ? '—' : formatPercent(latestMtdReturn)}`,
-      baseline:
-        medianMonthlyReturnValue == null
-          ? '—'
-          : `Median month ${formatPercent(medianMonthlyReturnValue)}`,
-      change: `${String(trailingNegativeMonthCount)} trailing down month(s)`,
-      watch: recentLossPressureWatch.level,
     },
   ]
   const payloadCurrentWatchRows = Array.isArray(risk.current_watch?.rows)
@@ -7168,20 +6320,20 @@ export default function FundDetailPage({
         } => row !== null,
       )
     : []
-  const currentRiskWatchRows = payloadCurrentWatchRows.length ? payloadCurrentWatchRows : localCurrentRiskWatchRows
-  const riskFallbackFacts = currentRiskWatchRows.length ? currentRiskWatchRows.slice(0, 4) : localRiskFallbackFacts
-  const riskStructureRows = payloadRiskStructureRows.length ? payloadRiskStructureRows : localRiskStructureRows
-  const riskChangeRows = payloadRiskChangeRows.length ? payloadRiskChangeRows : localRiskChangeRows
+  const currentRiskWatchRows = payloadCurrentWatchRows
+  const riskFallbackFacts = currentRiskWatchRows.slice(0, 4)
+  const riskStructureRows = payloadRiskStructureRows
+  const riskChangeRows = payloadRiskChangeRows
   const riskMatrixRows = [
     {
       label: 'Ann. Volatility',
       supportsBenchmark: true,
       cells: riskMatrixSnapshots.map(({ fund, benchmark }) => ({
-        primary: fund.annualizedVolatility == null ? '—' : formatPercent(fund.annualizedVolatility),
+        primary: fund.annualized_volatility == null ? '—' : formatPercent(fund.annualized_volatility),
         secondary:
-          benchmark?.annualizedVolatility == null
+          benchmark?.annualized_volatility == null
             ? null
-            : buildBenchmarkNote(formatPercent(benchmark.annualizedVolatility)),
+            : buildBenchmarkNote(formatPercent(benchmark.annualized_volatility)),
       })),
     },
     {
@@ -7189,18 +6341,18 @@ export default function FundDetailPage({
       supportsBenchmark: true,
       cells: riskMatrixSnapshots.map(({ fund, benchmark }) => ({
         primary:
-          fund.annualizedDownsideDeviation == null ? '—' : formatPercent(fund.annualizedDownsideDeviation),
+          fund.annualized_downside_deviation == null ? '—' : formatPercent(fund.annualized_downside_deviation),
         secondary:
-          benchmark?.annualizedDownsideDeviation == null
+          benchmark?.annualized_downside_deviation == null
             ? null
-            : buildBenchmarkNote(formatPercent(benchmark.annualizedDownsideDeviation)),
+            : buildBenchmarkNote(formatPercent(benchmark.annualized_downside_deviation)),
       })),
     },
     {
       label: 'Tracking Error',
       supportsBenchmark: false,
       cells: riskMatrixSnapshots.map(({ relative }) => ({
-        primary: relative?.trackingError == null ? '—' : formatPercent(relative.trackingError),
+        primary: relative?.tracking_error == null ? '—' : formatPercent(relative.tracking_error),
         secondary: null,
       })),
     },
@@ -7216,11 +6368,11 @@ export default function FundDetailPage({
       label: 'Max DD',
       supportsBenchmark: true,
       cells: riskMatrixSnapshots.map(({ fund, benchmark }) => ({
-        primary: fund.maxDrawdown == null ? '—' : formatPercent(fund.maxDrawdown),
+        primary: fund.max_drawdown == null ? '—' : formatPercent(fund.max_drawdown),
         secondary:
-          benchmark?.maxDrawdown == null
+          benchmark?.max_drawdown == null
             ? null
-            : buildBenchmarkNote(formatPercent(benchmark.maxDrawdown)),
+            : buildBenchmarkNote(formatPercent(benchmark.max_drawdown)),
       })),
     },
     {
@@ -7235,7 +6387,7 @@ export default function FundDetailPage({
       label: 'Upside Capture',
       supportsBenchmark: false,
       cells: riskMatrixSnapshots.map(({ relative }) => ({
-        primary: relative?.upsideCapture == null ? '—' : formatPercent(relative.upsideCapture, 0),
+        primary: relative?.upside_capture == null ? '—' : formatPercent(relative.upside_capture, 0),
         secondary: null,
       })),
     },
@@ -7243,7 +6395,7 @@ export default function FundDetailPage({
       label: 'Downside Capture',
       supportsBenchmark: false,
       cells: riskMatrixSnapshots.map(({ relative }) => ({
-        primary: relative?.downsideCapture == null ? '—' : formatPercent(relative.downsideCapture, 0),
+        primary: relative?.downside_capture == null ? '—' : formatPercent(relative.downside_capture, 0),
         secondary: null,
       })),
     },
@@ -7451,7 +6603,7 @@ export default function FundDetailPage({
           <section className="instrument-chart-settings-block">
             <div className="instrument-chart-settings-block-head">
               <span>Display</span>
-              <strong>{effectiveCurrency}</strong>
+              <strong>{effectiveCurrency || '—'}</strong>
             </div>
             <div className="instrument-chart-settings-field-grid">
               <label className="instrument-chart-settings-field">
@@ -7467,8 +6619,13 @@ export default function FundDetailPage({
               </label>
               <label className="instrument-chart-settings-field">
                 <span>Currency</span>
-                <select value={effectiveCurrency} onChange={(event) => setSelectedCurrency(event.target.value)}>
-                  {(availableCurrencies.length ? availableCurrencies : [effectiveCurrency]).map((currency) => (
+                <select
+                  value={effectiveCurrency}
+                  disabled={availableCurrencies.length === 0}
+                  onChange={(event) => setSelectedCurrency(event.target.value)}
+                >
+                  {availableCurrencies.length === 0 ? <option value="">—</option> : null}
+                  {availableCurrencies.map((currency) => (
                     <option key={currency} value={currency}>
                       {currency}
                     </option>
@@ -7676,10 +6833,6 @@ export default function FundDetailPage({
               </span>
               <span className="context-chip" data-portfolio-ops-i18n-ignore="true">
                 Risk basis: {calculationFrequencyStatus}
-              </span>
-              <span className="context-chip" data-portfolio-ops-i18n-ignore="true">
-                {localize(language, SYSTEM_LABELS.analystStance)}:{' '}
-                {localizeSystemValue(summary.analyst_stance, language)}
               </span>
             </div>
           </div>
@@ -7924,17 +7077,11 @@ export default function FundDetailPage({
                         <div className="instrument-series-label">
                           <strong>{summary.ticker_or_isin}</strong>
                           <span>{chartSeriesBasisLabel}</span>
-                          <em className={`instrument-series-change-${getSignedMetricTone(chartQuotePeriodStats.changePct ?? chartQuotePeriodStats.change)}`}>
-                            {formatChangeSummary(chartQuotePeriodStats.change, chartQuotePeriodStats.changePct)}
-                          </em>
                         </div>
                         {selectedBenchmark ? (
                           <div className="instrument-series-label instrument-series-label-benchmark-row">
                             <strong>{selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name}</strong>
                             <span>Compare</span>
-                            <em className={`instrument-series-change-${getSignedMetricTone(chartBenchmarkPeriodStats.changePct ?? chartBenchmarkPeriodStats.change)}`}>
-                              {formatChangeSummary(chartBenchmarkPeriodStats.change, chartBenchmarkPeriodStats.changePct)}
-                            </em>
                           </div>
                         ) : null}
                       </div>
@@ -8960,6 +8107,8 @@ export default function FundDetailPage({
                   points={rollingVolatilitySeries}
                   benchmarkPoints={benchmarkRollingVolatilitySeries}
                   benchmarkLabel={selectedBenchmark ? selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name : null}
+                  quality={authoritativeAnalytics.quality.series.rolling_annualized_volatility}
+                  benchmarkQuality={authoritativeAnalytics.quality.series.benchmark_rolling_annualized_volatility}
                   displayStyle={rollingRiskChartDisplayStyle}
                   formatValue={(value) => formatPercent(value)}
                   emptyLabel={`Insufficient ${rollingRiskWindowLabel} total-return NAV history.`}
@@ -8969,6 +8118,8 @@ export default function FundDetailPage({
                   points={rollingSharpeSeries}
                   benchmarkPoints={benchmarkRollingSharpeSeries}
                   benchmarkLabel={selectedBenchmark ? selectedBenchmark.ticker_or_isin || selectedBenchmark.fund_name : null}
+                  quality={authoritativeAnalytics.quality.series.rolling_sharpe_ratio}
+                  benchmarkQuality={authoritativeAnalytics.quality.series.benchmark_rolling_sharpe_ratio}
                   displayStyle={rollingRiskChartDisplayStyle}
                   formatValue={(value) => formatNumber(value, 2)}
                   emptyLabel={`Insufficient ${rollingRiskWindowLabel} total-return NAV history.`}
@@ -9152,100 +8303,6 @@ export default function FundDetailPage({
                   </tbody>
                 </table>
               </div>
-            </div>
-          </section>
-        </section>
-      ) : null}
-
-      {activeTab === 'exposure' ? (
-        <section className="detail-grid">
-          <section className="panel">
-            <div className="instrument-section-header">
-              <div>
-                <div className="panel-title">Exposure</div>
-                <div className="instrument-section-title">Allocation</div>
-              </div>
-            </div>
-            <div className="stack-list">
-              {getRows(portfolio.allocation_blocks.asset_allocation).length ? (
-                getRows(portfolio.allocation_blocks.asset_allocation).map((item, index) => (
-                  <div key={`${String(item.name)}-${index}`} className="stack-item">
-                    <span>{getString(item.name)}</span>
-                    <strong>{formatPercent(getNumber(item.investment))}</strong>
-                  </div>
-                ))
-              ) : (
-                <div className="instrument-placeholder">
-                  Exposure analytics will be rebuilt by product type later.
-                </div>
-              )}
-            </div>
-          </section>
-
-          <section className="panel">
-            <div className="instrument-section-header">
-              <div>
-                <div className="panel-title">Exposure</div>
-                <div className="instrument-section-title">Style & Holdings</div>
-              </div>
-            </div>
-            <div className="stack-list">
-              {portfolio.style_box ? renderStackRows(portfolio.style_box) : null}
-              {portfolio.holdings_summary ? renderStackRows(portfolio.holdings_summary) : null}
-              {!portfolio.style_box && !portfolio.holdings_summary ? (
-                <div className="instrument-placeholder">No exposure summary available.</div>
-              ) : null}
-            </div>
-          </section>
-
-          <section className="panel detail-span-2">
-            <div className="instrument-section-header">
-              <div>
-                <div className="panel-title">Holdings</div>
-                <div className="instrument-section-title">Current Positions</div>
-              </div>
-            </div>
-            <div className="table-shell">
-              <table className="terminal-table terminal-table-compact">
-                <thead>
-                  <tr>
-                    <th>Holding</th>
-                    <th>Issuer</th>
-                    <th>Weight</th>
-                    <th>Market Value</th>
-                    <th>Change</th>
-                    <th>Maturity</th>
-                    <th>Rating</th>
-                    <th>Eff. Dur.</th>
-                    <th>YTW</th>
-                    <th>Sector</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {holdings.rows.length ? (
-                    holdings.rows.slice(0, 12).map((row, index) => (
-                      <tr key={`${String(row.holding_name)}-${index}`}>
-                        <td>{getString(row.holding_name)}</td>
-                        <td>{getString(row.issuer_name)}</td>
-                        <td>{formatPercent(getNumber(row.portfolio_weight))}</td>
-                        <td>{formatCompactCurrency(getNumber(row.market_value))}</td>
-                        <td>{formatPercent(getNumber(row.share_change_pct))}</td>
-                        <td>{formatDate(row.maturity_date)}</td>
-                        <td>{getString(row.credit_rating)}</td>
-                        <td>{formatNumber(getNumber(row.effective_duration))}</td>
-                        <td>{formatPercent(getNumber(row.yield_to_worst))}</td>
-                        <td>{getString(row.sector)}</td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={10} className="empty-state">
-                        No holdings available.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
             </div>
           </section>
         </section>
@@ -11058,26 +10115,33 @@ export default function FundDetailPage({
           <section className="instrument-research-section">
             <div className="instrument-research-section-header">
               <div>
-                <div className="instrument-section-title">Rating</div>
+                <div className="instrument-section-title">Research Rating</div>
               </div>
-              {manualRatingHasChanges ? (
+              {researchRatingDirty ? (
                 <div className="toolbar">
                   <button
                     type="button"
-                    className="button-primary"
-                    onClick={() => void handleSaveManualRating()}
-                    disabled={savingSection === 'manual_rating'}
+                    onClick={() => void handleResetResearchRating()}
+                    disabled={savingSection === 'research_rating'}
                   >
-                    {savingSection === 'manual_rating' ? 'Saving...' : 'Save'}
+                    {savingSection === 'research_rating' ? 'Refreshing...' : 'Reset'}
+                  </button>
+                  <button
+                    type="button"
+                    className="button-primary"
+                    onClick={() => void handleSaveResearchRating()}
+                    disabled={savingSection === 'research_rating'}
+                  >
+                    {savingSection === 'research_rating' ? 'Saving...' : 'Save Revision'}
                   </button>
                 </div>
               ) : null}
             </div>
             <div className="instrument-manual-rating-row">
-              <div className="instrument-manual-rating-picker" role="radiogroup" aria-label="Manual rating">
+              <div className="instrument-manual-rating-picker" role="radiogroup" aria-label="Research rating">
                 {[1, 2, 3, 4, 5].map((value) => {
-                  const selected = displayedManualRating === value
-                  const active = displayedManualRating != null && value <= displayedManualRating
+                  const selected = displayedResearchRating === value
+                  const active = displayedResearchRating != null && value <= displayedResearchRating
                   return (
                     <button
                       key={value}
@@ -11091,8 +10155,8 @@ export default function FundDetailPage({
                       role="radio"
                       onClick={() => {
                         const nextRating = selected ? null : value
-                        setManualRatingDraft(nextRating)
-                        setManualRatingDirty(nextRating !== researchManualRating)
+                        setResearchRatingDraft((current) => ({ ...current, ratingValue: nextRating }))
+                        setResearchRatingDirty(true)
                         setSectionError(null)
                         setSectionNotice(null)
                       }}
@@ -11103,6 +10167,179 @@ export default function FundDetailPage({
                 })}
               </div>
             </div>
+            <div className="instrument-research-section-body">
+              {researchRatingDraft.confidence === 'unassessed' ? (
+                <div className="inline-notice inline-notice-error" role="alert">
+                  This legacy rating has unassessed confidence. Review the evidence and select low, medium or high confidence before saving a new revision.
+                </div>
+              ) : null}
+              <div className="instrument-research-facts-grid instrument-research-facts-grid-edit">
+                <label className="instrument-research-fact instrument-research-fact-edit">
+                  <span>As of</span>
+                  <input
+                    className="form-input instrument-inline-value-input"
+                    type="date"
+                    value={researchRatingDraft.asOfDate}
+                    onChange={(event) => {
+                      setResearchRatingDraft((current) => ({ ...current, asOfDate: event.target.value }))
+                      setResearchRatingDirty(true)
+                    }}
+                  />
+                </label>
+                <label className="instrument-research-fact instrument-research-fact-edit">
+                  <span>Author</span>
+                  <input
+                    className="form-input instrument-inline-value-input"
+                    type="text"
+                    value={researchRatingDraft.author}
+                    placeholder="Research author"
+                    onChange={(event) => {
+                      setResearchRatingDraft((current) => ({ ...current, author: event.target.value }))
+                      setResearchRatingDirty(true)
+                    }}
+                  />
+                </label>
+                <label className="instrument-research-fact instrument-research-fact-edit">
+                  <span>Confidence</span>
+                  <select
+                    className="form-select instrument-inline-value-input"
+                    value={researchRatingDraft.confidence}
+                    onChange={(event) => {
+                      const confidence = event.target.value
+                      if (confidence !== 'low' && confidence !== 'medium' && confidence !== 'high') {
+                        return
+                      }
+                      setResearchRatingDraft((current) => ({
+                        ...current,
+                        confidence,
+                      }))
+                      setResearchRatingDirty(true)
+                    }}
+                  >
+                    <option value="" disabled>Select confidence</option>
+                    <option value="unassessed" disabled>Unassessed — review required</option>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                  </select>
+                </label>
+                <label className="instrument-research-fact instrument-research-fact-edit">
+                  <span>Next review</span>
+                  <input
+                    className="form-input instrument-inline-value-input"
+                    type="date"
+                    value={researchRatingDraft.nextReviewDate}
+                    onChange={(event) => {
+                      setResearchRatingDraft((current) => ({ ...current, nextReviewDate: event.target.value }))
+                      setResearchRatingDirty(true)
+                    }}
+                  />
+                </label>
+                <div className="instrument-research-fact">
+                  <span>Current revision</span>
+                  <strong>{researchRating?.rating_revision_id || 'No revision yet'}</strong>
+                </div>
+              </div>
+              <label className="instrument-research-fact instrument-research-fact-edit">
+                <span>Rationale *</span>
+                <textarea
+                  className="form-textarea"
+                  rows={4}
+                  value={researchRatingDraft.rationale}
+                  placeholder="Record the evidence, judgement and material risks behind this rating."
+                  onChange={(event) => {
+                    setResearchRatingDraft((current) => ({ ...current, rationale: event.target.value }))
+                    setResearchRatingDirty(true)
+                  }}
+                />
+              </label>
+            </div>
+          </section>
+
+          <section className="instrument-research-section">
+            <div className="instrument-research-section-header">
+              <div>
+                <div className="panel-title">Research Rating</div>
+                <div className="instrument-section-title">Rating History</div>
+              </div>
+            </div>
+            {researchRatingHistory.length ? (
+              <div className="table-shell instrument-research-table-shell">
+                <table className="terminal-table terminal-table-compact instrument-research-table instrument-research-rating-history-table">
+                  <thead>
+                    <tr>
+                      <th>Revision</th>
+                      <th>Rating</th>
+                      <th>Effective / Review</th>
+                      <th>Analyst / Confidence</th>
+                      <th>Status</th>
+                      <th>Created</th>
+                      <th>Rationale</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {researchRatingHistory.map((row) => (
+                      <tr key={row.rating_revision_id || `${row.revision_number}-${row.created_at}`}>
+                        <td>
+                          <div className="instrument-research-rating-history-stack instrument-research-rating-history-revision">
+                            <strong>
+                              {row.revision_number == null ? 'Revision —' : `Revision ${row.revision_number}`}
+                            </strong>
+                            <span title={row.rating_revision_id || undefined}>
+                              {row.rating_revision_id || 'No revision ID'}
+                            </span>
+                            {row.previous_rating_revision_id ? (
+                              <span title={row.previous_rating_revision_id}>
+                                Previous: {row.previous_rating_revision_id}
+                              </span>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td>
+                          {row.rating == null
+                            ? 'Cleared'
+                            : `${formatStarRating(row.rating)} (${formatNumber(row.rating, 0)} / 5)`}
+                        </td>
+                        <td>
+                          <div className="instrument-research-rating-history-stack">
+                            <span>Effective: {formatDate(row.as_of_date)}</span>
+                            <span>Review: {formatDate(row.next_review_date)}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <div className="instrument-research-rating-history-stack">
+                            <span>{row.author || '—'}</span>
+                            <span>
+                              {row.confidence
+                                ? `${formatLabel(row.confidence)} confidence`
+                                : 'Confidence —'}
+                            </span>
+                          </div>
+                        </td>
+                        <td>
+                          <div className="instrument-research-rating-history-stack">
+                            <span className={`status-badge ${row.is_current ? 'status-fresh' : 'status-attribute'}`}>
+                              {row.is_current ? 'Current' : 'Superseded'}
+                            </span>
+                            {!row.is_current && row.superseded_at ? (
+                              <span>{formatDateTime(row.superseded_at)}</span>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td>{formatDateTime(row.created_at)}</td>
+                        <td className="instrument-research-rating-history-rationale">
+                          {row.rationale || '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="instrument-placeholder instrument-research-placeholder">
+                No rating revisions yet.
+              </div>
+            )}
           </section>
 
           {productFrameworkAttributes === null ? (
@@ -11517,7 +10754,8 @@ export default function FundDetailPage({
                   <tr>
                     <th>Domain</th>
                     <th>As Of</th>
-                    <th>Source Cutoff</th>
+                    <th>Calculated / Updated At</th>
+                    <th>Market Input Watermark</th>
                     <th>Methodology</th>
                     <th>Status</th>
                   </tr>
@@ -11527,7 +10765,8 @@ export default function FundDetailPage({
                     <tr key={row.domain}>
                       <td>{row.domain}</td>
                       <td>{row.asOf}</td>
-                      <td>{row.cutoff}</td>
+                      <td>{row.updatedAt}</td>
+                      <td>{row.inputWatermark}</td>
                       <td>{row.methodology}</td>
                       <td>
                         <span className={`status-badge ${row.tone}`}>{row.status}</span>

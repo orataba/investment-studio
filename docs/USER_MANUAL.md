@@ -139,11 +139,11 @@ Watchlist 的字段来自 field registry 和 instrument attributes。字段可�
 
 `Group By` 支持可写 taxonomy 或只读字段分组。可写 taxonomy 分组支持拖拽资产到目标分组，并把分类结果写回后端。只读指标分组只用于查看，不能拖拽修改。
 
-分类应由研究或业务负责人明确维护。系统不会自动推断 fund/index taxonomy。遇到分类为空，应补标签或补 taxonomy assignment，而不是等待系统自动填充。
+分类应由研究或业务负责人明确维护。系统不会自动推断 fund/ETF/index taxonomy。遇到分类为空，应补标签或补 taxonomy assignment，而不是等待系统自动填充。
 
-### 5.6 基金详情页
+### 5.6 基金与 ETF 详情页
 
-基金详情页包含 Overview、Quote、Performance、Risk、Exposure、Ratings、People、Strategy、Price、Documents、Research、Monitoring 等信息区。实际可见 tab 会根据数据覆盖情况和资产类型变化。
+基金与 ETF 详情页包含 Overview（内含 Quote）、Performance、Risk、Price、People、Strategy、Documents、Research 和 Monitoring 等信息区。实际可见 tab 会根据资产类型变化；研究评级在 Research 内人工维护，每次保存新增 revision，不覆盖旧判断。
 
 常用区域：
 
@@ -151,7 +151,7 @@ Watchlist 的字段来自 field registry 和 instrument attributes。字段可�
 - Quote：查看 NAV 序列、NAV with dividend、分红、默认 benchmark 和图表。
 - Performance：查看增长曲线、年度收益、trailing returns、peer comparison 和区间表现。
 - Risk：查看波动率、回撤、风险结构、rolling volatility / Sharpe 和 benchmark 对比。
-- Research：维护人工评级、研究结论、research overview 和时间线 notes。
+- Research：维护人工评级、研究结论、research overview 和时间线 notes；修改评级前先核对 revision history、作者、依据、置信度与复核日。
 - Monitoring：查看需要关注的缺失数据、标签、刷新任务和监控判断。
 
 在 Quote / Performance / Risk 中选择 benchmark 后，图表会展示基金与 benchmark 的相对表现。benchmark 本身也必须有可用行情，否则只显示基金自身数据。
@@ -186,6 +186,8 @@ recalc 失败时，不要手工改计算结果。应查看失败资产、失败�
 
 Portfolio 以交易和行情为事实来源。持仓、市值、绩效、风险和研究结果都由这些事实计算得出。不要直接修改结果表来“修正”展示值，应回到交易、账户、行情或 taxonomy 源头处理。
 
+创建组合时必须同时填写组合名称并显式选择 base currency。系统不会根据所在地、已有组合或账户币种默认成 USD；base currency 一旦承载交易和估值历史，不应通过普通编辑随意修改。创建账户时同样必须选择币种；交易币种只从已选账户或 instrument 的正式币种事实解析，无法解析时禁止保存。
+
 ### 6.2 Accounts
 
 Accounts 管理组合内账户。账户类型通常包括证券账户和现金/存款账户。证券账户可设置默认 settlement cash account，用于买卖、分红、债券兑付等交易的现金结算。
@@ -207,6 +209,10 @@ Accounts 管理组合内账户。账户类型通常包括证券账户和现金/�
 
 Transactions 是组合事实入口。新增交易前确认账户、资产、币种、trade date、settlement date、数量、价格、费用和税费。交易保存后会生成 ledger postings，并影响持仓、现金、成本和组合快照。
 
+交易保存后不是一条可以无痕覆盖的数据库记录。系统为交易保留稳定 `transaction_id`，后续修正和删除分别追加
+新 revision；Transactions 列表与组合计算只使用当前有效 revision，完整版本链保留在 History 和审计记录中。
+金额、数量、价格、费用和汇率按 Decimal 保存，界面应使用普通十进制输入，不使用科学计数法。
+
 支持的交易类型：
 
 - `buy`：买入证券。需要证券账户、instrument、quantity、price、gross amount，可填写 fee / tax，需要结算现金账户。
@@ -227,9 +233,45 @@ Transactions 是组合事实入口。新增交易前确认账户、资产、币�
 
 买入、卖出和证券期初持仓要求 gross amount 与 quantity × price 一致。卖出、到期兑付和仓位转移会校验可用数量。分红、票息、费用、税费等若带 entitlement date，日期不能晚于 trade date。settlement date 不能早于 trade date。
 
-内部转账用于组合内账户之间移动现金或持仓。现金转账填写金额；持仓转账填写 instrument、quantity，必要时填写 transferred cost basis。内部转账会生成 transfer in/out 配对记录，不应手工分别录入两边。
+#### 本地操作者身份
 
-删除交易会影响由该交易派生的现金、持仓、成本和绩效。删除内部转账配对时，系统会按 transfer group 处理对应记录。删除前应确认该交易不是后续复盘口径的一部分。
+新增、修正和删除交易都要求填写 `Operator display name`。第一次保存时，浏览器会生成稳定的本地 actor id，
+并把 actor id 与 display name 只保存在当前浏览器的 local storage；以后修改 display name 不会改变该 actor id。
+清理浏览器数据、换浏览器或换设备会形成另一个 actor id，因此不要把共享浏览器当作个人审计身份使用。
+
+当前该身份标记为 `client_asserted`，用于本地审计署名，不等于登录认证、电子签名或 RBAC。需要多人正式使用前，
+仍需接入认证身份；不要把本地 display name 当作已经验证的人员凭证。
+
+#### 修正交易与查看 History
+
+修正录错的历史交易：
+
+1. 在 Transactions 选择目标行，先打开 `History`，确认当前版本、此前操作人、原因、时间和 changed fields。
+2. 点击编辑。抽屉顶部显示本次草稿基于的 revision，例如 `Base revision v2`。
+3. 修改至少一个事实字段，确认 `Operator display name`，并填写至少 3 个字符的 `Change reason`。
+4. 保存后系统追加一条 amend revision；原版本仍保留，持仓、账本和快照按新的 current revision 重建。
+
+`History` 按版本展示 `baseline / create / amend / delete` operation、actor/source、记录时间、change reason、
+changed fields 和 mutation id。它用于解释事实如何变化，不表示旧版本仍同时参与当前计算。
+
+保存修正或删除时，系统会核对打开表单时的 revision id 与 revision number。若其他页面或用户已经先修改，界面会显示
+`Concurrent change detected` / revision conflict，并保留当前草稿和原因；系统不会用 last-write-wins 覆盖新版本。
+此时关闭编辑抽屉，刷新或重新选择该交易，查看最新 Fact 与 History，再人工合并仍需要的改动并重新提交。
+不要反复点击保存，也不要绕过冲突直接改数据库。
+
+#### 删除与内部转账
+
+删除不是物理删除。确认框要求 operator、至少 3 个字符的 deletion reason 和当前 expected revision；成功后系统追加
+delete tombstone，该交易不再出现在当前列表和当前计算中，但稳定身份、旧版本、删除操作人、原因和时间继续保留。
+若删除会使之后的卖出或转仓超过历史可用持仓，系统会拒绝该操作，应先检查后续交易链。
+
+内部转账用于组合内账户之间移动现金或持仓。现金转账填写金额；持仓转账填写 instrument、quantity，必要时填写
+transferred cost basis。必须通过 Internal Transfer 表单一次提交，系统会在同一个 mutation 中原子生成
+`transfer_out / transfer_in` 配对，不应手工分别录入两边。配对记录不能单腿编辑；需要修正时先使用 `Delete Pair`
+为两腿同时追加 deletion revisions，再按正确事实重新创建整对。单腿删除不会被接受。
+
+任何修正或删除都会影响由该交易派生的现金、持仓、成本和绩效。操作前应确认业务票据和后续交易关系；保存后若快照
+显示 stale，等待后台刷新完成再复核 Holdings、Accounts、Performance 和相关 ledger postings。
 
 ### 6.4 Holdings
 
@@ -259,11 +301,11 @@ Performance 用于真实组合区间复盘。核心口径是日频 TWR、期间 
 - Boundary holdings：检查区间开始和结束持仓。
 - Entries / drilldown：追踪计算条目。
 
-Performance 反映真实历史组合，不是当前权重假设。若与 Risk 或 Research 结果不同，先确认三者口径：Performance 是历史事实，Risk 是当前持仓风险，Research 是规划求解和假设回测。
+Performance 反映真实历史组合，不是当前权重假设。若与 Risk 或 Research 结果不同，先确认三者口径：Performance 是历史事实，Risk 是当前持仓风险，当前名为 Research 的页面只做 Allocation Research 的规划求解和 Policy Replay。
 
 ### 6.7 Risk
 
-Risk 是当前权重口径的风险工作台，使用当前非现金持仓权重和资产历史收益窗口。它适合回答“现在这组持仓的风险结构如何”，不适合替代历史绩效归因。
+Risk 是当前权重口径的风险工作台，使用当前非现金持仓权重和资产 canonical total-return 历史窗口。它适合回答“现在这组持仓如果以当前权重保持不变，风险结构如何”，不适合替代历史绩效归因。所有投资指标都由后端 Risk Workspace 计算；浏览器只负责选择窗口、taxonomy scope、matrix 日期和 benchmark，并展示结果。
 
 常用内容：
 
@@ -273,11 +315,15 @@ Risk 是当前权重口径的风险工作台，使用当前非现金持仓权重
 - risk contribution：看各资产或分组对组合风险的贡献。
 - benchmark：选择可用 benchmark 后比较风险曲线。
 
-风险结果依赖资产收益序列。缺少历史行情、日期不重叠或缺少 FX 时，结果可能为空或覆盖不足。
+风险结果依赖 canonical total-return、FX、当前估值权重和 taxonomy assignment。缺少历史行情、日期不重叠、存在不完整 observation、缺少 FX、持仓未分类或目标集合不完整时，对应 section 会明确显示 unavailable；系统不会用 chart/valuation 数据、较短窗口、0 return 或未分类资产的静默剔除来补算。页面元数据中的 Production Risk Model、频率、coverage 和 reason 是复核口径的一部分。
 
 ### 6.8 Taxonomies
 
-Taxonomies 管理组合分类和目标体系。Research 的求解结构来自这里。
+Taxonomies 管理普通组合的分类、归因主轴和目标体系。Research 的求解结构来自这里；
+只有显式归类的 ETF 轮动策略组合是特殊类型，不要求为了复用普通组合模型而配置 taxonomy、
+风险预算、TargetSet 或 policy drift。仅仅持有 ETF 的普通组合仍应配置 taxonomy。
+当前系统不会根据组合名称、组合 ID 或 ETF 持仓自动判断这种特殊类型；在正式引入可审计的
+组合运营分类前，该边界由人工管理，代码中的 taxonomy 校验不得给予 ETF 品种级豁免。
 
 常见对象：
 
@@ -299,9 +345,9 @@ Taxonomies 管理组合分类和目标体系。Research 的求解结构来自这
 
 若 Research 报 scope 无成员、目标缺失或 top sleeve bounds 无法满足，通常要回到 Taxonomies 检查 assignment、TargetSet 和树结构。
 
-### 6.9 Research
+### 6.9 Research（Allocation Research / Allocation Lab）
 
-Research 用于 target solve 和假设回测。它不改变真实持仓，结果用于研究和调仓建议。
+当前页面名 `Research` 仅指资产配置研究，用于 target solve 和 Policy Replay。它不是通用策略研究模型，不改变真实持仓，结果用于配置研究和调仓建议。planning taxonomy、TargetSet、风险预算和 policy drift 只适用于这类研究；ETF 轮动等其他策略不需要复用这些对象。
 
 运行前需要确认：
 
@@ -396,10 +442,12 @@ Research 失败不会覆盖上一轮成功结果。失败后先看页面上的�
 
 ## 9. 使用规范
 
-正式数据保存前先确认来源。行情要保留可追溯 provider 或来源说明；交易要保留业务票据或记录；taxonomy 和评级要有研究依据。
+正式数据保存前先确认来源。行情要保留可追溯 `source_ref` 或来源说明；交易要保留业务票据或记录；taxonomy 和评级要有研究依据。
 
 不要为了让图表显示而录入猜测值，不要用零值代替缺失值，不要把不适用字段强行填满。缺失就是重要信息，应通过补源数据或调整分析口径解决。
 
-不要删除已有历史事实来修正展示。需要更正时，优先按业务规则修改原交易、补录冲销或维护正确行情；不确定时先记录问题，不直接操作正式数据。
+不要通过数据库物理删除或原地覆盖历史事实来修正展示。普通录入错误优先使用 Transactions 编辑并填写修正原因；
+只有整笔事实不应继续生效时才使用 UI 的 tombstone delete，必要的业务冲销仍应补录为独立事实。行情错误应维护
+正确的行情 revision。不确定时先记录问题，不直接操作正式数据。
 
 导出结果适合会议沟通、数据复核和阶段性留档。投资判断仍需结合数据来源、覆盖期、缺失提示、人工研究和风险约束。

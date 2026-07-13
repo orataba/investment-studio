@@ -18,7 +18,7 @@ touch \
 
 for app in platform portfolio watchlist; do
   upper_app="$(printf '%s' "$app" | tr '[:lower:]' '[:upper:]')"
-  printf 'PORTFOLIO_OPS_%s_DATABASE_URL=postgresql://from-env-file/%s\nPORTFOLIO_OPS_%s_ALEMBIC_DATABASE_URL=postgresql://from-env-file/%s-alembic\n' \
+  printf 'PORTFOLIO_OPS_%s_DATABASE_URL=postgresql://from-env-file/%s\nPORTFOLIO_OPS_%s_ALEMBIC_DATABASE_URL=postgresql://from-env-file/%s-alembic\nPORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE=must-not-authorize-from-env-file\n' \
     "$upper_app" "$app" "$upper_app" "$app" > "$TEST_ROOT/apps/$app/backend/.env"
 done
 
@@ -39,6 +39,7 @@ export PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="postgresql://explicit/portfolio"
 export PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL="postgresql://explicit/portfolio-alembic"
 export PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="postgresql://explicit/watchlist"
 export PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL="postgresql://explicit/watchlist-alembic"
+export PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE="explicit-target"
 
 PROJECT_ROOT="$TEST_ROOT" PYTHON_BIN="$FAKE_PYTHON" ENV_ROOT="" \
   "$REPOSITORY_ROOT/infra/scripts/migrate_all.sh"
@@ -53,5 +54,12 @@ grep -q 'postgresql://explicit/portfolio' "$CAPTURE_PATH"
 grep -q 'postgresql://explicit/portfolio-alembic' "$CAPTURE_PATH"
 grep -q 'postgresql://explicit/watchlist' "$CAPTURE_PATH"
 grep -q 'postgresql://explicit/watchlist-alembic' "$CAPTURE_PATH"
+
+unset PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE
+if PROJECT_ROOT="$TEST_ROOT" PYTHON_BIN="$FAKE_PYTHON" ENV_ROOT="" \
+  "$REPOSITORY_ROOT/infra/scripts/migrate_all.sh" >/dev/null 2>&1; then
+  echo "A runtime .env file authorized a migration without caller confirmation." >&2
+  exit 1
+fi
 
 echo "migrate_all explicit-environment precedence test passed."

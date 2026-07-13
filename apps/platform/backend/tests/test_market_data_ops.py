@@ -582,7 +582,7 @@ def test_incremental_email_import_uses_attachment_nav_dates_not_latest_received_
     assert record == {"instrument_id": "zb945a"}
     rows = captured["rows"]
     assert [row["as_of_date"] for row in rows] == ["2026-04-02", "2026-04-03"]
-    assert captured["provider"] == "email:recent_window"
+    assert captured["source_ref"] == "email:recent_window"
     assert (
         captured["message"]
         == "Imported 2 NAV rows from 2 recent email attachments. Recalculated total_return_nav using dividend reinvestment."
@@ -697,7 +697,7 @@ def test_email_refresh_uses_success_cursor_and_does_not_reimport_unchanged_lates
                     "as_of_date": "2026-04-03",
                     "value": "0.9352",
                     "currency": "CNY",
-                    "provider": "email:previous",
+                    "source_ref": "email:previous",
                     "status": "complete",
                 }
             ],
@@ -1204,7 +1204,7 @@ def test_tushare_refresh_imports_public_fund_nav(monkeypatch) -> None:
     assert captured["api_call"]["params"] == {"ts_code": "018654.OF"}
     assert captured["api_call"]["fields"] == "ts_code,ann_date,end_date,nav_date,unit_nav,accum_nav,adj_nav,update_flag"
     replace_payload = captured["replace"]
-    assert replace_payload["provider"] == "tushare:fund_nav"
+    assert replace_payload["source_ref"] == "tushare:fund_nav"
     assert replace_payload["mode"] == "api"
     assert replace_payload["rows"] == [
         {
@@ -1278,7 +1278,7 @@ def test_tushare_refresh_imports_index_close(monkeypatch) -> None:
                 "as_of_date": market_data_ops.date(2026, 6, 15),
                 "value": market_data_ops.Decimal("4200.12"),
                 "currency": "CNY",
-                "provider": "tushare:index_daily",
+                "source_ref": "tushare:index_daily",
                 "status": "complete",
             }
         ],
@@ -1347,7 +1347,7 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
         "quote_selection_policy": {
             "trading": ["last", "close"],
             "valuation": ["close", "last"],
-            "total_return": ["adjusted_close", "close", "last"],
+            "total_return": ["adjusted_close"],
             "chart": ["adjusted_close", "close", "last"],
             "reference": ["close", "last"],
         },
@@ -1360,7 +1360,7 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
             "as_of_date": market_data_ops.date(2024, 1, 2),
             "value": market_data_ops.Decimal("0.91"),
             "currency": "CNY",
-            "provider": "tushare:fund_daily",
+            "source_ref": "tushare:fund_daily",
             "status": "complete",
         },
         {
@@ -1369,7 +1369,7 @@ def test_tushare_price_refresh_starts_at_2024_when_no_existing_history(monkeypat
             "as_of_date": market_data_ops.date(2024, 1, 2),
             "value": "0.91",
             "currency": "CNY",
-            "provider": "tushare:fund_adj:qfq:latest_factor=1",
+            "source_ref": "tushare:fund_adj:qfq:latest_factor=1",
             "status": "complete",
         },
     ]

@@ -42,8 +42,7 @@ Copilot 不是独立产品，也不是当前已发布工作面里的聊天框。
 - quote / chart
 - performance
 - risk
-- exposure
-- ratings
+- current manual research rating
 - people
 - strategy
 - documents
@@ -91,7 +90,7 @@ Copilot 不是独立产品，也不是当前已发布工作面里的聊天框。
 
 - canonical facts
 - NAV rows
-- ratings
+- research ratings
 - research notes
 - manual profiles
 - product framework labels

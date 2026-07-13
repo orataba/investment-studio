@@ -7,7 +7,7 @@
 - `apps/platform`
   平台入口和 Database Dashboard。
 - `apps/watchlist`
-  fund/index Watchlist / local detail / monitoring / recalc；Copilot 当前只保留后端扩展接口，不作为已发布 UI。
+  fund/ETF/index Watchlist / local detail / research rating / monitoring / recalc；Copilot 当前只保留后端扩展接口，不作为已发布 UI。
 - `apps/portfolio`
   Portfolio / account / transaction / performance / risk / research / taxonomy。
 
@@ -35,7 +35,7 @@
 
 - 直接读写 `watchlist`
 - 直接读取 `instrument_registry`
-- 当前已发布范围收口为 `fund` 与 `index` 资产类型；其他共享资产可以存在于 registry，但不进入 Watchlist 主工作面
+- 当前已发布范围收口为 `fund`、`etf` 与 `index` 资产类型；其他共享资产可以存在于 registry，但不进入 Watchlist 主工作面
 - 在本地维护自己的 read models、recalc jobs、manual profile 和产品框架；Copilot 仅保留 backend extension boundary
 
 ### Portfolio
@@ -48,7 +48,7 @@
 
 当前共享层分成三部分：
 
-### `packages-ops/instrument-core`
+### `packages/instrument-core`
 
 承载跨 app 稳定 contract 和共享持久化 helper：
 
@@ -77,8 +77,14 @@
 
 - instrument
 - instrument_identifier
-- instrument_market_data
+- quote_series
+- quote_observation
+- quote_observation_revision
 - registry metadata
+
+行情值不再保存在可覆盖的扁平表中：series 定义稳定口径，observation 定义业务日期，
+revision 以 append-only 方式保存值、来源证据、状态及更正历史。应用读取的扁平 market-data
+DTO 只是 current complete revision 的投影，不是另一份事实表。
 
 `instrument_registry` 的 Alembic 入口独立放在 [infra/instrument_registry](../infra/instrument_registry/README.md)，不再挂在 `platform` app 下。
 
@@ -86,7 +92,12 @@
 
 共享资产身份由数据库直接约束，而不是靠 app 约定：
 
-- `portfolio.transaction_record.instrument_id -> instrument_registry.instrument.instrument_id`
+- `portfolio.transaction_revision_record.instrument_id -> instrument_registry.instrument.instrument_id`
+
+Portfolio 的交易真源是 append-only revision ledger；日常计算只读取
+`portfolio.transaction_current` 最新有效视图。视图不是可写表，修订记录中的
+instrument snapshot 只用于保存当时输入证据，canonical instrument identity 仍由
+Instrument Registry 外键约束。
 - `watchlist.watchlist_item.instrument_id -> instrument_registry.instrument.instrument_id`
 - `watchlist.instrument_detail.instrument_id -> instrument_registry.instrument.instrument_id`
 

@@ -53,7 +53,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
       'as_of_date: latest complete as_of_date',
       'resolved_primary_benchmark_assignment_id: resolved active assignment at as_of_date',
       'base_currency: portfolio base currency',
-      'coverage_state: complete / partial / unavailable',
+      'nav_coverage_state + nav_coverage_reason_codes: fair-value NAV coverage only',
     ],
     coreBlocks: [
       { title: 'Portfolio summary hero', owner: 'PortfolioSnapshot', role: 'Show NAV, day move, status, and latest complete as_of_date' },
@@ -89,7 +89,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
       'selected_taxonomy_id: page-specific default',
       'resolved_primary_benchmark_assignment_id: resolved active assignment at as_of_date',
       'base_currency: portfolio base currency',
-      'coverage_state: complete / partial / unavailable',
+      'nav_coverage_state + nav_coverage_reason_codes: fair-value NAV coverage only',
     ],
     coreBlocks: [
       { title: 'Canonical holdings table', owner: 'Positions + lots', role: 'Show market value, weight, cost basis, and unrealized state' },
@@ -124,7 +124,9 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
       'benchmark_resolution_mode: resolved primary benchmark over selected period',
       'selected_taxonomy_id: page-specific default',
       'base_currency: portfolio base currency',
-      'coverage_state: complete / partial / unavailable',
+      'nav_coverage_state + nav_coverage_reason_codes: fair-value NAV coverage',
+      'book_pnl_coverage_state + book_pnl_coverage_reason_codes: accounting P&L coverage',
+      'twr_reliability_status + twr_reliability_reasons: return-chain reliability',
     ],
     coreBlocks: [
       { title: 'Return scorecard', owner: 'PerformanceSnapshot', role: 'Show TWR, IRR, drawdown, and absolute result' },
@@ -158,7 +160,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
       'selected_taxonomy_id: planning-aware default',
       'target_comparators: SAA Weight / SAA Risk / TAA Weight / TAA Risk',
       'resolved_primary_benchmark_assignment_id: resolved active assignment at as_of_date',
-      'coverage_state: complete / partial / unavailable',
+      'nav_coverage_state + nav_coverage_reason_codes: fair-value input coverage only',
     ],
     coreBlocks: [
       { title: 'Rolling risk path', owner: 'RiskSnapshot + realized window', role: 'Show rolling volatility and Sharpe with optional benchmark compare' },
@@ -216,7 +218,7 @@ export const portfolioPageDefinitions: Record<string, PortfolioPageDefinition> =
     sharedContext: [
       'portfolio_id: current workspace portfolio',
       'base_currency: portfolio base currency',
-      'coverage_state: complete / partial / unavailable',
+      'valuation_coverage_state: account valuation coverage only',
     ],
     coreBlocks: [
       { title: 'Account list', owner: 'Account', role: 'List cash and securities accounts with role and status' },

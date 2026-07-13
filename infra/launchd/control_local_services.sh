@@ -45,6 +45,38 @@ is_scheduled_service() {
   [[ "$1" == "market-data-refresh" ]]
 }
 
+bootstrap_service() {
+  local label="$1"
+  local plist="$2"
+  local attempt
+  local max_attempts="${LAUNCHD_BOOTSTRAP_MAX_ATTEMPTS:-5}"
+  local retry_delay_seconds="${LAUNCHD_BOOTSTRAP_RETRY_DELAY_SECONDS:-1}"
+
+  if [[ ! "$max_attempts" =~ ^[1-9][0-9]*$ ]]; then
+    echo "LAUNCHD_BOOTSTRAP_MAX_ATTEMPTS must be a positive integer." >&2
+    return 64
+  fi
+  if [[ ! "$retry_delay_seconds" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "LAUNCHD_BOOTSTRAP_RETRY_DELAY_SECONDS must be non-negative." >&2
+    return 64
+  fi
+
+  for attempt in $(seq 1 "$max_attempts"); do
+    # bootout can return before launchd has fully released the old job.  Clear
+    # any partial retry state and tolerate that short teardown window.
+    launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
+    if launchctl bootstrap "$domain" "$plist"; then
+      return 0
+    fi
+    if [[ "$attempt" -lt "$max_attempts" ]]; then
+      sleep "$retry_delay_seconds"
+    fi
+  done
+
+  echo "Cannot restart $label after $max_attempts bootstrap attempts." >&2
+  return 1
+}
+
 stop_services() {
   local service label plist
   mkdir -p "$(dirname "$STATE_FILE")"
@@ -89,8 +121,7 @@ start_services() {
       echo "Cannot restart $label: missing plist $plist" >&2
       exit 1
     fi
-    launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
-    launchctl bootstrap "$domain" "$plist"
+    bootstrap_service "$label" "$plist"
     launchctl enable "$domain/$label"
     if ! is_scheduled_service "$service"; then
       launchctl kickstart -k "$domain/$label"

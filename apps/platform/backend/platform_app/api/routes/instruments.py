@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from typing import Annotated
 
@@ -17,6 +18,7 @@ from platform_app.api.contracts import (
     PlatformNavImportPreviewResponse,
     PlatformNavImportRequest,
     PlatformQuoteSelectionPolicyUpdateRequest,
+    PlatformQuoteObservationRevisionsResponse,
     PlatformRefreshTriggerRequest,
     PlatformSourceSettingsUpdateRequest,
 )
@@ -32,7 +34,9 @@ from platform_app.services.instrument_store import (
     create_instrument,
     find_instrument_by_identifier,
     get_instrument,
+    instrument_exists,
     instrument_registry_name,
+    list_quote_observation_revisions,
     list_instruments,
     restore_instrument,
     upsert_market_data,
@@ -153,6 +157,32 @@ def get_instrument_record(instrument_id: str) -> PlatformInstrumentDetail:
     return PlatformInstrumentDetail.model_validate(record)
 
 
+@router.get(
+    "/{instrument_id}/quote-revisions",
+    response_model=PlatformQuoteObservationRevisionsResponse,
+)
+def list_instrument_quote_revisions(
+    instrument_id: str,
+    quote_series_id: str | None = None,
+    as_of_date: date | None = None,
+    limit: Annotated[int, Query(ge=1, le=5000)] = 500,
+) -> PlatformQuoteObservationRevisionsResponse:
+    if not instrument_exists(instrument_id):
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    revisions = list_quote_observation_revisions(
+        instrument_id=instrument_id,
+        quote_series_id=quote_series_id,
+        as_of_date=as_of_date,
+        limit=limit + 1,
+    )
+    return PlatformQuoteObservationRevisionsResponse(
+        instrument_id=instrument_id,
+        limit=limit,
+        truncated=len(revisions) > limit,
+        revisions=revisions[:limit],
+    )
+
+
 @router.post("/{instrument_id}/market-data", response_model=PlatformInstrumentRecord)
 def upsert_instrument_market_data(
     instrument_id: str,
@@ -166,8 +196,9 @@ def upsert_instrument_market_data(
         as_of_date=payload.as_of_date,
         value=str(payload.value),
         currency=payload.currency,
-        provider=payload.provider,
+        source_ref=payload.source_ref,
         status=payload.status,
+        source_published_at=payload.source_published_at,
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
@@ -256,7 +287,7 @@ def import_instrument_nav_history(
         record = import_nav_text(
             instrument_id=instrument_id,
             raw_text=payload.raw_text,
-            provider=payload.provider,
+            source_ref=payload.source_ref,
             status=payload.status,
             updated_by=payload.updated_by,
         )
@@ -304,7 +335,7 @@ def import_instrument_nav_history_file(
             instrument_id=instrument_id,
             file_name=payload.file_name,
             file_bytes=payload.decoded_bytes(),
-            provider=payload.provider,
+            source_ref=payload.source_ref,
             status=payload.status,
             updated_by=payload.updated_by,
         )

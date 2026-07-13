@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import date
+from datetime import date, timedelta
+import hashlib
+import json
 from math import isclose, sqrt
 
 import pytest
+from sqlalchemy import event
 
+from portfolio_app.api import contracts
 from portfolio_app.api.routes import performance as performance_routes
 from portfolio_app.api.routes import workspace as workspace_routes
 from portfolio_app.db.models import (
@@ -14,27 +18,176 @@ from portfolio_app.db.models import (
     PortfolioDailyHoldingSnapshotModel,
     PortfolioDailySnapshotModel,
 )
-from portfolio_app.db.session import get_session_factory
+from portfolio_app.db.session import get_engine, get_session_factory
 from portfolio_app.services import daily_snapshots, ledger, performance, portfolio_store
+from portfolio_app.services.canonical_quotes import resolve_quote_window_books_in_session
+from portfolio_ops_instrument_core import instrument_store as shared_store
+from portfolio_ops_instrument_core.db_models import Instrument
+from tests.store_fixture import TEST_PORTFOLIO_STORE
+
+
+# Every integration scenario in this module explicitly owns the full portfolio
+# state it exercises.  Starting with an empty ledger keeps fixture loading on
+# the same append-only contract as a newly provisioned database.
+PORTFOLIO_LEDGER_FIXTURE_MODE = "empty"
+
+
+class _CanonicalSeedCatalog:
+    def get(self, instrument_id: str) -> dict[str, object] | None:
+        del instrument_id
+        return None
+
+
+_TEST_INSTRUMENT_CATALOG = _CanonicalSeedCatalog()
 
 
 def _write_store(store: dict[str, object]) -> None:
-    portfolio_store.reset_store(store)
+    """Persist portfolio facts and seed their mocked instruments canonically.
+
+    Historical kernel tests replace the registry-detail read used by the
+    non-valuation analytics paths.  Daily NAV now resolves valuations directly
+    from the shared quote tables, so those same fixtures must be represented in
+    the real canonical store instead of reviving a production fallback.
+    """
+
+    revision_store = deepcopy(store)
+    for transaction in revision_store.get("transactions", []):
+        if not isinstance(transaction, dict):
+            continue
+        if (
+            transaction.get("transaction_type") == "opening_balance"
+            and transaction.get("instrument_id") is not None
+            and transaction.get("acquisition_date") is None
+        ):
+            # Synthetic performance histories treat the opening trade date as
+            # the acquisition date unless the scenario states otherwise.  The
+            # revision ledger requires that economic fact explicitly.
+            transaction["acquisition_date"] = transaction["trade_date"]
+
+    instrument_ids = {
+        str(transaction.get("instrument_id") or "").strip()
+        for transaction in revision_store.get("transactions", [])
+        if isinstance(transaction, dict)
+        and str(transaction.get("instrument_id") or "").strip()
+    }
+    instrument_ids.update(
+        instrument_id
+        for instrument_id in ("fx-usd-hkd", "fx-usd-cny")
+        if _TEST_INSTRUMENT_CATALOG.get(instrument_id) is not None
+    )
+    session_factory = get_session_factory()
+    for instrument_id in sorted(instrument_ids):
+        detail = _TEST_INSTRUMENT_CATALOG.get(instrument_id)
+        if not isinstance(detail, dict):
+            continue
+        instrument_type = str(detail.get("instrument_type") or "other").strip().lower()
+        default_policy = deepcopy(
+            shared_store.QUOTE_SELECTION_POLICY_DEFAULTS.get(
+                instrument_type,
+                shared_store.QUOTE_SELECTION_POLICY_DEFAULTS["other"],
+            )
+        )
+        raw_policy = detail.get("quote_selection_policy")
+        if isinstance(raw_policy, dict):
+            for role, bases in raw_policy.items():
+                if role in default_policy and isinstance(bases, list):
+                    default_policy[role] = deepcopy(bases)
+
+        with session_factory() as session:
+            instrument = session.get(Instrument, instrument_id)
+            if instrument is None:
+                instrument = Instrument(
+                    instrument_id=instrument_id,
+                    instrument_name=str(detail.get("instrument_name") or instrument_id),
+                    instrument_type=instrument_type,
+                    currency=str(detail.get("currency") or "USD").strip().upper(),
+                    quote_selection_policy_json=default_policy,
+                    source_settings_json={},
+                    refresh_status_json={},
+                    lifecycle_state_json={"status": "active"},
+                    market_data_updated_at=None,
+                )
+                session.add(instrument)
+            else:
+                instrument.quote_selection_policy_json = default_policy
+            session.commit()
+
+        market_data_rows = [
+            deepcopy(point)
+            for point in detail.get("market_data", [])
+            if isinstance(point, dict)
+        ]
+        for point in market_data_rows:
+            quote_basis = str(point.get("quote_basis") or "").strip().lower()
+            canonical_metric_family = shared_store.VALID_QUOTE_BASES.get(quote_basis)
+            if canonical_metric_family is not None:
+                point["metric_family"] = canonical_metric_family
+        if market_data_rows:
+            shared_store.upsert_market_data_points(
+                session_factory,
+                instrument_id=instrument_id,
+                rows=market_data_rows,
+            )
+    portfolio_store.reset_store(revision_store)
 
 
 def test_holding_day_change_uses_adjusted_return_but_raw_market_value_across_split() -> None:
     change_pct, change_value = performance._holding_day_change_metrics(
         quantity=200.0,
         current_price=0.905,
-        previous_price=1.945,
-        current_return_price=0.905,
-        previous_return_price=0.9730108306861102,
+        current_total_return_price=0.905,
+        previous_total_return_price=0.9730108306861102,
         instrument_ref={"instrument_type": "etf"},
     )
     expected_return = 0.905 / 0.9730108306861102 - 1.0
     assert change_pct == pytest.approx(expected_return)
     assert change_value == pytest.approx(200.0 * 0.905 - 200.0 * 0.905 / (1.0 + expected_return))
     assert change_pct > -0.10
+
+
+@pytest.mark.parametrize(
+    ("current_total_return_price", "previous_total_return_price"),
+    [(None, 100.0), (101.0, None), (None, None)],
+)
+def test_holding_day_change_never_falls_back_to_valuation_prices(
+    current_total_return_price: float | None,
+    previous_total_return_price: float | None,
+) -> None:
+    assert performance._holding_day_change_metrics(
+        quantity=10.0,
+        current_price=101.0,
+        current_total_return_price=current_total_return_price,
+        previous_total_return_price=previous_total_return_price,
+        instrument_ref={"instrument_type": "equity"},
+    ) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "contract_model",
+    [
+        contracts.DailySnapshotRecord,
+        contracts.DailyPerformancePoint,
+        contracts.PerformanceSummary,
+        contracts.ReturnCalendarBucket,
+        contracts.ReturnCalendarSummary,
+        contracts.DailyContributionSliceRecord,
+        contracts.ContributionLineRecord,
+        contracts.ContributionReportSummary,
+        contracts.ContributionCalendarBucketRecord,
+        contracts.ContributionCalendarSummary,
+        contracts.ContributionBucketGroupRecord,
+        contracts.ContributionBucketSummary,
+        contracts.ContributionBucketCalendarBucketRecord,
+        contracts.ContributionBucketCalendarSummary,
+    ],
+)
+def test_twr_reliability_contract_fields_are_required(contract_model) -> None:
+    for field_name in (
+        "twr_state",
+        "twr_reliability_status",
+        "twr_reliability_reasons",
+    ):
+        assert contract_model.model_fields[field_name].is_required()
 
 
 def _test_instrument_detail(
@@ -169,155 +322,540 @@ def test_realized_risk_contribution_links_daily_contributions_for_weekly_frequen
     assert metrics["instrument-b"]["risk_return_observation_count"] == 3
 
 
-def test_valuation_quote_selection_rejects_reference_and_total_return_fallbacks():
-    detail = {
-        "instrument_id": "equity-us-split",
-        "instrument_name": "Split Adjusted Equity",
-        "instrument_type": "equity",
-        "currency": "USD",
-        "identifiers": [{"identifier_type": "ticker", "identifier_value": "SPLT", "is_primary": True}],
-        "quote_selection_policy": {
+def _create_canonical_return_test_instrument(
+    *,
+    ticker: str,
+    total_return_bases: list[str],
+) -> str:
+    instrument = shared_store.create_instrument(
+        get_session_factory(),
+        instrument_name=f"Canonical Return Test {ticker}",
+        instrument_type="equity",
+        currency="USD",
+        identifiers=[
+            {
+                "identifier_type": "ticker",
+                "identifier_value": ticker,
+                "is_primary": True,
+            }
+        ],
+        quote_selection_policy={
+            "trading": ["close"],
             "valuation": ["close"],
-            "reference": ["adjusted_close"],
-            "total_return": ["adjusted_close", "close"],
+            "total_return": total_return_bases,
+            "chart": ["adjusted_close", "close"],
+            "reference": ["close"],
         },
-        "market_data": [
-            {
-                "metric_family": "price",
-                "quote_basis": "adjusted_close",
-                "as_of_date": "2026-01-02",
-                "value": "55.00",
-                "currency": "USD",
-                "status": "complete",
-            }
-        ],
-        "latest_market_data": [
-            {
-                "metric_family": "price",
-                "quote_basis": "adjusted_close",
-                "as_of_date": "2026-01-02",
-                "value": "55.00",
-                "currency": "USD",
-                "status": "complete",
-            }
-        ],
-    }
-
-    assert (
-        performance._select_market_point_as_of(
-            detail=deepcopy(detail),
-            role="valuation",
-            as_of_date=date(2026, 1, 2),
-        )
-        is None
     )
-    assert ledger._select_quote_value(deepcopy(detail), role="valuation", as_of_date=date(2026, 1, 2)) is None
-    assert ledger._select_quote_value(deepcopy(detail), role="valuation") is None
+    return str(instrument["instrument_id"])
 
-    total_return_point = performance._select_market_point_as_of(
-        detail=deepcopy(detail),
-        role="total_return",
+
+def _upsert_canonical_return_test_points(
+    instrument_id: str,
+    rows: list[dict[str, object]],
+) -> None:
+    assert shared_store.upsert_market_data_points(
+        get_session_factory(),
+        instrument_id=instrument_id,
+        rows=rows,
+    ) == len(rows)
+
+
+def _canonical_return_test_store(instrument_id: str) -> dict[str, object]:
+    portfolio_id = f"canonical-return-{instrument_id}"
+    store = _minimal_store(
+        portfolio_id=portfolio_id,
+        transactions=[
+            {
+                "transaction_id": "txn-opening",
+                "portfolio_id": portfolio_id,
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "broker-us-core",
+                "settlement_cash_account_id": None,
+                "instrument_id": instrument_id,
+                "instrument_ref": {
+                    "instrument_id": instrument_id,
+                    "instrument_name": instrument_id,
+                    "instrument_type": "equity",
+                    "currency": "USD",
+                    "identifiers": [],
+                },
+                "quantity": 10.0,
+                "price": 50.0,
+                "gross_amount": 500.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "USD",
+                "created_at": "2026-01-01T09:00:00Z",
+            }
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-01-02"
+    _write_store(store)
+    return store
+
+
+def test_holding_day_change_uses_only_same_locked_total_return_series():
+    instrument_id = _create_canonical_return_test_instrument(
+        ticker="TR-GOLDEN",
+        total_return_bases=["adjusted_close", "reinvested_nav"],
+    )
+    _upsert_canonical_return_test_points(
+        instrument_id,
+        [
+            {"metric_family": "price", "quote_basis": "close", "as_of_date": "2026-01-01", "value": "50", "currency": "USD", "source_ref": "test:close:1", "status": "complete"},
+            {"metric_family": "price", "quote_basis": "close", "as_of_date": "2026-01-02", "value": "55", "currency": "USD", "source_ref": "test:close:2", "status": "complete"},
+            {"metric_family": "price", "quote_basis": "adjusted_close", "as_of_date": "2026-01-01", "value": "100", "currency": "USD", "source_ref": "test:adjusted:1", "status": "complete"},
+            {"metric_family": "price", "quote_basis": "adjusted_close", "as_of_date": "2026-01-02", "value": "102", "currency": "USD", "source_ref": "test:adjusted:2", "status": "complete"},
+            {"metric_family": "nav", "quote_basis": "reinvested_nav", "as_of_date": "2026-01-01", "value": "1000", "currency": "USD", "source_ref": "test:lower:1", "status": "complete"},
+            {"metric_family": "nav", "quote_basis": "reinvested_nav", "as_of_date": "2026-01-02", "value": "1500", "currency": "USD", "source_ref": "test:lower:2", "status": "complete"},
+        ],
+    )
+    store = _canonical_return_test_store(instrument_id)
+
+    with get_session_factory()() as quote_session:
+        books = resolve_quote_window_books_in_session(
+            quote_session,
+            instrument_ids=[instrument_id],
+            roles=["valuation", "total_return"],
+            start_date=date(2025, 12, 1),
+            end_date=date(2026, 1, 2),
+        )
+    current = books["total_return"].quote_at(instrument_id, date(2026, 1, 2))
+    previous = books["total_return"].previous_quote(instrument_id, current or {})
+    assert current is not None and previous is not None
+    assert current["role"] == previous["role"] == "total_return"
+    assert current["quote_basis"] == previous["quote_basis"] == "adjusted_close"
+    assert current["quote_series_id"] == previous["quote_series_id"]
+    assert current["source_ref"] == "test:adjusted:2"
+    assert previous["source_ref"] == "test:adjusted:1"
+
+    report = performance.build_holdings_report(
+        store["portfolios"][0],
+        store["accounts"],
+        store["transactions"],
         as_of_date=date(2026, 1, 2),
     )
-    assert total_return_point is not None
-    assert total_return_point["quote_basis"] == "adjusted_close"
+    holding = report["positions"][0]
+    expected_return = 102.0 / 100.0 - 1.0
+    assert holding["quote_basis"] == "close"
+    assert holding["last_price"] == pytest.approx(55.0)
+    assert holding["market_value"] == pytest.approx(550.0)
+    assert holding["cost_basis"] == pytest.approx(500.0)
+    assert holding["cost_basis_base"] == pytest.approx(500.0)
+    assert holding["unrealized_pnl"] == pytest.approx(50.0)
+    assert holding["unrealized_pnl_base"] == pytest.approx(50.0)
+    assert holding["unrealized_return"] == pytest.approx(0.1)
+    assert holding["day_change_pct"] == pytest.approx(expected_return)
+    assert holding["day_change_value"] == pytest.approx(
+        550.0 - 550.0 / (1.0 + expected_return)
+    )
 
-    misconfigured_detail = deepcopy(detail)
-    misconfigured_detail["quote_selection_policy"]["valuation"] = ["adjusted_close", "close"]
-    misconfigured_detail["market_data"].append(
-        {
-            "metric_family": "price",
-            "quote_basis": "close",
-            "as_of_date": "2026-01-02",
-            "value": "50.00",
+
+def test_preferred_total_return_series_late_start_never_stitches_lower_series():
+    instrument_id = _create_canonical_return_test_instrument(
+        ticker="TR-LATE-START",
+        total_return_bases=["adjusted_close", "reinvested_nav"],
+    )
+    _upsert_canonical_return_test_points(
+        instrument_id,
+        [
+            {"metric_family": "price", "quote_basis": "close", "as_of_date": "2026-01-02", "value": "55", "currency": "USD", "source_ref": "test:close", "status": "complete"},
+            {"metric_family": "price", "quote_basis": "adjusted_close", "as_of_date": "2026-01-02", "value": "200", "currency": "USD", "source_ref": "test:preferred", "status": "complete"},
+            {"metric_family": "nav", "quote_basis": "reinvested_nav", "as_of_date": "2026-01-01", "value": "100", "currency": "USD", "source_ref": "test:lower:1", "status": "complete"},
+            {"metric_family": "nav", "quote_basis": "reinvested_nav", "as_of_date": "2026-01-02", "value": "101", "currency": "USD", "source_ref": "test:lower:2", "status": "complete"},
+        ],
+    )
+    store = _canonical_return_test_store(instrument_id)
+
+    report = performance.build_holdings_report(
+        store["portfolios"][0],
+        store["accounts"],
+        store["transactions"],
+        as_of_date=date(2026, 1, 2),
+    )
+    holding = report["positions"][0]
+    assert holding["market_value"] == pytest.approx(550.0)
+    assert holding["day_change_pct"] is None
+    assert holding["day_change_value"] is None
+
+
+def test_holding_unrealized_fields_fail_closed_without_market_value():
+    instrument_id = _create_canonical_return_test_instrument(
+        ticker="UNREALIZED-NO-PRICE",
+        total_return_bases=["adjusted_close"],
+    )
+    store = _canonical_return_test_store(instrument_id)
+
+    report = performance.build_holdings_report(
+        store["portfolios"][0],
+        store["accounts"],
+        store["transactions"],
+        as_of_date=date(2026, 1, 2),
+    )
+    holding = report["positions"][0]
+
+    assert holding["cost_basis"] == pytest.approx(500.0)
+    assert holding["market_value"] is None
+    assert holding["market_value_base"] is None
+    assert holding["unrealized_pnl"] is None
+    assert holding["unrealized_pnl_base"] is None
+    assert holding["unrealized_return"] is None
+
+
+def test_period_and_contribution_valuation_ignore_registry_detail_market_data(
+    monkeypatch,
+):
+    instrument_id = _create_canonical_return_test_instrument(
+        ticker="VALUATION-AUTHORITY",
+        total_return_bases=["adjusted_close"],
+    )
+    _upsert_canonical_return_test_points(
+        instrument_id,
+        [
+            {"metric_family": "price", "quote_basis": "close", "as_of_date": "2026-01-01", "value": "50", "currency": "USD", "source_ref": "test:canonical:1", "status": "complete"},
+            {"metric_family": "price", "quote_basis": "close", "as_of_date": "2026-01-02", "value": "55", "currency": "USD", "source_ref": "test:canonical:2", "status": "complete"},
+        ],
+    )
+    store = _canonical_return_test_store(instrument_id)
+    monkeypatch.setattr(
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
+        lambda requested_id: {
+            "instrument_id": instrument_id,
+            "instrument_name": instrument_id,
+            "instrument_type": "equity",
             "currency": "USD",
-            "status": "complete",
+            "quote_selection_policy": {"valuation": ["close"]},
+            "market_data": [
+                {
+                    "metric_family": "price",
+                    "quote_basis": "close",
+                    "as_of_date": "2026-01-02",
+                    "value": "999",
+                    "currency": "USD",
+                    "status": "complete",
+                }
+            ],
         }
-    )
-    misconfigured_detail["latest_market_data"].append(
-        deepcopy(misconfigured_detail["market_data"][-1])
+        if requested_id == instrument_id
+        else None,
     )
 
-    # A registry policy containing any total-return valuation basis is invalid.
-    # Fail closed instead of silently valuing with it or degrading to a later
-    # candidate; this makes the snapshot incomplete and surfaces the bad policy.
-    assert (
-        performance._select_market_point_as_of(
-            detail=deepcopy(misconfigured_detail),
-            role="valuation",
-            as_of_date=date(2026, 1, 2),
-        )
-        is None
+    calculation = performance.build_period_calculation_report(
+        store["portfolios"][0],
+        store["accounts"],
+        store["transactions"],
+        start_date=date(2026, 1, 2),
+        end_date=date(2026, 1, 2),
     )
-    assert (
-        ledger._select_quote_value(
-            deepcopy(misconfigured_detail),
-            role="valuation",
-            as_of_date=date(2026, 1, 2),
-        )
-        is None
+    assert calculation["summary"]["initial_value"] == pytest.approx(500.0)
+    assert calculation["summary"]["final_value"] == pytest.approx(550.0)
+    assert calculation["summary"]["unrealized_capital_gains"] == pytest.approx(50.0)
+
+    contribution = performance.build_contribution_report(
+        store["portfolios"][0],
+        store["accounts"],
+        store["transactions"],
+        start_date=date(2026, 1, 2),
+        end_date=date(2026, 1, 2),
+        axis="instrument",
     )
-    assert ledger._select_quote_value(deepcopy(misconfigured_detail), role="valuation") is None
+    slice_record = next(
+        item
+        for item in contribution["daily_slices"]
+        if item["group_key"] == instrument_id
+        and item["as_of_date"] == date(2026, 1, 2)
+    )
+    assert slice_record["ending_value_base"] == pytest.approx(550.0)
 
 
-def test_quote_selection_uses_only_complete_market_data():
-    detail = {
-        "instrument_id": "equity-us-status-test",
-        "instrument_name": "Status Test Equity",
-        "instrument_type": "equity",
-        "currency": "USD",
-        "quote_selection_policy": {"valuation": ["close"], "reference": ["close"]},
-        "market_data": [
-            {
-                "metric_family": "price",
-                "quote_basis": "close",
-                "as_of_date": "2026-01-01",
-                "value": "100.00",
-                "currency": "USD",
-                "status": "complete",
-            },
-            {
-                "metric_family": "price",
-                "quote_basis": "close",
-                "as_of_date": "2026-01-02",
-                "value": "110.00",
-                "currency": "USD",
-                "status": "partial",
-            },
+@pytest.mark.parametrize(
+    ("bad_status", "expected_reason"),
+    [
+        ("partial", "partial_series"),
+        ("rejected", "rejected_observation"),
+        ("withdrawn", "withdrawn_observation"),
+    ],
+)
+def test_bad_total_return_revision_blocks_holding_return_with_lineage(
+    bad_status: str,
+    expected_reason: str,
+):
+    total_return_basis = (
+        "total_return_nav" if bad_status == "withdrawn" else "adjusted_close"
+    )
+    instrument_id = _create_canonical_return_test_instrument(
+        ticker=f"TR-{bad_status.upper()}",
+        total_return_bases=[total_return_basis],
+    )
+    _upsert_canonical_return_test_points(
+        instrument_id,
+        [
+            {"metric_family": "price", "quote_basis": "close", "as_of_date": "2026-01-02", "value": "55", "currency": "USD", "source_ref": "test:close", "status": "complete"},
+            {"metric_family": "nav" if bad_status == "withdrawn" else "price", "quote_basis": total_return_basis, "as_of_date": "2026-01-01", "value": "100", "currency": "USD", "source_ref": "test:prior", "status": "complete"},
+            {"metric_family": "nav" if bad_status == "withdrawn" else "price", "quote_basis": total_return_basis, "as_of_date": "2026-01-02", "value": "102", "currency": "USD", "source_ref": f"test:{bad_status}", "status": "complete" if bad_status == "withdrawn" else bad_status},
         ],
-        "latest_market_data": [
-            {
-                "metric_family": "price",
-                "quote_basis": "close",
-                "as_of_date": "2026-01-02",
-                "value": "110.00",
-                "currency": "USD",
-                "status": "partial",
-            },
-            {
-                "metric_family": "price",
-                "quote_basis": "close",
-                "as_of_date": "2026-01-01",
-                "value": "100.00",
-                "currency": "USD",
-                "status": "complete",
-            },
-        ],
-    }
+    )
+    if bad_status == "withdrawn":
+        assert shared_store.replace_nav_history(
+            get_session_factory(),
+            instrument_id=instrument_id,
+            rows=[
+                {
+                    "as_of_date": "2026-01-02",
+                    "nav": "55",
+                    "currency": "USD",
+                }
+            ],
+            source_ref="test:withdrawn",
+            point_status="complete",
+            refresh_status="imported",
+            updated_by="pytest",
+            message="withdraw invalid total-return observation",
+        ) is not None
+    store = _canonical_return_test_store(instrument_id)
 
-    point = performance._select_market_point_as_of(
-        detail=deepcopy(detail),
-        role="valuation",
+    with get_session_factory()() as quote_session:
+        books = resolve_quote_window_books_in_session(
+            quote_session,
+            instrument_ids=[instrument_id],
+            roles=["total_return"],
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 2),
+        )
+    rejected_point = books["total_return"].quote_at(
+        instrument_id,
+        date(2026, 1, 2),
+    )
+    assert rejected_point is not None
+    assert rejected_point["resolution_status"] == "unavailable"
+    assert rejected_point["source_status"] == bad_status
+    assert rejected_point["source_ref"] == f"test:{bad_status}"
+    assert rejected_point["reason_codes"] == [expected_reason]
+    assert rejected_point["revision_id"]
+    assert rejected_point["payload_hash"]
+
+    report = performance.build_holdings_report(
+        store["portfolios"][0],
+        store["accounts"],
+        store["transactions"],
         as_of_date=date(2026, 1, 2),
     )
+    holding = report["positions"][0]
+    assert holding["market_value"] == pytest.approx(550.0)
+    assert holding["day_change_pct"] is None
+    assert holding["day_change_value"] is None
 
-    assert point is not None
-    assert point["value"] == 100.0
-    assert point["as_of_date"] == date(2026, 1, 1)
-    assert point["status"] == "complete"
-    assert point["stale"] is True
-    assert ledger._select_quote_value(deepcopy(detail), role="valuation", as_of_date=date(2026, 1, 2)) == 100.0
-    assert ledger._select_quote_value(deepcopy(detail), role="valuation") == 100.0
+
+@pytest.mark.parametrize(
+    (
+        "stale_price_flag",
+        "stale_fx_flag",
+        "carry_forward_valuation_flag",
+        "external_cash_in",
+        "external_cash_out",
+        "expected_state",
+        "expected_status",
+        "expected_reasons",
+    ),
+    [
+        (False, False, False, 0.0, 0.0, "linked", "reliable", []),
+        (False, False, False, 10.0, 0.0, "linked", "reliable", []),
+        (False, False, False, 0.0, 10.0, "linked", "reliable", []),
+        (
+            False,
+            False,
+            True,
+            0.0,
+            0.0,
+            "carry_forward",
+            "qualified",
+            ["carried_forward_valuation_without_external_flow"],
+        ),
+        (
+            False,
+            False,
+            True,
+            10.0,
+            0.0,
+            "broken",
+            "unavailable",
+            ["carried_forward_valuation_on_external_flow"],
+        ),
+        (
+            False,
+            False,
+            True,
+            0.0,
+            10.0,
+            "broken",
+            "unavailable",
+            ["carried_forward_valuation_on_external_flow"],
+        ),
+        (
+            True,
+            False,
+            False,
+            0.0,
+            0.0,
+            "carry_forward",
+            "qualified",
+            ["stale_valuation_without_external_flow"],
+        ),
+        (
+            False,
+            True,
+            False,
+            0.0,
+            0.0,
+            "carry_forward",
+            "qualified",
+            ["stale_valuation_without_external_flow"],
+        ),
+        (
+            True,
+            False,
+            False,
+            10.0,
+            0.0,
+            "broken",
+            "unavailable",
+            ["stale_valuation_on_external_flow"],
+        ),
+        (
+            False,
+            True,
+            False,
+            10.0,
+            0.0,
+            "broken",
+            "unavailable",
+            ["stale_valuation_on_external_flow"],
+        ),
+        (
+            True,
+            False,
+            False,
+            0.0,
+            10.0,
+            "broken",
+            "unavailable",
+            ["stale_valuation_on_external_flow"],
+        ),
+        (
+            False,
+            True,
+            False,
+            0.0,
+            10.0,
+            "broken",
+            "unavailable",
+            ["stale_valuation_on_external_flow"],
+        ),
+    ],
+)
+def test_daily_twr_reliability_truth_table(
+    stale_price_flag: bool,
+    stale_fx_flag: bool,
+    carry_forward_valuation_flag: bool,
+    external_cash_in: float,
+    external_cash_out: float,
+    expected_state: str,
+    expected_status: str,
+    expected_reasons: list[str],
+) -> None:
+    nav = 100.0 + external_cash_in - external_cash_out
+    result = performance._daily_twr_link_result(
+        nav=nav,
+        valuation_complete=True,
+        stale_price_flag=stale_price_flag,
+        stale_fx_flag=stale_fx_flag,
+        flow_coverage_complete=True,
+        has_external_flow=bool(external_cash_in or external_cash_out),
+        external_cash_in=external_cash_in,
+        external_cash_out=external_cash_out,
+        previous_anchor_nav=100.0,
+        awaiting_fresh_anchor=False,
+        carry_forward_valuation_flag=carry_forward_valuation_flag,
+    )
+
+    assert result["twr_state"] == expected_state
+    assert result["twr_reliability_status"] == expected_status
+    assert result["twr_reliability_reasons"] == expected_reasons
+    if expected_status == "unavailable":
+        assert result["daily_twr"] is None
+        assert result["awaiting_fresh_anchor"] is True
+    else:
+        assert result["daily_twr"] == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    (
+        "market_observation_count",
+        "twr_reliability_status",
+        "valuation_reliability_stale",
+        "expected",
+    ),
+    [
+        pytest.param(0, "qualified", False, False, id="pure-calendar-carry"),
+        pytest.param(1, "qualified", False, True, id="mixed-frequency-carry"),
+        pytest.param(1, "qualified", True, False, id="resolver-explicit-stale"),
+        pytest.param(1, "unavailable", True, False, id="broken-boundary"),
+    ],
+)
+def test_risk_observation_eligibility_distinguishes_calendar_carry_from_stale(
+    market_observation_count: int,
+    twr_reliability_status: str,
+    valuation_reliability_stale: bool,
+    expected: bool,
+) -> None:
+    assert (
+        performance._return_observation_eligible(
+            daily_twr=0.01,
+            market_observation_count=market_observation_count,
+            twr_reliability_status=twr_reliability_status,
+            valuation_reliability_stale=valuation_reliability_stale,
+        )
+        is expected
+    )
+
+
+def test_twr_window_reliability_preserves_distinct_carry_reasons() -> None:
+    result = performance._twr_window_reliability(
+        [
+            {
+                "as_of_date": date(2026, 1, 2),
+                "daily_twr": 0.01,
+                "twr_state": "carry_forward",
+                "twr_reliability_status": "qualified",
+                "twr_reliability_reasons": [
+                    "stale_valuation_without_external_flow"
+                ],
+            },
+            {
+                "as_of_date": date(2026, 1, 1),
+                "daily_twr": 0.0,
+                "twr_state": "carry_forward",
+                "twr_reliability_status": "qualified",
+                "twr_reliability_reasons": [
+                    "carried_forward_valuation_without_external_flow"
+                ],
+            },
+        ]
+    )
+
+    assert result == {
+        "twr_state": "carry_forward",
+        "twr_reliability_status": "qualified",
+        "twr_reliability_reasons": [
+            "carried_forward_valuation_without_external_flow",
+            "stale_valuation_without_external_flow",
+        ],
+        "linkable": True,
+    }
 
 
 def _daily_snapshot_row_count(portfolio_id: str) -> int:
@@ -407,6 +945,8 @@ def _minimal_store(
 
 
 def test_seed_portfolio_performance_uses_external_boundary_flows(client):
+    _write_store(deepcopy(TEST_PORTFOLIO_STORE))
+
     snapshots_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert snapshots_response.status_code == 200
     snapshots_payload = snapshots_response.json()
@@ -417,6 +957,10 @@ def test_seed_portfolio_performance_uses_external_boundary_flows(client):
     assert by_date["2026-04-08"]["external_cash_in"] == 0.0
     assert by_date["2026-04-08"]["external_cash_out"] == 0.0
     assert by_date["2026-04-11"]["external_cash_out"] == 12000.0
+    assert by_date["2026-04-11"]["twr_state"] == "broken"
+    assert by_date["2026-04-11"]["twr_reliability_reasons"] == [
+        "carried_forward_valuation_on_external_flow"
+    ]
     assert by_date["2026-04-12"]["external_cash_in"] == 0.0
     assert by_date["2026-04-12"]["external_cash_out"] == 0.0
 
@@ -428,11 +972,19 @@ def test_seed_portfolio_performance_uses_external_boundary_flows(client):
     assert summary["external_cash_in"] == 50000.0
     assert summary["external_cash_out"] == 12000.0
     assert summary["net_external_inflow"] == 38000.0
-    assert summary["cumulative_twr"] is not None
-    assert summary["irr"] is not None
+    assert summary["cumulative_twr"] is None
+    assert summary["twr_reliability_status"] == "unavailable"
+    assert summary["twr_reliability_reasons"] == [
+        "crosses_broken_twr_boundary"
+    ]
+    assert summary["irr"] is None
+    assert summary["mwror"] is None
+    assert summary["history_reliability"]["annualized_return_eligible"] is False
 
 
 def test_performance_endpoints_reuse_materialized_daily_snapshots(client, monkeypatch):
+    _write_store(deepcopy(TEST_PORTFOLIO_STORE))
+
     first_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert first_response.status_code == 200
     assert _daily_snapshot_row_count("portfolio-ops") > 0
@@ -455,6 +1007,8 @@ def test_performance_endpoints_reuse_materialized_daily_snapshots(client, monkey
 
 
 def test_refresh_materializes_holdings_and_contribution_slices(client):
+    _write_store(deepcopy(TEST_PORTFOLIO_STORE))
+
     response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert response.status_code == 200
 
@@ -472,6 +1026,8 @@ def test_refresh_materializes_holdings_and_contribution_slices(client):
 
 
 def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(client, monkeypatch):
+    _write_store(deepcopy(TEST_PORTFOLIO_STORE))
+
     response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert response.status_code == 200
 
@@ -507,13 +1063,52 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
     holdings_rows = holdings_payload["rows"]
     assert holdings_rows
     abbv_row = next(row for row in holdings_rows if row["instrument_core"]["instrument_id"] == "equity-us-abbv")
-    assert abbv_row["day_change_pct"] == pytest.approx(206.47 / 207.18 - 1)
-    assert abbv_row["day_change_value"] == pytest.approx(abbv_row["quantity"] * (206.47 - 207.18))
-    expected_day_change_base = sum(row["day_change_value_base"] for row in holdings_rows)
-    expected_prior_market_value = holdings_payload["totals"]["market_value"] - expected_day_change_base
-    assert holdings_payload["totals"]["day_change_value"] == pytest.approx(expected_day_change_base)
-    assert holdings_payload["totals"]["day_change_pct"] == pytest.approx(
-        expected_day_change_base / expected_prior_market_value
+    # The seed has distinct canonical valuation and adjusted total-return
+    # series, so valuation and one-day return semantics remain separate.
+    assert abbv_row["last_price"] == pytest.approx(206.47)
+    assert abbv_row["market_value"] is not None
+    assert abbv_row["cost_basis"] is not None
+    assert abbv_row["cost_basis_base"] is not None
+    assert abbv_row["unrealized_pnl"] == pytest.approx(
+        abbv_row["market_value"] - abbv_row["cost_basis"]
+    )
+    assert abbv_row["unrealized_pnl_base"] == pytest.approx(
+        abbv_row["market_value_base"] - abbv_row["cost_basis_base"]
+    )
+    assert abbv_row["unrealized_return"] == pytest.approx(
+        abbv_row["unrealized_pnl"] / abs(abbv_row["cost_basis"])
+    )
+    assert abbv_row["day_change_pct"] == pytest.approx(206.47 / 207.18 - 1.0)
+    assert abbv_row["day_change_value"] is not None
+    assert holdings_payload["totals"]["day_change_value"] is not None
+    assert holdings_payload["totals"]["day_change_pct"] is not None
+    noncash_rows = [
+        row
+        for row in holdings_rows
+        if row["instrument_core"]["instrument_type"] != "cash"
+    ]
+    cash_rows = [
+        row
+        for row in holdings_rows
+        if row["instrument_core"]["instrument_type"] == "cash"
+    ]
+    assert noncash_rows
+    assert all(row["unrealized_pnl_base"] is not None for row in noncash_rows)
+    assert all(
+        row["unrealized_pnl"] is None
+        and row["unrealized_pnl_base"] is None
+        and row["unrealized_return"] is None
+        for row in cash_rows
+    )
+    expected_unrealized_pnl_base = sum(
+        row["unrealized_pnl_base"] for row in noncash_rows
+    )
+    expected_cost_basis_base = sum(row["cost_basis_base"] for row in noncash_rows)
+    assert holdings_payload["totals"]["unrealized_pnl_base"] == pytest.approx(
+        expected_unrealized_pnl_base
+    )
+    assert holdings_payload["totals"]["unrealized_return"] == pytest.approx(
+        expected_unrealized_pnl_base / abs(expected_cost_basis_base)
     )
 
     contribution_response = client.get("/api/portfolios/portfolio-ops/performance/contribution?axis=instrument")
@@ -531,6 +1126,8 @@ def test_holdings_and_contribution_endpoints_reuse_materialized_read_models(clie
 
 
 def test_materialized_contribution_rejects_missing_tail_snapshot(client):
+    _write_store(deepcopy(TEST_PORTFOLIO_STORE))
+
     response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert response.status_code == 200
 
@@ -558,6 +1155,8 @@ def test_materialized_contribution_rejects_missing_tail_snapshot(client):
 
 
 def test_daily_snapshot_refresh_endpoint_refreshes_impacted_instrument_portfolios(client):
+    _write_store(deepcopy(TEST_PORTFOLIO_STORE))
+
     initial_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
     assert initial_response.status_code == 200
 
@@ -591,14 +1190,9 @@ def test_daily_twr_neutralizes_external_deposit(client, monkeypatch):
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -708,6 +1302,426 @@ def test_daily_twr_neutralizes_external_deposit(client, monkeypatch):
     assert contribution_summary["contribution_residual"] == pytest.approx(0.0)
 
 
+def test_external_cash_value_date_is_shared_by_nav_twr_irr_and_period_reports(
+    client,
+    monkeypatch,
+):
+
+    def cash_transaction(
+        transaction_id: str,
+        transaction_type: str,
+        trade_date: str,
+        settlement_date: str,
+        gross_amount: float,
+    ) -> dict[str, object]:
+        return {
+            "transaction_id": transaction_id,
+            "portfolio_id": "external-value-date-test",
+            "transaction_type": transaction_type,
+            "trade_date": trade_date,
+            "settlement_date": settlement_date,
+            "account_id": "cash-usd-main",
+            "settlement_cash_account_id": None,
+            "instrument_id": None,
+            "instrument_ref": None,
+            "quantity": None,
+            "price": None,
+            "gross_amount": gross_amount,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "transfer_scope": None,
+            "transfer_object_type": None,
+            "transfer_group_id": None,
+            "counterparty_account_id": None,
+            "note": transaction_type,
+            "created_at": f"{trade_date}T09:00:00Z",
+        }
+
+    store = _minimal_store(
+        portfolio_id="external-value-date-test",
+        transactions=[
+            cash_transaction(
+                "txn-opening",
+                "opening_balance",
+                "2026-01-30",
+                "2026-01-30",
+                100.0,
+            ),
+            cash_transaction(
+                "txn-deposit",
+                "deposit",
+                "2026-01-31",
+                "2026-02-01",
+                50.0,
+            ),
+            cash_transaction(
+                "txn-withdrawal",
+                "withdrawal",
+                "2026-02-28",
+                "2026-03-01",
+                20.0,
+            ),
+        ],
+    )
+    store["portfolios"][0]["as_of_date"] = "2027-01-30"
+    _write_store(store)
+
+    performance_response = client.get(
+        "/api/portfolios/external-value-date-test/performance"
+    )
+    assert performance_response.status_code == 200
+    performance_payload = performance_response.json()
+    by_date = {
+        point["as_of_date"]: point for point in performance_payload["daily_series"]
+    }
+
+    assert by_date["2026-01-31"]["ending_nav"] == pytest.approx(100.0)
+    assert by_date["2026-01-31"]["external_cash_in"] == pytest.approx(0.0)
+    assert by_date["2026-01-31"]["daily_twr"] == pytest.approx(0.0)
+    assert by_date["2026-02-01"]["ending_nav"] == pytest.approx(150.0)
+    assert by_date["2026-02-01"]["external_cash_in"] == pytest.approx(50.0)
+    assert by_date["2026-02-01"]["daily_twr"] == pytest.approx(0.0)
+    assert by_date["2026-02-28"]["ending_nav"] == pytest.approx(150.0)
+    assert by_date["2026-02-28"]["external_cash_out"] == pytest.approx(0.0)
+    assert by_date["2026-02-28"]["daily_twr"] == pytest.approx(0.0)
+    assert by_date["2026-03-01"]["ending_nav"] == pytest.approx(130.0)
+    assert by_date["2026-03-01"]["external_cash_out"] == pytest.approx(20.0)
+    assert by_date["2026-03-01"]["daily_twr"] == pytest.approx(0.0)
+
+    summary = performance_payload["summary"]
+    assert summary["external_cash_in"] == pytest.approx(50.0)
+    assert summary["external_cash_out"] == pytest.approx(20.0)
+    assert summary["net_external_inflow"] == pytest.approx(30.0)
+    assert summary["delta"] == pytest.approx(0.0)
+    assert summary["cumulative_twr"] == pytest.approx(0.0)
+    assert summary["history_reliability"]["annualized_return_eligible"] is True
+    assert summary["irr"] == pytest.approx(0.0, abs=1e-8)
+
+    calendar_response = client.get(
+        "/api/portfolios/external-value-date-test/performance/calendar?frequency=monthly"
+    )
+    assert calendar_response.status_code == 200
+    calendar = {
+        bucket["bucket_key"]: bucket for bucket in calendar_response.json()["buckets"]
+    }
+    assert calendar["2026-01"]["external_cash_in"] == pytest.approx(0.0)
+    assert calendar["2026-02"]["external_cash_in"] == pytest.approx(50.0)
+    assert calendar["2026-02"]["external_cash_out"] == pytest.approx(0.0)
+    assert calendar["2026-03"]["external_cash_out"] == pytest.approx(20.0)
+
+    calculation_response = client.get(
+        "/api/portfolios/external-value-date-test/performance/calculation"
+    )
+    assert calculation_response.status_code == 200
+    calculation_summary = calculation_response.json()["summary"]
+    assert calculation_summary["initial_value"] == pytest.approx(100.0)
+    assert calculation_summary["final_value"] == pytest.approx(130.0)
+    assert calculation_summary["deposits"] == pytest.approx(50.0)
+    assert calculation_summary["withdrawals"] == pytest.approx(20.0)
+    assert calculation_summary["net_external_inflow"] == pytest.approx(30.0)
+    assert calculation_summary["delta"] == pytest.approx(0.0)
+
+    deposit_entries_response = client.get(
+        "/api/portfolios/external-value-date-test/performance/calculation/entries"
+        "?axis=account&bucket=deposits"
+    )
+    withdrawal_entries_response = client.get(
+        "/api/portfolios/external-value-date-test/performance/calculation/entries"
+        "?axis=account&bucket=withdrawals"
+    )
+    assert deposit_entries_response.status_code == 200
+    assert withdrawal_entries_response.status_code == 200
+    deposit_entry = deposit_entries_response.json()["entries"][0]
+    withdrawal_entry = withdrawal_entries_response.json()["entries"][0]
+    assert deposit_entry["trade_date"] == "2026-01-31"
+    assert deposit_entry["settlement_date"] == "2026-02-01"
+    assert deposit_entry["effective_date"] == "2026-02-01"
+    assert withdrawal_entry["trade_date"] == "2026-02-28"
+    assert withdrawal_entry["settlement_date"] == "2026-03-01"
+    assert withdrawal_entry["effective_date"] == "2026-03-01"
+
+    deposit_entry_calendar_response = client.get(
+        "/api/portfolios/external-value-date-test/performance/calculation/entries/calendar"
+        "?axis=account&bucket=deposits&frequency=monthly"
+    )
+    withdrawal_entry_calendar_response = client.get(
+        "/api/portfolios/external-value-date-test/performance/calculation/entries/calendar"
+        "?axis=account&bucket=withdrawals&frequency=monthly"
+    )
+    assert deposit_entry_calendar_response.status_code == 200
+    assert withdrawal_entry_calendar_response.status_code == 200
+    assert {
+        bucket["bucket_key"]
+        for bucket in deposit_entry_calendar_response.json()["buckets"]
+    } == {"2026-02"}
+    assert {
+        bucket["bucket_key"]
+        for bucket in withdrawal_entry_calendar_response.json()["buckets"]
+    } == {"2026-03"}
+
+    portfolio = portfolio_store.get_portfolio("external-value-date-test")
+    assert portfolio is not None
+    contribution = performance.build_contribution_report(
+        portfolio,
+        portfolio_store.list_accounts("external-value-date-test"),
+        portfolio_store.list_transactions("external-value-date-test"),
+        axis="account",
+    )
+    cash_slices = {
+        item["as_of_date"]: item
+        for item in contribution["daily_slices"]
+        if item["group_key"] == "cash-usd-main"
+    }
+    assert cash_slices[date(2026, 1, 31)]["capital_flow_in_base"] == pytest.approx(0.0)
+    assert cash_slices[date(2026, 2, 1)]["capital_flow_in_base"] == pytest.approx(50.0)
+    assert cash_slices[date(2026, 2, 28)]["capital_flow_out_base"] == pytest.approx(0.0)
+    assert cash_slices[date(2026, 3, 1)]["capital_flow_out_base"] == pytest.approx(20.0)
+
+
+@pytest.mark.parametrize(
+    ("transaction_type", "calculation_bucket"),
+    [("deposit", "deposits"), ("withdrawal", "withdrawals")],
+)
+def test_external_cash_without_value_date_fails_closed(
+    client,
+    monkeypatch,
+    transaction_type: str,
+    calculation_bucket: str,
+):
+    portfolio_id = f"missing-value-date-{transaction_type}"
+    transactions = [
+        {
+            "transaction_id": "txn-opening",
+            "portfolio_id": portfolio_id,
+            "transaction_type": "opening_balance",
+            "trade_date": "2026-01-01",
+            "settlement_date": "2026-01-01",
+            "account_id": "cash-usd-main",
+            "instrument_id": None,
+            "instrument_ref": None,
+            "gross_amount": 100.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+        },
+        {
+            "transaction_id": "txn-invalid-external",
+            "portfolio_id": portfolio_id,
+            "transaction_type": transaction_type,
+            "trade_date": "2026-01-02",
+            "settlement_date": None,
+            "account_id": "cash-usd-main",
+            "instrument_id": None,
+            "instrument_ref": None,
+            "gross_amount": 20.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+        },
+    ]
+    store = _minimal_store(portfolio_id=portfolio_id, transactions=transactions)
+    store["portfolios"][0]["as_of_date"] = "2026-01-02"
+    _write_store(store)
+
+    original_transaction_serializer = daily_snapshots._serialize_transaction_row
+
+    def serialize_corrupt_historical_transaction(row):
+        payload = original_transaction_serializer(row)
+        if payload.get("transaction_id") == "txn-invalid-external":
+            payload["settlement_date"] = None
+        return payload
+
+    monkeypatch.setattr(
+        daily_snapshots,
+        "_serialize_transaction_row",
+        serialize_corrupt_historical_transaction,
+    )
+    monkeypatch.setattr(
+        performance_routes,
+        "list_transactions",
+        lambda requested_portfolio_id: deepcopy(transactions)
+        if requested_portfolio_id == portfolio_id
+        else [],
+    )
+
+    error_pattern = "requires a valid settlement/value date"
+    with pytest.raises(performance.PerformanceDataIntegrityError, match=error_pattern):
+        performance.transaction_performance_effective_date(transactions[1])
+    with pytest.raises(performance.PerformanceDataIntegrityError, match=error_pattern):
+        performance.build_daily_portfolio_snapshots(
+            store["portfolios"][0],
+            store["accounts"],
+            transactions,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 2),
+        )
+    with pytest.raises(performance.PerformanceDataIntegrityError, match=error_pattern):
+        performance.build_period_calculation_entries_report(
+            store["portfolios"][0],
+            store["accounts"],
+            transactions,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 2),
+            axis="account",
+            bucket=calculation_bucket,
+        )
+
+    for endpoint in (
+        f"/api/portfolios/{portfolio_id}/snapshots/daily",
+        f"/api/portfolios/{portfolio_id}/performance",
+        f"/api/portfolios/{portfolio_id}/performance/calculation",
+    ):
+        response = client.get(endpoint)
+        assert response.status_code == 422
+        assert error_pattern in response.json()["detail"]
+
+
+def test_failed_value_date_refresh_preserves_last_good_materialization(
+    monkeypatch,
+):
+    portfolio_id = "value-date-refresh-preservation"
+    transactions = [
+        {
+            "transaction_id": "txn-opening",
+            "portfolio_id": portfolio_id,
+            "transaction_type": "opening_balance",
+            "trade_date": "2026-01-01",
+            "settlement_date": "2026-01-01",
+            "account_id": "cash-usd-main",
+            "instrument_id": None,
+            "instrument_ref": None,
+            "gross_amount": 100.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+        },
+        {
+            "transaction_id": "txn-deposit",
+            "portfolio_id": portfolio_id,
+            "transaction_type": "deposit",
+            "trade_date": "2026-01-02",
+            "settlement_date": "2026-01-02",
+            "account_id": "cash-usd-main",
+            "instrument_id": None,
+            "instrument_ref": None,
+            "gross_amount": 20.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+        },
+    ]
+    store = _minimal_store(portfolio_id=portfolio_id, transactions=transactions)
+    store["portfolios"][0]["as_of_date"] = "2026-01-02"
+    _write_store(store)
+    assert daily_snapshots.refresh_portfolio_daily_snapshots(portfolio_id) is not None
+
+    with get_session_factory()() as session:
+        before = [
+            deepcopy(row.snapshot_json)
+            for row in session.query(PortfolioDailySnapshotModel)
+            .filter(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)
+            .order_by(PortfolioDailySnapshotModel.as_of_date)
+            .all()
+        ]
+    assert before
+
+    original_transaction_serializer = daily_snapshots._serialize_transaction_row
+
+    def serialize_corrupt_historical_transaction(row):
+        payload = original_transaction_serializer(row)
+        if payload.get("transaction_id") == "txn-deposit":
+            payload["settlement_date"] = None
+        return payload
+
+    monkeypatch.setattr(
+        daily_snapshots,
+        "_serialize_transaction_row",
+        serialize_corrupt_historical_transaction,
+    )
+    daily_snapshots.mark_portfolio_daily_snapshots_stale(
+        portfolio_id,
+        dirty_from=date(2026, 1, 1),
+    )
+    with pytest.raises(
+        performance.PerformanceDataIntegrityError,
+        match="requires a valid settlement/value date",
+    ):
+        daily_snapshots.refresh_portfolio_daily_snapshots(portfolio_id)
+
+    with get_session_factory()() as session:
+        after = [
+            deepcopy(row.snapshot_json)
+            for row in session.query(PortfolioDailySnapshotModel)
+            .filter(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)
+            .order_by(PortfolioDailySnapshotModel.as_of_date)
+            .all()
+        ]
+        state = session.get(PortfolioCalculationStateModel, portfolio_id)
+    assert after == before
+    assert state is not None
+    assert state.daily_snapshot_status == "failed"
+    assert "requires a valid settlement/value date" in str(state.error_message)
+
+
+def test_contribution_entry_calendar_uses_entitlement_effective_date_across_month(
+    monkeypatch,
+):
+    portfolio = {
+        "portfolio_id": "entry-effective-date-test",
+        "base_currency": "USD",
+        "as_of_date": "2026-02-02",
+    }
+    accounts = [
+        {
+            "account_id": "broker-us-core",
+            "portfolio_id": "entry-effective-date-test",
+            "account_name": "Core Brokerage",
+            "account_type": "securities_account",
+            "currency": "USD",
+        }
+    ]
+    transactions = [
+        {
+            "transaction_id": "txn-dividend",
+            "portfolio_id": "entry-effective-date-test",
+            "transaction_type": "dividend",
+            "trade_date": "2026-01-31",
+            "settlement_date": "2026-02-02",
+            "entitlement_date": "2026-02-01",
+            "account_id": "broker-us-core",
+            "instrument_id": "equity-us-abbv",
+            "instrument_ref": {
+                "instrument_id": "equity-us-abbv",
+                "instrument_name": "AbbVie Inc",
+                "instrument_type": "equity",
+                "currency": "USD",
+                "identifiers": [],
+            },
+            "gross_amount": 10.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+        }
+    ]
+
+    report = performance.build_contribution_entries_calendar_report(
+        portfolio,
+        accounts,
+        transactions,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 2, 2),
+        axis="account",
+        bucket="income_cash_amount",
+        frequency="monthly",
+    )
+
+    assert len(report["buckets"]) == 1
+    assert report["buckets"][0]["bucket_key"] == "2026-02"
+    assert report["buckets"][0]["start_date"] == date(2026, 2, 1)
+    assert report["buckets"][0]["end_date"] == date(2026, 2, 1)
+
+
 def test_inception_day_twr_includes_bod_funding_and_first_day_pnl(client, monkeypatch):
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-inception",
@@ -715,14 +1729,9 @@ def test_inception_day_twr_includes_bod_funding_and_first_day_pnl(client, monkey
         history=[("2026-01-01", "110.00")],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-inception" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
     instrument_ref = {
         "instrument_id": "equity-us-inception",
@@ -795,11 +1804,6 @@ def test_inception_day_twr_includes_bod_funding_and_first_day_pnl(client, monkey
 
 
 def test_default_inception_calculation_counts_first_day_deposit_once(client, monkeypatch):
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
-    )
     portfolio_id = "inception-calculation-deposit-test"
     store = _minimal_store(
         portfolio_id=portfolio_id,
@@ -848,7 +1852,8 @@ def test_default_inception_calculation_counts_first_day_deposit_once(client, mon
 
     assert response.status_code == 200
     summary = response.json()["summary"]
-    assert summary["coverage_state"] == "complete"
+    assert summary["nav_coverage_state"] == "complete"
+    assert summary["book_pnl_coverage_state"] == "complete"
     assert summary["initial_value"] == pytest.approx(0.0)
     assert summary["final_value"] == pytest.approx(220.0)
     assert summary["deposits"] == pytest.approx(200.0)
@@ -861,11 +1866,6 @@ def test_default_inception_calculation_counts_first_day_deposit_once(client, mon
 
 
 def test_same_day_inception_cash_flows_have_no_money_weighted_return(client, monkeypatch):
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
-    )
     portfolio_id = "same-day-inception-mwrr-test"
     store = _minimal_store(
         portfolio_id=portfolio_id,
@@ -903,7 +1903,8 @@ def test_same_day_inception_cash_flows_have_no_money_weighted_return(client, mon
 
     assert calculation_response.status_code == 200
     calculation_summary = calculation_response.json()["summary"]
-    assert calculation_summary["coverage_state"] == "complete"
+    assert calculation_summary["nav_coverage_state"] == "complete"
+    assert calculation_summary["book_pnl_coverage_state"] == "complete"
     assert calculation_summary["initial_value"] == pytest.approx(0.0)
     assert calculation_summary["final_value"] == pytest.approx(200_000.0)
     assert calculation_summary["deposits"] == pytest.approx(200_000.0)
@@ -941,14 +1942,9 @@ def test_dividend_receivable_is_accrued_on_entitlement_date(client, monkeypatch)
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-dividend" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
     instrument_ref = {
         "instrument_id": "equity-us-dividend",
@@ -1031,14 +2027,9 @@ def test_explicit_performance_period_uses_beginning_nav_boundary(client, monkeyp
         "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -1122,6 +2113,8 @@ def test_explicit_performance_period_uses_beginning_nav_boundary(client, monkeyp
 
 
 def test_period_calculation_clamps_future_end_date_to_portfolio_as_of(client):
+    _write_store(deepcopy(TEST_PORTFOLIO_STORE))
+
     response = client.get(
         "/api/portfolios/portfolio-ops/performance/calculation?start_date=2026-04-12&end_date=2026-05-11"
     )
@@ -1147,14 +2140,9 @@ def test_daily_twr_ignores_internal_sale_but_cuts_on_withdrawal(client, monkeypa
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -1290,14 +2278,9 @@ def test_performance_summary_reports_one_year_twr_annualized_and_irr(client, mon
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -1391,14 +2374,9 @@ def test_performance_summary_reports_pnl_decomposition_and_risk_metrics(client, 
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -1555,14 +2533,9 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -1635,29 +2608,70 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
     daily_stddev = sqrt(sum((value - mean_return) ** 2 for value in risk_returns) / (len(risk_returns) - 1))
     downside_deviation = sqrt(sum(min(0.0, value) ** 2 for value in risk_returns) / len(risk_returns))
     expected_periods_per_year = 2 / 4 * performance.DAYS_PER_YEAR
-    expected_annualized_twr = (1.05 ** (performance.DAYS_PER_YEAR / 4)) - 1
     expected_annualized_mean = mean_return * expected_periods_per_year
     expected_annualized_volatility = daily_stddev * sqrt(expected_periods_per_year)
     expected_annualized_downside_volatility = downside_deviation * sqrt(expected_periods_per_year)
 
     assert by_date["2026-01-03"]["market_observation_count"] == 0
     assert by_date["2026-01-03"]["return_observation_eligible"] is False
+    assert by_date["2026-01-03"]["twr_state"] == "carry_forward"
+    assert by_date["2026-01-03"]["twr_reliability_status"] == "qualified"
+    assert by_date["2026-01-03"]["twr_reliability_reasons"] == [
+        "carried_forward_valuation_without_external_flow"
+    ]
     assert by_date["2026-01-04"]["market_observation_count"] == 0
     assert by_date["2026-01-04"]["return_observation_eligible"] is False
+    assert by_date["2026-01-04"]["twr_state"] == "carry_forward"
+    assert by_date["2026-01-04"]["twr_reliability_status"] == "qualified"
+    assert by_date["2026-01-04"]["twr_reliability_reasons"] == [
+        "carried_forward_valuation_without_external_flow"
+    ]
     assert by_date["2026-01-05"]["market_observation_count"] == 1
     assert by_date["2026-01-05"]["return_observation_eligible"] is True
     assert by_date["2026-01-06"]["market_observation_count"] == 1
     assert by_date["2026-01-06"]["return_observation_eligible"] is True
     assert summary["return_observation_count"] == 4
     assert summary["risk_return_observation_count"] == 2
+    assert summary["twr_state"] == "carry_forward"
+    assert summary["twr_reliability_status"] == "qualified"
+    assert summary["twr_reliability_reasons"] == [
+        "carried_forward_valuation_without_external_flow"
+    ]
     assert isclose(summary["risk_annualization_periods_per_year"], expected_periods_per_year, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["mean_daily_return"], sum(risk_returns) / len(risk_returns), rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["annualized_return_from_daily_mean"], expected_annualized_mean, rel_tol=0.0, abs_tol=1e-12)
-    assert isclose(summary["annualized_twr"], expected_annualized_twr, rel_tol=0.0, abs_tol=1e-12)
+    assert summary["annualized_twr"] is None
+    assert summary["history_reliability"]["annualized_return_eligible"] is False
     assert isclose(summary["annualized_volatility"], expected_annualized_volatility, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["annualized_downside_volatility"], expected_annualized_downside_volatility, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["sharpe_ratio"], expected_annualized_mean / expected_annualized_volatility, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(summary["sortino_ratio"], expected_annualized_mean / expected_annualized_downside_volatility, rel_tol=0.0, abs_tol=1e-12)
+
+    calendar_response = client.get(
+        "/api/portfolios/non-trading-risk-test/performance/calendar?frequency=monthly"
+    )
+    assert calendar_response.status_code == 200
+    calendar_payload = calendar_response.json()
+    assert calendar_payload["summary"]["twr_reliability_reasons"] == [
+        "carried_forward_valuation_without_external_flow"
+    ]
+    assert calendar_payload["buckets"][0]["twr_reliability_reasons"] == [
+        "carried_forward_valuation_without_external_flow"
+    ]
+
+    contribution_response = client.get(
+        "/api/portfolios/non-trading-risk-test/performance/contribution?axis=instrument"
+    )
+    assert contribution_response.status_code == 200
+    contribution_payload = contribution_response.json()
+    assert contribution_payload["summary"]["twr_reliability_reasons"] == [
+        "carried_forward_valuation_without_external_flow"
+    ]
+    assert all(
+        line["twr_reliability_reasons"]
+        == ["carried_forward_valuation_without_external_flow"]
+        for line in contribution_payload["lines"]
+    )
 
     window_response = client.get(
         "/api/portfolios/non-trading-risk-test/performance?start_date=2026-01-05&end_date=2026-01-06"
@@ -1667,6 +2681,409 @@ def test_risk_metrics_exclude_carry_forward_non_trading_days(client, monkeypatch
     assert window_payload["summary"]["start_date"] == "2026-01-05"
     assert window_payload["summary"]["start_nav"] == 100.0
     assert isclose(window_payload["summary"]["cumulative_twr"], 0.05, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_external_flow_on_carried_valuation_breaks_twr_until_fresh_reanchor(monkeypatch):
+    instrument_id = "equity-us-twr-boundary"
+    instrument_detail = _test_instrument_detail(
+        instrument_id=instrument_id,
+        instrument_name="TWR Boundary Equity",
+            history=[
+                ("2026-01-01", "100.00"),
+                ("2026-01-02", "105.00"),
+                ("2026-01-04", "120.00"),
+                ("2026-01-05", "126.00"),
+            ],
+        )
+    monkeypatch.setattr(
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
+        lambda requested_id: deepcopy(instrument_detail)
+        if requested_id == instrument_id
+        else None,
+    )
+
+    portfolio_id = "twr-reliability-boundary-test"
+    instrument_ref = {
+        "instrument_id": instrument_id,
+        "instrument_name": "TWR Boundary Equity",
+        "instrument_type": "equity",
+        "currency": "USD",
+        "identifiers": [
+            {
+                "identifier_type": "ticker",
+                "identifier_value": "TWRB",
+                "is_primary": True,
+            }
+        ],
+    }
+    transactions = [
+        {
+            "transaction_id": "txn-0001",
+            "portfolio_id": portfolio_id,
+            "transaction_type": "opening_balance",
+            "trade_date": "2026-01-01",
+            "settlement_date": "2026-01-01",
+            "account_id": "cash-usd-main",
+            "settlement_cash_account_id": None,
+            "instrument_id": None,
+            "instrument_ref": None,
+            "quantity": None,
+            "price": None,
+            "gross_amount": 100.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "created_at": "2026-01-01T09:00:00Z",
+        },
+        {
+            "transaction_id": "txn-0002",
+            "portfolio_id": portfolio_id,
+            "transaction_type": "buy",
+            "trade_date": "2026-01-01",
+            "settlement_date": "2026-01-01",
+            "account_id": "broker-us-core",
+            "settlement_cash_account_id": "cash-usd-main",
+            "instrument_id": instrument_id,
+            "instrument_ref": instrument_ref,
+            "quantity": 1.0,
+            "price": 100.0,
+            "gross_amount": 100.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "created_at": "2026-01-01T09:30:00Z",
+        },
+        {
+            "transaction_id": "txn-0003",
+            "portfolio_id": portfolio_id,
+            "transaction_type": "deposit",
+            "trade_date": "2026-01-03",
+            "settlement_date": "2026-01-03",
+            "account_id": "cash-usd-main",
+            "settlement_cash_account_id": None,
+            "instrument_id": None,
+            "instrument_ref": None,
+            "quantity": None,
+            "price": None,
+            "gross_amount": 50.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "created_at": "2026-01-03T09:00:00Z",
+        },
+    ]
+    store = _minimal_store(portfolio_id=portfolio_id, transactions=transactions)
+    portfolio = store["portfolios"][0]
+    portfolio["as_of_date"] = "2026-01-05"
+    accounts = store["accounts"]
+    _write_store(store)
+
+    snapshots = performance.build_daily_portfolio_snapshots(
+        portfolio,
+        accounts,
+        transactions,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 5),
+    )
+    by_date = {snapshot["as_of_date"]: snapshot for snapshot in snapshots}
+
+    assert by_date[date(2026, 1, 2)]["twr_state"] == "linked"
+    assert by_date[date(2026, 1, 3)]["twr_state"] == "broken"
+    assert by_date[date(2026, 1, 3)]["twr_reliability_reasons"] == [
+        "carried_forward_valuation_on_external_flow"
+    ]
+    assert by_date[date(2026, 1, 3)]["daily_twr"] is None
+    assert by_date[date(2026, 1, 4)]["twr_state"] == "reanchor"
+    assert by_date[date(2026, 1, 4)]["daily_twr"] is None
+    assert by_date[date(2026, 1, 5)]["twr_state"] == "linked"
+    assert by_date[date(2026, 1, 5)]["daily_twr"] == pytest.approx(
+        176.0 / 170.0 - 1.0
+    )
+    for boundary_date in (date(2026, 1, 3), date(2026, 1, 4), date(2026, 1, 5)):
+        assert by_date[boundary_date]["cumulative_twr"] is None
+        assert by_date[boundary_date]["drawdown"] is None
+
+    full_report = performance.build_portfolio_performance_report_from_snapshots(
+        portfolio,
+        snapshots,
+        transactions=transactions,
+    )
+    assert full_report["summary"]["twr_reliability_status"] == "unavailable"
+    assert full_report["summary"]["twr_reliability_reasons"] == [
+        "crosses_broken_twr_boundary"
+    ]
+
+
+    assert full_report["summary"]["cumulative_twr"] is None
+    assert full_report["summary"]["annualized_twr"] is None
+    assert full_report["summary"]["max_drawdown"] is None
+
+    post_reanchor_report = performance.build_portfolio_performance_report_from_snapshots(
+        portfolio,
+        snapshots,
+        transactions=transactions,
+        start_date=date(2026, 1, 5),
+        end_date=date(2026, 1, 5),
+    )
+    assert post_reanchor_report["summary"]["twr_reliability_status"] == "reliable"
+    assert post_reanchor_report["summary"]["cumulative_twr"] == pytest.approx(
+        176.0 / 170.0 - 1.0
+    )
+
+    contribution_report = performance.build_contribution_report(
+        portfolio,
+        accounts,
+        transactions,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 5),
+        axis="instrument",
+    )
+    assert contribution_report["summary"]["twr_reliability_status"] == "unavailable"
+    assert contribution_report["summary"]["portfolio_arithmetic_return"] is None
+    assert contribution_report["summary"]["portfolio_cumulative_twr"] is None
+    assert contribution_report["summary"]["total_period_contribution"] is None
+    assert contribution_report["summary"]["contribution_residual"] is None
+    assert contribution_report["lines"]
+    assert all(
+        line["period_contribution"] is None
+        for line in contribution_report["lines"]
+    )
+
+
+def test_daily_snapshot_quote_query_count_is_independent_of_day_count(monkeypatch):
+    instrument_id = "equity-us-window-query-count"
+    first_date = date(2026, 1, 1)
+    instrument_detail = _test_instrument_detail(
+        instrument_id=instrument_id,
+        instrument_name="Window Query Count Equity",
+        history=[
+            (
+                (first_date + timedelta(days=offset)).isoformat(),
+                str(100 + offset),
+            )
+            for offset in range(90)
+        ],
+    )
+    monkeypatch.setattr(
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
+        lambda requested_id: deepcopy(instrument_detail)
+        if requested_id == instrument_id
+        else None,
+    )
+    transactions = [
+        {
+            "transaction_id": "txn-0001",
+            "portfolio_id": "window-query-count-test",
+            "transaction_type": "opening_balance",
+            "trade_date": first_date.isoformat(),
+            "settlement_date": first_date.isoformat(),
+            "account_id": "broker-us-core",
+            "settlement_cash_account_id": None,
+            "instrument_id": instrument_id,
+            "instrument_ref": {
+                "instrument_id": instrument_id,
+                "instrument_name": "Window Query Count Equity",
+                "instrument_type": "equity",
+                "currency": "USD",
+                "identifiers": [],
+            },
+            "quantity": 1.0,
+            "price": 100.0,
+            "gross_amount": 100.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "USD",
+            "created_at": "2026-01-01T09:00:00Z",
+        }
+    ]
+    store = _minimal_store(
+        portfolio_id="window-query-count-test",
+        transactions=transactions,
+    )
+    store["portfolios"][0]["as_of_date"] = "2026-03-31"
+    _write_store(store)
+
+    def quote_query_count(end_date: date) -> tuple[int, int]:
+        statements: list[str] = []
+
+        def record_statement(
+            _connection,
+            _cursor,
+            statement,
+            _parameters,
+            _context,
+            _executemany,
+        ) -> None:
+            normalized = str(statement).lower()
+            if "instrument" in normalized or "quote_" in normalized:
+                statements.append(normalized)
+
+        engine = get_engine()
+        event.listen(engine, "before_cursor_execute", record_statement)
+        try:
+            with get_session_factory()() as quote_session:
+                snapshots = performance.build_daily_portfolio_snapshots(
+                    store["portfolios"][0],
+                    store["accounts"],
+                    transactions,
+                    start_date=first_date,
+                    end_date=end_date,
+                    include_materialized_rows=True,
+                    quote_session=quote_session,
+                )
+        finally:
+            event.remove(engine, "before_cursor_execute", record_statement)
+        return len(statements), len(snapshots)
+
+    short_query_count, short_snapshot_count = quote_query_count(
+        first_date + timedelta(days=4)
+    )
+    long_query_count, long_snapshot_count = quote_query_count(
+        first_date + timedelta(days=89)
+    )
+
+    assert short_snapshot_count == 5
+    assert long_snapshot_count == 90
+    assert short_query_count == long_query_count == 5
+
+
+def test_daily_snapshot_fx_query_count_is_independent_of_day_count(monkeypatch):
+    first_date = date(2026, 1, 1)
+    fx_detail = {
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD",
+        "instrument_type": "fx",
+        "currency": "HKD",
+        "identifiers": [
+            {
+                "identifier_type": "ticker",
+                "identifier_value": "USDHKD",
+                "is_primary": True,
+            }
+        ],
+        "quote_selection_policy": {
+            "valuation": ["spot"],
+            "reference": ["spot"],
+        },
+        "market_data": [
+            {
+                "metric_family": "fx",
+                "quote_basis": "spot",
+                "as_of_date": (first_date + timedelta(days=offset)).isoformat(),
+                "value": "7.80",
+                "currency": "HKD",
+                "status": "complete",
+            }
+            for offset in range(90)
+        ],
+    }
+    monkeypatch.setattr(
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
+        lambda instrument_id: deepcopy(fx_detail)
+        if instrument_id == "fx-usd-hkd"
+        else None,
+    )
+    transactions = [
+        {
+            "transaction_id": "txn-0001",
+            "portfolio_id": "fx-window-query-count-test",
+            "transaction_type": "opening_balance",
+            "trade_date": first_date.isoformat(),
+            "settlement_date": first_date.isoformat(),
+            "account_id": "cash-hkd-main",
+            "settlement_cash_account_id": None,
+            "instrument_id": None,
+            "instrument_ref": None,
+            "quantity": None,
+            "price": None,
+            "gross_amount": 780.0,
+            "fees": 0.0,
+            "taxes": 0.0,
+            "currency": "HKD",
+            "created_at": "2026-01-01T09:00:00Z",
+        }
+    ]
+    store = {
+        "portfolios": [
+            {
+                "portfolio_id": "fx-window-query-count-test",
+                "portfolio_name": "FX Window Query Count",
+                "base_currency": "USD",
+                "valuation_timezone": "Asia/Shanghai",
+                "valuation_cutoff_policy": "latest_complete_eod",
+                "as_of_date": "2026-03-31",
+                "nav": 100.0,
+                "day_change_value": 0.0,
+                "day_change_pct": 0.0,
+                "securities_count": 0,
+                "sort_order": 0,
+            }
+        ],
+        "accounts": [
+            {
+                "account_id": "cash-hkd-main",
+                "portfolio_id": "fx-window-query-count-test",
+                "account_name": "HKD Cash",
+                "account_type": "deposit_account",
+                "currency": "HKD",
+                "institution": "Test Bank",
+                "default_settlement_cash_account_id": None,
+                "cost_basis_method": None,
+                "allowed_instrument_types": None,
+                "opened_at": "2026-01-01",
+                "status": "active",
+            }
+        ],
+        "transactions": transactions,
+    }
+    _write_store(store)
+
+    def fx_query_count(end_date: date) -> tuple[int, int]:
+        statements: list[str] = []
+
+        def record_statement(
+            _connection,
+            _cursor,
+            statement,
+            _parameters,
+            _context,
+            _executemany,
+        ) -> None:
+            normalized = str(statement).lower()
+            if normalized.lstrip().startswith("select") and (
+                "instrument" in normalized or "quote_" in normalized
+            ):
+                statements.append(normalized)
+
+        engine = get_engine()
+        event.listen(engine, "before_cursor_execute", record_statement)
+        try:
+            with get_session_factory()() as quote_session:
+                snapshots = performance.build_daily_portfolio_snapshots(
+                    store["portfolios"][0],
+                    store["accounts"],
+                    transactions,
+                    start_date=first_date,
+                    end_date=end_date,
+                    quote_session=quote_session,
+                )
+        finally:
+            event.remove(engine, "before_cursor_execute", record_statement)
+        return len(statements), len(snapshots)
+
+    short_query_count, short_snapshot_count = fx_query_count(
+        first_date + timedelta(days=4)
+    )
+    long_query_count, long_snapshot_count = fx_query_count(
+        first_date + timedelta(days=89)
+    )
+
+    assert short_snapshot_count == 5
+    assert long_snapshot_count == 90
+    assert short_query_count == long_query_count == 3
 
 
 def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatch):
@@ -1681,14 +3098,9 @@ def test_materialized_window_summary_rebases_twr_and_drawdown(client, monkeypatc
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -1781,14 +3193,9 @@ def test_window_drawdown_uses_period_start_anchor_when_first_return_is_loss(clie
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -1877,14 +3284,9 @@ def test_period_calculation_report_reconciles_initial_delta_transfers_and_final_
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -2035,14 +3437,9 @@ def test_period_calculation_report_splits_earnings_fees_and_taxes(client, monkey
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -2209,14 +3606,9 @@ def test_period_boundary_holdings_report_returns_start_and_end_positions(client,
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -2335,14 +3727,9 @@ def test_period_boundary_holdings_can_filter_by_account_group(client, monkeypatc
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -2429,14 +3816,9 @@ def test_period_boundary_holdings_can_filter_by_taxonomy_group(client, monkeypat
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -2558,6 +3940,7 @@ def test_return_calendar_report_rolls_daily_returns_into_monthly_buckets(client,
     instrument_detail = _test_instrument_detail(
         instrument_id="equity-us-test",
         instrument_name="Test Equity",
+        instrument_type="fund",
         history=[
             ("2026-01-31", "100.00"),
             ("2026-02-01", "110.00"),
@@ -2565,14 +3948,9 @@ def test_return_calendar_report_rolls_daily_returns_into_monthly_buckets(client,
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -2613,7 +3991,7 @@ def test_return_calendar_report_rolls_daily_returns_into_monthly_buckets(client,
                 "instrument_ref": {
                     "instrument_id": "equity-us-test",
                     "instrument_name": "Test Equity",
-                    "instrument_type": "equity",
+                    "instrument_type": "fund",
                     "currency": "USD",
                     "identifiers": [{"identifier_type": "ticker", "identifier_value": "TEST", "is_primary": True}],
                 },
@@ -2661,14 +4039,9 @@ def test_instrument_contribution_report_tracks_daily_pnl_and_residual(client, mo
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -2752,7 +4125,20 @@ def test_instrument_contribution_report_tracks_daily_pnl_and_residual(client, mo
     assert isclose(slice_by_date["2026-01-02"]["total_pnl"], 10.0, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_calculation_period_return_uses_group_twr_with_intraperiod_trades(client, monkeypatch):
+@pytest.mark.parametrize(
+    ("portfolio_id", "scenario"),
+    [
+        ("line-twr-new-buy-test", "new_buy"),
+        ("line-twr-add-buy-test", "add_buy"),
+        ("line-twr-roundtrip-test", "roundtrip"),
+    ],
+)
+def test_calculation_period_return_uses_group_twr_with_intraperiod_trades(
+    client,
+    monkeypatch,
+    portfolio_id: str,
+    scenario: str,
+):
     instrument_id = "equity-us-line-twr"
     instrument_ref = {
         "instrument_id": instrument_id,
@@ -2770,14 +4156,9 @@ def test_calculation_period_return_uses_group_twr_with_intraperiod_trades(client
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda requested_instrument_id: deepcopy(instrument_detail) if requested_instrument_id == instrument_id else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     def transaction(
@@ -2931,27 +4312,36 @@ def test_calculation_period_return_uses_group_twr_with_intraperiod_trades(client
         ),
     ]
 
+    transactions_by_scenario = {
+        "new_buy": new_buy_transactions,
+        "add_buy": add_buy_transactions,
+        "roundtrip": roundtrip_transactions,
+    }
     assert isclose(
-        calculation_group_period_return("line-twr-new-buy-test", new_buy_transactions),
-        0.1,
-        rel_tol=0.0,
-        abs_tol=1e-12,
-    )
-    assert isclose(
-        calculation_group_period_return("line-twr-add-buy-test", add_buy_transactions),
-        0.1,
-        rel_tol=0.0,
-        abs_tol=1e-12,
-    )
-    assert isclose(
-        calculation_group_period_return("line-twr-roundtrip-test", roundtrip_transactions),
+        calculation_group_period_return(
+            portfolio_id,
+            transactions_by_scenario[scenario],
+        ),
         0.1,
         rel_tol=0.0,
         abs_tol=1e-12,
     )
 
 
-def test_cost_basis_method_changes_book_split_not_economic_contribution(client, monkeypatch):
+@pytest.mark.parametrize(
+    ("cost_basis_method", "final_sale"),
+    [
+        pytest.param("fifo", False, id="fifo-open-position"),
+        pytest.param("moving_average", False, id="moving-average-open-position"),
+        pytest.param("fifo", True, id="fifo-sold-out-position"),
+    ],
+)
+def test_cost_basis_method_changes_book_split_not_economic_contribution(
+    client,
+    monkeypatch,
+    cost_basis_method: str,
+    final_sale: bool,
+):
     instrument_id = "equity-us-cost-method"
     instrument_ref = {
         "instrument_id": instrument_id,
@@ -2971,38 +4361,10 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda requested_instrument_id: deepcopy(instrument_detail) if requested_instrument_id == instrument_id else None,
     )
-    monkeypatch.setattr(
-        ledger,
-        "get_registry_instrument_details",
-        lambda requested_instrument_ids: {
-            requested_instrument_id: (
-                deepcopy(instrument_detail)
-                if requested_instrument_id == instrument_id
-                else None
-            )
-            for requested_instrument_id in requested_instrument_ids
-        },
-    )
-    monkeypatch.setattr(
-        workspace_routes,
-        "build_instrument_holdings_market_profile",
-        lambda *_args, **_kwargs: {
-            "price_chart_1m": [],
-            "price_chart_3m": [],
-            "price_chart_6m": [],
-            "price_chart_1y": [],
-        },
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
-    )
-
     def transaction(
         transaction_id: str,
         transaction_type: str,
@@ -3139,80 +4501,77 @@ def test_cost_basis_method_changes_book_split_not_economic_contribution(client, 
             "summary": performance_response.json()["summary"],
         }
 
-    fifo = run_case("cost-method-fifo-test", "fifo")
-    moving_average = run_case("cost-method-ma-test", "moving_average")
+    if final_sale:
+        portfolio_id = "cost-method-sold-out-test"
+        _write_store(build_store(portfolio_id, cost_basis_method, final_sale=True))
+        sold_out_response = client.get(
+            f"/api/portfolios/{portfolio_id}/performance/calculation/groups?axis=instrument"
+        )
+        assert sold_out_response.status_code == 200
+        sold_out_group = next(
+            item
+            for item in sold_out_response.json()["groups"]
+            if item["group_key"] == instrument_id
+        )
+        assert sold_out_group["final_value"] == 0.0
+        assert sold_out_group["capital_gains"] == 20000.0
+        assert sold_out_group["realized_capital_gains"] == 20000.0
+        assert sold_out_group["unrealized_pnl_change"] == 0.0
 
-    assert fifo["holding"]["quantity"] == 4000.0
-    assert moving_average["holding"]["quantity"] == 4000.0
-    assert fifo["holding"]["market_value"] == 300000.0
-    assert moving_average["holding"]["market_value"] == 300000.0
+        sold_out_summary_response = client.get(
+            f"/api/portfolios/{portfolio_id}/performance/calculation"
+        )
+        assert sold_out_summary_response.status_code == 200
+        sold_out_summary = sold_out_summary_response.json()["summary"]
+        assert sold_out_summary["capital_gains"] == 20000.0
+        assert sold_out_summary["realized_capital_gains"] == 20000.0
+        assert sold_out_summary["unrealized_capital_gains"] == 0.0
+        return
 
-    assert fifo["holding"]["cost_basis"] == 400000.0
-    assert fifo["line"]["realized_pnl"] == 100000.0
-    assert fifo["line"]["unrealized_pnl_change"] == -100000.0
-    assert fifo["calculation_group"]["capital_gains"] == 0.0
-    assert fifo["calculation_group"]["realized_capital_gains"] == 100000.0
-    assert fifo["calculation_group"]["unrealized_pnl_change"] == -100000.0
-    assert fifo["calculation_group"]["total_pnl"] == 0.0
-    assert fifo["calculation_group"]["beginning_weight"] is not None
-    assert fifo["calculation_group"]["average_weight"] is not None
-    assert fifo["calculation_group"]["ending_weight"] is not None
+    portfolio_id = f"cost-method-{cost_basis_method.replace('_', '-')}-test"
+    result = run_case(portfolio_id, cost_basis_method)
 
-    assert moving_average["holding"]["cost_basis"] == 300000.0
-    assert moving_average["line"]["realized_pnl"] == 0.0
-    assert moving_average["line"]["unrealized_pnl_change"] == 0.0
-    assert moving_average["calculation_group"]["capital_gains"] == 0.0
-    assert moving_average["calculation_group"]["realized_capital_gains"] == 100000.0
-    assert moving_average["calculation_group"]["unrealized_pnl_change"] == -100000.0
-    assert moving_average["calculation_group"]["total_pnl"] == 0.0
+    assert result["holding"]["quantity"] == 4000.0
+    # The live holdings surface advances to the latest complete canonical
+    # valuation date (2026-01-04), independently of the last trade date.
+    assert result["holding"]["quote_as_of_date"] == "2026-01-04"
+    assert result["holding"]["market_value"] == 320000.0
 
-    assert fifo["line"]["total_pnl"] == 0.0
-    assert moving_average["line"]["total_pnl"] == 0.0
-    assert isclose(
-        fifo["line"]["period_contribution"],
-        moving_average["line"]["period_contribution"],
-        rel_tol=0.0,
-        abs_tol=1e-12,
+    expected_book_split = {
+        "fifo": {
+            "cost_basis": 400000.0,
+            "realized_pnl": 100000.0,
+            "unrealized_pnl_change": -80000.0,
+        },
+        "moving_average": {
+            "cost_basis": 300000.0,
+            "realized_pnl": 0.0,
+            "unrealized_pnl_change": 20000.0,
+        },
+    }[cost_basis_method]
+    assert result["holding"]["cost_basis"] == expected_book_split["cost_basis"]
+    assert result["line"]["realized_pnl"] == expected_book_split["realized_pnl"]
+    assert (
+        result["line"]["unrealized_pnl_change"]
+        == expected_book_split["unrealized_pnl_change"]
     )
-    assert isclose(
-        fifo["summary"]["cumulative_twr"],
-        moving_average["summary"]["cumulative_twr"],
-        rel_tol=0.0,
-        abs_tol=1e-12,
-    )
 
-    _write_store(build_store("cost-method-sold-out-test", "fifo", final_sale=True))
-    sold_out_response = client.get(
-        "/api/portfolios/cost-method-sold-out-test/performance/calculation/groups?axis=instrument"
-    )
-    assert sold_out_response.status_code == 200
-    sold_out_group = next(
-        item
-        for item in sold_out_response.json()["groups"]
-        if item["group_key"] == instrument_id
-    )
-    assert sold_out_group["final_value"] == 0.0
-    assert sold_out_group["capital_gains"] == 20000.0
-    assert sold_out_group["realized_capital_gains"] == 20000.0
-    assert sold_out_group["unrealized_pnl_change"] == 0.0
-
-    sold_out_summary_response = client.get(
-        "/api/portfolios/cost-method-sold-out-test/performance/calculation"
-    )
-    assert sold_out_summary_response.status_code == 200
-    sold_out_summary = sold_out_summary_response.json()["summary"]
-    assert sold_out_summary["capital_gains"] == 20000.0
-    assert sold_out_summary["realized_capital_gains"] == 20000.0
-    assert sold_out_summary["unrealized_capital_gains"] == 0.0
+    # Economic contribution and TWR are invariant to the account's book-cost
+    # convention.  Both parametrized cases assert the same economic outputs.
+    assert result["line"]["total_pnl"] == 20000.0
+    assert result["calculation_group"]["capital_gains"] == 20000.0
+    assert result["calculation_group"]["realized_capital_gains"] == 100000.0
+    assert result["calculation_group"]["unrealized_pnl_change"] == -80000.0
+    assert result["calculation_group"]["total_pnl"] == 20000.0
+    assert result["calculation_group"]["beginning_weight"] is not None
+    assert result["calculation_group"]["average_weight"] is not None
+    assert result["calculation_group"]["ending_weight"] is not None
+    assert result["line"]["period_contribution"] == pytest.approx(0.11)
+    assert result["summary"]["cumulative_twr"] == pytest.approx(0.0266666666666666)
 
 
 def test_account_contribution_report_tracks_interest_income(client, monkeypatch):
-    monkeypatch.setattr(performance, "get_registry_instrument_detail", lambda instrument_id: None)
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
-    )
+    monkeypatch.setattr(_TEST_INSTRUMENT_CATALOG, "get", lambda instrument_id: None)
 
     store = _minimal_store(
         portfolio_id="account-contribution-test",
@@ -3297,14 +4656,9 @@ def test_instrument_contribution_and_calculation_capture_attached_buy_charges(cl
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-fee-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -3424,14 +4778,9 @@ def test_instrument_contribution_report_can_filter_by_group_key(client, monkeypa
         ),
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -3566,14 +4915,9 @@ def test_instrument_contribution_bucket_drilldown_can_filter_by_group_key(client
         ),
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -3706,14 +5050,9 @@ def test_instrument_contribution_entries_can_filter_income_by_group_key(client, 
         ),
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -3941,29 +5280,9 @@ def test_instrument_contribution_report_surfaces_instrument_currency_gains(clien
         "fund-hk-contribution-test": fund_detail,
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {
-            "supported_currencies": ["USD", "HKD"],
-            "maintained_pairs": ["USD/HKD"],
-            "rates": [
-                {
-                    "base_currency": "USD",
-                    "quote_currency": "HKD",
-                    "rate": 7.50,
-                    "as_of_date": "2026-01-02",
-                    "source_kind": "direct",
-                    "instrument_id": "fx-usd-hkd",
-                    "source_instrument_ids": ["fx-usd-hkd"],
-                    "status": "complete",
-                }
-            ],
-        },
     )
 
     store = {
@@ -4113,29 +5432,9 @@ def test_instrument_contribution_bucket_drilldown_surfaces_instrument_currency_g
         "fund-hk-contribution-drilldown-test": fund_detail,
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {
-            "supported_currencies": ["USD", "HKD"],
-            "maintained_pairs": ["USD/HKD"],
-            "rates": [
-                {
-                    "base_currency": "USD",
-                    "quote_currency": "HKD",
-                    "rate": 7.50,
-                    "as_of_date": "2026-01-02",
-                    "source_kind": "direct",
-                    "instrument_id": "fx-usd-hkd",
-                    "source_instrument_ids": ["fx-usd-hkd"],
-                    "status": "complete",
-                }
-            ],
-        },
     )
 
     store = {
@@ -4228,14 +5527,9 @@ def test_instrument_contribution_entries_support_realized_pnl_realizations(clien
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-realized-entry" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -4371,29 +5665,9 @@ def test_account_contribution_report_tracks_cash_currency_gains(client, monkeypa
         ],
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(fx_detail) if instrument_id == "fx-usd-hkd" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {
-            "supported_currencies": ["USD", "HKD"],
-            "maintained_pairs": ["USD/HKD"],
-            "rates": [
-                {
-                    "base_currency": "USD",
-                    "quote_currency": "HKD",
-                    "rate": 7.50,
-                    "as_of_date": "2026-01-02",
-                    "source_kind": "direct",
-                    "instrument_id": "fx-usd-hkd",
-                    "source_instrument_ids": ["fx-usd-hkd"],
-                    "status": "complete",
-                }
-            ],
-        },
     )
 
     store = {
@@ -4569,14 +5843,9 @@ def test_taxonomy_contribution_report_uses_current_assignment_for_full_period(cl
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -4737,14 +6006,9 @@ def test_taxonomy_group_return_uses_capital_flow_denominator_for_in_period_buys(
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-flow-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -4880,14 +6144,9 @@ def test_taxonomy_contribution_and_entries_support_cash_bucket_scope(client, mon
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-cash-bucket" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -5067,14 +6326,9 @@ def test_instrument_contribution_calendar_can_filter_by_group_key(client, monkey
         ),
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -5208,14 +6462,9 @@ def test_instrument_contribution_calendar_bucket_drilldown_can_filter_by_group_k
         ),
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -5350,14 +6599,9 @@ def test_instrument_contribution_entries_calendar_can_filter_income_by_group_key
         ),
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -5539,14 +6783,9 @@ def test_instrument_contribution_calendar_rolls_daily_slices_into_monthly_bucket
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -5640,14 +6879,9 @@ def test_taxonomy_contribution_calendar_uses_current_assignment_for_full_bucket(
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -5799,14 +7033,9 @@ def test_period_calculation_groups_calendar_rolls_monthly_instrument_bridge(clie
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -5916,14 +7145,9 @@ def test_period_calculation_groups_support_instrument_type_axis(client, monkeypa
         "fund-us-test": fund_detail,
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     portfolio_id = "calculation-groups-instrument-type-test"
@@ -6046,19 +7270,23 @@ def test_period_calculation_groups_use_unified_weekly_risk_basis_for_mixed_frequ
         ],
         instrument_type="fund",
     )
+    for detail in (daily_detail, weekly_detail):
+        detail["quote_selection_policy"]["total_return"] = ["adjusted_close"]
+        detail["market_data"].extend(
+            {
+                **deepcopy(point),
+                "quote_basis": "adjusted_close",
+            }
+            for point in list(detail["market_data"])
+        )
     instrument_details = {
         "equity-us-daily-risk-test": daily_detail,
         "fund-us-weekly-risk-test": weekly_detail,
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     portfolio_id = "calculation-groups-mixed-risk-basis-test"
@@ -6227,14 +7455,9 @@ def test_period_calculation_groups_instrument_includes_cash_balance(client, monk
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-cash-line-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     portfolio_id = "calculation-instrument-cash-line-test"
@@ -6422,14 +7645,9 @@ def test_period_calculation_groups_calendar_supports_monthly_taxonomy_bridge(cli
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -6574,14 +7792,9 @@ def test_period_calculation_groups_calendar_can_filter_by_group_key(client, monk
         ),
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -6706,14 +7919,9 @@ def test_taxonomy_boundary_groups_report_uses_current_assignment_on_start_and_en
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -6861,14 +8069,9 @@ def test_taxonomy_calculation_groups_use_period_end_view_and_preserve_cash_group
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -7033,14 +8236,9 @@ def test_taxonomy_calculation_groups_keep_sold_out_instruments_in_effective_grou
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda target_id: deepcopy(instrument_detail) if target_id == instrument_id else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     instrument_ref = {
@@ -7198,14 +8396,9 @@ def test_period_calculation_drilldown_returns_instrument_capital_gains(client, m
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -7297,14 +8490,9 @@ def test_period_calculation_drilldown_taxonomy_uses_period_end_view(client, monk
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -7454,14 +8642,9 @@ def test_period_calculation_entries_extract_attached_tax_bucket_by_instrument(cl
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -7580,14 +8763,9 @@ def test_period_calculation_entries_return_realized_gain_realizations(client, mo
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -7707,14 +8885,9 @@ def test_period_calculation_entries_calendar_rolls_up_monthly_earnings(client, m
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -7861,14 +9034,9 @@ def test_period_calculation_entries_calendar_rolls_up_taxonomy_taxes(client, mon
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -8036,14 +9204,9 @@ def test_period_calculation_entries_calendar_can_filter_by_group_key(client, mon
         ),
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -8240,29 +9403,9 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
         ],
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(fx_detail) if instrument_id == "fx-usd-hkd" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {
-            "supported_currencies": ["USD", "HKD"],
-            "maintained_pairs": ["USD/HKD"],
-            "rates": [
-                {
-                    "base_currency": "USD",
-                    "quote_currency": "HKD",
-                    "rate": 7.50,
-                    "as_of_date": "2026-01-02",
-                    "source_kind": "direct",
-                    "instrument_id": "fx-usd-hkd",
-                    "source_instrument_ids": ["fx-usd-hkd"],
-                    "status": "complete",
-                }
-            ],
-        },
     )
 
     store = {
@@ -8332,6 +9475,32 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(performance_summary["total_pnl"], 4.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(performance_summary["cumulative_twr"], 0.04, rel_tol=0.0, abs_tol=1e-12)
 
+    snapshot_response = client.get(
+        "/api/portfolios/cash-fx-test/snapshots/daily"
+    )
+    assert snapshot_response.status_code == 200
+    final_snapshot = next(
+        item
+        for item in snapshot_response.json()["snapshots"]
+        if item["as_of_date"] == "2026-01-02"
+    )
+    fx_manifest = final_snapshot["fx_dependency_manifest"]
+    assert fx_manifest["requested_as_of_date"] == "2026-01-02"
+    assert fx_manifest["dependencies"]
+    expected_fx_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                key: value
+                for key, value in fx_manifest.items()
+                if key != "fingerprint"
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert fx_manifest["fingerprint"] == expected_fx_fingerprint
+
     holdings_response = client.get("/api/workspace/holdings", params={"portfolio_id": "cash-fx-test"})
     assert holdings_response.status_code == 200
     holdings_payload = holdings_response.json()
@@ -8343,6 +9512,9 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(hkd_cash_row["quantity"], 780.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(hkd_cash_row["market_value"], 780.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(hkd_cash_row["market_value_base"], 104.0, rel_tol=0.0, abs_tol=1e-12)
+    assert hkd_cash_row["unrealized_pnl"] is None
+    assert hkd_cash_row["unrealized_pnl_base"] is None
+    assert hkd_cash_row["unrealized_return"] is None
     assert isclose(hkd_cash_row["day_change_pct"], 0.04, rel_tol=0.0, abs_tol=1e-12)
     assert hkd_cash_row["day_change_value"] is None
     assert isclose(hkd_cash_row["day_change_value_base"], 4.0, rel_tol=0.0, abs_tol=1e-12)
@@ -8354,6 +9526,8 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(holdings_payload["totals"]["day_change_pct"], 0.04, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(holdings_payload["totals"]["cash_balance"], 104.0, rel_tol=0.0, abs_tol=1e-12)
     assert isclose(holdings_payload["totals"]["nav"], 104.0, rel_tol=0.0, abs_tol=1e-12)
+    assert holdings_payload["totals"]["unrealized_pnl_base"] == 0.0
+    assert holdings_payload["totals"]["unrealized_return"] is None
 
     calculation_response = client.get("/api/portfolios/cash-fx-test/performance/calculation")
     assert calculation_response.status_code == 200
@@ -8395,46 +9569,127 @@ def test_cash_currency_gains_flow_through_performance_and_calculation(client, mo
     assert isclose(cash_child["cash_currency_gains"], 4.0, rel_tol=0.0, abs_tol=1e-12)
 
 
-def test_previous_fx_rate_resolves_cross_rate_through_usd_pivot():
-    instrument_detail_cache = {
-        "fx-usd-hkd": {
-            "market_data": [
-                {
-                    "metric_family": "fx",
-                    "quote_basis": "spot",
-                    "as_of_date": "2026-01-02",
-                    "value": "7.8",
-                    "status": "complete",
-                }
-            ]
-        },
-        "fx-usd-cny": {
-            "market_data": [
-                {
-                    "metric_family": "fx",
-                    "quote_basis": "spot",
-                    "as_of_date": "2026-01-02",
-                    "value": "7.2",
-                    "status": "complete",
-                }
-            ]
-        },
+def test_complete_nav_does_not_hide_incomplete_book_pnl_or_twr_state(
+    client,
+    monkeypatch,
+):
+    fx_detail = {
+        "instrument_id": "fx-usd-hkd",
+        "instrument_name": "USD/HKD",
+        "instrument_type": "fx",
+        "currency": "HKD",
+        "identifiers": [
+            {
+                "identifier_type": "ticker",
+                "identifier_value": "USDHKD",
+                "is_primary": True,
+            }
+        ],
+        "quote_selection_policy": {"valuation": ["spot"], "reference": ["spot"]},
+        "market_data": [
+            {
+                "metric_family": "fx",
+                "quote_basis": "spot",
+                "as_of_date": "2026-01-02",
+                "value": "7.50",
+                "currency": "HKD",
+                "status": "complete",
+            }
+        ],
     }
-
-    resolved = performance.resolve_previous_fx_rate_before(
-        before_date=date(2026, 1, 10),
-        base_currency="HKD",
-        quote_currency="CNY",
-        direct_instruments={
-            ("USD", "HKD"): "fx-usd-hkd",
-            ("USD", "CNY"): "fx-usd-cny",
-        },
-        instrument_detail_cache=instrument_detail_cache,
+    monkeypatch.setattr(
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
+        lambda instrument_id: (
+            deepcopy(fx_detail) if instrument_id == "fx-usd-hkd" else None
+        ),
     )
 
-    assert resolved is not None
-    assert resolved["rate"] == pytest.approx(7.2 / 7.8)
-    assert resolved["as_of_date"] == date(2026, 1, 2)
+    store = {
+        "portfolios": [
+            {
+                "portfolio_id": "split-coverage-test",
+                "portfolio_name": "Split Coverage Test",
+                "base_currency": "USD",
+                "valuation_timezone": "Asia/Shanghai",
+                "valuation_cutoff_policy": "latest_complete_eod",
+                "as_of_date": "2026-01-02",
+                "nav": 0.0,
+                "day_change_value": 0.0,
+                "day_change_pct": 0.0,
+                "securities_count": 0,
+                "sort_order": 0,
+            }
+        ],
+        "accounts": [
+            {
+                "account_id": "cash-hkd-main",
+                "portfolio_id": "split-coverage-test",
+                "account_name": "HKD Cash",
+                "account_type": "deposit_account",
+                "currency": "HKD",
+                "institution": "Test Bank",
+                "default_settlement_cash_account_id": None,
+                "cost_basis_method": None,
+                "allowed_instrument_types": None,
+                "opened_at": "2026-01-01",
+                "status": "active",
+            }
+        ],
+        "transactions": [
+            {
+                "transaction_id": "txn-0001",
+                "portfolio_id": "split-coverage-test",
+                "transaction_type": "opening_balance",
+                "trade_date": "2026-01-01",
+                "settlement_date": "2026-01-01",
+                "account_id": "cash-hkd-main",
+                "settlement_cash_account_id": None,
+                "instrument_id": None,
+                "instrument_ref": None,
+                "quantity": None,
+                "price": None,
+                "gross_amount": 750.0,
+                "fees": 0.0,
+                "taxes": 0.0,
+                "currency": "HKD",
+                "transfer_scope": None,
+                "transfer_object_type": None,
+                "transfer_group_id": None,
+                "counterparty_account_id": None,
+                "note": "Opening HKD cash before the first FX observation.",
+                "created_at": "2026-01-01T09:00:00Z",
+            }
+        ],
+    }
+    _write_store(store)
+
+    response = client.get(
+        "/api/portfolios/split-coverage-test/snapshots/daily"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    by_date = {item["as_of_date"]: item for item in payload["snapshots"]}
+    day_two = by_date["2026-01-02"]
+
+    assert day_two["nav_coverage_state"] == "complete"
+    assert day_two["nav_coverage_reason_codes"] == []
+    assert day_two["ending_nav"] == pytest.approx(100.0)
+    assert day_two["book_pnl_coverage_state"] == "partial"
+    assert "cash_currency_attribution_incomplete" in day_two[
+        "book_pnl_coverage_reason_codes"
+    ]
+    assert day_two["realized_pnl"] is None
+    assert day_two["cash_currency_gains"] is None
+    assert day_two["instrument_currency_gains"] is None
+    assert day_two["total_pnl"] is None
+    # Book-P&L history is unavailable, but the current fair-value NAV is still
+    # allowed to establish the first TWR anchor.  There was no prior broken
+    # link, so this is a qualified ``no_anchor`` day rather than a re-anchor.
+    assert day_two["twr_state"] == "no_anchor"
+    assert day_two["twr_reliability_status"] == "qualified"
+    assert day_two["twr_reliability_reasons"] == []
+    assert payload["summary"]["latest_complete_as_of_date"] == "2026-01-02"
 
 
 def test_instrument_currency_gains_flow_through_performance_and_calculation(client, monkeypatch):
@@ -8495,29 +9750,9 @@ def test_instrument_currency_gains_flow_through_performance_and_calculation(clie
         "fund-hk-test": hk_fund_detail,
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {
-            "supported_currencies": ["USD", "HKD"],
-            "maintained_pairs": ["USD/HKD"],
-            "rates": [
-                {
-                    "base_currency": "USD",
-                    "quote_currency": "HKD",
-                    "rate": 7.50,
-                    "as_of_date": "2026-01-02",
-                    "source_kind": "direct",
-                    "instrument_id": "fx-usd-hkd",
-                    "source_instrument_ids": ["fx-usd-hkd"],
-                    "status": "complete",
-                }
-            ],
-        },
     )
 
     store = {
@@ -8680,29 +9915,9 @@ def test_foreign_currency_income_and_realized_pnl_are_reported_in_base_currency(
         "equity-hk-income-test": hk_equity_detail,
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(details.get(instrument_id)),
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {
-            "supported_currencies": ["USD", "HKD"],
-            "maintained_pairs": ["USD/HKD"],
-            "rates": [
-                {
-                    "base_currency": "USD",
-                    "quote_currency": "HKD",
-                    "rate": 7.50,
-                    "as_of_date": "2026-01-02",
-                    "source_kind": "direct",
-                    "instrument_id": "fx-usd-hkd",
-                    "source_instrument_ids": ["fx-usd-hkd"],
-                    "status": "complete",
-                }
-            ],
-        },
     )
 
     store = {
@@ -8879,29 +10094,9 @@ def test_foreign_currency_external_flow_is_converted_before_daily_twr(client, mo
         ],
     }
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(fx_detail) if instrument_id == "fx-usd-hkd" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {
-            "supported_currencies": ["USD", "HKD"],
-            "maintained_pairs": ["USD/HKD"],
-            "rates": [
-                {
-                    "base_currency": "USD",
-                    "quote_currency": "HKD",
-                    "rate": 7.50,
-                    "as_of_date": "2026-01-02",
-                    "source_kind": "direct",
-                    "instrument_id": "fx-usd-hkd",
-                    "source_instrument_ids": ["fx-usd-hkd"],
-                    "status": "complete",
-                }
-            ],
-        },
     )
 
     store = {
@@ -8998,12 +10193,7 @@ def test_foreign_currency_external_flow_is_converted_before_daily_twr(client, mo
 
 
 def test_performance_summary_custom_period_uses_period_deltas(client, monkeypatch):
-    monkeypatch.setattr(performance, "get_registry_instrument_detail", lambda instrument_id: None)
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
-    )
+    monkeypatch.setattr(_TEST_INSTRUMENT_CATALOG, "get", lambda instrument_id: None)
 
     store = _minimal_store(
         portfolio_id="performance-period-delta-test",
@@ -9115,14 +10305,9 @@ def test_performance_summary_ignores_flows_before_first_complete_snapshot(client
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-partial-anchor" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -9246,14 +10431,9 @@ def test_daily_snapshots_keep_nav_constant_until_security_cash_settles(client, m
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-settlement-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(
@@ -9347,14 +10527,9 @@ def test_account_contribution_carries_pending_settlement_in_ending_values(client
         ],
     )
     monkeypatch.setattr(
-        performance,
-        "get_registry_instrument_detail",
+        _TEST_INSTRUMENT_CATALOG,
+        "get",
         lambda instrument_id: deepcopy(instrument_detail) if instrument_id == "equity-us-account-settlement-test" else None,
-    )
-    monkeypatch.setattr(
-        performance,
-        "get_platform_fx_rates",
-        lambda: {"supported_currencies": ["USD"], "maintained_pairs": [], "rates": []},
     )
 
     store = _minimal_store(

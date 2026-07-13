@@ -27,4 +27,6 @@ class PayloadReadModelMixin:
     last_recalculated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
-    source_cutoff_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    market_data_input_watermark_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )

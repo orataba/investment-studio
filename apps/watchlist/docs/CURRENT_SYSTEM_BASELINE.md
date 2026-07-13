@@ -81,7 +81,6 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 - `taxonomies`
 - `field-registry`
 - `screener`
-- `facts`
 - `monitoring`
 - `recalc`
 - `copilot`
@@ -89,12 +88,13 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 ### 5.2 已落地的数据能力
 
 - watchlist / view / row read model
+- row read model 不包含 AUM 裸金额；Watchlist 尚无同时具备 currency、as-of、source lineage 和明确统计粒度的 AUM canonical fact
 - shared-registry-backed instrument add into watchlist
 - instrument library search / resolve
 - fund taxonomy tree / taxonomy assignment / derived taxonomy levels
-- NAV facts ingest
-- holdings ingest
-- performance / risk / exposure / ratings materialization
+- canonical quote/NAV read-only lineage through the shared resolver；写入与修订由 Database Dashboard 负责
+- performance / risk materialization
+- append-only manual research rating revisions with current watchlist materialization
 - instrument manual profiles（当前 fund overlay 最完整）
 - instrument product framework definition / assignment
 - recalc job persistence
@@ -107,7 +107,7 @@ watchlist 和 fund detail 已经不再使用“平铺 fund tags”模型，而�
 - 迁移连接：`PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL`
 - schema：`PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA`
 - 迁移目录：`backend/alembic`
-- 初始化方式：只执行 `alembic upgrade head`
+- 初始化方式：显式设置 `PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE` 后执行 `alembic upgrade head`
 
 ## 7. 当前还没完成的模块
 

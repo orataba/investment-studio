@@ -3,6 +3,8 @@ from base64 import b64encode
 import pytest
 from pydantic import ValidationError
 
+from portfolio_ops_instrument_core.models import MarketDataPoint
+
 from platform_app.api import contracts
 
 
@@ -71,4 +73,104 @@ def test_quote_policy_rejects_cash_cumulative_nav_as_total_return(
     with pytest.raises(ValidationError, match="cash-cumulative NAV as total return"):
         contracts.PlatformQuoteSelectionPolicyUpdateRequest.model_validate(
             {"quote_selection_policy": policy}
+        )
+
+
+def test_market_data_point_contract_requires_canonical_revision_identity() -> None:
+    point = contracts.PlatformMarketDataPoint.model_validate(
+        {
+            "quote_series_id": "series-1",
+            "observation_id": "observation-1",
+            "revision_id": "revision-1",
+            "revision_number": 2,
+            "metric_family": "nav",
+            "quote_basis": "official_nav",
+            "as_of_date": "2026-07-10",
+            "value": "100.00",
+            "currency": "USD",
+            "source_ref": "issuer-file",
+            "status": "complete",
+            "source_published_at": "2026-07-11T00:00:00Z",
+            "ingested_at": None,
+            "payload_hash": "sha256:abc",
+        }
+    )
+    assert point.quote_series_id == "series-1"
+    assert point.source_ref == "issuer-file"
+    assert point.revision_number == 2
+
+
+def test_currency_contract_normalizes_ingress_once_and_rejects_non_iso_shape() -> None:
+    request = contracts.PlatformMarketDataUpsertRequest.model_validate(
+        {
+            "metric_family": "nav",
+            "quote_basis": "official_nav",
+            "as_of_date": "2026-07-10",
+            "value": "100",
+            "currency": " cny ",
+        }
+    )
+    assert request.currency == "CNY"
+
+    for invalid_currency in ("", "CN", "USDT", "C1Y"):
+        with pytest.raises(ValidationError):
+            contracts.PlatformMarketDataUpsertRequest.model_validate(
+                {
+                    "metric_family": "nav",
+                    "quote_basis": "official_nav",
+                    "as_of_date": "2026-07-10",
+                    "value": "100",
+                    "currency": invalid_currency,
+                }
+            )
+
+
+def test_platform_write_contract_rejects_removed_provider_field() -> None:
+    with pytest.raises(ValidationError, match="provider"):
+        contracts.PlatformMarketDataUpsertRequest.model_validate(
+            {
+                "metric_family": "nav",
+                "quote_basis": "official_nav",
+                "as_of_date": "2026-07-10",
+                "value": "100",
+                "currency": "USD",
+                "provider": "removed-field",
+            }
+        )
+
+
+def test_core_market_data_point_rejects_removed_provider_field() -> None:
+    with pytest.raises(ValidationError, match="provider"):
+        MarketDataPoint.model_validate(
+            {
+                "quote_series_id": "series-1",
+                "observation_id": "observation-1",
+                "revision_id": "revision-1",
+                "revision_number": 1,
+                "instrument_id": "fund-1",
+                "metric_family": "nav",
+                "quote_basis": "official_nav",
+                "as_of_date": "2026-07-10",
+                "value": "100",
+                "currency": "USD",
+                "source_ref": "issuer-file",
+                "provider": "removed-field",
+                "status": "complete",
+                "payload_hash": "sha256:abc",
+            }
+        )
+
+
+@pytest.mark.parametrize("status", ["unavailable", "withdrawn"])
+def test_market_data_upsert_contract_rejects_non_source_status(status: str) -> None:
+    with pytest.raises(ValidationError):
+        contracts.PlatformMarketDataUpsertRequest.model_validate(
+            {
+                "metric_family": "nav",
+                "quote_basis": "official_nav",
+                "as_of_date": "2026-07-10",
+                "value": "100",
+                "currency": "USD",
+                "status": status,
+            }
         )

@@ -27,22 +27,69 @@ from portfolio_app.services.portfolio_store import get_portfolio, list_accounts,
 router = APIRouter()
 
 
+def _parsed_date(value: object) -> date | None:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return date.fromisoformat(value.strip()[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _resolve_positions_as_of_date(
+    portfolio: dict[str, object],
+    transactions: list[dict[str, object]],
+    requested_as_of_date: date | None,
+) -> date:
+    """Resolve the current ledger boundary without hiding newer transactions.
+
+    ``portfolio.as_of_date`` is a persisted valuation boundary, not an
+    immutable transaction cut-off.  When the caller does not request a
+    historical date, position reads must include newly entered or corrected
+    facts and advance to their latest economic activity date.
+    """
+
+    if requested_as_of_date is not None:
+        return requested_as_of_date
+    candidates = [
+        candidate
+        for candidate in (
+            _parsed_date(portfolio.get("as_of_date")),
+            *(
+                _parsed_date(transaction.get(field_name))
+                for transaction in transactions
+                for field_name in ("trade_date", "settlement_date", "entitlement_date")
+            ),
+        )
+        if candidate is not None
+    ]
+    return max(candidates, default=date.today())
+
+
 @router.get("/{portfolio_id}/positions", response_model=PositionListResponse)
 def list_portfolio_positions(
     portfolio_id: str,
     as_of_date: date | None = None,
 ) -> PositionListResponse:
-    if get_portfolio(portfolio_id) is None:
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     accounts = list_accounts(portfolio_id)
     transactions = list_transactions(portfolio_id, end_date=as_of_date)
+    resolved_as_of_date = _resolve_positions_as_of_date(
+        portfolio,
+        transactions,
+        as_of_date,
+    )
     try:
         positions = build_portfolio_positions(
             portfolio_id,
             accounts,
             transactions,
-            as_of_date=as_of_date,
+            as_of_date=resolved_as_of_date,
         )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
@@ -61,11 +108,17 @@ def list_portfolio_position_lots(
     status: str | None = None,
     as_of_date: date | None = None,
 ) -> PositionLotListResponse:
-    if get_portfolio(portfolio_id) is None:
+    portfolio = get_portfolio(portfolio_id)
+    if portfolio is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     accounts = list_accounts(portfolio_id)
     transactions = list_transactions(portfolio_id, end_date=as_of_date)
+    resolved_as_of_date = _resolve_positions_as_of_date(
+        portfolio,
+        transactions,
+        as_of_date,
+    )
     try:
         position_lots = build_position_lots(
             portfolio_id,
@@ -74,7 +127,7 @@ def list_portfolio_position_lots(
             account_id=account_id,
             instrument_id=instrument_id,
             status=status,
-            as_of_date=as_of_date,
+            as_of_date=resolved_as_of_date,
         )
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error

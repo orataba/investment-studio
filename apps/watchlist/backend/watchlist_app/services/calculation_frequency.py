@@ -8,6 +8,11 @@ from typing import Any, Literal
 CalculationFrequency = Literal["daily", "weekly", "monthly"]
 
 CALCULATION_FREQUENCIES: tuple[CalculationFrequency, ...] = ("daily", "weekly", "monthly")
+ANNUALIZATION_PERIODS_PER_YEAR: dict[CalculationFrequency, float] = {
+    "daily": 252.0,
+    "weekly": 52.0,
+    "monthly": 12.0,
+}
 CALCULATION_FREQUENCY_LABELS: dict[CalculationFrequency, str] = {
     "daily": "Daily",
     "weekly": "Weekly",
@@ -19,6 +24,7 @@ _EXPECTED_MAX_GAP_DAYS: dict[CalculationFrequency, int] = {
     "weekly": 10,
     "monthly": 45,
 }
+_STABLE_FREQUENCY_MIN_SHARE = 0.8
 
 
 def normalize_frequency(value: object) -> CalculationFrequency | None:
@@ -32,10 +38,10 @@ def normalize_frequency(value: object) -> CalculationFrequency | None:
     return None
 
 
-def infer_observation_frequency(dates: list[date]) -> CalculationFrequency:
+def infer_observation_frequency(dates: list[date]) -> CalculationFrequency | None:
     ordered_dates = sorted(set(item for item in dates if isinstance(item, date)))
     if len(ordered_dates) < 2:
-        return "daily"
+        return None
 
     gaps = [
         (ordered_dates[index] - ordered_dates[index - 1]).days
@@ -43,30 +49,39 @@ def infer_observation_frequency(dates: list[date]) -> CalculationFrequency:
         if (ordered_dates[index] - ordered_dates[index - 1]).days > 0
     ]
     if not gaps:
-        return "daily"
+        return None
 
     sorted_gaps = sorted(gaps)
     median_gap = sorted_gaps[len(sorted_gaps) // 2]
-    daily_like_count = len([gap for gap in gaps if gap <= 3])
+    daily_like_count = len([gap for gap in gaps if gap <= 4])
     weekly_like_count = len([gap for gap in gaps if 4 <= gap <= 10])
     monthly_like_count = len([gap for gap in gaps if 18 <= gap <= 45])
 
     if len(gaps) < 5:
-        if daily_like_count:
+        if daily_like_count == len(gaps):
             return "daily"
         if weekly_like_count == len(gaps):
             return "weekly"
         if monthly_like_count == len(gaps):
             return "monthly"
-        return "daily"
+        return None
 
-    if median_gap <= 3:
+    if (
+        median_gap <= 4
+        and daily_like_count >= len(gaps) * _STABLE_FREQUENCY_MIN_SHARE
+    ):
         return "daily"
-    if median_gap <= 10:
+    if (
+        4 <= median_gap <= 10
+        and weekly_like_count >= len(gaps) * _STABLE_FREQUENCY_MIN_SHARE
+    ):
         return "weekly"
-    if monthly_like_count >= len(gaps) * 0.6:
+    if (
+        18 <= median_gap <= 45
+        and monthly_like_count >= len(gaps) * _STABLE_FREQUENCY_MIN_SHARE
+    ):
         return "monthly"
-    return "daily"
+    return None
 
 
 def _period_key(observation_date: date, frequency: CalculationFrequency) -> str:
@@ -95,13 +110,13 @@ def resample_nav_points(
     return sorted(buckets.values(), key=lambda point: point["as_of_date"])
 
 
-def _annualization_periods_per_year(points: list[dict[str, Any]]) -> float | None:
-    if len(points) < 2:
+def _annualization_periods_per_year(
+    points: list[dict[str, Any]],
+    frequency: CalculationFrequency | None,
+) -> float | None:
+    if len(points) < 2 or frequency is None:
         return None
-    elapsed_days = (points[-1]["as_of_date"] - points[0]["as_of_date"]).days
-    if elapsed_days <= 0:
-        return None
-    return (len(points) - 1) / elapsed_days * 365.25
+    return ANNUALIZATION_PERIODS_PER_YEAR[frequency]
 
 
 def build_calculation_frequency_context(
@@ -122,10 +137,20 @@ def build_calculation_frequency_context(
         if declared_frequencies
         else inferred_frequency
     )
-    calculation_points = resample_nav_points(raw_points, resolved_frequency)
+    calculation_points = (
+        resample_nav_points(raw_points, resolved_frequency)
+        if resolved_frequency is not None
+        else raw_points
+    )
 
     declared_counts = Counter(declared_frequencies)
-    unknown_count = max(len(raw_points) - len(declared_frequencies), 0)
+    unknown_count = (
+        max(len(raw_points) - len(declared_frequencies), 0)
+        if declared_frequencies
+        else 0
+        if inferred_frequency is not None
+        else len(raw_points)
+    )
     source_counts = {
         frequency: (
             int(declared_counts.get(frequency, 0))
@@ -143,14 +168,24 @@ def build_calculation_frequency_context(
         for index in range(1, len(calculation_points))
     ]
     largest_gap_days = max(gaps) if gaps else None
-    max_expected_gap = _EXPECTED_MAX_GAP_DAYS[resolved_frequency]
-    gap_count = len([gap for gap in gaps if gap > max_expected_gap])
+    max_expected_gap = (
+        _EXPECTED_MAX_GAP_DAYS[resolved_frequency]
+        if resolved_frequency is not None
+        else None
+    )
+    gap_count = (
+        len([gap for gap in gaps if gap > max_expected_gap])
+        if max_expected_gap is not None
+        else 0
+    )
     source_label = (
         "mixed declared data"
         if len([count for count in declared_counts.values() if count > 0]) > 1
         else f"declared {CALCULATION_FREQUENCY_LABELS[resolved_frequency].lower()} data"
         if declared_frequencies
         else f"inferred {CALCULATION_FREQUENCY_LABELS[inferred_frequency].lower()} data"
+        if inferred_frequency is not None
+        else "frequency unavailable"
     )
     gap_label = "calendar gaps" if gap_count else "aligned observations"
 
@@ -163,13 +198,24 @@ def build_calculation_frequency_context(
         "observation_count": len(calculation_points),
         "start_date": calculation_points[0]["as_of_date"].isoformat() if calculation_points else None,
         "end_date": calculation_points[-1]["as_of_date"].isoformat() if calculation_points else None,
-        "annualization_periods_per_year": _annualization_periods_per_year(calculation_points),
+        "annualization_periods_per_year": _annualization_periods_per_year(
+            calculation_points,
+            resolved_frequency,
+        ),
         "largest_gap_days": largest_gap_days,
         "gap_count": gap_count,
-        "gap_status": "calendar_gaps" if gap_count else "aligned",
+        "gap_status": (
+            "unresolved"
+            if resolved_frequency is None
+            else "calendar_gaps"
+            if gap_count
+            else "aligned"
+        ),
         "status_label": (
             f"{CALCULATION_FREQUENCY_LABELS[resolved_frequency]} risk basis - "
             f"{source_label}, {gap_label}"
+            if resolved_frequency is not None
+            else "Risk frequency unavailable - insufficient or irregular observations"
         ),
     }
     return {

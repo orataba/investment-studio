@@ -25,7 +25,7 @@ def upsert_fx_rate(
     quote_currency: str,
     rate: Decimal,
     as_of_date: date,
-    provider: str | None,
+    source_ref: str | None,
     status: str,
 ) -> dict[str, object]:
     return shared_fx_rates.upsert_fx_rate(
@@ -34,6 +34,6 @@ def upsert_fx_rate(
         quote_currency=quote_currency,
         rate=rate,
         as_of_date=as_of_date,
-        provider=provider,
+        source_ref=source_ref,
         status=status,
     )

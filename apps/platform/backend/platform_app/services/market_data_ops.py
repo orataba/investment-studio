@@ -160,7 +160,7 @@ TUSHARE_HISTORY_START_DATE = date(2024, 1, 1)
 TUSHARE_LISTED_SECURITY_QUOTE_SELECTION_POLICY: dict[str, list[str]] = {
     "trading": ["last", "close"],
     "valuation": ["close", "last"],
-    "total_return": ["adjusted_close", "close", "last"],
+    "total_return": ["adjusted_close"],
     "chart": ["adjusted_close", "close", "last"],
     "reference": ["close", "last"],
 }
@@ -1305,8 +1305,8 @@ def _stored_qfq_latest_factor(instrument: dict[str, object]) -> Decimal | None:
             continue
         if str(point.get("quote_basis") or "").strip() != "adjusted_close":
             continue
-        provider = str(point.get("provider") or "")
-        match = QFQ_FACTOR_PATTERN.search(provider)
+        source_ref = str(point.get("source_ref") or "")
+        match = QFQ_FACTOR_PATTERN.search(source_ref)
         point_date = _parse_nav_date(point.get("as_of_date"))
         if match is None or point_date is None:
             continue
@@ -1317,7 +1317,8 @@ def _stored_qfq_latest_factor(instrument: dict[str, object]) -> Decimal | None:
 
 
 def _decimal_text(value: Decimal) -> str:
-    return format(value.normalize(), "f")
+    fixed = format(value, "f")
+    return fixed.rstrip("0").rstrip(".") if "." in fixed else fixed
 
 
 def _format_imap_since_date(value: date) -> str:
@@ -1577,9 +1578,9 @@ def _import_rows_from_email_rules(
         for row in merged_rows
         if (row_date := _parse_nav_date(row.get("as_of_date"))) is not None
     }
-    used_provider_refs: list[str] = []
+    used_source_refs: list[str] = []
     used_attachment_names: list[str] = []
-    for provider_ref, attachment_name, batch_rows in matched_batches:
+    for source_ref, attachment_name, batch_rows in matched_batches:
         used_rows = (
             batch_rows
             if full_history
@@ -1591,25 +1592,25 @@ def _import_rows_from_email_rules(
         )
         if not used_rows:
             continue
-        used_provider_refs.append(provider_ref)
+        used_source_refs.append(source_ref)
         used_attachment_names.append(attachment_name)
 
     if full_history:
-        provider = "email:history"
+        source_ref = "email:history"
         message = (
-            f"Imported {len(merged_rows)} NAV rows from {len(used_provider_refs)} "
+            f"Imported {len(merged_rows)} NAV rows from {len(used_source_refs)} "
             "email attachments."
         )
     else:
         unique_attachment_names = list(dict.fromkeys(used_attachment_names))
-        provider = (
+        source_ref = (
             f"email:{unique_attachment_names[0]}"
             if len(unique_attachment_names) == 1
             else "email:recent_window"
         )
         since_text = f" since {nav_since_date.isoformat()}" if nav_since_date else ""
         message = (
-            f"Imported {len(merged_rows)} NAV rows from {len(used_provider_refs)} "
+            f"Imported {len(merged_rows)} NAV rows from {len(used_source_refs)} "
             f"recent email attachments{since_text}."
         )
     if reinvested_correction_applied:
@@ -1617,12 +1618,13 @@ def _import_rows_from_email_rules(
     return replace_nav_history(
         instrument_id=instrument_id,
         rows=merged_rows,
-        provider=provider,
+        source_ref=source_ref,
         point_status=_normalize_import_status(merged_rows, "complete"),
         refresh_status="imported",
         updated_by=updated_by,
         message=message,
         mode="email",
+        replace_all=full_history,
     )
 
 
@@ -1630,7 +1632,7 @@ def import_nav_text(
     *,
     instrument_id: str,
     raw_text: str,
-    provider: str | None,
+    source_ref: str | None,
     status: str,
     updated_by: str | None,
 ) -> dict[str, object] | None:
@@ -1640,7 +1642,7 @@ def import_nav_text(
     return replace_nav_history(
         instrument_id=instrument_id,
         rows=prepared_rows,
-        provider=provider or "platform_manual_import",
+        source_ref=source_ref or "platform_manual_import",
         point_status=normalized_status,
         refresh_status="imported",
         updated_by=updated_by,
@@ -1674,7 +1676,7 @@ def import_nav_file(
     instrument_id: str,
     file_name: str,
     file_bytes: bytes,
-    provider: str | None,
+    source_ref: str | None,
     status: str,
     updated_by: str | None,
 ) -> dict[str, object] | None:
@@ -1684,7 +1686,7 @@ def import_nav_file(
     return replace_nav_history(
         instrument_id=instrument_id,
         rows=prepared_rows,
-        provider=provider or f"platform_file_import:{file_name}",
+        source_ref=source_ref or f"platform_file_import:{file_name}",
         point_status=normalized_status,
         refresh_status="imported",
         updated_by=updated_by,
@@ -1887,7 +1889,7 @@ def _refresh_tushare_listed_security(
             "as_of_date": point_date,
             "value": value,
             "currency": "CNY",
-            "provider": f"tushare:{price_api_name}",
+            "source_ref": f"tushare:{price_api_name}",
             "status": "complete",
         }
         for point_date, value in fetched_close_by_date.items()
@@ -1912,7 +1914,7 @@ def _refresh_tushare_listed_security(
                     "as_of_date": point_date,
                     "value": _decimal_text(adjusted_close),
                     "currency": "CNY",
-                    "provider": (
+                    "source_ref": (
                         f"tushare:{factor_api_name}:qfq:latest_factor={factor_text}"
                     ),
                     "status": "complete",
@@ -2024,12 +2026,13 @@ def _refresh_from_tushare(
             return replace_nav_history(
                 instrument_id=instrument_id,
                 rows=nav_rows,
-                provider="tushare:fund_nav",
+                source_ref="tushare:fund_nav",
                 point_status="complete",
                 refresh_status="imported",
                 updated_by=updated_by,
                 message=f"Imported {len(nav_rows)} NAV rows from Tushare fund_nav for {ts_code}.",
                 mode="api",
+                replace_all=full_history,
             )
 
         if instrument_type in {"fund", "etf"} and suffix in TUSHARE_PRICE_SUFFIXES:
@@ -2121,7 +2124,7 @@ def _upsert_tushare_price_rows(
                 "as_of_date": row["as_of_date"],
                 "value": row["value"],
                 "currency": "CNY",
-                "provider": f"tushare:{api_name}",
+                "source_ref": f"tushare:{api_name}",
                 "status": "complete",
             }
             for row in rows

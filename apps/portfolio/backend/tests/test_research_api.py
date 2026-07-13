@@ -2,20 +2,27 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from math import sqrt
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError
 
 from portfolio_app.db.models import ResearchRunRecordModel
 from portfolio_app.db.session import get_session_factory
+from portfolio_ops_instrument_core import instrument_store as shared_store
 from portfolio_app.services import research as research_service
 from portfolio_app.services import research_solver as research_solver_service
 from portfolio_app.services.instrument_charts import (
     _annualized_volatility,
-    _candidate_chart_bases,
-    build_instrument_trend_metrics_from_detail,
+    build_instrument_trend_metrics_from_points,
+)
+from portfolio_app.services.performance_reliability import (
+    ANNUALIZED_RETURN_HISTORY_BELOW_MINIMUM,
+    HISTORY_WINDOW_UNAVAILABLE,
+    MIN_ANNUALIZED_RETURN_HISTORY_DAYS,
 )
 from portfolio_app.services.risk_model import normalize_portfolio_risk_policy, risk_min_observations_for_window
 
@@ -23,6 +30,8 @@ from portfolio_app.services.research_solver import (
     CAPITAL_MODE_TARGET_VOLATILITY,
     CAPITAL_MODE_VOLATILITY_CAP,
     RESEARCH_BACKTEST_METHODOLOGY_WARNINGS,
+    RESEARCH_BACKTEST_METRICS_METHOD_VERSION,
+    ResearchMarketDataError,
     RiskBudgetProblem,
     RiskBudgetSolution,
     SYSTEM_CASH_TARGET_MEMBER_ID,
@@ -37,16 +46,18 @@ from portfolio_app.services.research_solver import (
     _backtest_rebalance_dates,
     _build_backtest_metrics,
     _build_backtest_sampled_nav_by_instrument,
+    _build_instrument_nav_series,
     _build_leaf_target_weight_gaps,
     _build_sampled_benchmark_points,
     _build_taxonomy_state,
     _estimate_covariance,
     _infer_periods_per_year,
     _is_better_risk_budget_solution,
+    _lock_research_market_data,
+    _lock_research_market_data_in_session,
     _periodic_nav_series,
     _rebalance_schedule,
     _resolve_active_top_sleeve_bound_vectors,
-    _selected_price_points,
     _selected_target_risk_share,
     _current_scope_actuals,
     _series_to_nav,
@@ -57,6 +68,92 @@ from portfolio_app.services.research_solver import (
     build_current_target_backtest,
     research_window_start_date,
 )
+
+
+def _canonical_point(
+    point_date: date,
+    value: float,
+    *,
+    quote_basis: str,
+    currency: str,
+    status: str = "complete",
+) -> dict[str, object]:
+    metric_family = "nav" if quote_basis.endswith("nav") else ("fx" if quote_basis == "spot" else "price")
+    return {
+        "metric_family": metric_family,
+        "quote_basis": quote_basis,
+        "as_of_date": point_date.isoformat(),
+        "value": str(value),
+        "currency": currency,
+        "status": status,
+        "source_ref": "research-test",
+    }
+
+
+def _canonical_instrument(
+    instrument_id: str,
+    *,
+    currency: str,
+    points: list[dict[str, object]],
+    instrument_type: str = "fund",
+    total_return_bases: list[str] | None = None,
+) -> dict[str, object]:
+    if total_return_bases is None:
+        total_return_bases = ["total_return_nav"] if instrument_type == "fund" else ["adjusted_close"]
+    valuation_bases = (
+        ["spot"]
+        if instrument_type == "fx"
+        else (["official_nav"] if instrument_type == "fund" else ["close"])
+    )
+    return {
+        "instrument_id": instrument_id,
+        "instrument_name": instrument_id,
+        "instrument_type": instrument_type,
+        "currency": currency,
+        "quote_selection_policy": {
+            "total_return": total_return_bases,
+            "valuation": valuation_bases,
+        },
+        "market_data": points,
+    }
+
+
+def _install_canonical_instruments(instruments: list[dict[str, object]]) -> None:
+    shared_store.reset_store(
+        get_session_factory(),
+        {
+            "registry_name": "Allocation Research canonical test registry",
+            "instruments": instruments,
+        },
+    )
+
+
+def _market_data_only_state(
+    *,
+    context,
+    base_currency: str,
+    as_of_date: date,
+) -> TaxonomyResearchState:
+    return TaxonomyResearchState(
+        portfolio_id="portfolio-market-data-test",
+        planning_taxonomy_id="taxonomy-market-data-test",
+        taxonomy_name="Market Data Test",
+        root_default_target_dimension="weight",
+        base_currency=base_currency,
+        as_of_date=as_of_date,
+        node_by_id={},
+        children_by_parent={},
+        node_path_by_id={},
+        node_depth_by_id={},
+        node_subtree_by_id={},
+        direct_assignments_by_node={},
+        target_sets_by_scope_type={},
+        target_lines_by_set_id={},
+        account_name_by_id={},
+        frozen_taxonomy_node_ids=frozenset(),
+        top_sleeve_weight_bounds={},
+        market_data=context,
+    )
 
 def _create_planning_taxonomy(client, *, root_default_target_dimension: str = "weight") -> tuple[str, dict[str, str]]:
     taxonomy_response = client.post(
@@ -153,8 +250,6 @@ def test_current_target_solve_fails_closed_for_unassigned_non_cash_holding(monke
         target_sets_by_scope_type={},
         target_lines_by_set_id={},
         account_name_by_id={},
-        instrument_detail_cache={},
-        direct_fx_instruments={},
         frozen_taxonomy_node_ids=frozenset(),
         top_sleeve_weight_bounds={},
     )
@@ -221,8 +316,6 @@ def test_current_scope_actuals_reuses_one_portfolio_valuation_across_scopes(monk
         target_sets_by_scope_type={},
         target_lines_by_set_id={},
         account_name_by_id={},
-        instrument_detail_cache={},
-        direct_fx_instruments={},
         frozen_taxonomy_node_ids=frozenset(),
         top_sleeve_weight_bounds={},
     )
@@ -272,51 +365,20 @@ def test_current_scope_actuals_reuses_one_portfolio_valuation_across_scopes(monk
     assert calls == {"portfolio": 2, "accounts": 2, "transactions": 2, "holdings": 2, "workspace": 2}
 
 
-def test_taxonomy_state_reuses_seeded_market_data_caches(monkeypatch) -> None:
-    seeded_details = {"instrument-a": {"instrument_id": "instrument-a", "market_data": []}}
-    seeded_fx = {("HKD", "USD"): "fx-hkd-usd"}
+def test_allocation_research_source_has_no_legacy_market_or_fx_provider() -> None:
+    source = Path(research_solver_service.__file__).read_text(encoding="utf-8")
 
-    monkeypatch.setattr(
-        "portfolio_app.services.research_solver.get_portfolio",
-        lambda _portfolio_id: {"portfolio_id": "portfolio-cache-test", "base_currency": "USD"},
-    )
-    monkeypatch.setattr(
-        "portfolio_app.services.research_solver.list_taxonomies",
-        lambda _portfolio_id: [
-            {
-                "taxonomy_id": "taxonomy-cache-test",
-                "name": "Planning",
-                "root_default_target_dimension": "risk_budget",
-                "primary_assignment_scope": "instrument",
-            }
-        ],
-    )
-    monkeypatch.setattr("portfolio_app.services.research_solver.list_taxonomy_nodes", lambda _portfolio_id: [])
-    monkeypatch.setattr("portfolio_app.services.research_solver.list_taxonomy_assignments", lambda _portfolio_id: [])
-    monkeypatch.setattr(
-        "portfolio_app.services.research_solver.list_target_sets",
-        lambda _portfolio_id, **_kwargs: [],
-    )
-    monkeypatch.setattr(
-        "portfolio_app.services.research_solver.list_target_set_lines",
-        lambda _portfolio_id, **_kwargs: [],
-    )
-    monkeypatch.setattr("portfolio_app.services.research_solver.list_accounts", lambda _portfolio_id: [])
-    monkeypatch.setattr(
-        "portfolio_app.services.research_solver._build_direct_fx_instrument_map",
-        lambda: pytest.fail("seeded FX map should avoid a platform reload"),
-    )
-
-    state = _build_taxonomy_state(
-        "portfolio-cache-test",
-        planning_taxonomy_id="taxonomy-cache-test",
-        as_of_date=date(2026, 1, 2),
-        instrument_detail_cache=seeded_details,
-        direct_fx_instruments=seeded_fx,
-    )
-
-    assert state.instrument_detail_cache is seeded_details
-    assert state.direct_fx_instruments is seeded_fx
+    banned_symbols = {
+        "_build_direct_fx_instrument_map",
+        "_candidate_quote_bases",
+        "_selected_price_points",
+        "get_platform_fx_rates",
+        "get_registry_instrument_detail",
+        "resolve_fx_rate_on",
+        "instrument_detail_cache",
+        "direct_fx_instruments",
+    }
+    assert {symbol for symbol in banned_symbols if symbol in source} == set()
 
 
 def test_zero_risk_budget_member_is_excluded_from_covariance_and_kept_in_results() -> None:
@@ -328,27 +390,32 @@ def test_zero_risk_budget_member_is_excluded_from_covariance_and_kept_in_results
 
     def detail(instrument_id: str, dates: list[date], returns: list[float]) -> dict[str, object]:
         value = 1.0
-        points = []
+        points: list[dict[str, object]] = []
         for point_date, point_return in zip(dates, returns, strict=True):
             value *= 1.0 + point_return
             points.append(
-                {
-                    "as_of_date": point_date.isoformat(),
-                    "value": value,
-                    "quote_basis": "total_return_nav",
-                    "currency": "USD",
-                    "status": "complete",
-                }
+                _canonical_point(
+                    point_date,
+                    value,
+                    quote_basis="total_return_nav",
+                    currency="USD",
+                )
             )
-        return {
-            "instrument_id": instrument_id,
-            "instrument_name": instrument_id,
-            "currency": "USD",
-            "quote_selection_policy": {"total_return": ["total_return_nav"]},
-            "market_data": points,
-        }
+        return _canonical_instrument(instrument_id, currency="USD", points=points)
 
     short_dates = long_dates[-2:]
+    instrument_details = [
+        detail("asset-a", long_dates, return_paths["asset-a"]),
+        detail("asset-b", long_dates, return_paths["asset-b"]),
+        detail("asset-short", short_dates, [0.0, 0.02]),
+    ]
+    _install_canonical_instruments(instrument_details)
+    market_data = _lock_research_market_data(
+        instrument_ids=["asset-a", "asset-b", "asset-short"],
+        base_currency="USD",
+        start_date=research_window_start_date(long_dates[-1], 30),
+        end_date=long_dates[-1],
+    )
     state = TaxonomyResearchState(
         portfolio_id="portfolio-zero-budget",
         planning_taxonomy_id="taxonomy-zero-budget",
@@ -394,14 +461,9 @@ def test_zero_risk_budget_member_is_excluded_from_covariance_and_kept_in_results
             }
         },
         account_name_by_id={},
-        instrument_detail_cache={
-            "asset-a": detail("asset-a", long_dates, return_paths["asset-a"]),
-            "asset-b": detail("asset-b", long_dates, return_paths["asset-b"]),
-            "asset-short": detail("asset-short", short_dates, [0.0, 0.02]),
-        },
-        direct_fx_instruments={},
         frozen_taxonomy_node_ids=frozenset(),
         top_sleeve_weight_bounds={},
+        market_data=market_data,
     )
 
     result = _solve_current_scope(
@@ -439,25 +501,25 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
 
     def detail(instrument_id: str, dates: list[date], daily_return: float) -> dict[str, object]:
         value = 1.0
-        points = []
+        points: list[dict[str, object]] = []
         for index, point_date in enumerate(dates):
             value *= 1.0 + (daily_return if index % 2 == 0 else -daily_return / 2.0)
             points.append(
-                {
-                    "as_of_date": point_date.isoformat(),
-                    "value": value,
-                    "quote_basis": "total_return_nav",
-                    "currency": "USD",
-                    "status": "complete",
-                }
+                _canonical_point(
+                    point_date,
+                    value,
+                    quote_basis="total_return_nav",
+                    currency="USD",
+                )
             )
-        return {
-            "instrument_id": instrument_id,
-            "instrument_name": instrument_id,
-            "currency": "USD",
-            "quote_selection_policy": {"total_return": ["total_return_nav"]},
-            "market_data": points,
-        }
+        return _canonical_instrument(instrument_id, currency="USD", points=points)
+
+    _install_canonical_instruments(
+        [
+            detail("active", active_dates, 0.002),
+            detail("late-zero", late_dates, 0.003),
+        ]
+    )
 
     state = TaxonomyResearchState(
         portfolio_id="portfolio-zero-weight",
@@ -502,16 +564,11 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
             }
         },
         account_name_by_id={},
-        instrument_detail_cache={
-            "active": detail("active", active_dates, 0.002),
-            "late-zero": detail("late-zero", late_dates, 0.003),
-        },
-        direct_fx_instruments={},
         frozen_taxonomy_node_ids=frozenset(),
         top_sleeve_weight_bounds={},
     )
     monkeypatch.setattr(research_solver_service, "_build_taxonomy_state", lambda *_args, **_kwargs: state)
-    original_solve = research_solver_service.solve_current_target_weights
+    original_solve = research_solver_service._solve_current_target_weights_from_state
     period_solutions: list[dict[str, object]] = []
 
     def capture_period_solve(*args, **kwargs):
@@ -519,7 +576,11 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
         period_solutions.append(solution)
         return solution
 
-    monkeypatch.setattr(research_solver_service, "solve_current_target_weights", capture_period_solve)
+    monkeypatch.setattr(
+        research_solver_service,
+        "_solve_current_target_weights_from_state",
+        capture_period_solve,
+    )
     current_solution = {
         "leaf_targets": [
             {"member_type": "instrument", "member_id": "active", "target_weight": 1.0},
@@ -546,6 +607,20 @@ def test_zero_weight_member_starting_after_early_rebalance_does_not_block_backte
     )
 
     assert payload["backtest"]["points"]
+    assert payload["backtest"]["points"][0] == {"date": "2026-03-01", "value": 1.0}
+    assert payload["backtest"]["points"][-1]["date"] == "2026-07-09"
+    assert payload["backtest"]["points"][-1]["value"] == pytest.approx(
+        1.0479989767001392
+    )
+    assert payload["market_data_dependencies"]["policy_version"] == (
+        "allocation_research_market_data.v1"
+    )
+    assert payload["market_data_dependencies"]["instrument_ids"] == ["active", "late-zero"]
+    assert payload["market_data_dependencies"]["quote_dependencies"]
+    assert all(
+        item["role"] == "total_return"
+        for item in payload["market_data_dependencies"]["quote_dependencies"]
+    )
     assert period_solutions
     assert not any(
         "research window is clipped" in warning
@@ -561,22 +636,29 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight() -> None:
     dates = [item.date() for item in pd.bdate_range("2026-01-05", periods=8)]
 
     def detail(instrument_id: str, step: float) -> dict[str, object]:
-        return {
-            "instrument_id": instrument_id,
-            "instrument_name": instrument_id,
-            "currency": "USD",
-            "quote_selection_policy": {"total_return": ["total_return_nav"]},
-            "market_data": [
-                {
-                    "as_of_date": point_date.isoformat(),
-                    "value": 1.0 + index * step,
-                    "quote_basis": "total_return_nav",
-                    "currency": "USD",
-                    "status": "complete",
-                }
+        return _canonical_instrument(
+            instrument_id,
+            currency="USD",
+            points=[
+                _canonical_point(
+                    point_date,
+                    1.0 + index * step,
+                    quote_basis="total_return_nav",
+                    currency="USD",
+                )
                 for index, point_date in enumerate(dates)
             ],
-        }
+        )
+
+    _install_canonical_instruments(
+        [detail("asset-a", 0.01), detail("asset-b", 0.005)]
+    )
+    market_data = _lock_research_market_data(
+        instrument_ids=["asset-a", "asset-b"],
+        base_currency="USD",
+        start_date=research_window_start_date(dates[-1], 30),
+        end_date=dates[-1],
+    )
 
     state = TaxonomyResearchState(
         portfolio_id="portfolio-bound-zero",
@@ -616,10 +698,9 @@ def test_positive_top_sleeve_minimum_overrides_zero_configured_weight() -> None:
             }
         },
         account_name_by_id={},
-        instrument_detail_cache={"asset-a": detail("asset-a", 0.01), "asset-b": detail("asset-b", 0.005)},
-        direct_fx_instruments={},
         frozen_taxonomy_node_ids=frozenset(),
         top_sleeve_weight_bounds={"node-b": {"min_weight": 0.2, "max_weight": None}},
+        market_data=market_data,
     )
 
     result = _solve_current_scope(
@@ -939,7 +1020,44 @@ def test_research_backtest_rebalance_schedule_rolls_from_first_valid_month() -> 
     ) == [date(2026, 6, 1), date(2026, 9, 1), date(2026, 12, 1)]
 
 
-def test_research_backtest_metrics_include_ytd_drawdown_duration_and_calmar() -> None:
+def test_research_backtest_metrics_empty_data_is_versioned_and_fails_closed() -> None:
+    metrics = _build_backtest_metrics([], {})
+
+    assert metrics["method_version"] == (
+        "research-backtest-metrics.v2.history-gated-arithmetic-sharpe"
+    )
+    assert metrics["method_version"] == RESEARCH_BACKTEST_METRICS_METHOD_VERSION
+    assert metrics["history_reliability"] == {
+        "start_date": None,
+        "end_date": None,
+        "elapsed_days": None,
+        "calendar_span_days": None,
+        "minimum_history_days": MIN_ANNUALIZED_RETURN_HISTORY_DAYS,
+        "annualized_return_eligible": False,
+        "annualized_return_reason_codes": [HISTORY_WINDOW_UNAVAILABLE],
+        "sample_label": (
+            "Observed period unavailable · 0 snapshots · "
+            "0 return observations · 0 risk observations"
+        ),
+        "annualization_message": (
+            "Observed performance history is unavailable. Annualized TWR, "
+            "IRR / MWRR, and Calmar Ratio are withheld."
+        ),
+    }
+    for field_name in (
+        "period_return",
+        "ytd_return",
+        "annualized_return",
+        "annualized_volatility",
+        "sharpe_ratio",
+        "max_drawdown",
+        "current_drawdown",
+        "calmar_ratio",
+    ):
+        assert metrics[field_name] is None
+
+
+def test_research_backtest_short_history_retains_non_geometric_metrics() -> None:
     points = [
         {"date": "2025-12-31", "value": 1.0},
         {"date": "2026-01-02", "value": 1.1},
@@ -953,14 +1071,77 @@ def test_research_backtest_metrics_include_ytd_drawdown_duration_and_calmar() ->
     }
 
     metrics = _build_backtest_metrics(points, returns)
+    periods_per_year = _infer_periods_per_year(
+        [date.fromisoformat(item) for item in returns]
+    )
+    return_values = np.asarray(list(returns.values()), dtype="float64")
+    expected_volatility = float(
+        np.std(return_values, ddof=1) * sqrt(periods_per_year)
+    )
+    expected_arithmetic_sharpe = float(
+        (np.mean(return_values) * periods_per_year) / expected_volatility
+    )
 
+    assert metrics["method_version"] == RESEARCH_BACKTEST_METRICS_METHOD_VERSION
+    history_reliability = metrics["history_reliability"]
+    assert history_reliability["elapsed_days"] == 12
+    assert history_reliability["annualized_return_eligible"] is False
+    assert history_reliability["annualized_return_reason_codes"] == [
+        ANNUALIZED_RETURN_HISTORY_BELOW_MINIMUM
+    ]
     assert metrics["period_return"] == pytest.approx(0.12)
     assert metrics["ytd_return"] == pytest.approx(0.12)
+    assert metrics["annualized_return"] is None
+    assert metrics["annualized_volatility"] == pytest.approx(expected_volatility)
+    assert metrics["sharpe_ratio"] == pytest.approx(expected_arithmetic_sharpe)
     assert metrics["max_drawdown"] == pytest.approx(-0.2)
     assert metrics["max_drawdown_days"] == 3
     assert metrics["max_drawdown_recovery_days"] == 7
     assert metrics["current_drawdown"] == pytest.approx(0.0)
-    assert metrics["calmar_ratio"] is not None
+    assert metrics["calmar_ratio"] is None
+
+
+def test_research_backtest_metrics_publish_geometric_annualization_at_365_days() -> None:
+    start_date = date(2025, 1, 1)
+    drawdown_date = date(2025, 7, 2)
+    end_date = date(2026, 1, 1)
+    points = [
+        {"date": start_date.isoformat(), "value": 1.0},
+        {"date": drawdown_date.isoformat(), "value": 0.9},
+        {"date": end_date.isoformat(), "value": 1.1},
+    ]
+    returns = {
+        drawdown_date.isoformat(): -0.1,
+        end_date.isoformat(): 1.1 / 0.9 - 1.0,
+    }
+
+    metrics = _build_backtest_metrics(points, returns)
+    periods_per_year = _infer_periods_per_year([drawdown_date, end_date])
+    expected_annualized_return = 1.1 ** (periods_per_year / 2.0) - 1.0
+    expected_volatility = float(
+        np.std(np.asarray(list(returns.values())), ddof=1)
+        * sqrt(periods_per_year)
+    )
+    expected_arithmetic_sharpe = float(
+        (np.mean(list(returns.values())) * periods_per_year)
+        / expected_volatility
+    )
+
+    assert metrics["method_version"] == RESEARCH_BACKTEST_METRICS_METHOD_VERSION
+    history_reliability = metrics["history_reliability"]
+    assert history_reliability["elapsed_days"] == 365
+    assert history_reliability["annualized_return_eligible"] is True
+    assert history_reliability["annualized_return_reason_codes"] == []
+    assert metrics["period_return"] == pytest.approx(0.1)
+    assert metrics["annualized_return"] == pytest.approx(
+        expected_annualized_return
+    )
+    assert metrics["annualized_volatility"] == pytest.approx(expected_volatility)
+    assert metrics["sharpe_ratio"] == pytest.approx(expected_arithmetic_sharpe)
+    assert metrics["max_drawdown"] == pytest.approx(-0.1)
+    assert metrics["calmar_ratio"] == pytest.approx(
+        expected_annualized_return / 0.1
+    )
 
 
 def test_top_sleeve_bounds_reject_fixed_gross_above_max_capacity() -> None:
@@ -1227,142 +1408,134 @@ def test_research_pinned_as_of_requires_explicit_mode(client):
 
 
 def test_research_series_prefers_total_return_nav_for_funds() -> None:
-    detail = {
-        "instrument_id": "fund-test",
-        "instrument_type": "fund",
-        "currency": "USD",
-        "quote_selection_policy": {
-            "valuation": ["official_nav"],
-            "reference": ["official_nav"],
-            "chart": ["total_return_nav", "official_nav"],
-            "total_return": ["total_return_nav", "official_nav"],
-        },
-        "market_data": [
-            {
-                "metric_family": "nav",
-                "quote_basis": "official_nav",
-                "as_of_date": "2026-04-14",
-                "value": "1.0000",
-                "currency": "USD",
-                "status": "complete",
-            },
-            {
-                "metric_family": "nav",
-                "quote_basis": "total_return_nav",
-                "as_of_date": "2026-04-14",
-                "value": "1.1200",
-                "currency": "USD",
-                "status": "complete",
-            },
-            {
-                "metric_family": "nav",
-                "quote_basis": "official_nav",
-                "as_of_date": "2026-04-15",
-                "value": "1.0100",
-                "currency": "USD",
-                "status": "complete",
-            },
-            {
-                "metric_family": "nav",
-                "quote_basis": "total_return_nav",
-                "as_of_date": "2026-04-15",
-                "value": "1.1350",
-                "currency": "USD",
-                "status": "complete",
-            },
+    start_date = date(2026, 4, 14)
+    end_date = date(2026, 4, 15)
+    _install_canonical_instruments(
+        [
+            _canonical_instrument(
+                "fund-test",
+                currency="USD",
+                points=[
+                    _canonical_point(start_date, 1.0, quote_basis="official_nav", currency="USD"),
+                    _canonical_point(start_date, 1.12, quote_basis="total_return_nav", currency="USD"),
+                    _canonical_point(end_date, 1.01, quote_basis="official_nav", currency="USD"),
+                    _canonical_point(end_date, 1.135, quote_basis="total_return_nav", currency="USD"),
+                ],
+            )
+        ]
+    )
+    context = _lock_research_market_data(
+        instrument_ids=["fund-test"],
+        base_currency="USD",
+        start_date=start_date,
+        end_date=end_date,
+    )
+    state = _market_data_only_state(
+        context=context,
+        base_currency="USD",
+        as_of_date=end_date,
+    )
+
+    series, warnings = _build_instrument_nav_series(
+        state,
+        instrument_id="fund-test",
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    assert context.total_return_book.windows["fund-test"].quote_basis == "total_return_nav"
+    assert series.to_dict() == {start_date: 1.12, end_date: 1.135}
+    assert warnings == []
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_reason"),
+    [
+        ("partial", "partial_series"),
+        ("rejected", "rejected_observation"),
+        ("withdrawn", "withdrawn_observation"),
+    ],
+)
+def test_research_series_fails_closed_for_later_noncomplete_observation(
+    status: str,
+    expected_reason: str,
+) -> None:
+    start_date = date(2026, 4, 14)
+    end_date = date(2026, 4, 15)
+    _install_canonical_instruments(
+        [
+            _canonical_instrument(
+                "fund-status-test",
+                currency="USD",
+                points=[
+                    _canonical_point(start_date, 1.12, quote_basis="total_return_nav", currency="USD"),
+                    _canonical_point(
+                        end_date,
+                        1.135,
+                        quote_basis="total_return_nav",
+                        currency="USD",
+                        status=status,
+                    ),
+                ],
+            )
+        ]
+    )
+    context = _lock_research_market_data(
+        instrument_ids=["fund-status-test"],
+        base_currency="USD",
+        start_date=start_date,
+        end_date=end_date,
+    )
+    state = _market_data_only_state(
+        context=context,
+        base_currency="USD",
+        as_of_date=end_date,
+    )
+
+    with pytest.raises(ResearchMarketDataError) as error:
+        _build_instrument_nav_series(
+            state,
+            instrument_id="fund-status-test",
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    assert expected_reason in error.value.reason_codes
+    assert error.value.dependency["role"] == "total_return"
+    non_complete = error.value.dependency["non_complete_observations"][-1]
+    assert non_complete["status"] == status
+    assert non_complete["revision_id"] in error.value.dependency[
+        "window_calculation_dependency"
+    ]["excluded_revision_ids"]
+
+
+def test_instrument_trend_uses_explicit_locked_total_return_basis() -> None:
+    metrics = build_instrument_trend_metrics_from_points(
+        [
+            {"date": date(2026, 1, 1), "value": 100.0},
+            {"date": date(2026, 1, 10), "value": 110.0},
         ],
-    }
-
-    points = _selected_price_points(detail, end_date=date(2026, 4, 15))
-
-    assert [(item[0].isoformat(), item[1]) for item in points] == [
-        ("2026-04-14", 1.12),
-        ("2026-04-15", 1.135),
-    ]
-
-
-def test_research_series_uses_only_complete_market_data() -> None:
-    detail = {
-        "instrument_id": "fund-status-test",
-        "instrument_type": "fund",
-        "currency": "USD",
-        "quote_selection_policy": {
-            "valuation": ["official_nav"],
-            "reference": ["official_nav"],
-            "chart": ["total_return_nav", "official_nav"],
-            "total_return": ["total_return_nav", "official_nav"],
-        },
-        "market_data": [
-            {
-                "metric_family": "nav",
-                "quote_basis": "total_return_nav",
-                "as_of_date": "2026-04-14",
-                "value": "1.1200",
-                "currency": "USD",
-                "status": "complete",
-            },
-            {
-                "metric_family": "nav",
-                "quote_basis": "total_return_nav",
-                "as_of_date": "2026-04-15",
-                "value": "1.1350",
-                "currency": "USD",
-                "status": "partial",
-            },
-        ],
-    }
-
-    points = _selected_price_points(detail, end_date=date(2026, 4, 15))
-
-    assert [(item[0].isoformat(), item[1]) for item in points] == [("2026-04-14", 1.12)]
-
-
-def test_instrument_chart_bases_prefer_total_return_role() -> None:
-    detail = {
-        "quote_selection_policy": {
-            "valuation": ["official_nav"],
-            "reference": ["official_nav"],
-            "total_return": ["total_return_nav", "official_nav"],
-        },
-    }
-
-    assert _candidate_chart_bases(detail) == ["total_return_nav", "official_nav"]
-
-
-def test_instrument_trend_falls_back_to_latest_basis_when_policy_empty() -> None:
-    detail = {
-        "currency": "USD",
-        "market_data": [
-            {
-                "metric_family": "price",
-                "quote_basis": "close",
-                "as_of_date": "2026-01-01",
-                "value": "100",
-                "currency": "USD",
-                "status": "complete",
-            },
-            {
-                "metric_family": "price",
-                "quote_basis": "adjusted_close",
-                "as_of_date": "2026-01-01",
-                "value": "100",
-                "currency": "USD",
-                "status": "complete",
-            },
-            {
-                "metric_family": "price",
-                "quote_basis": "adjusted_close",
-                "as_of_date": "2026-01-10",
-                "value": "110",
-                "currency": "USD",
-                "status": "complete",
-            },
-        ],
-    }
-
-    metrics = build_instrument_trend_metrics_from_detail(detail, as_of_date=date(2026, 1, 10))
+        as_of_date=date(2026, 1, 10),
+        selected_basis="adjusted_close",
+    )
 
     assert metrics["instrument_trend_basis"] == "adjusted_close"
+    assert metrics["instrument_return_mtd"] is None
+    assert metrics["instrument_return_ytd"] is None
+
+
+def test_instrument_trend_mtd_and_ytd_require_prior_period_anchor() -> None:
+    metrics = build_instrument_trend_metrics_from_points(
+        [
+            {"date": date(2025, 12, 31), "value": 100.0},
+            {"date": date(2026, 1, 1), "value": 101.0},
+            {"date": date(2026, 1, 10), "value": 110.0},
+        ],
+        as_of_date=date(2026, 1, 10),
+        selected_basis="adjusted_close",
+    )
+
+    assert metrics["instrument_return_mtd"] == pytest.approx(0.1)
     assert metrics["instrument_return_ytd"] == pytest.approx(0.1)
 
 
@@ -1402,25 +1575,16 @@ def test_instrument_trend_volatility_can_use_weekly_risk_basis() -> None:
 
 
 def test_holdings_instrument_volatility_requires_window_start_coverage() -> None:
-    detail = {
-        "currency": "USD",
-        "quote_selection_policy": {"total_return": ["close"]},
-        "market_data": [
+    metrics = build_instrument_trend_metrics_from_points(
+        [
             {
-                "metric_family": "price",
-                "quote_basis": "close",
-                "as_of_date": (date(2026, 1, 1) + timedelta(days=offset)).isoformat(),
-                "value": str(100.0 + offset / 10),
-                "currency": "USD",
-                "status": "complete",
+                "date": date(2026, 1, 1) + timedelta(days=offset),
+                "value": 100.0 + offset / 10,
             }
             for offset in range(0, 106, 7)
         ],
-    }
-
-    metrics = build_instrument_trend_metrics_from_detail(
-        detail,
         as_of_date=date(2026, 4, 16),
+        selected_basis="adjusted_close",
         calculation_frequency="weekly",
     )
 
@@ -1428,25 +1592,16 @@ def test_holdings_instrument_volatility_requires_window_start_coverage() -> None
 
 
 def test_holdings_instrument_volatility_allows_complete_weekly_window() -> None:
-    detail = {
-        "currency": "USD",
-        "quote_selection_policy": {"total_return": ["close"]},
-        "market_data": [
+    metrics = build_instrument_trend_metrics_from_points(
+        [
             {
-                "metric_family": "price",
-                "quote_basis": "close",
-                "as_of_date": (date(2025, 10, 16) + timedelta(days=offset)).isoformat(),
-                "value": str(100.0 + offset / 10),
-                "currency": "USD",
-                "status": "complete",
+                "date": date(2025, 10, 16) + timedelta(days=offset),
+                "value": 100.0 + offset / 10,
             }
             for offset in range(0, 183, 7)
         ],
-    }
-
-    metrics = build_instrument_trend_metrics_from_detail(
-        detail,
         as_of_date=date(2026, 4, 16),
+        selected_basis="adjusted_close",
         calculation_frequency="weekly",
     )
 
@@ -1454,58 +1609,269 @@ def test_holdings_instrument_volatility_allows_complete_weekly_window() -> None:
 
 
 def test_research_series_prefers_adjusted_close_for_equities() -> None:
-    detail = {
-        "instrument_id": "equity-test",
-        "instrument_type": "equity",
-        "currency": "USD",
-        "quote_selection_policy": {
-            "valuation": ["close"],
-            "reference": ["close"],
-            "chart": ["adjusted_close", "close"],
-            "total_return": ["adjusted_close", "close"],
-        },
-        "market_data": [
-            {
-                "metric_family": "price",
-                "quote_basis": "close",
-                "as_of_date": "2026-04-14",
-                "value": "100.0000",
-                "currency": "USD",
-                "status": "complete",
-            },
-            {
-                "metric_family": "price",
-                "quote_basis": "adjusted_close",
-                "as_of_date": "2026-04-14",
-                "value": "108.0000",
-                "currency": "USD",
-                "status": "complete",
-            },
-            {
-                "metric_family": "price",
-                "quote_basis": "close",
-                "as_of_date": "2026-04-15",
-                "value": "102.0000",
-                "currency": "USD",
-                "status": "complete",
-            },
-            {
-                "metric_family": "price",
-                "quote_basis": "adjusted_close",
-                "as_of_date": "2026-04-15",
-                "value": "110.5000",
-                "currency": "USD",
-                "status": "complete",
-            },
-        ],
-    }
+    start_date = date(2026, 4, 14)
+    end_date = date(2026, 4, 15)
+    _install_canonical_instruments(
+        [
+            _canonical_instrument(
+                "equity-test",
+                currency="USD",
+                instrument_type="equity",
+                points=[
+                    _canonical_point(start_date, 100.0, quote_basis="close", currency="USD"),
+                    _canonical_point(start_date, 108.0, quote_basis="adjusted_close", currency="USD"),
+                    _canonical_point(end_date, 102.0, quote_basis="close", currency="USD"),
+                    _canonical_point(end_date, 110.5, quote_basis="adjusted_close", currency="USD"),
+                ],
+            )
+        ]
+    )
+    context = _lock_research_market_data(
+        instrument_ids=["equity-test"],
+        base_currency="USD",
+        start_date=start_date,
+        end_date=end_date,
+    )
+    state = _market_data_only_state(
+        context=context,
+        base_currency="USD",
+        as_of_date=end_date,
+    )
 
-    points = _selected_price_points(detail, end_date=date(2026, 4, 15))
+    series, _warnings = _build_instrument_nav_series(
+        state,
+        instrument_id="equity-test",
+        start_date=start_date,
+        end_date=end_date,
+    )
 
-    assert [(item[0].isoformat(), item[1]) for item in points] == [
-        ("2026-04-14", 108.0),
-        ("2026-04-15", 110.5),
+    assert context.total_return_book.windows["equity-test"].quote_basis == "adjusted_close"
+    assert series.to_dict() == {start_date: 108.0, end_date: 110.5}
+
+
+def test_research_never_falls_back_to_valuation_when_total_return_role_is_empty() -> None:
+    start_date = date(2026, 4, 14)
+    end_date = date(2026, 4, 15)
+    _install_canonical_instruments(
+        [
+            _canonical_instrument(
+                "equity-no-total-return",
+                currency="USD",
+                instrument_type="equity",
+                total_return_bases=[],
+                points=[
+                    _canonical_point(start_date, 100.0, quote_basis="close", currency="USD"),
+                    _canonical_point(end_date, 102.0, quote_basis="close", currency="USD"),
+                ],
+            )
+        ]
+    )
+    context = _lock_research_market_data(
+        instrument_ids=["equity-no-total-return"],
+        base_currency="USD",
+        start_date=start_date,
+        end_date=end_date,
+    )
+    state = _market_data_only_state(
+        context=context,
+        base_currency="USD",
+        as_of_date=end_date,
+    )
+
+    with pytest.raises(ResearchMarketDataError) as error:
+        _build_instrument_nav_series(
+            state,
+            instrument_id="equity-no-total-return",
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    assert "missing_quote_policy" in error.value.reason_codes
+    assert error.value.dependency["role"] == "total_return"
+
+
+def test_research_fails_closed_when_total_return_endpoint_is_late() -> None:
+    start_date = date(2026, 4, 1)
+    end_date = date(2026, 4, 15)
+    _install_canonical_instruments(
+        [
+            _canonical_instrument(
+                "equity-late-total-return",
+                currency="USD",
+                instrument_type="equity",
+                points=[
+                    _canonical_point(
+                        start_date,
+                        100.0,
+                        quote_basis="adjusted_close",
+                        currency="USD",
+                    )
+                ],
+            )
+        ]
+    )
+    context = _lock_research_market_data(
+        instrument_ids=["equity-late-total-return"],
+        base_currency="USD",
+        start_date=start_date,
+        end_date=end_date,
+    )
+    state = _market_data_only_state(
+        context=context,
+        base_currency="USD",
+        as_of_date=end_date,
+    )
+
+    with pytest.raises(ResearchMarketDataError) as error:
+        _build_instrument_nav_series(
+            state,
+            instrument_id="equity-late-total-return",
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    assert {"late_observation", "freshness_limit_exceeded"}.issubset(
+        error.value.reason_codes
+    )
+    assert error.value.dependency["endpoint_calculation_dependency"] is not None
+
+
+def test_research_canonical_cross_fx_keeps_two_leg_dependencies() -> None:
+    start_date = date(2026, 4, 14)
+    end_date = date(2026, 4, 15)
+    _install_canonical_instruments(
+        [
+            _canonical_instrument(
+                "fund-hkd-cross",
+                currency="HKD",
+                points=[
+                    _canonical_point(start_date, 100.0, quote_basis="total_return_nav", currency="HKD"),
+                    _canonical_point(end_date, 101.0, quote_basis="total_return_nav", currency="HKD"),
+                ],
+            ),
+            _canonical_instrument(
+                "fx-usd-hkd",
+                currency="HKD",
+                instrument_type="fx",
+                total_return_bases=[],
+                points=[
+                    _canonical_point(start_date, 7.8, quote_basis="spot", currency="HKD"),
+                    _canonical_point(end_date, 7.82, quote_basis="spot", currency="HKD"),
+                ],
+            ),
+            _canonical_instrument(
+                "fx-usd-cny",
+                currency="CNY",
+                instrument_type="fx",
+                total_return_bases=[],
+                points=[
+                    _canonical_point(start_date, 7.2, quote_basis="spot", currency="CNY"),
+                    _canonical_point(end_date, 7.29, quote_basis="spot", currency="CNY"),
+                ],
+            ),
+        ]
+    )
+    statements: list[str] = []
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        bind = session.get_bind()
+
+        def record_query(_conn, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(str(statement))
+
+        event.listen(bind, "before_cursor_execute", record_query)
+        try:
+            context = _lock_research_market_data_in_session(
+                session,
+                instrument_ids=["fund-hkd-cross"],
+                base_currency="CNY",
+                start_date=start_date,
+                end_date=end_date,
+            )
+        finally:
+            event.remove(bind, "before_cursor_execute", record_query)
+    state = _market_data_only_state(
+        context=context,
+        base_currency="CNY",
+        as_of_date=end_date,
+    )
+
+    series, _warnings = _build_instrument_nav_series(
+        state,
+        instrument_id="fund-hkd-cross",
+        start_date=start_date,
+        end_date=end_date,
+    )
+    manifest = research_solver_service._research_market_data_manifest(state)
+
+    assert series.loc[start_date] == pytest.approx(100.0 * 7.2 / 7.8)
+    assert series.loc[end_date] == pytest.approx(101.0 * 7.29 / 7.82)
+    assert manifest is not None
+    assert len(manifest["quote_dependencies"]) == 1
+    assert len(manifest["fx_dependencies"]) == 2
+    assert all(item["path_kind"] == "cross" for item in manifest["fx_dependencies"])
+    assert all(len(item["legs"]) == 2 for item in manifest["fx_dependencies"])
+    assert len(statements) == 9
+
+
+def test_research_market_data_lock_has_bounded_queries_and_nav_is_sql_free() -> None:
+    start_date = date(2026, 4, 1)
+    end_date = date(2026, 4, 15)
+    points = [
+        _canonical_point(
+            point_date.date(),
+            100.0 + index,
+            quote_basis="adjusted_close",
+            currency="USD",
+        )
+        for index, point_date in enumerate(pd.bdate_range(start_date, end_date))
     ]
+    _install_canonical_instruments(
+        [
+            _canonical_instrument(
+                "equity-query-bound",
+                currency="USD",
+                instrument_type="equity",
+                points=points,
+            )
+        ]
+    )
+    statements: list[str] = []
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        bind = session.get_bind()
+
+        def record_query(_conn, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(str(statement))
+
+        event.listen(bind, "before_cursor_execute", record_query)
+        try:
+            context = _lock_research_market_data_in_session(
+                session,
+                instrument_ids=["equity-query-bound"],
+                base_currency="USD",
+                start_date=start_date,
+                end_date=end_date,
+            )
+            lock_query_count = len(statements)
+            state = _market_data_only_state(
+                context=context,
+                base_currency="USD",
+                as_of_date=end_date,
+            )
+            for _index in range(25):
+                series, _warnings = _build_instrument_nav_series(
+                    state,
+                    instrument_id="equity-query-bound",
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                assert len(series) == len(points)
+            assert len(statements) == lock_query_count
+        finally:
+            event.remove(bind, "before_cursor_execute", record_query)
+
+    assert lock_query_count == 4
 
 
 def test_research_daily_alignment_does_not_span_missing_dates() -> None:
@@ -2013,7 +2379,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert run_payload["status"] == "completed"
     assert run_payload["planning_taxonomy_id"] == taxonomy_id
     assert "run_template" not in run_payload
-    assert run_payload["artifact_count"] == 12
+    assert run_payload["artifact_count"] == 11
     assert run_payload["detail"]["selected_scope"]["taxonomy_node_id"] == node_ids["Risk Assets"]
     assert run_payload["detail"]["selected_scope"]["label"] == "Risk Assets"
     assert "backtest_metrics" not in run_payload["detail"]
@@ -2077,9 +2443,7 @@ def test_research_run_creates_current_target_weight_outputs(client):
     assert "Solver" in signal_labels
     assert "Missing Returns" in signal_labels
     assert "Estimated Volatility" in signal_labels
-    reference_tape_artifact = next(item for item in run_payload["artifacts"] if item["artifact_id"] == "reference_tape")
-    assert reference_tape_artifact["label"] == "Reference Tape CSV"
-    assert reference_tape_artifact["path"].endswith("/reference_tape.csv")
+    assert all(item["artifact_id"] != "reference_tape" for item in run_payload["artifacts"])
     assert any(item["artifact_id"] == "target_weights" for item in run_payload["artifacts"])
     assert any(item["artifact_id"] == "leaf_targets" for item in run_payload["artifacts"])
     assert all(item["artifact_id"] != "backtest_curve" for item in run_payload["artifacts"])
@@ -2417,17 +2781,23 @@ def test_research_target_solve_actuals_include_pending_security_settlement(clien
     buy_response = client.post(
         "/api/portfolios/portfolio-ops/transactions",
         json={
+            "actor": {
+                "actor_type": "user",
+                "actor_id": "pm:research-api-test",
+                "display_name": "Research API Test Manager",
+                "actor_source": "client_asserted",
+            },
             "transaction_type": "buy",
             "trade_date": "2026-04-15",
             "settlement_date": "2026-04-16",
             "account_id": "broker-us-core",
             "settlement_cash_account_id": "cash-usd-main",
             "instrument_id": "equity-us-abbv",
-            "quantity": 1.0,
-            "price": 206.47,
-            "gross_amount": 206.47,
-            "fees": 0.0,
-            "taxes": 0.0,
+            "quantity": "1.000000000000",
+            "price": "206.470000000000",
+            "gross_amount": "206.47000000",
+            "fees": "0.00000000",
+            "taxes": "0.00000000",
             "currency": "USD",
         },
     )

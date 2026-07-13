@@ -11,21 +11,19 @@ import NoticeToast, { type NoticeToastMessage } from '../../../../../packages/ui
 import { downloadTable, type TableCell, type TableExportFormat } from '../../../../../packages/ui/src/tableExport'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import {
-  getPortfolioInstrumentPriceChart,
   getPortfolioInstruments,
   getPortfolioPerformance,
+  getPortfolioPerformanceComparison,
   getPortfolioPerformanceCalculation,
   getPortfolioPerformanceCalculationGroups,
   getPortfolioTableViewStore,
   getPortfolioTaxonomyCatalog,
   getWorkspaceSummaryForPortfolio,
   savePortfolioTableViewStore,
-  type PortfolioInstrumentPriceChartPoint,
-  type PortfolioInstrumentPriceChartResponse,
   type PortfolioContributionAxis,
-  type PortfolioDailyPerformancePoint,
   type PortfolioPerformanceCalculationGroupsResponse,
   type PortfolioPerformanceCalculationResponse,
+  type PortfolioPerformanceComparisonResponse,
   type PortfolioPerformanceResponse,
   type PortfolioPerformanceSummary,
   type PortfolioWorkspaceSummary,
@@ -40,15 +38,16 @@ import {
   formatSignedCurrency,
   signedValueClass,
 } from '../lib/format'
-import { buildPerformanceHistoryReliability } from '../lib/performanceHistoryReliability'
-import { assessPerformanceBenchmarkBasis } from '../lib/performanceBenchmarkBasis'
 import {
   realizedRiskContributionResidual,
   realizedRiskMetricsAvailable,
 } from '../lib/performanceRiskReliability'
+import {
+  annualizedReturnDisplayEligible,
+  selectPerformanceHistoryReliability,
+} from '../lib/performanceHistoryPresentation'
 
 const DEFAULT_PERFORMANCE_LOOKBACK_DAYS = 30
-const DAYS_PER_YEAR = 365.25
 
 type CalculationGroupRow = PortfolioPerformanceCalculationGroupsResponse['groups'][number]
 type CalculationGroupChildRow = CalculationGroupRow['children'][number]
@@ -64,33 +63,6 @@ type PerformanceMetricRow = {
   difference?: string
   differenceClassName?: string
   showComparison?: boolean
-}
-
-type DatedReturn = {
-  date: string
-  value: number
-}
-
-type BenchmarkPeriodMetrics = {
-  periodReturn: number | null
-  annualizedReturn: number | null
-  annualizedVolatility: number | null
-  annualizedDownsideVolatility: number | null
-  sharpe: number | null
-  sortino: number | null
-  calmar: number | null
-  currentDrawdown: number | null
-  maxDrawdown: number | null
-  dailyReturns: DatedReturn[]
-}
-
-type RelativePerformanceMetrics = {
-  informationRatio: number | null
-  trackingError: number | null
-  beta: number | null
-  upsideCapture: number | null
-  downsideCapture: number | null
-  captureRatio: number | null
 }
 
 type CalculationGroupByOption = {
@@ -412,7 +384,7 @@ function savePerformanceWindowSelection(portfolioId: string, startDate: string |
 }
 
 function signedPercent(value: number | null | undefined, digits = 2) {
-  if (value == null || Number.isNaN(value)) {
+  if (value == null || !Number.isFinite(value)) {
     return '—'
   }
   const absolute = formatPercent(Math.abs(value), digits)
@@ -427,10 +399,6 @@ function signedPercent(value: number | null | undefined, digits = 2) {
 
 function finiteNumber(value: number | null | undefined) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
-}
-
-function normalizedCurrency(value: string | null | undefined) {
-  return String(value ?? '').trim().toUpperCase()
 }
 
 function csvNumber(value: number | null | undefined) {
@@ -809,339 +777,6 @@ function signedRatio(value: number | null | undefined, digits = 2) {
   return formatNumber(finiteValue, digits)
 }
 
-function sampleStddev(values: number[]) {
-  if (values.length < 2) {
-    return null
-  }
-  const mean = values.reduce((total, value) => total + value, 0) / values.length
-  const variance =
-    values.reduce((total, value) => total + (value - mean) * (value - mean), 0) / (values.length - 1)
-  return Math.sqrt(Math.max(variance, 0))
-}
-
-function sampleCovariance(leftValues: number[], rightValues: number[]) {
-  if (leftValues.length < 2 || leftValues.length !== rightValues.length) {
-    return null
-  }
-  const leftMean = leftValues.reduce((total, value) => total + value, 0) / leftValues.length
-  const rightMean = rightValues.reduce((total, value) => total + value, 0) / rightValues.length
-  return (
-    leftValues.reduce(
-      (total, leftValue, index) => total + (leftValue - leftMean) * (rightValues[index] - rightMean),
-      0,
-    ) /
-    (leftValues.length - 1)
-  )
-}
-
-function sampleCorrelation(leftValues: number[], rightValues: number[]) {
-  const covariance = sampleCovariance(leftValues, rightValues)
-  const leftStddev = sampleStddev(leftValues)
-  const rightStddev = sampleStddev(rightValues)
-  return covariance != null && leftStddev != null && rightStddev != null && leftStddev > 0 && rightStddev > 0
-    ? covariance / (leftStddev * rightStddev)
-    : null
-}
-
-function dayDiff(left: string, right: string) {
-  const leftTime = Date.parse(`${left}T00:00:00`)
-  const rightTime = Date.parse(`${right}T00:00:00`)
-  if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) {
-    return null
-  }
-  return Math.max(0, (rightTime - leftTime) / 86_400_000)
-}
-
-function annualizationPeriodsPerYear(dateKeys: string[], observationCount = dateKeys.length, startDate?: string | null) {
-  const sortedDates = [...dateKeys].sort()
-  if (observationCount < 1 || sortedDates.length < 2) {
-    return null
-  }
-  if (startDate) {
-    const elapsedDays = dayDiff(startDate, sortedDates[sortedDates.length - 1])
-    return elapsedDays != null && elapsedDays > 0 ? (observationCount / elapsedDays) * DAYS_PER_YEAR : null
-  }
-  const elapsedDays = dayDiff(sortedDates[0], sortedDates[sortedDates.length - 1])
-  if (elapsedDays == null) {
-    return null
-  }
-  const gaps = sortedDates
-    .slice(1)
-    .map((dateKey, index) => dayDiff(sortedDates[index], dateKey))
-    .filter((value): value is number => value != null && value > 0)
-    .sort((left, right) => left - right)
-  const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 1
-  const observationSpanDays = elapsedDays + medianGap
-  return observationSpanDays > 0 ? (observationCount / observationSpanDays) * DAYS_PER_YEAR : null
-}
-
-function annualizedVolatility(values: number[], dateKeys: string[] = [], startDate?: string | null) {
-  const stddev = sampleStddev(values)
-  const periodsPerYear = annualizationPeriodsPerYear(dateKeys, values.length, startDate)
-  return stddev == null || periodsPerYear == null ? null : stddev * Math.sqrt(periodsPerYear)
-}
-
-function annualizedDownsideVolatility(values: number[], dateKeys: string[] = [], startDate?: string | null) {
-  const periodsPerYear = annualizationPeriodsPerYear(dateKeys, values.length, startDate)
-  if (!values.length || periodsPerYear == null) {
-    return null
-  }
-  const downsideSquares = values.map((value) => Math.min(0, value) ** 2)
-  if (!downsideSquares.some((value) => value > 0)) {
-    return null
-  }
-  return Math.sqrt(downsideSquares.reduce((total, value) => total + value, 0) / values.length) * Math.sqrt(periodsPerYear)
-}
-
-function annualizedMeanReturn(values: number[], dateKeys: string[], startDate?: string | null) {
-  const periodsPerYear = annualizationPeriodsPerYear(dateKeys, values.length, startDate)
-  if (!values.length || periodsPerYear == null) {
-    return null
-  }
-  return (values.reduce((total, value) => total + value, 0) / values.length) * periodsPerYear
-}
-
-function compoundReturn(values: number[]) {
-  if (!values.length) {
-    return null
-  }
-  return values.reduce((growthIndex, value) => growthIndex * (1 + value), 1) - 1
-}
-
-function ratioToDrawdown(returnValue: number | null | undefined, maxDrawdown: number | null | undefined) {
-  const finiteReturn = finiteNumber(returnValue)
-  const finiteDrawdown = finiteNumber(maxDrawdown)
-  return finiteReturn != null && finiteDrawdown != null && finiteDrawdown < 0
-    ? finiteReturn / Math.abs(finiteDrawdown)
-    : null
-}
-
-function latestBenchmarkPointOnOrBefore(
-  points: PortfolioInstrumentPriceChartPoint[],
-  targetDate: string,
-): PortfolioInstrumentPriceChartPoint | null {
-  let selected: PortfolioInstrumentPriceChartPoint | null = null
-  for (const point of points) {
-    if (point.date <= targetDate) {
-      selected = point
-    }
-  }
-  return selected
-}
-
-function benchmarkPointByDate(points: PortfolioInstrumentPriceChartPoint[]) {
-  return new Map(points.map((point) => [point.date, point]))
-}
-
-function eligiblePortfolioReturnDates(
-  portfolioDailySeries: PortfolioDailyPerformancePoint[],
-  startDate: string,
-  endDate: string,
-) {
-  return portfolioDailySeries
-    .filter((point) => {
-      const portfolioReturn = finiteNumber(point.daily_twr)
-      return (
-        point.as_of_date >= startDate &&
-        point.as_of_date <= endDate &&
-        portfolioReturn != null &&
-        point.return_observation_eligible
-      )
-    })
-    .map((point) => point.as_of_date)
-    .sort()
-}
-
-function benchmarkAlignedDailyReturns(
-  points: PortfolioInstrumentPriceChartPoint[],
-  portfolioDailySeries: PortfolioDailyPerformancePoint[],
-  startBoundaryDate: string,
-  startDate: string,
-  endDate: string,
-) {
-  if (!portfolioDailySeries.length) {
-    const returns: Array<{ date: string; value: number }> = []
-    for (let index = 1; index < points.length; index += 1) {
-      const previous = points[index - 1]
-      const point = points[index]
-      if (previous.value === 0) {
-        return null
-      }
-      returns.push({ date: point.date, value: point.value / previous.value - 1 })
-    }
-    return returns
-  }
-
-  const eligiblePortfolioDates = eligiblePortfolioReturnDates(portfolioDailySeries, startDate, endDate)
-  const benchmarkByDate = benchmarkPointByDate(points)
-  if (!eligiblePortfolioDates.length || eligiblePortfolioDates.some((dateKey) => !benchmarkByDate.has(dateKey))) {
-    return null
-  }
-
-  const dailyReturns: Array<{ date: string; value: number }> = []
-  let previousBenchmarkPoint = latestBenchmarkPointOnOrBefore(points, startBoundaryDate)
-
-  for (const dateKey of eligiblePortfolioDates) {
-    const currentBenchmarkPoint = benchmarkByDate.get(dateKey)
-    if (!currentBenchmarkPoint || !previousBenchmarkPoint || previousBenchmarkPoint.value === 0) {
-      return null
-    }
-    dailyReturns.push({
-      date: dateKey,
-      value: currentBenchmarkPoint.value / previousBenchmarkPoint.value - 1,
-    })
-    previousBenchmarkPoint = currentBenchmarkPoint
-  }
-
-  return dailyReturns
-}
-
-function buildBenchmarkPeriodMetrics(
-  points: PortfolioInstrumentPriceChartPoint[],
-  startDate: string,
-  endDate: string,
-  portfolioDailySeries: PortfolioDailyPerformancePoint[] = [],
-): BenchmarkPeriodMetrics | null {
-  const startBoundaryDate = shiftIsoDate(startDate, -1)
-  const sortedPoints = points
-    .filter((point) => Number.isFinite(point.value) && point.date <= endDate)
-    .slice()
-    .sort((left, right) => left.date.localeCompare(right.date))
-  const startAnchorPoint = latestBenchmarkPointOnOrBefore(sortedPoints, startBoundaryDate)
-  if (!startAnchorPoint) {
-    return null
-  }
-  const periodPoints = sortedPoints.filter((point) => point.date >= startAnchorPoint.date && point.date <= endDate)
-
-  const dailyReturns = benchmarkAlignedDailyReturns(
-    periodPoints,
-    portfolioDailySeries,
-    startBoundaryDate,
-    startDate,
-    endDate,
-  )
-  if (!dailyReturns?.length) {
-    return null
-  }
-
-  const periodReturn = compoundReturn(dailyReturns.map((point) => point.value))
-  const lastReturnDate = dailyReturns[dailyReturns.length - 1]?.date ?? null
-  const elapsedDays = lastReturnDate ? dayDiff(startBoundaryDate, lastReturnDate) : null
-  const annualizedReturn =
-    periodReturn != null && elapsedDays != null && elapsedDays > 0
-      ? (1 + periodReturn) ** (DAYS_PER_YEAR / elapsedDays) - 1
-      : null
-  const dailyReturnValues = dailyReturns.map((point) => point.value)
-  const dailyReturnDates = dailyReturns.map((point) => point.date)
-  const annualizedVol = annualizedVolatility(dailyReturnValues, dailyReturnDates, startBoundaryDate)
-  const annualizedDownsideVol = annualizedDownsideVolatility(dailyReturnValues, dailyReturnDates, startBoundaryDate)
-  const annualizedMean = annualizedMeanReturn(dailyReturnValues, dailyReturnDates, startBoundaryDate)
-
-  let highWater = 1
-  let benchmarkGrowth = 1
-  let currentDrawdown: number | null = null
-  let maxDrawdown: number | null = null
-  dailyReturns.forEach((point) => {
-    benchmarkGrowth *= 1 + point.value
-    highWater = Math.max(highWater, benchmarkGrowth)
-    const drawdown = highWater > 0 ? benchmarkGrowth / highWater - 1 : null
-    if (drawdown != null) {
-      currentDrawdown = drawdown
-      maxDrawdown = maxDrawdown == null ? drawdown : Math.min(maxDrawdown, drawdown)
-    }
-  })
-
-  return {
-    periodReturn,
-    annualizedReturn,
-    annualizedVolatility: annualizedVol,
-    annualizedDownsideVolatility: annualizedDownsideVol,
-    sharpe:
-      annualizedMean != null && annualizedVol != null && annualizedVol !== 0
-        ? annualizedMean / annualizedVol
-        : null,
-    sortino:
-      annualizedMean != null && annualizedDownsideVol != null && annualizedDownsideVol !== 0
-        ? annualizedMean / annualizedDownsideVol
-        : null,
-    calmar: ratioToDrawdown(annualizedReturn, maxDrawdown),
-    currentDrawdown,
-    maxDrawdown,
-    dailyReturns,
-  }
-}
-
-function buildRelativePerformanceMetrics(
-  portfolioDailySeries: PortfolioDailyPerformancePoint[],
-  benchmarkMetrics: BenchmarkPeriodMetrics | null,
-): RelativePerformanceMetrics | null {
-  if (!benchmarkMetrics?.dailyReturns.length) {
-    return null
-  }
-  const benchmarkByDate = new Map(benchmarkMetrics.dailyReturns.map((point) => [point.date, point.value]))
-  const pairs = portfolioDailySeries
-    .map((point) => {
-      const portfolioReturn = finiteNumber(point.daily_twr)
-      const benchmarkReturn = benchmarkByDate.get(point.as_of_date)
-      return portfolioReturn != null && benchmarkReturn != null && point.return_observation_eligible
-        ? { date: point.as_of_date, portfolioReturn, benchmarkReturn }
-        : null
-    })
-    .filter((value): value is { date: string; portfolioReturn: number; benchmarkReturn: number } => value != null)
-
-  if (pairs.length < 2) {
-    return null
-  }
-
-  const dates = pairs.map((point) => point.date)
-  const portfolioReturns = pairs.map((point) => point.portfolioReturn)
-  const benchmarkReturns = pairs.map((point) => point.benchmarkReturn)
-  const activeReturns = pairs.map((point) => point.portfolioReturn - point.benchmarkReturn)
-  const trackingError = annualizedVolatility(activeReturns, dates)
-  const activeAnnualizedMean = annualizedMeanReturn(activeReturns, dates)
-
-  const benchmarkMean = benchmarkReturns.reduce((total, value) => total + value, 0) / benchmarkReturns.length
-  const portfolioMean = portfolioReturns.reduce((total, value) => total + value, 0) / portfolioReturns.length
-  const benchmarkVariance =
-    benchmarkReturns.reduce((total, value) => total + (value - benchmarkMean) ** 2, 0) / (benchmarkReturns.length - 1)
-  const covariance =
-    pairs.reduce(
-      (total, point) => total + (point.portfolioReturn - portfolioMean) * (point.benchmarkReturn - benchmarkMean),
-      0,
-    ) /
-    (pairs.length - 1)
-
-  const upPairs = pairs.filter((point) => point.benchmarkReturn > 0)
-  const downPairs = pairs.filter((point) => point.benchmarkReturn < 0)
-  const upsideBenchmarkReturn = compoundReturn(upPairs.map((point) => point.benchmarkReturn))
-  const upsidePortfolioReturn = compoundReturn(upPairs.map((point) => point.portfolioReturn))
-  const downsideBenchmarkReturn = compoundReturn(downPairs.map((point) => point.benchmarkReturn))
-  const downsidePortfolioReturn = compoundReturn(downPairs.map((point) => point.portfolioReturn))
-  const upsideCapture =
-    upsidePortfolioReturn != null && upsideBenchmarkReturn != null && upsideBenchmarkReturn !== 0
-      ? (upsidePortfolioReturn / upsideBenchmarkReturn) * 100
-      : null
-  const downsideCapture =
-    downsidePortfolioReturn != null && downsideBenchmarkReturn != null && downsideBenchmarkReturn !== 0
-      ? (downsidePortfolioReturn / downsideBenchmarkReturn) * 100
-      : null
-
-  return {
-    informationRatio:
-      activeAnnualizedMean != null && trackingError != null && trackingError !== 0
-        ? activeAnnualizedMean / trackingError
-        : null,
-    trackingError,
-    beta: benchmarkVariance > 0 ? covariance / benchmarkVariance : null,
-    upsideCapture,
-    downsideCapture,
-    captureRatio:
-      upsideCapture != null && downsideCapture != null && downsideCapture !== 0
-        ? upsideCapture / downsideCapture
-        : null,
-  }
-}
-
 function benchmarkMetricText(
   selected: SharedInstrumentRecord | null,
   loading: boolean,
@@ -1167,61 +802,62 @@ function benchmarkMetricClassName(
 
 function buildPerformanceMetricRows(
   summary: PortfolioPerformanceSummary,
-  dailySeries: PortfolioDailyPerformancePoint[],
-  baseCurrency: string,
+  baseCurrency: string | null,
   selectedBenchmarkInstrument: SharedInstrumentRecord | null,
   benchmarkLoading: boolean,
-  benchmarkMetrics: BenchmarkPeriodMetrics | null,
+  comparison: PortfolioPerformanceComparisonResponse | null,
 ) {
-  const historyReliability = buildPerformanceHistoryReliability(summary)
-  const annualizedReturnEligible = historyReliability.annualizedReturnEligible
-  const relativeMetrics = buildRelativePerformanceMetrics(dailySeries, benchmarkMetrics)
+  const historyReliability = selectPerformanceHistoryReliability(
+    summary.history_reliability,
+    comparison?.history_reliability,
+  )
+  const annualizedReturnEligible = annualizedReturnDisplayEligible(historyReliability)
+  const comparisonReady = comparison?.status === 'ready'
+  const portfolioComparisonMetrics = comparisonReady ? comparison.portfolio_metrics : null
+  const benchmarkComparisonMetrics = comparisonReady ? comparison.benchmark_metrics : null
+  const relativeComparisonMetrics = comparisonReady ? comparison.relative_metrics : null
+  const comparisonDifferences = comparisonReady ? comparison.differences : null
   const showComparison = selectedBenchmarkInstrument != null || benchmarkLoading
   const irr = finiteNumber(summary.irr) ?? finiteNumber(summary.mwror)
-  const calmarRatio = annualizedReturnEligible
-    ? ratioToDrawdown(summary.annualized_twr, summary.max_drawdown)
-    : null
-  const returnDifference =
-    summary.cumulative_twr != null && benchmarkMetrics?.periodReturn != null
-      ? summary.cumulative_twr - benchmarkMetrics.periodReturn
-      : null
-  const annualizedReturnDifference =
-    annualizedReturnEligible && summary.annualized_twr != null && benchmarkMetrics?.annualizedReturn != null
-      ? summary.annualized_twr - benchmarkMetrics.annualizedReturn
-      : null
-  const volatilityDifference =
-    summary.annualized_volatility != null && benchmarkMetrics?.annualizedVolatility != null
-      ? summary.annualized_volatility - benchmarkMetrics.annualizedVolatility
-      : null
-  const downsideVolatilityDifference =
-    summary.annualized_downside_volatility != null && benchmarkMetrics?.annualizedDownsideVolatility != null
-      ? summary.annualized_downside_volatility - benchmarkMetrics.annualizedDownsideVolatility
-      : null
-  const sharpeDifference =
-    summary.sharpe_ratio != null && benchmarkMetrics?.sharpe != null ? summary.sharpe_ratio - benchmarkMetrics.sharpe : null
-  const sortinoDifference =
-    summary.sortino_ratio != null && benchmarkMetrics?.sortino != null ? summary.sortino_ratio - benchmarkMetrics.sortino : null
-  const calmarDifference =
-    calmarRatio != null && benchmarkMetrics?.calmar != null ? calmarRatio - benchmarkMetrics.calmar : null
-  const currentDrawdownDifference =
-    summary.current_drawdown != null && benchmarkMetrics?.currentDrawdown != null
-      ? summary.current_drawdown - benchmarkMetrics.currentDrawdown
-      : null
-  const maxDrawdownDifference =
-    summary.max_drawdown != null && benchmarkMetrics?.maxDrawdown != null
-      ? summary.max_drawdown - benchmarkMetrics.maxDrawdown
-      : null
+  const portfolioPeriodReturn = comparisonReady ? portfolioComparisonMetrics?.period_return ?? null : summary.cumulative_twr
+  const portfolioAnnualizedReturn = comparisonReady
+    ? portfolioComparisonMetrics?.annualized_return ?? null
+    : summary.annualized_twr
+  const portfolioVolatility = comparisonReady
+    ? portfolioComparisonMetrics?.annualized_volatility ?? null
+    : summary.annualized_volatility
+  const portfolioDownsideVolatility = comparisonReady
+    ? portfolioComparisonMetrics?.annualized_downside_volatility ?? null
+    : summary.annualized_downside_volatility
+  const portfolioSharpe = comparisonReady ? portfolioComparisonMetrics?.sharpe_ratio ?? null : summary.sharpe_ratio
+  const portfolioSortino = comparisonReady ? portfolioComparisonMetrics?.sortino_ratio ?? null : summary.sortino_ratio
+  const portfolioCurrentDrawdown = comparisonReady
+    ? portfolioComparisonMetrics?.current_drawdown ?? null
+    : summary.current_drawdown
+  const portfolioMaxDrawdown = comparisonReady
+    ? portfolioComparisonMetrics?.max_drawdown ?? null
+    : summary.max_drawdown
+  const calmarRatio = comparisonReady ? portfolioComparisonMetrics?.calmar_ratio ?? null : summary.calmar_ratio
+  const returnDifference = comparisonDifferences?.period_return ?? null
+  const annualizedReturnDifference = comparisonDifferences?.annualized_return ?? null
+  const volatilityDifference = comparisonDifferences?.annualized_volatility ?? null
+  const downsideVolatilityDifference = comparisonDifferences?.annualized_downside_volatility ?? null
+  const sharpeDifference = comparisonDifferences?.sharpe_ratio ?? null
+  const sortinoDifference = comparisonDifferences?.sortino_ratio ?? null
+  const calmarDifference = comparisonDifferences?.calmar_ratio ?? null
+  const currentDrawdownDifference = comparisonDifferences?.current_drawdown ?? null
+  const maxDrawdownDifference = comparisonDifferences?.max_drawdown ?? null
 
   return [
     {
       metric: 'Period TWR',
-      value: signedPercent(summary.cumulative_twr),
-      valueClassName: signedValueClass(summary.cumulative_twr),
-      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.periodReturn),
+      value: signedPercent(portfolioPeriodReturn),
+      valueClassName: signedValueClass(portfolioPeriodReturn),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkComparisonMetrics?.period_return),
       benchmarkClassName: benchmarkMetricClassName(
         selectedBenchmarkInstrument,
         benchmarkLoading,
-        benchmarkMetrics?.periodReturn,
+        benchmarkComparisonMetrics?.period_return,
       ),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, returnDifference),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, returnDifference),
@@ -1229,16 +865,16 @@ function buildPerformanceMetricRows(
     },
     {
       metric: 'Annualized TWR',
-      value: annualizedReturnEligible ? signedPercent(summary.annualized_twr) : 'N/A',
-      valueClassName: annualizedReturnEligible ? signedValueClass(summary.annualized_twr) : 'performance-cell-muted',
+      value: annualizedReturnEligible ? signedPercent(portfolioAnnualizedReturn) : 'N/A',
+      valueClassName: annualizedReturnEligible ? signedValueClass(portfolioAnnualizedReturn) : 'performance-cell-muted',
       reliabilityNote: annualizedReturnEligible ? undefined : 'Requires ≥ 1 year',
       benchmark: annualizedReturnEligible
-        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.annualizedReturn)
+        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkComparisonMetrics?.annualized_return)
         : selectedBenchmarkInstrument
           ? 'N/A'
           : '—',
       benchmarkClassName: annualizedReturnEligible
-        ? benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.annualizedReturn)
+        ? benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, benchmarkComparisonMetrics?.annualized_return)
         : 'performance-cell-muted',
       difference: annualizedReturnEligible
         ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, annualizedReturnDifference)
@@ -1272,7 +908,7 @@ function buildPerformanceMetricRows(
       valueClassName: annualizedReturnEligible ? undefined : 'performance-cell-muted',
       reliabilityNote: annualizedReturnEligible ? undefined : 'Annualized-return dependent',
       benchmark: annualizedReturnEligible
-        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.calmar, formatRatio)
+        ? benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkComparisonMetrics?.calmar_ratio, formatRatio)
         : selectedBenchmarkInstrument
           ? 'N/A'
           : '—',
@@ -1288,11 +924,11 @@ function buildPerformanceMetricRows(
     },
     {
       metric: 'Volatility',
-      value: formatPercent(summary.annualized_volatility),
+      value: formatPercent(portfolioVolatility),
       benchmark: benchmarkMetricText(
         selectedBenchmarkInstrument,
         benchmarkLoading,
-        benchmarkMetrics?.annualizedVolatility,
+        benchmarkComparisonMetrics?.annualized_volatility,
         formatPercent,
       ),
       benchmarkClassName: undefined,
@@ -1302,11 +938,11 @@ function buildPerformanceMetricRows(
     },
     {
       metric: 'Downside Volatility',
-      value: formatPercent(summary.annualized_downside_volatility),
+      value: formatPercent(portfolioDownsideVolatility),
       benchmark: benchmarkMetricText(
         selectedBenchmarkInstrument,
         benchmarkLoading,
-        benchmarkMetrics?.annualizedDownsideVolatility,
+        benchmarkComparisonMetrics?.annualized_downside_volatility,
         formatPercent,
       ),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, downsideVolatilityDifference),
@@ -1319,29 +955,29 @@ function buildPerformanceMetricRows(
     },
     {
       metric: 'Sharpe Ratio',
-      value: formatRatio(summary.sharpe_ratio),
-      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.sharpe, formatRatio),
+      value: formatRatio(portfolioSharpe),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkComparisonMetrics?.sharpe_ratio, formatRatio),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, sharpeDifference, signedRatio),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, sharpeDifference),
       showComparison,
     },
     {
       metric: 'Sortino Ratio',
-      value: formatRatio(summary.sortino_ratio),
-      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.sortino, formatRatio),
+      value: formatRatio(portfolioSortino),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkComparisonMetrics?.sortino_ratio, formatRatio),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, sortinoDifference, signedRatio),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, sortinoDifference),
       showComparison,
     },
     {
       metric: 'Current DD',
-      value: signedPercent(summary.current_drawdown),
-      valueClassName: signedValueClass(summary.current_drawdown),
-      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.currentDrawdown),
+      value: signedPercent(portfolioCurrentDrawdown),
+      valueClassName: signedValueClass(portfolioCurrentDrawdown),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkComparisonMetrics?.current_drawdown),
       benchmarkClassName: benchmarkMetricClassName(
         selectedBenchmarkInstrument,
         benchmarkLoading,
-        benchmarkMetrics?.currentDrawdown,
+        benchmarkComparisonMetrics?.current_drawdown,
       ),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, currentDrawdownDifference),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, currentDrawdownDifference),
@@ -1349,37 +985,41 @@ function buildPerformanceMetricRows(
     },
     {
       metric: 'Max DD',
-      value: signedPercent(summary.max_drawdown),
-      valueClassName: signedValueClass(summary.max_drawdown),
-      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.maxDrawdown),
-      benchmarkClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.maxDrawdown),
+      value: signedPercent(portfolioMaxDrawdown),
+      valueClassName: signedValueClass(portfolioMaxDrawdown),
+      benchmark: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, benchmarkComparisonMetrics?.max_drawdown),
+      benchmarkClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, benchmarkComparisonMetrics?.max_drawdown),
       difference: benchmarkMetricText(selectedBenchmarkInstrument, benchmarkLoading, maxDrawdownDifference),
       differenceClassName: benchmarkMetricClassName(selectedBenchmarkInstrument, benchmarkLoading, maxDrawdownDifference),
       showComparison,
     },
     {
       metric: 'Tracking Error',
-      value: formatPercent(relativeMetrics?.trackingError),
+      value: formatPercent(relativeComparisonMetrics?.tracking_error),
     },
     {
       metric: 'Information Ratio',
-      value: formatRatio(relativeMetrics?.informationRatio),
+      value: formatRatio(relativeComparisonMetrics?.information_ratio),
     },
     {
       metric: 'Beta',
-      value: formatRatio(relativeMetrics?.beta),
+      value: formatRatio(relativeComparisonMetrics?.beta),
+    },
+    {
+      metric: 'Correlation',
+      value: formatRatio(relativeComparisonMetrics?.correlation),
     },
     {
       metric: 'Upside Capture',
-      value: formatPercent(relativeMetrics?.upsideCapture == null ? null : relativeMetrics.upsideCapture / 100),
+      value: formatPercent(relativeComparisonMetrics?.upside_capture),
     },
     {
       metric: 'Downside Capture',
-      value: formatPercent(relativeMetrics?.downsideCapture == null ? null : relativeMetrics.downsideCapture / 100),
+      value: formatPercent(relativeComparisonMetrics?.downside_capture),
     },
     {
       metric: 'CAP Ratio',
-      value: formatRatio(relativeMetrics?.captureRatio),
+      value: formatRatio(relativeComparisonMetrics?.capture_ratio),
     },
   ] satisfies PerformanceMetricRow[]
 }
@@ -1540,7 +1180,8 @@ function PerformancePage() {
   const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
   const [benchmarkSearch, setBenchmarkSearch] = useState('')
   const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
-  const [benchmarkChart, setBenchmarkChart] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
+  const [benchmarkComparison, setBenchmarkComparison] =
+    useState<PortfolioPerformanceComparisonResponse | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
   const defaultPlanningTaxonomy = useMemo(
@@ -1953,7 +1594,7 @@ function PerformancePage() {
 
   useEffect(() => {
     if (!portfolioId || !benchmarkInstrumentId || waitingForDefaultEndDate) {
-      setBenchmarkChart(null)
+      setBenchmarkComparison(null)
       setBenchmarkLoading(false)
       setBenchmarkError(null)
       return
@@ -1962,21 +1603,23 @@ function PerformancePage() {
     let cancelled = false
     setBenchmarkLoading(true)
     setBenchmarkError(null)
-    setBenchmarkChart(null)
+    setBenchmarkComparison(null)
 
-    getPortfolioInstrumentPriceChart(portfolioId, benchmarkInstrumentId, {
+    getPortfolioPerformanceComparison(portfolioId, {
+      benchmark_instrument_id: benchmarkInstrumentId,
+      start_date: effectiveStartDate,
+      end_date: effectiveEndDate,
       as_of_date: effectiveEndDate,
-      range: 'all',
     })
       .then((response) => {
         if (!cancelled) {
-          setBenchmarkChart(response)
+          setBenchmarkComparison(response)
         }
       })
       .catch((requestError: unknown) => {
         if (!cancelled) {
-          setBenchmarkChart(null)
-          setBenchmarkError(requestError instanceof Error ? requestError.message : 'Failed to load benchmark history.')
+          setBenchmarkComparison(null)
+          setBenchmarkError(requestError instanceof Error ? requestError.message : 'Failed to load benchmark comparison.')
         }
       })
       .finally(() => {
@@ -1988,7 +1631,7 @@ function PerformancePage() {
     return () => {
       cancelled = true
     }
-  }, [benchmarkInstrumentId, effectiveEndDate, portfolioId, waitingForDefaultEndDate])
+  }, [benchmarkInstrumentId, effectiveEndDate, effectiveStartDate, portfolioId, waitingForDefaultEndDate])
 
   function updateWindowParams(nextStartDate: string | null, nextEndDate: string | null) {
     const normalizedStartDate = validIsoDate(nextStartDate)
@@ -2011,64 +1654,32 @@ function PerformancePage() {
   }
 
   const summary = workspace?.summary ?? null
-  const baseCurrency = workspace?.base_currency ?? calculationWorkspace?.base_currency ?? calculationGroupsWorkspace?.base_currency ?? 'USD'
+  const baseCurrency =
+    workspace?.base_currency ?? calculationWorkspace?.base_currency ?? calculationGroupsWorkspace?.base_currency ?? null
   const periodLabel =
     summary?.start_date && summary.end_date
       ? `${summary.start_date} to ${summary.end_date}`
       : `${effectiveStartDate} to ${effectiveEndDate}`
-  const performanceHistoryReliability = useMemo(
-    () => (summary ? buildPerformanceHistoryReliability(summary) : null),
-    [summary],
+  const performanceHistoryReliability = selectPerformanceHistoryReliability(
+    summary?.history_reliability,
+    benchmarkComparison?.history_reliability,
   )
-  const performanceMetricsMeta = performanceHistoryReliability?.sampleLabel ?? periodLabel
+  const performanceMetricsMeta = performanceHistoryReliability?.sample_label ?? periodLabel
 
   const selectedBenchmarkInstrument =
     benchmarkInstruments.find((instrument) => instrument.instrument_id === benchmarkInstrumentId) ?? null
-  const benchmarkCurrencyMismatch =
-    selectedBenchmarkInstrument != null &&
-    benchmarkChart != null &&
-    normalizedCurrency(benchmarkChart.currency) !== '' &&
-    normalizedCurrency(baseCurrency) !== '' &&
-    normalizedCurrency(benchmarkChart.currency) !== normalizedCurrency(baseCurrency)
-  const benchmarkBasisAssessment = useMemo(
-    () =>
-      selectedBenchmarkInstrument && benchmarkChart
-        ? assessPerformanceBenchmarkBasis(benchmarkChart.chart_basis)
-        : null,
-    [benchmarkChart, selectedBenchmarkInstrument],
-  )
-  const benchmarkMetrics = useMemo(
-    () =>
-      benchmarkCurrencyMismatch || !benchmarkBasisAssessment?.comparisonEligible
-        ? null
-        : buildBenchmarkPeriodMetrics(
-            benchmarkChart?.points ?? [],
-            effectiveStartDate,
-            effectiveEndDate,
-            workspace?.daily_series ?? [],
-          ),
-    [
-      benchmarkBasisAssessment?.comparisonEligible,
-      benchmarkChart,
-      benchmarkCurrencyMismatch,
-      effectiveStartDate,
-      effectiveEndDate,
-      workspace?.daily_series,
-    ],
-  )
   const metricRows = useMemo(
     () =>
       summary
         ? buildPerformanceMetricRows(
             summary,
-            workspace?.daily_series ?? [],
             baseCurrency,
             selectedBenchmarkInstrument,
             benchmarkLoading,
-            benchmarkMetrics,
+            benchmarkComparison,
           )
         : [],
-    [summary, workspace?.daily_series, baseCurrency, selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics],
+    [summary, baseCurrency, selectedBenchmarkInstrument, benchmarkLoading, benchmarkComparison],
   )
   const calculationRows = useMemo(() => {
     if (!calculationGroupsWorkspace) {
@@ -2472,12 +2083,13 @@ function PerformancePage() {
             onSelectInstrument={(instrument) => {
               setBenchmarkInstrumentId(instrument.instrument_id)
               setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
+              setBenchmarkComparison(null)
               setBenchmarkError(null)
             }}
             onClear={() => {
               setBenchmarkInstrumentId('')
               setBenchmarkSearch('')
-              setBenchmarkChart(null)
+              setBenchmarkComparison(null)
               setBenchmarkError(null)
             }}
             placeholder="Compare benchmark..."
@@ -2486,28 +2098,26 @@ function PerformancePage() {
 
         {error ? <div className="inline-notice inline-notice-error">{error}</div> : null}
         {benchmarkError ? <div className="inline-notice inline-notice-error">{benchmarkError}</div> : null}
-        {!benchmarkError && benchmarkCurrencyMismatch ? (
-          <div className="inline-notice inline-notice-error">
-            Benchmark currency {normalizedCurrency(benchmarkChart?.currency)} does not match portfolio base{' '}
-            {normalizedCurrency(baseCurrency)}.
-          </div>
-        ) : null}
-        {benchmarkBasisAssessment ? (
+        {benchmarkComparison ? (
           <div
             className={`performance-benchmark-basis-status ${
-              benchmarkBasisAssessment.comparisonEligible
+              benchmarkComparison.status === 'ready'
                 ? 'performance-benchmark-basis-status-comparable'
                 : 'performance-benchmark-basis-status-fallback'
             }`}
           >
             <span>Benchmark basis</span>
-            <code>{benchmarkBasisAssessment.basis ?? 'unavailable'}</code>
-            <span>{benchmarkBasisAssessment.label}</span>
+            <code>{benchmarkComparison.coverage.benchmark_quote_basis ?? 'unavailable'}</code>
+            <span>
+              {benchmarkComparison.status === 'ready'
+                ? `Canonical total return · ${benchmarkComparison.coverage.aligned_observation_count}/${benchmarkComparison.coverage.required_observation_count} aligned`
+                : 'Comparison unavailable'}
+            </span>
           </div>
         ) : null}
-        {!benchmarkError && benchmarkBasisAssessment?.warning ? (
+        {!benchmarkError && benchmarkComparison?.status === 'unavailable' ? (
           <div className="inline-notice inline-notice-warning performance-benchmark-basis-warning" role="status">
-            {benchmarkBasisAssessment.warning}
+            Relative metrics withheld: {benchmarkComparison.unavailable_reasons.join(', ')}.
           </div>
         ) : null}
         <QualityWarningsNotice warnings={summary?.quality_warnings} />
@@ -2526,10 +2136,10 @@ function PerformancePage() {
                   <div className="portfolio-detail-meta">{performanceMetricsMeta}</div>
                 </div>
               </div>
-              {performanceHistoryReliability?.annualizationMessage ? (
+              {performanceHistoryReliability?.annualization_message ? (
                 <div className="performance-history-reliability-warning" role="status">
-                  <strong>Short observed history.</strong>
-                  <span>{performanceHistoryReliability.annualizationMessage}</span>
+                  <strong>Annualization eligibility.</strong>
+                  <span>{performanceHistoryReliability.annualization_message}</span>
                 </div>
               ) : null}
               <MetricGrid rows={metricRows} />

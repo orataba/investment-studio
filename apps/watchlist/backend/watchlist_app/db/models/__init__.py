@@ -1,24 +1,19 @@
 from watchlist_app.db.models.instruments import InstrumentDetail
 from watchlist_app.db.models.analytics import (
     PerformanceSnapshot,
-    ExposureAnalyticsSnapshot,
     RiskSnapshot,
 )
 from watchlist_app.db.models.common import PayloadReadModelMixin, TimestampMixin
-from watchlist_app.db.models.facts import HoldingPosition, HoldingSnapshot, NavFact
 from watchlist_app.db.models.manual_profiles import InstrumentManualProfile
 from watchlist_app.db.models.read_models import (
     InstrumentChartReadModel,
     InstrumentPerformanceReadModel,
-    InstrumentExposureReadModel,
-    InstrumentExposureHoldingsReadModel,
-    InstrumentRatingReadModel,
     InstrumentRiskReadModel,
     InstrumentSummaryReadModel,
     WatchlistRowReadModel,
 )
 from watchlist_app.db.models.recalc import RecalcJob
-from watchlist_app.db.models.scoring import InstrumentScoreSnapshot
+from watchlist_app.db.models.research_ratings import InstrumentResearchRating
 from watchlist_app.db.models.watchlists import (
     FieldCategory,
     FieldRegistry,
@@ -35,26 +30,19 @@ from watchlist_app.db.models.watchlists import (
 __all__ = [
     "InstrumentChartReadModel",
     "InstrumentDetail",
-    "InstrumentExposureHoldingsReadModel",
-    "InstrumentExposureReadModel",
     "InstrumentManualProfile",
     "InstrumentPerformanceReadModel",
-    "InstrumentRatingReadModel",
+    "InstrumentResearchRating",
     "InstrumentRiskReadModel",
-    "InstrumentScoreSnapshot",
     "InstrumentSummaryReadModel",
     "FieldCategory",
     "FieldRegistry",
-    "HoldingPosition",
-    "HoldingSnapshot",
     "InstrumentAttributeDefinition",
     "InstrumentAttributeValue",
     "InstrumentTaxonomyAssignment",
     "InstrumentTaxonomyNode",
-    "NavFact",
     "PayloadReadModelMixin",
     "PerformanceSnapshot",
-    "ExposureAnalyticsSnapshot",
     "RecalcJob",
     "RiskSnapshot",
     "TimestampMixin",

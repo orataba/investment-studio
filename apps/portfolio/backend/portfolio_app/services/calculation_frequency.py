@@ -5,8 +5,6 @@ from collections import Counter
 from datetime import date, timedelta
 from typing import Literal
 
-from portfolio_app.services.market_data import is_usable_market_data_point
-
 CalculationFrequency = Literal["daily", "weekly", "monthly"]
 RequestedCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"]
 
@@ -17,29 +15,6 @@ CALCULATION_FREQUENCY_LABELS: dict[CalculationFrequency, str] = {
     "monthly": "Monthly",
 }
 _FREQUENCY_RANK: dict[CalculationFrequency, int] = {"daily": 0, "weekly": 1, "monthly": 2}
-
-
-def _safe_float(value: object) -> float | None:
-    try:
-        if value is None:
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _parse_iso_date(value: object) -> date | None:
-    if isinstance(value, date):
-        return value
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip()
-    if not normalized:
-        return None
-    try:
-        return date.fromisoformat(normalized[:10])
-    except ValueError:
-        return None
 
 
 def normalize_requested_frequency(value: object) -> RequestedCalculationFrequency:
@@ -176,42 +151,3 @@ def period_end_date(observation_date: date, frequency: CalculationFrequency, *, 
     if final_date is not None and period_end > final_date:
         return final_date
     return period_end
-
-
-def selected_observation_dates_from_detail(
-    detail: dict[str, object],
-    *,
-    end_date: date,
-) -> list[date]:
-    market_data = detail.get("market_data", [])
-    if not isinstance(market_data, list):
-        return []
-
-    policy = detail.get("quote_selection_policy", {})
-    candidate_bases: list[str] = []
-    if isinstance(policy, dict):
-        for role in ("total_return", "chart", "valuation", "reference"):
-            raw_values = policy.get(role)
-            if not isinstance(raw_values, list):
-                continue
-            for raw_value in raw_values:
-                value = str(raw_value or "").strip()
-                if value and value not in candidate_bases:
-                    candidate_bases.append(value)
-
-    dates_by_basis: dict[str, set[date]] = {}
-    for point in market_data:
-        if not is_usable_market_data_point(point):
-            continue
-        point_date = _parse_iso_date(point.get("as_of_date"))
-        point_value = _safe_float(point.get("value"))
-        quote_basis = str(point.get("quote_basis") or "").strip()
-        if point_date is None or point_value is None or not quote_basis or point_date > end_date:
-            continue
-        dates_by_basis.setdefault(quote_basis, set()).add(point_date)
-
-    for quote_basis in candidate_bases:
-        dates = dates_by_basis.get(quote_basis)
-        if dates:
-            return sorted(dates)
-    return []

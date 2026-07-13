@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 import {
@@ -7,11 +7,14 @@ import {
   deletePortfolio,
   getPortfolios,
   reorderPortfolios,
+  SUPPORTED_PORTFOLIO_CURRENCIES,
   type PortfolioEntryRecord,
 } from '../lib/api'
 import { formatCurrency, formatPercent, formatSignedCurrency } from '../lib/format'
 import { buildPortfolioSectionPath, PLATFORM_HOME_URL } from '../lib/navigation'
+import { groupPortfolioTotalsByBaseCurrency } from '../lib/portfolioTotals'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
+import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 
 const FALLBACK_PORTFOLIOS: PortfolioEntryRecord[] = []
 
@@ -35,7 +38,20 @@ export default function PortfoliosPage() {
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<PortfolioEntryRecord | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createName, setCreateName] = useState('')
+  const [createBaseCurrency, setCreateBaseCurrency] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
+  const createNameInputRef = useRef<HTMLInputElement>(null)
+  const closeCreateDialog = () => {
+    if (!creating) {
+      setCreateOpen(false)
+      setCreateError(null)
+    }
+  }
+  const createDialogRef = useModalDialog(createOpen, closeCreateDialog, createNameInputRef)
 
   useEffect(() => {
     let cancelled = false
@@ -84,15 +100,7 @@ export default function PortfoliosPage() {
   }, [notice])
 
   const resolvedPortfolios = portfolios.length ? portfolios : FALLBACK_PORTFOLIOS
-  const totalNav = resolvedPortfolios.reduce((sum, item) => sum + item.nav, 0)
-  const totalDayChange = resolvedPortfolios.reduce((sum, item) => sum + (item.day_change_value ?? 0), 0)
-  const totalDayChangePct = totalNav === 0 ? 0 : totalDayChange / (totalNav - totalDayChange || totalNav || 1)
-  const totalNavLabel = formatCurrency(totalNav, resolvedPortfolios[0]?.base_currency ?? 'USD')
-  const totalChangeLabel = formatSignedCurrency(totalDayChange, resolvedPortfolios[0]?.base_currency ?? 'USD')
-  const totalChangeClassName =
-    totalDayChange < 0
-      ? 'portfolio-entry-change-negative'
-      : 'portfolio-entry-change-positive'
+  const totalsByBaseCurrency = groupPortfolioTotalsByBaseCurrency(resolvedPortfolios)
 
   function movePortfolio(sourceId: string, targetId: string) {
     if (sourceId === targetId) {
@@ -125,24 +133,39 @@ export default function PortfoliosPage() {
     }
   }
 
-  async function handleCreatePortfolio() {
-    const proposedName = window.prompt('Portfolio name')
-    const name = proposedName?.trim()
+  async function handleCreatePortfolio(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const name = createName.trim()
     if (!name) {
+      setCreateError('Enter a portfolio name.')
+      return
+    }
+    if (!SUPPORTED_PORTFOLIO_CURRENCIES.includes(
+      createBaseCurrency as (typeof SUPPORTED_PORTFOLIO_CURRENCIES)[number],
+    )) {
+      setCreateError('Select the portfolio base currency.')
       return
     }
 
+    setCreating(true)
+    setCreateError(null)
     try {
-      const created = await createPortfolio({ name })
+      const created = await createPortfolio({
+        name,
+        base_currency: createBaseCurrency as (typeof SUPPORTED_PORTFOLIO_CURRENCIES)[number],
+      })
       setPortfolios((current) => [...current, created])
       setNotice(`Created portfolio "${created.portfolio_name}".`)
+      setCreateOpen(false)
       navigate(buildPortfolioSectionPath(created.portfolio_id, '/overview'))
     } catch (requestError) {
-      setNotice(
+      setCreateError(
         requestError instanceof Error
           ? requestError.message
           : 'Failed to create portfolio.',
       )
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -179,10 +202,21 @@ export default function PortfoliosPage() {
         </div>
         <div className="portfolio-entry-hero">
           <h1 className="portfolio-entry-title">All Portfolios</h1>
-          <span className="portfolio-entry-nav">{totalNavLabel}</span>
-          <span className={totalChangeClassName}>
-            {totalChangeLabel} ({formatPercent(totalDayChangePct)})
-          </span>
+          {totalsByBaseCurrency.map((total) => (
+            <span className="portfolio-entry-nav" key={total.baseCurrency} title={`${total.portfolioCount} portfolios`}>
+              {total.baseCurrency ? formatCurrency(total.nav, total.baseCurrency) : 'Base currency unavailable'}
+              {' · '}
+              <span
+                className={
+                  total.dayChangeValue != null && total.dayChangeValue < 0
+                    ? 'portfolio-entry-change-negative'
+                    : 'portfolio-entry-change-positive'
+                }
+              >
+                {total.baseCurrency ? formatSignedCurrency(total.dayChangeValue, total.baseCurrency) : '—'}
+              </span>
+            </span>
+          ))}
         </div>
       </header>
 
@@ -290,13 +324,74 @@ export default function PortfoliosPage() {
             type="button"
             className="workspace-create-link"
             onClick={() => {
-              void handleCreatePortfolio()
+              setCreateName('')
+              setCreateBaseCurrency('')
+              setCreateError(null)
+              setCreateOpen(true)
             }}
           >
             + Create Portfolio
           </button>
         </div>
       </section>
+      {createOpen ? (
+        <div
+          className="portfolio-settings-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              closeCreateDialog()
+            }
+          }}
+        >
+          <div
+            ref={createDialogRef}
+            className="portfolio-settings-modal portfolio-create-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-portfolio-title"
+            tabIndex={-1}
+          >
+            <div className="portfolio-settings-modal-header">
+              <strong id="create-portfolio-title">Create Portfolio</strong>
+              <button type="button" disabled={creating} onClick={closeCreateDialog}>Close</button>
+            </div>
+            <form className="portfolio-settings-form" onSubmit={(event) => void handleCreatePortfolio(event)}>
+              {createError ? <div className="portfolio-settings-notice error-state">{createError}</div> : null}
+              <div className="portfolio-settings-grid">
+                <label>
+                  <span>Portfolio Name</span>
+                  <input
+                    ref={createNameInputRef}
+                    value={createName}
+                    disabled={creating}
+                    maxLength={200}
+                    onChange={(event) => setCreateName(event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Base Currency</span>
+                  <select
+                    value={createBaseCurrency}
+                    disabled={creating}
+                    onChange={(event) => setCreateBaseCurrency(event.target.value)}
+                  >
+                    <option value="" disabled>Select currency</option>
+                    {SUPPORTED_PORTFOLIO_CURRENCIES.map((currencyCode) => (
+                      <option key={currencyCode} value={currencyCode}>{currencyCode}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="portfolio-settings-modal-actions">
+                <button type="button" disabled={creating} onClick={closeCreateDialog}>Cancel</button>
+                <button type="submit" disabled={creating}>
+                  {creating ? 'Creating…' : 'Create Portfolio'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
       <ConfirmDialog
         open={Boolean(pendingDelete)}
         title="Delete Portfolio"

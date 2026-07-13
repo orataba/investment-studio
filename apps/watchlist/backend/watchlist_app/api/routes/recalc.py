@@ -158,22 +158,6 @@ def enqueue_performance_recalc(
     return _enqueue_recalc(session, instrument_id=instrument_id, job_type="performance")
 
 
-@router.post("/instruments/{instrument_id}/exposure")
-def enqueue_exposure_recalc(
-    instrument_id: str,
-    session: Session = Depends(get_db_session),
-) -> dict[str, object]:
-    return _enqueue_recalc(session, instrument_id=instrument_id, job_type="exposure")
-
-
-@router.post("/instruments/{instrument_id}/ratings")
-def enqueue_ratings_recalc(
-    instrument_id: str,
-    session: Session = Depends(get_db_session),
-) -> dict[str, object]:
-    return _enqueue_recalc(session, instrument_id=instrument_id, job_type="ratings")
-
-
 @router.post("/instruments/{instrument_id}/all")
 def enqueue_full_recalc(
     instrument_id: str,

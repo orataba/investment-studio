@@ -248,7 +248,8 @@ export type ScreenerGroup = {
 export type ScreenerSnapshotMetadata = {
   as_of_date: string | null
   methodology_version: string
-  source_cutoff_at: string | null
+  market_data_input_watermark_at: string | null
+  last_recalculated_at: string | null
   is_current: boolean
   advanced_filter_applied: boolean
 }
@@ -286,6 +287,7 @@ export type MonitoringInstrumentRecord = {
   management_firm_name: string | null
   data_freshness_status: string
   latest_quote_date: string | null
+  market_data_input_watermark_at: string | null
   last_recalculated_at: string | null
   last_activity_at: string | null
   staleness_reason: string | null
@@ -343,22 +345,26 @@ export type FundSummaryResponse = {
   fund_id: string
   fund_name: string
   ticker_or_isin: string
-  rating_as_of: string | null
   management_firm_name: string | null
-  overall_rating: number | null
-  analyst_stance: string
+  research_rating: ResearchRatingRecord | null
   instrument_attributes: Record<string, unknown>
   taxonomy: FundTaxonomyContext
   key_stats: Array<{ label: string; value: string | number | null }>
   freshness: {
     data_freshness_status: string
-    last_fact_update_at: string | null
     last_recalculated_at: string | null
     last_successful_snapshot_at: string | null
+    market_data_input_watermark_at: string | null
+    market_data_input_watermark_status: 'known' | 'unknown'
+    market_data_input_watermark_reason_code: string
+    staleness_reason_codes: string[]
     staleness_reason: string | null
   }
   quick_monitoring_items: string[]
   tabs: string[]
+  consumer_freshness_profile?: ConsumerFreshnessProfile
+  calculation_state?: QuoteCalculationState
+  quote_resolution?: CanonicalQuoteSeriesResolutionSummary
   nav_snapshot?: {
     nav_basis_type?: string | null
     nav_basis_source?: string | null
@@ -391,12 +397,164 @@ type RawFundLibraryItem = {
 
 export type FundChartPoint = { date: string; value: number }
 
+export type PerformanceMetricPeriodKey =
+  | '1W'
+  | 'MTD'
+  | 'YTD'
+  | '1Y'
+  | '2Y'
+  | '3Y'
+  | '5Y'
+  | 'SI'
+
+export type PerformanceMetricSnapshot = {
+  period_return: number | null
+  annualized_return: number | null
+  annualized_volatility: number | null
+  annualized_downside_deviation: number | null
+  sharpe_ratio: number | null
+  sortino_ratio: number | null
+  calmar_ratio: number | null
+  max_drawdown: number | null
+  recovery_days: number | null
+  recovery_open: boolean
+}
+
+export type PerformanceRelativeSnapshot = {
+  excess_return: number | null
+  information_ratio: number | null
+  tracking_error: number | null
+  beta: number | null
+  upside_capture: number | null
+  downside_capture: number | null
+}
+
+export type InvestmentAnalyticsMetricQuality = {
+  status: 'available' | 'qualified' | 'unavailable' | 'not_requested'
+  reason: string | null
+  observation_count: number
+  excluded_observation_count: number
+  used_window_count: number
+  excluded_window_count: number
+}
+
+export type PerformanceSnapshotQuality = {
+  window: InvestmentAnalyticsMetricQuality
+  annualized_return: InvestmentAnalyticsMetricQuality
+  annualized_volatility: InvestmentAnalyticsMetricQuality
+  sharpe_ratio: InvestmentAnalyticsMetricQuality
+  downside_deviation: InvestmentAnalyticsMetricQuality
+  sortino_ratio: InvestmentAnalyticsMetricQuality
+  calmar_ratio: InvestmentAnalyticsMetricQuality
+}
+
+export type PerformanceRelativeQuality = {
+  alignment: InvestmentAnalyticsMetricQuality
+  excess_return: InvestmentAnalyticsMetricQuality
+  tracking_error: InvestmentAnalyticsMetricQuality
+  information_ratio: InvestmentAnalyticsMetricQuality
+  beta: InvestmentAnalyticsMetricQuality
+  upside_capture: InvestmentAnalyticsMetricQuality
+  downside_capture: InvestmentAnalyticsMetricQuality
+}
+
+export type PerformancePeriodAnalytics = {
+  period: PerformanceMetricPeriodKey
+  fund: PerformanceMetricSnapshot
+  benchmark: PerformanceMetricSnapshot | null
+  relative: PerformanceRelativeSnapshot | null
+  quality: {
+    fund: PerformanceSnapshotQuality
+    benchmark: PerformanceSnapshotQuality | null
+    relative: PerformanceRelativeQuality
+  }
+}
+
+export type InvestmentAnalyticsSeriesSummary = {
+  latest: number | null
+  median: number | null
+  percentile: number | null
+  maximum: number | null
+  minimum: number | null
+}
+
+export type FundInvestmentAnalytics = {
+  methodology_version: 'canonical-investment-analytics/v2'
+  methodology: {
+    annualized_return: 'geometric_minimum_365_calendar_days'
+    calmar_ratio: 'annualized_return_over_max_drawdown_minimum_1096_calendar_days'
+    annualized_risk: 'minimum_12_same_frequency_returns'
+    sharpe_ratio: 'arithmetic_mean_excess_return_risk_free_rate_zero'
+    downside_deviation: 'lower_partial_moment_mar_zero_all_observations'
+    sortino_ratio: 'arithmetic_mean_excess_return_mar_zero'
+    relative_alignment: 'exact_fund_observation_boundaries'
+    monthly_volatility_annualization: 'fixed_same_frequency_annualization_252_52_12'
+    rolling_beta_frequency: 'exact_contiguous_calendar_months'
+    capture_ratio: 'minimum_3_exact_same_frequency_returns_per_regime'
+  }
+  valuation_date?: string
+  quote_resolutions?: {
+    fund: CanonicalQuoteSeriesResolutionSummary
+    benchmark: CanonicalQuoteSeriesResolutionSummary | null
+  }
+  calculation_states?: {
+    fund: QuoteCalculationState
+    benchmark: QuoteCalculationState | null
+  }
+  as_of_date: string | null
+  benchmark_instrument_id: string | null
+  rolling_window_months: 1 | 3 | 6 | 12
+  periods: PerformancePeriodAnalytics[]
+  monthly_return_matrix: Array<{
+    year: string
+    months: Array<number | null>
+    ytd: number | null
+  }>
+  series: {
+    drawdown: FundChartPoint[]
+    benchmark_drawdown: FundChartPoint[]
+    monthly_drawdown: FundChartPoint[]
+    monthly_annualized_volatility: FundChartPoint[]
+    rolling_annualized_volatility: FundChartPoint[]
+    benchmark_rolling_annualized_volatility: FundChartPoint[]
+    rolling_sharpe_ratio: FundChartPoint[]
+    benchmark_rolling_sharpe_ratio: FundChartPoint[]
+    rolling_beta: FundChartPoint[]
+  }
+  statistics: {
+    current_drawdown: number | null
+    monthly_return: InvestmentAnalyticsSeriesSummary
+    monthly_drawdown: InvestmentAnalyticsSeriesSummary
+    rolling_annualized_volatility: InvestmentAnalyticsSeriesSummary
+    rolling_beta: InvestmentAnalyticsSeriesSummary
+    trailing_negative_month_count: number | null
+  }
+  source_observation_count: number
+  benchmark_observation_count: number
+  source_input_observation_count: number
+  benchmark_input_observation_count: number
+  quality: {
+    fund_status: 'available' | 'unavailable'
+    fund_reason: string | null
+    benchmark_status: 'available' | 'unavailable' | 'not_requested'
+    benchmark_reason: string | null
+    series: {
+      monthly_annualized_volatility: InvestmentAnalyticsMetricQuality
+      rolling_annualized_volatility: InvestmentAnalyticsMetricQuality
+      benchmark_rolling_annualized_volatility: InvestmentAnalyticsMetricQuality
+      rolling_sharpe_ratio: InvestmentAnalyticsMetricQuality
+      benchmark_rolling_sharpe_ratio: InvestmentAnalyticsMetricQuality
+      rolling_beta: InvestmentAnalyticsMetricQuality
+    }
+  }
+}
+
 export type CalculationFrequency = 'daily' | 'weekly' | 'monthly'
 
 export type CalculationFrequencyProfile = {
   requested_frequency: 'auto'
-  resolved_frequency: CalculationFrequency
-  inferred_frequency: CalculationFrequency
+  resolved_frequency: CalculationFrequency | null
+  inferred_frequency: CalculationFrequency | null
   source_frequency_counts: Record<CalculationFrequency | 'unknown', number>
   raw_observation_count: number
   observation_count: number
@@ -405,7 +563,7 @@ export type CalculationFrequencyProfile = {
   annualization_periods_per_year: number | null
   largest_gap_days: number | null
   gap_count: number
-  gap_status: 'aligned' | 'calendar_gaps'
+  gap_status: 'aligned' | 'calendar_gaps' | 'unresolved'
   status_label: string
 }
 
@@ -413,7 +571,8 @@ export type FundChartResponse = {
   fund_id: string
   base_series_type: string
   selected_series?: SelectedQuoteSeriesMetadata
-  currency: string
+  resolution?: CanonicalQuoteSeriesResolutionSummary
+  currency: string | null
   date_range: { start: string; end: string } | null
   series: Array<{ name: string; points: FundChartPoint[] }>
   available_compare_targets: string[]
@@ -436,6 +595,12 @@ export type SelectedQuotePoint = {
   metric_family?: string | null
   quote_basis?: string | null
   series_type?: string | null
+}
+
+type RawSelectedQuotePoint = Omit<Partial<SelectedQuotePoint>, 'value' | 'nav'> & {
+  date: string
+  nav?: number | null
+  value?: number | null
 }
 
 export type FundPerformanceResponse = {
@@ -487,8 +652,13 @@ export type FundPerformanceResponse = {
   snapshot_metadata: {
     as_of_date: string | null
     methodology_version: string
-    source_cutoff_at: string | null
+    calculated_at: string | null
+    market_data_input_watermark_at: string | null
   } | null
+  quote_resolution?: CanonicalQuoteSeriesResolutionSummary
+  historical_quote_resolution?: CanonicalQuoteSeriesResolutionSummary | null
+  calculation_state?: QuoteCalculationState
+  analytics: FundInvestmentAnalytics
 }
 
 export type FundRiskResponse = {
@@ -512,45 +682,12 @@ export type FundRiskResponse = {
   snapshot_metadata: {
     as_of_date: string | null
     methodology_version: string
-    source_cutoff_at: string | null
+    calculated_at: string | null
+    market_data_input_watermark_at: string | null
   } | null
-}
-
-export type FundExposureResponse = {
-  allocation_blocks: Record<string, Array<Record<string, unknown>>>
-  style_box: Record<string, unknown> | null
-  liquidity_leverage: Record<string, unknown> | null
-  valuation_statistics: Record<string, unknown> | null
-  holdings_summary: Record<string, unknown> | null
-  snapshot_metadata: {
-    as_of_date: string | null
-    methodology_version: string
-    source_cutoff_at: string | null
-  } | null
-}
-
-export type FundExposureHoldingsResponse = {
-  rows: Array<Record<string, unknown>>
-  page: number
-  page_size: number
-  total_rows: number
-}
-
-export type FundRatingsResponse = {
-  overall_rating: number | null
-  overall_score: number | null
-  analyst_stance: string
-  methodology_version: string
-  dimension_scores: Array<{
-    dimension_code: string
-    score: number | null
-    confidence_score: number | null
-  }>
-  override_info: {
-    has_override: boolean
-    approved_by: string | null
-    approved_at: string | null
-  } | null
+  quote_resolution?: CanonicalQuoteSeriesResolutionSummary
+  historical_quote_resolution?: CanonicalQuoteSeriesResolutionSummary | null
+  calculation_state?: QuoteCalculationState
 }
 
 export type FundPeopleResponse = {
@@ -596,14 +733,175 @@ export type InstrumentDocumentUploadPayload = {
 
 export type FundResearchResponse = {
   overview: Record<string, unknown>
-  manual_rating: number | null
   timeline_notes: Array<Record<string, unknown>>
 }
 
+export type ResearchRatingConfidence = 'low' | 'medium' | 'high'
+
+export type ResearchRatingRecord = {
+  rating_revision_id: string | null
+  revision_number: number | null
+  previous_rating_revision_id: string | null
+  rating: number | null
+  confidence: ResearchRatingConfidence | 'unassessed' | null
+  as_of_date: string | null
+  rationale: string | null
+  author: string | null
+  next_review_date: string | null
+  created_at: string | null
+}
+
+export type ResearchRatingResponse = ResearchRatingRecord & {
+  instrument_id: string
+  superseded_at: string | null
+  is_current: boolean
+}
+
+export type ResearchRatingsResponse = {
+  items: ResearchRatingResponse[]
+}
+
+export type ResearchRatingUpdatePayload = {
+  rating: number | null
+  confidence: ResearchRatingConfidence
+  as_of_date: string
+  rationale: string
+  author: string
+  next_review_date?: string | null
+  expected_current_revision_id: string | null
+}
+
+export type QuoteRevisionStatus = 'complete' | 'partial' | 'rejected' | 'withdrawn'
+
+export type CanonicalQuoteSeriesObservation = {
+  quote_series_id: string
+  observation_id: string
+  revision_id: string
+  revision_number: number
+  payload_hash: string
+  observation_date: string
+  value: string | null
+  status: QuoteRevisionStatus
+  source_ref: string | null
+  source_published_at: string | null
+  ingested_at: string | null
+}
+
+export type CanonicalQuoteSeriesPoint = Omit<CanonicalQuoteSeriesObservation, 'status'> & {
+  value: string
+}
+
+type CanonicalQuoteSeriesCalculationDependencyBase = {
+  resolver_strategy_version: string
+  freshness_policy_version: string
+  freshness_mode: string
+  max_age_days: number
+  range_mode: 'bounded' | 'since_inception'
+  start_date: string | null
+  end_date: string
+  quote_selection_policy_version: string
+  quote_selection_policy_revision: string | null
+  quote_series_id: string | null
+  fingerprint: string
+}
+
+export type CanonicalQuoteSeriesCalculationDependency =
+  CanonicalQuoteSeriesCalculationDependencyBase & {
+    revision_ids: string[]
+    payload_hashes: string[]
+    excluded_revision_ids: string[]
+    excluded_payload_hashes: string[]
+  }
+
+export type CanonicalQuoteSeriesCalculationDependencySummary =
+  CanonicalQuoteSeriesCalculationDependencyBase & {
+    revision_count: number
+    excluded_revision_count: number
+  }
+
+export type ConsumerFreshnessProfile = {
+  profile: 'periodic_fund_nav' | 'daily_market' | string
+  policy_version: string
+  reason_code: string
+  canonical_instrument_type: string
+  resolver_policy: {
+    policy_version: string
+    mode: string
+    max_age_days: number
+  }
+}
+
+export type QuoteConsumerDependency = {
+  dependency_kind: 'watchlist_quote_consumer_dependency'
+  dependency_version: 'v1'
+  canonical_dependency_fingerprint: string
+  consumer_freshness_profile: ConsumerFreshnessProfile
+  fingerprint: string
+}
+
+export type QuoteCalculationState = {
+  current_endpoint_state: 'resolved' | 'stale' | 'partial' | 'unavailable'
+  analysis_as_of_date?: string | null
+  historical_calculation_state?:
+    | 'current_endpoint'
+    | 'last_good_preserved'
+    | 'historical_as_of_last_observation'
+    | 'unavailable'
+  history_as_of_date?: string | null
+  reason_codes: string[]
+}
+
+type CanonicalQuoteSeriesResolutionBase = {
+  resolution_status: 'resolved' | 'unavailable'
+  resolver_strategy_version: string
+  instrument_id: string
+  role: string
+  metric_family: string | null
+  quote_basis: string | null
+  currency: string
+  range_mode: 'bounded' | 'since_inception'
+  start_date: string | null
+  end_date: string
+  quote_selection_policy_version: string
+  quote_selection_policy_revision: string | null
+  freshness_policy: {
+    policy_version: string
+    mode: string
+    max_age_days: number
+  }
+  quote_series_id: string | null
+  start_boundary_observation: CanonicalQuoteSeriesObservation | null
+  start_anchor: CanonicalQuoteSeriesPoint | null
+  observation_count: number
+  adopted_point_count: number
+  first_observation_date: string | null
+  last_observation_date: string | null
+  coverage_status: 'complete' | 'partial' | 'unavailable'
+  freshness_status: string
+  ingestion_status: string
+  reliability_status: string
+  reason_codes: string[]
+  consumer_freshness_profile: ConsumerFreshnessProfile
+  consumer_dependency: QuoteConsumerDependency
+}
+
+export type CanonicalQuoteSeriesResolution =
+  CanonicalQuoteSeriesResolutionBase & {
+    observations: CanonicalQuoteSeriesObservation[]
+    points: CanonicalQuoteSeriesPoint[]
+    calculation_dependency: CanonicalQuoteSeriesCalculationDependency
+  }
+
+export type CanonicalQuoteSeriesResolutionSummary =
+  CanonicalQuoteSeriesResolutionBase & {
+    schema_version: 'watchlist_quote_resolution_summary.v1'
+    calculation_dependency: CanonicalQuoteSeriesCalculationDependencySummary
+  }
+
 export type FundNavSeriesResponse = {
   fund_id: string
+  valuation_date: string | null
   count: number
-  nav_basis_preference: 'auto' | 'nav_with_dividend'
   nav_basis_type: string | null
   nav_basis_source: string
   nav_basis_status: string
@@ -613,7 +911,18 @@ export type FundNavSeriesResponse = {
   selected_series_type?: string | null
   selected_series_label?: string | null
   selected_date_label?: string | null
+  resolution: CanonicalQuoteSeriesResolution | null
+  consumer_freshness_profile?: ConsumerFreshnessProfile
   calculation_frequency_profile: CalculationFrequencyProfile
+  basis_statistics: Record<
+    'nav' | 'nav_with_dividend',
+    {
+      latest_date: string | null
+      latest_value: number | null
+      latest_change: number | null
+      latest_change_percent: number | null
+    }
+  >
   compare_settings?: {
     default_benchmark_instrument_id: string | null
     peer_instrument_ids: string[]
@@ -643,13 +952,20 @@ export type FundNavSeriesResponse = {
     currency: string | null
     frequency: string | null
     adopted_at: string | null
+    status: QuoteRevisionStatus
+    observation_id: string
+    revision_id: string
+    revision_number: number
+    payload_hash: string
+    source_ref: string | null
+    source_published_at: string | null
   }>
 }
 
 type RawFundNavSeriesResponse = {
   instrument_id: string
+  valuation_date: string
   count: number
-  nav_basis_preference: 'auto' | 'nav_with_dividend'
   nav_basis_type: string | null
   nav_basis_source: string
   nav_basis_status: string
@@ -659,7 +975,10 @@ type RawFundNavSeriesResponse = {
   selected_series_type?: string | null
   selected_series_label?: string | null
   selected_date_label?: string | null
+  resolution: CanonicalQuoteSeriesResolution
+  consumer_freshness_profile?: ConsumerFreshnessProfile
   calculation_frequency_profile: CalculationFrequencyProfile
+  basis_statistics: FundNavSeriesResponse['basis_statistics']
   compare_settings?: {
     default_benchmark_instrument_id: string | null
     peer_instrument_ids: string[]
@@ -671,8 +990,8 @@ type RawFundNavSeriesResponse = {
     requested_by: string | null
     mode: string
   }
-  series?: Array<Partial<SelectedQuotePoint> & { date: string; nav?: number; value?: number }>
-  calculation_series?: Array<Partial<SelectedQuotePoint> & { date: string; nav?: number; value?: number }>
+  series?: RawSelectedQuotePoint[]
+  calculation_series?: RawSelectedQuotePoint[]
   rows: Array<{
     date: string
     nav: number | null
@@ -689,6 +1008,13 @@ type RawFundNavSeriesResponse = {
     currency: string | null
     frequency: string | null
     adopted_at: string | null
+    status: QuoteRevisionStatus
+    observation_id: string
+    revision_id: string
+    revision_number: number
+    payload_hash: string
+    source_ref: string | null
+    source_published_at: string | null
   }>
 }
 
@@ -702,6 +1028,18 @@ const referenceGetCache = new Map<
   string,
   { expiresAt: number; promise: Promise<unknown> }
 >()
+
+export class ApiRequestError extends Error {
+  readonly status: number
+  readonly responseBody: string
+
+  constructor(status: number, responseBody: string) {
+    super(responseBody || `Request failed: ${status}`)
+    this.name = 'ApiRequestError'
+    this.status = status
+    this.responseBody = responseBody
+  }
+}
 
 async function fetchJson<T>(
   path: string,
@@ -717,7 +1055,7 @@ async function fetchJson<T>(
 
   if (!response.ok) {
     const body = await response.text()
-    throw new Error(body || `Request failed: ${response.status}`)
+    throw new ApiRequestError(response.status, body)
   }
 
   return (await response.json()) as T
@@ -762,20 +1100,23 @@ function normalizeFundLibraryItem(item: RawFundLibraryItem): FundLibraryItem {
   }
 }
 
-function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): FundNavSeriesResponse {
+export function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): FundNavSeriesResponse {
   const normalizeQuotePoints = (
-    points: Array<Partial<SelectedQuotePoint> & { date: string; nav?: number; value?: number }>,
+    points: RawSelectedQuotePoint[],
   ): SelectedQuotePoint[] =>
-    points.map((point) => {
-      const value = point.value ?? point.nav ?? 0
-      return {
+    points.flatMap((point) => {
+      const value = point.value
+      if (value == null) {
+        return []
+      }
+      return [{
         date: point.date,
         value,
-        nav: point.nav ?? value,
+        nav: value,
         metric_family: point.metric_family,
         quote_basis: point.quote_basis,
         series_type: point.series_type,
-      }
+      }]
     })
 
   const rows: FundNavSeriesResponse['rows'] = response.rows.map((row) => ({
@@ -794,19 +1135,20 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
     currency: row.currency,
     frequency: row.frequency,
     adopted_at: row.adopted_at,
+    status: row.status,
+    observation_id: row.observation_id,
+    revision_id: row.revision_id,
+    revision_number: row.revision_number,
+    payload_hash: row.payload_hash,
+    source_ref: row.source_ref,
+    source_published_at: row.source_published_at,
   }))
   const pointsFromRows = (calculationOnly: boolean): SelectedQuotePoint[] =>
     rows.flatMap((row) => {
       if (calculationOnly && row.calculation_included === false) {
         return []
       }
-      const fallbackValue =
-        row.selected_basis_type === 'nav'
-          ? row.nav
-          : row.selected_basis_type === 'nav_with_dividend'
-            ? row.nav_with_dividend
-            : null
-      const value = row.selected_value ?? fallbackValue
+      const value = row.selected_value
       if (value == null) {
         return []
       }
@@ -822,8 +1164,8 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
 
   return {
     fund_id: response.instrument_id,
+    valuation_date: response.valuation_date,
     count: response.count,
-    nav_basis_preference: response.nav_basis_preference,
     nav_basis_type: response.nav_basis_type,
     nav_basis_source: response.nav_basis_source,
     nav_basis_status: response.nav_basis_status,
@@ -833,7 +1175,9 @@ function normalizeFundNavSeriesResponse(response: RawFundNavSeriesResponse): Fun
     selected_series_type: response.selected_series_type,
     selected_series_label: response.selected_series_label,
     selected_date_label: response.selected_date_label,
+    resolution: response.resolution,
     calculation_frequency_profile: response.calculation_frequency_profile,
+    basis_statistics: response.basis_statistics,
     compare_settings: response.compare_settings,
     refresh_status: response.refresh_status,
     series: response.series ? normalizeQuotePoints(response.series) : pointsFromRows(false),
@@ -855,7 +1199,7 @@ export function getMonitoringDashboard() {
 export function executeInstrumentRecalc(
   instrumentId: string,
   payload?: {
-    job_type?: 'performance' | 'exposure' | 'ratings' | 'all'
+    job_type?: 'performance'
     trigger_type?: string
     trigger_ref_type?: string | null
     trigger_ref_id?: string | null
@@ -1113,28 +1457,28 @@ export function getInstrumentChart(instrumentId: string) {
   return fetchJson<FundChartResponse>(buildInstrumentDetailApiPath(instrumentId, 'chart'))
 }
 
-export function getInstrumentPerformance(instrumentId: string) {
-  return fetchJson<FundPerformanceResponse>(buildInstrumentDetailApiPath(instrumentId, 'performance'))
+export function getInstrumentPerformance(
+  instrumentId: string,
+  options?: {
+    benchmarkInstrumentId?: string | null
+    rollingWindowMonths?: 1 | 3 | 6 | 12
+  },
+) {
+  const searchParams = new URLSearchParams()
+  if (options?.benchmarkInstrumentId) {
+    searchParams.set('benchmark_instrument_id', options.benchmarkInstrumentId)
+  }
+  if (options?.rollingWindowMonths != null) {
+    searchParams.set('rolling_window_months', String(options.rollingWindowMonths))
+  }
+  const suffix = searchParams.size
+    ? `performance?${searchParams.toString()}`
+    : 'performance'
+  return fetchJson<FundPerformanceResponse>(buildInstrumentDetailApiPath(instrumentId, suffix))
 }
 
 export function getInstrumentRisk(instrumentId: string) {
   return fetchJson<FundRiskResponse>(buildInstrumentDetailApiPath(instrumentId, 'risk'))
-}
-
-export function getInstrumentExposureSummary(instrumentId: string) {
-  return fetchJson<FundExposureResponse>(
-    buildInstrumentDetailApiPath(instrumentId, 'exposure/summary'),
-  )
-}
-
-export function getInstrumentExposureHoldings(instrumentId: string) {
-  return fetchJson<FundExposureHoldingsResponse>(
-    buildInstrumentDetailApiPath(instrumentId, 'exposure/holdings'),
-  )
-}
-
-export function getInstrumentRatings(instrumentId: string) {
-  return fetchJson<FundRatingsResponse>(buildInstrumentDetailApiPath(instrumentId, 'ratings'))
 }
 
 export function getInstrumentPeople(instrumentId: string) {
@@ -1155,6 +1499,18 @@ export function getInstrumentDocuments(instrumentId: string) {
 
 export function getInstrumentResearch(instrumentId: string) {
   return fetchJson<FundResearchResponse>(buildInstrumentDetailApiPath(instrumentId, 'research'))
+}
+
+export function getInstrumentResearchRating(instrumentId: string) {
+  return fetchJson<ResearchRatingResponse>(
+    buildInstrumentDetailApiPath(instrumentId, 'research-rating'),
+  )
+}
+
+export function getInstrumentResearchRatings(instrumentId: string) {
+  return fetchJson<ResearchRatingsResponse>(
+    buildInstrumentDetailApiPath(instrumentId, 'research-ratings'),
+  )
 }
 
 export function getInstrumentNavSeries(instrumentId: string) {
@@ -1242,4 +1598,17 @@ export function updateInstrumentResearch(
     method: 'PUT',
     body: JSON.stringify(payload),
   })
+}
+
+export function updateInstrumentResearchRating(
+  instrumentId: string,
+  payload: ResearchRatingUpdatePayload,
+) {
+  return fetchJson<ResearchRatingResponse>(
+    buildInstrumentDetailApiPath(instrumentId, 'research-rating'),
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    },
+  )
 }

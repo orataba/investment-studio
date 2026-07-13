@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from datetime import date
 from pathlib import Path
 
 from alembic import command
@@ -171,6 +172,21 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
             "registry_name": shared_store.DEFAULT_REGISTRY_NAME,
             "instruments": list(TEST_SHARED_INSTRUMENTS.values()),
         },
+    )
+
+    class FrozenValuationDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return cls(2026, 4, 15)
+
+    from watchlist_app.api.routes import funds as funds_routes
+    from watchlist_app.services import canonical_recalc
+
+    monkeypatch.setattr(funds_routes, "date", FrozenValuationDate)
+    monkeypatch.setattr(
+        canonical_recalc,
+        "_current_valuation_date",
+        lambda: date(2026, 4, 15),
     )
 
     import watchlist_app.main as main_module

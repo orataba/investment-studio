@@ -18,6 +18,8 @@
    当前后端数据分层、关键表、API 分组与路由边界。
 7. [FUND_TERMINAL_V2_AI_COPILOT.md](./FUND_TERMINAL_V2_AI_COPILOT.md)
    保留中的 Copilot 后端接口、上下文范围、返回协议与 provider 边界；当前 UI 默认关闭。
+8. [INVESTMENT_ANALYTICS_METHODOLOGY.md](./INVESTMENT_ANALYTICS_METHODOLOGY.md)
+   基金投资分析 v2 的最低样本门槛、同期 benchmark、年化、相对指标和 quality contract。
 
 后续如果需要新文档，默认只补三类内容：
 

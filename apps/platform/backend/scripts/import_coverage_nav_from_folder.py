@@ -220,7 +220,7 @@ def main() -> int:
         replace_nav_history(
             instrument_id=instrument_id,
             rows=merged_rows,
-            provider="nav_folder_import",
+            source_ref="nav_folder_import",
             point_status=normalized_status,
             refresh_status="imported",
             updated_by="codex_nav_import",

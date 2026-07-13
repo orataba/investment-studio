@@ -27,7 +27,10 @@ from portfolio_app.api.contracts import (
     TaxonomyRecord,
     TaxonomyUpdateRequest,
 )
-from portfolio_app.services.instrument_charts import build_instrument_holdings_market_profile
+from portfolio_app.services.instrument_charts import (
+    build_instrument_holdings_market_profiles,
+    lock_instrument_market_data,
+)
 from portfolio_app.services.instrument_registry import InstrumentRegistryError, get_registry_instrument
 from portfolio_app.services.portfolio_store import (
     create_taxonomy,
@@ -100,22 +103,29 @@ def _enrich_universe_market_profiles(
         and str(record.get("instrument_id") or "").strip()
         and not _universe_record_is_cash(record)
     ]
+    market_data = lock_instrument_market_data(
+        instrument_ids,
+        as_of_date=as_of_date,
+        roles=("chart", "total_return"),
+    )
     risk_basis_profile = calculation_frequency_profile_for_instruments(
         instrument_ids,
         end_date=as_of_date,
         requested_frequency=requested_frequency,
+        market_data=market_data,
     )
     calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
+    profiles_by_instrument = build_instrument_holdings_market_profiles(
+        market_data,
+        instrument_ids=instrument_ids,
+        calculation_frequency=calculation_frequency,
+    )
     enriched_records: list[dict[str, object]] = []
     for record in records:
         enriched = dict(record)
         instrument_id = str(enriched.get("instrument_id") or "").strip()
         if instrument_id and instrument_id in instrument_ids:
-            profile = build_instrument_holdings_market_profile(
-                instrument_id,
-                as_of_date=as_of_date,
-                calculation_frequency=calculation_frequency,
-            )
+            profile = profiles_by_instrument.get(instrument_id, {})
             enriched["instrument_trend_basis"] = profile.get("instrument_trend_basis")
             enriched["instrument_risk_frequency"] = profile.get("instrument_risk_frequency")
             enriched["instrument_return_series_all"] = profile.get("instrument_return_series_all")

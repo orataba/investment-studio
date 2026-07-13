@@ -2,25 +2,49 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
+from decimal import Decimal
 from itertools import combinations
 from math import ceil, sqrt
 
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from portfolio_ops_instrument_core import (
+    CanonicalQuoteResolution,
+    CanonicalQuoteSeriesPoint,
+    CanonicalQuoteSeriesResolution,
+    resolve_quote_series_observation_at,
+)
+from portfolio_ops_instrument_core.canonical_fx import CanonicalFxWindowBook
+from portfolio_ops_instrument_core.db_models import Instrument
+from portfolio_ops_instrument_core.models import TOTAL_RETURN_QUOTE_BASES
+
+from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.fact_currency import require_portfolio_fact_currency
 from portfolio_app.services.calculation_frequency import (
     CalculationFrequency,
     calculation_frequency_profile,
     infer_observation_frequency,
     period_end_date,
 )
-from portfolio_app.services.market_data import is_usable_market_data_point
-import portfolio_app.services.performance as performance_service
+from portfolio_app.services.canonical_fx import (
+    portfolio_fx_freshness_policy,
+    resolve_portfolio_fx_window_book_in_session,
+)
+from portfolio_app.services.canonical_quotes import (
+    CanonicalQuoteWindowBook,
+    resolve_role_quote_window_book_in_session,
+)
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_holdings_report
+from portfolio_app.services.performance_reliability import (
+    build_performance_history_reliability,
+)
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
     list_accounts,
@@ -85,6 +109,7 @@ RESEARCH_OBSERVATIONS_PER_MONTH_BY_FREQUENCY: dict[CalculationFrequency, float] 
 }
 RESEARCH_RISK_CONTRIBUTION_MODE = "signed"
 RESEARCH_MAX_RISK_BUDGET_SHARE_GAP = 1e-4
+RESEARCH_MARKET_DATA_POLICY_VERSION = "allocation_research_market_data.v1"
 RESEARCH_COVARIANCE_PSD_TOLERANCE = 1e-10
 RISK_BUDGET_NORMALIZED_GAP_FLOOR_EQUAL_SHARE_FRACTION = 0.25
 RISK_BUDGET_NORMALIZED_GAP_MAX_FLOOR = 0.05
@@ -102,6 +127,9 @@ SUPPORTED_RESEARCH_LOOKBACK_DAYS = frozenset(RESEARCH_WINDOW_MONTHS_BY_LOOKBACK_
 RESEARCH_BACKTEST_METHODOLOGY_WARNINGS: tuple[str, ...] = (
     "Backtest applies the currently configured taxonomy membership and target policy across the full historical simulation; it is not a point-in-time reconstruction of past classifications or mandates.",
     "Backtest cash residual earns a 0% return, and simulated returns exclude transaction costs, taxes, slippage, and implementation delay.",
+)
+RESEARCH_BACKTEST_METRICS_METHOD_VERSION = (
+    "research-backtest-metrics.v2.history-gated-arithmetic-sharpe"
 )
 
 
@@ -216,10 +244,13 @@ class TaxonomyResearchState:
     target_sets_by_scope_type: dict[tuple[str | None, str], list[dict[str, object]]]
     target_lines_by_set_id: dict[str, dict[tuple[str, str], dict[str, object]]]
     account_name_by_id: dict[str, str]
-    instrument_detail_cache: dict[str, dict[str, object] | None]
-    direct_fx_instruments: dict[tuple[str, str], str]
     frozen_taxonomy_node_ids: frozenset[str]
     top_sleeve_weight_bounds: dict[str, dict[str, float | None]]
+    market_data: "ResearchMarketDataContext | None" = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     # A current-target solve walks the taxonomy recursively.  Current holdings
     # and account values are portfolio-level inputs, so rebuilding both ledgers
     # once per scope is redundant and can make deep taxonomies disproportionately
@@ -227,6 +258,43 @@ class TaxonomyResearchState:
     # state is constructed for every as-of date (including each backtest
     # rebalance), so this cache never crosses a point-in-time boundary.
     current_valuation_cache: dict[str, object] = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class ResearchMarketDataContext:
+    policy_version: str
+    base_currency: str
+    start_date: date
+    end_date: date
+    instrument_ids: frozenset[str]
+    instrument_name_by_id: dict[str, str]
+    instrument_currency_by_id: dict[str, str]
+    total_return_book: CanonicalQuoteWindowBook
+    fx_book: CanonicalFxWindowBook
+    adopted_quote_dependencies: dict[str, dict[str, object]] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+    adopted_fx_dependencies: dict[str, dict[str, object]] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
+
+
+class ResearchMarketDataError(ValueError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_codes: list[str],
+        dependency: dict[str, object],
+    ) -> None:
+        normalized_reasons = list(dict.fromkeys(reason_codes or ["unavailable_dependency"]))
+        super().__init__(f"{message} [reason_codes={','.join(normalized_reasons)}]")
+        self.reason_codes = tuple(normalized_reasons)
+        self.dependency = dependency
 
 
 def _safe_float(value: object) -> float | None:
@@ -288,117 +356,375 @@ def _parse_iso_date(value: object) -> date | None:
         return None
 
 
-def _normalized_currency(value: object, *, fallback: str = "USD") -> str:
-    normalized = str(value or "").strip().upper()
-    return normalized or fallback
+def _normalized_currency(value: object, *, context: str) -> str:
+    return require_portfolio_fact_currency(value, context=context)
 
 
-def _build_direct_fx_instrument_map() -> dict[tuple[str, str], str]:
-    direct_instruments: dict[tuple[str, str], str] = {}
-    payload = performance_service.get_platform_fx_rates()
-    if not isinstance(payload, dict):
-        return direct_instruments
-    for item in payload.get("rates", []):
-        if not is_usable_market_data_point(item):
-            continue
-        if str(item.get("source_kind") or "") != "direct":
-            continue
-        base_currency = _normalized_currency(item.get("base_currency"), fallback="")
-        quote_currency = _normalized_currency(item.get("quote_currency"), fallback="")
-        instrument_id = str(item.get("instrument_id") or "").strip()
-        if base_currency and quote_currency and instrument_id:
-            direct_instruments[(base_currency, quote_currency)] = instrument_id
-    return direct_instruments
-
-
-def _instrument_detail(
-    state: TaxonomyResearchState,
-    instrument_id: str,
-) -> dict[str, object] | None:
-    if instrument_id not in state.instrument_detail_cache:
-        state.instrument_detail_cache[instrument_id] = performance_service.get_registry_instrument_detail(instrument_id)
-    return state.instrument_detail_cache[instrument_id]
-
-
-def _candidate_quote_bases(detail: dict[str, object]) -> list[str]:
-    policy = detail.get("quote_selection_policy", {})
-    candidate_bases: list[str] = []
-    if isinstance(policy, dict):
-        # Research should consume total-return series whenever the shared
-        # registry provides one. Statement valuation still uses the separate
-        # valuation role; this path is specifically for return/risk simulation.
-        for role in ("total_return", "chart", "valuation", "reference"):
-            raw_values = policy.get(role)
-            if not isinstance(raw_values, list):
-                continue
-            for raw_value in raw_values:
-                value = str(raw_value or "").strip()
-                if value and value not in candidate_bases:
-                    candidate_bases.append(value)
-    return candidate_bases
-
-
-def _selected_price_points(
-    detail: dict[str, object],
-    *,
-    end_date: date,
-) -> list[tuple[date, float, str]]:
-    market_data = detail.get("market_data", [])
-    if not isinstance(market_data, list):
-        return []
-    points_by_basis: dict[str, list[tuple[date, float, str]]] = defaultdict(list)
-    for raw_point in market_data:
-        if not is_usable_market_data_point(raw_point):
-            continue
-        point_date = _parse_iso_date(raw_point.get("as_of_date"))
-        point_value = _safe_float(raw_point.get("value"))
-        quote_basis = str(raw_point.get("quote_basis") or "").strip()
-        if (
-            point_date is None
-            or point_value is None
-            or not np.isfinite(point_value)
-            or point_value <= 0.0
-            or not quote_basis
-            or point_date > end_date
-        ):
-            continue
-        points_by_basis[quote_basis].append(
-            (
-                point_date,
-                point_value,
-                _normalized_currency(raw_point.get("currency"), fallback=str(detail.get("currency") or "USD")),
-            )
-        )
-    for points in points_by_basis.values():
-        points.sort(key=lambda item: item[0])
-
-    for quote_basis in _candidate_quote_bases(detail):
-        if points_by_basis.get(quote_basis):
-            return points_by_basis[quote_basis]
-    return []
-
-
-def _convert_price_to_base(
+def _research_instrument_ids(
     state: TaxonomyResearchState,
     *,
-    point_date: date,
-    value: float,
-    point_currency: str,
-) -> float | None:
-    normalized_currency = _normalized_currency(point_currency, fallback=state.base_currency)
-    if normalized_currency == state.base_currency:
-        return value
-    fx = performance_service.resolve_fx_rate_on(
-        as_of_date=point_date,
-        base_currency=normalized_currency,
-        quote_currency=state.base_currency,
-        direct_instruments=state.direct_fx_instruments,
-        instrument_detail_cache=state.instrument_detail_cache,
+    scope_node_id: str | None = None,
+    additional_instrument_ids: list[str] | None = None,
+) -> list[str]:
+    node_ids = (
+        set(state.node_by_id)
+        if scope_node_id is None
+        else state.node_subtree_by_id.get(scope_node_id, {scope_node_id})
     )
-    rate = _safe_float((fx or {}).get("rate"))
-    if rate is None or rate <= 0:
+    instrument_ids = {
+        str(assignment.get("target_entity_id") or "").strip()
+        for node_id in node_ids
+        for assignment in state.direct_assignments_by_node.get(node_id, [])
+        if str(assignment.get("target_scope") or "") == TARGET_MEMBER_INSTRUMENT
+    }
+    instrument_ids.update(
+        str(instrument_id or "").strip()
+        for instrument_id in (additional_instrument_ids or [])
+    )
+    return sorted(instrument_id for instrument_id in instrument_ids if instrument_id)
+
+
+def _lock_research_market_data_in_session(
+    session: Session,
+    *,
+    instrument_ids: list[str],
+    base_currency: str,
+    start_date: date,
+    end_date: date,
+) -> ResearchMarketDataContext:
+    normalized_ids = sorted(
+        {str(instrument_id or "").strip() for instrument_id in instrument_ids}
+        - {""}
+    )
+    normalized_base_currency = _normalized_currency(
+        base_currency,
+        context="Research market-data base",
+    )
+    metadata_rows = session.execute(
+        select(
+            Instrument.instrument_id,
+            Instrument.instrument_name,
+            Instrument.currency,
+        ).where(Instrument.instrument_id.in_(normalized_ids))
+    ).all() if normalized_ids else []
+    instrument_name_by_id = {
+        str(instrument_id): str(instrument_name)
+        for instrument_id, instrument_name, _currency in metadata_rows
+    }
+    instrument_currency_by_id = {
+        str(instrument_id): _normalized_currency(
+            currency,
+            context=f"Research instrument '{instrument_id}'",
+        )
+        for instrument_id, _instrument_name, currency in metadata_rows
+    }
+    total_return_book = resolve_role_quote_window_book_in_session(
+        session,
+        instrument_ids=normalized_ids,
+        role="total_return",
+        start_date=start_date,
+        end_date=end_date,
+    )
+    currency_pairs = {
+        (currency, normalized_base_currency)
+        for currency in instrument_currency_by_id.values()
+        if currency
+    }
+    currency_pairs.add((normalized_base_currency, normalized_base_currency))
+    fx_book = resolve_portfolio_fx_window_book_in_session(
+        session,
+        currency_pairs=sorted(currency_pairs),
+        start_date=start_date,
+        end_date=end_date,
+        freshness_policy=portfolio_fx_freshness_policy(),
+    )
+    return ResearchMarketDataContext(
+        policy_version=RESEARCH_MARKET_DATA_POLICY_VERSION,
+        base_currency=normalized_base_currency,
+        start_date=start_date,
+        end_date=end_date,
+        instrument_ids=frozenset(normalized_ids),
+        instrument_name_by_id=instrument_name_by_id,
+        instrument_currency_by_id=instrument_currency_by_id,
+        total_return_book=total_return_book,
+        fx_book=fx_book,
+    )
+
+
+def lock_research_market_data_in_session(
+    session: Session,
+    *,
+    instrument_ids: list[str],
+    base_currency: str,
+    start_date: date,
+    end_date: date,
+) -> ResearchMarketDataContext:
+    """Public one-session canonical market-data boundary for risk consumers."""
+
+    return _lock_research_market_data_in_session(
+        session,
+        instrument_ids=instrument_ids,
+        base_currency=base_currency,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+def _lock_research_market_data(
+    *,
+    instrument_ids: list[str],
+    base_currency: str,
+    start_date: date,
+    end_date: date,
+) -> ResearchMarketDataContext:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        return _lock_research_market_data_in_session(
+            session,
+            instrument_ids=instrument_ids,
+            base_currency=base_currency,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+
+def _state_with_locked_market_data(
+    state: TaxonomyResearchState,
+    *,
+    instrument_ids: list[str],
+    start_date: date,
+    end_date: date,
+) -> TaxonomyResearchState:
+    context = _lock_research_market_data(
+        instrument_ids=instrument_ids,
+        base_currency=state.base_currency,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    return replace(state, market_data=context)
+
+
+def _require_research_market_data(
+    state: TaxonomyResearchState,
+    *,
+    instrument_id: str,
+    start_date: date,
+    end_date: date,
+) -> ResearchMarketDataContext:
+    context = state.market_data
+    if context is None:
+        raise ResearchMarketDataError(
+            "Allocation Research requires a pre-locked canonical market-data context.",
+            reason_codes=["missing_research_market_data_context"],
+            dependency={
+                "policy_version": RESEARCH_MARKET_DATA_POLICY_VERSION,
+                "instrument_id": instrument_id,
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+            },
+        )
+    if start_date < context.start_date or end_date > context.end_date:
+        raise ResearchMarketDataError(
+            f"{instrument_id} requested dates fall outside the locked research window.",
+            reason_codes=["research_window_not_locked"],
+            dependency={
+                "policy_version": context.policy_version,
+                "instrument_id": instrument_id,
+                "locked_start_date": context.start_date.isoformat(),
+                "locked_end_date": context.end_date.isoformat(),
+                "requested_start_date": start_date.isoformat(),
+                "requested_end_date": end_date.isoformat(),
+            },
+        )
+    if instrument_id not in context.instrument_ids:
+        raise ResearchMarketDataError(
+            f"{instrument_id} was not included in the locked research input set.",
+            reason_codes=["research_instrument_not_locked"],
+            dependency={
+                "policy_version": context.policy_version,
+                "instrument_id": instrument_id,
+                "locked_instrument_ids": sorted(context.instrument_ids),
+            },
+        )
+    return context
+
+
+def _quote_dependency_payload(
+    *,
+    context: ResearchMarketDataContext,
+    instrument_id: str,
+    window: CanonicalQuoteSeriesResolution | None,
+    endpoint: CanonicalQuoteResolution | None,
+    non_complete_observations: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "policy_version": context.policy_version,
+        "instrument_id": instrument_id,
+        "role": "total_return",
+        "window_calculation_dependency": (
+            window.calculation_dependency.model_dump(mode="json")
+            if window is not None
+            else None
+        ),
+        "endpoint_calculation_dependency": (
+            endpoint.calculation_dependency.model_dump(mode="json")
+            if endpoint is not None
+            else None
+        ),
+        "non_complete_observations": non_complete_observations,
+    }
+
+
+def _resolved_total_return_points(
+    state: TaxonomyResearchState,
+    *,
+    instrument_id: str,
+    start_date: date,
+    end_date: date,
+) -> tuple[
+    ResearchMarketDataContext,
+    CanonicalQuoteSeriesResolution,
+    CanonicalQuoteResolution,
+    list[CanonicalQuoteSeriesPoint],
+]:
+    context = _require_research_market_data(
+        state,
+        instrument_id=instrument_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    window = context.total_return_book.windows.get(instrument_id)
+    if window is None:
+        reason_code = (
+            "instrument_not_found"
+            if instrument_id in context.total_return_book.missing_instrument_ids
+            else "missing_quote_series"
+        )
+        dependency = _quote_dependency_payload(
+            context=context,
+            instrument_id=instrument_id,
+            window=None,
+            endpoint=None,
+            non_complete_observations=[],
+        )
+        raise ResearchMarketDataError(
+            f"{instrument_id} has no locked canonical total-return window.",
+            reason_codes=[reason_code],
+            dependency=dependency,
+        )
+    identity_reasons: list[str] = []
+    if window.role != "total_return":
+        identity_reasons.append("invalid_quote_role")
+    if window.quote_series_id is None:
+        identity_reasons.extend(window.reason_codes or ["missing_quote_series"])
+    elif window.quote_basis not in TOTAL_RETURN_QUOTE_BASES:
+        identity_reasons.append("invalid_total_return_quote_basis")
+    endpoint: CanonicalQuoteResolution | None = None
+    if not identity_reasons:
+        try:
+            endpoint = resolve_quote_series_observation_at(
+                window,
+                requested_as_of_date=end_date,
+            )
+        except ValueError as error:
+            identity_reasons.append(
+                str(getattr(error, "reason_code", "unavailable_total_return_endpoint"))
+            )
+    non_complete_observations = [
+        {
+            "observation_date": observation.observation_date.isoformat(),
+            "status": observation.status,
+            "observation_id": observation.observation_id,
+            "revision_id": observation.revision_id,
+            "revision_number": observation.revision_number,
+            "payload_hash": observation.payload_hash,
+        }
+        for observation in window.observations
+        if start_date <= observation.observation_date <= end_date
+        and observation.status != "complete"
+    ]
+    reason_by_status = {
+        "partial": "partial_series",
+        "rejected": "rejected_observation",
+        "withdrawn": "withdrawn_observation",
+    }
+    failure_reasons = list(identity_reasons)
+    if endpoint is not None and endpoint.resolution_status != "resolved":
+        failure_reasons.extend(endpoint.reason_codes or ["unavailable_total_return_endpoint"])
+    failure_reasons.extend(
+        reason_by_status.get(str(item["status"]), "unavailable_observation")
+        for item in non_complete_observations
+    )
+    dependency = _quote_dependency_payload(
+        context=context,
+        instrument_id=instrument_id,
+        window=window,
+        endpoint=endpoint,
+        non_complete_observations=non_complete_observations,
+    )
+    dependency_key = (
+        endpoint.calculation_dependency.fingerprint
+        if endpoint is not None
+        else window.calculation_dependency.fingerprint
+    )
+    context.adopted_quote_dependencies[dependency_key] = dependency
+    if failure_reasons or endpoint is None:
+        raise ResearchMarketDataError(
+            f"{instrument_id} canonical total-return dependency is unavailable.",
+            reason_codes=failure_reasons or ["unavailable_total_return_endpoint"],
+            dependency=dependency,
+        )
+    points = [
+        point
+        for point in window.points
+        if start_date <= point.observation_date <= end_date
+    ]
+    if not points:
+        raise ResearchMarketDataError(
+            f"{instrument_id} has no canonical total-return observations in the requested window.",
+            reason_codes=["insufficient_history"],
+            dependency=dependency,
+        )
+    return context, window, endpoint, points
+
+
+def _research_market_data_manifest(
+    state: TaxonomyResearchState,
+) -> dict[str, object] | None:
+    context = state.market_data
+    if context is None:
         return None
-    return float(value) * rate
+    return research_market_data_manifest(context)
+
+
+def research_market_data_manifest(
+    context: ResearchMarketDataContext,
+) -> dict[str, object]:
+    """Render adopted canonical quote/FX dependencies without re-resolving them."""
+
+    return {
+        "policy_version": context.policy_version,
+        "base_currency": context.base_currency,
+        "start_date": context.start_date.isoformat(),
+        "end_date": context.end_date.isoformat(),
+        "instrument_ids": sorted(context.instrument_ids),
+        "quote_dependencies": [
+            context.adopted_quote_dependencies[key]
+            for key in sorted(context.adopted_quote_dependencies)
+        ],
+        "fx_dependencies": [
+            context.adopted_fx_dependencies[key]
+            for key in sorted(context.adopted_fx_dependencies)
+        ],
+    }
+
+
+@dataclass(frozen=True)
+class _CanonicalSeriesState:
+    """Narrow adapter that keeps canonical series construction in one kernel."""
+
+    base_currency: str
+    market_data: ResearchMarketDataContext
 
 
 def _build_instrument_nav_series(
@@ -409,40 +735,90 @@ def _build_instrument_nav_series(
     end_date: date,
     warn_on_start_clip: bool = True,
 ) -> tuple[pd.Series, list[str]]:
-    detail = _instrument_detail(state, instrument_id)
-    if not isinstance(detail, dict):
-        raise ValueError(f"Instrument detail for {instrument_id} is unavailable.")
-
-    selected_points = _selected_price_points(detail, end_date=end_date)
+    context, window, endpoint, selected_points = _resolved_total_return_points(
+        state,
+        instrument_id=instrument_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
     warnings: list[str] = []
-    if not selected_points:
-        raise ValueError(f"{instrument_id} does not have usable market history for the requested period.")
-
-    rows: list[tuple[date, float]] = []
-    for point_date, point_value, point_currency in selected_points:
-        base_value = _convert_price_to_base(
-            state,
-            point_date=point_date,
-            value=point_value,
-            point_currency=point_currency,
+    rows: dict[date, Decimal] = {}
+    for point in selected_points:
+        fx_resolution = context.fx_book.rate_at(
+            window.currency,
+            state.base_currency,
+            point.observation_date,
         )
-        if base_value is None:
-            continue
-        rows.append((point_date, base_value))
+        fx_dependency = fx_resolution.calculation_dependency.model_dump(mode="json")
+        context.adopted_fx_dependencies[
+            fx_resolution.calculation_dependency.fingerprint
+        ] = fx_dependency
+        if fx_resolution.resolution_status != "resolved" or fx_resolution.rate is None:
+            raise ResearchMarketDataError(
+                f"{instrument_id} canonical FX dependency is unavailable on "
+                f"{point.observation_date.isoformat()}.",
+                reason_codes=list(fx_resolution.reason_codes or ["unavailable_fx_dependency"]),
+                dependency={
+                    "policy_version": context.policy_version,
+                    "instrument_id": instrument_id,
+                    "quote_observation_id": point.observation_id,
+                    "quote_revision_id": point.revision_id,
+                    "fx_calculation_dependency": fx_dependency,
+                },
+            )
+        rows[point.observation_date] = point.value * fx_resolution.rate
     if not rows:
-        raise ValueError(f"{instrument_id} does not have FX-complete market history for the requested period.")
-
-    series = pd.Series({point_date: base_value for point_date, base_value in rows}, dtype="float64").sort_index()
-    visible = series.loc[(series.index >= start_date) & (series.index <= end_date)]
-    if visible.empty:
-        visible = series.loc[series.index <= end_date]
-    if visible.empty:
-        raise ValueError(f"{instrument_id} does not have any observations on or before the selected end date.")
+        raise ResearchMarketDataError(
+            f"{instrument_id} has no FX-complete canonical total-return history.",
+            reason_codes=["insufficient_history"],
+            dependency={
+                "policy_version": context.policy_version,
+                "instrument_id": instrument_id,
+                "quote_calculation_dependency": endpoint.calculation_dependency.model_dump(
+                    mode="json"
+                ),
+            },
+        )
+    visible = pd.Series(
+        {point_date: float(value) for point_date, value in rows.items()},
+        dtype="float64",
+    ).sort_index()
     if warn_on_start_clip and visible.index[0] > start_date:
         warnings.append(
             f"{instrument_id} history starts on {visible.index[0].isoformat()}, so the research window is clipped for this member."
         )
+    if endpoint.reliability_status == "qualified":
+        warnings.append(
+            f"{instrument_id} total-return endpoint is qualified under the explicit canonical freshness policy."
+        )
     return visible, warnings
+
+
+def build_canonical_total_return_nav_series(
+    context: ResearchMarketDataContext,
+    *,
+    instrument_id: str,
+    base_currency: str,
+    start_date: date,
+    end_date: date,
+    warn_on_start_clip: bool = True,
+) -> tuple[pd.Series, list[str]]:
+    """Build FX-complete canonical total-return NAV through the research kernel."""
+
+    state = _CanonicalSeriesState(
+        base_currency=_normalized_currency(
+            base_currency,
+            context=f"Research series '{instrument_id}' base",
+        ),
+        market_data=context,
+    )
+    return _build_instrument_nav_series(  # type: ignore[arg-type]
+        state,
+        instrument_id=instrument_id,
+        start_date=start_date,
+        end_date=end_date,
+        warn_on_start_clip=warn_on_start_clip,
+    )
 
 
 def _build_cash_nav_series(
@@ -655,6 +1031,12 @@ def _infer_periods_per_year(dates: list[date]) -> float:
     if observation_span_days <= 0:
         return 1.0
     return float(len(timestamps)) / float(observation_span_days) * 365.25
+
+
+def infer_periods_per_year(dates: list[date]) -> float:
+    """Expose the covariance kernel's empirical annualization convention."""
+
+    return _infer_periods_per_year(dates)
 
 
 def _index_dates(index: pd.Index) -> list[date]:
@@ -1865,6 +2247,23 @@ def _periodic_nav_series(
     return pd.Series({target_date: value for target_date, (_point_date, value) in rows.items()}, dtype="float64").sort_index()
 
 
+def align_nav_series_to_calculation_frequency(
+    series: pd.Series,
+    *,
+    calculation_frequency: CalculationFrequency,
+    start_date: date,
+    end_date: date,
+) -> pd.Series:
+    """Use the research engine's period-end alignment and staleness policy."""
+
+    return _periodic_nav_series(
+        series,
+        calculation_frequency=calculation_frequency,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
 def _periodic_series_by_member(
     nav_series_by_member: dict[tuple[str, str], pd.Series],
     *,
@@ -2160,8 +2559,11 @@ def _scope_members(
         target_scope = str(assignment.get("target_scope") or "")
         target_entity_id = str(assignment.get("target_entity_id") or "")
         if target_scope == TARGET_MEMBER_INSTRUMENT:
-            detail = _instrument_detail(state, target_entity_id)
-            label = str((detail or {}).get("instrument_name") or target_entity_id)
+            label = (
+                state.market_data.instrument_name_by_id.get(target_entity_id, target_entity_id)
+                if state.market_data is not None
+                else target_entity_id
+            )
         elif target_scope == TARGET_MEMBER_CASH:
             label = state.account_name_by_id.get(target_entity_id, target_entity_id)
         else:
@@ -2203,13 +2605,18 @@ def _scope_source_frequencies(
             if not instrument_id or instrument_id in seen_instrument_ids:
                 continue
             seen_instrument_ids.add(instrument_id)
-            detail = _instrument_detail(state, instrument_id)
-            if not isinstance(detail, dict):
+            try:
+                _context, _window, _endpoint, points = _resolved_total_return_points(
+                    state,
+                    instrument_id=instrument_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            except ResearchMarketDataError:
                 continue
             dates = [
-                point_date
-                for point_date, _point_value, _point_currency in _selected_price_points(detail, end_date=end_date)
-                if start_date <= point_date <= end_date
+                point.observation_date
+                for point in points
             ]
             frequencies.append(_series_observation_frequency(pd.Series(1.0, index=pd.Index(dates, dtype="object"))))
     return frequencies
@@ -2543,12 +2950,12 @@ def _solve_current_scope(
 
     for member in members:
         member_key = f"{member.member_type}::{member.member_id}"
+        if member_key in zero_target_keys:
+            zero_nav = _build_cash_nav_series(start_date=start_day, end_date=as_of_date)
+            nav_series_by_member[(member.member_type, member.member_id)] = zero_nav
+            current_nav_series_by_member[(member.member_type, member.member_id)] = zero_nav
+            continue
         if member.member_type == TARGET_MEMBER_NODE:
-            if member_key in zero_target_keys:
-                zero_nav = _build_cash_nav_series(start_date=start_day, end_date=as_of_date)
-                nav_series_by_member[(member.member_type, member.member_id)] = zero_nav
-                current_nav_series_by_member[(member.member_type, member.member_id)] = zero_nav
-                continue
             child_result = _solve_current_scope(
                 state,
                 scope_node_id=member.member_id,
@@ -2584,20 +2991,12 @@ def _solve_current_scope(
             nav_series_by_member[(member.member_type, member.member_id)] = cash_nav
             current_nav_series_by_member[(member.member_type, member.member_id)] = cash_nav
         else:
-            try:
-                instrument_nav, instrument_warnings = _build_instrument_nav_series(
-                    state,
-                    instrument_id=member.member_id,
-                    start_date=start_day,
-                    end_date=as_of_date,
-                )
-            except ValueError as error:
-                if member_key not in zero_target_keys:
-                    raise
-                instrument_nav = _build_cash_nav_series(start_date=start_day, end_date=as_of_date)
-                instrument_warnings = [
-                    f"{member.label} has a 0% {target_dimension_used.replace('_', ' ')} target and was excluded from target history/covariance/return coverage: {error}"
-                ]
+            instrument_nav, instrument_warnings = _build_instrument_nav_series(
+                state,
+                instrument_id=member.member_id,
+                start_date=start_day,
+                end_date=as_of_date,
+            )
             nav_series_by_member[(member.member_type, member.member_id)] = instrument_nav
             current_nav_series_by_member[(member.member_type, member.member_id)] = instrument_nav
             warnings.extend(instrument_warnings)
@@ -3338,8 +3737,7 @@ def _build_taxonomy_state(
     as_of_date: date,
     frozen_taxonomy_node_ids: list[str] | None = None,
     top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
-    instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
-    direct_fx_instruments: dict[tuple[str, str], str] | None = None,
+    market_data: ResearchMarketDataContext | None = None,
 ) -> TaxonomyResearchState:
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
@@ -3451,7 +3849,10 @@ def _build_taxonomy_state(
         planning_taxonomy_id=planning_taxonomy_id,
         taxonomy_name=str(taxonomy.get("name") or planning_taxonomy_id),
         root_default_target_dimension=str(taxonomy.get("root_default_target_dimension") or TARGET_DIMENSION_WEIGHT),
-        base_currency=_normalized_currency(portfolio.get("base_currency")),
+        base_currency=_normalized_currency(
+            portfolio.get("base_currency"),
+            context=f"Portfolio '{portfolio_id}' base",
+        ),
         as_of_date=as_of_date,
         node_by_id=node_by_id,
         children_by_parent=children_by_parent,
@@ -3462,16 +3863,11 @@ def _build_taxonomy_state(
         target_sets_by_scope_type=target_sets_by_scope_type,
         target_lines_by_set_id=target_lines_by_set_id,
         account_name_by_id=account_name_by_id,
-        instrument_detail_cache=instrument_detail_cache if instrument_detail_cache is not None else {},
-        direct_fx_instruments=(
-            direct_fx_instruments
-            if direct_fx_instruments is not None
-            else _build_direct_fx_instrument_map()
-        ),
         frozen_taxonomy_node_ids=frozenset(
             str(item).strip() for item in (frozen_taxonomy_node_ids or []) if str(item).strip()
         ),
         top_sleeve_weight_bounds=_normalize_top_sleeve_weight_bounds(top_sleeve_weight_bounds),
+        market_data=market_data,
     )
 
 
@@ -3535,6 +3931,15 @@ def build_research_calculation_frequency_profile(
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
         raise ValueError("Selected research scope was not found in the planning taxonomy.")
     start_day = research_window_start_date(as_of_date, lookback_days)
+    state = _state_with_locked_market_data(
+        state,
+        instrument_ids=_research_instrument_ids(
+            state,
+            scope_node_id=comparator_taxonomy_node_id,
+        ),
+        start_date=start_day,
+        end_date=as_of_date,
+    )
     source_frequencies = _scope_source_frequencies(
         state,
         scope_node_id=comparator_taxonomy_node_id,
@@ -3637,6 +4042,8 @@ def _estimate_forward_risk_contribution_by_key(
                 start_date=start_day,
                 end_date=as_of_date,
             )
+        except ResearchMarketDataError:
+            raise
         except ValueError as error:
             warnings.append(f"{row.get('label') or instrument_id} forward RC unavailable: {error}")
             continue
@@ -3830,8 +4237,37 @@ def _compound_return(values: list[float]) -> float | None:
 
 
 def _build_backtest_metrics(points: list[dict[str, object]], returns: dict[str, float]) -> dict[str, object]:
+    dates: list[date] = []
+    for item in points:
+        parsed_date = _parse_iso_date(item.get("date"))
+        if parsed_date is not None:
+            dates.append(parsed_date)
+    raw_history_reliability = build_performance_history_reliability(
+        {
+            "start_date": dates[0] if dates else None,
+            "end_date": dates[-1] if dates else None,
+            "snapshot_count": len(dates),
+            "return_observation_count": len(returns),
+            "risk_return_observation_count": len(returns),
+        }
+    )
+    history_reliability = {
+        **raw_history_reliability,
+        "start_date": (
+            raw_history_reliability["start_date"].isoformat()
+            if isinstance(raw_history_reliability.get("start_date"), date)
+            else None
+        ),
+        "end_date": (
+            raw_history_reliability["end_date"].isoformat()
+            if isinstance(raw_history_reliability.get("end_date"), date)
+            else None
+        ),
+    }
     if len(points) < 2 or not returns:
         return {
+            "method_version": RESEARCH_BACKTEST_METRICS_METHOD_VERSION,
+            "history_reliability": history_reliability,
             "start_date": points[0]["date"] if points else None,
             "end_date": points[-1]["date"] if points else None,
             "period_return": None,
@@ -3850,11 +4286,6 @@ def _build_backtest_metrics(points: list[dict[str, object]], returns: dict[str, 
         }
     start_value = _safe_float(points[0].get("value")) or 1.0
     end_value = _safe_float(points[-1].get("value")) or start_value
-    dates: list[date] = []
-    for item in points:
-        parsed_date = _parse_iso_date(item.get("date"))
-        if parsed_date is not None:
-            dates.append(parsed_date)
     return_dates = [_parse_iso_date(date_key) for date_key in returns.keys()]
     periods_per_year = _infer_periods_per_year([item for item in return_dates if item is not None])
     period_count = max(len(returns), 1)
@@ -3868,18 +4299,30 @@ def _build_backtest_metrics(points: list[dict[str, object]], returns: dict[str, 
         and parsed_date.year == end_date.year
     ]
     ytd_return = _compound_return(ytd_return_values)
-    annualized_return = (
+    geometric_annualized_return = (
         (end_value / start_value) ** (periods_per_year / period_count) - 1.0
         if period_return is not None and end_value > 0 and start_value > 0
+        else None
+    )
+    annualized_return = (
+        geometric_annualized_return
+        if history_reliability["annualized_return_eligible"]
         else None
     )
     return_values = np.asarray(list(returns.values()), dtype="float64")
     annualized_volatility = (
         float(np.nanstd(return_values, ddof=1) * sqrt(periods_per_year)) if len(return_values) > 1 else None
     )
+    arithmetic_annualized_return = (
+        float(np.mean(return_values) * periods_per_year)
+        if len(return_values) > 0 and np.all(np.isfinite(return_values))
+        else None
+    )
     sharpe_ratio = (
-        float(annualized_return / annualized_volatility)
-        if annualized_return is not None and annualized_volatility is not None and annualized_volatility > 1e-12
+        float(arithmetic_annualized_return / annualized_volatility)
+        if arithmetic_annualized_return is not None
+        and annualized_volatility is not None
+        and annualized_volatility > 1e-12
         else None
     )
 
@@ -3917,6 +4360,8 @@ def _build_backtest_metrics(points: list[dict[str, object]], returns: dict[str, 
         else None
     )
     return {
+        "method_version": RESEARCH_BACKTEST_METRICS_METHOD_VERSION,
+        "history_reliability": history_reliability,
         "start_date": dates[0].isoformat() if dates else None,
         "end_date": dates[-1].isoformat() if dates else None,
         "period_return": period_return,
@@ -3945,9 +4390,8 @@ def _is_rebalance_data_gap_error(error: ValueError) -> bool:
 
 
 def _instrument_label(state: TaxonomyResearchState, instrument_id: str) -> str:
-    detail = _instrument_detail(state, instrument_id)
-    if isinstance(detail, dict):
-        return str(detail.get("instrument_name") or instrument_id)
+    if state.market_data is not None:
+        return state.market_data.instrument_name_by_id.get(instrument_id, instrument_id)
     return instrument_id
 
 
@@ -4099,6 +4543,8 @@ def _build_backtest_benchmark_comparison_from_state(
             end_date=state.as_of_date,
             warn_on_start_clip=False,
         )
+    except ResearchMarketDataError:
+        raise
     except ValueError as error:
         benchmark_warnings.append(str(error))
         benchmark_nav = pd.Series(dtype="float64")
@@ -4166,6 +4612,12 @@ def build_research_backtest_benchmark_comparison(
         planning_taxonomy_id=planning_taxonomy_id,
         as_of_date=as_of_date,
     )
+    state = _state_with_locked_market_data(
+        state,
+        instrument_ids=[benchmark_instrument_id],
+        start_date=date(1900, 1, 1),
+        end_date=as_of_date,
+    )
     return _build_backtest_benchmark_comparison_from_state(
         state,
         benchmark_instrument_id=benchmark_instrument_id,
@@ -4212,9 +4664,18 @@ def build_current_target_backtest(
         frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
         top_sleeve_weight_bounds=top_sleeve_weight_bounds,
     )
-    solution = current_solution or solve_current_target_weights(
-        portfolio_id,
-        planning_taxonomy_id=planning_taxonomy_id,
+    state = _state_with_locked_market_data(
+        state,
+        instrument_ids=_research_instrument_ids(
+            state,
+            scope_node_id=comparator_taxonomy_node_id,
+            additional_instrument_ids=[benchmark_instrument_id or ""],
+        ),
+        start_date=date(1900, 1, 1),
+        end_date=as_of_date,
+    )
+    solution = current_solution or _solve_current_target_weights_from_state(
+        state,
         comparator_taxonomy_node_id=comparator_taxonomy_node_id,
         as_of_date=as_of_date,
         lookback_days=lookback_days,
@@ -4225,8 +4686,6 @@ def build_current_target_backtest(
         target_volatility=target_volatility,
         max_gross_exposure=max_gross_exposure,
         missing_return_policy=missing_return_policy,
-        frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
-        top_sleeve_weight_bounds=top_sleeve_weight_bounds,
         risk_model_config=risk_model_config,
     )
     active_leaf_ids = _active_backtest_leaf_ids(solution)
@@ -4251,7 +4710,12 @@ def build_current_target_backtest(
                 )
             ),
         }
-        return {"backtest": empty_backtest, "backtest_benchmark": None, "backtest_relative_metrics": None}
+        return {
+            "backtest": empty_backtest,
+            "backtest_benchmark": None,
+            "backtest_relative_metrics": None,
+            "market_data_dependencies": _research_market_data_manifest(state),
+        }
 
     nav_by_instrument: dict[str, pd.Series] = {}
     for instrument_id in active_leaf_ids:
@@ -4263,6 +4727,8 @@ def build_current_target_backtest(
                 end_date=as_of_date,
                 warn_on_start_clip=False,
             )
+        except ResearchMarketDataError:
+            raise
         except ValueError as error:
             warnings.append(f"{instrument_id} excluded from backtest: {error}")
             continue
@@ -4292,7 +4758,12 @@ def build_current_target_backtest(
             "top_sleeve_contribution_points": [],
             "warnings": list(dict.fromkeys(warnings or ["Backtest has no usable instrument history."])),
         }
-        return {"backtest": empty_backtest, "backtest_benchmark": None, "backtest_relative_metrics": None}
+        return {
+            "backtest": empty_backtest,
+            "backtest_benchmark": None,
+            "backtest_relative_metrics": None,
+            "market_data_dependencies": _research_market_data_manifest(state),
+        }
 
     common_start = max(portfolio_first_dates)
     earliest_start_date = (
@@ -4318,7 +4789,12 @@ def build_current_target_backtest(
                 )
             ),
         }
-        return {"backtest": empty_backtest, "backtest_benchmark": None, "backtest_relative_metrics": None}
+        return {
+            "backtest": empty_backtest,
+            "backtest_benchmark": None,
+            "backtest_relative_metrics": None,
+            "market_data_dependencies": _research_market_data_manifest(state),
+        }
     returns_by_instrument = {instrument_id: _nav_returns(nav) for instrument_id, nav in sampled_nav_by_instrument.items()}
     rebal_dates = _backtest_rebalance_dates(
         start_date=earliest_start_date,
@@ -4367,9 +4843,12 @@ def build_current_target_backtest(
     for index, rebalance_date in enumerate(rebal_dates):
         period_end = rebal_dates[index + 1] if index + 1 < len(rebal_dates) else as_of_date
         try:
-            period_solution = solve_current_target_weights(
-                portfolio_id,
-                planning_taxonomy_id=planning_taxonomy_id,
+            period_solution = _solve_current_target_weights_from_state(
+                replace(
+                    state,
+                    as_of_date=rebalance_date,
+                    current_valuation_cache={},
+                ),
                 comparator_taxonomy_node_id=comparator_taxonomy_node_id,
                 as_of_date=rebalance_date,
                 lookback_days=lookback_days,
@@ -4380,13 +4859,11 @@ def build_current_target_backtest(
                 target_volatility=target_volatility,
                 max_gross_exposure=max_gross_exposure,
                 missing_return_policy=missing_return_policy,
-                frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
-                top_sleeve_weight_bounds=top_sleeve_weight_bounds,
                 risk_model_config=risk_model_config,
                 include_actuals=False,
-                _instrument_detail_cache=state.instrument_detail_cache,
-                _direct_fx_instruments=state.direct_fx_instruments,
             )
+        except ResearchMarketDataError:
+            raise
         except ValueError as error:
             if not _is_rebalance_data_gap_error(error):
                 raise ValueError(f"{rebalance_date.isoformat()} rebalance failed: {error}") from error
@@ -4518,13 +4995,13 @@ def build_current_target_backtest(
         "backtest": backtest,
         "backtest_benchmark": comparison_payload.get("backtest_benchmark"),
         "backtest_relative_metrics": comparison_payload.get("backtest_relative_metrics"),
+        "market_data_dependencies": _research_market_data_manifest(state),
     }
 
 
-def solve_current_target_weights(
-    portfolio_id: str,
+def _solve_current_target_weights_from_state(
+    state: TaxonomyResearchState,
     *,
-    planning_taxonomy_id: str,
     comparator_taxonomy_node_id: str | None,
     as_of_date: date,
     lookback_days: int,
@@ -4535,22 +5012,9 @@ def solve_current_target_weights(
     target_volatility: float | None,
     max_gross_exposure: float | None,
     missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
-    frozen_taxonomy_node_ids: list[str] | None = None,
-    top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
     risk_model_config: dict[str, object] | None = None,
     include_actuals: bool = True,
-    _instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
-    _direct_fx_instruments: dict[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
-    state = _build_taxonomy_state(
-        portfolio_id,
-        planning_taxonomy_id=planning_taxonomy_id,
-        as_of_date=as_of_date,
-        frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
-        top_sleeve_weight_bounds=top_sleeve_weight_bounds,
-        instrument_detail_cache=_instrument_detail_cache,
-        direct_fx_instruments=_direct_fx_instruments,
-    )
     if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
         raise ValueError("Selected research scope was not found in the planning taxonomy.")
     start_day = research_window_start_date(as_of_date, lookback_days)
@@ -4611,8 +5075,8 @@ def solve_current_target_weights(
         solved_result_groups = []
         target_weight_gaps = []
     return {
-        "portfolio_id": portfolio_id,
-        "planning_taxonomy_id": planning_taxonomy_id,
+        "portfolio_id": state.portfolio_id,
+        "planning_taxonomy_id": state.planning_taxonomy_id,
         "planning_taxonomy_name": state.taxonomy_name,
         "scope": {
             "taxonomy_node_id": comparator_taxonomy_node_id,
@@ -4633,4 +5097,60 @@ def solve_current_target_weights(
         "warnings": warnings,
         "return_observations": float(len(scope_result.return_series)),
         "calculation_frequency": frequency_profile,
+        "market_data_dependencies": _research_market_data_manifest(state),
     }
+
+
+def solve_current_target_weights(
+    portfolio_id: str,
+    *,
+    planning_taxonomy_id: str,
+    comparator_taxonomy_node_id: str | None,
+    as_of_date: date,
+    lookback_days: int,
+    calculation_frequency: str = "auto",
+    target_dimension: str,
+    capital_mode: str,
+    gross_exposure: float | None,
+    target_volatility: float | None,
+    max_gross_exposure: float | None,
+    missing_return_policy: str = RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
+    frozen_taxonomy_node_ids: list[str] | None = None,
+    top_sleeve_weight_bounds: list[dict[str, object]] | None = None,
+    risk_model_config: dict[str, object] | None = None,
+    include_actuals: bool = True,
+) -> dict[str, object]:
+    state = _build_taxonomy_state(
+        portfolio_id,
+        planning_taxonomy_id=planning_taxonomy_id,
+        as_of_date=as_of_date,
+        frozen_taxonomy_node_ids=frozen_taxonomy_node_ids,
+        top_sleeve_weight_bounds=top_sleeve_weight_bounds,
+    )
+    if comparator_taxonomy_node_id and comparator_taxonomy_node_id not in state.node_by_id:
+        raise ValueError("Selected research scope was not found in the planning taxonomy.")
+    start_day = research_window_start_date(as_of_date, lookback_days)
+    state = _state_with_locked_market_data(
+        state,
+        instrument_ids=_research_instrument_ids(
+            state,
+            scope_node_id=comparator_taxonomy_node_id,
+        ),
+        start_date=start_day,
+        end_date=as_of_date,
+    )
+    return _solve_current_target_weights_from_state(
+        state,
+        comparator_taxonomy_node_id=comparator_taxonomy_node_id,
+        as_of_date=as_of_date,
+        lookback_days=lookback_days,
+        calculation_frequency=calculation_frequency,
+        target_dimension=target_dimension,
+        capital_mode=capital_mode,
+        gross_exposure=gross_exposure,
+        target_volatility=target_volatility,
+        max_gross_exposure=max_gross_exposure,
+        missing_return_policy=missing_return_policy,
+        risk_model_config=risk_model_config,
+        include_actuals=include_actuals,
+    )

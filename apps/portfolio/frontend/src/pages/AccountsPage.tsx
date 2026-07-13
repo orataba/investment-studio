@@ -17,7 +17,14 @@ import {
   type PortfolioLedgerPostingRecord,
   type PortfolioTransactionRecord,
 } from '../lib/api'
-import { formatCurrency, formatLabel, formatNumber, formatSignedCurrency, formatUnitPrice } from '../lib/format'
+import {
+  formatCurrency,
+  formatLabel,
+  formatNumber,
+  formatSignedCurrency,
+  formatUnitPrice,
+  signedValueClass,
+} from '../lib/format'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import {
   beginRequest,
@@ -388,6 +395,11 @@ export default function AccountsPage() {
 
     if (!form.account_name.trim()) {
       setFormError('Enter an account name.')
+      return
+    }
+
+    if (!SUPPORTED_PORTFOLIO_CURRENCIES.includes(form.currency as (typeof SUPPORTED_PORTFOLIO_CURRENCIES)[number])) {
+      setFormError('Select an account currency.')
       return
     }
 
@@ -884,6 +896,7 @@ export default function AccountsPage() {
                       }))
                     }
                   >
+                    <option value="" disabled>Select currency</option>
                     {SUPPORTED_PORTFOLIO_CURRENCIES.map((currencyCode) => (
                       <option key={currencyCode} value={currencyCode}>
                         {currencyCode}
@@ -1141,7 +1154,7 @@ function buildInitialAccountForm(accounts: PortfolioAccountRecord[] = []): Accou
   return {
     account_name: '',
     account_type: 'deposit_account',
-    currency: defaultCashAccount?.currency ?? 'USD',
+    currency: defaultCashAccount?.currency ?? '',
     institution: '',
     default_settlement_cash_account_id: defaultCashAccount?.account_id ?? '',
     cost_basis_method: 'fifo',
@@ -1195,7 +1208,7 @@ function AccountTransactionRow({
       <td data-label="Gross">{formatCurrency(transaction.gross_amount, transaction.currency)}</td>
       <td
         data-label="Net Cash"
-        className={transaction.net_cash_effect != null && transaction.net_cash_effect < 0 ? 'negative-cell' : ''}
+        className={signedValueClass(transaction.net_cash_effect)}
       >
         {formatSignedCurrency(transaction.net_cash_effect, transaction.currency)}
       </td>

@@ -35,17 +35,27 @@ Then restore with the project wrapper. The explicit confirmation protects an
 existing local database from accidental replacement:
 
 ```bash
-CONFIRM_RESTORE=portfolio_ops infra/postgres/restore_project_dump.sh
+PORTFOLIO_OPS_DB_HOST=127.0.0.1 \
+PORTFOLIO_OPS_DB_PORT=5432 \
+PORTFOLIO_OPS_DB_NAME=portfolio_ops \
+PORTFOLIO_OPS_DB_USER=portfolio_ops \
+CONFIRM_RESTORE=portfolio_ops \
+PORTFOLIO_OPS_RESTORE_AS_OF_DATE=YYYY-MM-DD \
+  infra/postgres/restore_project_dump.sh
 ```
 
 The wrapper requires and verifies the checksum, validates the archive and exact
 database target, stops any installed local app services, disconnects remaining
 clients, and writes a private pre-restore backup of the current three schemas.
 It then restores only `instrument_registry`, `portfolio`, and `watchlist` and
-applies all current migrations. If restore, validation, or migration fails, it
-automatically drops the partial state, restores the safety backup, and restarts
-the services. Services are restarted only after either the new database or the
-rollback is complete.
+applies all current migrations, rebuilds Portfolio and Watchlist for the explicit
+as-of date, and requires a zero-failure/zero-warning audit. If restore,
+validation, migration, rebuild, or audit fails, it automatically drops the
+partial state and restores the safety backup. A successful rollback restarts the
+previously active services; a rollback failure leaves them stopped and prints
+the retained recovery-artifact path. The wrapper accepts explicit
+`PORTFOLIO_OPS_DB_*` target fields rather than a database URL and independently
+verifies the connected database identity before destructive work.
 
 Safety backups are retained under
 `${XDG_STATE_HOME:-~/.local/state}/portfolio-operations-workbench/postgres-backups/`.

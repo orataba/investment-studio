@@ -16,7 +16,8 @@ PORTFOLIO_WEB_PORT="${PORTFOLIO_WEB_PORT:-3102}"
 START_SERVICES="${START_SERVICES:-true}"
 RUN_MIGRATIONS="${RUN_MIGRATIONS:-true}"
 ENV_ROOT="${ENV_ROOT:-}"
-MANAGED_UNITS=(
+RELEASE_AS_OF_DATE="${PORTFOLIO_OPS_RELEASE_AS_OF_DATE:-}"
+APP_UNITS=(
   "$UNIT_PREFIX-platform-api.service"
   "$UNIT_PREFIX-watchlist-api.service"
   "$UNIT_PREFIX-portfolio-api.service"
@@ -24,6 +25,11 @@ MANAGED_UNITS=(
   "$UNIT_PREFIX-watchlist-web.service"
   "$UNIT_PREFIX-portfolio-web.service"
 )
+WRITER_UNITS=(
+  "$UNIT_PREFIX-market-data-refresh.timer"
+  "$UNIT_PREFIX-market-data-refresh.service"
+)
+MANAGED_UNITS=("${APP_UNITS[@]}" "${WRITER_UNITS[@]}")
 
 DEFAULT_PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
 if [[ ! -x "$DEFAULT_PYTHON_BIN" ]]; then
@@ -55,6 +61,24 @@ fi
 if [[ ! -x "$PROJECT_ROOT/infra/scripts/migrate_all.sh" ]]; then
   echo "Cannot find executable infra/scripts/migrate_all.sh under PROJECT_ROOT: $PROJECT_ROOT" >&2
   exit 1
+fi
+if [[ ! -x "$PROJECT_ROOT/infra/scripts/release_database.sh" ]]; then
+  echo "Cannot find safe release orchestrator under PROJECT_ROOT: $PROJECT_ROOT" >&2
+  exit 1
+fi
+if [[ "$RUN_MIGRATIONS" == "true" ]]; then
+  if [[ -z "$RELEASE_AS_OF_DATE" ]]; then
+    echo "Set PORTFOLIO_OPS_RELEASE_AS_OF_DATE to an explicit YYYY-MM-DD." >&2
+    exit 64
+  fi
+  if [[ -z "${PORTFOLIO_OPS_RELEASE_DATABASE_URL:-}" ]]; then
+    echo "Set PORTFOLIO_OPS_RELEASE_DATABASE_URL explicitly for a database release." >&2
+    exit 64
+  fi
+  if [[ -z "${CONFIRM_RELEASE:-}" ]]; then
+    echo "Set CONFIRM_RELEASE to database@host:port after confirming the release target." >&2
+    exit 64
+  fi
 fi
 
 write_api_service() {
@@ -143,20 +167,17 @@ write_web_service "portfolio" "apps/portfolio/frontend" "$PORTFOLIO_WEB_PORT" "$
 
 SERVICE_STATE_FILE="$(mktemp "${TMPDIR:-/tmp}/portfolio-ops-systemd-install-state.XXXXXX")"
 services_stopped=false
-restore_previous_services_on_failure() {
+leave_services_stopped_on_failure() {
   local exit_code=$?
   trap - EXIT
   if [[ $exit_code -ne 0 && "$services_stopped" == "true" ]]; then
-    echo "Install failed; restoring the previously active systemd services." >&2
-    while IFS= read -r unit || [[ -n "$unit" ]]; do
-      [[ -n "$unit" ]] || continue
-      systemctl --user start "$unit" || true
-    done < "$SERVICE_STATE_FILE"
+    systemctl --user stop "${MANAGED_UNITS[@]}" >/dev/null 2>&1 || true
+    echo "Install failed; managed services and refresh writers remain stopped for operator review." >&2
   fi
   rm -f "$SERVICE_STATE_FILE"
   exit "$exit_code"
 }
-trap restore_previous_services_on_failure EXIT
+trap leave_services_stopped_on_failure EXIT
 
 if [[ "$RUN_MIGRATIONS" == "true" ]]; then
   : > "$SERVICE_STATE_FILE"
@@ -171,9 +192,13 @@ if [[ "$RUN_MIGRATIONS" == "true" ]]; then
     [[ -n "$unit" ]] || continue
     systemctl --user stop "$unit"
   done < "$SERVICE_STATE_FILE"
-  echo "Managed services stopped; applying release migrations."
+  echo "Managed services and refresh writers stopped; applying the safe database release."
+  CONFIRM_RELEASE="$CONFIRM_RELEASE" \
+  PORTFOLIO_OPS_RELEASE_DATABASE_URL="$PORTFOLIO_OPS_RELEASE_DATABASE_URL" \
+  PORTFOLIO_OPS_RELEASE_AS_OF_DATE="$RELEASE_AS_OF_DATE" \
+  PORTFOLIO_OPS_RELEASE_SERVICE_MANAGER=none \
   PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="$ENV_ROOT" \
-    "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
+    "$PROJECT_ROOT/infra/scripts/release_database.sh"
 fi
 
 systemctl --user daemon-reload
@@ -186,7 +211,15 @@ systemctl --user enable \
   "$UNIT_PREFIX-portfolio-web.service"
 
 if [[ "$START_SERVICES" == "true" ]]; then
-  systemctl --user restart "${MANAGED_UNITS[@]}"
+  systemctl --user restart "${APP_UNITS[@]}"
+fi
+if [[ "$RUN_MIGRATIONS" == "true" ]] \
+  && grep -Fxq "$UNIT_PREFIX-market-data-refresh.timer" "$SERVICE_STATE_FILE"; then
+  systemctl --user start "$UNIT_PREFIX-market-data-refresh.timer"
+fi
+if [[ "$RUN_MIGRATIONS" == "true" ]] \
+  && grep -Fxq "$UNIT_PREFIX-market-data-refresh.service" "$SERVICE_STATE_FILE"; then
+  echo "The in-flight market-data refresh was fenced and was not replayed automatically."
 fi
 
 services_stopped=false

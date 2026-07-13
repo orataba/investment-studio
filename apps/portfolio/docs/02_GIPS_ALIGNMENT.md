@@ -1,5 +1,9 @@
 # GIPS-Informed Performance Methodology
 
+> Scope note: 本文中的 `Research` 仅表示 `Allocation Research / Allocation Lab`。
+> 普通组合仍使用 taxonomy 做分类、归因和跟踪；planning taxonomy 扩展、TargetSet、
+> 风险预算和 policy drift 规则不适用于显式归类的 ETF 轮动策略组合。仅持有 ETF 的普通组合仍使用 taxonomy。
+
 关联文档：
 
 - [`01_CALCULATION_SPEC.md`](./01_CALCULATION_SPEC.md)
@@ -35,6 +39,7 @@ GIPS 强调 TWR 要中性化 client-driven external cash flows，避免把出入
 
 - `deposit`、`withdrawal` 和真实组合边界分配为 external cash flow；
 - `buy / sell / dividend / coupon / fee / tax / internal transfer` 不作为组合级 external cash flow；
+- `deposit` / `withdrawal` 以 cash value date（当前即 `settlement_date`）进入 NAV 和绩效；较早的 `trade_date` 只保留为指令日期，不能提前形成 pending NAV 或 TWR flow；缺少 value date 时 fail closed，不允许回退到 trade date。证券交易仍按 trade-date position 与 pending settlement 处理；
 - 日频 TWR 公式固定为：
 
 ```text
@@ -51,7 +56,21 @@ GIPS 要求至少月度计算 TWR；如果不计算日收益，则大额外部�
 - 每个 daily snapshot 显式保留 `beginning_nav` 与 `ending_nav`，用户选择区间时用首日 `beginning_nav` 作为 initial value、末日 `ending_nav` 作为 final value；
 - 外部现金流发生日天然拥有当日估值；
 - 当前系统不另设 large cash flow threshold；
-- 若未来支持非日频估值，必须先引入大额现金流政策和子期间 return linking，不能直接用 Modified Dietz 静默替代 true TWR。
+- 现金流事实当前只有日期、没有可信的日内时间戳；计算政策先把 external flow 的业务日期固定为
+  cash value / `settlement_date`，再把 `deposit` 视为该估值日期初流入、把 `withdrawal` 视为该估值日期末流出。
+  因此这是带明确时点假设的日估值 TWR，不声称能还原任意日内
+  现金流顺序，也不使用 `true TWR` 作为合规性或精度标签；
+- 因为本系统不使用 Modified Dietz 等区间估算方法，所以任何外部现金流边界都必须有
+  fresh complete valuation。无论是 resolver 明示 stale，还是周末、节假日、周频/月频 NAV 的正常 calendar
+  carry，只要当日发生 deposit / withdrawal，都不能把 carried NAV 代入公式；该日及所有跨越断点的 linked
+  TWR、annualized TWR、drawdown 和 contribution 必须 unavailable；
+- 没有外部现金流时，calendar carry 与 resolver-explicit stale 必须分开披露。前者使用
+  `carried_forward_valuation_without_external_flow`，后者使用 `stale_valuation_without_external_flow`；
+  原始观察日期早于自然日不是 stale 的充分证据；
+- 断点后的第一笔 fresh complete valuation 只用于重新建立 return anchor。只有后续有效子期间才能恢复 TWR；
+  新查询窗口从这个 re-anchor 开始时可以正常计算，跨越断点的历史窗口仍保持 unavailable；
+- 若未来支持非日频估值，必须先引入大额现金流政策和子期间 return linking；若未来支持可信的
+  日内现金流时点，则必须引入日内估值或相匹配的版本化时点政策。两者都不能静默改变既有 TWR 口径。
 
 ### 2.4 方法必须一致且可解释
 
@@ -63,7 +82,7 @@ GIPS 强调一致应用计算方法、建立政策，并披露方法边界。
 - materialized snapshot 可重建，不能成为不可解释的手填事实；
 - materialized snapshot / contribution slice schema 变化通过 `calculation_version` 失效重建，不在收益读路径保留旧 schema 兼容层；
 - materialized snapshot 刷新必须可重复、可追踪，并在更新并发到达时保留最新 stale 请求；
-- `coverage_state`、`stale_price_flag`、`stale_fx_flag` 必须随关键结果返回；
+- fair-value `nav_coverage_state`、book-P&L `book_pnl_coverage_state`、TWR reliability、`stale_price_flag` 与 `stale_fx_flag` 必须分别随关键结果返回；三者不能互相代理或降级；
 - 区间 daily series、summary、drawdown 必须使用同一组 window-rebased `daily_twr`。
 
 ### 2.5 成本法不得污染绩效收益率
@@ -95,9 +114,13 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 
 - portfolio realized volatility、rolling volatility 默认使用 `daily_twr` simple returns 做标准差并年化；Sharpe、Sortino 作为 additional risk measures，使用同一区间、同一 periodicity 的 arithmetic mean excess return 年化后除以年化 volatility / downside volatility（MVP `r_f = 0`）；
 - 若输出正式 GIPS Composite / Pooled Fund Report 风格披露，ex-post standard deviation 必须使用 monthly returns，组合与 benchmark 必须使用同一 periodicity 与同一计算方法；
-- 非市场观察日的 stale-price carry-forward 0 return 不进入风险样本；
+- 纯 calendar carry 日因没有新市场观察而不进入风险样本；resolver 明示 stale 的观察也必须排除。混合频率
+  组合中，若一个 sleeve 有真实新观察而另一个 sleeve 仅按既定 cadence carry，calendar carry 不自动否定该日
+  的 realized risk observation；
 - `NAV_t` 只用于资产规模和现金流调节，不作为组合级波动率输入。
-- 手动 benchmark 对比只有在币种一致、起点锚点存在且 benchmark 覆盖组合 eligible return dates 时才输出；当前未接入后端 benchmark FX conversion / coverage reporting，不能用 stale-filled 或 raw-currency 序列替代。
+- 手动 benchmark 对比由后端以物化组合 TWR 和 canonical `total_return` role 统一计算；只有双方 reliability 为 `reliable`、币种一致、起点锚点合格且 benchmark 精确覆盖全部组合 eligible return dates 时才输出，并披露 coverage 与 quote/snapshot lineage。当前未接入 benchmark FX conversion，不能用 stale-filled、price/chart basis 或 raw-currency 序列替代。
+- 少于一年的 observed period 不作为 annualized-return headline 展示；后端 `PerformanceSummary.history_reliability` 统一计算 365 elapsed-day eligibility、跨度、样本事实和 reason codes，并在不合格时将 annualized TWR、IRR / MWRR 与依赖年化收益的 Calmar 直接置为 `null`，前端不再自行计算日期跨度或阈值。Benchmark comparison 必须按所选区间自己的 boundary 与 aligned end date 独立判断，不能沿用组合全历史资格。该规则服务于当前 workbench 展示纪律，不替代正式 GIPS report 的完整披露与验证要求。
+- Allocation Research 的 Policy Replay 属于假设模拟，不是 GIPS-compliant 实盘业绩；但仍采用同一反虚假精确度纪律。`research-backtest-metrics.v2.history-gated-arithmetic-sharpe` 在不足 365 elapsed days 时只发布 period return，不发布 geometric annualized return 或依赖它的 Calmar；annualized volatility 与 Sharpe 属于频率明确的风险统计，Sharpe 分子使用同频收益算术均值年化，不借用几何年化收益。
 
 ## 3. 当前实现映射
 
@@ -115,7 +138,7 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 | 刷新治理 | `PortfolioCalculationStateModel.refresh_request_id` 对 stale 请求去重，刷新串行 claim；计算期间若收到新请求会再跑一轮 |
 | MWR | `_solve_xirr()` 输出 `irr` / `mwror`，作为补充指标 |
 | Performance group TWR | `_daily_group_return_from_components()` 在 instrument / taxonomy / calculation detail 聚合间复用同一 flow-adjusted denominator |
-| Manual benchmark guard | Performance 页面要求同币种、起点锚点和 eligible return date 覆盖完整后才展示轻量 benchmark metrics |
+| Manual benchmark guard | Performance 后端要求 canonical total-return basis、可靠 TWR、同币种、合格锚点和 eligible return date 完整覆盖；失败时整组相对指标为 null |
 
 ## 4. 暂不覆盖的 GIPS 能力
 

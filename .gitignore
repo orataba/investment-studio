@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv/
+apps/*/backend/uv.lock
 .env
 .env.*
 !.env.example

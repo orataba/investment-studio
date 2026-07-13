@@ -20,17 +20,28 @@ brew services start postgresql@17
 在项目根目录运行：
 
 ```bash
-infra/launchd/install_local_services.sh
+CONFIRM_RELEASE='portfolio_ops@127.0.0.1:5432' \
+PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+PORTFOLIO_OPS_RELEASE_AS_OF_DATE=YYYY-MM-DD \
+  infra/launchd/install_local_services.sh
 ```
 
-安装器会依次校验并初始化本地数据库，停止并等待旧服务退出，执行全部
-Alembic 迁移，重建三个前端，然后更新并启动 `launchd` 服务。这样旧 worker
-无法跨越新迁移继续写入；任一迁移或构建失败时，安装器会恢复此前加载的服务，
-不会用不完整版本替换它们。定时任务会被加载但不会在安装时立即执行。
+`CONFIRM_RELEASE` 必须与 URL 解析出的 `database@host:port` 完全一致；日期必须是本次
+Portfolio/Watchlist 全量重建采用的显式估值日期。安装器会校验并初始化本地数据库，
+停止六个常驻 job 和定时刷新 job，再调用安全发布编排器创建已校验的发布前备份、
+执行全部 Alembic 迁移、重建 Portfolio/Watchlist、通过零失败零告警审计并创建已校验的
+发布后备份。随后才重建三个前端、更新并启动 `launchd` 服务。服务停止后的任一步失败
+都会保持全部托管服务停止，供人工检查。安全数据库发布本身若在变更后失败，会先尝试
+恢复发布前备份，且回滚成功也不会自动恢复服务；若数据库发布已经通过、随后前端构建或
+LaunchAgent 更新/启动失败，则保留已审计的新数据库并继续停服。定时任务只在完整成功后
+加载，且不会在安装时立即执行。
 
 默认调度时间可以在安装时覆盖，例如：
 
 ```bash
+CONFIRM_RELEASE='portfolio_ops@127.0.0.1:5432' \
+PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+PORTFOLIO_OPS_RELEASE_AS_OF_DATE=YYYY-MM-DD \
 PORTFOLIO_OPS_LOCAL_REFRESH_HOUR=22 \
 PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE=30 \
   infra/launchd/install_local_services.sh
@@ -94,8 +105,22 @@ launchctl kickstart "gui/$UID/com.orataba.portfolio-ops.market-data-refresh"
 执行。Database Dashboard 的 UI 批量刷新是另一条入口，不受这个 scheduled-script
 锁约束。
 
-执行 `infra/postgres/restore_project_dump.sh` 时，恢复脚本会临时卸载当前已
-加载的六个常驻 job 和定时刷新 job，完成安全备份和数据库恢复/迁移后再加载。
-恢复定时 job 时只重新注册日历计划，不会立即触发刷新。恢复失败会先自动回滚
-数据库，再恢复这些服务；回滚本身失败时服务保持停止，避免在半恢复数据库上
-继续写入。
+恢复项目 dump 时也必须显式声明目标和重建日期；该脚本不接受数据库 URL，而是使用
+下列 `PORTFOLIO_OPS_DB_*` 参数：
+
+```bash
+PORTFOLIO_OPS_DB_HOST=127.0.0.1 \
+PORTFOLIO_OPS_DB_PORT=5432 \
+PORTFOLIO_OPS_DB_NAME=portfolio_ops \
+PORTFOLIO_OPS_DB_USER=portfolio_ops \
+CONFIRM_RESTORE=portfolio_ops \
+PORTFOLIO_OPS_RESTORE_AS_OF_DATE=YYYY-MM-DD \
+  infra/postgres/restore_project_dump.sh
+```
+
+恢复脚本会临时卸载当前已加载的六个常驻 job 和定时刷新 job，校验 checksum、archive
+和实际数据库身份，创建恢复前安全备份，只恢复三个项目 schema，再执行全部迁移、
+Portfolio/Watchlist 全量重建和零失败零告警审计。完整成功后才重新加载原先运行的 job；
+恢复定时 job 时只重新注册日历计划，不会立即触发刷新。恢复、迁移、重建或审计失败会
+先自动回滚数据库；回滚成功后恢复先前服务，回滚本身失败时服务保持停止并打印恢复
+备份路径，避免在半恢复数据库上继续写入。

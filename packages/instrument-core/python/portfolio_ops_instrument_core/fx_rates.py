@@ -3,20 +3,16 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+from portfolio_ops_instrument_core.fx_universe import (
+    MAINTAINED_FX_INSTRUMENTS,
+    PIVOT_CURRENCY,
+    SUPPORTED_FX_CURRENCIES,
+)
 from portfolio_ops_instrument_core.instrument_store import (
     SessionFactory,
     get_instrument,
     upsert_market_data,
 )
-
-
-SUPPORTED_FX_CURRENCIES: tuple[str, ...] = ("USD", "HKD", "CNY")
-PIVOT_CURRENCY = "USD"
-MAINTAINED_FX_INSTRUMENTS: dict[tuple[str, str], str] = {
-    ("USD", "HKD"): "fx-usd-hkd",
-    ("USD", "CNY"): "fx-usd-cny",
-}
-
 
 def supported_fx_currencies() -> list[str]:
     return list(SUPPORTED_FX_CURRENCIES)
@@ -68,7 +64,7 @@ def _direct_rate_record(
         "source_kind": "direct",
         "instrument_id": instrument_id,
         "source_instrument_ids": [instrument_id],
-        "provider": point.get("provider"),
+        "source_ref": point.get("source_ref"),
         "status": str(point.get("status") or "complete"),
     }
 
@@ -91,7 +87,7 @@ def _inverse_rate_record(
         "source_kind": "inverse",
         "instrument_id": direct_record["instrument_id"],
         "source_instrument_ids": list(direct_record["source_instrument_ids"]),
-        "provider": direct_record["provider"],
+        "source_ref": direct_record["source_ref"],
         "status": direct_record["status"],
     }
 
@@ -112,8 +108,8 @@ def _cross_rate_record(
     rate = Decimal(str(usd_to_quote["rate"])) / Decimal(str(usd_to_base["rate"]))
     status = "partial" if "partial" in {usd_to_base["status"], usd_to_quote["status"]} else "complete"
     as_of_date = min(usd_to_base["as_of_date"], usd_to_quote["as_of_date"])
-    provider_parts = [part for part in [usd_to_base.get("provider"), usd_to_quote.get("provider")] if part]
-    provider = " + ".join(dict.fromkeys(provider_parts)) or None
+    source_refs = [part for part in [usd_to_base.get("source_ref"), usd_to_quote.get("source_ref")] if part]
+    source_ref = " + ".join(dict.fromkeys(source_refs)) or None
     source_instrument_ids = list(dict.fromkeys([*usd_to_base["source_instrument_ids"], *usd_to_quote["source_instrument_ids"]]))
     return {
         "base_currency": base_currency,
@@ -123,7 +119,7 @@ def _cross_rate_record(
         "source_kind": "cross",
         "instrument_id": None,
         "source_instrument_ids": source_instrument_ids,
-        "provider": provider,
+        "source_ref": source_ref,
         "status": status,
     }
 
@@ -146,7 +142,7 @@ def get_fx_rate(
             "source_kind": "direct",
             "instrument_id": None,
             "source_instrument_ids": [],
-            "provider": None,
+            "source_ref": None,
             "status": "complete",
         }
 
@@ -189,7 +185,7 @@ def upsert_fx_rate(
     quote_currency: str,
     rate: Decimal,
     as_of_date: date,
-    provider: str | None,
+    source_ref: str | None,
     status: str,
 ) -> dict[str, object]:
     normalized_base = base_currency.strip().upper()
@@ -206,7 +202,7 @@ def upsert_fx_rate(
         as_of_date=as_of_date,
         value=str(rate),
         currency=normalized_quote,
-        provider=provider,
+        source_ref=source_ref,
         status=status,
     )
     if record is None:

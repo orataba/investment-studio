@@ -34,6 +34,26 @@ def get_instrument(instrument_id: str) -> dict[str, object] | None:
     return shared_store.get_instrument(get_session_factory(), instrument_id)
 
 
+def instrument_exists(instrument_id: str) -> bool:
+    return shared_store.instrument_exists(get_session_factory(), instrument_id)
+
+
+def list_quote_observation_revisions(
+    *,
+    instrument_id: str,
+    quote_series_id: str | None = None,
+    as_of_date=None,
+    limit: int | None = None,
+) -> list[dict[str, object]]:
+    return shared_store.list_quote_observation_revisions(
+        get_session_factory(),
+        instrument_id=instrument_id,
+        quote_series_id=quote_series_id,
+        as_of_date=as_of_date,
+        limit=limit,
+    )
+
+
 def find_instrument_by_identifier(
     *,
     identifier_value: str,
@@ -74,8 +94,9 @@ def upsert_market_data(
     as_of_date,
     value: str,
     currency: str,
-    provider: str | None,
+    source_ref: str | None,
     status: str,
+    source_published_at=None,
 ) -> dict[str, object] | None:
     return shared_store.upsert_market_data(
         get_session_factory(),
@@ -85,8 +106,9 @@ def upsert_market_data(
         as_of_date=as_of_date,
         value=value,
         currency=currency,
-        provider=provider,
+        source_ref=source_ref,
         status=status,
+        source_published_at=source_published_at,
     )
 
 
@@ -145,23 +167,25 @@ def replace_nav_history(
     *,
     instrument_id: str,
     rows: list[dict[str, object]],
-    provider: str | None,
+    source_ref: str | None,
     point_status: str,
     refresh_status: str,
     updated_by: str | None,
     message: str,
     mode: str | None = None,
+    replace_all: bool = False,
 ) -> dict[str, object] | None:
     return shared_store.replace_nav_history(
         get_session_factory(),
         instrument_id=instrument_id,
         rows=rows,
-        provider=provider,
+        source_ref=source_ref,
         point_status=point_status,
         refresh_status=refresh_status,
         updated_by=updated_by,
         message=message,
         mode=mode,
+        replace_all=replace_all,
     )
 
 

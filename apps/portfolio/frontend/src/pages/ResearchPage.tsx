@@ -42,6 +42,7 @@ import {
   formatPercent,
   formatPercentInput,
 } from '../lib/format'
+import { annualizedReturnDisplayEligible } from '../lib/performanceHistoryPresentation'
 import { resolveResearchAsOfDraft, serializeResearchAsOf } from '../lib/researchAsOf'
 
 const CAPITAL_MODE_OPTIONS = [
@@ -276,71 +277,6 @@ function buildPath(points: Array<{ date: string; value?: number | null }>, args:
   return coordinates.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ')
 }
 
-function drawdownPoints(points: Array<{ date: string; value?: number | null }>) {
-  let highValue = -Infinity
-  return points
-    .filter((point) => point.value != null)
-    .map((point) => {
-      const value = point.value ?? 0
-      highValue = Math.max(highValue, value)
-      return {
-        date: point.date,
-        value: highValue > 0 ? value / highValue - 1 : 0,
-      }
-    })
-}
-
-function currentDrawdownFromPoints(points: Array<{ date: string; value?: number | null }>) {
-  const visiblePoints = points.filter((point) => point.value != null)
-  if (visiblePoints.length < 2) {
-    return null
-  }
-  let highValue = -Infinity
-  let currentValue: number | null = null
-  visiblePoints.forEach((point) => {
-    const value = point.value ?? 0
-    highValue = Math.max(highValue, value)
-    currentValue = value
-  })
-  return highValue > 0 && currentValue != null ? currentValue / highValue - 1 : null
-}
-
-function returnMapByDate(points: Array<{ date: string; value?: number | null }>) {
-  const visiblePoints = points.filter((point) => point.value != null)
-  const returns = new Map<string, number>()
-  for (let index = 1; index < visiblePoints.length; index += 1) {
-    const previousValue = visiblePoints[index - 1].value ?? 0
-    const currentValue = visiblePoints[index].value ?? 0
-    if (previousValue > 0) {
-      returns.set(visiblePoints[index].date, currentValue / previousValue - 1)
-    }
-  }
-  return returns
-}
-
-function activeCurrentDrawdown(
-  portfolioPoints: Array<{ date: string; value?: number | null }>,
-  benchmarkPoints: Array<{ date: string; value?: number | null }>,
-) {
-  const portfolioReturns = returnMapByDate(portfolioPoints)
-  const benchmarkReturns = returnMapByDate(benchmarkPoints)
-  const commonDates = [...portfolioReturns.keys()]
-    .filter((dateKey) => benchmarkReturns.has(dateKey))
-    .sort()
-  if (!commonDates.length) {
-    return null
-  }
-  let navValue = 1.0
-  let highValue = 1.0
-  let currentDrawdown = 0.0
-  commonDates.forEach((dateKey) => {
-    navValue *= 1.0 + (portfolioReturns.get(dateKey) ?? 0) - (benchmarkReturns.get(dateKey) ?? 0)
-    highValue = Math.max(highValue, navValue)
-    currentDrawdown = highValue > 0 ? navValue / highValue - 1 : 0.0
-  })
-  return currentDrawdown
-}
-
 function dateTicks(minTime: number, maxTime: number, count = 4) {
   if (!Number.isFinite(minTime) || !Number.isFinite(maxTime)) {
     return []
@@ -396,7 +332,7 @@ function ResearchLineChart({
     return <div className="empty-state">No backtest series.</div>
   }
   const width = 720
-  const height = 330
+  const height = 250
   const padding = 36
   const left = 44
   const right = width - 24
@@ -418,21 +354,6 @@ function ResearchLineChart({
     left,
     right,
     top: 24,
-    bottom: 180,
-  }
-  const drawdowns = drawdownPoints(visiblePoints)
-  const drawdownMin = Math.min(...drawdowns.map((point) => point.value ?? 0), -0.01)
-  const drawdownArgs = {
-    minTime,
-    maxTime,
-    minValue: drawdownMin,
-    maxValue: 0,
-    width,
-    height,
-    padding,
-    left,
-    right,
-    top: 218,
     bottom: height - padding,
   }
   return (
@@ -440,7 +361,6 @@ function ResearchLineChart({
       <div className="research-chart-legend">
         <span><i style={{ background: CHART_COLORS[0] }} />Solved</span>
         {visibleBenchmark.length > 1 ? <span><i style={{ background: CHART_COLORS[2] }} />{benchmarkLabel ?? 'Benchmark'}</span> : null}
-        <span><i style={{ background: '#64748b' }} />Drawdown</span>
       </div>
       <svg viewBox={`0 0 ${width} ${height}`} className="research-chart-svg" role="img" aria-label="Backtest curve">
         <line x1={left} x2={right} y1={args.bottom} y2={args.bottom} className="research-chart-axis" />
@@ -448,11 +368,9 @@ function ResearchLineChart({
         {visibleBenchmark.length > 1 ? (
           <path d={buildPath(visibleBenchmark, args)} className="research-chart-line research-chart-line-muted" style={{ stroke: CHART_COLORS[2] }} />
         ) : null}
-        <text x={left} y={208} className="research-chart-panel-label">Drawdown</text>
-        <line x1={left} x2={right} y1={drawdownArgs.top} y2={drawdownArgs.top} className="research-chart-axis research-chart-axis-muted" />
-        <path d={buildPath(drawdowns, drawdownArgs)} className="research-chart-line research-chart-line-drawdown" />
-        {renderTimeAxis(drawdownArgs)}
+        {renderTimeAxis(args)}
       </svg>
+      <div className="portfolio-detail-meta">Drawdown curve withheld: the backend response does not provide authoritative drawdown points.</div>
     </div>
   )
 }
@@ -589,27 +507,9 @@ function MetricTable({
   const metrics = run.detail?.backtest?.metrics ?? null
   const benchmarkMetrics = benchmark?.metrics ?? null
   const relative = relativeMetrics
-  const backtestPoints = run.detail?.backtest?.points ?? []
-  const benchmarkPoints = benchmark?.points ?? []
-  const portfolioCurrentDrawdown = metrics?.current_drawdown ?? currentDrawdownFromPoints(backtestPoints)
-  const benchmarkCurrentDrawdown = benchmarkMetrics?.current_drawdown ?? currentDrawdownFromPoints(benchmarkPoints)
-  const relativeCurrentDrawdown = relative?.current_drawdown ?? activeCurrentDrawdown(backtestPoints, benchmarkPoints)
 
   function periodLabel(record: PortfolioResearchBacktestMetricsRecord | PortfolioResearchBacktestRelativeMetricsRecord | null) {
     return record?.start_date && record?.end_date ? `${record.start_date} to ${record.end_date}` : '-'
-  }
-
-  function metricDifference(
-    left: number | null | undefined,
-    right: number | null | undefined,
-  ) {
-    return left == null || right == null ? null : left - right
-  }
-
-  function excessReturnMetric(key: 'period_return' | 'ytd_return' | 'annualized_return') {
-    return metricDifference(metrics?.[key], benchmarkMetrics?.[key]) ?? relative?.[key] ?? (
-      key === 'period_return' ? relative?.excess_return : null
-    )
   }
 
   function formatMetricValue(
@@ -631,9 +531,42 @@ function MetricTable({
     return formatMaybeNumber(value)
   }
 
+  function formatMetricCell(
+    value: number | string | null | undefined,
+    kind: 'percent' | 'number' | 'days' | 'text',
+    requiresAnnualizedHistory: boolean,
+    record: PortfolioResearchBacktestMetricsRecord | PortfolioResearchBacktestRelativeMetricsRecord | null,
+  ) {
+    if (
+      requiresAnnualizedHistory &&
+      !annualizedReturnDisplayEligible(record?.history_reliability)
+    ) {
+      return 'N/A'
+    }
+    return formatMetricValue(value, kind)
+  }
+
+  function historyReliabilityNote(
+    record: PortfolioResearchBacktestMetricsRecord | PortfolioResearchBacktestRelativeMetricsRecord | null,
+  ) {
+    const reliability = record?.history_reliability
+    if (!reliability) {
+      return 'N/A'
+    }
+    return (
+      <span className="research-metric-history-note">
+        <span>{reliability.sample_label}</span>
+        {reliability.annualization_message ? (
+          <small>{reliability.annualization_message}</small>
+        ) : null}
+      </span>
+    )
+  }
+
   const rows: Array<{
     label: string
     kind: 'percent' | 'number' | 'days' | 'text'
+    requiresAnnualizedHistory?: boolean
     portfolio: number | string | null | undefined
     benchmark: number | string | null | undefined
     excess: number | string | null | undefined
@@ -643,28 +576,29 @@ function MetricTable({
       kind: 'percent',
       portfolio: metrics?.period_return,
       benchmark: benchmarkMetrics?.period_return,
-      excess: excessReturnMetric('period_return'),
+      excess: relative?.excess_return,
     },
     {
       label: 'YTD',
       kind: 'percent',
       portfolio: metrics?.ytd_return,
       benchmark: benchmarkMetrics?.ytd_return,
-      excess: excessReturnMetric('ytd_return'),
+      excess: relative?.ytd_return,
     },
     {
       label: 'Annual Return',
       kind: 'percent',
+      requiresAnnualizedHistory: true,
       portfolio: metrics?.annualized_return,
       benchmark: benchmarkMetrics?.annualized_return,
-      excess: excessReturnMetric('annualized_return'),
+      excess: relative?.annualized_return,
     },
     {
       label: 'Annual Volatility',
       kind: 'percent',
       portfolio: metrics?.annualized_volatility,
       benchmark: benchmarkMetrics?.annualized_volatility,
-      excess: relative?.annualized_volatility ?? relative?.tracking_error,
+      excess: relative?.tracking_error,
     },
     {
       label: 'Max Drawdown',
@@ -676,9 +610,9 @@ function MetricTable({
     {
       label: 'Current DD',
       kind: 'percent',
-      portfolio: portfolioCurrentDrawdown,
-      benchmark: benchmarkCurrentDrawdown,
-      excess: relativeCurrentDrawdown,
+      portfolio: metrics?.current_drawdown,
+      benchmark: benchmarkMetrics?.current_drawdown,
+      excess: relative?.current_drawdown,
     },
     {
       label: 'MDD Duration',
@@ -699,11 +633,12 @@ function MetricTable({
       kind: 'number',
       portfolio: metrics?.sharpe_ratio,
       benchmark: benchmarkMetrics?.sharpe_ratio,
-      excess: relative?.sharpe_ratio ?? relative?.information_ratio,
+      excess: relative?.information_ratio,
     },
     {
       label: 'Calmar',
       kind: 'number',
+      requiresAnnualizedHistory: true,
       portfolio: metrics?.calmar_ratio,
       benchmark: benchmarkMetrics?.calmar_ratio,
       excess: relative?.calmar_ratio,
@@ -727,12 +662,39 @@ function MetricTable({
           <td>{periodLabel(benchmarkMetrics)}</td>
           <td>{periodLabel(relative)}</td>
         </tr>
+        <tr className="research-metric-history-row">
+          <th>History Sample</th>
+          <td>{historyReliabilityNote(metrics)}</td>
+          <td>{historyReliabilityNote(benchmarkMetrics)}</td>
+          <td>{historyReliabilityNote(relative)}</td>
+        </tr>
         {rows.map((row) => (
           <tr key={row.label}>
             <th>{row.label}</th>
-            <td>{formatMetricValue(row.portfolio, row.kind)}</td>
-            <td>{formatMetricValue(row.benchmark, row.kind)}</td>
-            <td>{formatMetricValue(row.excess, row.kind)}</td>
+            <td>
+              {formatMetricCell(
+                row.portfolio,
+                row.kind,
+                row.requiresAnnualizedHistory === true,
+                metrics,
+              )}
+            </td>
+            <td>
+              {formatMetricCell(
+                row.benchmark,
+                row.kind,
+                row.requiresAnnualizedHistory === true,
+                benchmarkMetrics,
+              )}
+            </td>
+            <td>
+              {formatMetricCell(
+                row.excess,
+                row.kind,
+                row.requiresAnnualizedHistory === true,
+                relative,
+              )}
+            </td>
           </tr>
         ))}
       </tbody>

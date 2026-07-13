@@ -16,6 +16,7 @@ BUILD_FRONTENDS="${BUILD_FRONTENDS:-true}"
 DATABASE_URL="${PORTFOLIO_OPS_LOCAL_DATABASE_URL:-postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops}"
 REFRESH_HOUR="${PORTFOLIO_OPS_LOCAL_REFRESH_HOUR:-21}"
 REFRESH_MINUTE="${PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE:-0}"
+RELEASE_AS_OF_DATE="${PORTFOLIO_OPS_RELEASE_AS_OF_DATE:-}"
 
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
 NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
@@ -30,6 +31,10 @@ done
 
 if [[ ! -x "$PROJECT_ROOT/infra/scripts/migrate_all.sh" ]]; then
   echo "Missing migration runner: $PROJECT_ROOT/infra/scripts/migrate_all.sh" >&2
+  exit 1
+fi
+if [[ ! -x "$PROJECT_ROOT/infra/scripts/release_database.sh" ]]; then
+  echo "Missing safe database release orchestrator: $PROJECT_ROOT/infra/scripts/release_database.sh" >&2
   exit 1
 fi
 if [[ ! -f "$SCRIPT_DIR/generate_local_service_plists.py" ]]; then
@@ -50,6 +55,14 @@ if [[ ! "$REFRESH_HOUR" =~ ^[0-9]+$ || "$REFRESH_HOUR" -gt 23 ]]; then
 fi
 if [[ ! "$REFRESH_MINUTE" =~ ^[0-9]+$ || "$REFRESH_MINUTE" -gt 59 ]]; then
   echo "PORTFOLIO_OPS_LOCAL_REFRESH_MINUTE must be an integer between 0 and 59." >&2
+  exit 64
+fi
+if [[ -z "$RELEASE_AS_OF_DATE" ]]; then
+  echo "Set PORTFOLIO_OPS_RELEASE_AS_OF_DATE to an explicit YYYY-MM-DD." >&2
+  exit 64
+fi
+if [[ -z "${CONFIRM_RELEASE:-}" ]]; then
+  echo "Set CONFIRM_RELEASE to database@host:port after confirming the release target." >&2
   exit 64
 fi
 
@@ -73,9 +86,9 @@ mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR" "$PROJECT_ROOT/var/watchlist-documents"
 "$SCRIPT_DIR/bootstrap_local_database.sh"
 
 SERVICE_STATE_FILE="$(mktemp "${TMPDIR:-/tmp}/portfolio-ops-launchd-install-state.XXXXXX")"
-services_stopped=true
+services_stopped=false
 new_services_started=false
-restore_previous_services_on_failure() {
+leave_services_stopped_on_failure() {
   local exit_code=$?
   trap - EXIT
   if [[ $exit_code -ne 0 && "$services_stopped" == "true" ]]; then
@@ -85,34 +98,25 @@ restore_previous_services_on_failure() {
         launchctl bootout "gui/$UID/$LABEL_PREFIX.$service" >/dev/null 2>&1 || true
       done
     fi
-    echo "Install failed; restoring the previously loaded launchd services." >&2
-    LABEL_PREFIX="$LABEL_PREFIX" LAUNCH_AGENTS_DIR="$LAUNCH_AGENTS_DIR" \
-      "$SCRIPT_DIR/control_local_services.sh" start "$SERVICE_STATE_FILE" || \
-      echo "Failed to restore one or more previous launchd services." >&2
+    echo "Install failed; managed services remain stopped for operator review." >&2
   fi
   rm -f "$SERVICE_STATE_FILE"
   exit "$exit_code"
 }
-trap restore_previous_services_on_failure EXIT
+trap leave_services_stopped_on_failure EXIT
 
 # A running pre-upgrade worker does not understand a newly introduced database
 # fencing protocol.  Stop every managed process before applying migrations.
 LABEL_PREFIX="$LABEL_PREFIX" LAUNCH_AGENTS_DIR="$LAUNCH_AGENTS_DIR" \
   "$SCRIPT_DIR/control_local_services.sh" stop "$SERVICE_STATE_FILE"
+services_stopped=true
 
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA=instrument_registry
-export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
-export PORTFOLIO_OPS_WATCHLIST_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA=watchlist
-export PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL="$DATABASE_URL"
-export PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA=portfolio
+CONFIRM_RELEASE="$CONFIRM_RELEASE" \
+PORTFOLIO_OPS_RELEASE_DATABASE_URL="$DATABASE_URL" \
+PORTFOLIO_OPS_RELEASE_AS_OF_DATE="$RELEASE_AS_OF_DATE" \
+PORTFOLIO_OPS_RELEASE_SERVICE_MANAGER=none \
 PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" \
-  "$PROJECT_ROOT/infra/scripts/migrate_all.sh"
+  "$PROJECT_ROOT/infra/scripts/release_database.sh"
 
 if [[ "$BUILD_FRONTENDS" == "true" ]]; then
   for app in platform watchlist portfolio; do

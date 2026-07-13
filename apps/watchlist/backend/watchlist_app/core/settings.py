@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     recalc_worker_shutdown_timeout_seconds: float = 5.0
     recalc_worker_running_job_timeout_seconds: float = 300.0
     recalc_worker_heartbeat_interval_seconds: float = 30.0
+    daily_market_quote_max_age_days: int = 5
+    fund_quote_max_age_days: int = 45
     document_storage_root: Path = WORKSPACE_ROOT / "var" / "watchlist-documents"
     document_upload_max_bytes: int = 25 * 1024 * 1024
     copilot_provider: str = "stub"
@@ -78,6 +80,18 @@ class Settings(BaseSettings):
         numeric = int(value)
         if numeric <= 0:
             raise ValueError("document_upload_max_bytes must be positive.")
+        return numeric
+
+    @field_validator(
+        "daily_market_quote_max_age_days",
+        "fund_quote_max_age_days",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_quote_age_days(cls, value: object) -> int:
+        numeric = int(value)
+        if not 1 <= numeric <= 366:
+            raise ValueError("quote freshness age must be between 1 and 366 days.")
         return numeric
 
     @model_validator(mode="after")

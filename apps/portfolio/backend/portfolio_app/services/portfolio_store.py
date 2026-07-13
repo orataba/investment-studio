@@ -3,13 +3,18 @@ from __future__ import annotations
 import re
 from copy import deepcopy
 from datetime import UTC, date, datetime, time
-from typing import Any
+from decimal import Decimal
+from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Integer, and_, cast, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from portfolio_ops_instrument_core.db_models import InstrumentMarketData
+from portfolio_ops_instrument_core.db_models import (
+    QuoteObservation,
+    QuoteObservationRevision,
+    QuoteSeries,
+)
 
 from portfolio_app.core.settings import get_settings
 from portfolio_app.db.models import (
@@ -27,15 +32,29 @@ from portfolio_app.db.models import (
     TaxonomyNodeRecordModel,
     TaxonomyRecordModel,
     TransactionIdAllocatorModel,
-    TransactionRecordModel,
+    TransactionCurrentModel,
+    TransactionIdentityRecordModel,
+    TransactionRevisionGroupRecordModel,
+    TransactionRevisionRecordModel,
 )
 from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.fact_currency import require_portfolio_fact_currency
 from portfolio_app.services.ledger import (
     build_account_workspace,
     build_position_lots,
     validate_transaction_position_history,
 )
 from portfolio_app.services.snapshot_selection import default_portfolio_snapshot
+from portfolio_app.services.transaction_revisions import (
+    AmendTransactionRevision,
+    CreateTransactionRevision,
+    DeleteTransactionRevision,
+    TransactionFactPayload,
+    TransactionRevisionContext,
+    append_transaction_revision_batch,
+    list_transaction_revision_history as list_revision_history_records,
+    refresh_transaction_current_projection,
+)
 
 EMPTY_STORE: dict[str, list[dict[str, Any]]] = {
     "portfolios": [],
@@ -64,6 +83,10 @@ def _current_utc_timestamp() -> str:
 
 
 def _utc_isoformat(value: datetime) -> str:
+    if value.tzinfo is None:
+        # SQLite drops timezone metadata in tests; persisted transaction
+        # timestamps are normalized to UTC before insertion.
+        value = value.replace(tzinfo=UTC)
     return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
@@ -86,6 +109,135 @@ def _format_trade_time(value: time) -> str:
     return f"{value.hour:02d}:{value.minute:02d}"
 
 
+def _parse_aware_utc_datetime(value: object, *, field_name: str) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError(f"{field_name} requires a timezone-aware timestamp.")
+        try:
+            parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError(f"{field_name} requires a valid ISO timestamp.") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{field_name} requires an explicit timezone.")
+    return parsed.astimezone(UTC)
+
+
+def _transaction_revision_context(
+    *,
+    actor: Mapping[str, object],
+    change_reason: str,
+    source_kind: str = "manual",
+    recorded_at: datetime | None = None,
+    request_id: str | None = None,
+    idempotency_key: str | None = None,
+    source_ref: str | None = None,
+) -> TransactionRevisionContext:
+    return TransactionRevisionContext(
+        source_kind=source_kind,  # type: ignore[arg-type]
+        change_reason=change_reason,
+        actor_type=str(actor.get("actor_type") or ""),  # type: ignore[arg-type]
+        actor_id=str(actor.get("actor_id") or ""),
+        actor_display_name=str(actor.get("display_name") or ""),
+        actor_source=str(actor.get("actor_source") or ""),
+        recorded_at=recorded_at or datetime.now(UTC),
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        source_ref=source_ref,
+    )
+
+
+def _transaction_fact_payload(
+    *,
+    transaction_id: str,
+    transaction_type: str,
+    trade_date: date,
+    trade_time: str | None,
+    trade_timezone: str | None = None,
+    trade_time_is_estimated: bool | None = None,
+    trade_at: object | None = None,
+    settlement_date: date,
+    entitlement_date: date | None,
+    acquisition_date: date | None,
+    account_id: str,
+    settlement_cash_account_id: str | None,
+    instrument_id: str | None,
+    instrument_ref: dict[str, object] | None,
+    quantity: Decimal | int | float | str | None,
+    price: Decimal | int | float | str | None,
+    gross_amount: Decimal | int | float | str,
+    counter_amount: Decimal | int | float | str | None,
+    fx_rate: Decimal | int | float | str | None,
+    fees: Decimal | int | float | str,
+    taxes: Decimal | int | float | str,
+    currency: str,
+    transfer_scope: str | None,
+    transfer_object_type: str | None,
+    transfer_group_id: str | None,
+    counterparty_account_id: str | None,
+    note: str | None,
+) -> TransactionFactPayload:
+    if isinstance(instrument_ref, dict):
+        _validate_instrument_ref_contract(
+            instrument_ref,
+            context=f"Transaction '{transaction_id}'",
+            expected_instrument_id=instrument_id,
+        )
+    elif instrument_id:
+        raise ValueError(f"Transaction '{transaction_id}' with instrument_id requires instrument_ref.")
+
+    resolved_timing = resolve_trade_timing(
+        trade_date=trade_date,
+        trade_time=trade_time,
+        trade_timezone=trade_timezone,
+        trade_time_is_estimated=trade_time_is_estimated,
+    )
+    resolved_trade_at = (
+        _parse_aware_utc_datetime(
+            trade_at,
+            field_name=f"Transaction '{transaction_id}' trade_at",
+        )
+        if trade_at is not None
+        else _parse_aware_utc_datetime(
+            resolved_timing["trade_at"],
+            field_name=f"Transaction '{transaction_id}' trade_at",
+        )
+    )
+    return TransactionFactPayload(
+        transaction_type=transaction_type,
+        trade_date=trade_date,
+        trade_time=time.fromisoformat(str(resolved_timing["trade_time"])),
+        trade_at=resolved_trade_at,
+        trade_timezone=str(resolved_timing["trade_timezone"]),
+        trade_time_is_estimated=bool(resolved_timing["trade_time_is_estimated"]),
+        settlement_date=settlement_date,
+        entitlement_date=entitlement_date,
+        acquisition_date=acquisition_date,
+        account_id=account_id,
+        settlement_cash_account_id=settlement_cash_account_id,
+        instrument_id=instrument_id,
+        instrument_snapshot_json=deepcopy(instrument_ref) if isinstance(instrument_ref, dict) else None,
+        quantity=quantity,
+        price=price,
+        gross_amount=gross_amount,
+        counter_amount=counter_amount,
+        fx_rate=fx_rate,
+        fees=fees,
+        taxes=taxes,
+        currency=require_portfolio_fact_currency(
+            currency,
+            context=f"Transaction '{transaction_id}'",
+        ),
+        transfer_scope=transfer_scope,
+        transfer_object_type=transfer_object_type,
+        transfer_group_id=transfer_group_id,
+        counterparty_account_id=counterparty_account_id,
+        note=note,
+    )
+
+
 def _validate_instrument_ref_contract(
     instrument_ref: dict[str, object],
     *,
@@ -98,6 +250,10 @@ def _validate_instrument_ref_contract(
     missing_keys = sorted(key for key in INSTRUMENT_REF_REQUIRED_KEYS if not instrument_ref.get(key))
     if missing_keys:
         raise ValueError(f"{context} is missing instrument reference fields: {', '.join(missing_keys)}")
+    require_portfolio_fact_currency(
+        instrument_ref.get("currency"),
+        context=f"{context} instrument reference",
+    )
     if expected_instrument_id and str(instrument_ref["instrument_id"]) != expected_instrument_id:
         raise ValueError(f"{context} instrument_ref.instrument_id must match instrument_id")
     identifiers = instrument_ref.get("identifiers")
@@ -151,12 +307,22 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
             normalized[key] = value
     for portfolio in normalized["portfolios"]:
         if isinstance(portfolio, dict):
+            portfolio_id = str(portfolio.get("portfolio_id") or "<unknown>")
+            require_portfolio_fact_currency(
+                portfolio.get("base_currency"),
+                context=f"Portfolio '{portfolio_id}' base",
+            )
             portfolio.setdefault("valuation_timezone", "Asia/Shanghai")
             portfolio.setdefault("valuation_cutoff_policy", "latest_complete_eod")
             portfolio.setdefault("default_planning_taxonomy_id", None)
     for account in normalized["accounts"]:
         if not isinstance(account, dict):
             continue
+        account_id = str(account.get("account_id") or "<unknown>")
+        require_portfolio_fact_currency(
+            account.get("currency"),
+            context=f"Account '{account_id}'",
+        )
         if "allowed_asset_types" in account:
             raise ValueError(
                 f"Account '{account.get('account_id')}' uses legacy allowed_asset_types; use allowed_instrument_types."
@@ -166,6 +332,11 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
     for transaction in normalized["transactions"]:
         if not isinstance(transaction, dict):
             continue
+        transaction_id = str(transaction.get("transaction_id") or "<unknown>")
+        require_portfolio_fact_currency(
+            transaction.get("currency"),
+            context=f"Transaction '{transaction_id}'",
+        )
         if "asset_id" in transaction:
             raise ValueError(
                 f"Transaction '{transaction.get('transaction_id')}' uses legacy asset_id; use instrument_id."
@@ -247,12 +418,12 @@ def _load_store_from_db(session) -> dict[str, object]:
         )
     ).all()
     transactions = session.scalars(
-        select(TransactionRecordModel).order_by(
-            TransactionRecordModel.trade_date,
-            TransactionRecordModel.trade_at,
-            TransactionRecordModel.created_at,
-            TransactionRecordModel.transaction_id,
-            TransactionRecordModel.settlement_date,
+        select(TransactionCurrentModel).order_by(
+            TransactionCurrentModel.trade_date,
+            TransactionCurrentModel.trade_at,
+            TransactionCurrentModel.created_at,
+            TransactionCurrentModel.transaction_id,
+            TransactionCurrentModel.settlement_date,
         )
     ).all()
     taxonomies = session.scalars(
@@ -341,8 +512,8 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "portfolio_id": item.portfolio_id,
                 "transaction_type": item.transaction_type,
                 "trade_date": item.trade_date.isoformat(),
-                "trade_time": item.trade_time,
-                "trade_at": item.trade_at,
+                "trade_time": _format_trade_time(item.trade_time),
+                "trade_at": _utc_isoformat(item.trade_at),
                 "trade_timezone": item.trade_timezone,
                 "trade_time_is_estimated": item.trade_time_is_estimated,
                 "settlement_date": item.settlement_date.isoformat(),
@@ -355,7 +526,7 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "account_id": item.account_id,
                 "settlement_cash_account_id": item.settlement_cash_account_id,
                 "instrument_id": item.instrument_id,
-                "instrument_ref": deepcopy(item.instrument_ref_json),
+                "instrument_ref": deepcopy(item.instrument_snapshot_json),
                 "quantity": item.quantity,
                 "price": item.price,
                 "gross_amount": item.gross_amount,
@@ -369,7 +540,7 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "transfer_group_id": item.transfer_group_id,
                 "counterparty_account_id": item.counterparty_account_id,
                 "note": item.note,
-                "created_at": item.created_at,
+                "created_at": _utc_isoformat(item.created_at),
             }
             for item in transactions
         ],
@@ -450,6 +621,21 @@ def _load_store_from_db(session) -> dict[str, object]:
 def _save_store_to_db(session, data: dict[str, object]) -> None:
     normalized = _normalize_store(data)
 
+    if session.get_bind().dialect.name == "postgresql":
+        raise RuntimeError(
+            "The fixture store reset is test-only and cannot erase the append-only "
+            "transaction ledger in PostgreSQL."
+        )
+    existing_transaction_identity_count = int(
+        session.scalar(select(func.count()).select_from(TransactionIdentityRecordModel))
+        or 0
+    )
+    if existing_transaction_identity_count:
+        raise RuntimeError(
+            "The fixture store cannot overwrite an initialized append-only transaction "
+            "ledger. Create a fresh test database instead."
+        )
+
     session.execute(delete(PortfolioDailyContributionSliceModel))
     session.execute(delete(PortfolioDailyHoldingSnapshotModel))
     session.execute(delete(PortfolioDailySnapshotModel))
@@ -460,7 +646,9 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
     session.execute(delete(TaxonomyAssignmentRecordModel))
     session.execute(delete(TaxonomyNodeRecordModel))
     session.execute(delete(TaxonomyRecordModel))
-    session.execute(delete(TransactionRecordModel))
+    session.execute(delete(TransactionRevisionRecordModel))
+    session.execute(delete(TransactionRevisionGroupRecordModel))
+    session.execute(delete(TransactionIdentityRecordModel))
     session.execute(delete(AccountRecordModel))
     session.execute(delete(PortfolioRecordModel))
 
@@ -472,7 +660,13 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
             PortfolioRecordModel(
                 portfolio_id=str(raw_portfolio.get("portfolio_id") or "").strip(),
                 portfolio_name=str(raw_portfolio.get("portfolio_name") or "").strip(),
-                base_currency=str(raw_portfolio.get("base_currency") or "USD").strip().upper() or "USD",
+                base_currency=require_portfolio_fact_currency(
+                    raw_portfolio.get("base_currency"),
+                    context=(
+                        "Portfolio "
+                        f"'{str(raw_portfolio.get('portfolio_id') or '<unknown>')}' base"
+                    ),
+                ),
                 valuation_timezone=str(raw_portfolio.get("valuation_timezone") or "Asia/Shanghai").strip()
                 or "Asia/Shanghai",
                 valuation_cutoff_policy=str(
@@ -513,7 +707,10 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                 portfolio_id=str(raw_account.get("portfolio_id") or "").strip(),
                 account_name=str(raw_account.get("account_name") or "").strip(),
                 account_type=str(raw_account.get("account_type") or "").strip(),
-                currency=str(raw_account.get("currency") or "USD").strip().upper() or "USD",
+                currency=require_portfolio_fact_currency(
+                    raw_account.get("currency"),
+                    context=f"Account '{str(raw_account.get('account_id') or '<unknown>')}'",
+                ),
                 institution=(str(raw_account.get("institution")).strip() if raw_account.get("institution") else None),
                 default_settlement_cash_account_id=(
                     str(raw_account.get("default_settlement_cash_account_id")).strip()
@@ -705,84 +902,108 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
             )
         )
 
+    session.flush()
+    fixture_commands_by_portfolio: dict[str, list[CreateTransactionRevision]] = {}
     for raw_transaction in list(normalized.get("transactions", [])):
         if not isinstance(raw_transaction, dict):
             continue
+        transaction_id = str(raw_transaction.get("transaction_id") or "").strip()
+        portfolio_id = str(raw_transaction.get("portfolio_id") or "").strip()
+        trade_date = date.fromisoformat(
+            str(raw_transaction.get("trade_date") or date.today().isoformat())
+        )
         entitlement_date = raw_transaction.get("entitlement_date")
         acquisition_date = raw_transaction.get("acquisition_date")
-        session.add(
-            TransactionRecordModel(
-                transaction_id=str(raw_transaction.get("transaction_id") or "").strip(),
-                portfolio_id=str(raw_transaction.get("portfolio_id") or "").strip(),
-                transaction_type=str(raw_transaction.get("transaction_type") or "").strip(),
-                trade_date=date.fromisoformat(str(raw_transaction.get("trade_date") or date.today().isoformat())),
-                trade_time=str(raw_transaction.get("trade_time") or "12:00").strip() or "12:00",
-                trade_at=str(raw_transaction.get("trade_at") or "").strip(),
-                trade_timezone=str(raw_transaction.get("trade_timezone") or "").strip(),
-                trade_time_is_estimated=bool(raw_transaction.get("trade_time_is_estimated")),
-                settlement_date=date.fromisoformat(
-                    str(raw_transaction.get("settlement_date") or date.today().isoformat())
-                ),
-                entitlement_date=date.fromisoformat(str(entitlement_date)) if entitlement_date else None,
-                acquisition_date=date.fromisoformat(str(acquisition_date)) if acquisition_date else None,
-                account_id=str(raw_transaction.get("account_id") or "").strip(),
-                settlement_cash_account_id=(
-                    str(raw_transaction.get("settlement_cash_account_id")).strip()
-                    if raw_transaction.get("settlement_cash_account_id")
-                    else None
-                ),
-                instrument_id=str(raw_transaction.get("instrument_id")).strip() if raw_transaction.get("instrument_id") else None,
-                instrument_ref_json=(
-                    deepcopy(raw_transaction.get("instrument_ref"))
-                    if isinstance(raw_transaction.get("instrument_ref"), dict)
-                    else None
-                ),
-                quantity=(
-                    float(raw_transaction["quantity"])
-                    if raw_transaction.get("quantity") is not None
-                    else None
-                ),
-                price=float(raw_transaction["price"]) if raw_transaction.get("price") is not None else None,
-                gross_amount=float(raw_transaction.get("gross_amount") or 0.0),
-                counter_amount=(
-                    float(raw_transaction["counter_amount"])
-                    if raw_transaction.get("counter_amount") is not None
-                    else None
-                ),
-                fx_rate=float(raw_transaction["fx_rate"]) if raw_transaction.get("fx_rate") is not None else None,
-                fees=float(raw_transaction.get("fees") or 0.0),
-                taxes=float(raw_transaction.get("taxes") or 0.0),
-                currency=str(raw_transaction.get("currency") or "USD").strip().upper() or "USD",
-                transfer_scope=(
-                    str(raw_transaction.get("transfer_scope")).strip()
-                    if raw_transaction.get("transfer_scope")
-                    else None
-                ),
-                transfer_object_type=(
-                    str(raw_transaction.get("transfer_object_type")).strip()
-                    if raw_transaction.get("transfer_object_type")
-                    else None
-                ),
-                transfer_group_id=(
-                    str(raw_transaction.get("transfer_group_id")).strip()
-                    if raw_transaction.get("transfer_group_id")
-                    else None
-                ),
-                counterparty_account_id=(
-                    str(raw_transaction.get("counterparty_account_id")).strip()
-                    if raw_transaction.get("counterparty_account_id")
-                    else None
-                ),
-                note=str(raw_transaction.get("note")).strip() if raw_transaction.get("note") else None,
-                created_at=(
-                    str(raw_transaction.get("created_at")).strip()
-                    if raw_transaction.get("created_at")
-                    else None
-                ),
+        created_at = _parse_aware_utc_datetime(
+            raw_transaction.get("created_at") or _current_utc_timestamp(),
+            field_name=f"Transaction '{transaction_id}' created_at",
+        )
+        facts = _transaction_fact_payload(
+            transaction_id=transaction_id,
+            transaction_type=str(raw_transaction.get("transaction_type") or "").strip(),
+            trade_date=trade_date,
+            trade_time=str(raw_transaction.get("trade_time") or "12:00").strip() or "12:00",
+            trade_timezone=str(raw_transaction.get("trade_timezone") or "").strip() or None,
+            trade_time_is_estimated=bool(raw_transaction.get("trade_time_is_estimated")),
+            trade_at=raw_transaction.get("trade_at"),
+            settlement_date=date.fromisoformat(
+                str(raw_transaction.get("settlement_date") or trade_date.isoformat())
+            ),
+            entitlement_date=date.fromisoformat(str(entitlement_date)) if entitlement_date else None,
+            acquisition_date=date.fromisoformat(str(acquisition_date)) if acquisition_date else None,
+            account_id=str(raw_transaction.get("account_id") or "").strip(),
+            settlement_cash_account_id=(
+                str(raw_transaction.get("settlement_cash_account_id")).strip()
+                if raw_transaction.get("settlement_cash_account_id")
+                else None
+            ),
+            instrument_id=(
+                str(raw_transaction.get("instrument_id")).strip()
+                if raw_transaction.get("instrument_id")
+                else None
+            ),
+            instrument_ref=(
+                deepcopy(raw_transaction.get("instrument_ref"))
+                if isinstance(raw_transaction.get("instrument_ref"), dict)
+                else None
+            ),
+            quantity=raw_transaction.get("quantity"),
+            price=raw_transaction.get("price"),
+            gross_amount=raw_transaction.get("gross_amount") or Decimal("0"),
+            counter_amount=raw_transaction.get("counter_amount"),
+            fx_rate=raw_transaction.get("fx_rate"),
+            fees=raw_transaction.get("fees") or Decimal("0"),
+            taxes=raw_transaction.get("taxes") or Decimal("0"),
+            currency=str(raw_transaction.get("currency") or ""),
+            transfer_scope=(
+                str(raw_transaction.get("transfer_scope")).strip()
+                if raw_transaction.get("transfer_scope")
+                else None
+            ),
+            transfer_object_type=(
+                str(raw_transaction.get("transfer_object_type")).strip()
+                if raw_transaction.get("transfer_object_type")
+                else None
+            ),
+            transfer_group_id=(
+                str(raw_transaction.get("transfer_group_id")).strip()
+                if raw_transaction.get("transfer_group_id")
+                else None
+            ),
+            counterparty_account_id=(
+                str(raw_transaction.get("counterparty_account_id")).strip()
+                if raw_transaction.get("counterparty_account_id")
+                else None
+            ),
+            note=str(raw_transaction.get("note") or "").strip() or None,
+        )
+        fixture_commands_by_portfolio.setdefault(portfolio_id, []).append(
+            CreateTransactionRevision(
+                transaction_id=transaction_id,
+                facts=facts,
+                created_at=created_at,
+                revision_kind="baseline",
             )
         )
 
-    session.flush()
+    fixture_actor = {
+        "actor_type": "service",
+        "actor_id": "system:test-fixture",
+        "display_name": "Test fixture loader",
+        "actor_source": "trusted_service",
+    }
+    for portfolio_id, commands in fixture_commands_by_portfolio.items():
+        append_transaction_revision_batch(
+            session,
+            portfolio_id=portfolio_id,
+            context=_transaction_revision_context(
+                actor=fixture_actor,
+                change_reason="Loaded explicit test fixture baseline",
+                source_kind="system",
+            ),
+            mutations=commands,
+        )
+
     _refresh_portfolio_instrument_universe_records(session, None)
 
 
@@ -790,7 +1011,10 @@ def _serialize_portfolio_row(item: PortfolioRecordModel) -> dict[str, object]:
     return {
         "portfolio_id": item.portfolio_id,
         "portfolio_name": item.portfolio_name,
-        "base_currency": item.base_currency,
+        "base_currency": require_portfolio_fact_currency(
+            item.base_currency,
+            context=f"Portfolio '{item.portfolio_id}' base",
+        ),
         "valuation_timezone": item.valuation_timezone,
         "valuation_cutoff_policy": item.valuation_cutoff_policy,
         "as_of_date": item.as_of_date.isoformat() if item.as_of_date is not None else None,
@@ -824,11 +1048,11 @@ def _safe_date(value: object) -> date | None:
     return None
 
 
-def _max_transaction_trade_date(transactions: list[TransactionRecordModel]) -> date | None:
+def _max_transaction_trade_date(transactions: list[TransactionCurrentModel]) -> date | None:
     return max((transaction.trade_date for transaction in transactions if transaction.trade_date is not None), default=None)
 
 
-def _max_transaction_activity_date(transactions: list[TransactionRecordModel]) -> date | None:
+def _max_transaction_activity_date(transactions: list[TransactionCurrentModel]) -> date | None:
     activity_dates = [
         candidate
         for transaction in transactions
@@ -848,15 +1072,30 @@ def _latest_market_data_date_for_instruments(session, instrument_ids: set[str]) 
         return None
 
     return session.scalar(
-        select(InstrumentMarketData.as_of_date)
-        .where(
-            InstrumentMarketData.instrument_id.in_(normalized_instrument_ids),
-            InstrumentMarketData.metric_family.in_(("price", "nav")),
-            InstrumentMarketData.status != "error",
+        select(QuoteObservation.as_of_date)
+        .select_from(QuoteSeries)
+        .join(
+            QuoteObservation,
+            QuoteObservation.quote_series_id == QuoteSeries.quote_series_id,
         )
-        .group_by(InstrumentMarketData.as_of_date)
-        .having(func.count(func.distinct(InstrumentMarketData.instrument_id)) == len(normalized_instrument_ids))
-        .order_by(InstrumentMarketData.as_of_date.desc())
+        .join(
+            QuoteObservationRevision,
+            QuoteObservationRevision.observation_id
+            == QuoteObservation.observation_id,
+        )
+        .where(
+            QuoteSeries.instrument_id.in_(normalized_instrument_ids),
+            QuoteSeries.metric_family.in_(("price", "nav")),
+            QuoteObservationRevision.is_current.is_(True),
+            QuoteObservationRevision.status == "complete",
+            QuoteObservationRevision.value.is_not(None),
+        )
+        .group_by(QuoteObservation.as_of_date)
+        .having(
+            func.count(func.distinct(QuoteSeries.instrument_id))
+            == len(normalized_instrument_ids)
+        )
+        .order_by(QuoteObservation.as_of_date.desc())
         .limit(1)
     )
 
@@ -866,7 +1105,7 @@ def _resolve_live_portfolio_as_of_date(
     item: PortfolioRecordModel,
     *,
     accounts: list[AccountRecordModel],
-    transactions: list[TransactionRecordModel],
+    transactions: list[TransactionCurrentModel],
 ) -> date:
     transaction_rows = [_serialize_transaction_row(transaction) for transaction in transactions]
     portfolio_as_of_date = item.as_of_date
@@ -902,6 +1141,7 @@ def _resolve_live_portfolio_as_of_date(
             boundary_transactions,
             status="open",
             as_of_date=candidate_as_of_date,
+            include_market_valuation=False,
         )
         if str(position_lot.get("instrument_id") or "")
     }
@@ -934,7 +1174,7 @@ def _build_live_portfolio_rollup(
     item: PortfolioRecordModel,
     *,
     accounts: list[AccountRecordModel],
-    transactions: list[TransactionRecordModel],
+    transactions: list[TransactionCurrentModel],
 ) -> dict[str, object]:
     base_payload = _serialize_portfolio_row(item)
     as_of_date = _resolve_live_portfolio_as_of_date(
@@ -948,7 +1188,8 @@ def _build_live_portfolio_rollup(
         return {
             **base_payload,
             "nav": 0.0,
-            "coverage_state": "complete",
+            "nav_coverage_state": "complete",
+            "nav_coverage_reason_codes": [],
             "valuation_coverage": {
                 "account_count": 0,
                 "valued_account_count": 0,
@@ -984,7 +1225,14 @@ def _build_live_portfolio_rollup(
     return {
         **base_payload,
         "nav": nav,
-        "coverage_state": str(summary.get("valuation_coverage_state") or "unavailable"),
+        "nav_coverage_state": str(
+            summary.get("valuation_coverage_state") or "unavailable"
+        ),
+        "nav_coverage_reason_codes": (
+            []
+            if len(valued_accounts) == len(account_rollups)
+            else ["account_valuation_incomplete"]
+        ),
         "valuation_coverage": {
             "account_count": len(account_rollups),
             "valued_account_count": len(valued_accounts),
@@ -1005,14 +1253,14 @@ def _serialize_portfolio_row_with_live_summary(
         .order_by(AccountRecordModel.account_id)
     ).all()
     transactions = session.scalars(
-        select(TransactionRecordModel)
-        .where(TransactionRecordModel.portfolio_id == item.portfolio_id)
+        select(TransactionCurrentModel)
+        .where(TransactionCurrentModel.portfolio_id == item.portfolio_id)
         .order_by(
-            TransactionRecordModel.trade_date,
-            TransactionRecordModel.trade_at,
-            TransactionRecordModel.created_at,
-            TransactionRecordModel.transaction_id,
-            TransactionRecordModel.settlement_date,
+            TransactionCurrentModel.trade_date,
+            TransactionCurrentModel.trade_at,
+            TransactionCurrentModel.created_at,
+            TransactionCurrentModel.transaction_id,
+            TransactionCurrentModel.settlement_date,
         )
     ).all()
     return _build_live_portfolio_rollup(session, item, accounts=accounts, transactions=transactions)
@@ -1028,7 +1276,10 @@ def _serialize_portfolio_row_with_materialized_summary(
         payload["nav"] = None
         payload["day_change_value"] = None
         payload["day_change_pct"] = None
-        payload["coverage_state"] = "unavailable"
+        payload["nav_coverage_state"] = "unavailable"
+        payload["nav_coverage_reason_codes"] = [
+            "materialized_snapshot_not_available"
+        ]
         return payload
 
     snapshot = latest_snapshot.snapshot_json if isinstance(latest_snapshot.snapshot_json, dict) else {}
@@ -1038,7 +1289,12 @@ def _serialize_portfolio_row_with_materialized_summary(
     # misclassify subscriptions, withdrawals, and inception funding as return.
     payload["day_change_value"] = _safe_float(snapshot.get("delta"))
     payload["day_change_pct"] = _safe_float(snapshot.get("daily_twr"))
-    payload["coverage_state"] = str(snapshot.get("coverage_state") or "unavailable")
+    payload["nav_coverage_state"] = str(
+        snapshot.get("nav_coverage_state") or "unavailable"
+    )
+    payload["nav_coverage_reason_codes"] = list(
+        snapshot.get("nav_coverage_reason_codes") or []
+    )
     payload["securities_count"] = int(snapshot.get("total_position_count") or 0)
     return payload
 
@@ -1049,7 +1305,10 @@ def _serialize_account_row(item: AccountRecordModel) -> dict[str, object]:
         "portfolio_id": item.portfolio_id,
         "account_name": item.account_name,
         "account_type": item.account_type,
-        "currency": item.currency,
+        "currency": require_portfolio_fact_currency(
+            item.currency,
+            context=f"Account '{item.account_id}'",
+        ),
         "institution": item.institution,
         "default_settlement_cash_account_id": item.default_settlement_cash_account_id,
         "cost_basis_method": item.cost_basis_method,
@@ -1060,14 +1319,25 @@ def _serialize_account_row(item: AccountRecordModel) -> dict[str, object]:
     }
 
 
-def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object]:
+def _serialize_transaction_row(item: TransactionCurrentModel) -> dict[str, object]:
+    if item.instrument_id:
+        instrument_ref = item.instrument_snapshot_json
+        if not isinstance(instrument_ref, dict):
+            raise ValueError(
+                f"Transaction '{item.transaction_id}' with instrument_id requires instrument_ref."
+            )
+        _validate_instrument_ref_contract(
+            instrument_ref,
+            context=f"Transaction '{item.transaction_id}'",
+            expected_instrument_id=item.instrument_id,
+        )
     return {
         "transaction_id": item.transaction_id,
         "portfolio_id": item.portfolio_id,
         "transaction_type": item.transaction_type,
         "trade_date": item.trade_date.isoformat(),
-        "trade_time": item.trade_time,
-        "trade_at": item.trade_at,
+        "trade_time": _format_trade_time(item.trade_time),
+        "trade_at": _utc_isoformat(item.trade_at),
         "trade_timezone": item.trade_timezone,
         "trade_time_is_estimated": item.trade_time_is_estimated,
         "settlement_date": item.settlement_date.isoformat(),
@@ -1076,7 +1346,7 @@ def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object
         "account_id": item.account_id,
         "settlement_cash_account_id": item.settlement_cash_account_id,
         "instrument_id": item.instrument_id,
-        "instrument_ref": deepcopy(item.instrument_ref_json),
+        "instrument_ref": deepcopy(item.instrument_snapshot_json),
         "quantity": item.quantity,
         "price": item.price,
         "gross_amount": item.gross_amount,
@@ -1084,13 +1354,29 @@ def _serialize_transaction_row(item: TransactionRecordModel) -> dict[str, object
         "fx_rate": item.fx_rate,
         "fees": item.fees,
         "taxes": item.taxes,
-        "currency": item.currency,
+        "currency": require_portfolio_fact_currency(
+            item.currency,
+            context=f"Transaction '{item.transaction_id}'",
+        ),
         "transfer_scope": item.transfer_scope,
         "transfer_object_type": item.transfer_object_type,
         "transfer_group_id": item.transfer_group_id,
         "counterparty_account_id": item.counterparty_account_id,
         "note": item.note,
-        "created_at": item.created_at,
+        "created_at": _utc_isoformat(item.created_at),
+        "revision_id": item.current_revision_id,
+        "revision_number": item.current_revision_number,
+        "lifecycle_status": "active",
+        "last_mutation_id": item.revision_group_id,
+        "last_changed_at": _utc_isoformat(item.recorded_at),
+        "last_actor": {
+            "actor_type": item.actor_type,
+            "actor_id": item.actor_id,
+            "display_name": item.actor_display_name,
+            "actor_source": item.actor_source,
+        },
+        "last_change_reason": item.change_reason,
+        "payload_hash": item.payload_hash,
     }
 
 
@@ -1120,7 +1406,7 @@ def _serialize_portfolio_instrument_universe_row(
     }
 
 
-def _transaction_position_quantity_delta(record: TransactionRecordModel) -> float:
+def _transaction_position_quantity_delta(record: TransactionCurrentModel) -> float:
     quantity = _safe_float(record.quantity) or 0.0
     if quantity <= 0:
         return 0.0
@@ -1136,11 +1422,11 @@ def _transaction_position_quantity_delta(record: TransactionRecordModel) -> floa
     return 0.0
 
 
-def _transaction_record_order_key(record: TransactionRecordModel) -> tuple[str, str, str, str, str]:
+def _transaction_record_order_key(record: TransactionCurrentModel) -> tuple[str, str, str, str, str]:
     return (
         record.trade_date.isoformat() if record.trade_date is not None else "",
-        record.trade_at or "",
-        record.created_at or "",
+        _utc_isoformat(record.trade_at) if record.trade_at is not None else "",
+        _utc_isoformat(record.created_at) if record.created_at is not None else "",
         record.transaction_id or "",
         record.settlement_date.isoformat() if record.settlement_date is not None else "",
     )
@@ -1175,22 +1461,22 @@ def _refresh_portfolio_instrument_universe_records(
         for record in existing_records
     }
 
-    transaction_statement = select(TransactionRecordModel).where(TransactionRecordModel.instrument_id.is_not(None))
+    transaction_statement = select(TransactionCurrentModel).where(TransactionCurrentModel.instrument_id.is_not(None))
     if normalized_portfolio_id:
-        transaction_statement = transaction_statement.where(TransactionRecordModel.portfolio_id == normalized_portfolio_id)
+        transaction_statement = transaction_statement.where(TransactionCurrentModel.portfolio_id == normalized_portfolio_id)
     if normalized_instrument_ids:
-        transaction_statement = transaction_statement.where(TransactionRecordModel.instrument_id.in_(normalized_instrument_ids))
+        transaction_statement = transaction_statement.where(TransactionCurrentModel.instrument_id.in_(normalized_instrument_ids))
     transaction_rows = session.scalars(
         transaction_statement.order_by(
-            TransactionRecordModel.portfolio_id,
-            TransactionRecordModel.instrument_id,
-            TransactionRecordModel.trade_date,
-            TransactionRecordModel.trade_at,
-            TransactionRecordModel.created_at,
-            TransactionRecordModel.transaction_id,
+            TransactionCurrentModel.portfolio_id,
+            TransactionCurrentModel.instrument_id,
+            TransactionCurrentModel.trade_date,
+            TransactionCurrentModel.trade_at,
+            TransactionCurrentModel.created_at,
+            TransactionCurrentModel.transaction_id,
         )
     ).all()
-    transactions_by_key: dict[tuple[str, str], list[TransactionRecordModel]] = {}
+    transactions_by_key: dict[tuple[str, str], list[TransactionCurrentModel]] = {}
     for transaction in transaction_rows:
         instrument_id = str(transaction.instrument_id or "").strip()
         if not instrument_id:
@@ -1241,7 +1527,11 @@ def _refresh_portfolio_instrument_universe_records(
                     created_at=now,
                 )
                 session.add(existing)
-            existing.instrument_ref_json = deepcopy(latest.instrument_ref_json) if isinstance(latest.instrument_ref_json, dict) else None
+            existing.instrument_ref_json = (
+                deepcopy(latest.instrument_snapshot_json)
+                if isinstance(latest.instrument_snapshot_json, dict)
+                else None
+            )
             existing.source = "transaction"
             existing.holding_state = "held" if quantity > 1e-9 else "not_held"
             existing.first_transaction_date = first_transaction_date
@@ -1369,8 +1659,8 @@ TRANSACTION_ID_ALLOCATOR_KEY = "transaction"
 def _next_transaction_number_from_history(session) -> int:
     next_number = 1
     for transaction_id in session.scalars(
-        select(TransactionRecordModel.transaction_id).where(
-            TransactionRecordModel.transaction_id.like("txn-%")
+        select(TransactionIdentityRecordModel.transaction_id).where(
+            TransactionIdentityRecordModel.transaction_id.like("txn-%")
         )
     ):
         normalized = str(transaction_id or "")
@@ -1459,7 +1749,7 @@ def _validate_portfolio_transaction_history(session, portfolio_id: str) -> None:
     )
     transactions = list(
         session.scalars(
-            select(TransactionRecordModel).where(TransactionRecordModel.portfolio_id == portfolio_id)
+            select(TransactionCurrentModel).where(TransactionCurrentModel.portfolio_id == portfolio_id)
         ).all()
     )
     validate_transaction_position_history(
@@ -3124,11 +3414,17 @@ def set_default_planning_taxonomy(
         return _serialize_portfolio_row(portfolio)
 
 
-def create_portfolio(name: str | None = None) -> dict[str, object]:
+def create_portfolio(name: str, *, base_currency: str) -> dict[str, object]:
     session_factory = get_session_factory()
     with session_factory() as session:
         portfolios = session.scalars(select(PortfolioRecordModel)).all()
-        resolved_name = (name or "").strip() or f"Portfolio {len(portfolios) + 1}"
+        resolved_name = name.strip()
+        if not resolved_name:
+            raise ValueError("Portfolio name is required.")
+        resolved_base_currency = require_portfolio_fact_currency(
+            base_currency,
+            context=f"New portfolio '{resolved_name}' base",
+        )
         base_id = _slugify(resolved_name)
         candidate = base_id
         suffix = 2
@@ -3140,7 +3436,7 @@ def create_portfolio(name: str | None = None) -> dict[str, object]:
         record = PortfolioRecordModel(
             portfolio_id=candidate,
             portfolio_name=resolved_name,
-            base_currency="USD",
+            base_currency=resolved_base_currency,
             valuation_timezone="Asia/Shanghai",
             valuation_cutoff_policy="latest_complete_eod",
             as_of_date=date.today(),
@@ -3169,6 +3465,10 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
         source = next((item for item in portfolios if item.portfolio_id == portfolio_id), None)
         if source is None:
             return None
+        source_base_currency = require_portfolio_fact_currency(
+            source.base_currency,
+            context=f"Portfolio '{source.portfolio_id}' base",
+        )
 
         copied_name = f"{source.portfolio_name} Copy"
         base_id = _slugify(copied_name)
@@ -3182,7 +3482,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
         copied = PortfolioRecordModel(
             portfolio_id=candidate,
             portfolio_name=copied_name,
-            base_currency=source.base_currency,
+            base_currency=source_base_currency,
             valuation_timezone=source.valuation_timezone,
             valuation_cutoff_policy=source.valuation_cutoff_policy,
             as_of_date=source.as_of_date,
@@ -3211,7 +3511,10 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     portfolio_id=candidate,
                     account_name=account.account_name,
                     account_type=account.account_type,
-                    currency=account.currency,
+                    currency=require_portfolio_fact_currency(
+                        account.currency,
+                        context=f"Account '{account.account_id}'",
+                    ),
                     institution=account.institution,
                     default_settlement_cash_account_id=(
                         account_id_map.get(account.default_settlement_cash_account_id)
@@ -3346,20 +3649,31 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                 )
             )
 
+        session.flush()
         source_transactions = [
             _serialize_transaction_row(item)
             for item in session.scalars(
-                select(TransactionRecordModel)
-                .where(TransactionRecordModel.portfolio_id == portfolio_id)
+                select(TransactionCurrentModel)
+                .where(TransactionCurrentModel.portfolio_id == portfolio_id)
                 .order_by(
-                    TransactionRecordModel.trade_date,
-                    TransactionRecordModel.trade_at,
-                    TransactionRecordModel.created_at,
-                    TransactionRecordModel.transaction_id,
+                    TransactionCurrentModel.trade_date,
+                    TransactionCurrentModel.trade_at,
+                    TransactionCurrentModel.created_at,
+                    TransactionCurrentModel.transaction_id,
                 )
             ).all()
         ]
         copied_transaction_ids = _allocate_transaction_ids(session, len(source_transactions))
+        transfer_group_id_map = {
+            transfer_group_id: f"{transfer_group_id}-{candidate}"
+            for transfer_group_id in {
+                str(transaction.get("transfer_group_id") or "").strip()
+                for transaction in source_transactions
+            }
+            if transfer_group_id
+        }
+        copied_transaction_commands: list[CreateTransactionRevision] = []
+        copied_at = datetime.now(UTC)
         for transaction, copied_transaction_id in zip(
             source_transactions,
             copied_transaction_ids,
@@ -3383,90 +3697,95 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     str(copied_transaction["counterparty_account_id"]),
                     copied_transaction["counterparty_account_id"],
                 )
-            session.add(
-                TransactionRecordModel(
-                    transaction_id=str(copied_transaction["transaction_id"]),
-                    portfolio_id=str(copied_transaction["portfolio_id"]),
-                    transaction_type=str(copied_transaction["transaction_type"]),
-                    trade_date=date.fromisoformat(str(copied_transaction["trade_date"])),
-                    trade_time=str(copied_transaction["trade_time"]),
-                    trade_at=str(copied_transaction["trade_at"]),
-                    trade_timezone=str(copied_transaction["trade_timezone"]),
-                    trade_time_is_estimated=bool(copied_transaction["trade_time_is_estimated"]),
-                    settlement_date=date.fromisoformat(str(copied_transaction["settlement_date"])),
-                    entitlement_date=(
-                        date.fromisoformat(str(copied_transaction["entitlement_date"]))
-                        if copied_transaction.get("entitlement_date")
-                        else None
-                    ),
-                    acquisition_date=(
-                        date.fromisoformat(str(copied_transaction["acquisition_date"]))
-                        if copied_transaction.get("acquisition_date")
-                        else None
-                    ),
-                    account_id=str(copied_transaction["account_id"]),
-                    settlement_cash_account_id=(
-                        str(copied_transaction["settlement_cash_account_id"])
-                        if copied_transaction.get("settlement_cash_account_id")
-                        else None
-                    ),
-                    instrument_id=(
-                        str(copied_transaction["instrument_id"])
-                        if copied_transaction.get("instrument_id")
-                        else None
-                    ),
-                    instrument_ref_json=deepcopy(copied_transaction.get("instrument_ref")),
-                    quantity=(
-                        float(copied_transaction["quantity"])
-                        if copied_transaction.get("quantity") is not None
-                        else None
-                    ),
-                    price=(
-                        float(copied_transaction["price"])
-                        if copied_transaction.get("price") is not None
-                        else None
-                    ),
-                    gross_amount=float(copied_transaction.get("gross_amount") or 0.0),
-                    counter_amount=(
-                        float(copied_transaction["counter_amount"])
-                        if copied_transaction.get("counter_amount") is not None
-                        else None
-                    ),
-                    fx_rate=(
-                        float(copied_transaction["fx_rate"])
-                        if copied_transaction.get("fx_rate") is not None
-                        else None
-                    ),
-                    fees=float(copied_transaction.get("fees") or 0.0),
-                    taxes=float(copied_transaction.get("taxes") or 0.0),
-                    currency=str(copied_transaction.get("currency") or "USD"),
-                    transfer_scope=(
-                        str(copied_transaction["transfer_scope"])
-                        if copied_transaction.get("transfer_scope")
-                        else None
-                    ),
-                    transfer_object_type=(
-                        str(copied_transaction["transfer_object_type"])
-                        if copied_transaction.get("transfer_object_type")
-                        else None
-                    ),
-                    transfer_group_id=(
-                        str(copied_transaction["transfer_group_id"])
-                        if copied_transaction.get("transfer_group_id")
-                        else None
-                    ),
-                    counterparty_account_id=(
-                        str(copied_transaction["counterparty_account_id"])
-                        if copied_transaction.get("counterparty_account_id")
-                        else None
-                    ),
-                    note=str(copied_transaction["note"]) if copied_transaction.get("note") else None,
-                    created_at=(
-                        str(copied_transaction["created_at"])
-                        if copied_transaction.get("created_at")
-                        else None
-                    ),
+            source_transfer_group_id = str(
+                copied_transaction.get("transfer_group_id") or ""
+            ).strip()
+            copied_transfer_group_id = transfer_group_id_map.get(source_transfer_group_id)
+            facts = _transaction_fact_payload(
+                transaction_id=copied_transaction_id,
+                transaction_type=str(copied_transaction["transaction_type"]),
+                trade_date=date.fromisoformat(str(copied_transaction["trade_date"])),
+                trade_time=str(copied_transaction["trade_time"]),
+                trade_timezone=str(copied_transaction["trade_timezone"]),
+                trade_time_is_estimated=bool(copied_transaction["trade_time_is_estimated"]),
+                trade_at=copied_transaction["trade_at"],
+                settlement_date=date.fromisoformat(str(copied_transaction["settlement_date"])),
+                entitlement_date=(
+                    date.fromisoformat(str(copied_transaction["entitlement_date"]))
+                    if copied_transaction.get("entitlement_date")
+                    else None
+                ),
+                acquisition_date=(
+                    date.fromisoformat(str(copied_transaction["acquisition_date"]))
+                    if copied_transaction.get("acquisition_date")
+                    else None
+                ),
+                account_id=str(copied_transaction["account_id"]),
+                settlement_cash_account_id=(
+                    str(copied_transaction["settlement_cash_account_id"])
+                    if copied_transaction.get("settlement_cash_account_id")
+                    else None
+                ),
+                instrument_id=(
+                    str(copied_transaction["instrument_id"])
+                    if copied_transaction.get("instrument_id")
+                    else None
+                ),
+                instrument_ref=(
+                    deepcopy(copied_transaction.get("instrument_ref"))
+                    if isinstance(copied_transaction.get("instrument_ref"), dict)
+                    else None
+                ),
+                quantity=copied_transaction.get("quantity"),
+                price=copied_transaction.get("price"),
+                gross_amount=copied_transaction.get("gross_amount") or Decimal("0"),
+                counter_amount=copied_transaction.get("counter_amount"),
+                fx_rate=copied_transaction.get("fx_rate"),
+                fees=copied_transaction.get("fees") or Decimal("0"),
+                taxes=copied_transaction.get("taxes") or Decimal("0"),
+                currency=str(copied_transaction["currency"]),
+                transfer_scope=(
+                    str(copied_transaction["transfer_scope"])
+                    if copied_transaction.get("transfer_scope")
+                    else None
+                ),
+                transfer_object_type=(
+                    str(copied_transaction["transfer_object_type"])
+                    if copied_transaction.get("transfer_object_type")
+                    else None
+                ),
+                transfer_group_id=copied_transfer_group_id,
+                counterparty_account_id=(
+                    str(copied_transaction["counterparty_account_id"])
+                    if copied_transaction.get("counterparty_account_id")
+                    else None
+                ),
+                note=str(copied_transaction["note"]) if copied_transaction.get("note") else None,
+            )
+            copied_transaction_commands.append(
+                CreateTransactionRevision(
+                    transaction_id=copied_transaction_id,
+                    facts=facts,
+                    created_at=copied_at,
                 )
+            )
+
+        if copied_transaction_commands:
+            append_transaction_revision_batch(
+                session,
+                portfolio_id=candidate,
+                context=_transaction_revision_context(
+                    actor={
+                        "actor_type": "service",
+                        "actor_id": "system:portfolio-copy",
+                        "display_name": "Portfolio copy service",
+                        "actor_source": "trusted_service",
+                    },
+                    change_reason=f"Copied current facts from portfolio {portfolio_id}",
+                    source_kind="system",
+                    source_ref=portfolio_id,
+                ),
+                mutations=copied_transaction_commands,
             )
 
         session.flush()
@@ -3491,6 +3810,17 @@ def delete_portfolio(portfolio_id: str) -> bool:
         if target is None:
             return False
 
+        transaction_identity_count = session.scalar(
+            select(func.count())
+            .select_from(TransactionIdentityRecordModel)
+            .where(TransactionIdentityRecordModel.portfolio_id == portfolio_id)
+        )
+        if int(transaction_identity_count or 0) > 0:
+            raise ValueError(
+                "A portfolio with transaction audit history cannot be deleted. "
+                "Keep the portfolio as the immutable books-and-records boundary."
+            )
+
         session.execute(
             delete(TaxonomyAssignmentRecordModel).where(
                 TaxonomyAssignmentRecordModel.taxonomy_id.in_(
@@ -3511,7 +3841,6 @@ def delete_portfolio(portfolio_id: str) -> bool:
         session.execute(delete(PortfolioCalculationStateModel).where(PortfolioCalculationStateModel.portfolio_id == portfolio_id))
         session.execute(delete(PortfolioInstrumentUniverseRecordModel).where(PortfolioInstrumentUniverseRecordModel.portfolio_id == portfolio_id))
         session.execute(delete(TaxonomyRecordModel).where(TaxonomyRecordModel.portfolio_id == portfolio_id))
-        session.execute(delete(TransactionRecordModel).where(TransactionRecordModel.portfolio_id == portfolio_id))
         session.execute(delete(AccountRecordModel).where(AccountRecordModel.portfolio_id == portfolio_id))
         session.execute(delete(PortfolioRecordModel).where(PortfolioRecordModel.portfolio_id == portfolio_id))
 
@@ -3589,14 +3918,168 @@ def get_transaction(portfolio_id: str, transaction_id: str) -> dict[str, object]
     session_factory = get_session_factory()
     with session_factory() as session:
         record = session.scalar(
-            select(TransactionRecordModel).where(
-                TransactionRecordModel.portfolio_id == portfolio_id,
-                TransactionRecordModel.transaction_id == transaction_id,
+            select(TransactionCurrentModel).where(
+                TransactionCurrentModel.portfolio_id == portfolio_id,
+                TransactionCurrentModel.transaction_id == transaction_id,
             )
         )
         if record is None:
             return None
         return _serialize_transaction_row(record)
+
+
+_REVISION_FACT_FIELDS = (
+    "transaction_type",
+    "trade_date",
+    "trade_time",
+    "trade_at",
+    "trade_timezone",
+    "trade_time_is_estimated",
+    "settlement_date",
+    "entitlement_date",
+    "acquisition_date",
+    "account_id",
+    "settlement_cash_account_id",
+    "instrument_id",
+    "instrument_snapshot_json",
+    "quantity",
+    "price",
+    "gross_amount",
+    "counter_amount",
+    "fx_rate",
+    "fees",
+    "taxes",
+    "currency",
+    "transfer_scope",
+    "transfer_object_type",
+    "transfer_group_id",
+    "counterparty_account_id",
+    "note",
+)
+
+
+def _serialize_transaction_revision_snapshot(
+    revision: TransactionRevisionRecordModel,
+    *,
+    created_at: datetime,
+) -> dict[str, object] | None:
+    if revision.is_tombstone:
+        return None
+    if revision.trade_date is None or revision.trade_time is None or revision.trade_at is None:
+        raise ValueError(f"Transaction revision '{revision.revision_id}' has incomplete timing facts.")
+    if revision.settlement_date is None or revision.account_id is None:
+        raise ValueError(f"Transaction revision '{revision.revision_id}' has incomplete account facts.")
+    return {
+        "transaction_type": revision.transaction_type,
+        "trade_date": revision.trade_date.isoformat(),
+        "trade_time": _format_trade_time(revision.trade_time),
+        "trade_at": _utc_isoformat(revision.trade_at),
+        "trade_timezone": revision.trade_timezone,
+        "trade_time_is_estimated": bool(revision.trade_time_is_estimated),
+        "settlement_date": revision.settlement_date.isoformat(),
+        "entitlement_date": (
+            revision.entitlement_date.isoformat()
+            if revision.entitlement_date is not None
+            else None
+        ),
+        "acquisition_date": (
+            revision.acquisition_date.isoformat()
+            if revision.acquisition_date is not None
+            else None
+        ),
+        "account_id": revision.account_id,
+        "settlement_cash_account_id": revision.settlement_cash_account_id,
+        "instrument_id": revision.instrument_id,
+        "instrument_ref": deepcopy(revision.instrument_snapshot_json),
+        "quantity": revision.quantity,
+        "price": revision.price,
+        "gross_amount": revision.gross_amount,
+        "counter_amount": revision.counter_amount,
+        "fx_rate": revision.fx_rate,
+        "fees": revision.fees,
+        "taxes": revision.taxes,
+        "currency": revision.currency,
+        "transfer_scope": revision.transfer_scope,
+        "transfer_object_type": revision.transfer_object_type,
+        "transfer_group_id": revision.transfer_group_id,
+        "counterparty_account_id": revision.counterparty_account_id,
+        "note": revision.note,
+        "created_at": _utc_isoformat(created_at),
+    }
+
+
+def get_transaction_revision_history(
+    portfolio_id: str,
+    transaction_id: str,
+) -> dict[str, object] | None:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        identity = session.scalar(
+            select(TransactionIdentityRecordModel).where(
+                TransactionIdentityRecordModel.portfolio_id == portfolio_id,
+                TransactionIdentityRecordModel.transaction_id == transaction_id,
+            )
+        )
+        if identity is None:
+            return None
+        history = list_revision_history_records(
+            session,
+            portfolio_id=portfolio_id,
+            transaction_id=transaction_id,
+        )
+        if not history:
+            raise ValueError(f"Transaction '{transaction_id}' has an identity without revisions.")
+
+        serialized_revisions: list[dict[str, object]] = []
+        previous_revision: TransactionRevisionRecordModel | None = None
+        for entry in history:
+            revision = entry.revision
+            if revision.revision_kind == "amend" and previous_revision is not None:
+                changed_fields = [
+                    ("instrument_ref" if field_name == "instrument_snapshot_json" else field_name)
+                    for field_name in _REVISION_FACT_FIELDS
+                    if getattr(previous_revision, field_name) != getattr(revision, field_name)
+                ]
+            elif revision.is_tombstone:
+                changed_fields = ["lifecycle_status"]
+            else:
+                changed_fields = []
+            serialized_revisions.append(
+                {
+                    "revision_id": revision.revision_id,
+                    "transaction_id": revision.transaction_id,
+                    "portfolio_id": revision.portfolio_id,
+                    "revision_number": revision.revision_number,
+                    "previous_revision_id": revision.supersedes_revision_id,
+                    "mutation_id": revision.revision_group_id,
+                    "operation": revision.revision_kind,
+                    "lifecycle_status": "deleted" if revision.is_tombstone else "active",
+                    "recorded_at": _utc_isoformat(entry.group.recorded_at),
+                    "actor": {
+                        "actor_type": entry.group.actor_type,
+                        "actor_id": entry.group.actor_id,
+                        "display_name": entry.group.actor_display_name,
+                        "actor_source": entry.group.actor_source,
+                    },
+                    "change_reason": entry.group.change_reason,
+                    "changed_fields": changed_fields,
+                    "snapshot": _serialize_transaction_revision_snapshot(
+                        revision,
+                        created_at=identity.created_at,
+                    ),
+                }
+            )
+            previous_revision = revision
+
+        latest = history[-1].revision
+        return {
+            "portfolio_id": portfolio_id,
+            "transaction_id": transaction_id,
+            "current_revision_id": latest.revision_id,
+            "current_revision_number": latest.revision_number,
+            "lifecycle_status": "deleted" if latest.is_tombstone else "active",
+            "revisions": serialized_revisions,
+        }
 
 
 def create_account(
@@ -3629,7 +4112,10 @@ def create_account(
             portfolio_id=portfolio_id,
             account_name=account_name.strip(),
             account_type=account_type,
-            currency=currency.upper(),
+            currency=require_portfolio_fact_currency(
+                currency,
+                context=f"New account in portfolio '{portfolio_id}'",
+            ),
             institution=(institution or "").strip() or None,
             default_settlement_cash_account_id=default_settlement_cash_account_id,
             cost_basis_method=cost_basis_method,
@@ -3679,15 +4165,15 @@ def update_account(
         first_instrument_transaction_date = None
         if cost_basis_method != previous_cost_basis_method:
             first_instrument_transaction_date = session.scalar(
-                select(func.min(TransactionRecordModel.trade_date)).where(
-                    TransactionRecordModel.portfolio_id == portfolio_id,
+                select(func.min(TransactionCurrentModel.trade_date)).where(
+                    TransactionCurrentModel.portfolio_id == portfolio_id,
                     or_(
-                        TransactionRecordModel.account_id == account_id,
-                        TransactionRecordModel.counterparty_account_id == account_id,
+                        TransactionCurrentModel.account_id == account_id,
+                        TransactionCurrentModel.counterparty_account_id == account_id,
                     ),
                     or_(
-                        TransactionRecordModel.instrument_id.is_not(None),
-                        TransactionRecordModel.transfer_object_type == "position",
+                        TransactionCurrentModel.instrument_id.is_not(None),
+                        TransactionCurrentModel.transfer_object_type == "position",
                     ),
                 )
             )
@@ -3728,33 +4214,33 @@ def list_transactions(
 ) -> list[dict[str, object]]:
     session_factory = get_session_factory()
     with session_factory() as session:
-        statement = select(TransactionRecordModel).where(TransactionRecordModel.portfolio_id == portfolio_id)
+        statement = select(TransactionCurrentModel).where(TransactionCurrentModel.portfolio_id == portfolio_id)
         if account_id:
             statement = statement.where(
                 or_(
-                    TransactionRecordModel.account_id == account_id,
+                    TransactionCurrentModel.account_id == account_id,
                     and_(
-                        TransactionRecordModel.transaction_type == "fx_conversion",
-                        TransactionRecordModel.counterparty_account_id == account_id,
+                        TransactionCurrentModel.transaction_type == "fx_conversion",
+                        TransactionCurrentModel.counterparty_account_id == account_id,
                     ),
                 )
             )
         if transaction_type:
-            statement = statement.where(TransactionRecordModel.transaction_type == transaction_type)
+            statement = statement.where(TransactionCurrentModel.transaction_type == transaction_type)
         if instrument_id:
-            statement = statement.where(TransactionRecordModel.instrument_id == instrument_id)
+            statement = statement.where(TransactionCurrentModel.instrument_id == instrument_id)
         if start_date is not None:
-            statement = statement.where(TransactionRecordModel.trade_date >= start_date)
+            statement = statement.where(TransactionCurrentModel.trade_date >= start_date)
         if end_date is not None:
-            statement = statement.where(TransactionRecordModel.trade_date <= end_date)
+            statement = statement.where(TransactionCurrentModel.trade_date <= end_date)
 
         records = session.scalars(
             statement.order_by(
-                TransactionRecordModel.trade_date.desc(),
-                TransactionRecordModel.trade_at.desc(),
-                TransactionRecordModel.created_at.desc(),
-                TransactionRecordModel.transaction_id.desc(),
-                TransactionRecordModel.settlement_date.desc(),
+                TransactionCurrentModel.trade_date.desc(),
+                TransactionCurrentModel.trade_at.desc(),
+                TransactionCurrentModel.created_at.desc(),
+                TransactionCurrentModel.transaction_id.desc(),
+                TransactionCurrentModel.settlement_date.desc(),
             )
         ).all()
         return [_serialize_transaction_row(item) for item in records]
@@ -3788,20 +4274,26 @@ def create_transaction(
     settlement_cash_account_id: str | None,
     instrument_id: str | None,
     instrument_ref: dict[str, object] | None,
-    quantity: float | None,
-    price: float | None,
-    gross_amount: float,
-    counter_amount: float | None,
-    fx_rate: float | None,
-    fees: float,
-    taxes: float,
+    quantity: Decimal | int | float | str | None,
+    price: Decimal | int | float | str | None,
+    gross_amount: Decimal | int | float | str,
+    counter_amount: Decimal | int | float | str | None,
+    fx_rate: Decimal | int | float | str | None,
+    fees: Decimal | int | float | str,
+    taxes: Decimal | int | float | str,
     currency: str,
     transfer_scope: str | None,
     transfer_object_type: str | None,
     transfer_group_id: str | None,
     counterparty_account_id: str | None,
     note: str | None,
+    actor: Mapping[str, object],
+    change_reason: str | None,
     created_at: str | None = None,
+    source_kind: str = "manual",
+    request_id: str | None = None,
+    idempotency_key: str | None = None,
+    source_ref: str | None = None,
 ) -> dict[str, object]:
     records = create_transactions(
         portfolio_id=portfolio_id,
@@ -3833,6 +4325,12 @@ def create_transaction(
                 "created_at": created_at,
             }
         ],
+        actor=actor,
+        change_reason=change_reason,
+        source_kind=source_kind,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        source_ref=source_ref,
     )
     return records[0]
 
@@ -3841,6 +4339,12 @@ def create_transactions(
     portfolio_id: str,
     *,
     records: list[dict[str, Any]],
+    actor: Mapping[str, object],
+    change_reason: str | None,
+    source_kind: str = "manual",
+    request_id: str | None = None,
+    idempotency_key: str | None = None,
+    source_ref: str | None = None,
 ) -> list[dict[str, object]]:
     if not records:
         return []
@@ -3850,17 +4354,26 @@ def create_transactions(
         if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
             raise ValueError("Portfolio no longer exists.")
         transaction_ids = _allocate_transaction_ids(session, len(records))
-        created: list[TransactionRecordModel] = []
+        recorded_at = datetime.now(UTC)
+        commands: list[CreateTransactionRevision] = []
+        facts_by_transaction_id: dict[str, TransactionFactPayload] = {}
         for values, transaction_id in zip(records, transaction_ids, strict=True):
-            record = TransactionRecordModel(
+            facts = _transaction_fact_payload(
                 transaction_id=transaction_id,
-                portfolio_id=portfolio_id,
-            )
-            _apply_transaction_record(
-                record,
                 transaction_type=str(values["transaction_type"]),
                 trade_date=values["trade_date"],
                 trade_time=values.get("trade_time"),
+                trade_timezone=(
+                    str(values["trade_timezone"])
+                    if values.get("trade_timezone")
+                    else None
+                ),
+                trade_time_is_estimated=(
+                    bool(values["trade_time_is_estimated"])
+                    if values.get("trade_time_is_estimated") is not None
+                    else None
+                ),
+                trade_at=values.get("trade_at"),
                 settlement_date=values["settlement_date"],
                 entitlement_date=values.get("entitlement_date"),
                 acquisition_date=values.get("acquisition_date"),
@@ -3878,11 +4391,11 @@ def create_transactions(
                 ),
                 quantity=values.get("quantity"),
                 price=values.get("price"),
-                gross_amount=float(values["gross_amount"]),
+                gross_amount=values["gross_amount"],
                 counter_amount=values.get("counter_amount"),
                 fx_rate=values.get("fx_rate"),
-                fees=float(values["fees"]),
-                taxes=float(values["taxes"]),
+                fees=values["fees"],
+                taxes=values["taxes"],
                 currency=str(values["currency"]),
                 transfer_scope=str(values["transfer_scope"]) if values.get("transfer_scope") else None,
                 transfer_object_type=(
@@ -3895,17 +4408,47 @@ def create_transactions(
                     else None
                 ),
                 note=str(values["note"]) if values.get("note") is not None else None,
-                created_at=str(values.get("created_at") or _current_utc_timestamp()),
             )
-            session.add(record)
-            session.flush()
-            created.append(record)
+            created_at = _parse_aware_utc_datetime(
+                values.get("created_at") or recorded_at,
+                field_name=f"Transaction '{transaction_id}' created_at",
+            )
+            commands.append(
+                CreateTransactionRevision(
+                    transaction_id=transaction_id,
+                    facts=facts,
+                    created_at=created_at,
+                )
+            )
+            facts_by_transaction_id[transaction_id] = facts
+
+        append_transaction_revision_batch(
+            session,
+            portfolio_id=portfolio_id,
+            context=_transaction_revision_context(
+                actor=actor,
+                change_reason=(change_reason or "Initial transaction recorded").strip(),
+                source_kind=source_kind,
+                recorded_at=recorded_at,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                source_ref=source_ref,
+            ),
+            mutations=commands,
+        )
+        created_by_id = refresh_transaction_current_projection(
+            session,
+            portfolio_id=portfolio_id,
+            transaction_ids=transaction_ids,
+        )
+        if set(created_by_id) != set(transaction_ids):
+            raise RuntimeError("Created transaction revisions are missing from transaction_current.")
         _validate_portfolio_transaction_history(session, portfolio_id)
-        dirty_from = min((record.trade_date for record in created), default=None)
+        dirty_from = min((facts.trade_date for facts in facts_by_transaction_id.values()), default=None)
         affected_instrument_ids = {
-            str(record.instrument_id or "").strip()
-            for record in created
-            if str(record.instrument_id or "").strip()
+            str(facts.instrument_id or "").strip()
+            for facts in facts_by_transaction_id.values()
+            if str(facts.instrument_id or "").strip()
         }
         _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
         _mark_daily_snapshots_stale(
@@ -3914,7 +4457,7 @@ def create_transactions(
             session=session,
         )
         session.commit()
-        return [_serialize_transaction_row(record) for record in created]
+        return [_serialize_transaction_row(created_by_id[transaction_id]) for transaction_id in transaction_ids]
 
 
 def update_transaction(
@@ -3931,37 +4474,48 @@ def update_transaction(
     settlement_cash_account_id: str | None,
     instrument_id: str | None,
     instrument_ref: dict[str, object] | None,
-    quantity: float | None,
-    price: float | None,
-    gross_amount: float,
-    counter_amount: float | None,
-    fx_rate: float | None,
-    fees: float,
-    taxes: float,
+    quantity: Decimal | int | float | str | None,
+    price: Decimal | int | float | str | None,
+    gross_amount: Decimal | int | float | str,
+    counter_amount: Decimal | int | float | str | None,
+    fx_rate: Decimal | int | float | str | None,
+    fees: Decimal | int | float | str,
+    taxes: Decimal | int | float | str,
     currency: str,
     transfer_scope: str | None,
     transfer_object_type: str | None,
     transfer_group_id: str | None,
     counterparty_account_id: str | None,
     note: str | None,
-    created_at: str | None = None,
+    expected_revision_id: str,
+    expected_revision_number: int,
+    actor: Mapping[str, object],
+    change_reason: str,
+    source_kind: str = "manual",
+    request_id: str | None = None,
+    idempotency_key: str | None = None,
+    source_ref: str | None = None,
 ) -> dict[str, object] | None:
     session_factory = get_session_factory()
     with session_factory() as session:
         if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
             return None
         record = session.scalar(
-            select(TransactionRecordModel).where(
-                TransactionRecordModel.portfolio_id == portfolio_id,
-                TransactionRecordModel.transaction_id == transaction_id,
+            select(TransactionCurrentModel).where(
+                TransactionCurrentModel.portfolio_id == portfolio_id,
+                TransactionCurrentModel.transaction_id == transaction_id,
             )
         )
         if record is None:
             return None
+        if record.transfer_group_id or record.transaction_type in {"transfer_in", "transfer_out"}:
+            raise ValueError(
+                "Paired internal transfer facts must be deleted and recreated as one batch."
+            )
         previous_trade_date = record.trade_date
         previous_instrument_id = str(record.instrument_id or "").strip()
-        _apply_transaction_record(
-            record,
+        facts = _transaction_fact_payload(
+            transaction_id=transaction_id,
             transaction_type=transaction_type,
             trade_date=trade_date,
             trade_time=trade_time,
@@ -3985,18 +4539,47 @@ def update_transaction(
             transfer_group_id=transfer_group_id,
             counterparty_account_id=counterparty_account_id,
             note=note,
-            created_at=created_at or record.created_at or _current_utc_timestamp(),
         )
+        append_transaction_revision_batch(
+            session,
+            portfolio_id=portfolio_id,
+            context=_transaction_revision_context(
+                actor=actor,
+                change_reason=change_reason,
+                source_kind=source_kind,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                source_ref=source_ref,
+            ),
+            mutations=(
+                AmendTransactionRevision(
+                    transaction_id=transaction_id,
+                    expected_revision_id=expected_revision_id,
+                    expected_revision_number=expected_revision_number,
+                    facts=facts,
+                ),
+            ),
+        )
+        current_by_id = refresh_transaction_current_projection(
+            session,
+            portfolio_id=portfolio_id,
+            transaction_ids=(transaction_id,),
+        )
+        updated_record = current_by_id.get(transaction_id)
+        if updated_record is None:
+            raise RuntimeError("Amended transaction is missing from transaction_current.")
         dirty_from = min(
-            (candidate for candidate in (previous_trade_date, record.trade_date) if candidate is not None),
+            (candidate for candidate in (previous_trade_date, updated_record.trade_date) if candidate is not None),
             default=None,
         )
         affected_instrument_ids = {
-            instrument_id
-            for instrument_id in {previous_instrument_id, str(record.instrument_id or "").strip()}
-            if instrument_id
+            affected_instrument_id
+            for affected_instrument_id in {
+                previous_instrument_id,
+                str(updated_record.instrument_id or "").strip(),
+            }
+            if affected_instrument_id
         }
-        session.flush()
         _validate_portfolio_transaction_history(session, portfolio_id)
         _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
         _mark_daily_snapshots_stale(
@@ -4005,13 +4588,20 @@ def update_transaction(
             session=session,
         )
         session.commit()
-        return _serialize_transaction_row(record)
+        return _serialize_transaction_row(updated_record)
 
 
 def delete_transactions(
     portfolio_id: str,
     *,
     transaction_ids: list[str],
+    expected_revisions: Mapping[str, tuple[str, int]],
+    actor: Mapping[str, object],
+    change_reason: str,
+    source_kind: str = "manual",
+    request_id: str | None = None,
+    idempotency_key: str | None = None,
+    source_ref: str | None = None,
 ) -> list[dict[str, object]]:
     normalized_transaction_ids = [transaction_id.strip() for transaction_id in transaction_ids if transaction_id.strip()]
     if not normalized_transaction_ids:
@@ -4022,20 +4612,70 @@ def delete_transactions(
         if not _lock_portfolio_for_transaction_mutation(session, portfolio_id):
             return []
         records = session.scalars(
-            select(TransactionRecordModel).where(
-                TransactionRecordModel.portfolio_id == portfolio_id,
-                TransactionRecordModel.transaction_id.in_(normalized_transaction_ids),
+            select(TransactionCurrentModel).where(
+                TransactionCurrentModel.portfolio_id == portfolio_id,
+                TransactionCurrentModel.transaction_id.in_(normalized_transaction_ids),
             )
         ).all()
+        for transaction_id in normalized_transaction_ids:
+            if transaction_id not in expected_revisions:
+                raise ValueError(
+                    f"Expected revision is required for transaction '{transaction_id}'."
+                )
+
+        transfer_group_ids = {
+            str(record.transfer_group_id or "").strip()
+            for record in records
+            if str(record.transfer_group_id or "").strip()
+        }
+        for transfer_group_id in transfer_group_ids:
+            paired_ids = set(
+                session.scalars(
+                    select(TransactionCurrentModel.transaction_id).where(
+                        TransactionCurrentModel.portfolio_id == portfolio_id,
+                        TransactionCurrentModel.transfer_group_id == transfer_group_id,
+                    )
+                ).all()
+            )
+            if not paired_ids.issubset(set(normalized_transaction_ids)):
+                raise ValueError(
+                    f"Internal transfer group '{transfer_group_id}' must be deleted atomically."
+                )
+
         serialized = [_serialize_transaction_row(record) for record in records]
         affected_instrument_ids = {
             str(record.instrument_id or "").strip()
             for record in records
             if str(record.instrument_id or "").strip()
         }
-        for record in records:
-            session.delete(record)
-        session.flush()
+        commands = [
+            DeleteTransactionRevision(
+                transaction_id=transaction_id,
+                expected_revision_id=expected_revisions[transaction_id][0],
+                expected_revision_number=expected_revisions[transaction_id][1],
+            )
+            for transaction_id in normalized_transaction_ids
+        ]
+        appended = append_transaction_revision_batch(
+            session,
+            portfolio_id=portfolio_id,
+            context=_transaction_revision_context(
+                actor=actor,
+                change_reason=change_reason,
+                source_kind=source_kind,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                source_ref=source_ref,
+            ),
+            mutations=commands,
+        )
+        remaining = refresh_transaction_current_projection(
+            session,
+            portfolio_id=portfolio_id,
+            transaction_ids=normalized_transaction_ids,
+        )
+        if remaining:
+            raise RuntimeError("Deleted transaction revisions remain in transaction_current.")
         _validate_portfolio_transaction_history(session, portfolio_id)
         _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
         deleted_dates = [
@@ -4049,72 +4689,19 @@ def delete_transactions(
             dirty_from=dirty_from,
             session=session,
         )
+        deletion_by_id = {
+            revision.transaction_id: revision for revision in appended.revisions
+        }
+        for record in serialized:
+            transaction_id = str(record.get("transaction_id") or "")
+            deletion = deletion_by_id[transaction_id]
+            record["deleted_revision_id"] = deletion.revision_id
+            record["deleted_revision_number"] = deletion.revision_number
+            record["last_mutation_id"] = deletion.revision_group_id
         session.commit()
-        return serialized
-
-
-def _apply_transaction_record(
-    record: TransactionRecordModel,
-    *,
-    transaction_type: str,
-    trade_date: date,
-    trade_time: str | None,
-    settlement_date: date,
-    entitlement_date: date | None,
-    acquisition_date: date | None,
-    account_id: str,
-    settlement_cash_account_id: str | None,
-    instrument_id: str | None,
-    instrument_ref: dict[str, object] | None,
-    quantity: float | None,
-    price: float | None,
-    gross_amount: float,
-    counter_amount: float | None,
-    fx_rate: float | None,
-    fees: float,
-    taxes: float,
-    currency: str,
-    transfer_scope: str | None,
-    transfer_object_type: str | None,
-    transfer_group_id: str | None,
-    counterparty_account_id: str | None,
-    note: str | None,
-    created_at: str,
-) -> None:
-    if isinstance(instrument_ref, dict):
-        _validate_instrument_ref_contract(
-            instrument_ref,
-            context=f"Transaction '{record.transaction_id}'",
-            expected_instrument_id=instrument_id,
+        return sorted(
+            serialized,
+            key=lambda item: normalized_transaction_ids.index(
+                str(item.get("transaction_id") or "")
+            ),
         )
-    elif instrument_id:
-        raise ValueError(f"Transaction '{record.transaction_id}' with instrument_id requires instrument_ref.")
-
-    resolved_timing = resolve_trade_timing(trade_date=trade_date, trade_time=trade_time)
-    record.transaction_type = transaction_type
-    record.trade_date = trade_date
-    record.trade_time = str(resolved_timing["trade_time"])
-    record.trade_at = str(resolved_timing["trade_at"])
-    record.trade_timezone = str(resolved_timing["trade_timezone"])
-    record.trade_time_is_estimated = bool(resolved_timing["trade_time_is_estimated"])
-    record.settlement_date = settlement_date
-    record.entitlement_date = entitlement_date
-    record.acquisition_date = acquisition_date
-    record.account_id = account_id
-    record.settlement_cash_account_id = settlement_cash_account_id
-    record.instrument_id = instrument_id
-    record.instrument_ref_json = deepcopy(instrument_ref) if isinstance(instrument_ref, dict) else None
-    record.quantity = quantity
-    record.price = price
-    record.gross_amount = gross_amount
-    record.counter_amount = counter_amount
-    record.fx_rate = fx_rate
-    record.fees = fees
-    record.taxes = taxes
-    record.currency = currency.upper()
-    record.transfer_scope = transfer_scope
-    record.transfer_object_type = transfer_object_type
-    record.transfer_group_id = transfer_group_id
-    record.counterparty_account_id = counterparty_account_id
-    record.note = (note or "").strip() or None
-    record.created_at = created_at

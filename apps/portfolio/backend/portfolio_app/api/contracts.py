@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from datetime import date, time
-from typing import Literal
+from datetime import date, datetime, time
+import re
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    WithJsonSchema,
+    field_validator,
+    model_validator,
+)
 from portfolio_ops_instrument_core.models import InstrumentCore as InstrumentCoreContract
 from portfolio_ops_instrument_core.models import CorporateActionEvent as CorporateActionEventContract
 from portfolio_ops_instrument_core.models import InstrumentIdentifier as InstrumentIdentifierContract
@@ -13,7 +23,11 @@ from portfolio_ops_instrument_core.models import (
     IdentifierType,
     InstrumentType,
     MetricFamily,
+    ObservationFreshnessStatus,
     QuoteBasis,
+    QuoteReliabilityStatus,
+    QuoteResolutionStatus,
+    QuoteSeriesCoverageStatus,
 )
 
 
@@ -82,13 +96,64 @@ PortfolioRiskCalculationFrequency = Literal["auto", "daily", "weekly", "monthly"
 PortfolioRiskCovarianceModel = Literal["ewma_vol_shrinkage_corr_covariance", "ewma_covariance", "sample_covariance"]
 PortfolioRiskContributionMode = Literal["signed", "abs"]
 TargetSetType = Literal["saa", "taa"]
+TwrState = Literal["linked", "carry_forward", "broken", "reanchor", "no_anchor"]
+TwrReliabilityStatus = Literal["reliable", "qualified", "unavailable"]
+TwrReliabilityReason = Literal[
+    "stale_valuation_on_external_flow",
+    "incomplete_valuation_on_external_flow",
+    "awaiting_fresh_valuation_anchor",
+    "fresh_valuation_reanchor",
+    "invalid_return_denominator",
+    "crosses_broken_twr_boundary",
+    "stale_valuation_without_external_flow",
+    "carried_forward_valuation_without_external_flow",
+    "carried_forward_valuation_on_external_flow",
+]
+AnnualizedReturnEligibilityReason = Literal[
+    "performance_history_window_unavailable",
+    "annualized_return_history_below_minimum",
+]
 
 SUPPORTED_PORTFOLIO_CURRENCIES: tuple[SupportedCurrency, ...] = ("USD", "HKD", "CNY")
 SUPPORTED_RISK_WINDOW_DAYS = {30, 90, 180, 366, 730}
-QUANTITY_DISPLAY_QUANTUM = Decimal("0.01")
+QUANTITY_STORAGE_QUANTUM = Decimal("0.000000000001")
+AMOUNT_STORAGE_QUANTUM = Decimal("0.00000001")
+PRICE_STORAGE_QUANTUM = Decimal("0.000000000001")
+FX_RATE_STORAGE_QUANTUM = Decimal("0.000000000000000001")
 AMOUNT_DISPLAY_QUANTUM = Decimal("0.01")
 PRICE_DISPLAY_QUANTUM = Decimal("0.0001")
 AMOUNT_CONTRACT_EPSILON = Decimal("0.000001")
+TRANSACTION_DECIMAL_PATTERN = r"^[+-]?(?:0|[1-9]\d*)(?:\.\d+)?$"
+
+
+def _serialize_transaction_decimal(value: Decimal) -> str:
+    return format(value, "f")
+
+
+TransactionDecimal = Annotated[
+    Decimal,
+    PlainSerializer(_serialize_transaction_decimal, return_type=str, when_used="json"),
+]
+
+
+def _require_transaction_decimal_string(value: object) -> object:
+    if not isinstance(value, str):
+        raise ValueError("Transaction decimal values must be JSON strings.")
+    normalized = value.strip()
+    if not re.fullmatch(TRANSACTION_DECIMAL_PATTERN, normalized):
+        raise ValueError("Transaction decimal values must use plain decimal notation.")
+    return normalized
+
+
+TransactionInputDecimal = Annotated[
+    Decimal,
+    BeforeValidator(_require_transaction_decimal_string),
+    PlainSerializer(_serialize_transaction_decimal, return_type=str, when_used="json"),
+    WithJsonSchema(
+        {"type": "string", "pattern": TRANSACTION_DECIMAL_PATTERN},
+        mode="validation",
+    ),
+]
 
 
 def _to_decimal(value: object) -> Decimal | None:
@@ -136,14 +201,25 @@ def _amount_contract_matches_display_price(
 def _quantize_numeric_input(value: object, *, quantum: Decimal) -> object:
     if value is None:
         return None
-    if isinstance(value, str):
-        normalized = value.strip()
-        if not normalized:
-            return None
+    if not isinstance(value, str):
+        return value
+    normalized = value.strip()
+    if not normalized:
+        return None
     resolved_value = _to_decimal(value)
     if resolved_value is None:
         return value
-    return float(resolved_value.quantize(quantum, rounding=ROUND_HALF_UP))
+    if not resolved_value.is_finite():
+        return value
+    try:
+        quantized = resolved_value.quantize(quantum)
+    except InvalidOperation:
+        return value
+    if quantized != resolved_value:
+        raise ValueError(
+            f"Value cannot be represented without rounding at scale {-quantum.as_tuple().exponent}."
+        )
+    return normalized
 
 
 def _normalize_required_text(value: object) -> object:
@@ -209,7 +285,7 @@ class SharedFxRateRecord(BaseModel):
     source_kind: str
     instrument_id: str | None = None
     source_instrument_ids: list[str] = Field(default_factory=list)
-    provider: str | None = None
+    source_ref: str | None = None
     status: CoverageState = "complete"
 
 
@@ -313,6 +389,34 @@ class AccountUpdateRequest(BaseModel):
         return self
 
 
+TransactionActorType = Literal["user", "service", "migration"]
+TransactionActorSource = Literal[
+    "client_asserted",
+    "authenticated_principal",
+    "trusted_service",
+    "migration",
+]
+TransactionLifecycleStatus = Literal["active", "deleted"]
+TransactionRevisionOperation = Literal["baseline", "create", "amend", "delete"]
+
+
+class _TransactionActorBase(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    actor_id: str = Field(min_length=1, max_length=128)
+    display_name: str = Field(min_length=1, max_length=128)
+
+
+class TransactionActorInput(_TransactionActorBase):
+    actor_type: Literal["user"] = "user"
+    actor_source: Literal["client_asserted"] = "client_asserted"
+
+
+class TransactionActorRecord(_TransactionActorBase):
+    actor_type: TransactionActorType
+    actor_source: TransactionActorSource
+
+
 class TransactionRecord(BaseModel):
     transaction_id: str
     portfolio_id: str
@@ -330,21 +434,28 @@ class TransactionRecord(BaseModel):
     settlement_cash_account: AccountRecord | None = None
     instrument_id: str | None = None
     instrument_ref: InstrumentCoreContract | None = None
-    quantity: float | None = None
-    price: float | None = None
-    gross_amount: float
-    counter_amount: float | None = None
-    fx_rate: float | None = None
-    fees: float = 0.0
-    taxes: float = 0.0
+    quantity: TransactionDecimal | None = None
+    price: TransactionDecimal | None = None
+    gross_amount: TransactionDecimal
+    counter_amount: TransactionDecimal | None = None
+    fx_rate: TransactionDecimal | None = None
+    fees: TransactionDecimal = Decimal("0.00")
+    taxes: TransactionDecimal = Decimal("0.00")
     currency: str
     transfer_scope: TransferScope | None = None
     transfer_object_type: TransferObjectType | None = None
     transfer_group_id: str | None = None
     counterparty_account_id: str | None = None
-    net_cash_effect: float | None = None
+    net_cash_effect: TransactionDecimal | None = None
     note: str | None = None
     created_at: str | None = None
+    revision_id: str
+    revision_number: int = Field(ge=1)
+    lifecycle_status: TransactionLifecycleStatus
+    last_mutation_id: str
+    last_changed_at: datetime
+    last_actor: TransactionActorRecord
+    last_change_reason: str | None = None
 
 
 class TransactionListSummary(BaseModel):
@@ -398,6 +509,7 @@ class AccountPositionRecord(BaseModel):
     quantity: float
     cost_basis: float | None = None
     last_price: float | None = None
+    valuation_quote: dict[str, object] | None = None
     market_value: float | None = None
     currency: str
     cost_basis_method: CostBasisMethod | None = None
@@ -412,6 +524,7 @@ class PositionRecord(BaseModel):
     quantity: float
     cost_basis: float | None = None
     last_price: float | None = None
+    valuation_quote: dict[str, object] | None = None
     market_value: float | None = None
     currency: str
     account_ids: list[str] = Field(default_factory=list)
@@ -466,9 +579,27 @@ class TransactionExecutionQuoteResponse(BaseModel):
     quote_basis: QuoteBasis | None = None
     metric_family: MetricFamily | None = None
     currency: str
-    provider: str | None = None
+    source_ref: str | None = None
+    source_status: Literal["complete", "partial", "rejected", "withdrawn"] | None = None
     status: CoverageState
+    resolution_status: Literal["resolved", "unavailable"]
+    freshness_status: Literal["current", "late", "missing"]
+    ingestion_status: Literal["current", "unknown"]
+    reliability_status: Literal["reliable", "qualified", "unavailable"]
+    reason_codes: list[str] = Field(default_factory=list)
     stale: bool = False
+    carry_forward: bool = False
+    age_days: int | None = None
+    quote_selection_policy_version: str | None = None
+    quote_selection_policy_revision: str | None = None
+    quote_series_id: str | None = None
+    observation_id: str | None = None
+    revision_id: str | None = None
+    revision_number: int | None = None
+    payload_hash: str | None = None
+    source_published_at: datetime | None = None
+    ingested_at: datetime | None = None
+    calculation_dependency: dict[str, object]
 
 
 class PositionLotRealizationRecord(BaseModel):
@@ -530,6 +661,7 @@ class PositionLotRecord(BaseModel):
     entry_price: float | None = None
     average_exit_price: float | None = None
     current_market_value: float | None = None
+    valuation_quote: dict[str, object] | None = None
     unrealized_pnl: float | None = None
     holding_period_days: int | None = None
     linked_transaction_count: int = 0
@@ -577,13 +709,21 @@ class DailySnapshotRecord(BaseModel):
     base_currency: SupportedCurrency
     valuation_timezone: str
     valuation_cutoff_policy: str
-    coverage_state: CoverageState
+    nav_coverage_state: CoverageState
+    nav_coverage_reason_codes: list[str]
+    book_pnl_coverage_state: CoverageState
+    book_pnl_coverage_reason_codes: list[str]
     stale_price_flag: bool = False
     stale_fx_flag: bool = False
     total_position_count: int = 0
     priced_position_count: int = 0
     market_observation_count: int = 0
     return_observation_eligible: bool = False
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
+    valuation_quote_quality: dict[str, dict[str, object]] = Field(default_factory=dict)
+    fx_dependency_manifest: dict[str, object]
     cash_balance: float | None = None
     pending_settlement: float | None = None
     position_market_value: float | None = None
@@ -650,11 +790,17 @@ class DailySnapshotRefreshResponse(BaseModel):
 
 class DailyPerformancePoint(BaseModel):
     as_of_date: date
-    coverage_state: CoverageState
+    nav_coverage_state: CoverageState
+    nav_coverage_reason_codes: list[str]
+    book_pnl_coverage_state: CoverageState
+    book_pnl_coverage_reason_codes: list[str]
     stale_price_flag: bool = False
     stale_fx_flag: bool = False
     market_observation_count: int = 0
     return_observation_eligible: bool = False
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
     beginning_nav: float | None = None
     ending_nav: float | None = None
     pending_settlement: float | None = None
@@ -676,10 +822,71 @@ class DailyPerformancePoint(BaseModel):
     drawdown: float | None = None
 
 
+class PerformanceHistoryReliability(BaseModel):
+    start_date: date | None
+    end_date: date | None
+    elapsed_days: int | None = Field(ge=0)
+    calendar_span_days: int | None = Field(ge=1)
+    minimum_history_days: Literal[365]
+    annualized_return_eligible: bool
+    annualized_return_reason_codes: list[AnnualizedReturnEligibilityReason]
+    sample_label: str = Field(min_length=1)
+    annualization_message: str | None
+
+    @model_validator(mode="after")
+    def validate_history_policy(self) -> "PerformanceHistoryReliability":
+        if self.start_date is None or self.end_date is None:
+            expected_elapsed_days = None
+            expected_calendar_span_days = None
+            expected_eligible = False
+            expected_reasons = ["performance_history_window_unavailable"]
+        else:
+            expected_elapsed_days = (self.end_date - self.start_date).days
+            if expected_elapsed_days < 0:
+                raise ValueError(
+                    "Performance history end_date must not precede start_date."
+                )
+            expected_calendar_span_days = expected_elapsed_days + 1
+            expected_eligible = expected_elapsed_days >= self.minimum_history_days
+            expected_reasons = (
+                []
+                if expected_eligible
+                else ["annualized_return_history_below_minimum"]
+            )
+        if self.elapsed_days != expected_elapsed_days:
+            raise ValueError(
+                "Performance history elapsed_days is inconsistent with its boundaries."
+            )
+        if self.calendar_span_days != expected_calendar_span_days:
+            raise ValueError(
+                "Performance history calendar_span_days is inconsistent with elapsed_days."
+            )
+        if self.annualized_return_eligible != expected_eligible:
+            raise ValueError(
+                "Annualized-return eligibility is inconsistent with performance history."
+            )
+        if self.annualized_return_reason_codes != expected_reasons:
+            raise ValueError(
+                "Annualized-return reason codes are inconsistent with performance history."
+            )
+        if expected_eligible != (self.annualization_message is None):
+            raise ValueError(
+                "Annualization message is inconsistent with performance history eligibility."
+            )
+        return self
+
+
 class PerformanceSummary(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
-    coverage_state: CoverageState
+    nav_coverage_state: CoverageState
+    nav_coverage_reason_codes: list[str]
+    book_pnl_coverage_state: CoverageState
+    book_pnl_coverage_reason_codes: list[str]
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
+    history_reliability: PerformanceHistoryReliability
     snapshot_count: int
     return_observation_count: int
     risk_return_observation_count: int = 0
@@ -710,11 +917,34 @@ class PerformanceSummary(BaseModel):
     annualized_downside_volatility: float | None = None
     sharpe_ratio: float | None = None
     sortino_ratio: float | None = None
+    calmar_ratio: float | None
     current_drawdown: float | None = None
     max_drawdown: float | None = None
     max_drawdown_days: int | None = None
     drawdown_duration_days: int | None = None
     quality_warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_history_eligibility(self) -> "PerformanceSummary":
+        history = self.history_reliability
+        if history.start_date != self.start_date or history.end_date != self.end_date:
+            raise ValueError(
+                "Performance history boundaries must match summary boundaries."
+            )
+        if not history.annualized_return_eligible and any(
+            value is not None
+            for value in (
+                self.annualized_twr,
+                self.irr,
+                self.mwror,
+                self.calmar_ratio,
+            )
+        ):
+            raise ValueError(
+                "Ineligible performance history requires null annualized TWR, "
+                "IRR / MWRR, and Calmar Ratio."
+            )
+        return self
 
 
 class PerformanceResponse(BaseModel):
@@ -724,6 +954,159 @@ class PerformanceResponse(BaseModel):
     valuation_cutoff_policy: str
     summary: PerformanceSummary
     daily_series: list[DailyPerformancePoint]
+
+
+class PerformanceComparisonMetrics(BaseModel):
+    period_return: float | None
+    annualized_return: float | None
+    annualized_volatility: float | None
+    annualized_downside_volatility: float | None
+    sharpe_ratio: float | None
+    sortino_ratio: float | None
+    current_drawdown: float | None
+    max_drawdown: float | None
+    calmar_ratio: float | None
+
+
+class PerformanceRelativeMetrics(BaseModel):
+    excess_return: float | None
+    tracking_error: float | None
+    information_ratio: float | None
+    beta: float | None
+    correlation: float | None
+    upside_capture: float | None
+    downside_capture: float | None
+    capture_ratio: float | None
+
+
+class PerformanceComparisonCoverage(BaseModel):
+    required_observation_count: int = Field(ge=0)
+    aligned_observation_count: int = Field(ge=0)
+    coverage_ratio: float | None = Field(default=None, ge=0.0, le=1.0)
+    comparison_start_boundary_date: date
+    benchmark_start_anchor_date: date | None = None
+    benchmark_start_anchor_gap_days: int | None = Field(default=None, ge=0)
+    calculation_frequency: PortfolioCalculationFrequency | None = None
+    first_aligned_date: date | None = None
+    last_aligned_date: date | None = None
+    benchmark_currency: str | None = None
+    benchmark_quote_basis: QuoteBasis | None = None
+    benchmark_metric_family: MetricFamily | None = None
+    benchmark_resolution_status: QuoteResolutionStatus | None = None
+    benchmark_coverage_status: QuoteSeriesCoverageStatus | None = None
+    benchmark_freshness_status: ObservationFreshnessStatus | None = None
+    benchmark_reliability_status: QuoteReliabilityStatus | None = None
+    benchmark_reason_codes: list[str] = Field(default_factory=list)
+    portfolio_twr_reliability_status: TwrReliabilityStatus | None = None
+    portfolio_twr_reliability_reasons: list[TwrReliabilityReason] = Field(
+        default_factory=list
+    )
+
+
+class PerformanceComparisonPoint(BaseModel):
+    date: date
+    portfolio_index: float
+    benchmark_index: float
+    difference: float
+
+
+class PerformanceComparisonLineage(BaseModel):
+    method_version: str = Field(min_length=1)
+    portfolio: dict[str, object]
+    benchmark: dict[str, object] | None
+    fingerprint: str = Field(min_length=1)
+
+
+class PerformanceComparisonResponse(BaseModel):
+    portfolio_id: str
+    benchmark_instrument_id: str
+    benchmark_name: str | None = None
+    base_currency: SupportedCurrency
+    benchmark_currency: str | None = None
+    market_data_role: Literal["total_return"]
+    requested_start_date: date
+    requested_end_date: date
+    as_of_date: date
+    status: Literal["ready", "unavailable"]
+    unavailable_reasons: list[str] = Field(default_factory=list)
+    coverage: PerformanceComparisonCoverage
+    history_reliability: PerformanceHistoryReliability
+    portfolio_metrics: PerformanceComparisonMetrics
+    benchmark_metrics: PerformanceComparisonMetrics
+    relative_metrics: PerformanceRelativeMetrics
+    differences: PerformanceComparisonMetrics
+    points: list[PerformanceComparisonPoint] = Field(default_factory=list)
+    lineage: PerformanceComparisonLineage
+
+    @model_validator(mode="after")
+    def validate_history_eligibility(self) -> "PerformanceComparisonResponse":
+        history = self.history_reliability
+        if history.start_date != self.coverage.comparison_start_boundary_date:
+            raise ValueError(
+                "Comparison history start_date must match the calculation boundary."
+            )
+        if history.end_date != self.coverage.last_aligned_date:
+            raise ValueError(
+                "Comparison history end_date must match the last aligned observation."
+            )
+
+        if history.start_date is None or history.end_date is None:
+            expected_elapsed_days = None
+            expected_calendar_span_days = None
+            expected_eligibility = False
+        else:
+            expected_elapsed_days = (history.end_date - history.start_date).days
+            if expected_elapsed_days < 0:
+                raise ValueError(
+                    "Comparison history end_date must not precede start_date."
+                )
+            expected_calendar_span_days = expected_elapsed_days + 1
+            expected_eligibility = (
+                expected_elapsed_days >= history.minimum_history_days
+            )
+        if history.elapsed_days != expected_elapsed_days:
+            raise ValueError(
+                "Comparison history elapsed_days is inconsistent with its boundaries."
+            )
+        if history.calendar_span_days != expected_calendar_span_days:
+            raise ValueError(
+                "Comparison history calendar_span_days is inconsistent with elapsed_days."
+            )
+        if history.annualized_return_eligible != expected_eligibility:
+            raise ValueError(
+                "Comparison annualized-return eligibility is inconsistent with its history span."
+            )
+        if history.annualized_return_eligible:
+            if (
+                history.annualized_return_reason_codes
+                or history.annualization_message is not None
+            ):
+                raise ValueError(
+                    "Eligible comparison history cannot carry annualization failure reasons."
+                )
+        elif (
+            not history.annualized_return_reason_codes
+            or history.annualization_message is None
+        ):
+            raise ValueError(
+                "Ineligible comparison history requires reason codes and a message."
+            )
+
+        if not history.annualized_return_eligible:
+            for label, metrics in (
+                ("portfolio_metrics", self.portfolio_metrics),
+                ("benchmark_metrics", self.benchmark_metrics),
+                ("differences", self.differences),
+            ):
+                if (
+                    metrics.annualized_return is not None
+                    or metrics.calmar_ratio is not None
+                ):
+                    raise ValueError(
+                        "Ineligible comparison history requires null "
+                        f"{label} annualized_return and calmar_ratio."
+                    )
+        return self
 
 
 class PeriodCalculationLine(BaseModel):
@@ -738,7 +1121,10 @@ class PeriodCalculationLine(BaseModel):
 class PeriodCalculationSummary(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
-    coverage_state: CoverageState
+    nav_coverage_state: CoverageState
+    nav_coverage_reason_codes: list[str]
+    book_pnl_coverage_state: CoverageState
+    book_pnl_coverage_reason_codes: list[str]
     stale_price_flag: bool = False
     stale_fx_flag: bool = False
     initial_value: float | None = None
@@ -773,6 +1159,9 @@ class PeriodBoundaryHoldingRecord(BaseModel):
     quantity: float
     cost_basis: float | None = None
     cost_basis_base: float | None = None
+    unrealized_pnl: float | None = None
+    unrealized_pnl_base: float | None = None
+    unrealized_return: float | None = None
     last_price: float | None = None
     market_value: float | None = None
     market_value_base: float | None = None
@@ -812,7 +1201,11 @@ class ReturnCalendarBucket(BaseModel):
     frequency: Literal["monthly", "weekly"]
     start_date: date
     end_date: date
-    coverage_state: CoverageState
+    nav_coverage_state: CoverageState
+    nav_coverage_reason_codes: list[str]
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
     observation_count: int
     start_nav: float | None = None
     end_nav: float | None = None
@@ -826,6 +1219,9 @@ class ReturnCalendarBucket(BaseModel):
 
 class ReturnCalendarSummary(BaseModel):
     frequency: Literal["monthly", "weekly"]
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
     bucket_count: int
     complete_bucket_count: int
     partial_bucket_count: int
@@ -1143,6 +1539,141 @@ class PortfolioRiskPolicyUpdateRequest(BaseModel):
         return _validate_risk_window_days(value)
 
 
+RiskWorkspaceStatus = Literal["ready", "partial", "unavailable"]
+
+
+class RiskWorkspaceErrorRecord(BaseModel):
+    message: str
+    reason_codes: list[str] = Field(default_factory=list)
+    dependency: dict[str, object] | None = None
+
+
+class RiskWorkspacePointRecord(BaseModel):
+    date: date
+    value: float
+
+
+class RiskWorkspaceRollingRecord(BaseModel):
+    status: Literal["ready", "unavailable"]
+    errors: list[RiskWorkspaceErrorRecord] = Field(default_factory=list)
+    lookback_days: int
+    model_id: PortfolioRiskCovarianceModel
+    portfolio_volatility_points: list[RiskWorkspacePointRecord] = Field(default_factory=list)
+    portfolio_sharpe_points: list[RiskWorkspacePointRecord] = Field(default_factory=list)
+    benchmark_volatility_points: list[RiskWorkspacePointRecord] = Field(default_factory=list)
+    benchmark_sharpe_points: list[RiskWorkspacePointRecord] = Field(default_factory=list)
+
+
+class RiskWorkspaceMatrixGroupRecord(BaseModel):
+    key: str
+    label: str
+    observation_count: int = 0
+    weight: float | None = None
+
+
+class RiskWorkspaceMatrixCellRecord(BaseModel):
+    value: float | None = None
+    observation_count: int = 0
+
+
+class RiskWorkspaceMatrixRecord(BaseModel):
+    status: Literal["ready", "unavailable"]
+    errors: list[RiskWorkspaceErrorRecord] = Field(default_factory=list)
+    scope: str
+    as_of_date: date | None = None
+    available_as_of_dates: list[date] = Field(default_factory=list)
+    groups: list[RiskWorkspaceMatrixGroupRecord] = Field(default_factory=list)
+    cells: list[list[RiskWorkspaceMatrixCellRecord]] = Field(default_factory=list)
+    max_abs: float = 0.0
+    coverage: dict[str, object] | None = None
+
+
+class RiskWorkspaceContributionRowRecord(BaseModel):
+    group_key: str
+    group_label: str
+    weight: float
+    annualized_volatility: float
+    risk_share: float
+    contribution_to_variance: float
+    observation_count: int
+
+
+class RiskWorkspaceContributionRecord(BaseModel):
+    status: Literal["ready", "unavailable"]
+    errors: list[RiskWorkspaceErrorRecord] = Field(default_factory=list)
+    rows: list[RiskWorkspaceContributionRowRecord] = Field(default_factory=list)
+    portfolio_variance: float | None = None
+    portfolio_volatility: float | None = None
+    observation_count: int | None = None
+
+
+class RiskWorkspaceTargetGapRowRecord(BaseModel):
+    id: str
+    label: str
+    current: float | None = None
+    saa_target: float | None = None
+    taa_target: float | None = None
+    saa_gap: float | None = None
+    taa_gap: float | None = None
+    current_value_base: float | None = None
+
+
+class RiskWorkspaceDriftRecord(BaseModel):
+    status: Literal["ready", "unavailable"]
+    errors: list[RiskWorkspaceErrorRecord] = Field(default_factory=list)
+    weight_rows: list[RiskWorkspaceTargetGapRowRecord] = Field(default_factory=list)
+    risk_rows: list[RiskWorkspaceTargetGapRowRecord] = Field(default_factory=list)
+
+
+class RiskWorkspaceInstrumentCoverageRecord(BaseModel):
+    instrument_id: str
+    label: str
+    scopes: list[str] = Field(default_factory=list)
+    status: Literal["ready", "unavailable"]
+    observation_count: int = 0
+    first_observation_date: date | None = None
+    last_observation_date: date | None = None
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[RiskWorkspaceErrorRecord] = Field(default_factory=list)
+
+
+class RiskWorkspaceCoverageRecord(BaseModel):
+    market_data_role: Literal["total_return"] = "total_return"
+    instrument_count: int
+    ready_instrument_count: int
+    instruments: list[RiskWorkspaceInstrumentCoverageRecord] = Field(default_factory=list)
+
+
+class RiskWorkspaceScopeOptionRecord(BaseModel):
+    value: str
+    label: str
+    kind: Literal["instrument", "taxonomy"]
+
+
+class RiskWorkspaceTaxonomyRecord(BaseModel):
+    taxonomy_id: str
+    name: str
+
+
+class RiskWorkspaceResponse(BaseModel):
+    portfolio_id: str
+    portfolio_name: str
+    base_currency: SupportedCurrency
+    as_of_date: date
+    status: RiskWorkspaceStatus
+    planning_taxonomy: RiskWorkspaceTaxonomyRecord | None = None
+    risk_policy: PortfolioRiskPolicyRecord
+    frequency_profile: dict[str, object]
+    matrix_scope_options: list[RiskWorkspaceScopeOptionRecord] = Field(default_factory=list)
+    rolling: RiskWorkspaceRollingRecord
+    matrix: RiskWorkspaceMatrixRecord
+    risk_contribution: RiskWorkspaceContributionRecord
+    drift: RiskWorkspaceDriftRecord
+    coverage: RiskWorkspaceCoverageRecord
+    calculation_lineage: dict[str, object]
+    data_lineage: dict[str, object]
+
+
 class ResearchContextSignalRecord(BaseModel):
     label: str
     value: str
@@ -1180,11 +1711,6 @@ class ResearchFindingRecord(BaseModel):
     detail: str
 
 
-class ResearchContextPoint(BaseModel):
-    date: str
-    value: float | None = None
-
-
 class ResearchCurrentContextSummary(BaseModel):
     period_return: float | None = None
     annualized_volatility: float | None = None
@@ -1210,13 +1736,9 @@ class ResearchCurrentContextRecord(BaseModel):
     nav: float | None = None
     holdings_count: int = 0
     planning_group_count: int = 0
-    chart_label: str | None = None
-    chart_note: str | None = None
-    chart_currency: str | None = None
     summary: ResearchCurrentContextSummary
     planning_target_summary: ResearchPlanningTargetSummary | None = None
     quality_warnings: list[str] = Field(default_factory=list)
-    chart_points: list[ResearchContextPoint] = Field(default_factory=list)
     top_holdings: list[ResearchHoldingSnapshotRecord] = Field(default_factory=list)
     planning_groups: list[ResearchPlanningGroupSnapshotRecord] = Field(default_factory=list)
 
@@ -1360,6 +1882,10 @@ class ResearchBacktestSleevePointRecord(BaseModel):
 
 
 class ResearchBacktestMetricsRecord(BaseModel):
+    method_version: Literal[
+        "research-backtest-metrics.v2.history-gated-arithmetic-sharpe"
+    ]
+    history_reliability: PerformanceHistoryReliability
     start_date: str | None = None
     end_date: str | None = None
     period_return: float | None = None
@@ -1375,6 +1901,24 @@ class ResearchBacktestMetricsRecord(BaseModel):
     max_drawdown_recovery_days: int | None = None
     current_drawdown: float | None = None
     calmar_ratio: float | None = None
+
+    @model_validator(mode="after")
+    def validate_history_eligibility(self) -> "ResearchBacktestMetricsRecord":
+        history = self.history_reliability
+        start_date = date.fromisoformat(self.start_date) if self.start_date else None
+        end_date = date.fromisoformat(self.end_date) if self.end_date else None
+        if history.start_date != start_date or history.end_date != end_date:
+            raise ValueError(
+                "Research metric history boundaries must match metric boundaries."
+            )
+        if not history.annualized_return_eligible and (
+            self.annualized_return is not None or self.calmar_ratio is not None
+        ):
+            raise ValueError(
+                "Ineligible Research history requires null annualized return "
+                "and Calmar Ratio."
+            )
+        return self
 
 
 class ResearchBacktestRecord(BaseModel):
@@ -1779,9 +2323,15 @@ class DailyContributionSliceRecord(BaseModel):
     axis: ContributionAxis
     group_key: str
     group_label: str
-    coverage_state: CoverageState
+    nav_coverage_state: CoverageState
+    nav_coverage_reason_codes: list[str]
+    book_pnl_coverage_state: CoverageState
+    book_pnl_coverage_reason_codes: list[str]
     market_observation_count: int = 0
     return_observation_eligible: bool = False
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
     beginning_value_base: float | None = None
     ending_value_base: float | None = None
     beginning_weight: float | None = None
@@ -1807,6 +2357,9 @@ class ContributionLineRecord(BaseModel):
     axis: ContributionAxis
     group_key: str
     group_label: str
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
     start_value_base: float | None = None
     end_value_base: float | None = None
     beginning_weight: float | None = None
@@ -1831,7 +2384,13 @@ class ContributionReportSummary(BaseModel):
     group_label: str | None = None
     start_date: date | None = None
     end_date: date | None = None
-    coverage_state: CoverageState
+    nav_coverage_state: CoverageState
+    nav_coverage_reason_codes: list[str]
+    book_pnl_coverage_state: CoverageState
+    book_pnl_coverage_reason_codes: list[str]
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
     slice_count: int = 0
     group_count: int = 0
     observation_count: int = 0
@@ -1861,7 +2420,13 @@ class ContributionCalendarBucketRecord(BaseModel):
     axis: ContributionAxis
     group_key: str
     group_label: str
-    coverage_state: CoverageState
+    nav_coverage_state: CoverageState
+    nav_coverage_reason_codes: list[str]
+    book_pnl_coverage_state: CoverageState
+    book_pnl_coverage_reason_codes: list[str]
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
     observation_count: int = 0
     beginning_value_base: float | None = None
     ending_value_base: float | None = None
@@ -1886,6 +2451,9 @@ class ContributionCalendarSummary(BaseModel):
     group_key: str | None = None
     group_label: str | None = None
     frequency: Literal["monthly", "weekly"]
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
     start_date: date | None = None
     end_date: date | None = None
     bucket_count: int = 0
@@ -1929,6 +2497,9 @@ class ContributionBucketGroupRecord(BaseModel):
     bucket: ContributionBucket
     group_key: str
     group_label: str
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
     amount: float | None = None
     start_value: float | None = None
     end_value: float | None = None
@@ -1942,6 +2513,9 @@ class ContributionBucketSummary(BaseModel):
     group_key: str | None = None
     group_label: str | None = None
     bucket: ContributionBucket
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
     start_date: date | None = None
     end_date: date | None = None
     group_count: int = 0
@@ -1967,7 +2541,13 @@ class ContributionBucketCalendarBucketRecord(BaseModel):
     group_label: str
     start_date: date
     end_date: date
-    coverage_state: CoverageState
+    nav_coverage_state: CoverageState
+    nav_coverage_reason_codes: list[str]
+    book_pnl_coverage_state: CoverageState
+    book_pnl_coverage_reason_codes: list[str]
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
     observation_count: int = 0
     amount: float | None = None
     start_value: float | None = None
@@ -1983,6 +2563,9 @@ class ContributionBucketCalendarSummary(BaseModel):
     group_label: str | None = None
     bucket: ContributionBucket
     frequency: Literal["monthly", "weekly"]
+    twr_state: TwrState
+    twr_reliability_status: TwrReliabilityStatus
+    twr_reliability_reasons: list[TwrReliabilityReason]
     start_date: date | None = None
     end_date: date | None = None
     bucket_count: int = 0
@@ -2239,7 +2822,10 @@ class PeriodCalculationGroupCalendarBucketRecord(BaseModel):
     taxonomy_id: str | None = None
     group_key: str
     group_label: str
-    coverage_state: CoverageState
+    nav_coverage_state: CoverageState
+    nav_coverage_reason_codes: list[str]
+    book_pnl_coverage_state: CoverageState
+    book_pnl_coverage_reason_codes: list[str]
     observation_count: int = 0
     beginning_weight: float | None = None
     average_weight: float | None = None
@@ -2332,6 +2918,7 @@ class PeriodCalculationEntryRecord(BaseModel):
     transaction_type: str
     trade_date: date | None = None
     settlement_date: date | None = None
+    effective_date: date | None = None
     group_key: str
     group_label: str
     account_id: str | None = None
@@ -2457,7 +3044,9 @@ class LedgerPostingListResponse(BaseModel):
     ledger_postings: list[LedgerPostingRecord]
 
 
-class TransactionCreateRequest(BaseModel):
+class _TransactionFactRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     transaction_type: TransactionType
     trade_date: date
     trade_time: str | None = None
@@ -2467,13 +3056,13 @@ class TransactionCreateRequest(BaseModel):
     account_id: str
     settlement_cash_account_id: str | None = None
     instrument_id: str | None = None
-    quantity: float | None = Field(default=None, ge=0)
-    price: float | None = Field(default=None, ge=0)
-    gross_amount: float = Field(ge=0)
-    counter_amount: float | None = Field(default=None, ge=0)
-    fx_rate: float | None = Field(default=None, gt=0)
-    fees: float = Field(default=0, ge=0)
-    taxes: float = Field(default=0, ge=0)
+    quantity: TransactionInputDecimal | None = Field(default=None, ge=0)
+    price: TransactionInputDecimal | None = Field(default=None, ge=0)
+    gross_amount: TransactionInputDecimal = Field(ge=0)
+    counter_amount: TransactionInputDecimal | None = Field(default=None, ge=0)
+    fx_rate: TransactionInputDecimal | None = Field(default=None, gt=0)
+    fees: TransactionInputDecimal = Field(default=Decimal("0.00"), ge=0)
+    taxes: TransactionInputDecimal = Field(default=Decimal("0.00"), ge=0)
     currency: str = Field(min_length=1, max_length=8)
     transfer_scope: TransferScope | None = None
     transfer_object_type: TransferObjectType | None = None
@@ -2510,22 +3099,32 @@ class TransactionCreateRequest(BaseModel):
     @field_validator("quantity", mode="before")
     @classmethod
     def normalize_quantity_precision(cls, value: object) -> object:
-        return _quantize_numeric_input(value, quantum=QUANTITY_DISPLAY_QUANTUM)
+        return _quantize_numeric_input(value, quantum=QUANTITY_STORAGE_QUANTUM)
 
     @field_validator("price", mode="before")
     @classmethod
     def normalize_price_precision(cls, value: object) -> object:
-        return _quantize_numeric_input(value, quantum=PRICE_DISPLAY_QUANTUM)
+        return _quantize_numeric_input(value, quantum=PRICE_STORAGE_QUANTUM)
 
     @field_validator("gross_amount", "counter_amount", "fees", "taxes", mode="before")
     @classmethod
     def normalize_amount_precision(cls, value: object) -> object:
-        return _quantize_numeric_input(value, quantum=AMOUNT_DISPLAY_QUANTUM)
+        return _quantize_numeric_input(value, quantum=AMOUNT_STORAGE_QUANTUM)
+
+    @field_validator("fx_rate", mode="before")
+    @classmethod
+    def normalize_fx_rate_precision(cls, value: object) -> object:
+        return _quantize_numeric_input(value, quantum=FX_RATE_STORAGE_QUANTUM)
 
     @model_validator(mode="after")
-    def validate_amount_contract(self) -> "TransactionCreateRequest":
-        settlement_date = self.settlement_date or self.trade_date
-        if settlement_date < self.trade_date:
+    def validate_amount_contract(self) -> Self:
+        if self.transaction_type in {"deposit", "withdrawal"} and self.settlement_date is None:
+            raise ValueError(
+                "deposit and withdrawal require an explicit settlement_date (cash value date)."
+            )
+        if self.settlement_date is None:
+            self.settlement_date = self.trade_date
+        if self.settlement_date < self.trade_date:
             raise ValueError("settlement_date must not be earlier than trade_date.")
         if self.entitlement_date is not None and self.entitlement_date > self.trade_date:
             raise ValueError("entitlement_date must not be later than trade_date.")
@@ -2636,8 +3235,8 @@ class TransactionCreateRequest(BaseModel):
         ):
             raise ValueError("counter_amount and fx_rate are only allowed for fx_conversion.")
 
-        if self.transaction_type != "fx_conversion" and self.counterparty_account_id is not None:
-            raise ValueError("counterparty_account_id is only allowed for fx_conversion.")
+        if self.transaction_type not in {"fx_conversion", "transfer_in", "transfer_out"} and self.counterparty_account_id is not None:
+            raise ValueError("counterparty_account_id is only allowed for FX conversion and internal transfer.")
 
         if self.transaction_type in {"fee", "tax"}:
             if self.quantity is not None:
@@ -2660,10 +3259,14 @@ class TransactionCreateRequest(BaseModel):
         if self.transaction_type in {"transfer_in", "transfer_out"}:
             if self.transfer_scope != "internal_portfolio":
                 raise ValueError("Transfer transactions require transfer_scope=internal_portfolio.")
+            if self.settlement_cash_account_id is not None:
+                raise ValueError("Transfer transactions must not carry settlement_cash_account_id.")
             if self.transfer_object_type is None:
                 raise ValueError("Transfer transactions require transfer_object_type.")
             if not self.transfer_group_id:
                 raise ValueError("Transfer transactions require transfer_group_id.")
+            if not self.counterparty_account_id:
+                raise ValueError("Transfer transactions require counterparty_account_id.")
             if self.transfer_object_type == "cash":
                 if self.instrument_id is not None or self.quantity is not None or self.price is not None:
                     raise ValueError("Cash transfers must not carry instrument, quantity, or price.")
@@ -2674,8 +3277,8 @@ class TransactionCreateRequest(BaseModel):
                     raise ValueError("Position transfers require positive quantity.")
                 if self.price is not None:
                     raise ValueError("Position transfers must not carry price.")
-                if self.gross_amount <= 0:
-                    raise ValueError("Position transfers require transferred cost basis.")
+                if self.gross_amount < 0:
+                    raise ValueError("Position transfers require non-negative transferred cost basis.")
             if self.fees != 0 or self.taxes != 0:
                 raise ValueError("Transfer transactions must not carry fees or taxes.")
 
@@ -2718,7 +3321,33 @@ class TransactionCreateRequest(BaseModel):
         return self
 
 
+class TransactionCreateRequest(_TransactionFactRequest):
+    actor: TransactionActorInput
+    change_reason: str | None = Field(default=None, min_length=3, max_length=500)
+
+    @field_validator("change_reason", mode="before")
+    @classmethod
+    def normalize_optional_change_reason(cls, value: object) -> object:
+        if value is None:
+            return None
+        return _normalize_required_text(value)
+
+
+class TransactionUpdateRequest(_TransactionFactRequest):
+    expected_revision_id: str = Field(min_length=1, max_length=128)
+    expected_revision_number: int = Field(ge=1)
+    actor: TransactionActorInput
+    change_reason: str = Field(min_length=3, max_length=500)
+
+    @field_validator("expected_revision_id", "change_reason", mode="before")
+    @classmethod
+    def normalize_revision_metadata(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+
 class InternalTransferCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     trade_date: date
     trade_time: str | None = None
     settlement_date: date | None = None
@@ -2726,13 +3355,15 @@ class InternalTransferCreateRequest(BaseModel):
     from_account_id: str
     to_account_id: str
     instrument_id: str | None = None
-    quantity: float | None = Field(default=None, ge=0)
-    gross_amount: float | None = Field(default=None, ge=0)
+    quantity: TransactionInputDecimal | None = Field(default=None, ge=0)
+    gross_amount: TransactionInputDecimal | None = Field(default=None, ge=0)
     note: str | None = None
     transfer_group_id: str | None = None
+    actor: TransactionActorInput
+    change_reason: str | None = Field(default=None, min_length=3, max_length=500)
 
     @model_validator(mode="after")
-    def validate_internal_transfer(self) -> "InternalTransferCreateRequest":
+    def validate_internal_transfer(self) -> Self:
         settlement_date = self.settlement_date or self.trade_date
         if settlement_date < self.trade_date:
             raise ValueError("settlement_date must not be earlier than trade_date.")
@@ -2769,16 +3400,99 @@ class InternalTransferCreateRequest(BaseModel):
     @field_validator("quantity", mode="before")
     @classmethod
     def normalize_quantity_precision(cls, value: object) -> object:
-        return _quantize_numeric_input(value, quantum=QUANTITY_DISPLAY_QUANTUM)
+        return _quantize_numeric_input(value, quantum=QUANTITY_STORAGE_QUANTUM)
 
     @field_validator("gross_amount", mode="before")
     @classmethod
     def normalize_amount_precision(cls, value: object) -> object:
-        return _quantize_numeric_input(value, quantum=AMOUNT_DISPLAY_QUANTUM)
+        return _quantize_numeric_input(value, quantum=AMOUNT_STORAGE_QUANTUM)
+
+    @field_validator("change_reason", mode="before")
+    @classmethod
+    def normalize_optional_change_reason(cls, value: object) -> object:
+        if value is None:
+            return None
+        return _normalize_required_text(value)
+
+
+class TransactionDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision_id: str = Field(min_length=1, max_length=128)
+    expected_revision_number: int = Field(ge=1)
+    actor: TransactionActorInput
+    change_reason: str = Field(min_length=3, max_length=500)
+
+    @field_validator("expected_revision_id", "change_reason", mode="before")
+    @classmethod
+    def normalize_revision_metadata(cls, value: object) -> object:
+        return _normalize_required_text(value)
+
+
+class TransactionRevisionSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transaction_type: TransactionType
+    trade_date: date
+    trade_time: str
+    trade_at: str
+    trade_timezone: str
+    trade_time_is_estimated: bool = False
+    settlement_date: date
+    entitlement_date: date | None = None
+    acquisition_date: date | None = None
+    account_id: str
+    settlement_cash_account_id: str | None = None
+    instrument_id: str | None = None
+    instrument_ref: InstrumentCoreContract | None = None
+    quantity: TransactionDecimal | None = None
+    price: TransactionDecimal | None = None
+    gross_amount: TransactionDecimal
+    counter_amount: TransactionDecimal | None = None
+    fx_rate: TransactionDecimal | None = None
+    fees: TransactionDecimal = Decimal("0.00")
+    taxes: TransactionDecimal = Decimal("0.00")
+    currency: SupportedCurrency
+    transfer_scope: TransferScope | None = None
+    transfer_object_type: TransferObjectType | None = None
+    transfer_group_id: str | None = None
+    counterparty_account_id: str | None = None
+    note: str | None = None
+    created_at: str | None = None
+
+
+class TransactionRevisionRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision_id: str
+    transaction_id: str
+    portfolio_id: str
+    revision_number: int = Field(ge=1)
+    previous_revision_id: str | None = None
+    mutation_id: str
+    operation: TransactionRevisionOperation
+    lifecycle_status: TransactionLifecycleStatus
+    recorded_at: datetime
+    actor: TransactionActorRecord
+    change_reason: str | None = None
+    changed_fields: list[str]
+    snapshot: TransactionRevisionSnapshot | None
+
+
+class TransactionRevisionHistoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    portfolio_id: str
+    transaction_id: str
+    current_revision_id: str
+    current_revision_number: int = Field(ge=1)
+    lifecycle_status: TransactionLifecycleStatus
+    revisions: list[TransactionRevisionRecord]
 
 
 class TransactionBatchResponse(BaseModel):
     portfolio_id: str
+    mutation_id: str
     created_count: int
     transfer_group_id: str | None = None
     transactions: list[TransactionRecord]
@@ -2786,6 +3500,8 @@ class TransactionBatchResponse(BaseModel):
 
 class TransactionDeleteResponse(BaseModel):
     portfolio_id: str
+    mutation_id: str
     deleted_count: int
     deleted_transaction_ids: list[str]
     transfer_group_id: str | None = None
+    revisions: list[TransactionRevisionRecord]

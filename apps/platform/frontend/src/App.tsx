@@ -28,7 +28,7 @@ type PlatformMarketDataPoint = {
   as_of_date: string
   value: string
   currency: string
-  provider?: string | null
+  source_ref?: string | null
   status: DataStatus
 }
 
@@ -109,7 +109,7 @@ type PlatformFxRateRecord = {
   source_kind: FxRateSourceKind
   instrument_id?: string | null
   source_instrument_ids: string[]
-  provider?: string | null
+  source_ref?: string | null
   status: DataStatus
 }
 
@@ -137,6 +137,7 @@ type PlatformNavImportPreviewResponse = {
 
 const PLATFORM_API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 const INSTRUMENT_REGISTRY_PATH = '/instruments'
+const SUPPORTED_CURRENCIES: SupportedCurrency[] = ['USD', 'HKD', 'CNY']
 const FX_PANEL_PAIRS: Array<[SupportedCurrency, SupportedCurrency]> = [
   ['USD', 'HKD'],
   ['USD', 'CNY'],
@@ -479,13 +480,13 @@ function InstrumentsPage({
     instrument_type: InstrumentType
     currency: string
     identifiers: PlatformInstrumentIdentifier[]
-  }) => Promise<void>
+  }) => Promise<boolean>
   onUpsertFxRate: (payload: {
     base_currency: SupportedCurrency
     quote_currency: SupportedCurrency
     rate: string
     as_of_date: string
-    provider?: string | null
+    source_ref?: string | null
     status: DataStatus
   }) => Promise<void>
   onUpsertMarketData: (payload: {
@@ -495,9 +496,9 @@ function InstrumentsPage({
     as_of_date: string
     value: string
     currency: string
-    provider?: string | null
+    source_ref?: string | null
     status: DataStatus
-  }) => Promise<void>
+  }) => Promise<boolean>
   onUpdateSourceSettings: (payload: {
     instrument_id: string
     source_mode: SourceMode
@@ -518,31 +519,31 @@ function InstrumentsPage({
   onImportNavText: (payload: {
     instrument_id: string
     raw_text: string
-    provider?: string | null
+    source_ref?: string | null
     status: DataStatus
     updated_by?: string | null
-  }) => Promise<void>
+  }) => Promise<boolean>
   onImportNavFile: (payload: {
     instrument_id: string
     file_name: string
     file_content_base64: string
-    provider?: string | null
+    source_ref?: string | null
     status: DataStatus
     updated_by?: string | null
-  }) => Promise<void>
+  }) => Promise<boolean>
   onArchiveInstrument: (payload: { instrument_id: string; updated_by?: string | null }) => Promise<void>
   onRestoreInstrument: (payload: { instrument_id: string; updated_by?: string | null }) => Promise<void>
 }) {
   const [instrumentName, setInstrumentName] = useState('')
   const [instrumentType, setInstrumentType] = useState<InstrumentType>('equity')
-  const [currency, setCurrency] = useState('USD')
+  const [currency, setCurrency] = useState('')
   const [identifierType, setIdentifierType] = useState<IdentifierType>('ticker')
   const [identifierValue, setIdentifierValue] = useState('')
   const [selectedInstrumentId, setSelectedInstrumentId] = useState('')
   const [metricFamily, setMetricFamily] = useState<MetricFamily>('price')
   const [quoteBasis, setQuoteBasis] = useState<QuoteBasis>('close')
   const [metricValue, setMetricValue] = useState('')
-  const [metricCurrency, setMetricCurrency] = useState('USD')
+  const [metricCurrency, setMetricCurrency] = useState('')
   const [metricDate, setMetricDate] = useState(() => currentLocalDate())
   const [metricStatus, setMetricStatus] = useState<DataStatus>('complete')
   const [sourceMode, setSourceMode] = useState<SourceMode>('manual')
@@ -641,7 +642,7 @@ function InstrumentsPage({
           nav_with_dividend: string | null
           currency: string
           status: DataStatus
-          provider: string | null
+          source_ref: string | null
         }
       >()
       for (const point of currentSelectedInstrumentDetail?.market_data || []) {
@@ -657,7 +658,7 @@ function InstrumentsPage({
             nav_with_dividend: null,
             currency: point.currency,
             status: point.status,
-            provider: point.provider || null,
+            source_ref: point.source_ref || null,
           }
         if (point.quote_basis === 'official_nav') {
           existing.nav = point.value
@@ -670,7 +671,7 @@ function InstrumentsPage({
         }
         existing.currency = point.currency
         existing.status = point.status
-        existing.provider = point.provider || existing.provider
+        existing.source_ref = point.source_ref || existing.source_ref
         merged.set(point.as_of_date, existing)
       }
       return [...merged.values()].sort((left, right) => right.as_of_date.localeCompare(left.as_of_date))
@@ -907,7 +908,7 @@ function InstrumentsPage({
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    await onCreateInstrument({
+    const created = await onCreateInstrument({
       instrument_name: instrumentName.trim(),
       instrument_type: instrumentType,
       currency: currency.trim().toUpperCase(),
@@ -919,6 +920,9 @@ function InstrumentsPage({
         },
       ],
     })
+    if (!created) {
+      return
+    }
     setInstrumentName('')
     setIdentifierValue('')
   }
@@ -930,14 +934,14 @@ function InstrumentsPage({
       quote_currency: selectedEditableFxPair.quoteCurrency,
       rate: fxRateValue.trim(),
       as_of_date: fxRateDate,
-      provider: 'platform_fx_manual',
+      source_ref: 'platform_fx_manual',
       status: fxRateStatus,
     })
   }
 
   async function handleMetricSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    await onUpsertMarketData({
+    const saved = await onUpsertMarketData({
       instrument_id: selectedInstrumentId,
       metric_family: metricFamily,
       quote_basis: quoteBasis,
@@ -945,8 +949,11 @@ function InstrumentsPage({
       value: metricValue.trim(),
       currency: metricCurrency.trim().toUpperCase(),
       status: metricStatus,
-      provider: 'platform_manual',
+      source_ref: 'platform_manual',
     })
+    if (!saved) {
+      return
+    }
     setMetricValue('')
     await refreshSelectedInstrumentDetail(selectedInstrumentId)
   }
@@ -1044,24 +1051,28 @@ function InstrumentsPage({
     if (!selectedInstrumentId) {
       return
     }
+    let imported = false
     if (navImportFileName && navImportFileContent) {
-      await onImportNavFile({
+      imported = await onImportNavFile({
         instrument_id: selectedInstrumentId,
         file_name: navImportFileName,
         file_content_base64: navImportFileContent,
-        provider: 'platform_file_import',
+        source_ref: 'platform_file_import',
         status: 'complete',
         updated_by: 'platform_ui',
       })
     } else if (navImportText.trim()) {
-      await onImportNavText({
+      imported = await onImportNavText({
         instrument_id: selectedInstrumentId,
         raw_text: navImportText.trim(),
-        provider: 'platform_paste_import',
+        source_ref: 'platform_paste_import',
         status: 'complete',
         updated_by: 'platform_ui',
       })
     } else {
+      return
+    }
+    if (!imported) {
       return
     }
     setNavImportText('')
@@ -1460,7 +1471,15 @@ function InstrumentsPage({
                   </label>
                   <label>
                     <span>Currency</span>
-                    <input value={currency} onChange={(event) => setCurrency(event.target.value)} required />
+                    <input
+                      value={currency}
+                      onChange={(event) => setCurrency(event.target.value.toUpperCase())}
+                      maxLength={3}
+                      pattern="[A-Za-z]{3}"
+                      placeholder="USD"
+                      title="Enter a three-letter ISO currency code, such as USD, EUR, or JPY."
+                      required
+                    />
                   </label>
                   <label>
                     <span>Primary Identifier Type</span>
@@ -1536,7 +1555,7 @@ function InstrumentsPage({
                       <span>Currency</span>
                       <input
                         value={metricCurrency}
-                        onChange={(event) => setMetricCurrency(event.target.value)}
+                        readOnly
                         required
                       />
                     </label>
@@ -1901,7 +1920,7 @@ function InstrumentsPage({
                           <strong>{latestQuoteDate || '—'}</strong>
                           <span>
                             {latestQuoteDate
-                              ? primaryQuote?.provider || 'Shared market data'
+                              ? primaryQuote?.source_ref || 'Shared market data'
                               : '—'}
                           </span>
                         </div>
@@ -2120,7 +2139,7 @@ function InstrumentsPage({
                                             <td>{point.nav_with_dividend || '—'}</td>
                                             <td>{point.currency}</td>
                                             <td>{point.status}</td>
-                                            <td>{point.provider || '—'}</td>
+                                            <td>{point.source_ref || '—'}</td>
                                           </tr>
                                         ))
                                       ) : (
@@ -2167,7 +2186,7 @@ function InstrumentsPage({
                                             <td>{point.value}</td>
                                             <td>{point.currency}</td>
                                             <td>{point.status}</td>
-                                            <td>{point.provider || '—'}</td>
+                                            <td>{point.source_ref || '—'}</td>
                                           </tr>
                                         ))
                                       ) : (
@@ -2308,10 +2327,12 @@ export default function App() {
       setAllInstruments((current) => upsertInstrumentRecord(current, created, true))
       setRegistryNotice(`Created instrument "${created.instrument_name}".`)
       setRegistryError(null)
+      return true
     } catch (requestError) {
       setRegistryError(
         requestError instanceof Error ? requestError.message : 'Failed to create instrument.',
       )
+      return false
     }
   }
 
@@ -2320,7 +2341,7 @@ export default function App() {
     quote_currency: SupportedCurrency
     rate: string
     as_of_date: string
-    provider?: string | null
+    source_ref?: string | null
     status: DataStatus
   }) {
     const previousWrite = fxWriteQueueRef.current
@@ -2367,7 +2388,7 @@ export default function App() {
     as_of_date: string
     value: string
     currency: string
-    provider?: string | null
+    source_ref?: string | null
     status: DataStatus
   }) {
     try {
@@ -2382,10 +2403,12 @@ export default function App() {
       setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
       setRegistryNotice(`Updated ${formatBasisLabel(payload.quote_basis)} for "${updated.instrument_name}".`)
       setRegistryError(null)
+      return true
     } catch (requestError) {
       setRegistryError(
         requestError instanceof Error ? requestError.message : 'Failed to save market data.',
       )
+      return false
     }
   }
 
@@ -2476,7 +2499,7 @@ export default function App() {
   async function handleImportNavText(payload: {
     instrument_id: string
     raw_text: string
-    provider?: string | null
+    source_ref?: string | null
     status: DataStatus
     updated_by?: string | null
   }) {
@@ -2492,10 +2515,12 @@ export default function App() {
       setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
       setRegistryNotice(updated.refresh_status.message || `Imported NAV history for "${updated.instrument_name}".`)
       setRegistryError(null)
+      return true
     } catch (requestError) {
       setRegistryError(
         requestError instanceof Error ? requestError.message : 'Failed to import NAV history.',
       )
+      return false
     }
   }
 
@@ -2503,7 +2528,7 @@ export default function App() {
     instrument_id: string
     file_name: string
     file_content_base64: string
-    provider?: string | null
+    source_ref?: string | null
     status: DataStatus
     updated_by?: string | null
   }) {
@@ -2519,10 +2544,12 @@ export default function App() {
       setAllInstruments((current) => upsertInstrumentRecord(current, updated, true))
       setRegistryNotice(updated.refresh_status.message || `Imported NAV history for "${updated.instrument_name}".`)
       setRegistryError(null)
+      return true
     } catch (requestError) {
       setRegistryError(
         requestError instanceof Error ? requestError.message : 'Failed to import NAV file.',
       )
+      return false
     }
   }
 

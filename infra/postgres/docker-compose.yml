@@ -5,8 +5,12 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: portfolio_ops
-      POSTGRES_USER: portfolio_ops
-      POSTGRES_PASSWORD: portfolio_ops
+      # The image bootstrap account is deliberately distinct from the account
+      # used by APIs and migrations.  docker-entrypoint creates POSTGRES_USER
+      # as a superuser; using the runtime name here would silently grant the
+      # application cluster-wide privileges on every fresh volume.
+      POSTGRES_USER: portfolio_ops_admin
+      POSTGRES_PASSWORD: portfolio_ops_admin
     ports:
       - "127.0.0.1:5432:5432"
     volumes:

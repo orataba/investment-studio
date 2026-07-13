@@ -4,15 +4,33 @@ from collections import defaultdict
 from copy import deepcopy
 from datetime import date
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from sqlalchemy.orm import Session
 
-from portfolio_app.services.instrument_registry import (
-    InstrumentRegistryError,
-    get_platform_fx_rates,
-    get_registry_instrument_details,
-    list_registry_corporate_actions,
-    list_registry_instruments,
+from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.canonical_fx import (
+    CanonicalFxWindowBook,
+    portfolio_fx_freshness_policy,
+    resolve_portfolio_fx_window_book_in_session,
 )
-from portfolio_app.services.market_data import is_usable_market_data_point
+from portfolio_app.services.canonical_quotes import resolve_role_quotes_on_date_in_session
+from portfolio_app.services.fact_currency import (
+    PortfolioFactCurrencyError,
+    require_portfolio_fact_currency,
+)
+from portfolio_app.services.instrument_registry import (
+    list_registry_corporate_actions,
+)
+
+
+class LedgerDataIntegrityError(ValueError):
+    """A persisted ledger fact cannot be interpreted without guessing."""
+
+
+def _required_currency(value: object, *, fact_name: str) -> str:
+    try:
+        return require_portfolio_fact_currency(value, context=fact_name)
+    except PortfolioFactCurrencyError as error:
+        raise LedgerDataIntegrityError(str(error)) from error
 
 
 def _safe_float(value: object) -> float | None:
@@ -24,95 +42,50 @@ def _safe_float(value: object) -> float | None:
         return None
 
 
-def _resolve_pricing_map(
-    instrument_ids: set[str] | None = None,
+def _resolve_valuation_quote_map_in_session(
+    session: Session,
+    instrument_ids: set[str],
     *,
-    as_of_date: date | None = None,
-) -> dict[str, float]:
-    normalized_instrument_ids = {instrument_id for instrument_id in (instrument_ids or set()) if instrument_id}
-    if normalized_instrument_ids or as_of_date is not None:
-        target_instrument_ids = normalized_instrument_ids or {
-            str(item.get("instrument_id") or "")
-            for item in list_registry_instruments()
-            if str(item.get("instrument_id") or "")
-        }
-        instrument_details = get_registry_instrument_details(target_instrument_ids)
-        pricing_map: dict[str, float] = {}
-        for instrument_id in target_instrument_ids:
-            detail = instrument_details.get(instrument_id)
-            if not isinstance(detail, dict):
-                continue
-            resolved = _select_quote_value(
-                detail,
-                role="valuation",
-                as_of_date=as_of_date,
-            )
-            if resolved is not None:
-                pricing_map[instrument_id] = resolved
-        return pricing_map
-
-    instruments = list_registry_instruments()
-    pricing_map: dict[str, float] = {}
-    for instrument in instruments:
-        instrument_id = str(instrument.get("instrument_id") or "")
-        if normalized_instrument_ids and instrument_id not in normalized_instrument_ids:
-            continue
-        resolved = _select_quote_value(instrument, role="valuation")
-        if resolved is not None:
-            pricing_map[instrument_id] = resolved
-    return pricing_map
-
-
-def resolve_fx_rate_map() -> dict[tuple[str, str], float]:
-    try:
-        payload = get_platform_fx_rates()
-    except InstrumentRegistryError:
-        return {}
-
-    fx_rate_map: dict[tuple[str, str], float] = {}
-    supported_currencies = {
-        str(currency or "").strip().upper()
-        for currency in payload.get("supported_currencies", [])
-        if str(currency or "").strip()
+    as_of_date: date,
+) -> dict[str, dict[str, object]]:
+    normalized_instrument_ids = {
+        str(instrument_id or "").strip()
+        for instrument_id in instrument_ids
+        if str(instrument_id or "").strip()
     }
-    for item in payload.get("rates", []):
-        if not is_usable_market_data_point(item):
-            continue
-        base_currency = str(item.get("base_currency") or "").strip().upper()
-        quote_currency = str(item.get("quote_currency") or "").strip().upper()
-        rate = _safe_float(item.get("rate"))
-        if not base_currency or not quote_currency or rate is None or rate <= 0:
-            continue
-        fx_rate_map[(base_currency, quote_currency)] = rate
-        supported_currencies.add(base_currency)
-        supported_currencies.add(quote_currency)
-
-    for currency in supported_currencies:
-        fx_rate_map[(currency, currency)] = 1.0
-    return fx_rate_map
+    if not normalized_instrument_ids:
+        return {}
+    return resolve_role_quotes_on_date_in_session(
+        session,
+        instrument_ids=normalized_instrument_ids,
+        role="valuation",
+        as_of_date=as_of_date,
+    )
 
 
-def _direct_fx_instrument_map(fx_payload: dict[str, object]) -> dict[tuple[str, str], str]:
-    direct_instruments: dict[tuple[str, str], str] = {}
-    for item in fx_payload.get("rates", []):
-        if not is_usable_market_data_point(item):
-            continue
-        if str(item.get("source_kind") or "") != "direct":
-            continue
-        base_currency = str(item.get("base_currency") or "").strip().upper()
-        quote_currency = str(item.get("quote_currency") or "").strip().upper()
-        instrument_id = str(item.get("instrument_id") or "").strip()
-        if base_currency and quote_currency and instrument_id:
-            direct_instruments[(base_currency, quote_currency)] = instrument_id
-    return direct_instruments
+def _resolve_valuation_quote_map(
+    instrument_ids: set[str],
+    *,
+    as_of_date: date,
+) -> dict[str, dict[str, object]]:
+    """Standalone quote-only unit of work for ledger reports without FX."""
+
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        return _resolve_valuation_quote_map_in_session(
+            session,
+            instrument_ids=instrument_ids,
+            as_of_date=as_of_date,
+        )
 
 
-def convert_amount(
+def _convert_amount_with_fx_book(
     amount: float | None,
     *,
+    as_of_date: date,
     from_currency: str,
     to_currency: str,
-    fx_rate_map: dict[tuple[str, str], float] | None = None,
+    fx_book: CanonicalFxWindowBook,
 ) -> float | None:
     if amount is None:
         return None
@@ -121,126 +94,10 @@ def convert_amount(
     normalized_to = to_currency.strip().upper()
     if not normalized_from or not normalized_to:
         return None
-    if normalized_from == normalized_to:
-        return float(amount)
-
-    resolved_fx_rate_map = fx_rate_map if fx_rate_map is not None else resolve_fx_rate_map()
-    rate = _safe_float(resolved_fx_rate_map.get((normalized_from, normalized_to)))
-    if rate is None or rate <= 0:
+    resolution = fx_book.rate_at(normalized_from, normalized_to, as_of_date)
+    if resolution.resolution_status != "resolved" or resolution.rate is None:
         return None
-    return float(amount) * rate
-
-
-def _normalized_policy_bases(instrument: dict[str, object], role: str) -> list[str]:
-    policy = instrument.get("quote_selection_policy", {})
-    if not isinstance(policy, dict):
-        return []
-    raw_values = policy.get(role)
-    if not isinstance(raw_values, list):
-        return []
-    normalized_values: list[str] = []
-    for raw_value in raw_values:
-        value = str(raw_value or "").strip()
-        if value and value not in normalized_values:
-            normalized_values.append(value)
-    return normalized_values
-
-
-FORBIDDEN_VALUATION_QUOTE_BASES = frozenset(
-    {
-        "adjusted_close",
-        "adjusted_nav",
-        "adjusted_price",
-        "accum_nav",
-        "accumulated_nav",
-        "cum_nav",
-        "cumulative_nav",
-        "dividend_adjusted_nav",
-        "nav_with_dividend",
-        "reinvested_nav",
-        "split_adjusted_close",
-        "total_return_nav",
-        "total_return_price",
-    }
-)
-
-
-def _market_points_by_basis(detail: dict[str, object]) -> dict[str, list[dict[str, object]]]:
-    market_data = detail.get("market_data", [])
-    points_by_basis: dict[str, list[dict[str, object]]] = defaultdict(list)
-    if not isinstance(market_data, list):
-        return points_by_basis
-    for point in market_data:
-        if not is_usable_market_data_point(point):
-            continue
-        quote_basis = str(point.get("quote_basis") or "").strip()
-        if not quote_basis:
-            continue
-        points_by_basis[quote_basis].append(point)
-    for points in points_by_basis.values():
-        points.sort(key=lambda item: str(item.get("as_of_date") or ""))
-    return points_by_basis
-
-
-def _latest_point_on_or_before(
-    points: list[dict[str, object]],
-    as_of_date: date,
-) -> dict[str, object] | None:
-    as_of_iso = as_of_date.isoformat()
-    latest: dict[str, object] | None = None
-    for point in points:
-        point_date = str(point.get("as_of_date") or "")
-        if point_date and point_date <= as_of_iso:
-            latest = point
-    return latest
-
-
-def _latest_points_by_basis(instrument: dict[str, object]) -> dict[str, dict[str, object]]:
-    latest_market_data = instrument.get("latest_market_data", [])
-    if not isinstance(latest_market_data, list):
-        return {}
-
-    latest_by_basis: dict[str, dict[str, object]] = {}
-    for point in latest_market_data:
-        if not is_usable_market_data_point(point):
-            continue
-        quote_basis = str(point.get("quote_basis") or "").strip()
-        if not quote_basis:
-            continue
-        as_of_date = str(point.get("as_of_date") or "")
-        current = latest_by_basis.get(quote_basis)
-        if current is None or as_of_date >= str(current.get("as_of_date") or ""):
-            latest_by_basis[quote_basis] = point
-    return latest_by_basis
-
-
-def _select_quote_value(
-    instrument: dict[str, object],
-    *,
-    role: str,
-    as_of_date: date | None = None,
-) -> float | None:
-    candidate_bases = _normalized_policy_bases(instrument, role)
-    if role == "valuation" and any(
-        quote_basis.strip().lower() in FORBIDDEN_VALUATION_QUOTE_BASES
-        for quote_basis in candidate_bases
-    ):
-        return None
-    if as_of_date is not None:
-        points_by_basis = _market_points_by_basis(instrument)
-        for quote_basis in candidate_bases:
-            point = _latest_point_on_or_before(points_by_basis.get(quote_basis, []), as_of_date)
-            resolved = _safe_float((point or {}).get("value"))
-            if resolved is not None:
-                return resolved
-        return None
-
-    latest_by_basis = _latest_points_by_basis(instrument)
-    for quote_basis in candidate_bases:
-        resolved = _safe_float(latest_by_basis.get(quote_basis, {}).get("value"))
-        if resolved is not None:
-            return resolved
-    return None
+    return float(Decimal(str(amount)) * resolution.rate)
 
 
 def _position_market_value(
@@ -454,10 +311,11 @@ def _resolve_cost_basis_method(account_cost_methods: dict[str, str] | None, acco
 def _resolve_account_currency(
     account_currency_map: dict[str, str] | None,
     account_id: str,
-    fallback_currency: str,
 ) -> str:
-    resolved = str((account_currency_map or {}).get(account_id) or "").strip().upper()
-    return resolved or fallback_currency
+    return _required_currency(
+        (account_currency_map or {}).get(account_id),
+        fact_name=f"account '{account_id or '<unknown>'}'",
+    )
 
 
 def _ensure_position_bucket(
@@ -870,6 +728,10 @@ def derive_ledger_postings(
         cost_basis_delta: float | None = None,
         currency: str | None = None,
     ) -> None:
+        posting_currency = _required_currency(
+            currency if currency is not None else transaction.get("currency"),
+            fact_name=f"transaction '{transaction.get('transaction_id') or '<unknown>'}'",
+        )
         posting_index = len([item for item in postings if item["transaction_id"] == transaction["transaction_id"]]) + 1
         postings.append(
             {
@@ -892,7 +754,7 @@ def derive_ledger_postings(
                 "cash_amount_delta": cash_amount_delta,
                 "quantity_delta": quantity_delta,
                 "cost_basis_delta": cost_basis_delta,
-                "currency": currency or str(transaction.get("currency") or ""),
+                "currency": posting_currency,
                 "transfer_group_id": transaction.get("transfer_group_id"),
                 "note": transaction.get("note"),
                 "created_at": transaction.get("created_at"),
@@ -963,7 +825,10 @@ def derive_ledger_postings(
         quantity = _safe_float(transaction.get("quantity"))
         account_id = str(transaction.get("account_id") or "")
         settlement_cash_account_id = transaction.get("settlement_cash_account_id")
-        currency = str(transaction.get("currency") or "")
+        currency = _required_currency(
+            transaction.get("currency"),
+            fact_name=f"transaction '{transaction.get('transaction_id') or '<unknown>'}'",
+        )
         instrument_id = str(transaction.get("instrument_id") or "")
         cost_basis_method = _resolve_cost_basis_method(account_cost_methods, account_id)
 
@@ -1032,7 +897,7 @@ def derive_ledger_postings(
                     posting_role="fx_conversion_target_cash",
                     account_id=target_account_id,
                     cash_amount_delta=target_amount,
-                    currency=_resolve_account_currency(account_currency_map, target_account_id, currency),
+                    currency=_resolve_account_currency(account_currency_map, target_account_id),
                 )
             continue
 
@@ -1826,7 +1691,9 @@ def build_position_lots(
     status: str | None = None,
     as_of_date: date | None = None,
     corporate_actions: list[dict[str, object]] | None = None,
-    pricing_map: dict[str, float] | None = None,
+    valuation_quote_map: dict[str, dict[str, object]] | None = None,
+    valuation_session: Session | None = None,
+    include_market_valuation: bool = True,
 ) -> list[dict[str, object]]:
     account_cost_methods = {
         str(account.get("account_id") or ""): str(account.get("cost_basis_method") or "fifo")
@@ -1869,11 +1736,23 @@ def build_position_lots(
         source_position_lot_id: str | None = None,
         linked_transaction_ids: set[str] | None = None,
     ) -> dict[str, object]:
+        resolved_currency = _required_currency(
+            currency,
+            fact_name=f"position lot for instrument '{target_instrument_id}'",
+        )
         resolved_cost_basis_method = _resolve_cost_basis_method(account_cost_methods, target_account_id)
         if resolved_cost_basis_method == "moving_average":
             active_lots = _active_position_lots(position_lots_by_key, target_account_id, target_instrument_id)
             if active_lots:
                 position_lot = active_lots[0]
+                existing_currency = _required_currency(
+                    position_lot.get("currency"),
+                    fact_name=f"position lot '{position_lot.get('position_lot_id') or '<unknown>'}'",
+                )
+                if existing_currency != resolved_currency:
+                    raise LedgerDataIntegrityError(
+                        "Moving-average lots cannot merge different currencies."
+                    )
                 position_lot["entry_quantity"] = (_safe_float(position_lot.get("entry_quantity")) or 0.0) + entry_quantity
                 position_lot["remaining_quantity"] = (
                     (_safe_float(position_lot.get("remaining_quantity")) or 0.0) + entry_quantity
@@ -1912,7 +1791,7 @@ def build_position_lots(
             account_id=target_account_id,
             instrument_id=target_instrument_id,
             instrument_ref=instrument_ref,
-            currency=currency,
+            currency=resolved_currency,
             cost_basis_method=resolved_cost_basis_method,
             opened_by_transaction_id=opened_by_transaction_id,
             opening_transaction_type=opening_transaction_type,
@@ -1962,6 +1841,7 @@ def build_position_lots(
                     instrument_id=target_instrument_id,
                     as_of_date=entitlement_date,
                     corporate_actions=resolved_actions,
+                    include_market_valuation=False,
                 )
                 if (_safe_float(position_lot.get("remaining_quantity")) or 0.0) > 1e-9
             ]
@@ -2042,7 +1922,10 @@ def build_position_lots(
                         "target_quantity": target_quantity,
                         "remaining_cost_basis": remaining_cost_basis,
                         "instrument_ref": deepcopy(position_lot.get("instrument_ref") or {}),
-                        "currency": str(position_lot.get("currency") or ""),
+                        "currency": _required_currency(
+                            position_lot.get("currency"),
+                            fact_name=f"position lot '{position_lot.get('position_lot_id') or '<unknown>'}'",
+                        ),
                         "acquisition_date": str(position_lot.get("acquisition_date") or effective_date),
                         "linked_transaction_ids": set(linked_ids) if isinstance(linked_ids, set) else set(),
                     }
@@ -2121,7 +2004,10 @@ def build_position_lots(
         transaction_type = str(transaction.get("transaction_type") or "")
         trade_date = str(transaction.get("trade_date") or "")
         entitlement_date = _parse_iso_date(transaction.get("entitlement_date")) or _parse_iso_date(trade_date)
-        currency = str(transaction.get("currency") or "")
+        currency = _required_currency(
+            transaction.get("currency"),
+            fact_name=f"transaction '{transaction_id or '<unknown>'}'",
+        )
         account_key = str(transaction.get("account_id") or "")
         instrument_ref = (
             deepcopy(transaction.get("instrument_ref"))
@@ -2351,7 +2237,10 @@ def build_position_lots(
                         "account_id": str(transaction.get("counterparty_account_id") or ""),
                         "instrument_id": resolved_instrument_id,
                         "instrument_ref": deepcopy(position_lot.get("instrument_ref")),
-                        "currency": str(position_lot.get("currency") or currency),
+                        "currency": _required_currency(
+                            position_lot.get("currency"),
+                            fact_name=f"position lot '{position_lot.get('position_lot_id') or '<unknown>'}'",
+                        ),
                         "opened_by_transaction_id": str(position_lot.get("opened_by_transaction_id") or transaction_id),
                         "opening_transaction_type": str(position_lot.get("opening_transaction_type") or "transfer_in"),
                         "opened_at": str(position_lot.get("opened_at") or trade_date),
@@ -2401,7 +2290,10 @@ def build_position_lots(
                         if isinstance(incoming_slice.get("instrument_ref"), dict)
                         else (instrument_ref or {})
                     ),
-                    currency=str(incoming_slice.get("currency") or currency),
+                    currency=_required_currency(
+                        incoming_slice.get("currency"),
+                        fact_name="transferred position lot slice",
+                    ),
                     opened_by_transaction_id=str(incoming_slice.get("opened_by_transaction_id") or transaction_id),
                     opening_transaction_type=str(
                         incoming_slice.get("opening_transaction_type") or transaction_type
@@ -2434,11 +2326,25 @@ def build_position_lots(
         for position_lot in filtered_position_lots
         if str(position_lot.get("instrument_id") or "")
     }
-    resolved_pricing_map = pricing_map if pricing_map is not None else {}
-    missing_pricing_ids = returned_instrument_ids - resolved_pricing_map.keys()
-    if missing_pricing_ids:
-        resolved_pricing_map.update(
-            _resolve_pricing_map(missing_pricing_ids, as_of_date=as_of_date)
+    resolved_valuation_quote_map = (
+        valuation_quote_map if valuation_quote_map is not None else {}
+    )
+    missing_pricing_ids = returned_instrument_ids - resolved_valuation_quote_map.keys()
+    if include_market_valuation and missing_pricing_ids:
+        quote_loader = (
+            _resolve_valuation_quote_map
+            if valuation_session is None
+            else lambda ids, *, as_of_date: _resolve_valuation_quote_map_in_session(
+                valuation_session,
+                ids,
+                as_of_date=as_of_date,
+            )
+        )
+        resolved_valuation_quote_map.update(
+            quote_loader(
+                missing_pricing_ids,
+                as_of_date=as_of_date or date.today(),
+            )
         )
     resolved_as_of_date = as_of_date or date.today()
     rendered_position_lots: list[dict[str, object]] = []
@@ -2452,7 +2358,21 @@ def build_position_lots(
         entry_tax_amount = _safe_float(raw_position_lot.get("entry_tax_amount")) or 0.0
         entry_cost_basis = _safe_float(raw_position_lot.get("entry_cost_basis")) or 0.0
         realized_proceeds = _safe_float(raw_position_lot.get("realized_proceeds")) or 0.0
-        instrument_price = resolved_pricing_map.get(str(raw_position_lot.get("instrument_id") or ""))
+        instrument_id_value = str(raw_position_lot.get("instrument_id") or "")
+        valuation_quote = resolved_valuation_quote_map.get(instrument_id_value)
+        lot_currency = _required_currency(
+            raw_position_lot.get("currency"),
+            fact_name=f"position lot '{raw_position_lot.get('position_lot_id') or '<unknown>'}'",
+        )
+        quote_currency = str((valuation_quote or {}).get("currency") or "").strip().upper()
+        instrument_price = (
+            _safe_float((valuation_quote or {}).get("value"))
+            if include_market_valuation
+            and (valuation_quote or {}).get("resolution_status") == "resolved"
+            and lot_currency
+            and quote_currency == lot_currency
+            else None
+        )
         instrument_ref = (
             raw_position_lot.get("instrument_ref")
             if isinstance(raw_position_lot.get("instrument_ref"), dict)
@@ -2478,7 +2398,7 @@ def build_position_lots(
                 "account_id": raw_position_lot["account_id"],
                 "instrument_id": raw_position_lot["instrument_id"],
                 "instrument_ref": deepcopy(instrument_ref),
-                "currency": raw_position_lot["currency"],
+                "currency": lot_currency,
                 "cost_basis_method": raw_position_lot["cost_basis_method"],
                 "opened_by_transaction_id": raw_position_lot["opened_by_transaction_id"],
                 "opening_transaction_type": raw_position_lot["opening_transaction_type"],
@@ -2523,6 +2443,7 @@ def build_position_lots(
                     realized_proceeds / realized_quantity if realized_quantity > 1e-9 else None
                 ),
                 "current_market_value": current_market_value,
+                "valuation_quote": deepcopy(valuation_quote),
                 "unrealized_pnl": (
                     current_market_value - remaining_cost_basis if current_market_value is not None else None
                 ),
@@ -2561,14 +2482,14 @@ def build_portfolio_positions(
     *,
     as_of_date: date | None = None,
 ) -> list[dict[str, object]]:
-    pricing_map: dict[str, float] = {}
+    valuation_quote_map: dict[str, dict[str, object]] = {}
     position_lots = build_position_lots(
         portfolio_id,
         accounts,
         transactions,
         status="open",
         as_of_date=as_of_date,
-        pricing_map=pricing_map,
+        valuation_quote_map=valuation_quote_map,
     )
     positions_by_instrument: dict[str, dict[str, object]] = {}
 
@@ -2583,7 +2504,10 @@ def build_portfolio_positions(
                 "instrument_ref": deepcopy(position_lot.get("instrument_ref")),
                 "quantity": 0.0,
                 "cost_basis": 0.0,
-                "currency": str(position_lot.get("currency") or ""),
+                "currency": _required_currency(
+                    position_lot.get("currency"),
+                    fact_name=f"position lot '{position_lot.get('position_lot_id') or '<unknown>'}'",
+                ),
                 "account_ids": set(),
                 "open_position_lot_count": 0,
             },
@@ -2598,7 +2522,19 @@ def build_portfolio_positions(
         quantity = _safe_float(bucket.get("quantity")) or 0.0
         if abs(quantity) <= 1e-9:
             continue
-        last_price = pricing_map.get(str(bucket.get("instrument_id") or ""))
+        instrument_id = str(bucket.get("instrument_id") or "")
+        valuation_quote = valuation_quote_map.get(instrument_id)
+        position_currency = _required_currency(
+            bucket.get("currency"),
+            fact_name="portfolio position",
+        )
+        last_price = (
+            _safe_float((valuation_quote or {}).get("value"))
+            if (valuation_quote or {}).get("resolution_status") == "resolved"
+            and str((valuation_quote or {}).get("currency") or "").strip().upper()
+            == position_currency
+            else None
+        )
         account_ids = sorted(account_id for account_id in bucket["account_ids"] if account_id)
         rendered_positions.append(
             {
@@ -2609,6 +2545,7 @@ def build_portfolio_positions(
                 "quantity": quantity,
                 "cost_basis": _safe_float(bucket.get("cost_basis")),
                 "last_price": last_price,
+                "valuation_quote": deepcopy(valuation_quote),
                 "market_value": _position_market_value(
                     quantity=quantity,
                     last_price=last_price,
@@ -2650,7 +2587,7 @@ def build_account_workspace(
     transactions: list[dict[str, object]],
     *,
     selected_account_id: str | None = None,
-    base_currency: str = "USD",
+    base_currency: str,
     as_of_date: date | None = None,
 ) -> dict[str, object]:
     account_lookup = {str(account["account_id"]): account for account in accounts}
@@ -2660,8 +2597,15 @@ def build_account_workspace(
         for account in accounts
         if account.get("account_type") == "securities_account"
     }
+    normalized_base_currency = _required_currency(
+        base_currency,
+        fact_name="portfolio.base_currency",
+    )
     account_currency_map = {
-        str(account.get("account_id") or ""): str(account.get("currency") or "")
+        str(account.get("account_id") or ""): _required_currency(
+            account.get("currency"),
+            fact_name=f"account '{account.get('account_id') or '<unknown>'}'",
+        )
         for account in accounts
     }
     boundary_transactions = list(transactions)
@@ -2685,35 +2629,6 @@ def build_account_workspace(
         corporate_actions=corporate_actions,
         as_of_date=as_of_date,
     )
-    fx_rate_map = resolve_fx_rate_map()
-    convert_amount_on_fn = None
-    direct_fx_instruments: dict[tuple[str, str], str] = {}
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
-    if as_of_date is not None:
-        from portfolio_app.services.performance import convert_amount_on
-
-        convert_amount_on_fn = convert_amount_on
-        direct_fx_instruments = _direct_fx_instrument_map(get_platform_fx_rates())
-
-    def convert_to_base(amount: float | None, *, from_currency: str) -> float | None:
-        normalized_currency = str(from_currency or "").strip().upper()
-        if as_of_date is None or convert_amount_on_fn is None:
-            return convert_amount(
-                amount,
-                from_currency=normalized_currency,
-                to_currency=base_currency,
-                fx_rate_map=fx_rate_map,
-            )
-        converted_amount, _ = convert_amount_on_fn(
-            amount,
-            as_of_date=as_of_date,
-            from_currency=normalized_currency,
-            to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
-        )
-        return converted_amount
-
     linked_transaction_ids: dict[str, set[str]] = defaultdict(set)
     linked_posting_count: dict[str, int] = defaultdict(int)
     cash_balance: dict[str, float] = defaultdict(float)
@@ -2732,16 +2647,61 @@ def build_account_workspace(
         else:
             pending_settlement[account_id] += cash_delta
 
-    pricing_map: dict[str, float] = {}
-    position_lots = build_position_lots(
-        portfolio_id,
-        accounts,
-        boundary_transactions,
-        status="open",
-        as_of_date=as_of_date,
-        corporate_actions=corporate_actions,
-        pricing_map=pricing_map,
-    )
+    valuation_quote_map: dict[str, dict[str, object]] = {}
+    calculation_date = as_of_date or date.today()
+    session_factory = get_session_factory()
+    with session_factory() as calculation_session:
+        position_lots = build_position_lots(
+            portfolio_id,
+            accounts,
+            boundary_transactions,
+            status="open",
+            as_of_date=calculation_date,
+            corporate_actions=corporate_actions,
+            valuation_quote_map=valuation_quote_map,
+            valuation_session=calculation_session,
+        )
+        calculation_currencies = {
+            normalized_base_currency,
+            *account_currency_map.values(),
+            *[
+                _required_currency(
+                    transaction.get("currency"),
+                    fact_name=f"transaction '{transaction.get('transaction_id') or '<unknown>'}'",
+                )
+                for transaction in boundary_transactions
+            ],
+            *[
+                _required_currency(
+                    position_lot.get("currency"),
+                    fact_name=f"position lot '{position_lot.get('position_lot_id') or '<unknown>'}'",
+                )
+                for position_lot in position_lots
+            ],
+        }
+        fx_book = resolve_portfolio_fx_window_book_in_session(
+            calculation_session,
+            currency_pairs={
+                (currency, normalized_base_currency)
+                for currency in calculation_currencies
+                if currency
+            },
+            start_date=calculation_date,
+            end_date=calculation_date,
+            freshness_policy=portfolio_fx_freshness_policy(),
+        )
+
+    def convert_to_base(amount: float | None, *, from_currency: str) -> float | None:
+        return _convert_amount_with_fx_book(
+            amount,
+            as_of_date=calculation_date,
+            from_currency=_required_currency(
+                from_currency,
+                fact_name="workspace valuation component",
+            ),
+            to_currency=normalized_base_currency,
+            fx_book=fx_book,
+        )
     positions_by_account_instrument: dict[tuple[str, str], dict[str, object]] = {}
     for position_lot in position_lots:
         account_id = str(position_lot.get("account_id") or "")
@@ -2756,7 +2716,10 @@ def build_account_workspace(
                 "instrument_ref": deepcopy(position_lot.get("instrument_ref")),
                 "quantity": 0.0,
                 "cost_basis": 0.0,
-                "currency": str(position_lot.get("currency") or ""),
+                "currency": _required_currency(
+                    position_lot.get("currency"),
+                    fact_name=f"position lot '{position_lot.get('position_lot_id') or '<unknown>'}'",
+                ),
                 "cost_basis_method": str(position_lot.get("cost_basis_method") or ""),
                 "open_position_lot_count": 0,
             },
@@ -2775,7 +2738,18 @@ def build_account_workspace(
         if abs(quantity) < 1e-9:
             continue
         instrument_id = str(bucket["instrument_id"])
-        last_price = pricing_map.get(instrument_id)
+        valuation_quote = valuation_quote_map.get(instrument_id)
+        position_currency = _required_currency(
+            bucket.get("currency"),
+            fact_name="workspace position",
+        )
+        last_price = (
+            _safe_float((valuation_quote or {}).get("value"))
+            if (valuation_quote or {}).get("resolution_status") == "resolved"
+            and str((valuation_quote or {}).get("currency") or "").strip().upper()
+            == position_currency
+            else None
+        )
         market_value = _position_market_value(
             quantity=quantity,
             last_price=last_price,
@@ -2793,7 +2767,7 @@ def build_account_workspace(
         else:
             converted_market_value = convert_to_base(
                 market_value,
-                from_currency=str(bucket.get("currency") or ""),
+                from_currency=position_currency,
             )
             if converted_market_value is None and abs(market_value) <= 1e-9:
                 converted_market_value = 0.0
@@ -2812,6 +2786,7 @@ def build_account_workspace(
                 "quantity": quantity,
                 "cost_basis": float(bucket["cost_basis"]),
                 "last_price": last_price,
+                "valuation_quote": deepcopy(valuation_quote),
                 "market_value": market_value,
                 "currency": bucket["currency"],
                 "cost_basis_method": bucket["cost_basis_method"] or None,
@@ -2829,7 +2804,10 @@ def build_account_workspace(
     account_rows: list[dict[str, object]] = []
     for account in accounts:
         account_id = str(account["account_id"])
-        account_currency = str(account.get("currency") or "")
+        account_currency = _required_currency(
+            account.get("currency"),
+            fact_name=f"account '{account_id}'",
+        )
         settlement_name = None
         settlement_id = account.get("default_settlement_cash_account_id")
         if isinstance(settlement_id, str):
@@ -2900,7 +2878,11 @@ def build_account_workspace(
                 "valuation_missing_components": missing_components,
                 "position_line_count": position_count_by_account[account_id],
                 "position_market_value": position_market_value,
-                "position_market_value_currency": base_currency if position_count_by_account[account_id] else None,
+                "position_market_value_currency": (
+                    normalized_base_currency
+                    if position_count_by_account[account_id]
+                    else None
+                ),
             }
         )
 
@@ -2925,7 +2907,7 @@ def build_account_workspace(
 
     return {
         "portfolio_id": portfolio_id,
-        "base_currency": base_currency,
+        "base_currency": normalized_base_currency,
         "summary": {
             "account_count": len(accounts),
             "deposit_account_count": sum(1 for account in accounts if account.get("account_type") == "deposit_account"),

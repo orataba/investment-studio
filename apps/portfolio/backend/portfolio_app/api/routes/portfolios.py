@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from portfolio_app.api.contracts import PortfolioRiskPolicyRecord, PortfolioRiskPolicyUpdateRequest
+from portfolio_app.api.contracts import (
+    PortfolioRiskPolicyRecord,
+    PortfolioRiskPolicyUpdateRequest,
+    SupportedCurrency,
+)
 from portfolio_app.services.portfolio_store import (
     copy_portfolio,
     create_portfolio,
@@ -18,7 +22,16 @@ router = APIRouter()
 
 
 class PortfolioCreateRequest(BaseModel):
-    name: str | None = None
+    name: str = Field(min_length=1, max_length=200)
+    base_currency: SupportedCurrency
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Portfolio name is required.")
+        return normalized
 
 
 class PortfolioReorderRequest(BaseModel):
@@ -32,7 +45,7 @@ def list_portfolio_records() -> list[dict[str, object]]:
 
 @router.post("")
 def create_portfolio_record(payload: PortfolioCreateRequest) -> dict[str, object]:
-    return create_portfolio(payload.name)
+    return create_portfolio(payload.name, base_currency=payload.base_currency)
 
 
 @router.post("/reorder")

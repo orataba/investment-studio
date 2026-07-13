@@ -48,7 +48,7 @@
 
 Database Dashboard 的邮件刷新使用显式产品规则匹配发件人、主题、附件名与行级产品信息。非 full-history 刷新会先读取该 instrument 已有最新 NAV 日期，再用 IMAP `SINCE` 缩小邮件搜索范围，并在解析后过滤早于该 NAV 日期的行；若没有历史 NAV，才退回最近邮件窗口。IMAP 连接超时由 `email_imap_timeout_seconds` 控制，避免邮件服务器阻塞整个刷新请求。
 
-Database Dashboard 也支持 Tushare SDK 兼容刷新。将 instrument 的 `Source Mode` 设为 `API`，`API Profile` 设为 `tushare` 后，后端会用 `tushare` Python SDK 调用，并把 SDK 的 `_DataApi__http_url` 指向 `PORTFOLIO_OPS_PLATFORM_TUSHARE_API_URL`，默认值为 `https://fastapic.stockai888.top`。公募 `.OF` 代码通过 `fund_nav` 写入 `official_nav / total_return_nav`，场内基金 `.SH/.SZ` 通过 `fund_daily` 写入 `price/close`，指数 `.SH/.SZ/.CSI/.CNI` 通过 `index_daily` 写入 `price/close`。Tushare token 读取 Git-ignored backend `.env` 或 shell 环境变量；不要把 token 明文写进 Git、提交信息或聊天记录。
+Database Dashboard 也支持 Tushare SDK 兼容刷新。将 instrument 的 `Source Mode` 设为 `API`，`API Profile` 设为 `tushare` 后，后端会用 `tushare` Python SDK 调用，并把 SDK 的 `_DataApi__http_url` 指向 `PORTFOLIO_OPS_PLATFORM_TUSHARE_API_URL`，默认值为 `https://fastapic.stockai888.top`。公募 `.OF` 代码通过 `fund_nav` 写入 `official_nav / total_return_nav`，场内基金 `.SH/.SZ` 通过 `fund_daily` 写入 `price/close`，指数 `.SH/.SZ/.CSI/.CNI` 通过 `index_daily` 写入 `price/close`。纯开发进程可以读取 Git-ignored backend `.env` 或 shell 环境变量；macOS 后台服务只读取受保护的外部秘密目录，并拒绝仓库内 backend `.env` 文件或软链接。不要把 token 明文写进 Git、提交信息或聊天记录。
 
 后台定时刷新使用 [backend/scripts/refresh_market_data_scheduled.py](./backend/scripts/refresh_market_data_scheduled.py)。默认依次刷新 Tushare 和邮件；成功写入后同步等待 Portfolio 快照刷新，并让 Watchlist 可靠入队后由 worker 异步重算。安装每天 21:00 刷新 timer：
 
@@ -57,7 +57,18 @@ PYTHON_BIN=/home/shaw/miniconda3/envs/us_sector_rotation/bin/python \
   infra/systemd/install_market_data_refresh_timer.sh
 ```
 
-服务器部署时在服务器项目目录执行同一个脚本，并把 `PYTHON_BIN` 指向服务器后端运行环境。timer 默认按 `*-*-* 21:00 Asia/Shanghai` 运行，日志追加到 `~/.local/state/portfolio-ops/logs/market-data-refresh.log`。脚本使用 `fcntl` 锁拒绝重叠运行，原子保存最近一次摘要，并先对失败 instrument 做内部重试；默认把单项失败或下游重算失败报告为非零退出状态，由 systemd 的有界重启策略处理。macOS 使用仓库根目录的 `infra/launchd/install_local_services.sh` 安装同为每日 21:00 的 LaunchAgent。
+服务器部署时在服务器项目目录执行同一个脚本，并把 `PYTHON_BIN` 指向服务器后端运行环境。timer 默认按 `*-*-* 21:00 Asia/Shanghai` 运行，日志追加到 `~/.local/state/portfolio-ops/logs/market-data-refresh.log`。脚本使用 `fcntl` 锁拒绝重叠运行，原子保存最近一次摘要，并先对失败 instrument 做内部重试；默认把单项失败或下游重算失败报告为非零退出状态，由 systemd 的有界重启策略处理。
+
+macOS 通过仓库根目录的统一安全安装器安装同为每日 21:00 的 LaunchAgent。必须显式确认数据库 URL 所指向的目标和本次重建日期：
+
+```bash
+CONFIRM_RELEASE='portfolio_ops@127.0.0.1:5432' \
+PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+PORTFOLIO_OPS_RELEASE_AS_OF_DATE=YYYY-MM-DD \
+  infra/launchd/install_local_services.sh
+```
+
+安装器会先停止全部应用与刷新 writer，再执行已校验备份、三条迁移链、Portfolio/Watchlist 全量重建、零失败零告警审计和发布后备份。服务停止后的任一步失败都会保持托管服务停止。数据库发布门禁本身若在变更后失败，会先尝试恢复发布前备份；门禁已经通过、随后前端构建或 LaunchAgent 启动失败时，保留已审计的新数据库并继续停服。
 
 ## Downstream Refresh
 
@@ -124,5 +135,9 @@ platform frontend 不再把 backend / watchlist / portfolio 地址写死在代�
 ```bash
 (cd apps/platform/backend && pytest)
 npm --prefix apps/platform/frontend run build
-(cd infra/instrument_registry && alembic upgrade head)
+(
+  export PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE=portfolio_ops
+  cd infra/instrument_registry
+  alembic upgrade head
+)
 ```

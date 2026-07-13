@@ -30,7 +30,7 @@ def upsert_platform_fx_rate(
             quote_currency=payload.quote_currency,
             rate=payload.rate,
             as_of_date=payload.as_of_date,
-            provider=payload.provider,
+            source_ref=payload.source_ref,
             status=payload.status,
         )
     except ValueError as error:

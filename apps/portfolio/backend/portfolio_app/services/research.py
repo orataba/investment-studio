@@ -23,10 +23,10 @@ from portfolio_app.db.models import (
     TaxonomyAssignmentRecordModel,
     TaxonomyNodeRecordModel,
     TaxonomyRecordModel,
-    TransactionRecordModel,
+    TransactionCurrentModel,
 )
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.instrument_charts import build_instrument_sparkline
+from portfolio_app.services.fact_currency import require_portfolio_fact_currency
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
 from portfolio_app.services.ledger import build_account_workspace
 from portfolio_app.services.performance import build_holdings_report
@@ -494,8 +494,8 @@ def _latest_research_transaction_date(portfolio_id: str) -> date | None:
     session_factory = get_session_factory()
     with session_factory() as session:
         return session.scalar(
-            select(func.max(TransactionRecordModel.trade_date)).where(
-                TransactionRecordModel.portfolio_id == portfolio_id
+            select(func.max(TransactionCurrentModel.trade_date)).where(
+                TransactionCurrentModel.portfolio_id == portfolio_id
             )
         )
 
@@ -773,7 +773,10 @@ def _normalize_top_holding_snapshot(item: dict[str, object]) -> dict[str, object
         "allocation": _safe_float(item.get("allocation")),
         "market_value_base": _safe_float(item.get("market_value_base")),
         "cost_basis_base": _safe_float(item.get("cost_basis_base")),
-        "base_currency": str(item.get("base_currency") or "USD"),
+        "base_currency": require_portfolio_fact_currency(
+            item.get("base_currency"),
+            context=f"Research top holding '{instrument_id}' base",
+        ),
         "price": _safe_float(item.get("price")),
     }
 
@@ -996,16 +999,32 @@ def _build_research_context(
         transactions,
         as_of_date=as_of_date,
     )
+    portfolio_base_currency = require_portfolio_fact_currency(
+        portfolio.get("base_currency"),
+        context=f"Portfolio '{portfolio_id}' base",
+    )
+    statement_base_currency = require_portfolio_fact_currency(
+        statement.get("base_currency"),
+        context=f"Research holdings statement '{portfolio_id}/{as_of_date.isoformat()}' base",
+    )
+    if statement_base_currency != portfolio_base_currency:
+        raise ValueError(
+            f"Research holdings statement '{portfolio_id}/{as_of_date.isoformat()}' base "
+            "currency does not match the portfolio fact."
+        )
     account_workspace = build_account_workspace(
         portfolio_id,
         accounts,
         transactions,
-        base_currency=str(statement.get("base_currency") or portfolio.get("base_currency") or "USD"),
+        base_currency=statement_base_currency,
         as_of_date=as_of_date,
     )
     lookback_start = research_window_start_date(as_of_date, lookback_days)
     statement_positions = list(statement.get("positions", []))
-    top_holdings = _build_top_holdings_snapshot(statement_positions, base_currency=str(statement.get("base_currency") or "USD"))
+    top_holdings = _build_top_holdings_snapshot(
+        statement_positions,
+        base_currency=statement_base_currency,
+    )
     planning_groups = _build_planning_group_snapshot(
         statement_positions,
         account_rows=list(account_workspace.get("accounts") or []),
@@ -1028,24 +1047,6 @@ def _build_research_context(
             "Research target solve is unavailable until all non-cash holdings are assigned to the selected planning taxonomy "
             f"({int(unassigned_group.get('position_count') or 0)} unassigned holding(s))."
         )
-    chart_label = None
-    chart_note = None
-    chart_currency = None
-    daily_points: list[dict[str, object]] = []
-    if top_holdings:
-        reference_instrument = top_holdings[0]
-        daily_points = build_instrument_sparkline(
-            str(reference_instrument.get("instrument_id") or ""),
-            as_of_date=as_of_date,
-            max_points=20,
-        )
-        chart_label = "Reference Tape"
-        chart_currency = str(reference_instrument.get("base_currency") or statement.get("base_currency") or "USD")
-        chart_note = (
-            f"Using the six-month sparkline for {reference_instrument.get('instrument_name') or reference_instrument.get('instrument_id')} "
-            "until a cheaper portfolio daily tape is wired into the research workbench."
-        )
-
     statement_nav_base = _safe_float(statement.get("total_nav_base"))
     portfolio_nav_base = _safe_float(portfolio.get("nav"))
     resolved_nav_base = statement_nav_base if statement_nav_base is not None else portfolio_nav_base
@@ -1053,16 +1054,13 @@ def _build_research_context(
     return {
         "portfolio_id": portfolio_id,
         "portfolio_name": str(portfolio.get("portfolio_name") or portfolio_id),
-        "base_currency": str(statement.get("base_currency") or portfolio.get("base_currency") or "USD"),
+        "base_currency": statement_base_currency,
         "as_of_date": as_of_date.isoformat(),
         "lookback_start": lookback_start.isoformat(),
         "lookback_end": as_of_date.isoformat(),
         "nav": resolved_nav_base,
         "holdings_count": len(statement_positions),
         "planning_group_count": len(planning_groups),
-        "chart_label": chart_label,
-        "chart_note": chart_note,
-        "chart_currency": chart_currency,
         "summary": {
             "period_return": None,
             "annualized_volatility": None,
@@ -1073,7 +1071,6 @@ def _build_research_context(
         },
         "planning_target_summary": planning_target_summary,
         "quality_warnings": quality_warnings,
-        "chart_points": daily_points,
         "top_holdings": top_holdings,
         "planning_groups": planning_groups,
     }
@@ -1457,7 +1454,6 @@ def _write_artifacts(
     settings_path = run_root / "request.json"
     holdings_path = run_root / "top_holdings.csv"
     groups_path = run_root / "planning_groups.csv"
-    reference_tape_path = run_root / "reference_tape.csv"
     target_weights_path = run_root / "target_weights.csv"
     member_targets_path = run_root / "member_targets.csv"
     leaf_targets_path = run_root / "leaf_targets.csv"
@@ -1522,7 +1518,6 @@ def _write_artifacts(
     )
     _write_csv(holdings_path, list(detail.get("top_holdings") or []))
     _write_csv(groups_path, list(detail.get("planning_groups") or []))
-    _write_csv(reference_tape_path, list(context.get("chart_points") or []))
     _write_csv(target_weights_path, list(detail.get("target_rows") or []))
     _write_csv(member_targets_path, list(detail.get("member_targets") or []))
     _write_csv(leaf_targets_path, list(detail.get("leaf_targets") or []))
@@ -1538,7 +1533,6 @@ def _write_artifacts(
         ("request", "Run Request", settings_path),
         ("holdings", "Top Holdings CSV", holdings_path),
         ("groups", "Planning Groups CSV", groups_path),
-        ("reference_tape", "Reference Tape CSV", reference_tape_path),
         ("target_weights", "Target Weights CSV", target_weights_path),
         ("member_targets", "Member Targets CSV", member_targets_path),
         ("leaf_targets", "Leaf Targets CSV", leaf_targets_path),
@@ -1665,7 +1659,10 @@ def get_research_workbench(
     return {
         "portfolio_id": portfolio_id,
         "portfolio_name": str(portfolio.get("portfolio_name") or portfolio_id),
-        "base_currency": str(portfolio.get("base_currency") or "USD"),
+        "base_currency": require_portfolio_fact_currency(
+            portfolio.get("base_currency"),
+            context=f"Portfolio '{portfolio_id}' base",
+        ),
         "as_of_date": _iso_date(latest_portfolio_as_of_date),
         "default_planning_taxonomy_id": str(portfolio.get("default_planning_taxonomy_id") or "").strip() or None,
         "planning_taxonomy_options": _planning_taxonomy_options(portfolio_id),

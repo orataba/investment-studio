@@ -4,21 +4,25 @@
 
 建议阅读顺序：
 
-1. [README.md](../README.md)
+1. [REFACTORING_BLUEPRINT.md](./REFACTORING_BLUEPRINT.md)
+   当前获批的产品边界、目标架构、领域模型、准确性规范与分阶段重构计划。
+2. [MARKET_DATA_RELIABILITY_SPEC.md](./MARKET_DATA_RELIABILITY_SPEC.md)
+   Phase 2 的 canonical market series、append-only revision、四种时间/可靠性状态、quote resolver 和 TWR fail-closed 规范。
+3. [README.md](../README.md)
    仓库概览、目录、当前边界、启动方式和常用校验命令。
-2. [USER_MANUAL.md](./USER_MANUAL.md)
+4. [USER_MANUAL.md](./USER_MANUAL.md)
    面向公司同事的使用手册，说明 Platform / Watchlist / Portfolio 的日常使用方式。
-3. [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)
+5. [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md)
    单库多 schema 的数据库拓扑、迁移入口、重建脚本和 PostgreSQL integration test 路径。
-4. [PLATFORM_BOUNDARIES.md](./PLATFORM_BOUNDARIES.md)
+6. [PLATFORM_BOUNDARIES.md](./PLATFORM_BOUNDARIES.md)
    `Platform / Watchlist / Portfolio / instrument-core / instrument_registry` 之间的当前职责和数据边界。
-5. [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md)
+7. [FRONTEND_DESIGN_BASELINE.md](./FRONTEND_DESIGN_BASELINE.md)
    当前前端设计基线：白底数据终端、tab-to-content 节奏、字体层级和跨 app UI 边界。
-6. [MAC_MIGRATION_FREEZE.md](./MAC_MIGRATION_FREEZE.md)
+8. [MAC_MIGRATION_FREEZE.md](./MAC_MIGRATION_FREEZE.md)
    WSL 到 Mac 迁移冻结清单：Git 承载范围、数据 dump、NAV 附件和服务重建边界。
-7. [NEW_MACHINE_RESTORE.md](./NEW_MACHINE_RESTORE.md)
+9. [NEW_MACHINE_RESTORE.md](./NEW_MACHINE_RESTORE.md)
    新电脑从私有 GitHub 仓库恢复项目、数据库、运行环境和定时任务的步骤参考。
-8. [LOCAL_MACOS_SERVICE.md](./LOCAL_MACOS_SERVICE.md)
+10. [LOCAL_MACOS_SERVICE.md](./LOCAL_MACOS_SERVICE.md)
    在 macOS 上安装、检查和移除本地 `launchd` 常驻服务与每日 21:00 刷新/重算任务。
 
 按 app 深入时：

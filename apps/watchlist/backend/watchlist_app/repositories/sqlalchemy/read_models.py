@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -10,9 +10,6 @@ from sqlalchemy.orm import Session, selectinload
 from watchlist_app.db.models.read_models import (
     InstrumentChartReadModel,
     InstrumentPerformanceReadModel,
-    InstrumentExposureHoldingsReadModel,
-    InstrumentExposureReadModel,
-    InstrumentRatingReadModel,
     InstrumentRiskReadModel,
     InstrumentSummaryReadModel,
     WatchlistRowReadModel,
@@ -130,9 +127,9 @@ class SQLAlchemyReadModelRepository:
                 share_class=data.get("share_class"),
                 ticker_or_isin=data.get("ticker_or_isin"),
                 management_firm_name=data.get("management_firm_name"),
-                overall_rating=data.get("overall_rating"),
-                analyst_stance=data.get("analyst_stance"),
-                aum=data.get("aum"),
+                research_rating=data.get("research_rating"),
+                research_rating_as_of=data.get("research_rating_as_of"),
+                research_rating_updated_at=data.get("research_rating_updated_at"),
                 return_ytd=data.get("return_ytd"),
                 return_1w=data.get("return_1w"),
                 return_mtd=data.get("return_mtd"),
@@ -144,14 +141,12 @@ class SQLAlchemyReadModelRepository:
                 max_drawdown=data.get("max_drawdown"),
                 volatility=data.get("volatility"),
                 sharpe_ratio=data.get("sharpe_ratio"),
-                duration=data.get("duration"),
-                yield_to_worst=data.get("yield_to_worst"),
-                avg_credit_rating=data.get("avg_credit_rating"),
                 attributes_json=data.get("attributes", {}),
-                exposure_updated_at=data.get("exposure_updated_at"),
                 last_nav_date=data.get("last_nav_date"),
                 data_freshness_status=str(data.get("data_freshness_status") or "unavailable"),
-                last_fact_update_at=data.get("last_fact_update_at"),
+                market_data_input_watermark_at=data.get(
+                    "market_data_input_watermark_at"
+                ),
                 last_recalculated_at=data.get("last_recalculated_at"),
                 last_successful_snapshot_at=data.get("last_successful_snapshot_at"),
                 staleness_reason=data.get("staleness_reason"),
@@ -165,9 +160,9 @@ class SQLAlchemyReadModelRepository:
         record.share_class = data.get("share_class")
         record.ticker_or_isin = data.get("ticker_or_isin")
         record.management_firm_name = data.get("management_firm_name")
-        record.overall_rating = data.get("overall_rating")
-        record.analyst_stance = data.get("analyst_stance")
-        record.aum = data.get("aum")
+        record.research_rating = data.get("research_rating")
+        record.research_rating_as_of = data.get("research_rating_as_of")
+        record.research_rating_updated_at = data.get("research_rating_updated_at")
         record.return_ytd = data.get("return_ytd")
         record.return_1w = data.get("return_1w")
         record.return_mtd = data.get("return_mtd")
@@ -179,14 +174,12 @@ class SQLAlchemyReadModelRepository:
         record.max_drawdown = data.get("max_drawdown")
         record.volatility = data.get("volatility")
         record.sharpe_ratio = data.get("sharpe_ratio")
-        record.duration = data.get("duration")
-        record.yield_to_worst = data.get("yield_to_worst")
-        record.avg_credit_rating = data.get("avg_credit_rating")
         record.attributes_json = data.get("attributes", {})
-        record.exposure_updated_at = data.get("exposure_updated_at")
         record.last_nav_date = data.get("last_nav_date")
         record.data_freshness_status = str(data.get("data_freshness_status") or "unavailable")
-        record.last_fact_update_at = data.get("last_fact_update_at")
+        record.market_data_input_watermark_at = data.get(
+            "market_data_input_watermark_at"
+        )
         record.last_recalculated_at = data.get("last_recalculated_at")
         record.last_successful_snapshot_at = data.get("last_successful_snapshot_at")
         record.staleness_reason = data.get("staleness_reason")
@@ -206,6 +199,32 @@ class SQLAlchemyReadModelRepository:
             record.attributes_json = attributes
             if touched_at is not None:
                 record.last_recalculated_at = touched_at
+        session.flush()
+
+    def set_current_research_rating(
+        self,
+        session: Session,
+        *,
+        instrument_id: str,
+        rating_payload: dict[str, object] | None,
+        rating_value: int | None,
+        rating_as_of: date | None,
+        rating_updated_at: datetime | None,
+    ) -> None:
+        summary = self.get_summary(session, instrument_id)
+        if summary is not None:
+            summary.payload_json = {
+                **(summary.payload_json or {}),
+                "research_rating": rating_payload,
+            }
+
+        stmt = select(WatchlistRowReadModel).where(
+            WatchlistRowReadModel.instrument_id == instrument_id
+        )
+        for row in session.scalars(stmt):
+            row.research_rating = rating_value
+            row.research_rating_as_of = rating_as_of
+            row.research_rating_updated_at = rating_updated_at
         session.flush()
 
     def get_view(
@@ -248,23 +267,6 @@ class SQLAlchemyReadModelRepository:
     def get_risk(self, session: Session, instrument_id: str) -> InstrumentRiskReadModel | None:
         return session.get(InstrumentRiskReadModel, instrument_id)
 
-    def get_exposure_summary(
-        self,
-        session: Session,
-        instrument_id: str,
-    ) -> InstrumentExposureReadModel | None:
-        return session.get(InstrumentExposureReadModel, instrument_id)
-
-    def get_exposure_holdings(
-        self,
-        session: Session,
-        instrument_id: str,
-    ) -> InstrumentExposureHoldingsReadModel | None:
-        return session.get(InstrumentExposureHoldingsReadModel, instrument_id)
-
-    def get_rating(self, session: Session, instrument_id: str) -> InstrumentRatingReadModel | None:
-        return session.get(InstrumentRatingReadModel, instrument_id)
-
     def upsert_payload_read_model(
         self,
         session: Session,
@@ -274,7 +276,7 @@ class SQLAlchemyReadModelRepository:
         payload_json: dict[str, Any],
         data_freshness_status: str,
         last_recalculated_at,
-        source_cutoff_at,
+        market_data_input_watermark_at,
     ):
         record = session.get(model_class, instrument_id)
         if record is None:
@@ -283,7 +285,7 @@ class SQLAlchemyReadModelRepository:
                 payload_json=payload_json,
                 data_freshness_status=data_freshness_status,
                 last_recalculated_at=last_recalculated_at,
-                source_cutoff_at=source_cutoff_at,
+                market_data_input_watermark_at=market_data_input_watermark_at,
             )
             session.add(record)
             session.flush()
@@ -291,6 +293,6 @@ class SQLAlchemyReadModelRepository:
         record.payload_json = payload_json
         record.data_freshness_status = data_freshness_status
         record.last_recalculated_at = last_recalculated_at
-        record.source_cutoff_at = source_cutoff_at
+        record.market_data_input_watermark_at = market_data_input_watermark_at
         session.flush()
         return record

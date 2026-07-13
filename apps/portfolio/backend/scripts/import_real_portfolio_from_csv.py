@@ -15,10 +15,16 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from portfolio_app.db.models import AccountRecordModel, PortfolioRecordModel, TransactionRecordModel
+from portfolio_app.db.models import AccountRecordModel, PortfolioRecordModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.performance import build_holdings_report
 from portfolio_app.services.portfolio_store import _allocate_transaction_ids, resolve_trade_timing
+from portfolio_app.services.transaction_revisions import (
+    CreateTransactionRevision,
+    TransactionFactPayload,
+    TransactionRevisionContext,
+    append_transaction_revision_batch,
+)
 
 DEFAULT_VALUATION_DATE = date.today()
 PRICE_DISPLAY_QUANTUM = Decimal("0.0001")
@@ -185,16 +191,16 @@ def trade_payload(
     gross_amount: Decimal,
     currency: str,
     note: str | None,
-    created_at: str,
-) -> tuple[TransactionRecordModel, dict[str, object]]:
+    created_at: datetime,
+) -> tuple[CreateTransactionRevision, dict[str, object]]:
     resolved_timing = resolve_trade_timing(trade_date=trade_date, trade_time=trade_time)
-    transaction_record = TransactionRecordModel(
-        transaction_id=transaction_id,
-        portfolio_id=portfolio_id,
+    facts = TransactionFactPayload(
         transaction_type=transaction_type,
         trade_date=trade_date,
-        trade_time=str(resolved_timing["trade_time"]),
-        trade_at=str(resolved_timing["trade_at"]),
+        trade_time=datetime.strptime(str(resolved_timing["trade_time"]), "%H:%M").time(),
+        trade_at=datetime.fromisoformat(
+            str(resolved_timing["trade_at"]).replace("Z", "+00:00")
+        ),
         trade_timezone=str(resolved_timing["trade_timezone"]),
         trade_time_is_estimated=bool(resolved_timing["trade_time_is_estimated"]),
         settlement_date=settlement_date,
@@ -202,20 +208,24 @@ def trade_payload(
         account_id=account_id,
         settlement_cash_account_id=settlement_cash_account_id,
         instrument_id=instrument_id,
-        instrument_ref_json=instrument_ref,
-        quantity=decimal_to_float(quantity),
-        price=decimal_to_float(price),
-        gross_amount=float(gross_amount),
+        instrument_snapshot_json=instrument_ref,
+        quantity=quantity,
+        price=price,
+        gross_amount=gross_amount,
         counter_amount=None,
         fx_rate=None,
-        fees=0.0,
-        taxes=0.0,
+        fees=Decimal("0"),
+        taxes=Decimal("0"),
         currency=currency,
         transfer_scope=None,
         transfer_object_type=None,
         transfer_group_id=None,
         counterparty_account_id=None,
         note=note,
+    )
+    command = CreateTransactionRevision(
+        transaction_id=transaction_id,
+        facts=facts,
         created_at=created_at,
     )
     transaction_payload = {
@@ -223,10 +233,10 @@ def trade_payload(
         "portfolio_id": portfolio_id,
         "transaction_type": transaction_type,
         "trade_date": trade_date.isoformat(),
-        "trade_time": transaction_record.trade_time,
-        "trade_at": transaction_record.trade_at,
-        "trade_timezone": transaction_record.trade_timezone,
-        "trade_time_is_estimated": transaction_record.trade_time_is_estimated,
+        "trade_time": str(resolved_timing["trade_time"]),
+        "trade_at": str(resolved_timing["trade_at"]),
+        "trade_timezone": str(resolved_timing["trade_timezone"]),
+        "trade_time_is_estimated": bool(resolved_timing["trade_time_is_estimated"]),
         "settlement_date": settlement_date.isoformat(),
         "entitlement_date": None,
         "account_id": account_id,
@@ -246,9 +256,9 @@ def trade_payload(
         "transfer_group_id": None,
         "counterparty_account_id": None,
         "note": note,
-        "created_at": created_at,
+        "created_at": created_at.isoformat().replace("+00:00", "Z"),
     }
-    return transaction_record, transaction_payload
+    return command, transaction_payload
 
 
 def main() -> None:
@@ -360,10 +370,12 @@ def main() -> None:
         transaction_ids = iter(_allocate_transaction_ids(session, len(rows) + 1))
         current_created_at = datetime.now(UTC).replace(microsecond=0)
         transaction_payloads: list[dict[str, object]] = []
+        revision_commands: list[CreateTransactionRevision] = []
         imported_trade_date = min(row.trade_date for row in rows)
         total_gross_amount = sum(row.gross_amount for row in rows)
 
-        deposit_record, deposit_payload = trade_payload(
+        session.flush()
+        deposit_command, deposit_payload = trade_payload(
             transaction_id=next(transaction_ids),
             portfolio_id=args.portfolio_id,
             transaction_type="deposit",
@@ -379,9 +391,9 @@ def main() -> None:
             gross_amount=total_gross_amount,
             currency="CNY",
             note=f"Imported funding from {csv_path.name}.",
-            created_at=current_created_at.isoformat().replace("+00:00", "Z"),
+            created_at=current_created_at,
         )
-        session.add(deposit_record)
+        revision_commands.append(deposit_command)
         transaction_payloads.append(deposit_payload)
         for index, row in enumerate(rows, start=1):
             instrument = resolve_instrument(row, instrument_lookup)
@@ -412,7 +424,7 @@ def main() -> None:
                 f"Imported from {csv_path.name}; CSV display price={row.display_price}; "
                 f"authoritative quantity/gross_amount preserved."
             )
-            transaction_record, transaction_payload = trade_payload(
+            transaction_command, transaction_payload = trade_payload(
                 transaction_id=next(transaction_ids),
                 portfolio_id=args.portfolio_id,
                 transaction_type=row.transaction_type,
@@ -434,10 +446,25 @@ def main() -> None:
                 gross_amount=row.gross_amount,
                 currency=instrument.currency,
                 note=note,
-                created_at=current_created_at.isoformat().replace("+00:00", "Z"),
+                created_at=current_created_at,
             )
-            session.add(transaction_record)
+            revision_commands.append(transaction_command)
             transaction_payloads.append(transaction_payload)
+
+        append_transaction_revision_batch(
+            session,
+            portfolio_id=args.portfolio_id,
+            context=TransactionRevisionContext(
+                source_kind="import",
+                change_reason=f"Imported verified trade blotter {csv_path.name}",
+                actor_type="service",
+                actor_id="service:csv-import",
+                actor_display_name="CSV portfolio importer",
+                actor_source="trusted_service",
+                source_ref=str(csv_path),
+            ),
+            mutations=revision_commands,
+        )
         portfolio_payload = {
             "portfolio_id": args.portfolio_id,
             "portfolio_name": portfolio_name,

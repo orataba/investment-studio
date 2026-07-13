@@ -7,7 +7,7 @@
 - `apps/platform`
   平台入口与 `Database Dashboard`，维护 `instrument_registry` schema 中的 `Instruments / FX / NAV` 主数据，支持手工录入、CSV/Excel 导入、邮件刷新与历史查看，但不是其他 app 的运行时依赖。
 - `apps/watchlist`
-  已有可运行的前后端、数据库迁移、测试与文档，继续承载 fund/index watchlist、local detail、facts、recalc 与 read model 基线；Copilot 当前只保留后端扩展接口，默认 UI 不对外开放。
+  已有可运行的前后端、数据库迁移、测试与文档，承载 fund/ETF/index watchlist、local detail、人工研究评级、monitoring、recalc 与 read model；Copilot 当前只保留后端扩展接口，默认 UI 不对外开放。
 - `apps/portfolio`
   已有可运行的前后端、数据库迁移、交易、绩效、持仓、风险与研究工作台，以及成体系的领域文档。
 
@@ -37,6 +37,10 @@ portfolio-operations-workbench/
 
 ## 文档入口
 
+- [docs/REFACTORING_BLUEPRINT.md](./docs/REFACTORING_BLUEPRINT.md)
+  面向基金经理个人及小型协作团队的目标架构与不兼容重构计划，明确基金研究、人工评级、Allocation Research、外部 ETF Live 集成和交易纠错边界。
+- [docs/MARKET_DATA_RELIABILITY_SPEC.md](./docs/MARKET_DATA_RELIABILITY_SPEC.md)
+  Phase 2 的 canonical quote series、append-only observation revision、freshness/reliability 与 TWR fail-closed 唯一规范。
 - [docs/README.md](./docs/README.md)
   顶层文档索引，串起数据库工作流、平台边界和设计基线。
 - [docs/USER_MANUAL.md](./docs/USER_MANUAL.md)
@@ -59,7 +63,7 @@ portfolio-operations-workbench/
 ## 当前边界
 
 - `apps/watchlist`
-  承载 fund/index watchlist / local detail / facts / read model / recalc 语境；Copilot 仅保留后端接口边界，不作为当前已发布 UI 能力。
+  承载 fund/ETF/index watchlist / local detail / manual research rating / monitoring / read model / recalc 语境；Copilot 仅保留后端接口边界，不作为当前已发布 UI 能力。
 - `apps/portfolio`
   承载 portfolio / account / transaction / performance / risk / research 语境。
 - `apps/platform`
@@ -76,7 +80,7 @@ portfolio-operations-workbench/
 - 两个 app 保持解耦，不做业务模型融合。
 - `Watchlist` 与 `Portfolio` 直接访问同一个 PostgreSQL 中的 `instrument_registry` + 各自私有 schema，不通过 app-to-app HTTP 互相取数。
 - 共享资产身份与 typed market facts / selector policy，不共享上层业务 read model。
-- `Watchlist` 继续 fund/index watchlist 语境，不承载 portfolio 业务事实。
+- `Watchlist` 继续 fund/ETF/index 的研究与监测语境，不承载 portfolio 业务事实。
 - `Portfolio` 继续 portfolio/account/transaction/performance/risk/research 语境。
 - 前端视觉基线统一为白底、冷中性灰线条和表格优先的信息密度；不要再引入米黄、沙色或暖灰页面背景。
 
@@ -90,24 +94,28 @@ portfolio-operations-workbench/
 (cd infra/postgres && docker compose up -d)
 ```
 
-新电脑从零恢复时，优先按 [docs/NEW_MACHINE_RESTORE.md](./docs/NEW_MACHINE_RESTORE.md) 执行：先启动 PostgreSQL，再校验并 `pg_restore` `data/migration/` 里的当前项目级 dump。不要在恢复后运行 `./infra/postgres/rebuild_local_schemas.sh`，除非明确要清空恢复数据并重建空 schema。
+新电脑从零恢复时，优先按 [docs/NEW_MACHINE_RESTORE.md](./docs/NEW_MACHINE_RESTORE.md) 执行：先启动 PostgreSQL，再通过安全恢复包装器校验并恢复 `data/migration/` 里的当前项目级 dump。不要绕过包装器直接 `pg_restore`；也不要在恢复后运行 `./infra/postgres/rebuild_local_schemas.sh`，除非明确要清空恢复数据并重建空 schema。
 
 默认单库 schema 划分：
 
 - `instrument_registry`
   共享资产、行情、净值、FX 等主事实。
 - `watchlist`
-  watchlist 自己的 read model、facts、recalc job 等私有数据。
+  watchlist 自己的 read model、research rating、monitoring 和 recalc job 等私有数据。
 - `portfolio`
   portfolio / account / transaction / performance / research 等私有数据。
 
 ### 后端迁移
 
 ```bash
+export PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE=portfolio_ops
 (cd infra/instrument_registry && alembic upgrade head)
 (cd apps/portfolio/backend && PYTHONPATH=. alembic upgrade head)
 (cd apps/watchlist/backend && PYTHONPATH=. alembic upgrade head)
 ```
+
+PostgreSQL migration 会在任何 DDL 前同时核对 URL 中的数据库名与实时
+`current_database()`；该确认只能来自当前进程，不能由应用 `.env` 自动授权。
 
 说明：
 
@@ -117,7 +125,9 @@ portfolio-operations-workbench/
 如果本地库已经跑脏或迁移链断过，直接执行：
 
 ```bash
-./infra/postgres/rebuild_local_schemas.sh
+CONFIRM_REBUILD_DATABASE=portfolio_ops \
+PORTFOLIO_OPS_LOCAL_POSTGRES_URL='postgresql://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+  ./infra/postgres/rebuild_local_schemas.sh
 ```
 
 这个脚本会销毁并重建 `instrument_registry / portfolio / watchlist` 三个 schema。
@@ -162,8 +172,16 @@ npm --prefix apps/watchlist/frontend run build
 常驻服务及每日 `21:00` 刷新/重算任务的安装或更新：
 
 ```bash
-infra/launchd/install_local_services.sh
+CONFIRM_RELEASE='portfolio_ops@127.0.0.1:5432' \
+PORTFOLIO_OPS_LOCAL_DATABASE_URL='postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops' \
+PORTFOLIO_OPS_RELEASE_AS_OF_DATE=YYYY-MM-DD \
+  infra/launchd/install_local_services.sh
 ```
+
+安装器会停止所有应用与刷新 writer，创建已校验的发布前备份，迁移并全量重建
+Portfolio/Watchlist，通过零失败零告警审计并创建发布后备份后才启动新服务。停止服务后
+任一步失败都会保持服务停止。数据库发布门禁本身若在变更后失败，会先尝试回滚到发布前
+备份；门禁已通过、随后前端构建或服务启动失败时，保留已审计的新数据库并继续停服。
 
 安装后从 `http://127.0.0.1:5172` 进入 Platform；详细状态、日志和卸载命令见
 [docs/LOCAL_MACOS_SERVICE.md](./docs/LOCAL_MACOS_SERVICE.md)。

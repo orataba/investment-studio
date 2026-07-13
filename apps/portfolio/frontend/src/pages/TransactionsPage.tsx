@@ -5,6 +5,7 @@ import CalculationStatus from '../components/CalculationStatus'
 import InstrumentFilterCombobox from '../components/InstrumentFilterCombobox'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
 import {
+  ApiError,
   createPortfolioInternalTransfer,
   createPortfolioTransaction,
   deletePortfolioTransaction,
@@ -13,6 +14,7 @@ import {
   getPortfolioInstruments,
   getPortfolioTransactionExecutionQuote,
   getPortfolioTransactionPositionPreview,
+  getPortfolioTransactionRevisionHistory,
   getPortfolioTransactionsWorkspace,
   type PortfolioAccountRecord,
   type PortfolioPositionLotRecord,
@@ -22,9 +24,16 @@ import {
   type PortfolioTransactionCreatePayload,
   type PortfolioTransactionFilters,
   type PortfolioTransactionRecord,
+  type PortfolioTransactionRevisionHistoryResponse,
+  type PortfolioTransactionUpdatePayload,
   type PortfolioTransactionWorkspaceResponse,
   updatePortfolioTransaction,
 } from '../lib/api'
+import {
+  createTransactionActorIdentity,
+  loadTransactionActorIdentity,
+  saveTransactionActorIdentity,
+} from '../lib/actorIdentity'
 import {
   formatCurrency,
   formatLabel,
@@ -32,6 +41,9 @@ import {
   formatQuantity,
   formatSignedCurrency,
   formatUnitPrice,
+  signedValueClass,
+  toFiniteNumber,
+  type NumericValue,
 } from '../lib/format'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import ConfirmDialog from '../../../../../packages/ui/src/ConfirmDialog'
@@ -40,6 +52,7 @@ import { downloadTable, type TableExportFormat } from '../../../../../packages/u
 import {
   buildTransactionExportRows,
   countActiveTransactionFilters,
+  transactionDraftHasChanges,
   transactionDateLabels,
 } from '../lib/transactionPresentation'
 import { supportsTransactionInstrumentType } from '../lib/transactionEligibility'
@@ -70,8 +83,40 @@ const TRANSACTION_TYPES = [
 ] as const
 
 const ACCOUNT_SCOPE_ENFORCED_TRANSACTION_TYPES = new Set(['buy', 'dividend_reinvestment', 'opening_balance'])
+const PLAIN_NON_NEGATIVE_DECIMAL_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d+)?$/
 
-type TransactionInspectorTab = 'fact' | 'lots' | 'postings'
+type TransactionInspectorTab = 'fact' | 'lots' | 'postings' | 'history'
+
+type TransactionRevisionConflict = {
+  transactionId: string
+  expectedRevisionNumber: number
+  actualRevisionNumber: number
+  lifecycleStatus: string
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function transactionRevisionConflict(error: unknown): TransactionRevisionConflict | null {
+  if (!(error instanceof ApiError) || error.status !== 409 || error.code !== 'transaction_revision_conflict') {
+    return null
+  }
+  if (!isObjectRecord(error.detail)) {
+    return null
+  }
+  const expectedRevisionNumber = Number(error.detail.expected_revision_number)
+  const actualRevisionNumber = Number(error.detail.actual_revision_number)
+  if (!Number.isInteger(expectedRevisionNumber) || !Number.isInteger(actualRevisionNumber)) {
+    return null
+  }
+  return {
+    transactionId: String(error.detail.transaction_id ?? ''),
+    expectedRevisionNumber,
+    actualRevisionNumber,
+    lifecycleStatus: String(error.detail.current_lifecycle_status ?? 'unknown'),
+  }
+}
 
 function primaryIdentifier(
   instrument:
@@ -107,20 +152,24 @@ function localTodayIso() {
 }
 
 function formatFormNumber(
-  value: number | null | undefined,
+  value: NumericValue | null | undefined,
   options?: { zeroAsEmpty?: boolean },
 ) {
   const zeroAsEmpty = options?.zeroAsEmpty ?? false
-  if (value == null) {
+  const resolved = toFiniteNumber(value)
+  if (resolved == null) {
     return ''
   }
-  if (zeroAsEmpty && Math.abs(value) < 1e-9) {
+  if (zeroAsEmpty && Math.abs(resolved) < 1e-9) {
     return ''
   }
   return String(value)
 }
 
 function parsePositiveFormNumber(value: string) {
+  if (!PLAIN_NON_NEGATIVE_DECIMAL_PATTERN.test(value.trim())) {
+    return null
+  }
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null
 }
@@ -419,6 +468,9 @@ function showsTaxField(transactionType: string) {
 }
 
 function parseNonNegativeFormNumber(value: string) {
+  if (!PLAIN_NON_NEGATIVE_DECIMAL_PATTERN.test(value.trim())) {
+    return 0
+  }
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
 }
@@ -651,11 +703,23 @@ export default function TransactionsPage() {
   const [notice, setNotice] = useState<string | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null)
+  const [editingBaseTransaction, setEditingBaseTransaction] = useState<PortfolioTransactionRecord | null>(null)
+  const [changeReason, setChangeReason] = useState('')
+  const [revisionConflict, setRevisionConflict] = useState<TransactionRevisionConflict | null>(null)
+  const [transactionActor, setTransactionActor] = useState(() => loadTransactionActorIdentity())
+  const [actorDisplayName, setActorDisplayName] = useState(
+    () => loadTransactionActorIdentity()?.display_name ?? '',
+  )
   const [pendingDeleteTransaction, setPendingDeleteTransaction] = useState<PortfolioTransactionRecord | null>(null)
   const [deletingTransaction, setDeletingTransaction] = useState(false)
+  const [deleteReason, setDeleteReason] = useState('')
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [deleteRevisionConflict, setDeleteRevisionConflict] = useState<TransactionRevisionConflict | null>(null)
   const [selectedTransactionIds, setSelectedTransactionIds] = useState<Set<string>>(() => new Set())
   const [inspectorTab, setInspectorTab] = useState<TransactionInspectorTab>('fact')
+  const [revisionHistory, setRevisionHistory] = useState<PortfolioTransactionRevisionHistoryResponse | null>(null)
+  const [revisionHistoryLoading, setRevisionHistoryLoading] = useState(false)
+  const [revisionHistoryError, setRevisionHistoryError] = useState<string | null>(null)
   const [form, setForm] = useState<TransactionFormState>(() => buildInitialFormState([]))
   const [pricingAnchor, setPricingAnchor] = useState<PricingAnchor>('price')
   const [historicalQuote, setHistoricalQuote] = useState<{
@@ -673,6 +737,8 @@ export default function TransactionsPage() {
   const drawerDialogRef = useModalDialog(drawerOpen, () => {
     setDrawerOpen(false)
     setEditingTransactionId(null)
+    setEditingBaseTransaction(null)
+    setRevisionConflict(null)
   })
 
   currentPortfolioIdRef.current = portfolioId
@@ -712,9 +778,17 @@ export default function TransactionsPage() {
     let cancelled = false
     setPendingDeleteTransaction(null)
     setDeleteError(null)
+    setDeleteReason('')
+    setDeleteRevisionConflict(null)
     setDeletingTransaction(false)
     setSelectedTransactionIds(new Set())
     setInspectorTab('fact')
+    setRevisionHistory(null)
+    setRevisionHistoryError(null)
+    setRevisionHistoryLoading(false)
+    setEditingBaseTransaction(null)
+    setChangeReason('')
+    setRevisionConflict(null)
 
     if (!portfolioId) {
       setAccounts([])
@@ -817,6 +891,40 @@ export default function TransactionsPage() {
     selectedTransactionId,
   ])
 
+  useEffect(() => {
+    if (inspectorTab !== 'history' || !portfolioId || !selectedTransactionId) {
+      setRevisionHistory(null)
+      setRevisionHistoryError(null)
+      setRevisionHistoryLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setRevisionHistory(null)
+    setRevisionHistoryError(null)
+    setRevisionHistoryLoading(true)
+    getPortfolioTransactionRevisionHistory(portfolioId, selectedTransactionId)
+      .then((response) => {
+        if (!cancelled) {
+          setRevisionHistory(response)
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setRevisionHistoryError(error instanceof Error ? error.message : 'Failed to load revision history.')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setRevisionHistoryLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [inspectorTab, portfolioId, selectedTransactionId])
+
   const selectedAccount =
     accounts.find((account) => account.account_id === form.account_id) ??
     eligibleAccounts(form.transaction_type, accounts, form.transfer_object_type)[0]
@@ -863,7 +971,7 @@ export default function TransactionsPage() {
       ? selectedCounterparty?.account_id ?? ''
       : selectedAccount?.account_id ?? form.account_id
   const resolvedTransactionCurrency =
-    selectedInstrument?.currency?.toUpperCase() ?? selectedAccount?.currency?.toUpperCase() ?? 'USD'
+    selectedInstrument?.currency?.toUpperCase() ?? selectedAccount?.currency?.toUpperCase() ?? ''
   const resolvedCounterpartyCurrency = selectedCounterparty?.currency?.toUpperCase() ?? ''
   const sharedFxRate = useMemo(() => {
     if (!isFxConversion || !resolvedTransactionCurrency || !resolvedCounterpartyCurrency) {
@@ -980,6 +1088,13 @@ export default function TransactionsPage() {
       }
       return (sourceAmount * fxRate).toFixed(2)
     })()
+  const effectiveTransactionDraft: TransactionFormState = {
+    ...form,
+    price: shouldUsePrice ? computedUnitPrice : '',
+    gross_amount: computedGrossAmount,
+    counter_amount: isFxConversion ? computedCounterAmount : '',
+    fx_rate: isFxConversion ? resolvedFxRate : '',
+  }
 
   useEffect(() => {
     if (!drawerOpen || !portfolioId || !shouldUsePrice || !selectedInstrument || !form.trade_date) {
@@ -1551,7 +1666,11 @@ export default function TransactionsPage() {
 
   function openCreateDrawer() {
     setEditingTransactionId(null)
+    setEditingBaseTransaction(null)
     setForm(buildInitialFormState(accounts))
+    setChangeReason('')
+    setRevisionConflict(null)
+    setActorDisplayName(transactionActor?.display_name ?? '')
     setPricingAnchor('price')
     autoQuoteKeyRef.current = null
     autoQuantityKeyRef.current = null
@@ -1562,7 +1681,11 @@ export default function TransactionsPage() {
 
   function openEditDrawer(transaction: PortfolioTransactionRecord) {
     setEditingTransactionId(transaction.transaction_id)
+    setEditingBaseTransaction(transaction)
     setForm(buildFormStateFromTransaction(transaction))
+    setChangeReason('')
+    setRevisionConflict(null)
+    setActorDisplayName(transactionActor?.display_name ?? '')
     setPricingAnchor('price')
     autoQuoteKeyRef.current = null
     autoQuantityKeyRef.current = null
@@ -1581,6 +1704,8 @@ export default function TransactionsPage() {
       }
       setDrawerOpen(false)
       setEditingTransactionId(null)
+      setEditingBaseTransaction(null)
+      setRevisionConflict(null)
     }
     window.addEventListener('keydown', handleKeyDown)
     window.setTimeout(() => {
@@ -1590,16 +1715,88 @@ export default function TransactionsPage() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [drawerOpen])
 
+  function persistTransactionActor() {
+    const displayName = actorDisplayName.trim()
+    if (!displayName) {
+      throw new Error('Enter the operator display name before saving.')
+    }
+    const identity = transactionActor
+      ? saveTransactionActorIdentity({
+          actor_id: transactionActor.actor_id,
+          display_name: displayName,
+        })
+      : createTransactionActorIdentity(displayName)
+    if (!transactionActor) {
+      saveTransactionActorIdentity(identity)
+    }
+    setTransactionActor(identity)
+    setActorDisplayName(identity.display_name)
+    return identity
+  }
+
   async function handleCreateTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setFormError(null)
     setNotice(null)
+    setRevisionConflict(null)
     const isEditingTransaction = editingTransactionId !== null
+
+    if (isEditingTransaction) {
+      if (!editingBaseTransaction || editingBaseTransaction.transaction_id !== editingTransactionId) {
+        setFormError('The edit base revision is unavailable. Close the drawer and reopen the transaction.')
+        return
+      }
+      if (!transactionDraftHasChanges(effectiveTransactionDraft, buildFormStateFromTransaction(editingBaseTransaction))) {
+        setFormError('No transaction facts have changed.')
+        return
+      }
+      if (changeReason.trim().length < 3) {
+        setFormError('Enter a change reason of at least 3 characters.')
+        return
+      }
+    }
+
+    const decimalDrafts: Array<[string, string]> = [['gross amount', computedGrossAmount]]
+    if (shouldUseQuantity) {
+      decimalDrafts.push(['quantity', form.quantity])
+    }
+    if (shouldUsePrice) {
+      decimalDrafts.push(['price', computedUnitPrice])
+    }
+    if (isFxConversion) {
+      decimalDrafts.push(['received amount', computedCounterAmount], ['FX rate', resolvedFxRate])
+    }
+    if (shouldShowFees) {
+      decimalDrafts.push(['fee', form.fees])
+    }
+    if (shouldShowTaxes) {
+      decimalDrafts.push(['tax', form.taxes])
+    }
+    const invalidDecimal = decimalDrafts.find(
+      ([, value]) => value.trim() && !PLAIN_NON_NEGATIVE_DECIMAL_PATTERN.test(value.trim()),
+    )
+    if (invalidDecimal) {
+      setFormError(`Enter ${invalidDecimal[0]} in plain decimal notation.`)
+      return
+    }
+
+    let actor: ReturnType<typeof persistTransactionActor>
+    try {
+      actor = persistTransactionActor()
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Configure the transaction operator before saving.')
+      return
+    }
 
     const resolvedAccount =
       accounts.find((account) => account.account_id === form.account_id) ?? selectedAccount ?? null
     if (!resolvedAccount) {
       setFormError('Select an account before saving.')
+      return
+    }
+
+    if (!/^[A-Z]{3}$/.test(resolvedTransactionCurrency)) {
+      setFormError('The transaction currency is unavailable. Correct the selected account or instrument first.')
       return
     }
 
@@ -1676,22 +1873,30 @@ export default function TransactionsPage() {
         instrument_id: null,
         quantity: null,
         price: null,
-        gross_amount: sourceAmount,
-        counter_amount: targetAmount,
-        fx_rate: fxRate,
-        fees: 0,
-        taxes: 0,
+        gross_amount: computedGrossAmount.trim(),
+        counter_amount: computedCounterAmount.trim(),
+        fx_rate: resolvedFxRate.trim(),
+        fees: '0',
+        taxes: '0',
         currency: resolvedTransactionCurrency,
         counterparty_account_id: selectedCounterparty.account_id,
         note: form.note.trim() || null,
+        actor,
       }
 
       try {
-        const created = isEditingTransaction
-          ? await updatePortfolioTransaction(portfolioId, editingTransactionId, payload)
+        const created = isEditingTransaction && editingBaseTransaction
+          ? await updatePortfolioTransaction(portfolioId, editingTransactionId, {
+              ...payload,
+              expected_revision_id: editingBaseTransaction.revision_id,
+              expected_revision_number: editingBaseTransaction.revision_number,
+              change_reason: changeReason.trim(),
+            })
           : await createPortfolioTransaction(portfolioId, payload)
         setDrawerOpen(false)
         setEditingTransactionId(null)
+        setEditingBaseTransaction(null)
+        setChangeReason('')
         setNotice(
           isEditingTransaction
             ? `Updated ${formatLabel(created.transaction_type)} transaction ${created.transaction_id}.`
@@ -1704,8 +1909,14 @@ export default function TransactionsPage() {
         })
         await refreshTransactions(filters, created.transaction_id)
       } catch (error) {
+        const conflict = transactionRevisionConflict(error)
+        if (conflict) {
+          setRevisionConflict(conflict)
+        }
         setFormError(
-          error instanceof Error
+          conflict
+            ? `Revision conflict: your draft is based on v${conflict.expectedRevisionNumber}, while the current fact is v${conflict.actualRevisionNumber}. Your draft has been preserved.`
+            : error instanceof Error
             ? error.message
             : isEditingTransaction
               ? 'Failed to update FX conversion.'
@@ -1741,14 +1952,15 @@ export default function TransactionsPage() {
         from_account_id: isTransferOut ? resolvedAccount.account_id : selectedCounterparty!.account_id,
         to_account_id: isTransferOut ? selectedCounterparty!.account_id : resolvedAccount.account_id,
         instrument_id: transferObjectType === 'position' ? selectedInstrument?.instrument_id ?? null : null,
-        quantity: shouldUseQuantity && form.quantity ? Number(form.quantity) : null,
+        quantity: shouldUseQuantity && form.quantity ? form.quantity.trim() : null,
         gross_amount:
           transferObjectType === 'position'
             ? rawGrossAmount
-              ? parsedGrossAmount
+              ? rawGrossAmount
               : null
-            : parsedGrossAmount,
+            : rawGrossAmount,
         note: form.note.trim() || null,
+        actor,
       } as const
 
       try {
@@ -1796,23 +2008,31 @@ export default function TransactionsPage() {
       account_id: resolvedAccount.account_id,
       settlement_cash_account_id: shouldRequireSettlement ? form.settlement_cash_account_id || null : null,
       instrument_id: shouldAllowInstrument ? selectedInstrument?.instrument_id ?? null : null,
-      quantity: shouldUseQuantity && form.quantity ? Number(form.quantity) : null,
-      price: shouldUsePrice && computedUnitPrice ? Number(computedUnitPrice) : null,
-      gross_amount: grossAmount,
+      quantity: shouldUseQuantity && form.quantity ? form.quantity.trim() : null,
+      price: shouldUsePrice && computedUnitPrice ? computedUnitPrice.trim() : null,
+      gross_amount: computedGrossAmount.trim(),
       counter_amount: null,
       fx_rate: null,
-      fees: shouldShowFees && form.fees ? Number(form.fees) : 0,
-      taxes: shouldShowTaxes && form.taxes ? Number(form.taxes) : 0,
+      fees: shouldShowFees && form.fees ? form.fees.trim() : '0',
+      taxes: shouldShowTaxes && form.taxes ? form.taxes.trim() : '0',
       currency: resolvedTransactionCurrency,
       note: form.note.trim() || null,
+      actor,
     }
 
     try {
-      const created = isEditingTransaction
-        ? await updatePortfolioTransaction(portfolioId, editingTransactionId, payload)
+      const created = isEditingTransaction && editingBaseTransaction
+        ? await updatePortfolioTransaction(portfolioId, editingTransactionId, {
+            ...payload,
+            expected_revision_id: editingBaseTransaction.revision_id,
+            expected_revision_number: editingBaseTransaction.revision_number,
+            change_reason: changeReason.trim(),
+          } satisfies PortfolioTransactionUpdatePayload)
         : await createPortfolioTransaction(portfolioId, payload)
       setDrawerOpen(false)
       setEditingTransactionId(null)
+      setEditingBaseTransaction(null)
+      setChangeReason('')
       setNotice(
         isEditingTransaction
           ? `Updated ${formatLabel(created.transaction_type)} transaction ${created.transaction_id}.`
@@ -1825,8 +2045,14 @@ export default function TransactionsPage() {
       })
       await refreshTransactions(filters, created.transaction_id)
     } catch (error) {
+      const conflict = transactionRevisionConflict(error)
+      if (conflict) {
+        setRevisionConflict(conflict)
+      }
       setFormError(
-        error instanceof Error
+        conflict
+          ? `Revision conflict: your draft is based on v${conflict.expectedRevisionNumber}, while the current fact is v${conflict.actualRevisionNumber}. Your draft has been preserved.`
+          : error instanceof Error
           ? error.message
           : isEditingTransaction
             ? 'Failed to update transaction.'
@@ -1841,14 +2067,31 @@ export default function TransactionsPage() {
     if (!transaction || !targetPortfolioId || deletingTransaction) {
       return
     }
+    if (deleteReason.trim().length < 3) {
+      setDeleteError('Enter a deletion reason of at least 3 characters.')
+      return
+    }
+    let actor: ReturnType<typeof persistTransactionActor>
+    try {
+      actor = persistTransactionActor()
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : 'Configure the transaction operator before deleting.')
+      return
+    }
     const deletingTransferPair = Boolean(transaction.transfer_group_id)
     setFormError(null)
     setDeleteError(null)
+    setDeleteRevisionConflict(null)
     setNotice(null)
     setDeletingTransaction(true)
 
     try {
-      const deleted = await deletePortfolioTransaction(targetPortfolioId, transaction.transaction_id)
+      const deleted = await deletePortfolioTransaction(targetPortfolioId, transaction.transaction_id, {
+        expected_revision_id: transaction.revision_id,
+        expected_revision_number: transaction.revision_number,
+        actor,
+        change_reason: deleteReason.trim(),
+      })
       if (currentPortfolioIdRef.current !== targetPortfolioId) {
         return
       }
@@ -1856,6 +2099,7 @@ export default function TransactionsPage() {
       setEditingTransactionId(null)
       setForm(buildInitialFormState(accounts))
       setPendingDeleteTransaction(null)
+      setDeleteReason('')
       patchSearchParams({ transaction_id: null })
       await refreshTransactions(filters, null)
       setNotice(
@@ -1865,7 +2109,15 @@ export default function TransactionsPage() {
       )
     } catch (error) {
       if (currentPortfolioIdRef.current === targetPortfolioId) {
-        setDeleteError(error instanceof Error ? error.message : 'Failed to delete transaction.')
+        const conflict = transactionRevisionConflict(error)
+        if (conflict) {
+          setDeleteRevisionConflict(conflict)
+          setDeleteError(
+            `Revision conflict: deletion expected v${conflict.expectedRevisionNumber}, but the current fact is v${conflict.actualRevisionNumber}. Your reason has been preserved.`,
+          )
+        } else {
+          setDeleteError(error instanceof Error ? error.message : 'Failed to delete transaction.')
+        }
       }
     } finally {
       if (currentPortfolioIdRef.current === targetPortfolioId) {
@@ -1877,6 +2129,14 @@ export default function TransactionsPage() {
   const summary = transactionsWorkspace?.summary
   const selectedTransaction = transactionsWorkspace?.selected_transaction ?? null
   const isEditingTransaction = editingTransactionId !== null
+  const editHasChanges = Boolean(
+    editingBaseTransaction &&
+      transactionDraftHasChanges(effectiveTransactionDraft, buildFormStateFromTransaction(editingBaseTransaction)),
+  )
+  const transactionSubmitDisabled =
+    !actorDisplayName.trim() ||
+    Boolean(revisionConflict) ||
+    (isEditingTransaction && (!editHasChanges || changeReason.trim().length < 3))
 
   useEffect(() => {
     const nextTransactionId = resolveWorkspaceTransactionSelection({
@@ -1935,7 +2195,7 @@ export default function TransactionsPage() {
     ticketQuantityDelta < 0 &&
     projectedPositionQuantity != null &&
     projectedPositionQuantity < -1e-9
-  const previewCurrency = resolvedTransactionCurrency || selectedAccount?.currency || 'USD'
+  const previewCurrency = resolvedTransactionCurrency || selectedAccount?.currency || ''
 
   useEffect(() => {
     const visibleIds = new Set(visibleTransactions.map((transaction) => transaction.transaction_id))
@@ -2330,12 +2590,17 @@ export default function TransactionsPage() {
                           <td className="transaction-number-cell">
                             <div className="holding-name-stack">
                               <span>{formatCurrency(transaction.gross_amount, transaction.currency)}</span>
-                              <span className={transaction.net_cash_effect != null && transaction.net_cash_effect < 0 ? 'holding-secondary negative-cell' : 'holding-secondary'}>
+                              <span className={`holding-secondary ${signedValueClass(transaction.net_cash_effect)}`.trim()}>
                                 Net {formatSignedCurrency(transaction.net_cash_effect, transaction.currency)}
                               </span>
-                              {transaction.fees || transaction.taxes ? (
+                              {(toFiniteNumber(transaction.fees) ?? 0) !== 0 || (toFiniteNumber(transaction.taxes) ?? 0) !== 0 ? (
                                 <span className="holding-secondary">
-                                  Fee / tax {formatCurrency(transaction.fees + transaction.taxes, transaction.currency)}
+                                  Fee / tax{' '}
+                                  {formatCurrency(
+                                    (toFiniteNumber(transaction.fees) ?? 0) +
+                                      (toFiniteNumber(transaction.taxes) ?? 0),
+                                    transaction.currency,
+                                  )}
                                 </span>
                               ) : null}
                             </div>
@@ -2370,7 +2635,9 @@ export default function TransactionsPage() {
                     <div>
                       <span className="portfolio-detail-meta">Selected fact</span>
                       <div className="panel-title">{formatLabel(selectedTransaction.transaction_type)}</div>
-                      <div className="portfolio-detail-meta">{selectedTransaction.transaction_id}</div>
+                      <div className="portfolio-detail-meta">
+                        {selectedTransaction.transaction_id} · v{selectedTransaction.revision_number}
+                      </div>
                     </div>
                     <div className="transaction-inspector-actions">
                       <button
@@ -2386,6 +2653,9 @@ export default function TransactionsPage() {
                         className="toolbar-link transaction-danger-action"
                         onClick={() => {
                           setDeleteError(null)
+                          setDeleteReason('')
+                          setDeleteRevisionConflict(null)
+                          setActorDisplayName(transactionActor?.display_name ?? '')
                           setPendingDeleteTransaction(selectedTransaction)
                         }}
                       >
@@ -2398,6 +2668,7 @@ export default function TransactionsPage() {
                       ['fact', 'Fact'],
                       ['lots', `Lots ${relatedPositionLots.length}`],
                       ['postings', `Postings ${transactionsWorkspace.ledger_summary.posting_count}`],
+                      ['history', 'History'],
                     ] as const).map(([tabKey, label]) => (
                       <button
                         key={tabKey}
@@ -2417,7 +2688,7 @@ export default function TransactionsPage() {
                       <div className="transaction-fact-highlight">
                         <span>Gross amount</span>
                         <strong>{formatCurrency(selectedTransaction.gross_amount, selectedTransaction.currency)}</strong>
-                        <em className={selectedTransaction.net_cash_effect != null && selectedTransaction.net_cash_effect < 0 ? 'negative-cell' : ''}>
+                        <em className={signedValueClass(selectedTransaction.net_cash_effect)}>
                           Net cash {formatSignedCurrency(selectedTransaction.net_cash_effect, selectedTransaction.currency)}
                         </em>
                       </div>
@@ -2511,6 +2782,45 @@ export default function TransactionsPage() {
                       ) : null}
                     </div>
                   ) : null}
+
+                  {inspectorTab === 'history' ? (
+                    <div className="transaction-inspector-list transaction-history-list" role="tabpanel">
+                      {revisionHistoryLoading ? (
+                        <div className="empty-state">Loading revision history…</div>
+                      ) : revisionHistoryError ? (
+                        <div className="error-state">{revisionHistoryError}</div>
+                      ) : revisionHistory?.revisions.length ? (
+                        [...revisionHistory.revisions]
+                          .sort((left, right) => right.revision_number - left.revision_number)
+                          .map((revision) => (
+                            <article key={revision.revision_id} className="transaction-inspector-card transaction-history-card">
+                              <div className="transaction-inspector-card-head">
+                                <div>
+                                  <strong>v{revision.revision_number} · {formatLabel(revision.operation)}</strong>
+                                  <span>{revision.actor.display_name} · {revision.actor.actor_source}</span>
+                                </div>
+                                <span>{new Date(revision.recorded_at).toLocaleString()}</span>
+                              </div>
+                              <p className="transaction-history-reason">
+                                {revision.change_reason || (revision.operation === 'create' || revision.operation === 'baseline'
+                                  ? 'Initial recorded fact'
+                                  : 'No reason recorded')}
+                              </p>
+                              {revision.changed_fields.length ? (
+                                <div className="transaction-impact-tags">
+                                  {revision.changed_fields.map((field) => (
+                                    <span key={field}>{formatLabel(field)}</span>
+                                  ))}
+                                </div>
+                              ) : null}
+                              <div className="portfolio-detail-meta">Mutation {revision.mutation_id}</div>
+                            </article>
+                          ))
+                      ) : (
+                        <div className="empty-state">No revision history is available.</div>
+                      )}
+                    </div>
+                  ) : null}
                 </>
               ) : (
                 <div className="transaction-inspector-empty">
@@ -2530,6 +2840,8 @@ export default function TransactionsPage() {
           onClick={() => {
             setDrawerOpen(false)
             setEditingTransactionId(null)
+            setEditingBaseTransaction(null)
+            setRevisionConflict(null)
           }}
         >
           <aside
@@ -2544,6 +2856,11 @@ export default function TransactionsPage() {
             <div className="transaction-entry-modal-header">
               <div>
                 <div className="panel-title">{isEditingTransaction ? 'Edit Transaction' : 'Add Transaction'}</div>
+                {isEditingTransaction ? (
+                  <div className="portfolio-detail-meta">
+                    Base revision v{editingBaseTransaction?.revision_number ?? '—'}
+                  </div>
+                ) : null}
               </div>
               <button
                 type="button"
@@ -2551,6 +2868,8 @@ export default function TransactionsPage() {
                 onClick={() => {
                   setDrawerOpen(false)
                   setEditingTransactionId(null)
+                  setEditingBaseTransaction(null)
+                  setRevisionConflict(null)
                 }}
               >
                 Close
@@ -2998,7 +3317,7 @@ export default function TransactionsPage() {
                       <span>Received Amount</span>
                       <strong>
                         {computedCounterAmount
-                          ? formatCurrency(Number(computedCounterAmount), resolvedCounterpartyCurrency || 'USD')
+                          ? formatCurrency(Number(computedCounterAmount), resolvedCounterpartyCurrency)
                           : '—'}
                       </strong>
                     </div>
@@ -3068,6 +3387,44 @@ export default function TransactionsPage() {
                 />
               </label>
 
+              <label className="transaction-notes-field">
+                <span>Operator display name</span>
+                <input
+                  value={actorDisplayName}
+                  maxLength={128}
+                  autoComplete="name"
+                  placeholder="Required for the audit trail"
+                  onChange={(event) => setActorDisplayName(event.target.value)}
+                />
+                <small>
+                  Stored only in this browser and recorded as a client-asserted user.
+                </small>
+              </label>
+
+              {isEditingTransaction ? (
+                <label className="transaction-notes-field">
+                  <span>Change reason · editing v{editingBaseTransaction?.revision_number ?? '—'}</span>
+                  <textarea
+                    rows={3}
+                    value={changeReason}
+                    maxLength={500}
+                    placeholder="Explain why this historical fact is being corrected"
+                    onChange={(event) => setChangeReason(event.target.value)}
+                  />
+                  <small>{editHasChanges ? 'Fact changes detected.' : 'Change at least one transaction fact.'}</small>
+                </label>
+              ) : null}
+
+              {revisionConflict ? (
+                <div className="transaction-revision-conflict" role="alert">
+                  <strong>Concurrent change detected</strong>
+                  <span>Draft base: v{revisionConflict.expectedRevisionNumber}</span>
+                  <span>Current fact: v{revisionConflict.actualRevisionNumber}</span>
+                  <span>Status: {formatLabel(revisionConflict.lifecycleStatus)}</span>
+                  <p>Your draft and reason remain in the drawer. Review the current fact before trying again.</p>
+                </div>
+              ) : null}
+
               {formError ? <div className="error-state transaction-form-error">{formError}</div> : null}
               </aside>
 
@@ -3078,11 +3435,28 @@ export default function TransactionsPage() {
                   onClick={() => {
                     setDrawerOpen(false)
                     setEditingTransactionId(null)
+                    setEditingBaseTransaction(null)
+                    setRevisionConflict(null)
                   }}
                 >
                   Cancel
                 </button>
-                <button type="submit" className="toolbar-link button-primary">
+                <button
+                  type="submit"
+                  className="toolbar-link button-primary"
+                  disabled={transactionSubmitDisabled}
+                  title={
+                    !actorDisplayName.trim()
+                      ? 'Operator display name is required.'
+                      : revisionConflict
+                        ? 'Review the current revision before resubmitting.'
+                      : isEditingTransaction && !editHasChanges
+                        ? 'No transaction facts have changed.'
+                        : isEditingTransaction && changeReason.trim().length < 3
+                          ? 'A change reason is required.'
+                          : undefined
+                  }
+                >
                   {isEditingTransaction ? 'Save Changes' : 'Save Transaction'}
                 </button>
               </div>
@@ -3094,9 +3468,45 @@ export default function TransactionsPage() {
         open={Boolean(pendingDeleteTransaction)}
         title={pendingDeleteTransaction?.transfer_group_id ? 'Delete Transfer Pair' : 'Delete Transaction'}
         description={
-          pendingDeleteTransaction?.transfer_group_id
-            ? `This permanently deletes both legs of transfer pair ${pendingDeleteTransaction.transfer_group_id}. This action cannot be undone.`
-            : `This permanently deletes transaction ${pendingDeleteTransaction?.transaction_id ?? ''}. This action cannot be undone.`
+          <div className="transaction-delete-review">
+            <p>
+              {pendingDeleteTransaction?.transfer_group_id
+                ? `This records deletion revisions for both legs of transfer pair ${pendingDeleteTransaction.transfer_group_id}.`
+                : `This records a deletion revision for transaction ${pendingDeleteTransaction?.transaction_id ?? ''}.`}
+            </p>
+            <div className="portfolio-detail-meta">
+              Expected revision v{pendingDeleteTransaction?.revision_number ?? '—'}
+            </div>
+            <label>
+              <span>Operator display name</span>
+              <input
+                value={actorDisplayName}
+                maxLength={128}
+                autoComplete="name"
+                disabled={deletingTransaction}
+                onChange={(event) => setActorDisplayName(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Deletion reason</span>
+              <textarea
+                rows={3}
+                value={deleteReason}
+                maxLength={500}
+                disabled={deletingTransaction}
+                placeholder="Explain why this fact should no longer be active"
+                onChange={(event) => setDeleteReason(event.target.value)}
+              />
+            </label>
+            {deleteRevisionConflict ? (
+              <div className="transaction-revision-conflict" role="alert">
+                <strong>Concurrent change detected</strong>
+                <span>Expected v{deleteRevisionConflict.expectedRevisionNumber}</span>
+                <span>Current v{deleteRevisionConflict.actualRevisionNumber}</span>
+                <span>Status: {formatLabel(deleteRevisionConflict.lifecycleStatus)}</span>
+              </div>
+            ) : null}
+          </div>
         }
         confirmLabel={pendingDeleteTransaction?.transfer_group_id ? 'Delete Pair' : 'Delete Transaction'}
         confirmationText={
@@ -3104,9 +3514,14 @@ export default function TransactionsPage() {
         }
         error={deleteError}
         busy={deletingTransaction}
+        confirmDisabled={
+          !actorDisplayName.trim() || deleteReason.trim().length < 3 || Boolean(deleteRevisionConflict)
+        }
         onCancel={() => {
           setPendingDeleteTransaction(null)
           setDeleteError(null)
+          setDeleteReason('')
+          setDeleteRevisionConflict(null)
         }}
         onConfirm={handleDeleteTransaction}
       />

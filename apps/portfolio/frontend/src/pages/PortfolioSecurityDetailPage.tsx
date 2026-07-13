@@ -116,16 +116,11 @@ export default function PortfolioSecurityDetailPage() {
     selectedPositionLots[0] ??
     null
   const resolvedAsOfDate = workspace?.as_of_date || requestedAsOfDate
-  const baseCurrency = workspace?.base_currency ?? selectedRow?.instrument_core.currency ?? instrumentChartWorkspace?.currency ?? 'USD'
+  const baseCurrency = workspace?.base_currency ?? ''
+  const baseCurrencyLabel = baseCurrency || 'Base currency unavailable'
   const selectedRowIdentifier = selectedRow ? primaryIdentifier(selectedRow) : instrumentId
-  const selectedRowUnrealizedBase =
-    selectedRow?.market_value_base != null && selectedRow.cost_basis_base != null
-      ? selectedRow.market_value_base - selectedRow.cost_basis_base
-      : null
-  const selectedRowUnrealizedLocal =
-    selectedRow?.market_value != null && selectedRow.cost_basis != null
-      ? selectedRow.market_value - selectedRow.cost_basis
-      : null
+  const selectedRowUnrealizedBase = selectedRow?.unrealized_pnl_base ?? null
+  const selectedRowUnrealizedLocal = selectedRow?.unrealized_pnl ?? null
   const heroMarketValue = selectedRow?.market_value_base ?? selectedRow?.market_value
   const heroMarketCurrency = selectedRow?.market_value_base != null ? baseCurrency : selectedRow?.instrument_core.currency ?? baseCurrency
   const heroUnrealizedValue = selectedRowUnrealizedBase ?? selectedRowUnrealizedLocal
@@ -209,7 +204,7 @@ export default function PortfolioSecurityDetailPage() {
           holdingCurrencyMatchesBase
             ? []
             : [{
-                label: `Market Value (${baseCurrency})`,
+                label: `Market Value (${baseCurrencyLabel})`,
                 value: formatCurrency(selectedRow.market_value_base ?? null, baseCurrency),
               }]
         ),
@@ -222,7 +217,7 @@ export default function PortfolioSecurityDetailPage() {
           holdingCurrencyMatchesBase
             ? []
             : [{
-                label: `Unrealized P/L (${baseCurrency})`,
+                label: `Unrealized P/L (${baseCurrencyLabel})`,
                 value: formatSignedCurrency(selectedRowUnrealizedBase, baseCurrency),
                 toneClassName: signedValueClass(selectedRowUnrealizedBase),
               }]
@@ -522,7 +517,7 @@ export default function PortfolioSecurityDetailPage() {
                   <div className="portfolio-detail-meta">Valuation and cost basis</div>
                 </div>
                 <div className="portfolio-detail-meta">
-                  {selectedRow?.instrument_core.currency ?? 'Instrument'} / {baseCurrency}
+                  {selectedRow?.instrument_core.currency ?? 'Instrument'} / {baseCurrencyLabel}
                 </div>
               </div>
               <div className="portfolio-security-metric-grid">

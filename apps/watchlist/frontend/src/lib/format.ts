@@ -1,32 +1,19 @@
-export function formatCompactCurrency(value: unknown) {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
-    return '—'
-  }
-
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    notation: 'compact',
-    maximumFractionDigits: 2,
-  }).format(value)
-}
-
 export function formatPercent(value: unknown, digits = 2) {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
     return '—'
   }
   return `${value.toFixed(digits)}%`
 }
 
 export function formatNumber(value: unknown, digits = 2) {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
     return '—'
   }
   return value.toFixed(digits)
 }
 
 export function signedValueClass(value: unknown) {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
     return ''
   }
   if (value > 0) {

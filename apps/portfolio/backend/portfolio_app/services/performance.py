@@ -1,17 +1,35 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from copy import deepcopy
 from datetime import date, timedelta
+from decimal import Decimal
+import hashlib
+import json
 from math import isfinite, prod, sqrt
 from typing import cast
+from sqlalchemy.orm import Session
 
 from portfolio_app.services.calculation_frequency import CalculationFrequency, period_end_date
 from portfolio_app.core.settings import get_settings
+from portfolio_app.db.session import get_session_factory
+from portfolio_app.services.canonical_quotes import (
+    CanonicalQuoteWindowBook,
+    maximum_valuation_quote_age_days,
+    resolve_quote_window_books_in_session,
+    resolve_role_quote_window_book_in_session,
+)
+from portfolio_app.services.canonical_fx import (
+    CanonicalFxWindowBook,
+    portfolio_fx_freshness_policy,
+    resolve_portfolio_fx_window_book_in_session,
+)
+from portfolio_app.services.fact_currency import (
+    PortfolioFactCurrencyError,
+    require_portfolio_fact_currency,
+)
 from portfolio_app.services.instrument_registry import (
-    InstrumentRegistryError,
-    get_platform_fx_rates,
-    get_registry_instrument_detail,
     list_registry_corporate_actions,
 )
 from portfolio_app.services.ledger import (
@@ -19,7 +37,6 @@ from portfolio_app.services.ledger import (
     derive_ledger_postings,
     ledger_posting_effective_date_iso,
 )
-from portfolio_app.services.market_data import is_usable_market_data_point, market_data_status
 from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
 
 
@@ -51,32 +68,27 @@ NON_CAPITALIZED_ATTACHED_CHARGE_TRANSACTION_TYPES = {
 }
 ENTITLEMENT_ACCRUAL_TRANSACTION_TYPES = {"dividend", "coupon"}
 
-# A total-return series is suitable for return analysis, never for an actual
-# position valuation.  Fail closed if the shared registry accidentally puts
-# one of these bases in the valuation policy; otherwise cash distributions or
-# split adjustments can be counted twice in NAV.
-FORBIDDEN_VALUATION_QUOTE_BASES = frozenset(
-    {
-        "adjusted_close",
-        "adjusted_nav",
-        "adjusted_price",
-        "accum_nav",
-        "accumulated_nav",
-        "cum_nav",
-        "cumulative_nav",
-        "dividend_adjusted_nav",
-        "nav_with_dividend",
-        "reinvested_nav",
-        "split_adjusted_close",
-        "total_return_nav",
-        "total_return_price",
-    }
-)
 GROUP_CAPITAL_FLOW_IN_FIELD = "capital_flow_in_base"
 GROUP_CAPITAL_FLOW_OUT_FIELD = "capital_flow_out_base"
 DAYS_PER_YEAR = 365.25
 _SUPPORTED_INSTRUMENT_TYPES = {"fund", "etf", "bond", "equity", "cash", "fx", "other"}
 _LEGACY_INSTRUMENT_REF_KEYS = {"asset_id", "asset_name", "asset_type"}
+
+NAV_COVERAGE_REASON_CASH_VALUATION = "cash_valuation_incomplete"
+NAV_COVERAGE_REASON_PENDING_SETTLEMENT = "pending_settlement_valuation_incomplete"
+NAV_COVERAGE_REASON_POSITION_VALUATION = "position_valuation_incomplete"
+BOOK_PNL_COVERAGE_REASON_POSITION_VALUATION = "position_valuation_incomplete"
+BOOK_PNL_COVERAGE_REASON_COST_BASIS = "open_cost_basis_incomplete"
+BOOK_PNL_COVERAGE_REASON_TRANSACTION = "transaction_pnl_incomplete"
+BOOK_PNL_COVERAGE_REASON_REALIZED = "realized_pnl_incomplete"
+BOOK_PNL_COVERAGE_REASON_CASH_FX = "cash_currency_attribution_incomplete"
+BOOK_PNL_COVERAGE_REASON_INSTRUMENT_FX = (
+    "instrument_currency_attribution_incomplete"
+)
+
+
+class PerformanceDataIntegrityError(ValueError):
+    """A portfolio fact cannot be placed on the calculation timeline."""
 
 
 def _safe_float(value: object) -> float | None:
@@ -86,6 +98,77 @@ def _safe_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coverage_state_from_reasons(
+    reason_codes: list[str],
+    *,
+    has_partial_content: bool,
+) -> str:
+    if not reason_codes:
+        return "complete"
+    return "partial" if has_partial_content else "unavailable"
+
+
+def _append_unique_reason(reason_codes: list[str], reason_code: str) -> None:
+    if reason_code not in reason_codes:
+        reason_codes.append(reason_code)
+
+
+def _merge_coverage_states(states: list[str]) -> str:
+    normalized = [
+        state if state in {"complete", "partial", "unavailable"} else "unavailable"
+        for state in states
+    ]
+    if not normalized or all(state == "unavailable" for state in normalized):
+        return "unavailable"
+    if all(state == "complete" for state in normalized):
+        return "complete"
+    return "partial"
+
+
+def _merge_coverage_reason_codes(
+    rows: list[dict[str, object]],
+    *,
+    field_name: str,
+) -> list[str]:
+    reasons: list[str] = []
+    for row in rows:
+        raw_reasons = row.get(field_name)
+        if isinstance(raw_reasons, list):
+            for raw_reason in raw_reasons:
+                reason = str(raw_reason or "").strip()
+                if reason:
+                    _append_unique_reason(reasons, reason)
+    return reasons
+
+
+def _snapshot_fx_dependency_manifest(
+    fx_book: CanonicalFxWindowBook,
+    *,
+    as_of_date: date,
+) -> dict[str, object]:
+    dependencies = [
+        fx_book.rate_at(base_currency, quote_currency, as_of_date)
+        .calculation_dependency.model_dump(mode="json")
+        for base_currency, quote_currency in fx_book.locked_currency_pairs
+    ]
+    fingerprint_payload = {
+        "consumer_policy_version": fx_book.consumer_policy_version,
+        "freshness_policy": fx_book.freshness_policy.model_dump(mode="json"),
+        "requested_as_of_date": as_of_date.isoformat(),
+        "dependencies": dependencies,
+    }
+    encoded = json.dumps(
+        fingerprint_payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        **fingerprint_payload,
+        "fingerprint": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 def corporate_action_quality_warnings(
@@ -113,7 +196,7 @@ def corporate_action_quality_warnings(
             )
         if detected_count:
             warnings.append(
-                f"{detected_count} provider-detected share-adjustment event(s) are not posted to the ledger "
+                f"{detected_count} source-detected share-adjustment event(s) are not posted to the ledger "
                 "until issuer, exchange, or depository evidence confirms ratio and fractional treatment."
             )
         warnings.append(
@@ -131,6 +214,16 @@ def _transaction_instrument_types(
         for transaction in transactions or []
         if isinstance((instrument_ref := transaction.get("instrument_ref")), dict)
         and str(instrument_ref.get("instrument_type") or "").strip()
+    }
+
+
+def _transaction_instrument_ids(
+    transactions: list[dict[str, object]],
+) -> set[str]:
+    return {
+        instrument_id
+        for transaction in transactions
+        if (instrument_id := str(transaction.get("instrument_id") or "").strip())
     }
 
 
@@ -182,8 +275,6 @@ def summarize_holding_day_change(
 def normalize_instrument_core(
     instrument_id: str,
     instrument_ref: dict[str, object] | None,
-    *,
-    fallback_currency: str = "USD",
 ) -> dict[str, object]:
     if not isinstance(instrument_ref, dict):
         raise ValueError(f"Instrument reference is required for '{instrument_id}'.")
@@ -200,8 +291,11 @@ def normalize_instrument_core(
     if resolved_type not in _SUPPORTED_INSTRUMENT_TYPES:
         raise ValueError(f"Instrument reference for '{instrument_id}' has unsupported instrument_type.")
     instrument_name = str(instrument_ref.get("instrument_name") or "").strip()
-    currency = str(instrument_ref.get("currency") or "").strip().upper()
-    if not instrument_name or not currency:
+    currency = _required_currency(
+        instrument_ref.get("currency"),
+        fact_name=f"instrument reference '{instrument_id}'",
+    )
+    if not instrument_name:
         raise ValueError(f"Instrument reference for '{instrument_id}' is incomplete.")
     identifiers = instrument_ref.get("identifiers")
     return {
@@ -227,13 +321,20 @@ def _parse_iso_date(value: object) -> date | None:
         return None
 
 
-def _normalized_currency(value: object, *, fallback: str = "USD") -> str:
+def _normalized_currency(value: object, *, fallback: str = "") -> str:
     normalized = str(value or "").strip().upper()
     return normalized or fallback
 
 
+def _required_currency(value: object, *, fact_name: str) -> str:
+    try:
+        return require_portfolio_fact_currency(value, context=fact_name)
+    except PortfolioFactCurrencyError as error:
+        raise PerformanceDataIntegrityError(str(error)) from error
+
+
 def cash_holding_instrument_id(currency: str) -> str:
-    return f"cash:{_normalized_currency(currency, fallback='CASH')}"
+    return f"cash:{_required_currency(currency, fact_name='cash holding')}"
 
 
 def is_cash_holding_instrument_id(instrument_id: object) -> bool:
@@ -241,7 +342,7 @@ def is_cash_holding_instrument_id(instrument_id: object) -> bool:
 
 
 def _cash_holding_instrument_ref(currency: str) -> dict[str, object]:
-    normalized_currency = _normalized_currency(currency)
+    normalized_currency = _required_currency(currency, fact_name="cash holding")
     instrument_id = cash_holding_instrument_id(normalized_currency)
     return {
         "instrument_id": instrument_id,
@@ -330,11 +431,26 @@ def _transaction_sort_key(transaction: dict[str, object]) -> tuple[str, str, str
 def transaction_performance_effective_date(transaction: dict[str, object]) -> date | None:
     """Accounting-recognition date used by NAV and performance.
 
+    External contributions and distributions become portfolio capital on their
+    cash value date.  Keeping them out of the transaction boundary before
+    settlement prevents a future cash posting from entering pending NAV before
+    the matching TWR flow.  Security trades retain trade-date recognition and
+    their unsettled cash remains part of NAV through ledger postings.
+
     Dividend/coupon cash is a receivable from entitlement until settlement;
-    all other facts retain their trade-date recognition boundary.
+    remaining facts retain their trade-date recognition boundary.
     """
 
     transaction_type = str(transaction.get("transaction_type") or "")
+    if transaction_type in (EXTERNAL_CASH_IN_TYPES | EXTERNAL_CASH_OUT_TYPES):
+        settlement_date = _parse_iso_date(transaction.get("settlement_date"))
+        if settlement_date is None:
+            transaction_id = str(transaction.get("transaction_id") or "<unknown>")
+            raise PerformanceDataIntegrityError(
+                "External cash transaction "
+                f"'{transaction_id}' requires a valid settlement/value date."
+            )
+        return settlement_date
     if transaction_type in ENTITLEMENT_ACCRUAL_TRANSACTION_TYPES:
         entitlement_date = _parse_iso_date(transaction.get("entitlement_date"))
         if entitlement_date is not None:
@@ -382,7 +498,10 @@ def _account_cost_methods(accounts: list[dict[str, object]]) -> dict[str, str]:
 
 def _account_currency_map(accounts: list[dict[str, object]]) -> dict[str, str]:
     return {
-        str(account.get("account_id") or ""): _normalized_currency(account.get("currency"))
+        str(account.get("account_id") or ""): _required_currency(
+            account.get("currency"),
+            fact_name=f"account '{account.get('account_id') or '<unknown>'}'",
+        )
         for account in accounts
     }
 
@@ -396,154 +515,30 @@ def _resolve_portfolio_valuation_cutoff_policy(portfolio: dict[str, object]) -> 
     return str(portfolio.get("valuation_cutoff_policy") or DEFAULT_VALUATION_CUTOFF_POLICY)
 
 
-def _instrument_detail_cache_get(
-    instrument_id: str,
-    cache: dict[str, dict[str, object] | None],
-) -> dict[str, object] | None:
-    if instrument_id not in cache:
-        cache[instrument_id] = get_registry_instrument_detail(instrument_id)
-    return cache[instrument_id]
-
-
-def _normalized_policy_bases(detail: dict[str, object], role: str) -> list[str]:
-    policy = detail.get("quote_selection_policy", {})
-    if not isinstance(policy, dict):
-        return []
-    raw_values = policy.get(role)
-    if not isinstance(raw_values, list):
-        return []
-    normalized: list[str] = []
-    for raw_value in raw_values:
-        value = str(raw_value or "").strip()
-        if value and value not in normalized:
-            normalized.append(value)
-    return normalized
-
-
-def _market_points_by_basis(detail: dict[str, object]) -> dict[str, list[dict[str, object]]]:
-    market_data = detail.get("market_data", [])
-    points_by_basis: dict[str, list[dict[str, object]]] = defaultdict(list)
-    if not isinstance(market_data, list):
-        return points_by_basis
-    for point in market_data:
-        if not is_usable_market_data_point(point):
-            continue
-        quote_basis = str(point.get("quote_basis") or "").strip()
-        if not quote_basis:
-            continue
-        points_by_basis[quote_basis].append(point)
-    for points in points_by_basis.values():
-        points.sort(key=lambda item: str(item.get("as_of_date") or ""))
-    return points_by_basis
-
-
-def _latest_point_on_or_before(
-    points: list[dict[str, object]],
-    as_of_date: date,
-) -> dict[str, object] | None:
-    as_of_iso = as_of_date.isoformat()
-    latest: dict[str, object] | None = None
-    for point in points:
-        point_date = str(point.get("as_of_date") or "")
-        if point_date and point_date <= as_of_iso:
-            latest = point
-    return latest
-
-
-def _select_market_point_as_of(
-    *,
-    detail: dict[str, object],
-    role: str,
-    as_of_date: date,
-) -> dict[str, object] | None:
-    points_by_basis = _market_points_by_basis(detail)
-    candidate_bases = _normalized_policy_bases(detail, role)
-    if role == "valuation" and any(
-        quote_basis.strip().lower() in FORBIDDEN_VALUATION_QUOTE_BASES
-        for quote_basis in candidate_bases
-    ):
-        return None
-    seen_bases: set[str] = set()
-    for quote_basis in candidate_bases:
-        if quote_basis in seen_bases:
-            continue
-        seen_bases.add(quote_basis)
-        point = _latest_point_on_or_before(points_by_basis.get(quote_basis, []), as_of_date)
-        if point is not None:
-            resolved_value = _safe_float(point.get("value"))
-            if resolved_value is None:
-                continue
-            point_date = _parse_iso_date(point.get("as_of_date"))
-            return {
-                "value": resolved_value,
-                "as_of_date": point_date,
-                "currency": _normalized_currency(point.get("currency"), fallback=str(detail.get("currency") or "USD")),
-                "metric_family": str(point.get("metric_family") or ""),
-                "quote_basis": quote_basis,
-                "provider": point.get("provider"),
-                "status": market_data_status(point),
-                "stale": point_date is not None and point_date < as_of_date,
-            }
-    return None
-
-
-def _previous_market_point_for_selected_point(
-    *,
-    detail: dict[str, object],
-    selected_point: dict[str, object] | None,
-) -> dict[str, object] | None:
-    if selected_point is None:
-        return None
-    quote_basis = str(selected_point.get("quote_basis") or "").strip()
-    selected_date = _parse_iso_date(selected_point.get("as_of_date"))
-    if not quote_basis or selected_date is None:
-        return None
-    for point in reversed(_market_points_by_basis(detail).get(quote_basis, [])):
-        point_date = _parse_iso_date(point.get("as_of_date"))
-        if point_date is None or point_date >= selected_date:
-            continue
-        resolved_value = _safe_float(point.get("value"))
-        if resolved_value is None:
-            continue
-        return {
-            "value": resolved_value,
-            "as_of_date": point_date,
-            "currency": _normalized_currency(
-                point.get("currency"),
-                fallback=str(detail.get("currency") or "USD"),
-            ),
-            "metric_family": str(point.get("metric_family") or ""),
-            "quote_basis": quote_basis,
-            "provider": point.get("provider"),
-            "status": market_data_status(point),
-            "stale": False,
-        }
-    return None
-
-
 def _holding_day_change_metrics(
     *,
     quantity: float,
     current_price: float | None,
-    previous_price: float | None,
     instrument_ref: dict[str, object] | None,
-    current_return_price: float | None = None,
-    previous_return_price: float | None = None,
+    current_total_return_price: float | None,
+    previous_total_return_price: float | None,
 ) -> tuple[float | None, float | None]:
-    resolved_current_return_price = (
-        current_return_price if current_return_price is not None else current_price
-    )
-    resolved_previous_return_price = (
-        previous_return_price if previous_return_price is not None else previous_price
-    )
+    """Return one-day total return and its value effect on current holdings.
+
+    Actual market value always uses the canonical valuation role.  The return
+    ratio is intentionally strict: it is never approximated with valuation
+    prices and cannot splice one side of a total-return pair with another
+    semantic series.
+    """
+
     if (
         current_price is None
-        or resolved_current_return_price is None
-        or resolved_previous_return_price is None
-        or abs(resolved_previous_return_price) <= 1e-12
+        or current_total_return_price is None
+        or previous_total_return_price is None
+        or abs(previous_total_return_price) <= 1e-12
     ):
         return None, None
-    day_change_pct = resolved_current_return_price / resolved_previous_return_price - 1.0
+    day_change_pct = current_total_return_price / previous_total_return_price - 1.0
     current_market_value = _position_market_value(
         quantity=quantity,
         last_price=current_price,
@@ -562,288 +557,197 @@ def _holding_day_change_metrics(
     return day_change_pct, day_change_value
 
 
-def _fx_direct_instrument_map(fx_payload: dict[str, object]) -> dict[tuple[str, str], str]:
-    direct_instruments: dict[tuple[str, str], str] = {}
-    for item in fx_payload.get("rates", []):
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("source_kind") or "") != "direct":
-            continue
-        base_currency = _normalized_currency(item.get("base_currency"), fallback="")
-        quote_currency = _normalized_currency(item.get("quote_currency"), fallback="")
-        instrument_id = str(item.get("instrument_id") or "").strip()
-        if base_currency and quote_currency and instrument_id:
-            direct_instruments[(base_currency, quote_currency)] = instrument_id
-    return direct_instruments
-
-
-def _direct_fx_point_as_of(
+def _canonical_total_return_pair(
     *,
+    quote_book: CanonicalQuoteWindowBook,
     instrument_id: str,
     as_of_date: date,
-    instrument_detail_cache: dict[str, dict[str, object] | None],
-) -> dict[str, object] | None:
-    detail = _instrument_detail_cache_get(instrument_id, instrument_detail_cache)
-    if not isinstance(detail, dict):
-        return None
-    market_data = detail.get("market_data", [])
-    if not isinstance(market_data, list):
-        return None
-    points = [
-        point
-        for point in market_data
-        if is_usable_market_data_point(point)
-        and str(point.get("metric_family") or "") == "fx"
-        and str(point.get("quote_basis") or "") == "spot"
-    ]
-    points.sort(key=lambda item: str(item.get("as_of_date") or ""))
-    point = _latest_point_on_or_before(points, as_of_date)
-    if point is None:
-        return None
-    rate = _safe_float(point.get("value"))
-    point_date = _parse_iso_date(point.get("as_of_date"))
-    if rate is None or rate <= 0 or point_date is None:
-        return None
-    return {
-        "rate": rate,
-        "as_of_date": point_date,
-        "status": market_data_status(point),
-        "stale": point_date < as_of_date,
-    }
+    currency: str,
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    """Return a complete, same-series canonical total-return pair or no pair."""
+
+    if quote_book.role != "total_return":
+        raise ValueError("Holding return calculations require a total_return quote book.")
+    current = quote_book.quote_at(instrument_id, as_of_date)
+    if not isinstance(current, dict) or current.get("resolution_status") != "resolved":
+        return None, None
+    previous = quote_book.previous_quote(instrument_id, current)
+    if not isinstance(previous, dict) or previous.get("resolution_status") != "resolved":
+        return None, None
+
+    expected_currency = _normalized_currency(currency, fallback="")
+    current_series_id = str(current.get("quote_series_id") or "")
+    current_basis = str(current.get("quote_basis") or "")
+    source_guard_passes = (
+        bool(expected_currency and current_series_id and current_basis)
+        and current.get("role") == "total_return"
+        and previous.get("role") == "total_return"
+        and str(previous.get("quote_series_id") or "") == current_series_id
+        and str(previous.get("quote_basis") or "") == current_basis
+        and _normalized_currency(current.get("currency"), fallback="")
+        == expected_currency
+        and _normalized_currency(previous.get("currency"), fallback="")
+        == expected_currency
+        and current.get("source_status") == "complete"
+        and previous.get("source_status") == "complete"
+    )
+    return (current, previous) if source_guard_passes else (None, None)
 
 
-def _direct_fx_point_before(
+def _collect_calculation_currencies(
+    value: object,
+    currencies: set[str],
+) -> None:
+    """Collect explicit currency facts without guessing from instrument names."""
+
+    if isinstance(value, Mapping):
+        for raw_key, item in value.items():
+            key = str(raw_key or "")
+            if key in {"currency", "base_currency", "quote_currency"}:
+                currencies.add(
+                    _required_currency(
+                        item,
+                        fact_name=f"calculation fact '{key}'",
+                    )
+                )
+            if key.endswith("_by_currency") and isinstance(item, Mapping):
+                for raw_currency in item:
+                    currencies.add(
+                        _required_currency(
+                            raw_currency,
+                            fact_name=f"calculation fact '{key}' key",
+                        )
+                    )
+            _collect_calculation_currencies(item, currencies)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            _collect_calculation_currencies(item, currencies)
+
+
+def _calculation_fx_pairs(
     *,
-    instrument_id: str,
-    before_date: date,
-    instrument_detail_cache: dict[str, dict[str, object] | None],
-) -> dict[str, object] | None:
-    detail = _instrument_detail_cache_get(instrument_id, instrument_detail_cache)
-    if not isinstance(detail, dict):
-        return None
-    market_data = detail.get("market_data", [])
-    if not isinstance(market_data, list):
-        return None
-    points = [
-        point
-        for point in market_data
-        if is_usable_market_data_point(point)
-        and str(point.get("metric_family") or "") == "fx"
-        and str(point.get("quote_basis") or "") == "spot"
-    ]
-    points.sort(key=lambda item: str(item.get("as_of_date") or ""))
-    for point in reversed(points):
-        point_date = _parse_iso_date(point.get("as_of_date"))
-        rate = _safe_float(point.get("value"))
-        if point_date is None or point_date >= before_date or rate is None or rate <= 0:
-            continue
-        return {
-            "rate": rate,
-            "as_of_date": point_date,
-            "status": market_data_status(point),
-            "stale": False,
-        }
-    return None
-
-
-def resolve_fx_rate_on(
-    *,
-    as_of_date: date,
     base_currency: str,
-    quote_currency: str,
-    direct_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
-) -> dict[str, object] | None:
-    normalized_base = _normalized_currency(base_currency, fallback="")
-    normalized_quote = _normalized_currency(quote_currency, fallback="")
-    if not normalized_base or not normalized_quote:
-        return None
-    if normalized_base == normalized_quote:
-        return {
-            "rate": 1.0,
-            "as_of_date": as_of_date,
-            "status": "complete",
-            "stale": False,
-        }
-
-    direct_instrument_id = direct_instruments.get((normalized_base, normalized_quote))
-    if direct_instrument_id:
-        direct_point = _direct_fx_point_as_of(
-            instrument_id=direct_instrument_id,
-            as_of_date=as_of_date,
-            instrument_detail_cache=instrument_detail_cache,
-        )
-        if direct_point is not None:
-            return direct_point
-
-    inverse_instrument_id = direct_instruments.get((normalized_quote, normalized_base))
-    if inverse_instrument_id:
-        inverse_point = _direct_fx_point_as_of(
-            instrument_id=inverse_instrument_id,
-            as_of_date=as_of_date,
-            instrument_detail_cache=instrument_detail_cache,
-        )
-        if inverse_point is not None:
-            return {
-                "rate": 1.0 / float(inverse_point["rate"]),
-                "as_of_date": inverse_point["as_of_date"],
-                "status": inverse_point["status"],
-                "stale": bool(inverse_point["stale"]),
-            }
-
-    pivot_currency = "USD"
-    if normalized_base == pivot_currency or normalized_quote == pivot_currency:
-        return None
-
-    base_leg = resolve_fx_rate_on(
-        as_of_date=as_of_date,
-        base_currency=pivot_currency,
-        quote_currency=normalized_base,
-        direct_instruments=direct_instruments,
-        instrument_detail_cache=instrument_detail_cache,
+    payloads: tuple[object, ...],
+    extra_currencies: tuple[str, ...] = (),
+) -> set[tuple[str, str]]:
+    normalized_base = _required_currency(
+        base_currency,
+        fact_name="portfolio.base_currency",
     )
-    quote_leg = resolve_fx_rate_on(
-        as_of_date=as_of_date,
-        base_currency=pivot_currency,
-        quote_currency=normalized_quote,
-        direct_instruments=direct_instruments,
-        instrument_detail_cache=instrument_detail_cache,
+    currencies = {normalized_base}
+    for payload in payloads:
+        _collect_calculation_currencies(payload, currencies)
+    currencies.update(
+        _required_currency(currency, fact_name="calculation extra currency")
+        for currency in extra_currencies
     )
-    if base_leg is None or quote_leg is None:
-        return None
-
-    base_rate = _safe_float(base_leg.get("rate"))
-    quote_rate = _safe_float(quote_leg.get("rate"))
-    base_date = _parse_iso_date(base_leg.get("as_of_date"))
-    quote_date = _parse_iso_date(quote_leg.get("as_of_date"))
-    if (
-        base_rate is None
-        or quote_rate is None
-        or base_rate <= 0
-        or quote_rate <= 0
-        or base_date is None
-        or quote_date is None
-    ):
-        return None
-    return {
-        "rate": quote_rate / base_rate,
-        "as_of_date": min(base_date, quote_date),
-        "status": "complete",
-        "stale": bool(base_leg.get("stale")) or bool(quote_leg.get("stale")),
-    }
+    return {(currency, normalized_base) for currency in currencies}
 
 
-def resolve_previous_fx_rate_before(
+def _calculation_fx_start_date(
+    requested_start_date: date,
     *,
-    before_date: date,
+    end_date: date,
+    payloads: tuple[object, ...],
+) -> date:
+    """Cover every historical fact replayed by a cumulative calculation.
+
+    Incremental daily-snapshot refreshes start rendering at a recent seed date,
+    but cumulative income, fees, flows, and realized gains still replay prior
+    transactions.  The immutable FX book must therefore begin at the earliest
+    effective date actually reachable by that replay, not merely at the first
+    rendered day.
+    """
+
+    earliest = requested_start_date
+
+    def visit(value: object) -> None:
+        nonlocal earliest
+        if isinstance(value, Mapping):
+            if "transaction_type" in value and "trade_date" in value:
+                effective_date = transaction_performance_effective_date(dict(value))
+                if effective_date is not None and effective_date <= end_date:
+                    earliest = min(earliest, effective_date)
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                visit(item)
+
+    for payload in payloads:
+        visit(payload)
+    return earliest
+
+
+def _lock_calculation_fx_book(
+    session: Session,
+    *,
     base_currency: str,
-    quote_currency: str,
-    direct_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
-) -> dict[str, object] | None:
-    normalized_base = _normalized_currency(base_currency, fallback="")
-    normalized_quote = _normalized_currency(quote_currency, fallback="")
-    if not normalized_base or not normalized_quote:
-        return None
-    if normalized_base == normalized_quote:
-        return {
-            "rate": 1.0,
-            "as_of_date": before_date,
-            "status": "complete",
-            "stale": False,
-        }
-
-    direct_instrument_id = direct_instruments.get((normalized_base, normalized_quote))
-    if direct_instrument_id:
-        direct_point = _direct_fx_point_before(
-            instrument_id=direct_instrument_id,
-            before_date=before_date,
-            instrument_detail_cache=instrument_detail_cache,
-        )
-        if direct_point is not None:
-            return direct_point
-
-    inverse_instrument_id = direct_instruments.get((normalized_quote, normalized_base))
-    if inverse_instrument_id:
-        inverse_point = _direct_fx_point_before(
-            instrument_id=inverse_instrument_id,
-            before_date=before_date,
-            instrument_detail_cache=instrument_detail_cache,
-        )
-        if inverse_point is not None:
-            return {
-                "rate": 1.0 / float(inverse_point["rate"]),
-                "as_of_date": inverse_point["as_of_date"],
-                "status": inverse_point["status"],
-                "stale": bool(inverse_point["stale"]),
-            }
-
-    pivot_currency = "USD"
-    if normalized_base == pivot_currency or normalized_quote == pivot_currency:
-        return None
-
-    base_leg = resolve_previous_fx_rate_before(
-        before_date=before_date,
-        base_currency=pivot_currency,
-        quote_currency=normalized_base,
-        direct_instruments=direct_instruments,
-        instrument_detail_cache=instrument_detail_cache,
+    start_date: date,
+    end_date: date,
+    payloads: tuple[object, ...],
+    extra_currencies: tuple[str, ...] = (),
+) -> CanonicalFxWindowBook:
+    if end_date < start_date:
+        raise PerformanceDataIntegrityError("FX calculation window is invalid.")
+    resolved_start_date = _calculation_fx_start_date(
+        start_date,
+        end_date=end_date,
+        payloads=payloads,
     )
-    quote_leg = resolve_previous_fx_rate_before(
-        before_date=before_date,
-        base_currency=pivot_currency,
-        quote_currency=normalized_quote,
-        direct_instruments=direct_instruments,
-        instrument_detail_cache=instrument_detail_cache,
+    return resolve_portfolio_fx_window_book_in_session(
+        session,
+        currency_pairs=_calculation_fx_pairs(
+            base_currency=base_currency,
+            payloads=payloads,
+            extra_currencies=extra_currencies,
+        ),
+        start_date=resolved_start_date,
+        end_date=end_date,
+        freshness_policy=portfolio_fx_freshness_policy(),
     )
-    if base_leg is None or quote_leg is None:
-        return None
-
-    base_rate = _safe_float(base_leg.get("rate"))
-    quote_rate = _safe_float(quote_leg.get("rate"))
-    base_date = _parse_iso_date(base_leg.get("as_of_date"))
-    quote_date = _parse_iso_date(quote_leg.get("as_of_date"))
-    if (
-        base_rate is None
-        or quote_rate is None
-        or base_rate <= 0
-        or quote_rate <= 0
-        or base_date is None
-        or quote_date is None
-    ):
-        return None
-    return {
-        "rate": quote_rate / base_rate,
-        "as_of_date": min(base_date, quote_date),
-        "status": "complete",
-        "stale": bool(base_leg.get("stale")) or bool(quote_leg.get("stale")),
-    }
 
 
-def convert_amount_on(
+def _fx_resolution_is_carried_forward(resolution: object) -> bool:
+    effective_date = getattr(resolution, "effective_as_of_date", None)
+    requested_date = getattr(resolution, "requested_as_of_date", None)
+    return (
+        isinstance(effective_date, date)
+        and isinstance(requested_date, date)
+        and effective_date < requested_date
+    )
+
+
+def _convert_amount_with_fx_book(
     amount: float | None,
     *,
     as_of_date: date,
     from_currency: str,
     to_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
 ) -> tuple[float | None, bool]:
     if amount is None:
         return None, False
-    resolved_fx = resolve_fx_rate_on(
-        as_of_date=as_of_date,
-        base_currency=from_currency,
-        quote_currency=to_currency,
-        direct_instruments=direct_fx_instruments,
-        instrument_detail_cache=instrument_detail_cache,
+    resolution = fx_book.rate_at(from_currency, to_currency, as_of_date)
+    if resolution.resolution_status != "resolved" or resolution.rate is None:
+        return None, False
+    converted = Decimal(str(amount)) * resolution.rate
+    return float(converted), _fx_resolution_is_carried_forward(resolution)
+
+
+def _fx_reliability_stale_at(
+    *,
+    as_of_date: date,
+    from_currency: str,
+    to_currency: str,
+    fx_book: CanonicalFxWindowBook,
+) -> bool:
+    resolution = fx_book.rate_at(from_currency, to_currency, as_of_date)
+    return (
+        resolution.resolution_status != "resolved"
+        or resolution.freshness_status != "current"
+        or resolution.reliability_status == "unavailable"
     )
-    if resolved_fx is None:
-        return None, False
-    rate = _safe_float(resolved_fx.get("rate"))
-    if rate is None or rate <= 0:
-        return None, False
-    return float(amount) * rate, bool(resolved_fx.get("stale"))
 
 
 def _cash_day_change_metrics(
@@ -852,39 +756,26 @@ def _cash_day_change_metrics(
     currency: str,
     base_currency: str,
     as_of_date: date,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
 ) -> tuple[float | None, float | None]:
-    normalized_currency = _normalized_currency(currency)
-    normalized_base = _normalized_currency(base_currency)
+    normalized_currency = _required_currency(currency, fact_name="cash balance")
+    normalized_base = _required_currency(base_currency, fact_name="portfolio.base_currency")
     if normalized_currency == normalized_base:
         return 0.0, 0.0
 
-    current_fx = resolve_fx_rate_on(
-        as_of_date=as_of_date,
-        base_currency=normalized_currency,
-        quote_currency=normalized_base,
-        direct_instruments=direct_fx_instruments,
-        instrument_detail_cache=instrument_detail_cache,
-    )
-    current_rate = _safe_float((current_fx or {}).get("rate"))
-    current_rate_date = _parse_iso_date((current_fx or {}).get("as_of_date"))
-    if current_rate is None or current_rate <= 0 or current_rate_date is None:
+    current_fx = fx_book.rate_at(normalized_currency, normalized_base, as_of_date)
+    previous_date = as_of_date - timedelta(days=1)
+    previous_fx = fx_book.rate_at(normalized_currency, normalized_base, previous_date)
+    if (
+        current_fx.resolution_status != "resolved"
+        or current_fx.rate is None
+        or previous_fx.resolution_status != "resolved"
+        or previous_fx.rate is None
+    ):
         return None, None
-
-    previous_fx = resolve_previous_fx_rate_before(
-        before_date=current_rate_date,
-        base_currency=normalized_currency,
-        quote_currency=normalized_base,
-        direct_instruments=direct_fx_instruments,
-        instrument_detail_cache=instrument_detail_cache,
-    )
-    previous_rate = _safe_float((previous_fx or {}).get("rate"))
-    if previous_rate is None or previous_rate <= 0:
-        return None, None
-
-    day_change_pct = current_rate / previous_rate - 1.0
-    return day_change_pct, amount * (current_rate - previous_rate)
+    day_change_pct = float(current_fx.rate / previous_fx.rate - Decimal("1"))
+    day_change_value = Decimal(str(amount)) * (current_fx.rate - previous_fx.rate)
+    return day_change_pct, float(day_change_value)
 
 
 def _build_cash_holding_rows(
@@ -892,12 +783,14 @@ def _build_cash_holding_rows(
     cash_balances: list[dict[str, object]],
     as_of_date: date,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for balance in cash_balances:
-        currency = _normalized_currency(balance.get("currency"), fallback=base_currency)
+        currency = _required_currency(
+            balance.get("currency"),
+            fact_name="cash balance",
+        )
         amount = _safe_float(balance.get("amount"))
         if amount is None or abs(amount) <= 1e-9:
             continue
@@ -908,10 +801,12 @@ def _build_cash_holding_rows(
             currency=currency,
             base_currency=base_currency,
             as_of_date=as_of_date,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
-        is_base_cash = currency == _normalized_currency(base_currency)
+        is_base_cash = currency == _required_currency(
+            base_currency,
+            fact_name="portfolio.base_currency",
+        )
         account_ids = sorted(str(account_id) for account_id in list(balance.get("account_ids") or []) if str(account_id or ""))
         rows.append(
             {
@@ -924,11 +819,14 @@ def _build_cash_holding_rows(
                 "cost_basis_method": None,
                 "cost_basis": None,
                 "cost_basis_base": None,
+                "unrealized_pnl": None,
+                "unrealized_pnl_base": None,
+                "unrealized_return": None,
                 "last_price": 1.0,
                 "quote_as_of_date": as_of_date.isoformat(),
                 "quote_metric_family": "cash",
                 "quote_basis": "cash_balance",
-                "quote_provider": "ledger",
+                "quote_source_ref": "portfolio-ledger:cash-balance",
                 "quote_status": "complete" if amount_base is not None else "unpriced",
                 "market_value": amount,
                 "market_value_base": amount_base,
@@ -959,7 +857,10 @@ def _position_buckets_from_lots(position_lots: list[dict[str, object]]) -> list[
             {
                 "instrument_id": instrument_id,
                 "instrument_ref": deepcopy(position_lot.get("instrument_ref")),
-                "currency": _normalized_currency(position_lot.get("currency")),
+                "currency": _required_currency(
+                    position_lot.get("currency"),
+                    fact_name="position lot",
+                ),
                 "quantity": 0.0,
                 "cost_basis": 0.0,
                 "open_position_lot_count": 0,
@@ -1012,7 +913,10 @@ def _position_buckets_by_account_instrument_from_lots(position_lots: list[dict[s
                 "account_id": account_id,
                 "instrument_id": instrument_id,
                 "instrument_ref": deepcopy(position_lot.get("instrument_ref")),
-                "currency": _normalized_currency(position_lot.get("currency")),
+                "currency": _required_currency(
+                    position_lot.get("currency"),
+                    fact_name="position lot",
+                ),
                 "quantity": 0.0,
                 "cost_basis": 0.0,
                 "open_position_lot_count": 0,
@@ -1061,9 +965,9 @@ def _resolve_snapshot_window(
     end_date: date | None,
 ) -> tuple[date, date] | None:
     transaction_dates = [
-        parsed
-        for parsed in (_parse_iso_date(item.get("trade_date")) for item in transactions)
-        if parsed is not None
+        effective_date
+        for item in transactions
+        if (effective_date := transaction_performance_effective_date(item)) is not None
     ]
     portfolio_as_of = _parse_iso_date(portfolio.get("as_of_date"))
     if not transaction_dates and portfolio_as_of is None:
@@ -1086,10 +990,13 @@ def _build_materialized_holding_rows(
     cash_balances: list[dict[str, object]] | None = None,
     as_of_date: date,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
+    valuation_quote_book: CanonicalQuoteWindowBook,
+    total_return_quote_book: CanonicalQuoteWindowBook,
     nav: float | None,
 ) -> list[dict[str, object]]:
+    if valuation_quote_book.role != "valuation":
+        raise ValueError("Holding market values require a valuation quote book.")
     rows: list[dict[str, object]] = []
     for bucket in account_instrument_buckets:
         account_id = str(bucket.get("account_id") or "")
@@ -1097,44 +1004,34 @@ def _build_materialized_holding_rows(
         if not account_id or not instrument_id:
             continue
 
-        currency = _normalized_currency(bucket.get("currency"), fallback=base_currency)
+        currency = _required_currency(bucket.get("currency"), fact_name="position lot")
         quantity = _safe_float(bucket.get("quantity")) or 0.0
         cost_basis = _safe_float(bucket.get("cost_basis"))
-        converted_cost_basis, _ = convert_amount_on(
+        converted_cost_basis, _ = _convert_amount_with_fx_book(
             cost_basis,
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
-        detail = _instrument_detail_cache_get(instrument_id, instrument_detail_cache)
-        price_point = (
-            _select_market_point_as_of(detail=detail, role="valuation", as_of_date=as_of_date)
-            if isinstance(detail, dict)
-            else None
-        )
-        previous_price_point = (
-            _previous_market_point_for_selected_point(detail=detail, selected_point=price_point)
-            if isinstance(detail, dict)
-            else None
-        )
-        return_price_point = (
-            _select_market_point_as_of(detail=detail, role="total_return", as_of_date=as_of_date)
-            if isinstance(detail, dict)
-            else None
-        )
-        previous_return_price_point = (
-            _previous_market_point_for_selected_point(
-                detail=detail,
-                selected_point=return_price_point,
-            )
-            if isinstance(detail, dict)
-            else None
+        price_point = valuation_quote_book.quote_at(instrument_id, as_of_date)
+        return_price_point, previous_return_price_point = _canonical_total_return_pair(
+            quote_book=total_return_quote_book,
+            instrument_id=instrument_id,
+            as_of_date=as_of_date,
+            currency=currency,
         )
         holding_start_date = _parse_iso_date(bucket.get("holding_start_date"))
-        last_price = _safe_float((price_point or {}).get("value"))
-        previous_price = _safe_float((previous_price_point or {}).get("value"))
+        quote_currency = _normalized_currency(
+            (price_point or {}).get("currency"),
+            fallback="",
+        )
+        quote_currency_matches = bool(quote_currency and quote_currency == currency)
+        last_price = (
+            _safe_float((price_point or {}).get("value"))
+            if quote_currency_matches
+            else None
+        )
         instrument_ref = bucket.get("instrument_ref") if isinstance(bucket.get("instrument_ref"), dict) else None
         market_value = _position_market_value(
             quantity=quantity,
@@ -1144,31 +1041,49 @@ def _build_materialized_holding_rows(
         day_change_pct, day_change_value = _holding_day_change_metrics(
             quantity=quantity,
             current_price=last_price,
-            previous_price=previous_price,
             instrument_ref=instrument_ref,
-            current_return_price=_safe_float((return_price_point or {}).get("value")),
-            previous_return_price=_safe_float((previous_return_price_point or {}).get("value")),
+            current_total_return_price=_safe_float(
+                (return_price_point or {}).get("value")
+            ),
+            previous_total_return_price=_safe_float(
+                (previous_return_price_point or {}).get("value")
+            ),
         )
-        converted_day_change_value, _ = convert_amount_on(
+        converted_day_change_value, _ = _convert_amount_with_fx_book(
             day_change_value,
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
-        converted_market_value, _ = convert_amount_on(
+        converted_market_value, _ = _convert_amount_with_fx_book(
             market_value,
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
+        )
+        unrealized_pnl = (
+            market_value - cost_basis
+            if market_value is not None and cost_basis is not None
+            else None
+        )
+        unrealized_pnl_base = (
+            converted_market_value - converted_cost_basis
+            if converted_market_value is not None
+            and converted_cost_basis is not None
+            else None
+        )
+        unrealized_return = (
+            unrealized_pnl / abs(cost_basis)
+            if unrealized_pnl is not None
+            and cost_basis is not None
+            and abs(cost_basis) > 1e-9
+            else None
         )
         instrument_core = normalize_instrument_core(
             instrument_id,
             instrument_ref,
-            fallback_currency=currency,
         )
         rows.append(
             {
@@ -1180,12 +1095,50 @@ def _build_materialized_holding_rows(
                 "cost_basis_method": str(bucket.get("cost_basis_method") or "fifo"),
                 "cost_basis": cost_basis,
                 "cost_basis_base": converted_cost_basis,
+                "unrealized_pnl": unrealized_pnl,
+                "unrealized_pnl_base": unrealized_pnl_base,
+                "unrealized_return": unrealized_return,
                 "last_price": last_price,
                 "quote_as_of_date": (price_point or {}).get("as_of_date"),
                 "quote_metric_family": (price_point or {}).get("metric_family"),
                 "quote_basis": (price_point or {}).get("quote_basis"),
-                "quote_provider": (price_point or {}).get("provider"),
+                "quote_source_ref": (price_point or {}).get("source_ref"),
                 "quote_status": (price_point or {}).get("status"),
+                "quote_resolution_status": (price_point or {}).get("resolution_status"),
+                "quote_source_status": (price_point or {}).get("source_status"),
+                "quote_freshness_status": (price_point or {}).get("freshness_status"),
+                "quote_ingestion_status": (price_point or {}).get("ingestion_status"),
+                "quote_reliability_status": (price_point or {}).get("reliability_status"),
+                "quote_reason_codes": list((price_point or {}).get("reason_codes") or []),
+                "quote_canonical_instrument_type": (price_point or {}).get(
+                    "canonical_instrument_type"
+                ),
+                "quote_consumer_freshness_policy_type": (price_point or {}).get(
+                    "consumer_freshness_policy_type"
+                ),
+                "quote_consumer_freshness_policy_version": (price_point or {}).get(
+                    "consumer_freshness_policy_version"
+                ),
+                "quote_carry_forward": bool((price_point or {}).get("carry_forward")),
+                "quote_age_days": (price_point or {}).get("age_days"),
+                "quote_series_id": (price_point or {}).get("quote_series_id"),
+                "quote_observation_id": (price_point or {}).get("observation_id"),
+                "quote_revision_id": (price_point or {}).get("revision_id"),
+                "quote_revision_number": (price_point or {}).get("revision_number"),
+                "quote_payload_hash": (price_point or {}).get("payload_hash"),
+                "quote_selection_policy_version": (price_point or {}).get(
+                    "quote_selection_policy_version"
+                ),
+                "quote_selection_policy_revision": (price_point or {}).get(
+                    "quote_selection_policy_revision"
+                ),
+                "quote_calculation_dependency": (price_point or {}).get(
+                    "calculation_dependency"
+                ),
+                "quote_window_calculation_dependency": (price_point or {}).get(
+                    "window_calculation_dependency"
+                ),
+                "valuation_quote": deepcopy(price_point),
                 "market_value": market_value,
                 "market_value_base": converted_market_value,
                 "day_change_pct": day_change_pct,
@@ -1215,8 +1168,7 @@ def _build_materialized_holding_rows(
             cash_balances=list(cash_balances or []),
             as_of_date=as_of_date,
             base_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
     )
     _apply_position_portfolio_weights(rows, nav)
@@ -1237,6 +1189,8 @@ def _build_single_date_snapshot(
     *,
     as_of_date: date,
     allow_materialized: bool = True,
+    calculation_session: Session | None = None,
+    calculation_fx_book: CanonicalFxWindowBook | None = None,
 ) -> dict[str, object]:
     portfolio_id = str(portfolio.get("portfolio_id") or "")
     if portfolio_id and allow_materialized:
@@ -1250,9 +1204,9 @@ def _build_single_date_snapshot(
     portfolio_view["as_of_date"] = as_of_date.isoformat()
     historical_start_date = min(
         (
-            parsed_trade_date
-            for parsed_trade_date in (_parse_iso_date(item.get("trade_date")) for item in transactions)
-            if parsed_trade_date is not None
+            effective_date
+            for item in transactions
+            if (effective_date := transaction_performance_effective_date(item)) is not None
         ),
         default=as_of_date,
     )
@@ -1262,18 +1216,26 @@ def _build_single_date_snapshot(
         transactions,
         start_date=historical_start_date,
         end_date=as_of_date,
+        quote_session=calculation_session,
+        fx_book=calculation_fx_book,
     )
     if snapshots:
         return snapshots[-1]
     return {
         "as_of_date": as_of_date,
-        "coverage_state": "unavailable",
+        "nav_coverage_state": "unavailable",
+        "nav_coverage_reason_codes": ["snapshot_not_available"],
+        "book_pnl_coverage_state": "unavailable",
+        "book_pnl_coverage_reason_codes": ["snapshot_not_available"],
         "stale_price_flag": False,
         "stale_fx_flag": False,
         "nav": None,
         "unrealized_pnl": None,
         "market_observation_count": 0,
         "return_observation_eligible": False,
+        "twr_state": TWR_STATE_NO_ANCHOR,
+        "twr_reliability_status": TWR_RELIABILITY_UNAVAILABLE,
+        "twr_reliability_reasons": [TWR_REASON_AWAITING_FRESH_ANCHOR],
     }
 
 
@@ -1337,8 +1299,7 @@ def _sum_period_transaction_buckets(
     transactions: list[dict[str, object]],
     *,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
 ) -> dict[str, object]:
     deposits = 0.0
     withdrawals = 0.0
@@ -1351,13 +1312,12 @@ def _sum_period_transaction_buckets(
 
     def convert_component(amount: float, *, trade_date: date, currency: str) -> float | None:
         nonlocal coverage_complete, stale_fx_flag
-        converted_amount, is_stale = convert_amount_on(
+        converted_amount, is_stale = _convert_amount_with_fx_book(
             amount,
             as_of_date=trade_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
         if converted_amount is None:
             coverage_complete = False
@@ -1370,7 +1330,7 @@ def _sum_period_transaction_buckets(
         if effective_date is None:
             coverage_complete = False
             continue
-        currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
+        currency = _required_currency(transaction.get("currency"), fact_name="transaction")
         transaction_type = str(transaction.get("transaction_type") or "")
         gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
         fee_amount = _safe_float(transaction.get("fees")) or 0.0
@@ -1432,8 +1392,7 @@ def _sum_period_realized_capital_gains(
     start_date: date | None,
     end_date: date | None,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
 ) -> dict[str, object]:
     realized_capital_gains = 0.0
     coverage_complete = True
@@ -1442,7 +1401,7 @@ def _sum_period_realized_capital_gains(
     end_iso = end_date.isoformat() if end_date is not None else None
 
     for position_lot in position_lots:
-        currency = _normalized_currency(position_lot.get("currency"), fallback=base_currency)
+        currency = _required_currency(position_lot.get("currency"), fact_name="position lot")
         realizations = position_lot.get("realizations") or []
         if not isinstance(realizations, list):
             continue
@@ -1464,13 +1423,12 @@ def _sum_period_realized_capital_gains(
             if realized_pnl is None:
                 coverage_complete = False
                 continue
-            converted_amount, is_stale = convert_amount_on(
+            converted_amount, is_stale = _convert_amount_with_fx_book(
                 realized_pnl,
                 as_of_date=trade_date,
                 from_currency=currency,
                 to_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
+                fx_book=fx_book,
             )
             if converted_amount is None:
                 coverage_complete = False
@@ -1577,18 +1535,21 @@ def _period_lot_market_value_local(
     lot: dict[str, object],
     *,
     as_of_date: date,
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    valuation_quote_book: CanonicalQuoteWindowBook,
 ) -> float | None:
+    if valuation_quote_book.role != "valuation":
+        raise ValueError("Period market values require a valuation quote book.")
     instrument_id = str(lot.get("instrument_id") or "")
-    detail = _instrument_detail_cache_get(instrument_id, instrument_detail_cache)
-    if not isinstance(detail, dict):
-        return None
-    price_point = _select_market_point_as_of(
-        detail=detail,
-        role="valuation",
-        as_of_date=as_of_date,
+    price_point = valuation_quote_book.quote_at(
+        instrument_id,
+        as_of_date,
     )
-    if price_point is None:
+    lot_currency = _required_currency(lot.get("currency"), fact_name="position lot")
+    if (
+        not lot_currency
+        or _normalized_currency((price_point or {}).get("currency"), fallback="")
+        != lot_currency
+    ):
         return None
     return _position_market_value(
         quantity=_safe_float(lot.get("quantity")) or 0.0,
@@ -1667,12 +1628,27 @@ def _period_unrealized_capital_gains_by_group(
     taxonomy_nodes: list[dict[str, object]] | None,
     taxonomy_assignments: list[dict[str, object]] | None,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
+    valuation_quote_book: CanonicalQuoteWindowBook | None = None,
 ) -> dict[str, object]:
     lots_by_key: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
     sorted_transactions = sorted(transactions, key=_transaction_sort_key)
     start_boundary_date = start_date - timedelta(days=1)
+    resolved_valuation_quote_book = valuation_quote_book
+    if resolved_valuation_quote_book is None:
+        session_factory = get_session_factory()
+        with session_factory() as quote_session:
+            resolved_valuation_quote_book = resolve_role_quote_window_book_in_session(
+                quote_session,
+                instrument_ids=_transaction_instrument_ids(sorted_transactions),
+                role="valuation",
+                start_date=(
+                    start_boundary_date
+                    - timedelta(days=maximum_valuation_quote_age_days())
+                ),
+                end_date=end_date,
+            )
+    assert resolved_valuation_quote_book is not None
     portfolio_id = str(portfolio.get("portfolio_id") or "")
     transactions_before_start = _transactions_as_of_end_date(sorted_transactions, end_date=start_boundary_date)
     coverage_complete = True
@@ -1683,6 +1659,7 @@ def _period_unrealized_capital_gains_by_group(
         accounts,
         transactions_before_start,
         as_of_date=start_boundary_date,
+        include_market_valuation=False,
     ):
         if str(position_lot.get("status") or "") != "open":
             continue
@@ -1697,14 +1674,17 @@ def _period_unrealized_capital_gains_by_group(
                 if isinstance(position_lot.get("instrument_ref"), dict)
                 else {}
             ),
-            "currency": _normalized_currency(position_lot.get("currency"), fallback=base_currency),
+            "currency": _required_currency(
+                position_lot.get("currency"),
+                fact_name="position lot",
+            ),
             "quantity": quantity,
             "cost_local": 0.0,
         }
         market_value_local = _period_lot_market_value_local(
             lot,
             as_of_date=start_boundary_date,
-            instrument_detail_cache=instrument_detail_cache,
+            valuation_quote_book=resolved_valuation_quote_book,
         )
         if market_value_local is None:
             coverage_complete = False
@@ -1728,7 +1708,7 @@ def _period_unrealized_capital_gains_by_group(
         quantity = _safe_float(transaction.get("quantity")) or 0.0
         if not account_id or not instrument_id or quantity <= 1e-9:
             continue
-        currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
+        currency = _required_currency(transaction.get("currency"), fact_name="transaction")
         gross_amount = _safe_float(transaction.get("gross_amount")) or 0.0
 
         if transaction_type in {"opening_balance", "buy", "dividend_reinvestment"}:
@@ -1787,7 +1767,10 @@ def _period_unrealized_capital_gains_by_group(
                             if isinstance(incoming_slice.get("instrument_ref"), dict)
                             else instrument_ref
                         ),
-                        currency=_normalized_currency(incoming_slice.get("currency"), fallback=currency),
+                        currency=_required_currency(
+                            incoming_slice.get("currency"),
+                            fact_name="transferred position lot",
+                        ),
                         quantity=_safe_float(incoming_slice.get("quantity")) or 0.0,
                         cost_local=_safe_float(incoming_slice.get("cost_local")) or 0.0,
                     )
@@ -1821,20 +1804,19 @@ def _period_unrealized_capital_gains_by_group(
             end_market_value_local = _period_lot_market_value_local(
                 lot,
                 as_of_date=end_date,
-                instrument_detail_cache=instrument_detail_cache,
+                valuation_quote_book=resolved_valuation_quote_book,
             )
             if end_market_value_local is None:
                 coverage_complete = False
                 continue
             unrealized_local = end_market_value_local - (_safe_float(lot.get("cost_local")) or 0.0)
-            currency = _normalized_currency(lot.get("currency"), fallback=base_currency)
-            unrealized_base, _is_stale = convert_amount_on(
+            currency = _required_currency(lot.get("currency"), fact_name="position lot")
+            unrealized_base, _is_stale = _convert_amount_with_fx_book(
                 unrealized_local,
                 as_of_date=end_date,
                 from_currency=currency,
                 to_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
+                fx_book=fx_book,
             )
             if unrealized_base is None:
                 coverage_complete = False
@@ -1875,7 +1857,7 @@ def _period_unrealized_capital_gains_by_group(
                 instrument_ref = _instrument_ref_from_mapping(lot)
                 group_key, _group_label = _instrument_type_key_label(instrument_ref.get("instrument_type"))
             elif axis == "currency":
-                group_key = _normalized_currency(lot.get("currency"), fallback=base_currency)
+                group_key = _required_currency(lot.get("currency"), fact_name="position lot")
             elif axis == "taxonomy" and taxonomy_resolver is not None:
                 group_key = taxonomy_resolver(lot)
             else:
@@ -1895,35 +1877,333 @@ def _daily_external_flow_breakdown(
     as_of_date: date,
     *,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
 ) -> dict[str, object]:
-    as_of_iso = as_of_date.isoformat()
     same_day_transactions = [
         transaction
         for transaction in transactions
-        if str(transaction.get("trade_date") or "") == as_of_iso
+        if transaction_performance_effective_date(transaction) == as_of_date
     ]
-    buckets = _sum_period_transaction_buckets(
-        same_day_transactions,
-        base_currency=base_currency,
-        direct_fx_instruments=direct_fx_instruments,
-        instrument_detail_cache=instrument_detail_cache,
-    )
+    external_cash_in = 0.0
+    external_cash_out = 0.0
+    coverage_complete = True
+    stale_fx_flag = False
+    reliability_stale_fx_flag = False
+    has_external_flow = False
+    for transaction in same_day_transactions:
+        transaction_type = str(transaction.get("transaction_type") or "")
+        if transaction_type not in (EXTERNAL_CASH_IN_TYPES | EXTERNAL_CASH_OUT_TYPES):
+            continue
+        has_external_flow = True
+        amount = _safe_float(transaction.get("gross_amount"))
+        if amount is None:
+            coverage_complete = False
+            continue
+        converted_amount, is_stale = _convert_amount_with_fx_book(
+            amount,
+            as_of_date=as_of_date,
+            from_currency=_required_currency(
+                transaction.get("currency"), fact_name="transaction"
+            ),
+            to_currency=base_currency,
+            fx_book=fx_book,
+        )
+        if converted_amount is None:
+            coverage_complete = False
+            continue
+        stale_fx_flag = stale_fx_flag or is_stale
+        reliability_stale_fx_flag = (
+            reliability_stale_fx_flag
+            or _fx_reliability_stale_at(
+                as_of_date=as_of_date,
+                from_currency=_required_currency(
+                    transaction.get("currency"), fact_name="transaction"
+                ),
+                to_currency=base_currency,
+                fx_book=fx_book,
+            )
+        )
+        if transaction_type in EXTERNAL_CASH_IN_TYPES:
+            external_cash_in += converted_amount
+        else:
+            external_cash_out += converted_amount
     return {
-        "external_cash_in": buckets["deposits"],
-        "external_cash_out": buckets["withdrawals"],
-        "net_external_inflow": buckets["net_external_inflow"],
-        "coverage_complete": buckets["coverage_complete"],
-        "stale_fx_flag": buckets["stale_fx_flag"],
+        "external_cash_in": external_cash_in,
+        "external_cash_out": external_cash_out,
+        "net_external_inflow": external_cash_in - external_cash_out,
+        "has_external_flow": has_external_flow,
+        "has_bootstrap_flow": any(
+            str(transaction.get("transaction_type") or "") == "opening_balance"
+            for transaction in same_day_transactions
+        ),
+        "coverage_complete": coverage_complete,
+        "stale_fx_flag": stale_fx_flag,
+        "reliability_stale_fx_flag": reliability_stale_fx_flag,
     }
 
 
-def build_daily_portfolio_snapshots(
+TWR_STATE_LINKED = "linked"
+TWR_STATE_CARRY_FORWARD = "carry_forward"
+TWR_STATE_BROKEN = "broken"
+TWR_STATE_REANCHOR = "reanchor"
+TWR_STATE_NO_ANCHOR = "no_anchor"
+
+TWR_RELIABILITY_RELIABLE = "reliable"
+TWR_RELIABILITY_QUALIFIED = "qualified"
+TWR_RELIABILITY_UNAVAILABLE = "unavailable"
+
+TWR_REASON_STALE_EXTERNAL_FLOW = "stale_valuation_on_external_flow"
+TWR_REASON_INCOMPLETE_EXTERNAL_FLOW = "incomplete_valuation_on_external_flow"
+TWR_REASON_AWAITING_FRESH_ANCHOR = "awaiting_fresh_valuation_anchor"
+TWR_REASON_FRESH_REANCHOR = "fresh_valuation_reanchor"
+TWR_REASON_INVALID_DENOMINATOR = "invalid_return_denominator"
+TWR_REASON_CROSSES_BROKEN_BOUNDARY = "crosses_broken_twr_boundary"
+TWR_REASON_STALE_WITHOUT_FLOW = "stale_valuation_without_external_flow"
+TWR_REASON_CARRIED_FORWARD_WITHOUT_FLOW = (
+    "carried_forward_valuation_without_external_flow"
+)
+TWR_REASON_CARRIED_FORWARD_EXTERNAL_FLOW = (
+    "carried_forward_valuation_on_external_flow"
+)
+
+
+def _return_observation_eligible(
+    *,
+    daily_twr: float | None,
+    market_observation_count: int,
+    twr_reliability_status: str,
+    valuation_reliability_stale: bool,
+) -> bool:
+    """Keep calendar carry distinct from resolver-explicit stale risk inputs."""
+
+    return bool(
+        daily_twr is not None
+        and isfinite(daily_twr)
+        and twr_reliability_status != TWR_RELIABILITY_UNAVAILABLE
+        and not valuation_reliability_stale
+        and (
+            market_observation_count > 0
+            or (
+                twr_reliability_status == TWR_RELIABILITY_RELIABLE
+                and abs(daily_twr) > 1e-12
+            )
+        )
+    )
+
+
+def _daily_twr_link_result(
+    *,
+    nav: float | None,
+    valuation_complete: bool,
+    stale_price_flag: bool,
+    stale_fx_flag: bool,
+    flow_coverage_complete: bool,
+    has_external_flow: bool,
+    external_cash_in: float,
+    external_cash_out: float,
+    previous_anchor_nav: float | None,
+    awaiting_fresh_anchor: bool,
+    carry_forward_valuation_flag: bool = False,
+    has_bootstrap_flow: bool = False,
+) -> dict[str, object]:
+    """Resolve one daily TWR link without silently crossing an unreliable flow date."""
+
+    valuation_complete = nav is not None and valuation_complete
+    valuation_stale = stale_price_flag or stale_fx_flag
+    link_coverage_complete = valuation_complete and flow_coverage_complete
+    fresh_complete_link = (
+        link_coverage_complete
+        and not valuation_stale
+        and not carry_forward_valuation_flag
+    )
+
+    base_result: dict[str, object] = {
+        "beginning_nav": previous_anchor_nav,
+        "absolute_change": None,
+        "delta": None,
+        "daily_twr": None,
+        "next_anchor_nav": previous_anchor_nav,
+        "awaiting_fresh_anchor": awaiting_fresh_anchor,
+        "new_broken_boundary": False,
+        "twr_state": TWR_STATE_NO_ANCHOR,
+        "twr_reliability_status": TWR_RELIABILITY_UNAVAILABLE,
+        "twr_reliability_reasons": [],
+    }
+
+    if awaiting_fresh_anchor:
+        if fresh_complete_link:
+            return {
+                **base_result,
+                "beginning_nav": None,
+                "next_anchor_nav": nav,
+                "awaiting_fresh_anchor": False,
+                "twr_state": TWR_STATE_REANCHOR,
+                "twr_reliability_status": TWR_RELIABILITY_QUALIFIED,
+                "twr_reliability_reasons": [TWR_REASON_FRESH_REANCHOR],
+            }
+        reasons: list[str] = []
+        if has_external_flow:
+            reasons.append(
+                TWR_REASON_STALE_EXTERNAL_FLOW
+                if valuation_stale
+                else (
+                    TWR_REASON_CARRIED_FORWARD_EXTERNAL_FLOW
+                    if carry_forward_valuation_flag
+                    else TWR_REASON_INCOMPLETE_EXTERNAL_FLOW
+                )
+            )
+        reasons.append(TWR_REASON_AWAITING_FRESH_ANCHOR)
+        return {
+            **base_result,
+            "beginning_nav": None,
+            "next_anchor_nav": None,
+            "twr_state": TWR_STATE_BROKEN,
+            "twr_reliability_status": TWR_RELIABILITY_UNAVAILABLE,
+            "twr_reliability_reasons": list(dict.fromkeys(reasons)),
+        }
+
+    if has_external_flow and (
+        not link_coverage_complete
+        or valuation_stale
+        or carry_forward_valuation_flag
+    ):
+        return {
+            **base_result,
+            "beginning_nav": previous_anchor_nav,
+            "next_anchor_nav": None,
+            "awaiting_fresh_anchor": True,
+            "new_broken_boundary": True,
+            "twr_state": TWR_STATE_BROKEN,
+            "twr_reliability_status": TWR_RELIABILITY_UNAVAILABLE,
+            "twr_reliability_reasons": [
+                TWR_REASON_STALE_EXTERNAL_FLOW
+                if valuation_stale
+                else (
+                    TWR_REASON_CARRIED_FORWARD_EXTERNAL_FLOW
+                    if carry_forward_valuation_flag
+                    else TWR_REASON_INCOMPLETE_EXTERNAL_FLOW
+                )
+            ],
+        }
+
+    if not valuation_complete or not flow_coverage_complete:
+        return {
+            **base_result,
+            "twr_state": TWR_STATE_NO_ANCHOR,
+            "twr_reliability_status": TWR_RELIABILITY_UNAVAILABLE,
+            "twr_reliability_reasons": [TWR_REASON_AWAITING_FRESH_ANCHOR],
+        }
+
+    if previous_anchor_nav is None:
+        if valuation_stale or carry_forward_valuation_flag:
+            return {
+                **base_result,
+                "beginning_nav": None,
+                "next_anchor_nav": None,
+                "twr_state": TWR_STATE_NO_ANCHOR,
+                "twr_reliability_status": TWR_RELIABILITY_UNAVAILABLE,
+                "twr_reliability_reasons": [TWR_REASON_AWAITING_FRESH_ANCHOR],
+            }
+        if external_cash_in <= 1e-9:
+            return {
+                **base_result,
+                "beginning_nav": None,
+                "next_anchor_nav": nav,
+                "twr_state": TWR_STATE_NO_ANCHOR,
+                "twr_reliability_status": TWR_RELIABILITY_QUALIFIED,
+                "twr_reliability_reasons": [],
+            }
+        beginning_nav = 0.0
+        absolute_change = nav
+        delta = nav - (external_cash_in - external_cash_out)
+        denominator = external_cash_in
+        numerator = nav + external_cash_out
+    else:
+        beginning_nav = previous_anchor_nav
+        absolute_change = nav - previous_anchor_nav
+        delta = absolute_change - (external_cash_in - external_cash_out)
+        denominator = previous_anchor_nav + external_cash_in
+        numerator = nav + external_cash_out
+
+    if (
+        denominator <= 1e-9
+        and not has_external_flow
+        and has_bootstrap_flow
+        and nav >= 0
+    ):
+        return {
+            **base_result,
+            "beginning_nav": previous_anchor_nav,
+            "next_anchor_nav": nav,
+            "awaiting_fresh_anchor": False,
+            "twr_state": TWR_STATE_NO_ANCHOR,
+            "twr_reliability_status": TWR_RELIABILITY_QUALIFIED,
+            "twr_reliability_reasons": [],
+        }
+
+    if denominator <= 1e-9 or numerator < 0:
+        return {
+            **base_result,
+            "beginning_nav": beginning_nav,
+            "next_anchor_nav": None,
+            "awaiting_fresh_anchor": True,
+            "new_broken_boundary": True,
+            "twr_state": TWR_STATE_BROKEN,
+            "twr_reliability_status": TWR_RELIABILITY_UNAVAILABLE,
+            "twr_reliability_reasons": [TWR_REASON_INVALID_DENOMINATOR],
+        }
+
+    daily_twr = (numerator / denominator) - 1.0
+    if not isfinite(daily_twr):
+        return {
+            **base_result,
+            "beginning_nav": beginning_nav,
+            "next_anchor_nav": None,
+            "awaiting_fresh_anchor": True,
+            "new_broken_boundary": True,
+            "twr_state": TWR_STATE_BROKEN,
+            "twr_reliability_status": TWR_RELIABILITY_UNAVAILABLE,
+            "twr_reliability_reasons": [TWR_REASON_INVALID_DENOMINATOR],
+        }
+
+    qualified_stale_link = valuation_stale and not has_external_flow
+    qualified_carry_forward_link = (
+        carry_forward_valuation_flag
+        and not valuation_stale
+        and not has_external_flow
+    )
+    qualified_link = qualified_stale_link or qualified_carry_forward_link
+    return {
+        **base_result,
+        "beginning_nav": beginning_nav,
+        "absolute_change": absolute_change,
+        "delta": delta,
+        "daily_twr": daily_twr,
+        "next_anchor_nav": nav,
+        "awaiting_fresh_anchor": False,
+        "twr_state": TWR_STATE_CARRY_FORWARD if qualified_link else TWR_STATE_LINKED,
+        "twr_reliability_status": (
+            TWR_RELIABILITY_QUALIFIED if qualified_link else TWR_RELIABILITY_RELIABLE
+        ),
+        "twr_reliability_reasons": (
+            [TWR_REASON_STALE_WITHOUT_FLOW]
+            if qualified_stale_link
+            else (
+                [TWR_REASON_CARRIED_FORWARD_WITHOUT_FLOW]
+                if qualified_carry_forward_link
+                else []
+            )
+        ),
+    }
+
+
+def _build_daily_portfolio_snapshots_in_session(
     portfolio: dict[str, object],
     accounts: list[dict[str, object]],
     transactions: list[dict[str, object]],
     *,
+    quote_session: Session,
+    fx_book: CanonicalFxWindowBook | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
     include_materialized_rows: bool = False,
@@ -1947,13 +2227,48 @@ def build_daily_portfolio_snapshots(
         sorted_transactions,
         effective_on_or_before=resolved_end_date,
     )
-    base_currency = _normalized_currency(portfolio.get("base_currency"))
+    base_currency = _required_currency(portfolio.get("base_currency"), fact_name="portfolio.base_currency")
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
+    quote_books = resolve_quote_window_books_in_session(
+        quote_session,
+        instrument_ids=_transaction_instrument_ids(sorted_transactions),
+        roles=(
+            ["valuation", "total_return"]
+            if include_materialized_rows
+            else ["valuation"]
+        ),
+        start_date=(
+            resolved_start_date
+            - timedelta(days=maximum_valuation_quote_age_days())
+            if include_materialized_rows
+            else resolved_start_date
+        ),
+        end_date=resolved_end_date,
+    )
+    valuation_quote_book = quote_books["valuation"]
+    total_return_quote_book = quote_books.get("total_return")
 
-    fx_payload = get_platform_fx_rates()
-    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+    required_fx_start_date = _calculation_fx_start_date(
+        resolved_start_date - timedelta(days=1),
+        end_date=resolved_end_date,
+        payloads=(portfolio, accounts, sorted_transactions),
+    )
+    if fx_book is None:
+        fx_book = _lock_calculation_fx_book(
+            quote_session,
+            base_currency=base_currency,
+            start_date=required_fx_start_date,
+            end_date=resolved_end_date,
+            payloads=(portfolio, accounts, sorted_transactions),
+        )
+    elif (
+        fx_book.start_date > required_fx_start_date
+        or fx_book.end_date < resolved_end_date
+    ):
+        raise PerformanceDataIntegrityError(
+            "The locked FX book does not cover the snapshot calculation window."
+        )
     transactions_by_date: dict[str, list[dict[str, object]]] = defaultdict(list)
     if include_materialized_rows:
         for transaction in sorted_transactions:
@@ -1961,7 +2276,9 @@ def build_daily_portfolio_snapshots(
             if effective_date is not None:
                 transactions_by_date[effective_date.isoformat()].append(transaction)
     snapshots: list[dict[str, object]] = []
-    last_complete_nav: float | None = None
+    return_anchor_nav: float | None = None
+    awaiting_fresh_twr_anchor = False
+    twr_history_broken = False
     growth_index = 1.0
     peak_growth_index = 1.0
     has_return_history = False
@@ -1999,6 +2316,7 @@ def build_daily_portfolio_snapshots(
             transactions_as_of,
             as_of_date=as_of_date,
             corporate_actions=corporate_actions,
+            include_market_valuation=False,
         )
         all_position_lots = position_lots
         open_position_lots = [position_lot for position_lot in all_position_lots if position_lot.get("status") == "open"]
@@ -2011,16 +2329,14 @@ def build_daily_portfolio_snapshots(
         transaction_buckets = _sum_period_transaction_buckets(
             transactions_as_of,
             base_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
         realized_pnl_summary = _sum_period_realized_capital_gains(
             position_lots,
             start_date=None,
             end_date=as_of_date,
             base_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
         pnl_components = {
             "realized_pnl": realized_pnl_summary["realized_capital_gains"],
@@ -2034,22 +2350,26 @@ def build_daily_portfolio_snapshots(
         pending_settlement_base = 0.0
         pending_settlement_complete = True
         stale_fx_flag = False
+        valuation_stale_fx_flag = False
+        valuation_carry_forward_flag = False
         cash_balances_by_currency: dict[str, float] = defaultdict(float)
         cash_account_ids_by_currency: dict[str, set[str]] = defaultdict(set)
         for posting in postings:
             cash_delta = _safe_float(posting.get("cash_amount_delta"))
             if cash_delta is None:
                 continue
-            posting_currency = _normalized_currency(posting.get("currency"), fallback=base_currency)
+            posting_currency = _required_currency(
+                posting.get("currency"),
+                fact_name="ledger posting",
+            )
             posting_effective_date = ledger_posting_effective_date_iso(posting)
             posting_account_id = str(posting.get("account_id") or "").strip()
-            converted_cash_delta, is_stale = convert_amount_on(
+            converted_cash_delta, is_stale = _convert_amount_with_fx_book(
                 cash_delta,
                 as_of_date=as_of_date,
                 from_currency=posting_currency,
                 to_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
+                fx_book=fx_book,
             )
             if converted_cash_delta is None:
                 if posting_effective_date <= as_of_iso:
@@ -2061,6 +2381,16 @@ def build_daily_portfolio_snapshots(
                     pending_settlement_complete = False
                 continue
             stale_fx_flag = stale_fx_flag or is_stale
+            valuation_carry_forward_flag = valuation_carry_forward_flag or is_stale
+            valuation_stale_fx_flag = (
+                valuation_stale_fx_flag
+                or _fx_reliability_stale_at(
+                    as_of_date=as_of_date,
+                    from_currency=posting_currency,
+                    to_currency=base_currency,
+                    fx_book=fx_book,
+                )
+            )
             if posting_effective_date <= as_of_iso:
                 cash_balances_by_currency[posting_currency] += cash_delta
                 if posting_account_id:
@@ -2075,21 +2405,19 @@ def build_daily_portfolio_snapshots(
             for currency, previous_balance in previous_cash_balances_by_currency.items():
                 if currency == base_currency or abs(previous_balance) <= 1e-9:
                     continue
-                previous_balance_at_previous_fx, previous_fx_stale = convert_amount_on(
+                previous_balance_at_previous_fx, previous_fx_stale = _convert_amount_with_fx_book(
                     previous_balance,
                     as_of_date=previous_cash_balance_date,
                     from_currency=currency,
                     to_currency=base_currency,
-                    direct_fx_instruments=direct_fx_instruments,
-                    instrument_detail_cache=instrument_detail_cache,
+                    fx_book=fx_book,
                 )
-                previous_balance_at_current_fx, current_fx_stale = convert_amount_on(
+                previous_balance_at_current_fx, current_fx_stale = _convert_amount_with_fx_book(
                     previous_balance,
                     as_of_date=as_of_date,
                     from_currency=currency,
                     to_currency=base_currency,
-                    direct_fx_instruments=direct_fx_instruments,
-                    instrument_detail_cache=instrument_detail_cache,
+                    fx_book=fx_book,
                 )
                 if previous_balance_at_previous_fx is None or previous_balance_at_current_fx is None:
                     cash_currency_gain_complete = False
@@ -2111,19 +2439,20 @@ def build_daily_portfolio_snapshots(
         cost_basis_complete = True
         position_valuation_complete = True
         stale_price_flag = False
+        valuation_stale_price_flag = False
         fresh_price_count = 0
+        valuation_quote_quality_by_instrument: dict[str, dict[str, object]] = {}
         current_position_market_values_local_by_instrument: dict[str, dict[str, object]] = {}
         for bucket in position_buckets:
-            currency = _normalized_currency(bucket.get("currency"), fallback=base_currency)
+            currency = _required_currency(bucket.get("currency"), fact_name="position lot")
             quantity = _safe_float(bucket.get("quantity")) or 0.0
             cost_basis = _safe_float(bucket.get("cost_basis")) or 0.0
-            converted_cost_basis, cost_basis_fx_stale = convert_amount_on(
+            converted_cost_basis, cost_basis_fx_stale = _convert_amount_with_fx_book(
                 cost_basis,
                 as_of_date=as_of_date,
                 from_currency=currency,
                 to_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
+                fx_book=fx_book,
             )
             if converted_cost_basis is None:
                 cost_basis_complete = False
@@ -2131,16 +2460,24 @@ def build_daily_portfolio_snapshots(
                 open_cost_basis_base += converted_cost_basis
                 stale_fx_flag = stale_fx_flag or cost_basis_fx_stale
 
-            detail = _instrument_detail_cache_get(str(bucket.get("instrument_id") or ""), instrument_detail_cache)
-            if not isinstance(detail, dict):
-                position_valuation_complete = False
-                continue
-            price_point = _select_market_point_as_of(
-                detail=detail,
-                role="valuation",
-                as_of_date=as_of_date,
-            )
-            if price_point is None:
+            instrument_id = str(bucket.get("instrument_id") or "")
+            price_point = valuation_quote_book.quote_at(instrument_id, as_of_date)
+            if isinstance(price_point, dict):
+                valuation_quote_quality_by_instrument[instrument_id] = deepcopy(
+                    price_point
+                )
+                stale_price_flag = stale_price_flag or bool(
+                    price_point.get("carry_forward") or price_point.get("stale")
+                )
+                valuation_stale_price_flag = (
+                    valuation_stale_price_flag or bool(price_point.get("stale"))
+                )
+            if (
+                not isinstance(price_point, dict)
+                or price_point.get("resolution_status") != "resolved"
+                or _normalized_currency(price_point.get("currency"), fallback="")
+                != currency
+            ):
                 position_valuation_complete = False
                 continue
             market_value_local = _position_market_value(
@@ -2152,13 +2489,12 @@ def build_daily_portfolio_snapshots(
                     else None
                 ),
             )
-            converted_market_value, valuation_fx_stale = convert_amount_on(
+            converted_market_value, valuation_fx_stale = _convert_amount_with_fx_book(
                 market_value_local,
                 as_of_date=as_of_date,
                 from_currency=currency,
                 to_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
+                fx_book=fx_book,
             )
             if market_value_local is None or converted_market_value is None:
                 position_valuation_complete = False
@@ -2166,41 +2502,53 @@ def build_daily_portfolio_snapshots(
             price_point_date = _parse_iso_date(price_point.get("as_of_date"))
             if price_point_date == as_of_date:
                 fresh_price_count += 1
-            current_position_market_values_local_by_instrument[str(bucket.get("instrument_id") or "")] = {
+            current_position_market_values_local_by_instrument[instrument_id] = {
                 "currency": currency,
                 "market_value_local": market_value_local,
             }
             priced_position_count += 1
             position_market_value_base += converted_market_value
-            stale_price_flag = stale_price_flag or bool(price_point.get("stale"))
             stale_fx_flag = stale_fx_flag or valuation_fx_stale
+            valuation_carry_forward_flag = (
+                valuation_carry_forward_flag or valuation_fx_stale
+            )
+            valuation_stale_fx_flag = (
+                valuation_stale_fx_flag
+                or _fx_reliability_stale_at(
+                    as_of_date=as_of_date,
+                    from_currency=currency,
+                    to_currency=base_currency,
+                    fx_book=fx_book,
+                )
+            )
 
         daily_instrument_currency_gain = 0.0
         instrument_currency_gain_complete = True
         if previous_position_market_value_date is not None:
             for instrument_id, previous_position_value in previous_position_market_values_local_by_instrument.items():
                 del instrument_id
-                currency = _normalized_currency(previous_position_value.get("currency"), fallback=base_currency)
+                currency = _required_currency(
+                    previous_position_value.get("currency"),
+                    fact_name="prior position valuation",
+                )
                 if currency == base_currency:
                     continue
                 previous_market_value_local = _safe_float(previous_position_value.get("market_value_local"))
                 if previous_market_value_local is None or abs(previous_market_value_local) <= 1e-9:
                     continue
-                previous_value_at_previous_fx, previous_fx_stale = convert_amount_on(
+                previous_value_at_previous_fx, previous_fx_stale = _convert_amount_with_fx_book(
                     previous_market_value_local,
                     as_of_date=previous_position_market_value_date,
                     from_currency=currency,
                     to_currency=base_currency,
-                    direct_fx_instruments=direct_fx_instruments,
-                    instrument_detail_cache=instrument_detail_cache,
+                    fx_book=fx_book,
                 )
-                previous_value_at_current_fx, current_fx_stale = convert_amount_on(
+                previous_value_at_current_fx, current_fx_stale = _convert_amount_with_fx_book(
                     previous_market_value_local,
                     as_of_date=as_of_date,
                     from_currency=currency,
                     to_currency=base_currency,
-                    direct_fx_instruments=direct_fx_instruments,
-                    instrument_detail_cache=instrument_detail_cache,
+                    fx_book=fx_book,
                 )
                 if previous_value_at_previous_fx is None or previous_value_at_current_fx is None:
                     instrument_currency_gain_complete = False
@@ -2215,27 +2563,63 @@ def build_daily_portfolio_snapshots(
         else:
             instrument_currency_gain_history_complete = False
 
-        coverage_state = "complete"
-        if (
-            not cash_complete
-            or not pending_settlement_complete
-            or not cost_basis_complete
-            or not position_valuation_complete
-        ):
-            has_partial_content = bool(postings) or bool(position_buckets)
-            coverage_state = "partial" if has_partial_content else "unavailable"
-        if not cash_currency_gain_history_complete and coverage_state == "complete":
-            coverage_state = "partial"
-        if not instrument_currency_gain_history_complete and coverage_state == "complete":
-            coverage_state = "partial"
-        if (
-            coverage_state == "complete"
-            and (
-                not transaction_buckets["coverage_complete"]
-                or not realized_pnl_summary["coverage_complete"]
+        has_partial_content = bool(postings) or bool(position_buckets)
+        nav_coverage_reason_codes: list[str] = []
+        if not cash_complete:
+            _append_unique_reason(
+                nav_coverage_reason_codes,
+                NAV_COVERAGE_REASON_CASH_VALUATION,
             )
-        ):
-            coverage_state = "partial"
+        if not pending_settlement_complete:
+            _append_unique_reason(
+                nav_coverage_reason_codes,
+                NAV_COVERAGE_REASON_PENDING_SETTLEMENT,
+            )
+        if not position_valuation_complete:
+            _append_unique_reason(
+                nav_coverage_reason_codes,
+                NAV_COVERAGE_REASON_POSITION_VALUATION,
+            )
+        nav_coverage_state = _coverage_state_from_reasons(
+            nav_coverage_reason_codes,
+            has_partial_content=has_partial_content,
+        )
+
+        book_pnl_coverage_reason_codes: list[str] = []
+        if not position_valuation_complete:
+            _append_unique_reason(
+                book_pnl_coverage_reason_codes,
+                BOOK_PNL_COVERAGE_REASON_POSITION_VALUATION,
+            )
+        if not cost_basis_complete:
+            _append_unique_reason(
+                book_pnl_coverage_reason_codes,
+                BOOK_PNL_COVERAGE_REASON_COST_BASIS,
+            )
+        if not bool(transaction_buckets["coverage_complete"]):
+            _append_unique_reason(
+                book_pnl_coverage_reason_codes,
+                BOOK_PNL_COVERAGE_REASON_TRANSACTION,
+            )
+        if not bool(realized_pnl_summary["coverage_complete"]):
+            _append_unique_reason(
+                book_pnl_coverage_reason_codes,
+                BOOK_PNL_COVERAGE_REASON_REALIZED,
+            )
+        if not cash_currency_gain_history_complete:
+            _append_unique_reason(
+                book_pnl_coverage_reason_codes,
+                BOOK_PNL_COVERAGE_REASON_CASH_FX,
+            )
+        if not instrument_currency_gain_history_complete:
+            _append_unique_reason(
+                book_pnl_coverage_reason_codes,
+                BOOK_PNL_COVERAGE_REASON_INSTRUMENT_FX,
+            )
+        book_pnl_coverage_state = _coverage_state_from_reasons(
+            book_pnl_coverage_reason_codes,
+            has_partial_content=has_partial_content,
+        )
 
         stale_fx_flag = (
             stale_fx_flag
@@ -2248,100 +2632,133 @@ def build_daily_portfolio_snapshots(
             position_market_value_base if position_valuation_complete else None
         )
         resolved_open_cost_basis = open_cost_basis_base if cost_basis_complete else None
+        valuation_complete = (
+            resolved_cash_balance is not None
+            and resolved_position_market_value is not None
+            and pending_settlement_complete
+        )
         nav = None
         unrealized_pnl = None
         total_pnl = None
-        if (
-            resolved_cash_balance is not None
-            and resolved_position_market_value is not None
-            and coverage_state == "complete"
-        ):
+        if valuation_complete:
             nav = resolved_cash_balance + pending_settlement_base + resolved_position_market_value
-            if resolved_open_cost_basis is not None:
-                unrealized_pnl = resolved_position_market_value - resolved_open_cost_basis
+        if (
+            resolved_position_market_value is not None
+            and resolved_open_cost_basis is not None
+        ):
+            unrealized_pnl = (
+                resolved_position_market_value - resolved_open_cost_basis
+            )
+            if (
+                transaction_buckets["coverage_complete"]
+                and realized_pnl_summary["coverage_complete"]
+            ):
                 total_pnl = (
-                    (pnl_components["realized_pnl"] + pnl_components["income_cash_amount"])
+                    (
+                        pnl_components["realized_pnl"]
+                        + pnl_components["income_cash_amount"]
+                    )
                     - pnl_components["expense_cash_amount"]
                     + unrealized_pnl
                 )
-                if cash_currency_gains is not None:
-                    total_pnl += cash_currency_gains
-                elif not cash_currency_gain_history_complete:
-                    total_pnl = None
+            if cash_currency_gains is not None:
                 if total_pnl is not None:
-                    if instrument_currency_gains is not None:
-                        total_pnl += instrument_currency_gains
-                    elif not instrument_currency_gain_history_complete:
-                        total_pnl = None
+                    total_pnl += cash_currency_gains
+            elif not cash_currency_gain_history_complete:
+                total_pnl = None
+            if total_pnl is not None:
+                if instrument_currency_gains is not None:
+                    total_pnl += instrument_currency_gains
+                elif not instrument_currency_gain_history_complete:
+                    total_pnl = None
 
         flow_breakdown = _daily_external_flow_breakdown(
             sorted_transactions,
             as_of_date,
             base_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
-        if coverage_state == "complete" and not flow_breakdown["coverage_complete"]:
-            coverage_state = "partial"
         stale_fx_flag = stale_fx_flag or bool(flow_breakdown["stale_fx_flag"])
-        beginning_nav = last_complete_nav
-        absolute_change = None
-        delta = None
-        daily_twr = None
-        if nav is not None and last_complete_nav is not None and flow_breakdown["coverage_complete"]:
-            absolute_change = nav - last_complete_nav
-            delta = absolute_change - flow_breakdown["net_external_inflow"]
-            denominator = last_complete_nav + flow_breakdown["external_cash_in"]
-            numerator = nav + flow_breakdown["external_cash_out"]
-            if denominator > 1e-9 and numerator >= 0:
-                daily_twr = (numerator / denominator) - 1.0
-        elif (
-            nav is not None
-            and last_complete_nav is None
-            and flow_breakdown["coverage_complete"]
-            and float(flow_breakdown["external_cash_in"]) > 1e-9
-        ):
-            # Inception funding follows the same documented BOD contribution /
-            # EOD withdrawal convention as every later daily subperiod.  A
-            # null first-day return silently discarded inception-day P&L.
-            beginning_nav = 0.0
-            absolute_change = nav
-            delta = nav - flow_breakdown["net_external_inflow"]
-            denominator = float(flow_breakdown["external_cash_in"])
-            numerator = nav + float(flow_breakdown["external_cash_out"])
-            if numerator >= 0:
-                daily_twr = (numerator / denominator) - 1.0
+        reliability_stale_fx = (
+            valuation_stale_fx_flag
+            or bool(flow_breakdown["reliability_stale_fx_flag"])
+        )
+        valuation_reliability_stale = (
+            valuation_stale_price_flag
+            or reliability_stale_fx
+        )
+        twr_link = _daily_twr_link_result(
+            nav=nav,
+            valuation_complete=valuation_complete,
+            stale_price_flag=valuation_stale_price_flag,
+            stale_fx_flag=reliability_stale_fx,
+            flow_coverage_complete=bool(flow_breakdown["coverage_complete"]),
+            has_external_flow=bool(flow_breakdown["has_external_flow"]),
+            external_cash_in=float(flow_breakdown["external_cash_in"]),
+            external_cash_out=float(flow_breakdown["external_cash_out"]),
+            previous_anchor_nav=return_anchor_nav,
+            awaiting_fresh_anchor=awaiting_fresh_twr_anchor,
+            carry_forward_valuation_flag=(
+                valuation_carry_forward_flag
+                or stale_price_flag
+                or bool(flow_breakdown["stale_fx_flag"])
+            ),
+            has_bootstrap_flow=bool(flow_breakdown["has_bootstrap_flow"]),
+        )
+        beginning_nav = _safe_float(twr_link.get("beginning_nav"))
+        absolute_change = _safe_float(twr_link.get("absolute_change"))
+        delta = _safe_float(twr_link.get("delta"))
+        daily_twr = _safe_float(twr_link.get("daily_twr"))
+        return_anchor_nav = _safe_float(twr_link.get("next_anchor_nav"))
+        awaiting_fresh_twr_anchor = bool(twr_link.get("awaiting_fresh_anchor"))
+        if bool(twr_link.get("new_broken_boundary")):
+            twr_history_broken = True
 
         if daily_twr is not None and isfinite(daily_twr):
             has_return_history = True
             growth_index *= 1.0 + daily_twr
             peak_growth_index = max(peak_growth_index, growth_index)
 
-        cumulative_twr = (growth_index - 1.0) if has_return_history else None
-        drawdown = (
-            (growth_index / peak_growth_index) - 1.0
-            if has_return_history and peak_growth_index > 0
+        cumulative_twr = (
+            (growth_index - 1.0)
+            if has_return_history and not twr_history_broken
             else None
         )
-
-        if nav is not None:
-            last_complete_nav = nav
+        drawdown = (
+            (growth_index / peak_growth_index) - 1.0
+            if has_return_history and not twr_history_broken and peak_growth_index > 0
+            else None
+        )
 
         snapshot_payload: dict[str, object] = {
             "as_of_date": as_of_date,
             "base_currency": base_currency,
             "valuation_timezone": valuation_timezone,
             "valuation_cutoff_policy": valuation_cutoff_policy,
-            "coverage_state": coverage_state,
+            "nav_coverage_state": nav_coverage_state,
+            "nav_coverage_reason_codes": nav_coverage_reason_codes,
+            "book_pnl_coverage_state": book_pnl_coverage_state,
+            "book_pnl_coverage_reason_codes": book_pnl_coverage_reason_codes,
             "stale_price_flag": stale_price_flag,
             "stale_fx_flag": stale_fx_flag,
             "total_position_count": total_position_count,
             "priced_position_count": priced_position_count,
             "market_observation_count": fresh_price_count,
-            "return_observation_eligible": (
-                daily_twr is not None
-                and isfinite(daily_twr)
-                and (fresh_price_count > 0 or abs(daily_twr) > 1e-12)
+            "return_observation_eligible": _return_observation_eligible(
+                daily_twr=daily_twr,
+                market_observation_count=fresh_price_count,
+                twr_reliability_status=str(
+                    twr_link["twr_reliability_status"]
+                ),
+                valuation_reliability_stale=valuation_reliability_stale,
+            ),
+            "twr_state": twr_link["twr_state"],
+            "twr_reliability_status": twr_link["twr_reliability_status"],
+            "twr_reliability_reasons": list(twr_link["twr_reliability_reasons"]),
+            "valuation_quote_quality": valuation_quote_quality_by_instrument,
+            "fx_dependency_manifest": _snapshot_fx_dependency_manifest(
+                fx_book,
+                as_of_date=as_of_date,
             ),
             "cash_balance": resolved_cash_balance,
             "pending_settlement": pending_settlement_base if pending_settlement_complete else None,
@@ -2349,13 +2766,39 @@ def build_daily_portfolio_snapshots(
             "nav": nav,
             "open_cost_basis": resolved_open_cost_basis,
             "unrealized_pnl": unrealized_pnl,
-            "realized_pnl": pnl_components["realized_pnl"],
-            "income_cash_amount": pnl_components["income_cash_amount"],
-            "expense_cash_amount": pnl_components["expense_cash_amount"],
-            "cash_currency_gains": cash_currency_gains,
-            "instrument_currency_gains": instrument_currency_gains,
-            "return_of_capital_amount": pnl_components["return_of_capital_amount"],
-            "total_pnl": total_pnl,
+            "realized_pnl": (
+                pnl_components["realized_pnl"]
+                if book_pnl_coverage_state == "complete"
+                else None
+            ),
+            "income_cash_amount": (
+                pnl_components["income_cash_amount"]
+                if book_pnl_coverage_state == "complete"
+                else None
+            ),
+            "expense_cash_amount": (
+                pnl_components["expense_cash_amount"]
+                if book_pnl_coverage_state == "complete"
+                else None
+            ),
+            "cash_currency_gains": (
+                cash_currency_gains
+                if book_pnl_coverage_state == "complete"
+                else None
+            ),
+            "instrument_currency_gains": (
+                instrument_currency_gains
+                if book_pnl_coverage_state == "complete"
+                else None
+            ),
+            "return_of_capital_amount": (
+                pnl_components["return_of_capital_amount"]
+                if book_pnl_coverage_state == "complete"
+                else None
+            ),
+            "total_pnl": (
+                total_pnl if book_pnl_coverage_state == "complete" else None
+            ),
             "external_cash_in": flow_breakdown["external_cash_in"],
             "external_cash_out": flow_breakdown["external_cash_out"],
             "net_external_inflow": flow_breakdown["net_external_inflow"],
@@ -2369,6 +2812,7 @@ def build_daily_portfolio_snapshots(
         }
 
         if include_materialized_rows:
+            assert total_return_quote_book is not None
             snapshot_payload["_holding_rows"] = _build_materialized_holding_rows(
                 account_instrument_buckets=account_instrument_buckets,
                 cash_balances=[
@@ -2376,13 +2820,12 @@ def build_daily_portfolio_snapshots(
                         "currency": currency,
                         "amount": amount,
                         "amount_base": (
-                            convert_amount_on(
+                            _convert_amount_with_fx_book(
                                 amount,
                                 as_of_date=as_of_date,
                                 from_currency=currency,
                                 to_currency=base_currency,
-                                direct_fx_instruments=direct_fx_instruments,
-                                instrument_detail_cache=instrument_detail_cache,
+                                fx_book=fx_book,
                             )[0]
                         ),
                         "account_ids": sorted(cash_account_ids_by_currency[currency]),
@@ -2392,8 +2835,9 @@ def build_daily_portfolio_snapshots(
                 ],
                 as_of_date=as_of_date,
                 base_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
+                fx_book=fx_book,
+                valuation_quote_book=valuation_quote_book,
+                total_return_quote_book=total_return_quote_book,
                 nav=nav,
             )
             contribution_slices: list[dict[str, object]] = []
@@ -2410,8 +2854,8 @@ def build_daily_portfolio_snapshots(
                     account_cost_methods=account_cost_methods,
                     account_currency_map=account_currency_map,
                     account_name_map=account_name_map,
-                    direct_fx_instruments=direct_fx_instruments,
-                    instrument_detail_cache=instrument_detail_cache,
+                    fx_book=fx_book,
+                    valuation_quote_book=valuation_quote_book,
                 )
                 current_events = _build_contribution_daily_events(
                     axis=contribution_axis,
@@ -2420,8 +2864,7 @@ def build_daily_portfolio_snapshots(
                     transactions_on_date=transactions_by_date.get(as_of_iso, []),
                     base_currency=base_currency,
                     account_name_map=account_name_map,
-                    direct_fx_instruments=direct_fx_instruments,
-                    instrument_detail_cache=instrument_detail_cache,
+                    fx_book=fx_book,
                 )
                 contribution_slices.extend(
                     _build_contribution_slices_for_date(
@@ -2433,8 +2876,7 @@ def build_daily_portfolio_snapshots(
                         snapshot=snapshot_payload,
                         previous_date=as_of_date - timedelta(days=1),
                         base_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                     )
                 )
                 previous_contribution_states_by_axis[contribution_axis] = current_states
@@ -2450,20 +2892,76 @@ def build_daily_portfolio_snapshots(
     return snapshots
 
 
+def build_daily_portfolio_snapshots(
+    portfolio: dict[str, object],
+    accounts: list[dict[str, object]],
+    transactions: list[dict[str, object]],
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    include_materialized_rows: bool = False,
+    quote_session: Session | None = None,
+    fx_book: CanonicalFxWindowBook | None = None,
+) -> list[dict[str, object]]:
+    """Build daily NAV/TWR from one canonical valuation window per instrument.
+
+    A caller that already owns a database unit of work passes ``quote_session``;
+    standalone callers get one owned session for the complete calculation.  No
+    resolver call occurs inside the calendar-day loop.
+    """
+
+    if quote_session is not None:
+        return _build_daily_portfolio_snapshots_in_session(
+            portfolio,
+            accounts,
+            transactions,
+            quote_session=quote_session,
+            fx_book=fx_book,
+            start_date=start_date,
+            end_date=end_date,
+            include_materialized_rows=include_materialized_rows,
+        )
+    session_factory = get_session_factory()
+    with session_factory() as owned_session:
+        return _build_daily_portfolio_snapshots_in_session(
+            portfolio,
+            accounts,
+            transactions,
+            quote_session=owned_session,
+            fx_book=fx_book,
+            start_date=start_date,
+            end_date=end_date,
+            include_materialized_rows=include_materialized_rows,
+        )
+
+
 def summarize_daily_snapshots(snapshots: list[dict[str, object]]) -> dict[str, object]:
     latest_complete = next(
         (
             snapshot
             for snapshot in reversed(snapshots)
-            if str(snapshot.get("coverage_state") or "") == "complete" and snapshot.get("nav") is not None
+            if str(snapshot.get("nav_coverage_state") or "") == "complete"
+            and snapshot.get("nav") is not None
         ),
         None,
     )
     return {
         "snapshot_count": len(snapshots),
-        "complete_count": sum(1 for snapshot in snapshots if snapshot.get("coverage_state") == "complete"),
-        "partial_count": sum(1 for snapshot in snapshots if snapshot.get("coverage_state") == "partial"),
-        "unavailable_count": sum(1 for snapshot in snapshots if snapshot.get("coverage_state") == "unavailable"),
+        "complete_count": sum(
+            1
+            for snapshot in snapshots
+            if snapshot.get("nav_coverage_state") == "complete"
+        ),
+        "partial_count": sum(
+            1
+            for snapshot in snapshots
+            if snapshot.get("nav_coverage_state") == "partial"
+        ),
+        "unavailable_count": sum(
+            1
+            for snapshot in snapshots
+            if snapshot.get("nav_coverage_state") == "unavailable"
+        ),
         "latest_complete_as_of_date": latest_complete.get("as_of_date") if latest_complete else None,
     }
 
@@ -2508,7 +3006,109 @@ def _downside_deviation(values: list[float], *, minimum_acceptable_return: float
     return sqrt(sum(downside_squares) / len(downside_squares))
 
 
+def _twr_window_reliability(
+    snapshots: list[dict[str, object]],
+) -> dict[str, object]:
+    ordered_snapshots = sorted(
+        snapshots,
+        key=lambda item: (
+            item.get("as_of_date")
+            if isinstance(item.get("as_of_date"), date)
+            else date.min
+        ),
+    )
+    crosses_broken_boundary = any(
+        str(snapshot["twr_state"]) == TWR_STATE_BROKEN
+        for snapshot in ordered_snapshots
+    ) or any(
+        index > 0
+        and str(snapshot["twr_state"]) == TWR_STATE_REANCHOR
+        for index, snapshot in enumerate(ordered_snapshots)
+    )
+    if crosses_broken_boundary:
+        return {
+            "twr_state": TWR_STATE_BROKEN,
+            "twr_reliability_status": TWR_RELIABILITY_UNAVAILABLE,
+            "twr_reliability_reasons": [TWR_REASON_CROSSES_BROKEN_BOUNDARY],
+            "linkable": False,
+        }
+
+    valid_returns = [
+        value
+        for snapshot in ordered_snapshots
+        if (value := _safe_float(snapshot.get("daily_twr"))) is not None
+        and isfinite(value)
+    ]
+    has_carry_forward = any(
+        str(snapshot["twr_state"]) == TWR_STATE_CARRY_FORWARD
+        for snapshot in ordered_snapshots
+    )
+    starts_at_reanchor = bool(
+        ordered_snapshots
+        and str(ordered_snapshots[0]["twr_state"])
+        == TWR_STATE_REANCHOR
+    )
+    if valid_returns:
+        if any(
+            not isinstance(snapshot["twr_reliability_reasons"], list)
+            for snapshot in ordered_snapshots
+        ):
+            raise TypeError("twr_reliability_reasons must be a list")
+        present_reasons = {
+            str(reason)
+            for snapshot in ordered_snapshots
+            for reason in snapshot["twr_reliability_reasons"]
+        }
+        qualification_reasons = [
+            *([TWR_REASON_FRESH_REANCHOR] if starts_at_reanchor else []),
+            *(
+                [TWR_REASON_CARRIED_FORWARD_WITHOUT_FLOW]
+                if TWR_REASON_CARRIED_FORWARD_WITHOUT_FLOW in present_reasons
+                else []
+            ),
+            *(
+                [TWR_REASON_STALE_WITHOUT_FLOW]
+                if TWR_REASON_STALE_WITHOUT_FLOW in present_reasons
+                else []
+            ),
+        ]
+        return {
+            "twr_state": (
+                TWR_STATE_CARRY_FORWARD
+                if has_carry_forward
+                else (TWR_STATE_REANCHOR if starts_at_reanchor else TWR_STATE_LINKED)
+            ),
+            "twr_reliability_status": (
+                TWR_RELIABILITY_QUALIFIED
+                if has_carry_forward or starts_at_reanchor
+                else TWR_RELIABILITY_RELIABLE
+            ),
+            "twr_reliability_reasons": qualification_reasons,
+            "linkable": True,
+        }
+
+    last_state = (
+        str(ordered_snapshots[-1]["twr_state"])
+        if ordered_snapshots
+        else TWR_STATE_NO_ANCHOR
+    )
+    reasons: list[str] = []
+    for snapshot in ordered_snapshots:
+        snapshot_reasons = snapshot["twr_reliability_reasons"]
+        if not isinstance(snapshot_reasons, list):
+            raise TypeError("twr_reliability_reasons must be a list")
+        reasons.extend(str(reason) for reason in snapshot_reasons if str(reason))
+    return {
+        "twr_state": last_state,
+        "twr_reliability_status": TWR_RELIABILITY_UNAVAILABLE,
+        "twr_reliability_reasons": list(dict.fromkeys(reasons)),
+        "linkable": False,
+    }
+
+
 def _compound_daily_twr(snapshots: list[dict[str, object]]) -> float | None:
+    if not bool(_twr_window_reliability(snapshots)["linkable"]):
+        return None
     growth_index = 1.0
     has_return = False
     for snapshot in snapshots:
@@ -2525,6 +3125,13 @@ def _drawdown_stats(
     *,
     start_anchor_date: date | None = None,
 ) -> dict[str, int | float | None]:
+    if not bool(_twr_window_reliability(snapshots)["linkable"]):
+        return {
+            "current_drawdown": None,
+            "max_drawdown": None,
+            "max_drawdown_days": None,
+            "drawdown_duration_days": None,
+        }
     growth_points: list[tuple[date, float]] = []
     growth_index = 1.0
     for snapshot in snapshots:
@@ -2589,20 +3196,36 @@ def _rebased_twr_series(snapshots: list[dict[str, object]]) -> list[dict[str, ob
     growth_index = 1.0
     peak_growth_index = 1.0
     has_return_history = False
+    crosses_broken_boundary = False
     rendered_snapshots: list[dict[str, object]] = []
 
     for snapshot in snapshots:
         rendered_snapshot = dict(snapshot)
+        twr_state = str(snapshot["twr_state"])
+        if twr_state == TWR_STATE_BROKEN or (
+            twr_state == TWR_STATE_REANCHOR and rendered_snapshots
+        ):
+            crosses_broken_boundary = True
         daily_twr = _safe_float(snapshot.get("daily_twr"))
-        if daily_twr is not None and isfinite(daily_twr):
+        if (
+            not crosses_broken_boundary
+            and daily_twr is not None
+            and isfinite(daily_twr)
+        ):
             has_return_history = True
             growth_index *= 1.0 + daily_twr
             peak_growth_index = max(peak_growth_index, growth_index)
 
-        rendered_snapshot["cumulative_twr"] = (growth_index - 1.0) if has_return_history else None
+        rendered_snapshot["cumulative_twr"] = (
+            (growth_index - 1.0)
+            if has_return_history and not crosses_broken_boundary
+            else None
+        )
         rendered_snapshot["drawdown"] = (
             (growth_index / peak_growth_index) - 1.0
-            if has_return_history and peak_growth_index > 0
+            if has_return_history
+            and not crosses_broken_boundary
+            and peak_growth_index > 0
             else None
         )
         rendered_snapshots.append(rendered_snapshot)
@@ -2718,41 +3341,48 @@ def build_portfolio_performance_report_from_snapshots(
         if start_date is None
         or (isinstance(snapshot.get("as_of_date"), date) and snapshot["as_of_date"] >= start_date)
     ]
+    window_twr_reliability = _twr_window_reliability(visible_snapshots)
     visible_daily_series_snapshots = _rebased_twr_series(visible_snapshots)
     snapshot_summary = summarize_daily_snapshots(visible_snapshots)
-    complete_snapshots = [
+    valuation_snapshots = [
         snapshot
         for snapshot in snapshots
-        if snapshot.get("coverage_state") == "complete" and snapshot.get("nav") is not None
+        if snapshot.get("nav") is not None
     ]
     if start_date is not None:
         transaction_dates = [
-            parsed
-            for parsed in (_parse_iso_date(item.get("trade_date")) for item in (transactions or []))
-            if parsed is not None
+            effective_date
+            for item in (transactions or [])
+            if (effective_date := transaction_performance_effective_date(item)) is not None
         ]
         first_transaction_date = min(transaction_dates) if transaction_dates else None
         if first_transaction_date is not None:
-            complete_snapshots = [
+            valuation_snapshots = [
                 snapshot
-                for snapshot in complete_snapshots
+                for snapshot in valuation_snapshots
                 if isinstance(snapshot.get("as_of_date"), date)
                 and snapshot["as_of_date"] >= first_transaction_date
             ]
-    visible_complete_snapshots = [
+    visible_valuation_snapshots = [
         snapshot
         for snapshot in visible_snapshots
-        if snapshot.get("coverage_state") == "complete" and snapshot.get("nav") is not None
+        if snapshot.get("nav") is not None
     ]
     return_observation_count = sum(1 for snapshot in visible_snapshots if snapshot.get("daily_twr") is not None)
     risk_return_snapshots = [
         snapshot
         for snapshot in visible_snapshots
-        if snapshot.get("daily_twr") is not None and bool(snapshot.get("return_observation_eligible"))
+        if bool(window_twr_reliability["linkable"])
+        and snapshot.get("daily_twr") is not None
+        and bool(snapshot.get("return_observation_eligible"))
     ]
     risk_return_observation_count = len(risk_return_snapshots)
-    start_snapshot = complete_snapshots[0] if complete_snapshots else None
-    end_snapshot = visible_complete_snapshots[-1] if visible_complete_snapshots else (complete_snapshots[-1] if complete_snapshots else None)
+    start_snapshot = valuation_snapshots[0] if valuation_snapshots else None
+    end_snapshot = (
+        visible_valuation_snapshots[-1]
+        if visible_valuation_snapshots
+        else (valuation_snapshots[-1] if valuation_snapshots else None)
+    )
     inception_window = bool(
         start_date is None
         and start_snapshot is not None
@@ -2914,23 +3544,51 @@ def build_portfolio_performance_report_from_snapshots(
     max_drawdown_days = drawdown_stats["max_drawdown_days"]
     drawdown_duration_days = drawdown_stats["drawdown_duration_days"]
 
-    coverage_state = "unavailable"
-    if visible_complete_snapshots:
-        coverage_state = "complete"
-        if snapshot_summary["partial_count"] or snapshot_summary["unavailable_count"]:
-            coverage_state = "partial"
-        if cumulative_twr is None:
-            coverage_state = "partial"
+    nav_coverage_state = _merge_coverage_states(
+        [
+            str(snapshot.get("nav_coverage_state") or "unavailable")
+            for snapshot in visible_snapshots
+        ]
+    )
+    nav_coverage_reason_codes = _merge_coverage_reason_codes(
+        visible_snapshots,
+        field_name="nav_coverage_reason_codes",
+    )
+    if nav_coverage_state != "complete" and not nav_coverage_reason_codes:
+        nav_coverage_reason_codes = ["nav_window_not_complete"]
+
+    book_pnl_coverage_state = _merge_coverage_states(
+        [
+            str(snapshot.get("book_pnl_coverage_state") or "unavailable")
+            for snapshot in visible_snapshots
+        ]
+    )
+    book_pnl_coverage_reason_codes = _merge_coverage_reason_codes(
+        visible_snapshots,
+        field_name="book_pnl_coverage_reason_codes",
+    )
+    if book_pnl_coverage_state != "complete" and not book_pnl_coverage_reason_codes:
+        book_pnl_coverage_reason_codes = ["book_pnl_window_not_complete"]
 
     return {
         "portfolio_id": str(portfolio.get("portfolio_id") or ""),
-        "base_currency": _normalized_currency(portfolio.get("base_currency")),
+        "base_currency": _required_currency(portfolio.get("base_currency"), fact_name="portfolio.base_currency"),
         "valuation_timezone": _resolve_portfolio_valuation_timezone(portfolio),
         "valuation_cutoff_policy": _resolve_portfolio_valuation_cutoff_policy(portfolio),
         "summary": {
             "start_date": display_start_date,
             "end_date": end_anchor_date or (snapshots[-1]["as_of_date"] if snapshots else None),
-            "coverage_state": coverage_state,
+            "nav_coverage_state": nav_coverage_state,
+            "nav_coverage_reason_codes": nav_coverage_reason_codes,
+            "book_pnl_coverage_state": book_pnl_coverage_state,
+            "book_pnl_coverage_reason_codes": book_pnl_coverage_reason_codes,
+            "twr_state": window_twr_reliability["twr_state"],
+            "twr_reliability_status": window_twr_reliability[
+                "twr_reliability_status"
+            ],
+            "twr_reliability_reasons": list(
+                window_twr_reliability["twr_reliability_reasons"]
+            ),
             "snapshot_count": len(visible_snapshots),
             "return_observation_count": return_observation_count,
             "risk_return_observation_count": risk_return_observation_count,
@@ -2977,11 +3635,25 @@ def build_portfolio_performance_report_from_snapshots(
         "daily_series": [
             {
                 "as_of_date": snapshot["as_of_date"],
-                "coverage_state": snapshot["coverage_state"],
+                "nav_coverage_state": snapshot["nav_coverage_state"],
+                "nav_coverage_reason_codes": list(
+                    snapshot.get("nav_coverage_reason_codes") or []
+                ),
+                "book_pnl_coverage_state": snapshot[
+                    "book_pnl_coverage_state"
+                ],
+                "book_pnl_coverage_reason_codes": list(
+                    snapshot.get("book_pnl_coverage_reason_codes") or []
+                ),
                 "stale_price_flag": snapshot["stale_price_flag"],
                 "stale_fx_flag": snapshot["stale_fx_flag"],
                 "market_observation_count": snapshot.get("market_observation_count", 0),
                 "return_observation_eligible": bool(snapshot.get("return_observation_eligible")),
+                "twr_state": snapshot["twr_state"],
+                "twr_reliability_status": snapshot["twr_reliability_status"],
+                "twr_reliability_reasons": list(
+                    snapshot["twr_reliability_reasons"]
+                ),
                 "beginning_nav": snapshot["beginning_nav"],
                 "ending_nav": snapshot["ending_nav"],
                 "pending_settlement": snapshot.get("pending_settlement"),
@@ -3021,7 +3693,7 @@ def build_period_calculation_report(
         start_date=start_date,
         end_date=end_date,
     )
-    base_currency = _normalized_currency(portfolio.get("base_currency"))
+    base_currency = _required_currency(portfolio.get("base_currency"), fact_name="portfolio.base_currency")
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
     if window is None:
@@ -3033,7 +3705,12 @@ def build_period_calculation_report(
             "summary": {
                 "start_date": start_date,
                 "end_date": end_date,
-                "coverage_state": "unavailable",
+                "nav_coverage_state": "unavailable",
+                "nav_coverage_reason_codes": ["snapshot_window_not_available"],
+                "book_pnl_coverage_state": "unavailable",
+                "book_pnl_coverage_reason_codes": [
+                    "snapshot_window_not_available"
+                ],
                 "stale_price_flag": False,
                 "stale_fx_flag": False,
                 "initial_value": None,
@@ -3073,25 +3750,63 @@ def build_period_calculation_report(
         sorted_transactions,
         end_date=resolved_end_date,
     )
+    fx_window_start = min(
+        [
+            initial_boundary_date,
+            *[
+                effective_date
+                for transaction in sorted_transactions
+                if (
+                    effective_date := transaction_performance_effective_date(
+                        transaction
+                    )
+                )
+                is not None
+            ],
+        ]
+    ) - timedelta(days=1)
     period_transactions = _transactions_in_period(
         sorted_transactions,
         start_date=resolved_start_date,
         end_date=resolved_end_date,
     )
 
-    start_snapshot = _build_single_date_snapshot(
-        portfolio,
-        accounts,
-        start_boundary_transactions,
-        as_of_date=initial_boundary_date,
-        allow_materialized=not default_inception_window,
-    )
-    end_snapshot = _build_single_date_snapshot(
-        portfolio,
-        accounts,
-        end_boundary_transactions,
-        as_of_date=resolved_end_date,
-    )
+    session_factory = get_session_factory()
+    with session_factory() as calculation_session:
+        fx_book = _lock_calculation_fx_book(
+            calculation_session,
+            base_currency=base_currency,
+            start_date=fx_window_start,
+            end_date=resolved_end_date,
+            payloads=(portfolio, accounts, sorted_transactions),
+        )
+        valuation_quote_book = resolve_role_quote_window_book_in_session(
+            calculation_session,
+            instrument_ids=_transaction_instrument_ids(sorted_transactions),
+            role="valuation",
+            start_date=(
+                initial_boundary_date
+                - timedelta(days=maximum_valuation_quote_age_days())
+            ),
+            end_date=resolved_end_date,
+        )
+        start_snapshot = _build_single_date_snapshot(
+            portfolio,
+            accounts,
+            start_boundary_transactions,
+            as_of_date=initial_boundary_date,
+            allow_materialized=not default_inception_window,
+            calculation_session=calculation_session,
+            calculation_fx_book=fx_book,
+        )
+        end_snapshot = _build_single_date_snapshot(
+            portfolio,
+            accounts,
+            end_boundary_transactions,
+            as_of_date=resolved_end_date,
+            calculation_session=calculation_session,
+            calculation_fx_book=fx_book,
+        )
 
     initial_value = _safe_float(start_snapshot.get("nav"))
     start_cash_currency_gains = _safe_float(start_snapshot.get("cash_currency_gains"))
@@ -3105,15 +3820,10 @@ def build_period_calculation_report(
     end_cash_currency_gains = _safe_float(end_snapshot.get("cash_currency_gains"))
     end_instrument_currency_gains = _safe_float(end_snapshot.get("instrument_currency_gains"))
 
-    fx_payload = get_platform_fx_rates()
-    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
-
     transaction_buckets = _sum_period_transaction_buckets(
         period_transactions,
         base_currency=base_currency,
-        direct_fx_instruments=direct_fx_instruments,
-        instrument_detail_cache=instrument_detail_cache,
+        fx_book=fx_book,
     )
     unrealized_capital_summary = _period_unrealized_capital_gains_by_group(
         portfolio,
@@ -3127,8 +3837,8 @@ def build_period_calculation_report(
         taxonomy_nodes=None,
         taxonomy_assignments=None,
         base_currency=base_currency,
-        direct_fx_instruments=direct_fx_instruments,
-        instrument_detail_cache=instrument_detail_cache,
+        fx_book=fx_book,
+        valuation_quote_book=valuation_quote_book,
     )
 
     delta = None
@@ -3169,30 +3879,76 @@ def build_period_calculation_report(
         else None
     )
 
-    coverage_state = "complete"
+    nav_coverage_reason_codes = _merge_coverage_reason_codes(
+        [start_snapshot, end_snapshot],
+        field_name="nav_coverage_reason_codes",
+    )
     initial_boundary_complete = (
         not start_boundary_transactions
-        or start_snapshot.get("coverage_state") == "complete"
+        or start_snapshot.get("nav_coverage_state") == "complete"
     )
+    if not initial_boundary_complete:
+        _append_unique_reason(
+            nav_coverage_reason_codes,
+            "initial_nav_boundary_incomplete",
+        )
+    if end_snapshot.get("nav_coverage_state") != "complete" or final_value is None:
+        _append_unique_reason(
+            nav_coverage_reason_codes,
+            "final_nav_boundary_incomplete",
+        )
+    if initial_value is None:
+        _append_unique_reason(
+            nav_coverage_reason_codes,
+            "initial_nav_boundary_incomplete",
+        )
+    has_any_content = (
+        bool(start_boundary_transactions)
+        or bool(end_boundary_transactions)
+        or bool(period_transactions)
+        or initial_value is not None
+        or final_value is not None
+    )
+    nav_coverage_state = _coverage_state_from_reasons(
+        nav_coverage_reason_codes,
+        has_partial_content=has_any_content,
+    )
+
+    book_pnl_coverage_reason_codes = _merge_coverage_reason_codes(
+        [start_snapshot, end_snapshot],
+        field_name="book_pnl_coverage_reason_codes",
+    )
+    if not bool(transaction_buckets["coverage_complete"]):
+        _append_unique_reason(
+            book_pnl_coverage_reason_codes,
+            BOOK_PNL_COVERAGE_REASON_TRANSACTION,
+        )
+    if not bool(unrealized_capital_summary["coverage_complete"]):
+        _append_unique_reason(
+            book_pnl_coverage_reason_codes,
+            BOOK_PNL_COVERAGE_REASON_COST_BASIS,
+        )
+    if nav_coverage_state != "complete" or delta is None:
+        _append_unique_reason(
+            book_pnl_coverage_reason_codes,
+            "nav_boundary_incomplete",
+        )
     if (
-        not initial_boundary_complete
-        or end_snapshot.get("coverage_state") != "complete"
-        or not transaction_buckets["coverage_complete"]
-        or not unrealized_capital_summary["coverage_complete"]
-        or initial_value is None
-        or final_value is None
-        or capital_gains is None
+        capital_gains is None
         or realized_capital_gains is None
         or unrealized_capital_gains is None
     ):
-        has_any_content = (
-            bool(start_boundary_transactions)
-            or bool(end_boundary_transactions)
-            or bool(period_transactions)
-            or initial_value is not None
-            or final_value is not None
+        _append_unique_reason(
+            book_pnl_coverage_reason_codes,
+            "period_pnl_reconciliation_incomplete",
         )
-        coverage_state = "partial" if has_any_content else "unavailable"
+    book_pnl_coverage_state = _coverage_state_from_reasons(
+        book_pnl_coverage_reason_codes,
+        has_partial_content=has_any_content,
+    )
+
+    def covered_book_value(value: object) -> object | None:
+        return value if book_pnl_coverage_state == "complete" else None
 
     stale_price_flag = bool(start_snapshot.get("stale_price_flag")) or bool(end_snapshot.get("stale_price_flag"))
     stale_fx_flag = (
@@ -3214,7 +3970,7 @@ def build_period_calculation_report(
         {
             "key": "capital_gains",
             "label": "Capital Gain",
-            "amount": capital_gains,
+            "amount": covered_book_value(capital_gains),
             "line_kind": "performance",
             "parent_key": None,
             "sort_order": 20,
@@ -3222,7 +3978,7 @@ def build_period_calculation_report(
         {
             "key": "instrument_currency_gains",
             "label": "Instrument Currency Gains",
-            "amount": instrument_currency_gains,
+            "amount": covered_book_value(instrument_currency_gains),
             "line_kind": "performance",
             "parent_key": None,
             "sort_order": 25,
@@ -3230,7 +3986,7 @@ def build_period_calculation_report(
         {
             "key": "realized_capital_gains",
             "label": "Realized Gain",
-            "amount": realized_capital_gains,
+            "amount": covered_book_value(realized_capital_gains),
             "line_kind": "performance",
             "parent_key": None,
             "sort_order": 30,
@@ -3238,7 +3994,7 @@ def build_period_calculation_report(
         {
             "key": "unrealized_capital_gains",
             "label": "Unrealized Gain",
-            "amount": unrealized_capital_gains,
+            "amount": covered_book_value(unrealized_capital_gains),
             "line_kind": "performance",
             "parent_key": None,
             "sort_order": 35,
@@ -3246,7 +4002,7 @@ def build_period_calculation_report(
         {
             "key": "earnings",
             "label": "Earnings",
-            "amount": transaction_buckets["earnings"],
+            "amount": covered_book_value(transaction_buckets["earnings"]),
             "line_kind": "performance",
             "parent_key": None,
             "sort_order": 40,
@@ -3254,7 +4010,7 @@ def build_period_calculation_report(
         {
             "key": "fees",
             "label": "Fees",
-            "amount": transaction_buckets["fees"],
+            "amount": covered_book_value(transaction_buckets["fees"]),
             "line_kind": "performance",
             "parent_key": None,
             "sort_order": 50,
@@ -3262,7 +4018,7 @@ def build_period_calculation_report(
         {
             "key": "taxes",
             "label": "Taxes",
-            "amount": transaction_buckets["taxes"],
+            "amount": covered_book_value(transaction_buckets["taxes"]),
             "line_kind": "performance",
             "parent_key": None,
             "sort_order": 60,
@@ -3270,7 +4026,7 @@ def build_period_calculation_report(
         {
             "key": "cash_currency_gains",
             "label": "Cash Currency Gains",
-            "amount": cash_currency_gains,
+            "amount": covered_book_value(cash_currency_gains),
             "line_kind": "performance",
             "parent_key": None,
             "sort_order": 70,
@@ -3317,20 +4073,27 @@ def build_period_calculation_report(
         "summary": {
             "start_date": resolved_start_date,
             "end_date": resolved_end_date,
-            "coverage_state": coverage_state,
+            "nav_coverage_state": nav_coverage_state,
+            "nav_coverage_reason_codes": nav_coverage_reason_codes,
+            "book_pnl_coverage_state": book_pnl_coverage_state,
+            "book_pnl_coverage_reason_codes": book_pnl_coverage_reason_codes,
             "stale_price_flag": stale_price_flag,
             "stale_fx_flag": stale_fx_flag,
             "initial_value": initial_value,
             "final_value": final_value,
             "delta": delta,
-            "capital_gains": capital_gains,
-            "realized_capital_gains": realized_capital_gains,
-            "unrealized_capital_gains": unrealized_capital_gains,
-            "earnings": transaction_buckets["earnings"],
-            "fees": transaction_buckets["fees"],
-            "taxes": transaction_buckets["taxes"],
-            "cash_currency_gains": cash_currency_gains,
-            "instrument_currency_gains": instrument_currency_gains,
+            "capital_gains": covered_book_value(capital_gains),
+            "realized_capital_gains": covered_book_value(realized_capital_gains),
+            "unrealized_capital_gains": covered_book_value(
+                unrealized_capital_gains
+            ),
+            "earnings": covered_book_value(transaction_buckets["earnings"]),
+            "fees": covered_book_value(transaction_buckets["fees"]),
+            "taxes": covered_book_value(transaction_buckets["taxes"]),
+            "cash_currency_gains": covered_book_value(cash_currency_gains),
+            "instrument_currency_gains": covered_book_value(
+                instrument_currency_gains
+            ),
             "deposits": transaction_buckets["deposits"],
             "withdrawals": transaction_buckets["withdrawals"],
             "net_external_inflow": transaction_buckets["net_external_inflow"],
@@ -3346,16 +4109,20 @@ def _build_boundary_holding_records(
     transactions: list[dict[str, object]],
     as_of_date: date,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
+    valuation_quote_book: CanonicalQuoteWindowBook,
+    total_return_quote_book: CanonicalQuoteWindowBook,
     boundary_nav: float | None,
 ) -> tuple[list[dict[str, object]], float | None]:
+    if valuation_quote_book.role != "valuation":
+        raise ValueError("Holding market values require a valuation quote book.")
     position_lots = build_position_lots(
         portfolio_id,
         accounts,
         transactions,
         status="open",
         as_of_date=as_of_date,
+        include_market_valuation=False,
     )
     position_buckets = _position_buckets_from_lots(position_lots)
     rendered_positions: list[dict[str, object]] = []
@@ -3363,43 +4130,33 @@ def _build_boundary_holding_records(
     total_market_value_complete = True
 
     for bucket in position_buckets:
-        currency = _normalized_currency(bucket.get("currency"), fallback=base_currency)
+        currency = _required_currency(bucket.get("currency"), fact_name="position lot")
         quantity = _safe_float(bucket.get("quantity")) or 0.0
         cost_basis = _safe_float(bucket.get("cost_basis"))
-        converted_cost_basis, _ = convert_amount_on(
+        converted_cost_basis, _ = _convert_amount_with_fx_book(
             cost_basis,
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
-        detail = _instrument_detail_cache_get(str(bucket.get("instrument_id") or ""), instrument_detail_cache)
-        price_point = (
-            _select_market_point_as_of(detail=detail, role="valuation", as_of_date=as_of_date)
-            if isinstance(detail, dict)
+        instrument_id = str(bucket.get("instrument_id") or "")
+        price_point = valuation_quote_book.quote_at(instrument_id, as_of_date)
+        return_price_point, previous_return_price_point = _canonical_total_return_pair(
+            quote_book=total_return_quote_book,
+            instrument_id=instrument_id,
+            as_of_date=as_of_date,
+            currency=currency,
+        )
+        quote_currency_matches = (
+            _normalized_currency((price_point or {}).get("currency"), fallback="")
+            == currency
+        )
+        last_price = (
+            _safe_float((price_point or {}).get("value"))
+            if quote_currency_matches
             else None
         )
-        previous_price_point = (
-            _previous_market_point_for_selected_point(detail=detail, selected_point=price_point)
-            if isinstance(detail, dict)
-            else None
-        )
-        return_price_point = (
-            _select_market_point_as_of(detail=detail, role="total_return", as_of_date=as_of_date)
-            if isinstance(detail, dict)
-            else None
-        )
-        previous_return_price_point = (
-            _previous_market_point_for_selected_point(
-                detail=detail,
-                selected_point=return_price_point,
-            )
-            if isinstance(detail, dict)
-            else None
-        )
-        last_price = _safe_float((price_point or {}).get("value"))
-        previous_price = _safe_float((previous_price_point or {}).get("value"))
         instrument_ref = bucket.get("instrument_ref") if isinstance(bucket.get("instrument_ref"), dict) else None
         market_value_local = _position_market_value(
             quantity=quantity,
@@ -3409,26 +4166,45 @@ def _build_boundary_holding_records(
         day_change_pct, day_change_value = _holding_day_change_metrics(
             quantity=quantity,
             current_price=last_price,
-            previous_price=previous_price,
             instrument_ref=instrument_ref,
-            current_return_price=_safe_float((return_price_point or {}).get("value")),
-            previous_return_price=_safe_float((previous_return_price_point or {}).get("value")),
+            current_total_return_price=_safe_float(
+                (return_price_point or {}).get("value")
+            ),
+            previous_total_return_price=_safe_float(
+                (previous_return_price_point or {}).get("value")
+            ),
         )
-        converted_day_change_value, _ = convert_amount_on(
+        converted_day_change_value, _ = _convert_amount_with_fx_book(
             day_change_value,
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
-        converted_market_value, _ = convert_amount_on(
+        converted_market_value, _ = _convert_amount_with_fx_book(
             market_value_local,
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
+        )
+        unrealized_pnl = (
+            market_value_local - cost_basis
+            if market_value_local is not None and cost_basis is not None
+            else None
+        )
+        unrealized_pnl_base = (
+            converted_market_value - converted_cost_basis
+            if converted_market_value is not None
+            and converted_cost_basis is not None
+            else None
+        )
+        unrealized_return = (
+            unrealized_pnl / abs(cost_basis)
+            if unrealized_pnl is not None
+            and cost_basis is not None
+            and abs(cost_basis) > 1e-9
+            else None
         )
         if market_value_local is None or converted_market_value is None:
             total_market_value_complete = False
@@ -3442,18 +4218,21 @@ def _build_boundary_holding_records(
                 "instrument_ref": normalize_instrument_core(
                     str(bucket.get("instrument_id") or ""),
                     instrument_ref,
-                    fallback_currency=currency,
                 ),
                 "quantity": quantity,
                 "cost_basis_method": str(bucket.get("cost_basis_method") or "fifo"),
                 "cost_basis": cost_basis,
                 "cost_basis_base": converted_cost_basis,
+                "unrealized_pnl": unrealized_pnl,
+                "unrealized_pnl_base": unrealized_pnl_base,
+                "unrealized_return": unrealized_return,
                 "last_price": last_price,
                 "quote_as_of_date": (price_point or {}).get("as_of_date"),
                 "quote_metric_family": (price_point or {}).get("metric_family"),
                 "quote_basis": (price_point or {}).get("quote_basis"),
-                "quote_provider": (price_point or {}).get("provider"),
+                "quote_source_ref": (price_point or {}).get("source_ref"),
                 "quote_status": (price_point or {}).get("status"),
+                "valuation_quote": deepcopy(price_point),
                 "market_value": market_value_local,
                 "market_value_base": converted_market_value,
                 "day_change_pct": day_change_pct,
@@ -3499,8 +4278,7 @@ def _statement_cash_nav_components(
     transactions: list[dict[str, object]],
     as_of_date: date,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
 ) -> dict[str, object]:
     postings = derive_ledger_postings(
         portfolio_id,
@@ -3522,16 +4300,18 @@ def _statement_cash_nav_components(
         cash_delta = _safe_float(posting.get("cash_amount_delta"))
         if cash_delta is None:
             continue
-        posting_currency = _normalized_currency(posting.get("currency"), fallback=base_currency)
+        posting_currency = _required_currency(
+            posting.get("currency"),
+            fact_name="ledger posting",
+        )
         posting_effective_date = ledger_posting_effective_date_iso(posting)
         posting_account_id = str(posting.get("account_id") or "").strip()
-        converted_cash_delta, _ = convert_amount_on(
+        converted_cash_delta, _ = _convert_amount_with_fx_book(
             cash_delta,
             as_of_date=as_of_date,
             from_currency=posting_currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
         if converted_cash_delta is None:
             if posting_effective_date <= as_of_iso:
@@ -3580,27 +4360,40 @@ def build_holdings_report(
     as_of_date: date,
     include_cash_rows: bool = False,
     calculation_frequency: CalculationFrequency = "daily",
-    instrument_detail_cache: dict[str, dict[str, object] | None] | None = None,
 ) -> dict[str, object]:
-    base_currency = _normalized_currency(portfolio.get("base_currency"))
+    base_currency = _required_currency(portfolio.get("base_currency"), fact_name="portfolio.base_currency")
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
     sorted_transactions = sorted(transactions, key=_transaction_sort_key)
     boundary_transactions = _transactions_as_of_end_date(sorted_transactions, end_date=as_of_date)
 
-    fx_payload = get_platform_fx_rates()
-    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
-    resolved_instrument_detail_cache = (
-        instrument_detail_cache if instrument_detail_cache is not None else {}
-    )
+    session_factory = get_session_factory()
+    with session_factory() as quote_session:
+        quote_books = resolve_quote_window_books_in_session(
+            quote_session,
+            instrument_ids=_transaction_instrument_ids(boundary_transactions),
+            roles=["valuation", "total_return"],
+            start_date=as_of_date - timedelta(days=maximum_valuation_quote_age_days()),
+            end_date=as_of_date,
+        )
+        fx_book = _lock_calculation_fx_book(
+            quote_session,
+            base_currency=base_currency,
+            start_date=as_of_date - timedelta(days=1),
+            end_date=as_of_date,
+            payloads=(portfolio, accounts, boundary_transactions),
+        )
+    valuation_quote_book = quote_books["valuation"]
+    total_return_quote_book = quote_books["total_return"]
     positions, position_market_value_base = _build_boundary_holding_records(
         portfolio_id=str(portfolio.get("portfolio_id") or ""),
         accounts=accounts,
         transactions=boundary_transactions,
         as_of_date=as_of_date,
         base_currency=base_currency,
-        direct_fx_instruments=direct_fx_instruments,
-        instrument_detail_cache=resolved_instrument_detail_cache,
+        fx_book=fx_book,
+        valuation_quote_book=valuation_quote_book,
+        total_return_quote_book=total_return_quote_book,
         boundary_nav=None,
     )
     cash_components = _statement_cash_nav_components(
@@ -3609,8 +4402,7 @@ def build_holdings_report(
         transactions=boundary_transactions,
         as_of_date=as_of_date,
         base_currency=base_currency,
-        direct_fx_instruments=direct_fx_instruments,
-        instrument_detail_cache=resolved_instrument_detail_cache,
+        fx_book=fx_book,
     )
     cash_balance_base = _safe_float(cash_components.get("cash_balance_base"))
     pending_settlement_base = _safe_float(cash_components.get("pending_settlement_base"))
@@ -3630,8 +4422,7 @@ def build_holdings_report(
                 cash_balances=list(cash_components.get("cash_balances") or []),
                 as_of_date=as_of_date,
                 base_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=resolved_instrument_detail_cache,
+                fx_book=fx_book,
             ),
         ]
     _apply_position_portfolio_weights(positions, total_nav_base)
@@ -3713,7 +4504,11 @@ def _filter_boundary_positions(
         filtered_positions = [
             position
             for position in positions
-            if _normalized_currency(position.get("currency"), fallback="") == resolved_group_key
+            if _required_currency(
+                position.get("currency"),
+                fact_name="position",
+            )
+            == resolved_group_key
         ]
         return filtered_positions, resolved_group_key
 
@@ -3769,7 +4564,7 @@ def build_period_boundary_holdings_report(
         start_date=start_date,
         end_date=end_date,
     )
-    base_currency = _normalized_currency(portfolio.get("base_currency"))
+    base_currency = _required_currency(portfolio.get("base_currency"), fact_name="portfolio.base_currency")
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
     if window is None:
@@ -3815,22 +4610,59 @@ def build_period_boundary_holdings_report(
         sorted_transactions,
         end_date=resolved_end_date,
     )
+    fx_window_start = min(
+        [
+            initial_boundary_date,
+            *[
+                effective_date
+                for transaction in sorted_transactions
+                if (
+                    effective_date := transaction_performance_effective_date(
+                        transaction
+                    )
+                )
+                is not None
+            ],
+        ]
+    ) - timedelta(days=1)
 
-    fx_payload = get_platform_fx_rates()
-    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
-    start_snapshot = _build_single_date_snapshot(
-        portfolio,
-        accounts,
-        start_boundary_transactions,
-        as_of_date=initial_boundary_date,
-    )
-    end_snapshot = _build_single_date_snapshot(
-        portfolio,
-        accounts,
-        end_boundary_transactions,
-        as_of_date=resolved_end_date,
-    )
+    session_factory = get_session_factory()
+    with session_factory() as quote_session:
+        quote_books = resolve_quote_window_books_in_session(
+            quote_session,
+            instrument_ids=_transaction_instrument_ids(sorted_transactions),
+            roles=["valuation", "total_return"],
+            start_date=(
+                initial_boundary_date
+                - timedelta(days=maximum_valuation_quote_age_days())
+            ),
+            end_date=resolved_end_date,
+        )
+        fx_book = _lock_calculation_fx_book(
+            quote_session,
+            base_currency=base_currency,
+            start_date=fx_window_start,
+            end_date=resolved_end_date,
+            payloads=(portfolio, accounts, sorted_transactions),
+        )
+        start_snapshot = _build_single_date_snapshot(
+            portfolio,
+            accounts,
+            start_boundary_transactions,
+            as_of_date=initial_boundary_date,
+            calculation_session=quote_session,
+            calculation_fx_book=fx_book,
+        )
+        end_snapshot = _build_single_date_snapshot(
+            portfolio,
+            accounts,
+            end_boundary_transactions,
+            as_of_date=resolved_end_date,
+            calculation_session=quote_session,
+            calculation_fx_book=fx_book,
+        )
+    valuation_quote_book = quote_books["valuation"]
+    total_return_quote_book = quote_books["total_return"]
 
     start_positions, start_total_market_value_base = _build_boundary_holding_records(
         portfolio_id=str(portfolio.get("portfolio_id") or ""),
@@ -3838,8 +4670,9 @@ def build_period_boundary_holdings_report(
         transactions=start_boundary_transactions,
         as_of_date=initial_boundary_date,
         base_currency=base_currency,
-        direct_fx_instruments=direct_fx_instruments,
-        instrument_detail_cache=instrument_detail_cache,
+        fx_book=fx_book,
+        valuation_quote_book=valuation_quote_book,
+        total_return_quote_book=total_return_quote_book,
         boundary_nav=_safe_float(start_snapshot.get("nav")),
     )
     end_positions, end_total_market_value_base = _build_boundary_holding_records(
@@ -3848,8 +4681,9 @@ def build_period_boundary_holdings_report(
         transactions=end_boundary_transactions,
         as_of_date=resolved_end_date,
         base_currency=base_currency,
-        direct_fx_instruments=direct_fx_instruments,
-        instrument_detail_cache=instrument_detail_cache,
+        fx_book=fx_book,
+        valuation_quote_book=valuation_quote_book,
+        total_return_quote_book=total_return_quote_book,
         boundary_nav=_safe_float(end_snapshot.get("nav")),
     )
 
@@ -4098,8 +4932,7 @@ def _compute_currency_translation_gain(
     previous_date: date,
     current_date: date,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
 ) -> tuple[float | None, bool]:
     if not isinstance(local_amounts_by_currency, dict) or not local_amounts_by_currency:
         return 0.0, False
@@ -4108,27 +4941,28 @@ def _compute_currency_translation_gain(
     stale_fx_flag = False
     coverage_complete = True
     for raw_currency, raw_amount in local_amounts_by_currency.items():
-        currency = _normalized_currency(raw_currency, fallback=base_currency)
+        currency = _required_currency(
+            raw_currency,
+            fact_name="currency translation balance",
+        )
         if currency == base_currency:
             continue
         amount = _safe_float(raw_amount)
         if amount is None or abs(amount) <= 1e-9:
             continue
-        previous_value, previous_stale = convert_amount_on(
+        previous_value, previous_stale = _convert_amount_with_fx_book(
             amount,
             as_of_date=previous_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
-        current_value, current_stale = convert_amount_on(
+        current_value, current_stale = _convert_amount_with_fx_book(
             amount,
             as_of_date=current_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
         if previous_value is None or current_value is None:
             coverage_complete = False
@@ -4169,7 +5003,8 @@ def build_return_calendar_report(
                 "frequency": frequency,
                 "start_date": as_of_date,
                 "end_date": as_of_date,
-                "coverage_state": "unavailable",
+                "nav_coverage_state": "unavailable",
+                "nav_coverage_reason_codes": [],
                 "observation_count": 0,
                 "start_nav": point.get("beginning_nav"),
                 "end_nav": point.get("ending_nav"),
@@ -4185,6 +5020,7 @@ def build_return_calendar_report(
                 "_seen_unavailable": False,
                 "_absolute_change_complete": True,
                 "_delta_complete": True,
+                "_twr_points": [],
             }
             buckets_by_key[bucket_key] = bucket
             ordered_keys.append(bucket_key)
@@ -4211,32 +5047,51 @@ def build_return_calendar_report(
             bucket["_growth_index"] *= 1.0 + daily_twr
             bucket["_has_return"] = True
             bucket["observation_count"] += 1
+        twr_points = bucket.get("_twr_points")
+        if isinstance(twr_points, list):
+            twr_points.append(point)
 
-        coverage_state = str(point.get("coverage_state") or "unavailable")
-        if coverage_state == "complete":
+        nav_coverage_state = str(
+            point.get("nav_coverage_state") or "unavailable"
+        )
+        if nav_coverage_state == "complete":
             bucket["_seen_complete"] = True
-        elif coverage_state == "partial":
+        elif nav_coverage_state == "partial":
             bucket["_seen_partial"] = True
         else:
             bucket["_seen_unavailable"] = True
+        for reason_code in list(point.get("nav_coverage_reason_codes") or []):
+            _append_unique_reason(
+                bucket["nav_coverage_reason_codes"],
+                str(reason_code),
+            )
 
     rendered_buckets: list[dict[str, object]] = []
     for bucket_key in ordered_keys:
         bucket = buckets_by_key[bucket_key]
-        coverage_state = "unavailable"
+        nav_coverage_state = "unavailable"
         if bucket["_seen_complete"]:
-            coverage_state = "complete"
+            nav_coverage_state = "complete"
             if bucket["_seen_partial"] or bucket["_seen_unavailable"]:
-                coverage_state = "partial"
+                nav_coverage_state = "partial"
         elif bucket["_seen_partial"]:
-            coverage_state = "partial"
+            nav_coverage_state = "partial"
+        twr_points = (
+            bucket.get("_twr_points")
+            if isinstance(bucket.get("_twr_points"), list)
+            else []
+        )
+        twr_reliability = _twr_window_reliability(twr_points)
         rendered_buckets.append(
             {
                 "bucket_key": bucket["bucket_key"],
                 "frequency": bucket["frequency"],
                 "start_date": bucket["start_date"],
                 "end_date": bucket["end_date"],
-                "coverage_state": coverage_state,
+                "nav_coverage_state": nav_coverage_state,
+                "nav_coverage_reason_codes": list(
+                    bucket["nav_coverage_reason_codes"]
+                ),
                 "observation_count": bucket["observation_count"],
                 "start_nav": bucket["start_nav"],
                 "end_nav": bucket["end_nav"],
@@ -4245,7 +5100,14 @@ def build_return_calendar_report(
                 "net_external_inflow": bucket["net_external_inflow"],
                 "absolute_change": bucket["absolute_change"] if bucket["_absolute_change_complete"] else None,
                 "delta": bucket["delta"] if bucket["_delta_complete"] else None,
-                "cumulative_twr": (bucket["_growth_index"] - 1.0) if bucket["_has_return"] else None,
+                "cumulative_twr": _compound_daily_twr(twr_points),
+                "twr_state": twr_reliability["twr_state"],
+                "twr_reliability_status": twr_reliability[
+                    "twr_reliability_status"
+                ],
+                "twr_reliability_reasons": list(
+                    twr_reliability["twr_reliability_reasons"]
+                ),
             }
         )
 
@@ -4256,11 +5118,28 @@ def build_return_calendar_report(
         "valuation_cutoff_policy": report["valuation_cutoff_policy"],
         "summary": {
             "frequency": frequency,
+            "twr_state": report["summary"]["twr_state"],
+            "twr_reliability_status": report["summary"][
+                "twr_reliability_status"
+            ],
+            "twr_reliability_reasons": list(
+                report["summary"]["twr_reliability_reasons"]
+            ),
             "bucket_count": len(rendered_buckets),
-            "complete_bucket_count": sum(1 for bucket in rendered_buckets if bucket["coverage_state"] == "complete"),
-            "partial_bucket_count": sum(1 for bucket in rendered_buckets if bucket["coverage_state"] == "partial"),
+            "complete_bucket_count": sum(
+                1
+                for bucket in rendered_buckets
+                if bucket["nav_coverage_state"] == "complete"
+            ),
+            "partial_bucket_count": sum(
+                1
+                for bucket in rendered_buckets
+                if bucket["nav_coverage_state"] == "partial"
+            ),
             "unavailable_bucket_count": sum(
-                1 for bucket in rendered_buckets if bucket["coverage_state"] == "unavailable"
+                1
+                for bucket in rendered_buckets
+                if bucket["nav_coverage_state"] == "unavailable"
             ),
             "start_date": rendered_buckets[0]["start_date"] if rendered_buckets else None,
             "end_date": rendered_buckets[-1]["end_date"] if rendered_buckets else None,
@@ -4340,7 +5219,10 @@ def _position_group_for_axis(
     if axis == "instrument_type":
         return _instrument_type_key_label(_instrument_ref_from_mapping(position_lot).get("instrument_type"))
     if axis == "currency":
-        group_key = _normalized_currency(position_lot.get("currency"), fallback=base_currency)
+        group_key = _required_currency(
+            position_lot.get("currency"),
+            fact_name="position lot",
+        )
         return (group_key, group_key)
     raise ValueError(CONTRIBUTION_AXIS_ERROR)
 
@@ -4408,7 +5290,7 @@ def _transaction_group_for_axis(
     account_id = str(transaction.get("account_id") or "")
     instrument_ref = _instrument_ref_from_mapping(transaction)
     instrument_id = str(transaction.get("instrument_id") or instrument_ref.get("instrument_id") or "")
-    currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
+    currency = _required_currency(transaction.get("currency"), fact_name="transaction")
     if axis == _CALCULATION_CASH_DETAIL_AXIS:
         if instrument_id:
             return ("", "")
@@ -4521,9 +5403,11 @@ def _build_contribution_group_end_states(
     account_cost_methods: dict[str, str],
     account_currency_map: dict[str, str],
     account_name_map: dict[str, str],
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
+    valuation_quote_book: CanonicalQuoteWindowBook,
 ) -> dict[str, dict[str, object]]:
+    if valuation_quote_book.role != "valuation":
+        raise ValueError("Contribution market values require a valuation quote book.")
     states: dict[str, dict[str, object]] = {}
     resolved_position_lots = (
         position_lots
@@ -4554,15 +5438,14 @@ def _build_contribution_group_end_states(
             group_label=group_label,
             axis=axis,
         )
-        currency = _normalized_currency(position_lot.get("currency"), fallback=base_currency)
+        currency = _required_currency(position_lot.get("currency"), fact_name="position lot")
         remaining_cost_basis = _safe_float(position_lot.get("remaining_cost_basis")) or 0.0
-        converted_cost_basis, cost_basis_fx_stale = convert_amount_on(
+        converted_cost_basis, cost_basis_fx_stale = _convert_amount_with_fx_book(
             remaining_cost_basis,
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
         if converted_cost_basis is None:
             state["_cost_complete"] = False
@@ -4570,18 +5453,26 @@ def _build_contribution_group_end_states(
             state["open_cost_basis_base"] = (_safe_float(state.get("open_cost_basis_base")) or 0.0) + converted_cost_basis
             state["stale_fx_flag"] = bool(state.get("stale_fx_flag")) or cost_basis_fx_stale
 
-        detail = _instrument_detail_cache_get(str(position_lot.get("instrument_id") or ""), instrument_detail_cache)
-        price_point = (
-            _select_market_point_as_of(detail=detail, role="valuation", as_of_date=as_of_date)
-            if isinstance(detail, dict)
-            else None
-        )
+        instrument_id = str(position_lot.get("instrument_id") or "")
+        price_point = valuation_quote_book.quote_at(instrument_id, as_of_date)
         price_point_date = _parse_iso_date((price_point or {}).get("as_of_date"))
-        if price_point_date == as_of_date:
+        quote_currency_matches = (
+            _normalized_currency((price_point or {}).get("currency"), fallback="")
+            == currency
+        )
+        if (
+            quote_currency_matches
+            and (price_point or {}).get("resolution_status") == "resolved"
+            and price_point_date == as_of_date
+        ):
             observed_instrument_ids = state.get("_market_observation_instrument_ids")
             if isinstance(observed_instrument_ids, set):
-                observed_instrument_ids.add(str(position_lot.get("instrument_id") or ""))
-        last_price = _safe_float((price_point or {}).get("value"))
+                observed_instrument_ids.add(instrument_id)
+        last_price = (
+            _safe_float((price_point or {}).get("value"))
+            if quote_currency_matches
+            else None
+        )
         market_value_local = _position_market_value(
             quantity=_safe_float(position_lot.get("remaining_quantity")) or 0.0,
             last_price=last_price,
@@ -4591,13 +5482,12 @@ def _build_contribution_group_end_states(
                 else None
             ),
         )
-        converted_market_value, valuation_fx_stale = convert_amount_on(
+        converted_market_value, valuation_fx_stale = _convert_amount_with_fx_book(
             market_value_local,
             as_of_date=as_of_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
         if market_value_local is None or converted_market_value is None:
             state["_position_complete"] = False
@@ -4627,7 +5517,10 @@ def _build_contribution_group_end_states(
             cash_amount_delta = _safe_float(posting.get("cash_amount_delta"))
             if cash_amount_delta is None:
                 continue
-            posting_currency = _normalized_currency(posting.get("currency"), fallback=base_currency)
+            posting_currency = _required_currency(
+                posting.get("currency"),
+                fact_name="ledger posting",
+            )
             group_key, group_label = _cash_group_for_axis(
                 axis=axis,
                 account_id=str(posting.get("account_id") or ""),
@@ -4642,13 +5535,12 @@ def _build_contribution_group_end_states(
                 group_label=group_label,
                 axis=axis,
             )
-            converted_cash_delta, is_stale = convert_amount_on(
+            converted_cash_delta, is_stale = _convert_amount_with_fx_book(
                 cash_amount_delta,
                 as_of_date=as_of_date,
                 from_currency=posting_currency,
                 to_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
+                fx_book=fx_book,
             )
             if converted_cash_delta is None:
                 if ledger_posting_effective_date_iso(posting) <= as_of_date.isoformat():
@@ -4723,8 +5615,7 @@ def _build_contribution_daily_events(
     transactions_on_date: list[dict[str, object]],
     base_currency: str,
     account_name_map: dict[str, str],
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
 ) -> dict[str, dict[str, object]]:
     events: dict[str, dict[str, object]] = {}
     as_of_iso = as_of_date.isoformat()
@@ -4757,13 +5648,12 @@ def _build_contribution_daily_events(
         trade_date: date,
         currency: str,
     ) -> None:
-        converted_amount, _ = convert_amount_on(
+        converted_amount, _ = _convert_amount_with_fx_book(
             amount,
             as_of_date=trade_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
         if converted_amount is None:
             event = ensure_event(group_key, group_label)
@@ -4862,14 +5752,17 @@ def _build_contribution_daily_events(
                 field_name="realized_pnl",
                 amount=realized_pnl,
                 trade_date=as_of_date,
-                currency=_normalized_currency(position_lot.get("currency"), fallback=base_currency),
+                currency=_required_currency(
+                    position_lot.get("currency"),
+                    fact_name="position lot",
+                ),
             )
 
     for transaction in transactions_on_date:
         transaction_type = str(transaction.get("transaction_type") or "")
         instrument_id = str(transaction.get("instrument_id") or "")
         account_id = str(transaction.get("account_id") or "")
-        currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
+        currency = _required_currency(transaction.get("currency"), fact_name="transaction")
         instrument_name = str(
             (
                 (transaction.get("instrument_ref") or {})
@@ -5048,13 +5941,24 @@ def _build_contribution_slices_for_date(
     snapshot: dict[str, object] | None,
     previous_date: date,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
 ) -> list[dict[str, object]]:
     daily_slices: list[dict[str, object]] = []
     group_keys = sorted(set(previous_states) | set(current_states) | set(current_events))
     beginning_nav = _safe_float((snapshot or {}).get("beginning_nav"))
     ending_nav = _safe_float((snapshot or {}).get("ending_nav"))
+    if snapshot is None:
+        snapshot_twr_state = TWR_STATE_NO_ANCHOR
+        snapshot_twr_reliability_status = TWR_RELIABILITY_UNAVAILABLE
+        snapshot_twr_reliability_reasons = [TWR_REASON_AWAITING_FRESH_ANCHOR]
+    else:
+        snapshot_twr_state = str(snapshot["twr_state"])
+        snapshot_twr_reliability_status = str(
+            snapshot["twr_reliability_status"]
+        )
+        snapshot_twr_reliability_reasons = list(
+            snapshot["twr_reliability_reasons"]
+        )
 
     for candidate_group_key in group_keys:
         previous_state = previous_states.get(candidate_group_key)
@@ -5106,8 +6010,7 @@ def _build_contribution_slices_for_date(
                 previous_date=previous_date,
                 current_date=as_of_date,
                 base_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
+                fx_book=fx_book,
             )
             if _axis_includes_cash_balance(axis):
                 cash_currency_gains, _ = _compute_currency_translation_gain(
@@ -5115,8 +6018,7 @@ def _build_contribution_slices_for_date(
                     previous_date=previous_date,
                     current_date=as_of_date,
                     base_currency=base_currency,
-                    direct_fx_instruments=direct_fx_instruments,
-                    instrument_detail_cache=instrument_detail_cache,
+                    fx_book=fx_book,
                 )
         if realized_pnl is None and current_event is None:
             realized_pnl = 0.0
@@ -5157,21 +6059,80 @@ def _build_contribution_slices_for_date(
             if _axis_includes_cash_balance(axis) and cash_currency_gains is not None:
                 total_pnl += cash_currency_gains
 
-        slice_coverage_state = str((snapshot or {}).get("coverage_state") or "unavailable")
+        nav_coverage_reason_codes = list(
+            (snapshot or {}).get("nav_coverage_reason_codes") or []
+        )
+        if snapshot is None:
+            _append_unique_reason(
+                nav_coverage_reason_codes,
+                "snapshot_not_available",
+            )
+        if previous_state is not None and beginning_value_base is None:
+            _append_unique_reason(
+                nav_coverage_reason_codes,
+                "beginning_group_valuation_incomplete",
+            )
+        if current_state is not None and ending_value_base is None:
+            _append_unique_reason(
+                nav_coverage_reason_codes,
+                "ending_group_valuation_incomplete",
+            )
+        if current_state is not None and ending_position_market_value_base is None:
+            _append_unique_reason(
+                nav_coverage_reason_codes,
+                NAV_COVERAGE_REASON_POSITION_VALUATION,
+            )
         if (
-            (previous_state is not None and beginning_value_base is None)
-            or (current_state is not None and ending_value_base is None)
-            or (current_state is not None and ending_position_market_value_base is None)
-            or (current_state is not None and ending_open_cost_basis_base is None)
-            or (_axis_includes_cash_balance(axis) and current_state is not None and ending_cash_balance_base is None)
-            or (instrument_currency_gains is None)
-            or (_axis_includes_cash_balance(axis) and cash_currency_gains is None)
-            or capital_flow_in_base is None
-            or capital_flow_out_base is None
-            or total_pnl is None
+            _axis_includes_cash_balance(axis)
+            and current_state is not None
+            and ending_cash_balance_base is None
         ):
-            if slice_coverage_state == "complete":
-                slice_coverage_state = "partial"
+            _append_unique_reason(
+                nav_coverage_reason_codes,
+                NAV_COVERAGE_REASON_CASH_VALUATION,
+            )
+        nav_coverage_state = _coverage_state_from_reasons(
+            nav_coverage_reason_codes,
+            has_partial_content=bool(previous_state or current_state or current_event),
+        )
+
+        book_pnl_coverage_reason_codes = list(
+            (snapshot or {}).get("book_pnl_coverage_reason_codes") or []
+        )
+        if snapshot is None:
+            _append_unique_reason(
+                book_pnl_coverage_reason_codes,
+                "snapshot_not_available",
+            )
+        if current_state is not None and ending_open_cost_basis_base is None:
+            _append_unique_reason(
+                book_pnl_coverage_reason_codes,
+                BOOK_PNL_COVERAGE_REASON_COST_BASIS,
+            )
+        if instrument_currency_gains is None:
+            _append_unique_reason(
+                book_pnl_coverage_reason_codes,
+                BOOK_PNL_COVERAGE_REASON_INSTRUMENT_FX,
+            )
+        if _axis_includes_cash_balance(axis) and cash_currency_gains is None:
+            _append_unique_reason(
+                book_pnl_coverage_reason_codes,
+                BOOK_PNL_COVERAGE_REASON_CASH_FX,
+            )
+        if capital_flow_in_base is None or capital_flow_out_base is None:
+            _append_unique_reason(
+                book_pnl_coverage_reason_codes,
+                BOOK_PNL_COVERAGE_REASON_TRANSACTION,
+            )
+        if total_pnl is None:
+            _append_unique_reason(
+                book_pnl_coverage_reason_codes,
+                "group_pnl_reconciliation_incomplete",
+            )
+        book_pnl_coverage_state = _coverage_state_from_reasons(
+            book_pnl_coverage_reason_codes,
+            has_partial_content=bool(previous_state or current_state or current_event),
+        )
 
         daily_return = _daily_group_return_from_components(
             beginning_value_base=beginning_value_base,
@@ -5198,11 +6159,22 @@ def _build_contribution_slices_for_date(
             )
             else None
         )
+        portfolio_daily_twr = _safe_float((snapshot or {}).get("daily_twr"))
+        if (
+            portfolio_daily_twr is None
+            or not isfinite(portfolio_daily_twr)
+            or nav_coverage_state != "complete"
+            or book_pnl_coverage_state != "complete"
+        ):
+            daily_return = None
+            daily_contribution = None
         market_observation_count = int((current_state or {}).get("market_observation_count") or 0)
         return_observation_eligible = (
             daily_return is not None
             and isfinite(daily_return)
-            and slice_coverage_state == "complete"
+            and nav_coverage_state == "complete"
+            and book_pnl_coverage_state == "complete"
+            and bool((snapshot or {}).get("return_observation_eligible"))
             and (market_observation_count > 0 or abs(daily_return) > 1e-12)
         )
 
@@ -5212,9 +6184,19 @@ def _build_contribution_slices_for_date(
                 "axis": axis,
                 "group_key": candidate_group_key,
                 "group_label": group_label,
-                "coverage_state": slice_coverage_state,
+                "nav_coverage_state": nav_coverage_state,
+                "nav_coverage_reason_codes": nav_coverage_reason_codes,
+                "book_pnl_coverage_state": book_pnl_coverage_state,
+                "book_pnl_coverage_reason_codes": (
+                    book_pnl_coverage_reason_codes
+                ),
                 "market_observation_count": market_observation_count,
                 "return_observation_eligible": return_observation_eligible,
+                "twr_state": snapshot_twr_state,
+                "twr_reliability_status": snapshot_twr_reliability_status,
+                "twr_reliability_reasons": list(
+                    snapshot_twr_reliability_reasons
+                ),
                 "beginning_value_base": beginning_value_base,
                 "ending_value_base": ending_value_base,
                 "beginning_weight": (
@@ -5230,18 +6212,34 @@ def _build_contribution_slices_for_date(
                 "cash_balance_base": ending_cash_balance_base,
                 "position_market_value_base": ending_position_market_value_base,
                 "open_cost_basis_base": ending_open_cost_basis_base,
-                "realized_pnl": realized_pnl,
+                "realized_pnl": (
+                    realized_pnl
+                    if book_pnl_coverage_state == "complete"
+                    else None
+                ),
                 "unrealized_pnl": ending_unrealized_pnl,
                 "unrealized_pnl_change": unrealized_pnl_change,
                 "income_cash_amount": income_cash_amount,
                 "expense_cash_amount": expense_cash_amount,
                 "fee_amount": fee_amount,
                 "tax_amount": tax_amount,
-                "cash_currency_gains": cash_currency_gains,
-                "instrument_currency_gains": instrument_currency_gains,
+                "cash_currency_gains": (
+                    cash_currency_gains
+                    if book_pnl_coverage_state == "complete"
+                    else None
+                ),
+                "instrument_currency_gains": (
+                    instrument_currency_gains
+                    if book_pnl_coverage_state == "complete"
+                    else None
+                ),
                 GROUP_CAPITAL_FLOW_IN_FIELD: capital_flow_in_base,
                 GROUP_CAPITAL_FLOW_OUT_FIELD: capital_flow_out_base,
-                "total_pnl": total_pnl,
+                "total_pnl": (
+                    total_pnl
+                    if book_pnl_coverage_state == "complete"
+                    else None
+                ),
                 "daily_return": daily_return,
                 "daily_contribution": daily_contribution,
             }
@@ -5275,17 +6273,6 @@ def _daily_group_return_from_components(
     if return_denominator <= 1e-9:
         return None
     return total_pnl / return_denominator
-
-
-def _merge_group_coverage_state(states: list[str]) -> str:
-    normalized_states = [state for state in states if state]
-    if not normalized_states:
-        return "unavailable"
-    if all(state == "complete" for state in normalized_states):
-        return "complete"
-    if any(state in {"complete", "partial"} for state in normalized_states):
-        return "partial"
-    return "unavailable"
 
 
 def _resolve_taxonomy_group_for_date(
@@ -5407,7 +6394,16 @@ def _group_contribution_slices_by_taxonomy(
         )
 
     grouped: dict[tuple[date, str], dict[str, object]] = {}
-    coverage_states_by_group: dict[tuple[date, str], list[str]] = defaultdict(list)
+    nav_coverage_states_by_group: dict[tuple[date, str], list[str]] = defaultdict(list)
+    book_pnl_coverage_states_by_group: dict[
+        tuple[date, str], list[str]
+    ] = defaultdict(list)
+    nav_coverage_reasons_by_group: dict[
+        tuple[date, str], list[str]
+    ] = defaultdict(list)
+    book_pnl_coverage_reasons_by_group: dict[
+        tuple[date, str], list[str]
+    ] = defaultdict(list)
     entities_present_at_assignment_date: set[str] = set()
     if assignment_as_of_date is not None:
         for base_slice in base_daily_slices:
@@ -5444,7 +6440,10 @@ def _group_contribution_slices_by_taxonomy(
                 "axis": "taxonomy",
                 "group_key": taxonomy_group_key,
                 "group_label": taxonomy_group_label,
-                "coverage_state": "complete",
+                "nav_coverage_state": "complete",
+                "nav_coverage_reason_codes": [],
+                "book_pnl_coverage_state": "complete",
+                "book_pnl_coverage_reason_codes": [],
                 "market_observation_count": 0,
                 "beginning_value_base": 0.0,
                 "ending_value_base": 0.0,
@@ -5468,9 +6467,33 @@ def _group_contribution_slices_by_taxonomy(
                 "daily_return": None,
                 "daily_contribution": 0.0,
                 "return_observation_eligible": False,
+                "twr_state": base_slice["twr_state"],
+                "twr_reliability_status": base_slice[
+                    "twr_reliability_status"
+                ],
+                "twr_reliability_reasons": list(
+                    base_slice["twr_reliability_reasons"]
+                ),
             },
         )
-        coverage_states_by_group[slice_key].append(str(base_slice.get("coverage_state") or "unavailable"))
+        nav_coverage_states_by_group[slice_key].append(
+            str(base_slice.get("nav_coverage_state") or "unavailable")
+        )
+        book_pnl_coverage_states_by_group[slice_key].append(
+            str(base_slice.get("book_pnl_coverage_state") or "unavailable")
+        )
+        for reason_code in list(base_slice.get("nav_coverage_reason_codes") or []):
+            _append_unique_reason(
+                nav_coverage_reasons_by_group[slice_key],
+                str(reason_code),
+            )
+        for reason_code in list(
+            base_slice.get("book_pnl_coverage_reason_codes") or []
+        ):
+            _append_unique_reason(
+                book_pnl_coverage_reasons_by_group[slice_key],
+                str(reason_code),
+            )
         grouped_slice["market_observation_count"] = (
             int(grouped_slice.get("market_observation_count") or 0)
             + int(base_slice.get("market_observation_count") or 0)
@@ -5510,22 +6533,39 @@ def _group_contribution_slices_by_taxonomy(
     grouped_slices = sorted(grouped.values(), key=lambda item: (item["as_of_date"], item["group_key"]))
     for grouped_slice in grouped_slices:
         slice_key = (grouped_slice["as_of_date"], grouped_slice["group_key"])
-        grouped_slice["coverage_state"] = _merge_group_coverage_state(coverage_states_by_group[slice_key])
+        grouped_slice["nav_coverage_state"] = _merge_coverage_states(
+            nav_coverage_states_by_group[slice_key]
+        )
+        grouped_slice["nav_coverage_reason_codes"] = list(
+            nav_coverage_reasons_by_group[slice_key]
+        )
+        grouped_slice["book_pnl_coverage_state"] = _merge_coverage_states(
+            book_pnl_coverage_states_by_group[slice_key]
+        )
+        grouped_slice["book_pnl_coverage_reason_codes"] = list(
+            book_pnl_coverage_reasons_by_group[slice_key]
+        )
         total_pnl = _safe_float(grouped_slice.get("total_pnl"))
         beginning_value_base = _safe_float(grouped_slice.get("beginning_value_base"))
         ending_value_base = _safe_float(grouped_slice.get("ending_value_base"))
         capital_flow_in_base = _safe_float(grouped_slice.get(GROUP_CAPITAL_FLOW_IN_FIELD))
         capital_flow_out_base = _safe_float(grouped_slice.get(GROUP_CAPITAL_FLOW_OUT_FIELD))
-        grouped_slice["daily_return"] = _daily_group_return_from_components(
-            beginning_value_base=beginning_value_base,
-            ending_value_base=ending_value_base,
-            total_pnl=total_pnl,
-            capital_flow_in_base=capital_flow_in_base,
-            capital_flow_out_base=capital_flow_out_base,
+        grouped_slice["daily_return"] = (
+            _daily_group_return_from_components(
+                beginning_value_base=beginning_value_base,
+                ending_value_base=ending_value_base,
+                total_pnl=total_pnl,
+                capital_flow_in_base=capital_flow_in_base,
+                capital_flow_out_base=capital_flow_out_base,
+            )
+            if grouped_slice["twr_reliability_status"]
+            != TWR_RELIABILITY_UNAVAILABLE
+            else None
         )
         grouped_slice["return_observation_eligible"] = (
             grouped_slice["daily_return"] is not None
-            and grouped_slice["coverage_state"] == "complete"
+            and grouped_slice["nav_coverage_state"] == "complete"
+            and grouped_slice["book_pnl_coverage_state"] == "complete"
             and (
                 int(grouped_slice.get("market_observation_count") or 0) > 0
                 or abs(float(grouped_slice["daily_return"])) > 1e-12
@@ -5618,6 +6658,7 @@ def _build_taxonomy_contribution_report(
                 "instrument_currency_gains": 0.0,
                 "total_pnl": 0.0,
                 "period_contribution": 0.0,
+                "_contribution_complete": True,
             },
         )
         beginning_weight = _safe_float(grouped_slice.get("beginning_weight"))
@@ -5637,6 +6678,8 @@ def _build_taxonomy_contribution_report(
         ):
             value = _safe_float(grouped_slice.get(field_name))
             if value is None:
+                if field_name == "daily_contribution":
+                    accumulator["_contribution_complete"] = False
                 continue
             target_field = "period_contribution" if field_name == "daily_contribution" else field_name
             accumulator[target_field] = (_safe_float(accumulator.get(target_field)) or 0.0) + value
@@ -5646,8 +6689,13 @@ def _build_taxonomy_contribution_report(
     end_weight_available = _safe_float(base_summary.get("end_nav")) is not None
     start_value_available = _safe_float(base_summary.get("start_nav")) is not None
     end_value_available = _safe_float(base_summary.get("end_nav")) is not None
+    base_twr_linkable = (
+        str(base_summary["twr_reliability_status"])
+        != TWR_RELIABILITY_UNAVAILABLE
+    )
 
     for group_key, accumulator in line_accumulators.items():
+        accumulator.pop("_contribution_complete", None)
         accumulator["start_value_base"] = (
             start_values.get(group_key, 0.0)
             if start_value_available
@@ -5673,6 +6721,15 @@ def _build_taxonomy_contribution_report(
             if weight_denominator > 0
             else None
         )
+        if not base_twr_linkable:
+            accumulator["period_contribution"] = None
+        accumulator["twr_state"] = base_summary["twr_state"]
+        accumulator["twr_reliability_status"] = base_summary[
+            "twr_reliability_status"
+        ]
+        accumulator["twr_reliability_reasons"] = list(
+            base_summary["twr_reliability_reasons"]
+        )
         lines.append(accumulator)
 
     lines.sort(
@@ -5682,18 +6739,55 @@ def _build_taxonomy_contribution_report(
         )
     )
 
-    total_period_contribution = sum((_safe_float(item.get("period_contribution")) or 0.0) for item in lines)
+    line_contributions = [
+        _safe_float(item.get("period_contribution")) for item in lines
+    ]
+    total_period_contribution = (
+        sum(value for value in line_contributions if value is not None)
+        if lines and all(value is not None for value in line_contributions)
+        else None
+    )
     portfolio_arithmetic_return = _safe_float(base_summary.get("portfolio_arithmetic_return"))
     contribution_residual = (
         portfolio_arithmetic_return - total_period_contribution
         if portfolio_arithmetic_return is not None
+        and total_period_contribution is not None
         else None
     )
-    coverage_state = str(base_summary.get("coverage_state") or "unavailable")
-    if coverage_state == "complete" and any(
-        str(item.get("coverage_state") or "unavailable") != "complete" for item in grouped_slices
-    ):
-        coverage_state = "partial"
+    nav_coverage_state = _merge_coverage_states(
+        [
+            str(base_summary.get("nav_coverage_state") or "unavailable"),
+            *[
+                str(item.get("nav_coverage_state") or "unavailable")
+                for item in grouped_slices
+            ],
+        ]
+    )
+    nav_coverage_reason_codes = list(
+        base_summary.get("nav_coverage_reason_codes") or []
+    )
+    book_pnl_coverage_state = _merge_coverage_states(
+        [
+            str(base_summary.get("book_pnl_coverage_state") or "unavailable"),
+            *[
+                str(item.get("book_pnl_coverage_state") or "unavailable")
+                for item in grouped_slices
+            ],
+        ]
+    )
+    book_pnl_coverage_reason_codes = list(
+        base_summary.get("book_pnl_coverage_reason_codes") or []
+    )
+    for item in grouped_slices:
+        for reason_code in list(item.get("nav_coverage_reason_codes") or []):
+            _append_unique_reason(nav_coverage_reason_codes, str(reason_code))
+        for reason_code in list(
+            item.get("book_pnl_coverage_reason_codes") or []
+        ):
+            _append_unique_reason(
+                book_pnl_coverage_reason_codes,
+                str(reason_code),
+            )
 
     return {
         "portfolio_id": base_report["portfolio_id"],
@@ -5704,7 +6798,10 @@ def _build_taxonomy_contribution_report(
             **base_summary,
             "axis": "taxonomy",
             "taxonomy_id": taxonomy_id,
-            "coverage_state": coverage_state,
+            "nav_coverage_state": nav_coverage_state,
+            "nav_coverage_reason_codes": nav_coverage_reason_codes,
+            "book_pnl_coverage_state": book_pnl_coverage_state,
+            "book_pnl_coverage_reason_codes": book_pnl_coverage_reason_codes,
             "slice_count": len(grouped_slices),
             "group_count": len(lines),
             "total_period_contribution": total_period_contribution,
@@ -5821,6 +6918,13 @@ def _apply_taxonomy_boundary_values_to_contribution_report(
         for item in list(report.get("lines") or [])
         if str(item.get("group_key") or "")
     }
+    report_summary = report["summary"]
+    if not isinstance(report_summary, dict):
+        raise TypeError("contribution report summary must be an object")
+    twr_linkable = (
+        str(report_summary["twr_reliability_status"])
+        != TWR_RELIABILITY_UNAVAILABLE
+    )
     all_group_keys = set(existing_lines.keys()) | set(start_groups.keys()) | set(end_groups.keys())
 
     updated_lines: list[dict[str, object]] = []
@@ -5870,7 +6974,16 @@ def _apply_taxonomy_boundary_values_to_contribution_report(
         line.setdefault("cash_currency_gains", 0.0)
         line.setdefault("instrument_currency_gains", 0.0)
         line.setdefault("total_pnl", 0.0)
-        line.setdefault("period_contribution", 0.0)
+        line.setdefault("period_contribution", 0.0 if twr_linkable else None)
+        line.setdefault("twr_state", report_summary["twr_state"])
+        line.setdefault(
+            "twr_reliability_status",
+            report_summary["twr_reliability_status"],
+        )
+        line.setdefault(
+            "twr_reliability_reasons",
+            list(report_summary["twr_reliability_reasons"]),
+        )
         updated_lines.append(line)
 
     updated_lines.sort(
@@ -5896,11 +7009,9 @@ def _filter_contribution_report_by_group_key(
         return report
 
     filtered_report = deepcopy(report)
-    summary = (
-        filtered_report.get("summary")
-        if isinstance(filtered_report.get("summary"), dict)
-        else {}
-    )
+    summary = filtered_report["summary"]
+    if not isinstance(summary, dict):
+        raise TypeError("contribution report summary must be an object")
     lines = [
         item
         for item in list(filtered_report.get("lines") or [])
@@ -5920,11 +7031,19 @@ def _filter_contribution_report_by_group_key(
     filtered_report["lines"] = lines
     filtered_report["daily_slices"] = daily_slices
 
-    total_period_contribution = sum((_safe_float(item.get("period_contribution")) or 0.0) for item in lines)
+    line_contributions = [
+        _safe_float(item.get("period_contribution")) for item in lines
+    ]
+    total_period_contribution = (
+        sum(value for value in line_contributions if value is not None)
+        if lines and all(value is not None for value in line_contributions)
+        else None
+    )
     portfolio_arithmetic_return = _safe_float(summary.get("portfolio_arithmetic_return"))
     contribution_residual = (
         portfolio_arithmetic_return - total_period_contribution
         if portfolio_arithmetic_return is not None
+        and total_period_contribution is not None
         else None
     )
     observation_dates = {
@@ -5933,15 +7052,33 @@ def _filter_contribution_report_by_group_key(
         if isinstance((as_of_date := item.get("as_of_date")), date)
         and _safe_float(item.get("daily_contribution")) is not None
     }
-    coverage_state = _merge_group_coverage_state(
-        [str(item.get("coverage_state") or "unavailable") for item in daily_slices]
+    nav_coverage_state = _merge_coverage_states(
+        [
+            str(item.get("nav_coverage_state") or "unavailable")
+            for item in daily_slices
+        ]
     )
-    if not daily_slices:
-        coverage_state = "unavailable"
+    book_pnl_coverage_state = _merge_coverage_states(
+        [
+            str(item.get("book_pnl_coverage_state") or "unavailable")
+            for item in daily_slices
+        ]
+    )
+    nav_coverage_reason_codes = _merge_coverage_reason_codes(
+        daily_slices,
+        field_name="nav_coverage_reason_codes",
+    )
+    book_pnl_coverage_reason_codes = _merge_coverage_reason_codes(
+        daily_slices,
+        field_name="book_pnl_coverage_reason_codes",
+    )
 
     summary["group_key"] = resolved_group_key
     summary["group_label"] = group_label
-    summary["coverage_state"] = coverage_state
+    summary["nav_coverage_state"] = nav_coverage_state
+    summary["nav_coverage_reason_codes"] = nav_coverage_reason_codes
+    summary["book_pnl_coverage_state"] = book_pnl_coverage_state
+    summary["book_pnl_coverage_reason_codes"] = book_pnl_coverage_reason_codes
     summary["slice_count"] = len(daily_slices)
     summary["group_count"] = len({str(item.get("group_key") or "") for item in lines})
     summary["observation_count"] = len(observation_dates)
@@ -5960,7 +7097,7 @@ def build_contribution_report_from_daily_slices(
     axis: str = "instrument",
     group_key: str | None = None,
 ) -> dict[str, object]:
-    base_currency = _normalized_currency(portfolio.get("base_currency"))
+    base_currency = _required_currency(portfolio.get("base_currency"), fact_name="portfolio.base_currency")
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
 
@@ -5999,7 +7136,15 @@ def build_contribution_report_from_daily_slices(
                 "group_label": None,
                 "start_date": start_date,
                 "end_date": end_date,
-                "coverage_state": "unavailable",
+                "nav_coverage_state": "unavailable",
+                "nav_coverage_reason_codes": ["snapshot_window_not_available"],
+                "book_pnl_coverage_state": "unavailable",
+                "book_pnl_coverage_reason_codes": [
+                    "snapshot_window_not_available"
+                ],
+                "twr_state": TWR_STATE_NO_ANCHOR,
+                "twr_reliability_status": TWR_RELIABILITY_UNAVAILABLE,
+                "twr_reliability_reasons": [TWR_REASON_AWAITING_FRESH_ANCHOR],
                 "slice_count": 0,
                 "group_count": 0,
                 "observation_count": 0,
@@ -6026,6 +7171,12 @@ def build_contribution_report_from_daily_slices(
         if isinstance(daily_slice.get("as_of_date"), date)
         and resolved_start_date <= daily_slice["as_of_date"] <= resolved_end_date
     ]
+    in_period_snapshots = [
+        snapshots_by_date[as_of_date]
+        for as_of_date in _iter_dates(resolved_start_date, resolved_end_date)
+        if as_of_date in snapshots_by_date
+    ]
+    window_twr_reliability = _twr_window_reliability(in_period_snapshots)
 
     contribution_growth_index = 1.0
     has_return_observation = False
@@ -6069,6 +7220,7 @@ def build_contribution_report_from_daily_slices(
                 "instrument_currency_gains": 0.0,
                 "total_pnl": 0.0,
                 "period_contribution": 0.0,
+                "_contribution_complete": True,
             },
         )
         if line_group_key not in line_first_slice_dates or as_of_date < line_first_slice_dates[line_group_key]:
@@ -6095,6 +7247,8 @@ def build_contribution_report_from_daily_slices(
         ):
             value = _safe_float(daily_slice.get(field_name))
             if value is None:
+                if field_name == "daily_contribution":
+                    accumulator["_contribution_complete"] = False
                 continue
             target_field = "period_contribution" if field_name == "daily_contribution" else field_name
             accumulator[target_field] = (_safe_float(accumulator.get(target_field)) or 0.0) + value
@@ -6102,8 +7256,18 @@ def build_contribution_report_from_daily_slices(
     lines: list[dict[str, object]] = []
     for accumulator in line_accumulators.values():
         weight_count = int(accumulator.pop("_weight_count", 0))
+        accumulator.pop("_contribution_complete", None)
         average_weight_total = _safe_float(accumulator.get("average_weight")) or 0.0
         accumulator["average_weight"] = (average_weight_total / weight_count) if weight_count > 0 else None
+        if not bool(window_twr_reliability["linkable"]):
+            accumulator["period_contribution"] = None
+        accumulator["twr_state"] = window_twr_reliability["twr_state"]
+        accumulator["twr_reliability_status"] = window_twr_reliability[
+            "twr_reliability_status"
+        ]
+        accumulator["twr_reliability_reasons"] = list(
+            window_twr_reliability["twr_reliability_reasons"]
+        )
         lines.append(accumulator)
     lines.sort(
         key=lambda item: (
@@ -6112,40 +7276,90 @@ def build_contribution_report_from_daily_slices(
         )
     )
 
-    in_period_snapshots = [
-        snapshots_by_date[as_of_date]
-        for as_of_date in _iter_dates(resolved_start_date, resolved_end_date)
-        if as_of_date in snapshots_by_date
-    ]
     portfolio_daily_series = [
         {
             "as_of_date": snapshot["as_of_date"],
             "daily_twr": _safe_float(snapshot.get("daily_twr")),
             "return_observation_eligible": bool(snapshot.get("return_observation_eligible")),
             "market_observation_count": int(snapshot.get("market_observation_count") or 0),
-            "coverage_state": str(snapshot.get("coverage_state") or "unavailable"),
+            "nav_coverage_state": str(
+                snapshot.get("nav_coverage_state") or "unavailable"
+            ),
+            "nav_coverage_reason_codes": list(
+                snapshot.get("nav_coverage_reason_codes") or []
+            ),
+            "book_pnl_coverage_state": str(
+                snapshot.get("book_pnl_coverage_state") or "unavailable"
+            ),
+            "book_pnl_coverage_reason_codes": list(
+                snapshot.get("book_pnl_coverage_reason_codes") or []
+            ),
+            "twr_state": snapshot["twr_state"],
+            "twr_reliability_status": snapshot["twr_reliability_status"],
+            "twr_reliability_reasons": list(
+                snapshot["twr_reliability_reasons"]
+            ),
         }
         for snapshot in in_period_snapshots
         if isinstance(snapshot.get("as_of_date"), date)
     ]
-    coverage_state = "unavailable"
-    if in_period_snapshots:
-        coverage_state = "complete"
-        if any(str(snapshot.get("coverage_state") or "unavailable") != "complete" for snapshot in in_period_snapshots):
-            coverage_state = "partial"
-        if any(str(item.get("coverage_state") or "unavailable") != "complete" for item in in_period_slices):
-            coverage_state = "partial"
+    nav_coverage_state = _merge_coverage_states(
+        [
+            *[
+                str(snapshot.get("nav_coverage_state") or "unavailable")
+                for snapshot in in_period_snapshots
+            ],
+            *[
+                str(item.get("nav_coverage_state") or "unavailable")
+                for item in in_period_slices
+            ],
+        ]
+    )
+    book_pnl_coverage_state = _merge_coverage_states(
+        [
+            *[
+                str(
+                    snapshot.get("book_pnl_coverage_state") or "unavailable"
+                )
+                for snapshot in in_period_snapshots
+            ],
+            *[
+                str(item.get("book_pnl_coverage_state") or "unavailable")
+                for item in in_period_slices
+            ],
+        ]
+    )
+    nav_coverage_reason_codes = _merge_coverage_reason_codes(
+        [*in_period_snapshots, *in_period_slices],
+        field_name="nav_coverage_reason_codes",
+    )
+    book_pnl_coverage_reason_codes = _merge_coverage_reason_codes(
+        [*in_period_snapshots, *in_period_slices],
+        field_name="book_pnl_coverage_reason_codes",
+    )
 
-    total_period_contribution = sum((_safe_float(line.get("period_contribution")) or 0.0) for line in lines)
-    portfolio_arithmetic_return = arithmetic_return if observation_count > 0 else None
+    line_contributions = [
+        _safe_float(line.get("period_contribution")) for line in lines
+    ]
+    total_period_contribution = (
+        sum(value for value in line_contributions if value is not None)
+        if lines and all(value is not None for value in line_contributions)
+        else None
+    )
+    portfolio_arithmetic_return = (
+        arithmetic_return
+        if observation_count > 0 and bool(window_twr_reliability["linkable"])
+        else None
+    )
     portfolio_cumulative_twr = (
         contribution_growth_index - 1.0
-        if has_return_observation
+        if has_return_observation and bool(window_twr_reliability["linkable"])
         else None
     )
     contribution_residual = (
         portfolio_arithmetic_return - total_period_contribution
         if portfolio_arithmetic_return is not None
+        and total_period_contribution is not None
         else None
     )
 
@@ -6160,7 +7374,17 @@ def build_contribution_report_from_daily_slices(
             "group_label": None,
             "start_date": resolved_start_date,
             "end_date": resolved_end_date,
-            "coverage_state": coverage_state,
+            "nav_coverage_state": nav_coverage_state,
+            "nav_coverage_reason_codes": nav_coverage_reason_codes,
+            "book_pnl_coverage_state": book_pnl_coverage_state,
+            "book_pnl_coverage_reason_codes": book_pnl_coverage_reason_codes,
+            "twr_state": window_twr_reliability["twr_state"],
+            "twr_reliability_status": window_twr_reliability[
+                "twr_reliability_status"
+            ],
+            "twr_reliability_reasons": list(
+                window_twr_reliability["twr_reliability_reasons"]
+            ),
             "slice_count": len(in_period_slices),
             "group_count": len(lines),
             "observation_count": observation_count,
@@ -6251,7 +7475,7 @@ def build_contribution_report(
         start_date=start_date,
         end_date=end_date,
     )
-    base_currency = _normalized_currency(portfolio.get("base_currency"))
+    base_currency = _required_currency(portfolio.get("base_currency"), fact_name="portfolio.base_currency")
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
     if window is None:
@@ -6266,7 +7490,15 @@ def build_contribution_report(
                 "group_label": None,
                 "start_date": start_date,
                 "end_date": end_date,
-                "coverage_state": "unavailable",
+                "nav_coverage_state": "unavailable",
+                "nav_coverage_reason_codes": ["snapshot_window_not_available"],
+                "book_pnl_coverage_state": "unavailable",
+                "book_pnl_coverage_reason_codes": [
+                    "snapshot_window_not_available"
+                ],
+                "twr_state": TWR_STATE_NO_ANCHOR,
+                "twr_reliability_status": TWR_RELIABILITY_UNAVAILABLE,
+                "twr_reliability_reasons": [TWR_REASON_AWAITING_FRESH_ANCHOR],
                 "slice_count": 0,
                 "group_count": 0,
                 "observation_count": 0,
@@ -6285,31 +7517,50 @@ def build_contribution_report(
     boundary_start_date = resolved_start_date - timedelta(days=1)
     portfolio_view = deepcopy(portfolio)
     portfolio_view["as_of_date"] = resolved_end_date.isoformat()
-    snapshots = build_daily_portfolio_snapshots(
-        portfolio_view,
-        accounts,
-        transactions,
-        start_date=boundary_start_date,
-        end_date=resolved_end_date,
-    )
-    snapshots_by_date = {
-        snapshot["as_of_date"]: snapshot
-        for snapshot in snapshots
-        if isinstance(snapshot.get("as_of_date"), date)
-    }
-
     sorted_transactions = sorted(transactions, key=_transaction_sort_key)
     transactions_by_date: dict[str, list[dict[str, object]]] = defaultdict(list)
     for transaction in sorted_transactions:
-        transactions_by_date[str(transaction.get("trade_date") or "")].append(transaction)
+        effective_date = transaction_performance_effective_date(transaction)
+        if effective_date is not None:
+            transactions_by_date[effective_date.isoformat()].append(transaction)
 
     portfolio_id = str(portfolio.get("portfolio_id") or "")
     account_cost_methods = _account_cost_methods(accounts)
     account_currency_map = _account_currency_map(accounts)
     account_name_map = _account_name_map(accounts)
-    fx_payload = get_platform_fx_rates()
-    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+    session_factory = get_session_factory()
+    with session_factory() as quote_session:
+        fx_book = _lock_calculation_fx_book(
+            quote_session,
+            base_currency=base_currency,
+            start_date=boundary_start_date - timedelta(days=1),
+            end_date=resolved_end_date,
+            payloads=(portfolio, accounts, sorted_transactions),
+        )
+        valuation_quote_book = resolve_role_quote_window_book_in_session(
+            quote_session,
+            instrument_ids=_transaction_instrument_ids(sorted_transactions),
+            role="valuation",
+            start_date=(
+                boundary_start_date
+                - timedelta(days=maximum_valuation_quote_age_days())
+            ),
+            end_date=resolved_end_date,
+        )
+        snapshots = build_daily_portfolio_snapshots(
+            portfolio_view,
+            accounts,
+            transactions,
+            start_date=boundary_start_date,
+            end_date=resolved_end_date,
+            quote_session=quote_session,
+            fx_book=fx_book,
+        )
+    snapshots_by_date = {
+        snapshot["as_of_date"]: snapshot
+        for snapshot in snapshots
+        if isinstance(snapshot.get("as_of_date"), date)
+    }
 
     group_states_by_date: dict[date, dict[str, dict[str, object]]] = {}
     group_events_by_date: dict[date, dict[str, dict[str, object]]] = {}
@@ -6324,6 +7575,7 @@ def build_contribution_report(
                 accounts,
                 transactions_as_of,
                 as_of_date=as_of_date,
+                include_market_valuation=False,
             )
         )
         group_states_by_date[as_of_date] = _build_contribution_group_end_states(
@@ -6337,8 +7589,8 @@ def build_contribution_report(
             account_cost_methods=account_cost_methods,
             account_currency_map=account_currency_map,
             account_name_map=account_name_map,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
+            valuation_quote_book=valuation_quote_book,
         )
         group_events_by_date[as_of_date] = _build_contribution_daily_events(
             axis=axis,
@@ -6347,8 +7599,7 @@ def build_contribution_report(
             transactions_on_date=transactions_by_date.get(as_of_date.isoformat(), []),
             base_currency=base_currency,
             account_name_map=account_name_map,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
 
     daily_slices: list[dict[str, object]] = []
@@ -6370,8 +7621,7 @@ def build_contribution_report(
                 snapshot=snapshot,
                 previous_date=previous_date,
                 base_currency=base_currency,
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
+                fx_book=fx_book,
             )
         )
 
@@ -6417,11 +7667,9 @@ def build_contribution_calendar_report(
         taxonomy_id=taxonomy_id,
         group_key=group_key,
     )
-    summary = (
-        deepcopy(contribution_report.get("summary"))
-        if isinstance(contribution_report.get("summary"), dict)
-        else {}
-    )
+    summary = deepcopy(contribution_report["summary"])
+    if not isinstance(summary, dict):
+        raise TypeError("contribution report summary must be an object")
     resolved_start_date = _parse_iso_date(summary.get("start_date"))
     resolved_end_date = _parse_iso_date(summary.get("end_date"))
     if resolved_start_date is None or resolved_end_date is None:
@@ -6438,6 +7686,25 @@ def build_contribution_calendar_report(
                 "frequency": frequency,
                 "start_date": start_date,
                 "end_date": end_date,
+                "nav_coverage_state": str(
+                    summary.get("nav_coverage_state") or "unavailable"
+                ),
+                "nav_coverage_reason_codes": list(
+                    summary.get("nav_coverage_reason_codes") or []
+                ),
+                "book_pnl_coverage_state": str(
+                    summary.get("book_pnl_coverage_state") or "unavailable"
+                ),
+                "book_pnl_coverage_reason_codes": list(
+                    summary.get("book_pnl_coverage_reason_codes") or []
+                ),
+                "twr_state": summary["twr_state"],
+                "twr_reliability_status": summary[
+                    "twr_reliability_status"
+                ],
+                "twr_reliability_reasons": list(
+                    summary["twr_reliability_reasons"]
+                ),
                 "bucket_count": 0,
                 "group_count": 0,
                 "observation_count": 0,
@@ -6473,8 +7740,33 @@ def build_contribution_calendar_report(
     bucket_beginning_weights: dict[tuple[str, str], float | None] = {}
     bucket_end_values: dict[tuple[str, str], float | None] = {}
     bucket_ending_weights: dict[tuple[str, str], float | None] = {}
-    bucket_coverage_states: dict[tuple[str, str], list[str]] = defaultdict(list)
+    bucket_nav_coverage_states: dict[tuple[str, str], list[str]] = defaultdict(list)
+    bucket_book_pnl_coverage_states: dict[
+        tuple[str, str], list[str]
+    ] = defaultdict(list)
+    bucket_nav_coverage_reasons: dict[
+        tuple[str, str], list[str]
+    ] = defaultdict(list)
+    bucket_book_pnl_coverage_reasons: dict[
+        tuple[str, str], list[str]
+    ] = defaultdict(list)
     bucket_observation_dates: dict[tuple[str, str], set[date]] = defaultdict(set)
+    portfolio_daily_series = list(
+        contribution_report.get("_portfolio_daily_series") or []
+    )
+    bucket_twr_reliability = {
+        bucket_key: _twr_window_reliability(
+            [
+                item
+                for item in portfolio_daily_series
+                if isinstance(item.get("as_of_date"), date)
+                and window["start_date"]
+                <= item["as_of_date"]
+                <= window["end_date"]
+            ]
+        )
+        for bucket_key, window in bucket_windows.items()
+    }
 
     for daily_slice in daily_slices:
         as_of_date = daily_slice.get("as_of_date")
@@ -6495,7 +7787,24 @@ def build_contribution_calendar_report(
             bucket_end_values[bucket_group_key] = _safe_float(daily_slice.get("ending_value_base"))
             bucket_ending_weights[bucket_group_key] = _safe_float(daily_slice.get("ending_weight"))
 
-        bucket_coverage_states[bucket_group_key].append(str(daily_slice.get("coverage_state") or "unavailable"))
+        bucket_nav_coverage_states[bucket_group_key].append(
+            str(daily_slice.get("nav_coverage_state") or "unavailable")
+        )
+        bucket_book_pnl_coverage_states[bucket_group_key].append(
+            str(daily_slice.get("book_pnl_coverage_state") or "unavailable")
+        )
+        for reason_code in list(daily_slice.get("nav_coverage_reason_codes") or []):
+            _append_unique_reason(
+                bucket_nav_coverage_reasons[bucket_group_key],
+                str(reason_code),
+            )
+        for reason_code in list(
+            daily_slice.get("book_pnl_coverage_reason_codes") or []
+        ):
+            _append_unique_reason(
+                bucket_book_pnl_coverage_reasons[bucket_group_key],
+                str(reason_code),
+            )
         if _safe_float(daily_slice.get("daily_contribution")) is not None:
             bucket_observation_dates[bucket_group_key].add(as_of_date)
 
@@ -6509,7 +7818,10 @@ def build_contribution_calendar_report(
                 "axis": axis,
                 "group_key": group_key,
                 "group_label": str(daily_slice.get("group_label") or group_key),
-                "coverage_state": "complete",
+                "nav_coverage_state": "complete",
+                "nav_coverage_reason_codes": [],
+                "book_pnl_coverage_state": "complete",
+                "book_pnl_coverage_reason_codes": [],
                 "observation_count": 0,
                 "beginning_value_base": 0.0,
                 "ending_value_base": 0.0,
@@ -6526,6 +7838,7 @@ def build_contribution_calendar_report(
                 "instrument_currency_gains": 0.0,
                 "total_pnl": 0.0,
                 "bucket_contribution": 0.0,
+                "_contribution_complete": True,
             },
         )
 
@@ -6546,6 +7859,8 @@ def build_contribution_calendar_report(
         ):
             value = _safe_float(daily_slice.get(field_name))
             if value is None:
+                if field_name == "daily_contribution":
+                    accumulator["_contribution_complete"] = False
                 continue
             target_field = "bucket_contribution" if field_name == "daily_contribution" else field_name
             accumulator[target_field] = (_safe_float(accumulator.get(target_field)) or 0.0) + value
@@ -6556,7 +7871,27 @@ def build_contribution_calendar_report(
         window = bucket_windows[bucket_key]
         available_weight_dates = window.get("available_weight_dates")
         weight_denominator = len(available_weight_dates) if isinstance(available_weight_dates, set) else 0
-        accumulator["coverage_state"] = _merge_group_coverage_state(bucket_coverage_states[bucket_group_key])
+        accumulator["nav_coverage_state"] = _merge_coverage_states(
+            bucket_nav_coverage_states[bucket_group_key]
+        )
+        accumulator["nav_coverage_reason_codes"] = list(
+            bucket_nav_coverage_reasons[bucket_group_key]
+        )
+        accumulator["book_pnl_coverage_state"] = _merge_coverage_states(
+            bucket_book_pnl_coverage_states[bucket_group_key]
+        )
+        accumulator["book_pnl_coverage_reason_codes"] = list(
+            bucket_book_pnl_coverage_reasons[bucket_group_key]
+        )
+        if accumulator["book_pnl_coverage_state"] != "complete":
+            for field_name in (
+                "realized_pnl",
+                "cash_currency_gains",
+                "instrument_currency_gains",
+                "total_pnl",
+                "bucket_contribution",
+            ):
+                accumulator[field_name] = None
         accumulator["observation_count"] = len(bucket_observation_dates[bucket_group_key])
         accumulator["beginning_value_base"] = (
             bucket_start_values.get(bucket_group_key, 0.0)
@@ -6583,6 +7918,17 @@ def build_contribution_calendar_report(
             if weight_denominator > 0
             else None
         )
+        accumulator.pop("_contribution_complete", None)
+        twr_reliability = bucket_twr_reliability[bucket_key]
+        if not bool(twr_reliability["linkable"]):
+            accumulator["bucket_contribution"] = None
+        accumulator["twr_state"] = twr_reliability["twr_state"]
+        accumulator["twr_reliability_status"] = twr_reliability[
+            "twr_reliability_status"
+        ]
+        accumulator["twr_reliability_reasons"] = list(
+            twr_reliability["twr_reliability_reasons"]
+        )
         rendered_buckets.append(accumulator)
 
     rendered_buckets.sort(
@@ -6593,11 +7939,22 @@ def build_contribution_calendar_report(
         )
     )
 
-    total_bucket_contribution = sum((_safe_float(item.get("bucket_contribution")) or 0.0) for item in rendered_buckets)
+    bucket_contributions = [
+        _safe_float(item.get("bucket_contribution")) for item in rendered_buckets
+    ]
+    total_bucket_contribution = (
+        sum(value for value in bucket_contributions if value is not None)
+        if rendered_buckets
+        and all(value is not None for value in bucket_contributions)
+        and str(summary["twr_reliability_status"])
+        != TWR_RELIABILITY_UNAVAILABLE
+        else None
+    )
     total_period_contribution = _safe_float(summary.get("total_period_contribution"))
     contribution_residual = (
         total_period_contribution - total_bucket_contribution
         if total_period_contribution is not None
+        and total_bucket_contribution is not None
         else None
     )
 
@@ -6614,6 +7971,23 @@ def build_contribution_calendar_report(
             "frequency": frequency,
             "start_date": resolved_start_date,
             "end_date": resolved_end_date,
+            "nav_coverage_state": str(
+                summary.get("nav_coverage_state") or "unavailable"
+            ),
+            "nav_coverage_reason_codes": list(
+                summary.get("nav_coverage_reason_codes") or []
+            ),
+            "book_pnl_coverage_state": str(
+                summary.get("book_pnl_coverage_state") or "unavailable"
+            ),
+            "book_pnl_coverage_reason_codes": list(
+                summary.get("book_pnl_coverage_reason_codes") or []
+            ),
+            "twr_state": summary["twr_state"],
+            "twr_reliability_status": summary["twr_reliability_status"],
+            "twr_reliability_reasons": list(
+                summary["twr_reliability_reasons"]
+            ),
             "bucket_count": len(bucket_windows),
             "group_count": len({str(item.get("group_key") or "") for item in rendered_buckets}),
             "observation_count": int(summary.get("observation_count") or 0),
@@ -6695,11 +8069,9 @@ def build_contribution_bucket_report(
         taxonomy_id=taxonomy_id,
         group_key=group_key,
     )
-    summary = (
-        deepcopy(contribution_report.get("summary"))
-        if isinstance(contribution_report.get("summary"), dict)
-        else {}
-    )
+    summary = deepcopy(contribution_report["summary"])
+    if not isinstance(summary, dict):
+        raise TypeError("contribution report summary must be an object")
 
     rendered_groups: list[dict[str, object]] = []
     total_amount = 0.0
@@ -6713,6 +8085,11 @@ def build_contribution_bucket_report(
                 "bucket": bucket,
                 "group_key": str(line.get("group_key") or ""),
                 "group_label": str(line.get("group_label") or line.get("group_key") or ""),
+                "twr_state": line["twr_state"],
+                "twr_reliability_status": line["twr_reliability_status"],
+                "twr_reliability_reasons": list(
+                    line["twr_reliability_reasons"]
+                ),
                 "amount": amount,
                 "start_value": _safe_float(line.get("start_value_base")),
                 "end_value": _safe_float(line.get("end_value_base")),
@@ -6742,6 +8119,11 @@ def build_contribution_bucket_report(
             "group_key": summary.get("group_key"),
             "group_label": summary.get("group_label"),
             "bucket": bucket,
+            "twr_state": summary["twr_state"],
+            "twr_reliability_status": summary["twr_reliability_status"],
+            "twr_reliability_reasons": list(
+                summary["twr_reliability_reasons"]
+            ),
             "start_date": summary.get("start_date"),
             "end_date": summary.get("end_date"),
             "group_count": len(rendered_groups),
@@ -6788,11 +8170,9 @@ def build_contribution_bucket_calendar_report(
         frequency=frequency,
         group_key=group_key,
     )
-    summary = (
-        deepcopy(contribution_calendar_report.get("summary"))
-        if isinstance(contribution_calendar_report.get("summary"), dict)
-        else {}
-    )
+    summary = deepcopy(contribution_calendar_report["summary"])
+    if not isinstance(summary, dict):
+        raise TypeError("contribution calendar summary must be an object")
     rendered_buckets: list[dict[str, object]] = []
     total_amount = 0.0
     total_amount_complete = True
@@ -6809,7 +8189,23 @@ def build_contribution_bucket_calendar_report(
                 "group_label": str(bucket_item.get("group_label") or bucket_item.get("group_key") or ""),
                 "start_date": bucket_item.get("start_date"),
                 "end_date": bucket_item.get("end_date"),
-                "coverage_state": bucket_item.get("coverage_state"),
+                "nav_coverage_state": bucket_item.get("nav_coverage_state"),
+                "nav_coverage_reason_codes": list(
+                    bucket_item.get("nav_coverage_reason_codes") or []
+                ),
+                "book_pnl_coverage_state": bucket_item.get(
+                    "book_pnl_coverage_state"
+                ),
+                "book_pnl_coverage_reason_codes": list(
+                    bucket_item.get("book_pnl_coverage_reason_codes") or []
+                ),
+                "twr_state": bucket_item["twr_state"],
+                "twr_reliability_status": bucket_item[
+                    "twr_reliability_status"
+                ],
+                "twr_reliability_reasons": list(
+                    bucket_item["twr_reliability_reasons"]
+                ),
                 "observation_count": int(bucket_item.get("observation_count") or 0),
                 "amount": amount,
                 "start_value": _safe_float(bucket_item.get("beginning_value_base")),
@@ -6842,6 +8238,23 @@ def build_contribution_bucket_calendar_report(
             "group_label": summary.get("group_label"),
             "bucket": bucket,
             "frequency": frequency,
+            "nav_coverage_state": str(
+                summary.get("nav_coverage_state") or "unavailable"
+            ),
+            "nav_coverage_reason_codes": list(
+                summary.get("nav_coverage_reason_codes") or []
+            ),
+            "book_pnl_coverage_state": str(
+                summary.get("book_pnl_coverage_state") or "unavailable"
+            ),
+            "book_pnl_coverage_reason_codes": list(
+                summary.get("book_pnl_coverage_reason_codes") or []
+            ),
+            "twr_state": summary["twr_state"],
+            "twr_reliability_status": summary["twr_reliability_status"],
+            "twr_reliability_reasons": list(
+                summary["twr_reliability_reasons"]
+            ),
             "start_date": summary.get("start_date"),
             "end_date": summary.get("end_date"),
             "bucket_count": len(rendered_buckets),
@@ -6881,7 +8294,16 @@ def _merge_calculation_detail_daily_slices(
     daily_slices: list[dict[str, object]],
 ) -> list[dict[str, object]]:
     grouped: dict[tuple[date, str], dict[str, object]] = {}
-    coverage_states_by_group: dict[tuple[date, str], list[str]] = defaultdict(list)
+    nav_coverage_states_by_group: dict[tuple[date, str], list[str]] = defaultdict(list)
+    book_pnl_coverage_states_by_group: dict[
+        tuple[date, str], list[str]
+    ] = defaultdict(list)
+    nav_coverage_reasons_by_group: dict[
+        tuple[date, str], list[str]
+    ] = defaultdict(list)
+    book_pnl_coverage_reasons_by_group: dict[
+        tuple[date, str], list[str]
+    ] = defaultdict(list)
 
     for daily_slice in daily_slices:
         as_of_date = daily_slice.get("as_of_date")
@@ -6896,14 +8318,41 @@ def _merge_calculation_detail_daily_slices(
                 "axis": str(daily_slice.get("axis") or ""),
                 "group_key": group_key,
                 "group_label": str(daily_slice.get("group_label") or group_key),
-                "coverage_state": "complete",
+                "nav_coverage_state": "complete",
+                "nav_coverage_reason_codes": [],
+                "book_pnl_coverage_state": "complete",
+                "book_pnl_coverage_reason_codes": [],
                 "market_observation_count": int(daily_slice.get("market_observation_count") or 0),
                 "return_observation_eligible": bool(daily_slice.get("return_observation_eligible")),
                 "daily_return": None,
+                "twr_state": daily_slice["twr_state"],
+                "twr_reliability_status": daily_slice[
+                    "twr_reliability_status"
+                ],
+                "twr_reliability_reasons": list(
+                    daily_slice["twr_reliability_reasons"]
+                ),
                 **{field_name: 0.0 for field_name in _CALCULATION_DETAIL_ADDITIVE_SLICE_FIELDS},
             },
         )
-        coverage_states_by_group[slice_key].append(str(daily_slice.get("coverage_state") or "unavailable"))
+        nav_coverage_states_by_group[slice_key].append(
+            str(daily_slice.get("nav_coverage_state") or "unavailable")
+        )
+        book_pnl_coverage_states_by_group[slice_key].append(
+            str(daily_slice.get("book_pnl_coverage_state") or "unavailable")
+        )
+        for reason_code in list(daily_slice.get("nav_coverage_reason_codes") or []):
+            _append_unique_reason(
+                nav_coverage_reasons_by_group[slice_key],
+                str(reason_code),
+            )
+        for reason_code in list(
+            daily_slice.get("book_pnl_coverage_reason_codes") or []
+        ):
+            _append_unique_reason(
+                book_pnl_coverage_reasons_by_group[slice_key],
+                str(reason_code),
+            )
         grouped_slice["market_observation_count"] = max(
             int(grouped_slice.get("market_observation_count") or 0),
             int(daily_slice.get("market_observation_count") or 0),
@@ -6921,22 +8370,39 @@ def _merge_calculation_detail_daily_slices(
     grouped_slices = sorted(grouped.values(), key=lambda item: (item["as_of_date"], item["group_key"]))
     for grouped_slice in grouped_slices:
         slice_key = (grouped_slice["as_of_date"], grouped_slice["group_key"])
-        grouped_slice["coverage_state"] = _merge_group_coverage_state(coverage_states_by_group[slice_key])
+        grouped_slice["nav_coverage_state"] = _merge_coverage_states(
+            nav_coverage_states_by_group[slice_key]
+        )
+        grouped_slice["nav_coverage_reason_codes"] = list(
+            nav_coverage_reasons_by_group[slice_key]
+        )
+        grouped_slice["book_pnl_coverage_state"] = _merge_coverage_states(
+            book_pnl_coverage_states_by_group[slice_key]
+        )
+        grouped_slice["book_pnl_coverage_reason_codes"] = list(
+            book_pnl_coverage_reasons_by_group[slice_key]
+        )
         total_pnl = _safe_float(grouped_slice.get("total_pnl"))
         beginning_value_base = _safe_float(grouped_slice.get("beginning_value_base"))
         ending_value_base = _safe_float(grouped_slice.get("ending_value_base"))
         capital_flow_in_base = _safe_float(grouped_slice.get(GROUP_CAPITAL_FLOW_IN_FIELD))
         capital_flow_out_base = _safe_float(grouped_slice.get(GROUP_CAPITAL_FLOW_OUT_FIELD))
-        grouped_slice["daily_return"] = _daily_group_return_from_components(
-            beginning_value_base=beginning_value_base,
-            ending_value_base=ending_value_base,
-            total_pnl=total_pnl,
-            capital_flow_in_base=capital_flow_in_base,
-            capital_flow_out_base=capital_flow_out_base,
+        grouped_slice["daily_return"] = (
+            _daily_group_return_from_components(
+                beginning_value_base=beginning_value_base,
+                ending_value_base=ending_value_base,
+                total_pnl=total_pnl,
+                capital_flow_in_base=capital_flow_in_base,
+                capital_flow_out_base=capital_flow_out_base,
+            )
+            if grouped_slice["twr_reliability_status"]
+            != TWR_RELIABILITY_UNAVAILABLE
+            else None
         )
         grouped_slice["return_observation_eligible"] = (
             grouped_slice["daily_return"] is not None
-            and grouped_slice["coverage_state"] == "complete"
+            and grouped_slice["nav_coverage_state"] == "complete"
+            and grouped_slice["book_pnl_coverage_state"] == "complete"
             and (
                 int(grouped_slice.get("market_observation_count") or 0) > 0
                 or abs(float(grouped_slice["daily_return"])) > 1e-12
@@ -7516,6 +8982,8 @@ def _instrument_ids_for_calculation_risk_basis(
             instrument_ids.add(instrument_id)
 
     if portfolio_id and end_date is not None:
+        # Position ownership is a trade-date state.  External cash facts have
+        # no instrument/quantity and therefore cannot enter these lot builds.
         end_transactions = [
             transaction
             for transaction in transactions
@@ -7526,6 +8994,7 @@ def _instrument_ids_for_calculation_risk_basis(
             accounts,
             end_transactions,
             as_of_date=end_date,
+            include_market_valuation=False,
         ):
             if str(position_lot.get("status") or "") == "open":
                 add_instrument_id(position_lot.get("instrument_id"))
@@ -7541,17 +9010,18 @@ def _instrument_ids_for_calculation_risk_basis(
                 accounts,
                 start_transactions,
                 as_of_date=start_date,
+                include_market_valuation=False,
             ):
                 if str(position_lot.get("status") or "") == "open":
                     add_instrument_id(position_lot.get("instrument_id"))
 
     for transaction in transactions:
-        trade_date = _parse_iso_date(transaction.get("trade_date"))
-        if trade_date is None:
+        effective_date = transaction_performance_effective_date(transaction)
+        if effective_date is None:
             continue
-        if end_date is not None and trade_date > end_date:
+        if end_date is not None and effective_date > end_date:
             continue
-        if start_date is not None and trade_date < start_date:
+        if start_date is not None and effective_date < start_date:
             continue
         add_instrument_id(transaction.get("instrument_id"))
 
@@ -7577,7 +9047,10 @@ def _build_period_calculation_child_records(
     portfolio_daily_series: list[dict[str, object]],
     risk_final_date: date | None,
     portfolio_start_weight_denominator: float | None,
+    risk_basis_complete: bool,
     detail_contribution_report: dict[str, object] | None = None,
+    fx_book: CanonicalFxWindowBook | None = None,
+    valuation_quote_book: CanonicalQuoteWindowBook | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     parent_labels = {
         str(item.get("group_key") or ""): str(item.get("group_label") or item.get("group_key") or "")
@@ -7639,18 +9112,19 @@ def _build_period_calculation_child_records(
         if str(item.get("group_key") or "")
     }
     period_returns = _period_returns_by_group(list(detail_report.get("daily_slices") or []))
-    child_risk_metrics = _realized_risk_attribution_by_group(
-        list(detail_report.get("daily_slices") or []),
-        portfolio_daily_series,
-        calculation_frequency=risk_calculation_frequency,
-        final_date=risk_final_date,
+    child_risk_metrics = (
+        _realized_risk_attribution_by_group(
+            list(detail_report.get("daily_slices") or []),
+            portfolio_daily_series,
+            calculation_frequency=risk_calculation_frequency,
+            final_date=risk_final_date,
+        )
+        if risk_basis_complete
+        else {}
     )
     if axis == "instrument":
         unrealized_capital_summary = {"values": {}, "coverage_complete": True}
     else:
-        fx_payload = get_platform_fx_rates()
-        direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
-        instrument_detail_cache: dict[str, dict[str, object] | None] = {}
         unrealized_capital_summary = (
             _period_unrealized_capital_gains_by_group(
                 portfolio,
@@ -7664,10 +9138,15 @@ def _build_period_calculation_child_records(
                 taxonomy_nodes=taxonomy_nodes,
                 taxonomy_assignments=taxonomy_assignments,
                 base_currency=str(detail_report["base_currency"]),
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
+                fx_book=fx_book,
+                valuation_quote_book=valuation_quote_book,
             )
-            if resolved_start_date is not None and resolved_end_date is not None
+            if (
+                resolved_start_date is not None
+                and resolved_end_date is not None
+                and fx_book is not None
+                and valuation_quote_book is not None
+            )
             else {"values": {}, "coverage_complete": False}
         )
     unrealized_capital_values = (
@@ -8024,26 +9503,53 @@ def build_period_calculation_groups_report(
     risk_frequency_profile = calculation_frequency_profile_for_instruments(
         risk_instrument_ids,
         end_date=risk_basis_end_date,
-        detail_loader=get_registry_instrument_detail,
     )
     risk_calculation_frequency = cast(
         CalculationFrequency,
         str(risk_frequency_profile.get("resolved_frequency") or "daily"),
     )
-    risk_metrics_by_group = _realized_risk_attribution_by_group(
-        contribution_daily_slices,
-        portfolio_daily_series,
-        calculation_frequency=risk_calculation_frequency,
-        final_date=resolved_end_date,
+    risk_basis_complete = risk_frequency_profile.get("coverage_status") == "complete"
+    risk_metrics_by_group = (
+        _realized_risk_attribution_by_group(
+            contribution_daily_slices,
+            portfolio_daily_series,
+            calculation_frequency=risk_calculation_frequency,
+            final_date=resolved_end_date,
+        )
+        if risk_basis_complete
+        else {}
     )
-    portfolio_risk_summary = _portfolio_realized_risk_summary(
-        portfolio_daily_series,
-        calculation_frequency=risk_calculation_frequency,
-        final_date=resolved_end_date,
+    portfolio_risk_summary = (
+        _portfolio_realized_risk_summary(
+            portfolio_daily_series,
+            calculation_frequency=risk_calculation_frequency,
+            final_date=resolved_end_date,
+        )
+        if risk_basis_complete
+        else _risk_metric_defaults(risk_calculation_frequency)
     )
-    fx_payload = get_platform_fx_rates()
-    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+    fx_book: CanonicalFxWindowBook | None = None
+    valuation_quote_book: CanonicalQuoteWindowBook | None = None
+    if resolved_start_date is not None and resolved_end_date is not None:
+        session_factory = get_session_factory()
+        with session_factory() as calculation_session:
+            fx_book = _lock_calculation_fx_book(
+                calculation_session,
+                base_currency=str(contribution_report["base_currency"]),
+                start_date=resolved_start_date - timedelta(days=1),
+                end_date=resolved_end_date,
+                payloads=(portfolio, accounts, transactions),
+            )
+            valuation_quote_book = resolve_role_quote_window_book_in_session(
+                calculation_session,
+                instrument_ids=_transaction_instrument_ids(transactions),
+                role="valuation",
+                start_date=(
+                    resolved_start_date
+                    - timedelta(days=maximum_valuation_quote_age_days() + 1)
+                ),
+                end_date=resolved_end_date,
+            )
     unrealized_capital_summary = (
         _period_unrealized_capital_gains_by_group(
             portfolio,
@@ -8057,10 +9563,15 @@ def build_period_calculation_groups_report(
             taxonomy_nodes=taxonomy_nodes,
             taxonomy_assignments=taxonomy_assignments,
             base_currency=str(contribution_report["base_currency"]),
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
+            valuation_quote_book=valuation_quote_book,
         )
-        if resolved_start_date is not None and resolved_end_date is not None
+        if (
+            resolved_start_date is not None
+            and resolved_end_date is not None
+            and fx_book is not None
+            and valuation_quote_book is not None
+        )
         else {"values": {}, "coverage_complete": False}
     )
     unrealized_capital_values = (
@@ -8282,7 +9793,10 @@ def build_period_calculation_groups_report(
         portfolio_daily_series=portfolio_daily_series,
         risk_final_date=resolved_end_date,
         portfolio_start_weight_denominator=full_period_start_weight_denominator,
+        risk_basis_complete=risk_basis_complete,
         detail_contribution_report=detail_contribution_report,
+        fx_book=fx_book,
+        valuation_quote_book=valuation_quote_book,
     )
     for item in groups:
         item["children"] = children_by_parent.get(str(item.get("group_key") or ""), [])
@@ -8360,13 +9874,45 @@ def build_period_calculation_groups_calendar_report(
         if isinstance(contribution_calendar_report.get("summary"), dict)
         else {}
     )
-    fx_payload = get_platform_fx_rates()
-    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
     unrealized_capital_cache: dict[tuple[date, date], dict[str, object]] = {}
+    calendar_bucket_windows = [
+        (bucket_start, bucket_end)
+        for bucket in list(contribution_calendar_report.get("buckets") or [])
+        if (bucket_start := _parse_iso_date(bucket.get("start_date"))) is not None
+        and (bucket_end := _parse_iso_date(bucket.get("end_date"))) is not None
+    ]
+    calendar_valuation_quote_book: CanonicalQuoteWindowBook | None = None
+    fx_book: CanonicalFxWindowBook | None = None
+    if calendar_bucket_windows:
+        quote_window_start = min(item[0] for item in calendar_bucket_windows) - timedelta(
+            days=maximum_valuation_quote_age_days() + 1
+        )
+        quote_window_end = max(item[1] for item in calendar_bucket_windows)
+        session_factory = get_session_factory()
+        with session_factory() as quote_session:
+            fx_book = _lock_calculation_fx_book(
+                quote_session,
+                base_currency=str(contribution_calendar_report["base_currency"]),
+                start_date=min(item[0] for item in calendar_bucket_windows)
+                - timedelta(days=1),
+                end_date=quote_window_end,
+                payloads=(portfolio, accounts, transactions),
+            )
+            calendar_valuation_quote_book = resolve_role_quote_window_book_in_session(
+                quote_session,
+                instrument_ids=_transaction_instrument_ids(transactions),
+                role="valuation",
+                start_date=quote_window_start,
+                end_date=quote_window_end,
+            )
 
     def unrealized_capital_for_bucket(bucket_start: date | None, bucket_end: date | None) -> dict[str, object]:
-        if bucket_start is None or bucket_end is None:
+        if (
+            bucket_start is None
+            or bucket_end is None
+            or fx_book is None
+            or calendar_valuation_quote_book is None
+        ):
             return {"values": {}, "coverage_complete": False}
         cache_key = (bucket_start, bucket_end)
         if cache_key not in unrealized_capital_cache:
@@ -8382,8 +9928,8 @@ def build_period_calculation_groups_calendar_report(
                 taxonomy_nodes=taxonomy_nodes,
                 taxonomy_assignments=taxonomy_assignments,
                 base_currency=str(contribution_calendar_report["base_currency"]),
-                direct_fx_instruments=direct_fx_instruments,
-                instrument_detail_cache=instrument_detail_cache,
+                fx_book=fx_book,
+                valuation_quote_book=calendar_valuation_quote_book,
             )
         return unrealized_capital_cache[cache_key]
 
@@ -8440,7 +9986,18 @@ def build_period_calculation_groups_calendar_report(
                 "taxonomy_id": summary.get("taxonomy_id"),
                 "group_key": bucket_group_key,
                 "group_label": str(bucket.get("group_label") or bucket_group_key),
-                "coverage_state": str(bucket.get("coverage_state") or "unavailable"),
+                "nav_coverage_state": str(
+                    bucket.get("nav_coverage_state") or "unavailable"
+                ),
+                "nav_coverage_reason_codes": list(
+                    bucket.get("nav_coverage_reason_codes") or []
+                ),
+                "book_pnl_coverage_state": str(
+                    bucket.get("book_pnl_coverage_state") or "unavailable"
+                ),
+                "book_pnl_coverage_reason_codes": list(
+                    bucket.get("book_pnl_coverage_reason_codes") or []
+                ),
                 "observation_count": int(bucket.get("observation_count") or 0),
                 "beginning_weight": _safe_float(bucket.get("beginning_weight")),
                 "average_weight": _safe_float(bucket.get("average_weight")),
@@ -8580,21 +10137,30 @@ _CALCULATION_ENTRY_BUCKETS = {
 
 
 def _period_returns_by_group(daily_slices: list[dict[str, object]]) -> dict[str, float | None]:
-    returns_by_group: dict[str, list[float]] = defaultdict(list)
+    slices_by_group: dict[str, list[dict[str, object]]] = defaultdict(list)
     for daily_slice in daily_slices:
         group_key = str(daily_slice.get("group_key") or "")
-        daily_return = _safe_float(daily_slice.get("daily_return"))
-        if not group_key or daily_return is None or not isfinite(daily_return):
+        if not group_key:
             continue
-        returns_by_group[group_key].append(daily_return)
-    return {
-        group_key: (
-            prod(1.0 + daily_return for daily_return in group_returns) - 1.0
-            if group_returns
+        slices_by_group[group_key].append(daily_slice)
+
+    period_returns: dict[str, float | None] = {}
+    for group_key, group_slices in slices_by_group.items():
+        reliability_snapshots = [
+            {**daily_slice, "daily_twr": daily_slice.get("daily_return")}
+            for daily_slice in group_slices
+        ]
+        daily_returns = [
+            _safe_float(daily_slice.get("daily_return"))
+            for daily_slice in group_slices
+        ]
+        period_returns[group_key] = (
+            prod(1.0 + value for value in daily_returns if value is not None) - 1.0
+            if any(value is not None and isfinite(value) for value in daily_returns)
+            and bool(_twr_window_reliability(reliability_snapshots)["linkable"])
             else None
         )
-        for group_key, group_returns in returns_by_group.items()
-    }
+    return period_returns
 
 
 def build_period_calculation_bucket_report(
@@ -8754,10 +10320,11 @@ def _resolve_calculation_entry_group(
             return _instrument_type_key_label(instrument_type)
         return ("cash", "Cash")
     if axis == "currency":
-        normalized_currency = _normalized_currency(currency, fallback="")
-        if normalized_currency:
-            return (normalized_currency, normalized_currency)
-        return ("unassigned:currency", "Unassigned")
+        normalized_currency = _required_currency(
+            currency,
+            fact_name="calculation entry",
+        )
+        return (normalized_currency, normalized_currency)
     if axis != "taxonomy":
         raise ValueError(CONTRIBUTION_AXIS_ERROR)
 
@@ -8791,15 +10358,15 @@ def _append_calculation_transaction_entry(
     component_kind: str,
     local_amount: float,
     base_currency: str,
-    direct_fx_instruments: dict[tuple[str, str], str],
-    instrument_detail_cache: dict[str, dict[str, object] | None],
+    fx_book: CanonicalFxWindowBook,
     account_name_map: dict[str, str],
     taxonomy_context: tuple[dict[str, object], dict[str, dict[str, object]], dict[str, list[dict[str, object]]], str]
     | None,
 ) -> None:
     trade_date = _parse_iso_date(transaction.get("trade_date"))
     settlement_date = _parse_iso_date(transaction.get("settlement_date"))
-    currency = _normalized_currency(transaction.get("currency"), fallback=base_currency)
+    effective_date = transaction_performance_effective_date(transaction)
+    currency = _required_currency(transaction.get("currency"), fact_name="transaction")
     account_id = str(transaction.get("account_id") or "") or None
     instrument_id = str(transaction.get("instrument_id") or "") or None
     instrument_ref = (
@@ -8810,7 +10377,7 @@ def _append_calculation_transaction_entry(
     instrument_name = str((instrument_ref or {}).get("instrument_name") or instrument_id or "")
     group_key, group_label = _resolve_calculation_entry_group(
         axis=axis,
-        trade_date=trade_date,
+        trade_date=effective_date,
         account_id=account_id,
         account_name_map=account_name_map,
         instrument_id=instrument_id,
@@ -8821,14 +10388,13 @@ def _append_calculation_transaction_entry(
     )
     base_amount = None
     stale_fx_flag = False
-    if trade_date is not None:
-        base_amount, stale_fx_flag = convert_amount_on(
+    if effective_date is not None:
+        base_amount, stale_fx_flag = _convert_amount_with_fx_book(
             local_amount,
-            as_of_date=trade_date,
+            as_of_date=effective_date,
             from_currency=currency,
             to_currency=base_currency,
-            direct_fx_instruments=direct_fx_instruments,
-            instrument_detail_cache=instrument_detail_cache,
+            fx_book=fx_book,
         )
     entries.append(
         {
@@ -8841,6 +10407,7 @@ def _append_calculation_transaction_entry(
             "transaction_type": str(transaction.get("transaction_type") or ""),
             "trade_date": trade_date,
             "settlement_date": settlement_date,
+            "effective_date": effective_date,
             "group_key": group_key,
             "group_label": group_label,
             "account_id": account_id,
@@ -8894,7 +10461,7 @@ def build_contribution_entries_report(
         start_date=start_date,
         end_date=end_date,
     )
-    base_currency = _normalized_currency(portfolio.get("base_currency"))
+    base_currency = _required_currency(portfolio.get("base_currency"), fact_name="portfolio.base_currency")
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
     if window is None:
@@ -8930,9 +10497,15 @@ def build_contribution_entries_report(
     )
 
     account_name_map = _account_name_map(accounts)
-    fx_payload = get_platform_fx_rates()
-    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+    session_factory = get_session_factory()
+    with session_factory() as calculation_session:
+        fx_book = _lock_calculation_fx_book(
+            calculation_session,
+            base_currency=base_currency,
+            start_date=resolved_start_date - timedelta(days=1),
+            end_date=resolved_end_date,
+            payloads=(portfolio, accounts, sorted_transactions),
+        )
     taxonomy_context = None
     cash_bucket_account_ids: set[str] = set()
     if axis == "taxonomy":
@@ -8980,8 +10553,7 @@ def build_contribution_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
@@ -8994,8 +10566,7 @@ def build_contribution_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
@@ -9009,8 +10580,7 @@ def build_contribution_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
@@ -9026,8 +10596,7 @@ def build_contribution_entries_report(
                         component_kind="attached_expense",
                         local_amount=attached_expense,
                         base_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
@@ -9041,8 +10610,7 @@ def build_contribution_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
@@ -9057,8 +10625,7 @@ def build_contribution_entries_report(
                         component_kind="attached_fee",
                         local_amount=fee_amount,
                         base_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
@@ -9072,8 +10639,7 @@ def build_contribution_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
@@ -9088,8 +10654,7 @@ def build_contribution_entries_report(
                         component_kind="attached_tax",
                         local_amount=tax_amount,
                         base_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
@@ -9099,6 +10664,7 @@ def build_contribution_entries_report(
             accounts,
             end_boundary_transactions,
             as_of_date=resolved_end_date,
+            include_market_valuation=False,
         )
         for position_lot in position_lots:
             realizations = position_lot.get("realizations") or []
@@ -9118,7 +10684,7 @@ def build_contribution_entries_report(
             )
             instrument_id = str(position_lot.get("instrument_id") or "") or None
             instrument_name = str((instrument_ref or {}).get("instrument_name") or instrument_id or "")
-            currency = _normalized_currency(position_lot.get("currency"), fallback=base_currency)
+            currency = _required_currency(position_lot.get("currency"), fact_name="position lot")
             for realization in realizations:
                 if not isinstance(realization, dict):
                     continue
@@ -9145,13 +10711,12 @@ def build_contribution_entries_report(
                 base_amount = None
                 stale_fx_flag = False
                 if local_amount is not None:
-                    base_amount, stale_fx_flag = convert_amount_on(
+                    base_amount, stale_fx_flag = _convert_amount_with_fx_book(
                         local_amount,
                         as_of_date=trade_date,
                         from_currency=currency,
                         to_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                     )
                 entries.append(
                     {
@@ -9164,6 +10729,7 @@ def build_contribution_entries_report(
                         "transaction_type": transaction_type,
                         "trade_date": trade_date,
                         "settlement_date": None,
+                        "effective_date": trade_date,
                         "group_key": realization_group_key,
                         "group_label": realization_group_label,
                         "account_id": account_id,
@@ -9180,7 +10746,7 @@ def build_contribution_entries_report(
 
     entries.sort(
         key=lambda item: (
-            item.get("trade_date") or date.min,
+            item.get("effective_date") or item.get("trade_date") or date.min,
             str(item.get("transaction_id") or ""),
             str(item.get("component_kind") or ""),
             str(item.get("group_key") or ""),
@@ -9266,13 +10832,13 @@ def build_contribution_entries_calendar_report(
 
     bucket_accumulators: dict[tuple[str, str], dict[str, object]] = {}
     for entry in list(entries_report.get("entries") or []):
-        trade_date = entry.get("trade_date")
-        if not isinstance(trade_date, date):
+        effective_date = entry.get("effective_date")
+        if not isinstance(effective_date, date):
             continue
         entry_group_key = str(entry.get("group_key") or "")
         if not entry_group_key:
             continue
-        bucket_key = _calendar_bucket_key(trade_date, frequency)
+        bucket_key = _calendar_bucket_key(effective_date, frequency)
         accumulator_key = (bucket_key, entry_group_key)
         accumulator = bucket_accumulators.setdefault(
             accumulator_key,
@@ -9284,17 +10850,17 @@ def build_contribution_entries_calendar_report(
                 "contribution_bucket": bucket,
                 "group_key": entry_group_key,
                 "group_label": str(entry.get("group_label") or entry_group_key),
-                "start_date": trade_date,
-                "end_date": trade_date,
+                "start_date": effective_date,
+                "end_date": effective_date,
                 "entry_count": 0,
                 "total_amount": 0.0,
                 "_amount_complete": True,
             },
         )
-        if trade_date < accumulator["start_date"]:
-            accumulator["start_date"] = trade_date
-        if trade_date > accumulator["end_date"]:
-            accumulator["end_date"] = trade_date
+        if effective_date < accumulator["start_date"]:
+            accumulator["start_date"] = effective_date
+        if effective_date > accumulator["end_date"]:
+            accumulator["end_date"] = effective_date
         accumulator["entry_count"] = int(accumulator.get("entry_count") or 0) + 1
         amount = _safe_float(entry.get("base_amount"))
         if amount is None:
@@ -9390,7 +10956,7 @@ def build_period_calculation_entries_report(
         start_date=start_date,
         end_date=end_date,
     )
-    base_currency = _normalized_currency(portfolio.get("base_currency"))
+    base_currency = _required_currency(portfolio.get("base_currency"), fact_name="portfolio.base_currency")
     valuation_timezone = _resolve_portfolio_valuation_timezone(portfolio)
     valuation_cutoff_policy = _resolve_portfolio_valuation_cutoff_policy(portfolio)
     if window is None:
@@ -9426,9 +10992,15 @@ def build_period_calculation_entries_report(
     )
 
     account_name_map = _account_name_map(accounts)
-    fx_payload = get_platform_fx_rates()
-    direct_fx_instruments = _fx_direct_instrument_map(fx_payload)
-    instrument_detail_cache: dict[str, dict[str, object] | None] = {}
+    session_factory = get_session_factory()
+    with session_factory() as calculation_session:
+        fx_book = _lock_calculation_fx_book(
+            calculation_session,
+            base_currency=base_currency,
+            start_date=resolved_start_date - timedelta(days=1),
+            end_date=resolved_end_date,
+            payloads=(portfolio, accounts, sorted_transactions),
+        )
     taxonomy_context = None
     if axis == "taxonomy":
         resolved_taxonomy_id = str(taxonomy_id or "").strip()
@@ -9457,8 +11029,7 @@ def build_period_calculation_entries_report(
                     component_kind="gross_amount",
                     local_amount=gross_amount,
                     base_currency=base_currency,
-                    direct_fx_instruments=direct_fx_instruments,
-                    instrument_detail_cache=instrument_detail_cache,
+                    fx_book=fx_book,
                     account_name_map=account_name_map,
                     taxonomy_context=taxonomy_context,
                 )
@@ -9471,8 +11042,7 @@ def build_period_calculation_entries_report(
                     component_kind="gross_amount",
                     local_amount=gross_amount,
                     base_currency=base_currency,
-                    direct_fx_instruments=direct_fx_instruments,
-                    instrument_detail_cache=instrument_detail_cache,
+                    fx_book=fx_book,
                     account_name_map=account_name_map,
                     taxonomy_context=taxonomy_context,
                 )
@@ -9485,8 +11055,7 @@ def build_period_calculation_entries_report(
                     component_kind="gross_amount",
                     local_amount=gross_amount,
                     base_currency=base_currency,
-                    direct_fx_instruments=direct_fx_instruments,
-                    instrument_detail_cache=instrument_detail_cache,
+                    fx_book=fx_book,
                     account_name_map=account_name_map,
                     taxonomy_context=taxonomy_context,
                 )
@@ -9500,8 +11069,7 @@ def build_period_calculation_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
@@ -9514,8 +11082,7 @@ def build_period_calculation_entries_report(
                         component_kind="attached_fee",
                         local_amount=fee_amount,
                         base_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
@@ -9529,8 +11096,7 @@ def build_period_calculation_entries_report(
                         component_kind="gross_amount",
                         local_amount=gross_amount,
                         base_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
@@ -9543,8 +11109,7 @@ def build_period_calculation_entries_report(
                         component_kind="attached_tax",
                         local_amount=tax_amount,
                         base_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                         account_name_map=account_name_map,
                         taxonomy_context=taxonomy_context,
                     )
@@ -9554,6 +11119,7 @@ def build_period_calculation_entries_report(
             accounts,
             end_boundary_transactions,
             as_of_date=resolved_end_date,
+            include_market_valuation=False,
         )
         for position_lot in position_lots:
             realizations = position_lot.get("realizations") or []
@@ -9567,7 +11133,7 @@ def build_period_calculation_entries_report(
             )
             instrument_id = str(position_lot.get("instrument_id") or "") or None
             instrument_name = str((instrument_ref or {}).get("instrument_name") or instrument_id or "")
-            currency = _normalized_currency(position_lot.get("currency"), fallback=base_currency)
+            currency = _required_currency(position_lot.get("currency"), fact_name="position lot")
             for realization in realizations:
                 if not isinstance(realization, dict):
                     continue
@@ -9594,13 +11160,12 @@ def build_period_calculation_entries_report(
                 base_amount = None
                 stale_fx_flag = False
                 if local_amount is not None:
-                    base_amount, stale_fx_flag = convert_amount_on(
+                    base_amount, stale_fx_flag = _convert_amount_with_fx_book(
                         local_amount,
                         as_of_date=trade_date,
                         from_currency=currency,
                         to_currency=base_currency,
-                        direct_fx_instruments=direct_fx_instruments,
-                        instrument_detail_cache=instrument_detail_cache,
+                        fx_book=fx_book,
                     )
                 entries.append(
                     {
@@ -9613,6 +11178,7 @@ def build_period_calculation_entries_report(
                         "transaction_type": transaction_type,
                         "trade_date": trade_date,
                         "settlement_date": None,
+                        "effective_date": trade_date,
                         "group_key": realization_group_key,
                         "group_label": realization_group_label,
                         "account_id": account_id,
@@ -9629,7 +11195,7 @@ def build_period_calculation_entries_report(
 
     entries.sort(
         key=lambda item: (
-            item.get("trade_date") or date.min,
+            item.get("effective_date") or item.get("trade_date") or date.min,
             str(item.get("transaction_id") or ""),
             str(item.get("component_kind") or ""),
             str(item.get("group_key") or ""),
@@ -9715,13 +11281,13 @@ def build_period_calculation_entries_calendar_report(
 
     bucket_accumulators: dict[tuple[str, str], dict[str, object]] = {}
     for entry in list(entries_report.get("entries") or []):
-        trade_date = entry.get("trade_date")
-        if not isinstance(trade_date, date):
+        effective_date = entry.get("effective_date")
+        if not isinstance(effective_date, date):
             continue
         entry_group_key = str(entry.get("group_key") or "")
         if not entry_group_key:
             continue
-        bucket_key = _calendar_bucket_key(trade_date, frequency)
+        bucket_key = _calendar_bucket_key(effective_date, frequency)
         accumulator_key = (bucket_key, entry_group_key)
         accumulator = bucket_accumulators.setdefault(
             accumulator_key,
@@ -9733,17 +11299,17 @@ def build_period_calculation_entries_calendar_report(
                 "calculation_bucket": bucket,
                 "group_key": entry_group_key,
                 "group_label": str(entry.get("group_label") or entry_group_key),
-                "start_date": trade_date,
-                "end_date": trade_date,
+                "start_date": effective_date,
+                "end_date": effective_date,
                 "entry_count": 0,
                 "total_amount": 0.0,
                 "_amount_complete": True,
             },
         )
-        if trade_date < accumulator["start_date"]:
-            accumulator["start_date"] = trade_date
-        if trade_date > accumulator["end_date"]:
-            accumulator["end_date"] = trade_date
+        if effective_date < accumulator["start_date"]:
+            accumulator["start_date"] = effective_date
+        if effective_date > accumulator["end_date"]:
+            accumulator["end_date"] = effective_date
         accumulator["entry_count"] = int(accumulator.get("entry_count") or 0) + 1
         amount = _safe_float(entry.get("base_amount"))
         if amount is None:

@@ -17,7 +17,8 @@ from portfolio_app.api.contracts import (
     LedgerPostingRecord,
 )
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
-from portfolio_app.services.ledger import build_account_workspace
+from portfolio_app.services.fact_currency import PortfolioFactCurrencyError
+from portfolio_app.services.ledger import LedgerDataIntegrityError, build_account_workspace
 from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
 from portfolio_app.services.portfolio_store import (
     create_account,
@@ -190,30 +191,32 @@ def get_accounts_workspace(
     account_id: str | None = None,
     as_of_date: date | None = None,
 ) -> AccountsWorkspaceResponse:
-    portfolio = get_portfolio(portfolio_id)
-    if portfolio is None:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
-
-    accounts = list_accounts(portfolio_id)
-    if account_id and not any(item["account_id"] == account_id for item in accounts):
-        raise HTTPException(status_code=404, detail="Account not found")
-
-    portfolio_as_of_date = (
-        date.fromisoformat(str(portfolio.get("as_of_date")))
-        if portfolio.get("as_of_date")
-        else None
-    )
-    resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
-    transactions = list_transactions(portfolio_id, end_date=resolved_as_of_date)
     try:
+        portfolio = get_portfolio(portfolio_id)
+        if portfolio is None:
+            raise HTTPException(status_code=404, detail="Portfolio not found")
+
+        accounts = list_accounts(portfolio_id)
+        if account_id and not any(item["account_id"] == account_id for item in accounts):
+            raise HTTPException(status_code=404, detail="Account not found")
+
+        portfolio_as_of_date = (
+            date.fromisoformat(str(portfolio.get("as_of_date")))
+            if portfolio.get("as_of_date")
+            else None
+        )
+        resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
+        transactions = list_transactions(portfolio_id, end_date=resolved_as_of_date)
         workspace = build_account_workspace(
             portfolio_id,
             accounts,
             transactions,
             selected_account_id=account_id,
-            base_currency=str(portfolio.get("base_currency") or "USD"),
+            base_currency=str(portfolio["base_currency"]),
             as_of_date=resolved_as_of_date,
         )
+    except (PortfolioFactCurrencyError, LedgerDataIntegrityError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 

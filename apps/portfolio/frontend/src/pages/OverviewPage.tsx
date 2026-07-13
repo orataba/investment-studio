@@ -1,10 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useParams } from 'react-router-dom'
 
-import BenchmarkSearchBox, {
-  benchmarkInstrumentLabel,
-  instrumentPrimaryIdentifier,
-} from '../components/BenchmarkSearchBox'
 import CalculationStatus from '../components/CalculationStatus'
 import PerformanceNavChart from '../components/PerformanceNavChart'
 import PortfolioWorkspaceLayout from '../components/PortfolioWorkspaceLayout'
@@ -13,23 +9,18 @@ import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import {
   getHoldingsWorkspace,
-  getPortfolioInstrumentPriceChart,
   getPortfolioPerformance,
-  getPortfolioInstruments,
+  getPortfolioReturnCalendar,
   getPortfolioTaxonomyCatalog,
   getWorkspaceSummaryForPortfolio,
   type HoldingsWorkspaceResponse,
-  type PortfolioInstrumentPriceChartPoint,
-  type PortfolioInstrumentPriceChartResponse,
   type PortfolioHoldingRow,
-  type PortfolioDailyPerformancePoint,
-  type PortfolioPerformanceCoverageState,
   type PortfolioPerformanceResponse,
+  type PortfolioReturnCalendarResponse,
   type PortfolioTaxonomyAssignmentRecord,
   type PortfolioTaxonomyCatalogResponse,
   type PortfolioTaxonomyNodeRecord,
   type PortfolioWorkspaceSummary,
-  type SharedInstrumentRecord,
 } from '../lib/api'
 import {
   formatCurrency,
@@ -41,8 +32,12 @@ import {
   formatUnitPrice,
   signedValueClass,
 } from '../lib/format'
-import { buildMonthlyBuckets, buildMonthlyReturnMatrixRows, MONTH_LABELS } from '../lib/monthlyReturns'
 import { buildTwrIndexPoints } from '../lib/performanceSeries'
+import { annualizedReturnDisplayEligible } from '../lib/performanceHistoryPresentation'
+import {
+  buildReturnCalendarMatrixRows,
+  RETURN_CALENDAR_MONTH_LABELS,
+} from '../lib/returnCalendarPresentation'
 
 type AllocationBucket = {
   id: string
@@ -50,6 +45,7 @@ type AllocationBucket = {
   topLevelId: string
   topLevelLabel: string
   value: number
+  baseValueComplete: boolean
   weight: number
   holdingsCount: number
 }
@@ -81,7 +77,6 @@ type TopHoldingColumnDefinition = {
 type OverviewMetricRow = {
   label: string
   value: string
-  benchmark?: string | null
   emphasis?: boolean
   toneClassName?: string
   title?: string
@@ -92,7 +87,6 @@ const DEFAULT_TOP_HOLDING_COLUMNS: TopHoldingColumnKey[] = [
   'sparkline',
   'market_value',
   'weight',
-  'unrealized_pnl',
   'return_1w',
   'return_mtd',
   'return_ytd',
@@ -119,7 +113,7 @@ const TOP_HOLDING_COLUMN_LABELS: Record<TopHoldingColumnKey, string> = {
 const TOP_HOLDING_COLUMN_GROUPS: Array<{ label: string; columns: TopHoldingColumnKey[] }> = [
   { label: 'Core', columns: ['instrument', 'identifier', 'sleeve', 'coverage'] },
   { label: 'Market', columns: ['sparkline', 'last_price', 'market_value', 'weight', 'day_change'] },
-  { label: 'Position', columns: ['quantity', 'cost_basis', 'unrealized_pnl'] },
+  { label: 'Position', columns: ['quantity', 'cost_basis'] },
   { label: 'Return', columns: ['return_1w', 'return_mtd', 'return_ytd'] },
 ]
 
@@ -144,7 +138,7 @@ function isCashHoldingRow(row: PortfolioHoldingRow) {
 }
 
 function signedPercent(value: number | null | undefined, digits = 2) {
-  if (value == null || Number.isNaN(value)) {
+  if (value == null || !Number.isFinite(value)) {
     return '—'
   }
   const absolute = formatPercent(Math.abs(value), digits)
@@ -155,319 +149,6 @@ function signedPercent(value: number | null | undefined, digits = 2) {
     return `-${absolute}`
   }
   return absolute
-}
-
-function coverageClassName(coverageState: PortfolioPerformanceCoverageState) {
-  return coverageState === 'complete' ? 'coverage-pill-live' : 'coverage-pill-warning'
-}
-
-function dateFromString(date: string) {
-  const time = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date}T00:00:00` : date)
-  return Number.isNaN(time) ? null : new Date(time)
-}
-
-function addDays(date: Date, days: number) {
-  const nextDate = new Date(date)
-  nextDate.setDate(nextDate.getDate() + days)
-  return nextDate
-}
-
-function dayDiff(left: string, right: string) {
-  const leftTime = Date.parse(`${left}T00:00:00`)
-  const rightTime = Date.parse(`${right}T00:00:00`)
-  if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) {
-    return null
-  }
-  return Math.max(0, (rightTime - leftTime) / 86_400_000)
-}
-
-function annualizationPeriodsPerYear(dateKeys: string[], observationCount = dateKeys.length, startDate?: string | null) {
-  const sortedDates = [...dateKeys].sort()
-  if (observationCount < 1 || sortedDates.length < 2) {
-    return null
-  }
-  if (startDate) {
-    const elapsedDays = dayDiff(startDate, sortedDates[sortedDates.length - 1])
-    return elapsedDays != null && elapsedDays > 0 ? (observationCount / elapsedDays) * 365.25 : null
-  }
-  const elapsedDays = dayDiff(sortedDates[0], sortedDates[sortedDates.length - 1])
-  if (elapsedDays == null) {
-    return null
-  }
-  const gaps = sortedDates
-    .slice(1)
-    .map((dateKey, index) => dayDiff(sortedDates[index], dateKey))
-    .filter((value): value is number => value != null && value > 0)
-    .sort((left, right) => left - right)
-  const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 1
-  const observationSpanDays = elapsedDays + medianGap
-  return observationSpanDays > 0 ? (observationCount / observationSpanDays) * 365.25 : null
-}
-
-function formatDateKey(date: Date) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-function periodReturnFromTwr(
-  points: PortfolioDailyPerformancePoint[],
-  targetDate: string | null,
-  options: { fallbackToFirst?: boolean; includeTargetDate?: boolean } = {},
-) {
-  const fallbackToFirst = options.fallbackToFirst ?? true
-  const includeTargetDate = options.includeTargetDate ?? false
-  const sortedPoints = points
-    .filter((point) => point.daily_twr != null && Number.isFinite(point.daily_twr))
-    .slice()
-    .sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
-  if (!sortedPoints.length) {
-    return null
-  }
-
-  const periodPoints = targetDate
-    ? sortedPoints.filter((point) =>
-        includeTargetDate ? point.as_of_date >= targetDate : point.as_of_date > targetDate,
-      )
-    : sortedPoints
-  if (!periodPoints.length && !fallbackToFirst) {
-    return null
-  }
-  const returnPoints = periodPoints.length ? periodPoints : sortedPoints
-
-  return returnPoints.reduce((growthIndex, point) => growthIndex * (1 + (point.daily_twr ?? 0)), 1) - 1
-}
-
-function buildPortfolioReturnMetrics(points: PortfolioDailyPerformancePoint[]) {
-  const sortedPoints = points.slice().sort((left, right) => left.as_of_date.localeCompare(right.as_of_date))
-  const latestPoint = sortedPoints[sortedPoints.length - 1]
-  const latestDate = latestPoint ? dateFromString(latestPoint.as_of_date) : null
-  if (!latestPoint || !latestDate) {
-    return {
-      oneWeek: null,
-      mtd: null,
-      ytd: null,
-    }
-  }
-
-  const monthStart = new Date(latestDate.getFullYear(), latestDate.getMonth(), 1)
-  const yearStart = new Date(latestDate.getFullYear(), 0, 1)
-  const priorMonthEnd = addDays(monthStart, -1)
-  const priorYearEnd = addDays(yearStart, -1)
-  const hasYearStartAnchor = sortedPoints.some(
-    (point) => point.ending_nav != null && point.as_of_date <= formatDateKey(yearStart),
-  )
-
-  return {
-    oneWeek: periodReturnFromTwr(sortedPoints, formatDateKey(addDays(latestDate, -7))),
-    mtd: periodReturnFromTwr(sortedPoints, formatDateKey(priorMonthEnd), { fallbackToFirst: false }),
-    ytd: hasYearStartAnchor
-      ? periodReturnFromTwr(sortedPoints, formatDateKey(priorYearEnd), { fallbackToFirst: false })
-      : null,
-  }
-}
-
-function periodReturnFromValuePoints(
-  points: Array<{ date: string; value: number }>,
-  targetDate: string | null,
-  fallbackToFirst = true,
-) {
-  const sortedPoints = points
-    .filter((point) => Number.isFinite(point.value))
-    .slice()
-    .sort((left, right) => left.date.localeCompare(right.date))
-  if (sortedPoints.length < 2) {
-    return null
-  }
-
-  const latestPoint = sortedPoints[sortedPoints.length - 1]
-  const anchorPoint = targetDate
-    ? sortedPoints.reduce<PortfolioInstrumentPriceChartPoint | null>(
-        (current, point) => (point.date <= targetDate ? point : current),
-        null,
-      ) ?? (fallbackToFirst ? sortedPoints[0] : null)
-    : sortedPoints[0]
-  return anchorPoint && anchorPoint.value !== 0 ? latestPoint.value / anchorPoint.value - 1 : null
-}
-
-function latestValuePointOnOrBefore(
-  points: PortfolioInstrumentPriceChartPoint[],
-  targetDate: string,
-): PortfolioInstrumentPriceChartPoint | null {
-  let selected: PortfolioInstrumentPriceChartPoint | null = null
-  points.forEach((point) => {
-    if (point.date <= targetDate) {
-      selected = point
-    }
-  })
-  return selected
-}
-
-function sampleStandardDeviation(values: number[]) {
-  if (values.length < 2) {
-    return null
-  }
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length
-  const variance =
-    values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1)
-  return Math.sqrt(variance)
-}
-
-function annualizedMeanReturn(values: number[], periodsPerYear: number | null) {
-  if (!values.length || periodsPerYear == null) {
-    return null
-  }
-  return (values.reduce((sum, value) => sum + value, 0) / values.length) * periodsPerYear
-}
-
-function trailingAnnualizedVolatility(
-  points: Array<{ date: string; value: number }>,
-  latestDate: Date,
-  lookbackDays: number,
-) {
-  const startDate = formatDateKey(addDays(latestDate, -lookbackDays))
-  const hasStartAnchor = points.some((point) => point.date <= startDate)
-  if (!hasStartAnchor) {
-    return null
-  }
-  const windowPoints = points.filter((point) => point.date > startDate)
-  if (windowPoints.length < 2) {
-    return null
-  }
-  const values = windowPoints.map((point) => point.value)
-  const volatility = sampleStandardDeviation(values)
-  const periodsPerYear = annualizationPeriodsPerYear(
-    windowPoints.map((point) => point.date),
-    windowPoints.length,
-    startDate,
-  )
-  return volatility == null || periodsPerYear == null ? null : volatility * Math.sqrt(periodsPerYear)
-}
-
-function buildPortfolioRiskMetrics(points: PortfolioDailyPerformancePoint[]) {
-  const sortedPoints = points
-    .filter(
-      (point) =>
-        point.return_observation_eligible &&
-        point.daily_twr != null &&
-        Number.isFinite(point.daily_twr),
-    )
-    .map((point) => ({ date: point.as_of_date, value: point.daily_twr as number }))
-    .sort((left, right) => left.date.localeCompare(right.date))
-  const latestPoint = sortedPoints[sortedPoints.length - 1]
-  const latestDate = latestPoint ? dateFromString(latestPoint.date) : null
-  if (!latestDate) {
-    return {
-      volatility1m: null,
-      volatility3m: null,
-    }
-  }
-
-  return {
-    volatility1m: trailingAnnualizedVolatility(sortedPoints, latestDate, 30),
-    volatility3m: trailingAnnualizedVolatility(sortedPoints, latestDate, 90),
-  }
-}
-
-function buildDrawdownMetrics(points: PortfolioInstrumentPriceChartPoint[]) {
-  let highWater = points[0]?.value ?? 0
-  let maxDrawdown: number | null = null
-  let currentDrawdown: number | null = null
-
-  points.forEach((point) => {
-    highWater = Math.max(highWater, point.value)
-    const drawdown = highWater > 0 ? point.value / highWater - 1 : null
-    if (drawdown != null) {
-      currentDrawdown = drawdown
-      maxDrawdown = maxDrawdown == null ? drawdown : Math.min(maxDrawdown, drawdown)
-    }
-  })
-
-  return { currentDrawdown, maxDrawdown }
-}
-
-function buildBenchmarkMetrics(
-  points: PortfolioInstrumentPriceChartPoint[],
-  portfolioInceptionDate?: string | null,
-  portfolioEndDate?: string | null,
-) {
-  const sortedPoints = points
-    .filter((point) => Number.isFinite(point.value) && (!portfolioEndDate || point.date <= portfolioEndDate))
-    .slice()
-    .sort((left, right) => left.date.localeCompare(right.date))
-  const firstPoint = portfolioInceptionDate
-    ? latestValuePointOnOrBefore(sortedPoints, portfolioInceptionDate)
-    : sortedPoints[0]
-  const metricPoints = firstPoint
-    ? sortedPoints.filter((point) => point.date >= firstPoint.date)
-    : []
-  const latestPoint = metricPoints[metricPoints.length - 1]
-  const latestDate = latestPoint ? dateFromString(latestPoint.date) : null
-  if (!firstPoint || !latestPoint || !latestDate) {
-    return null
-  }
-
-  const monthStart = new Date(latestDate.getFullYear(), latestDate.getMonth(), 1)
-  const yearStart = new Date(latestDate.getFullYear(), 0, 1)
-  const priorMonthEnd = addDays(monthStart, -1)
-  const priorYearEnd = addDays(yearStart, -1)
-  const dailyReturns = metricPoints
-    .slice(1)
-    .map((point, index) => {
-      const previous = metricPoints[index]
-      return previous.value !== 0 ? { date: point.date, value: point.value / previous.value - 1 } : null
-    })
-    .filter((value): value is { date: string; value: number } => value != null)
-  const volatility = sampleStandardDeviation(dailyReturns.map((point) => point.value))
-  const metricStartDate = portfolioInceptionDate ?? firstPoint.date
-  const periodsPerYear = annualizationPeriodsPerYear(
-    dailyReturns.map((point) => point.date),
-    dailyReturns.length,
-    metricStartDate,
-  )
-  const startDate = dateFromString(metricStartDate)
-  const daySpan = startDate ? Math.max(1, (latestDate.getTime() - startDate.getTime()) / 86_400_000) : null
-  const sinceInception = firstPoint.value !== 0 ? latestPoint.value / firstPoint.value - 1 : null
-  const annualizedReturn =
-    sinceInception != null && daySpan != null
-      ? (1 + sinceInception) ** (365.25 / daySpan) - 1
-      : null
-  const annualizedVolatility = volatility == null || periodsPerYear == null ? null : volatility * Math.sqrt(periodsPerYear)
-  const annualizedMean = annualizedMeanReturn(dailyReturns.map((point) => point.value), periodsPerYear)
-  const drawdowns = buildDrawdownMetrics(metricPoints)
-
-  return {
-    oneWeek: periodReturnFromValuePoints(metricPoints, formatDateKey(addDays(latestDate, -7))),
-    mtd: periodReturnFromValuePoints(metricPoints, formatDateKey(priorMonthEnd), false),
-    ytd: periodReturnFromValuePoints(metricPoints, formatDateKey(priorYearEnd), false),
-    sinceInception,
-    annualizedReturn,
-    annualizedVolatility,
-    volatility1m: trailingAnnualizedVolatility(dailyReturns, latestDate, 30),
-    volatility3m: trailingAnnualizedVolatility(dailyReturns, latestDate, 90),
-    sharpe:
-      annualizedMean != null && annualizedVolatility != null && annualizedVolatility !== 0
-        ? annualizedMean / annualizedVolatility
-        : null,
-    currentDrawdown: drawdowns.currentDrawdown,
-    maxDrawdown: drawdowns.maxDrawdown,
-  }
-}
-
-function benchmarkNote(
-  selected: SharedInstrumentRecord | null,
-  loading: boolean,
-  value: number | null | undefined,
-  formatter: (input: number | null | undefined) => string = signedPercent,
-) {
-  if (!selected) {
-    return null
-  }
-  if (loading) {
-    return 'BM loading'
-  }
-  return `BM ${formatter(value)}`
 }
 
 function StrategySleeveDonut({
@@ -568,13 +249,17 @@ function accumulateBucket(
     label: string
     topLevelId: string
     topLevelLabel: string
-    value: number
+    value: number | null
     weight: number
   },
 ) {
   const current = buckets.get(args.id)
   if (current) {
-    current.value += args.value
+    if (args.value == null) {
+      current.baseValueComplete = false
+    } else {
+      current.value += args.value
+    }
     current.weight += args.weight
     current.holdingsCount += 1
     return
@@ -584,7 +269,8 @@ function accumulateBucket(
     label: args.label,
     topLevelId: args.topLevelId,
     topLevelLabel: args.topLevelLabel,
-    value: args.value,
+    value: args.value ?? 0,
+    baseValueComplete: args.value != null,
     weight: args.weight,
     holdingsCount: 1,
   })
@@ -598,14 +284,9 @@ export default function OverviewPage() {
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [performanceWorkspace, setPerformanceWorkspace] = useState<PortfolioPerformanceResponse | null>(null)
+  const [returnCalendar, setReturnCalendar] = useState<PortfolioReturnCalendarResponse | null>(null)
   const [performanceLoading, setPerformanceLoading] = useState(false)
   const [performanceError, setPerformanceError] = useState<string | null>(null)
-  const [benchmarkInstruments, setBenchmarkInstruments] = useState<SharedInstrumentRecord[]>([])
-  const [benchmarkSearch, setBenchmarkSearch] = useState('')
-  const [benchmarkInstrumentId, setBenchmarkInstrumentId] = useState('')
-  const [benchmarkChart, setBenchmarkChart] = useState<PortfolioInstrumentPriceChartResponse | null>(null)
-  const [benchmarkLoading, setBenchmarkLoading] = useState(false)
-  const [benchmarkError, setBenchmarkError] = useState<string | null>(null)
   const [topHoldingColumns, setTopHoldingColumns] = useState<TopHoldingColumnKey[]>(DEFAULT_TOP_HOLDING_COLUMNS)
   const [topHoldingColumnDraft, setTopHoldingColumnDraft] = useState<TopHoldingColumnKey[]>(DEFAULT_TOP_HOLDING_COLUMNS)
   const [topHoldingColumnsOpen, setTopHoldingColumnsOpen] = useState(false)
@@ -664,25 +345,38 @@ export default function OverviewPage() {
     const asOfDate = holdingsWorkspace?.as_of_date ?? summary?.as_of_date
     if (!portfolioId || !asOfDate) {
       setPerformanceWorkspace(null)
+      setReturnCalendar(null)
       setPerformanceLoading(false)
       setPerformanceError(null)
       return
     }
 
     let cancelled = false
+    setPerformanceWorkspace(null)
+    setReturnCalendar(null)
+    setPerformanceError(null)
     setPerformanceLoading(true)
 
-    getPortfolioPerformance(portfolioId, { end_date: asOfDate })
-      .then((response) => {
+    Promise.all([
+      getPortfolioPerformance(portfolioId, { end_date: asOfDate }),
+      getPortfolioReturnCalendar(portfolioId, { end_date: asOfDate, frequency: 'monthly' }),
+    ])
+      .then(([performanceResponse, calendarResponse]) => {
         if (!cancelled) {
-          setPerformanceWorkspace(response)
+          setPerformanceWorkspace(performanceResponse)
+          setReturnCalendar(calendarResponse)
           setPerformanceError(null)
         }
       })
       .catch((requestError) => {
         if (!cancelled) {
-          setPerformanceError(requestError instanceof Error ? requestError.message : 'Failed to load NAV history.')
+          setPerformanceError(
+            requestError instanceof Error
+              ? requestError.message
+              : 'Failed to load authoritative performance and return calendar.',
+          )
           setPerformanceWorkspace(null)
+          setReturnCalendar(null)
         }
       })
       .finally(() => {
@@ -696,117 +390,38 @@ export default function OverviewPage() {
     }
   }, [holdingsWorkspace?.as_of_date, portfolioId, summary?.as_of_date])
 
-  useEffect(() => {
-    if (!portfolioId) {
-      setBenchmarkInstruments([])
-      return
-    }
-
-    let cancelled = false
-    getPortfolioInstruments(portfolioId)
-      .then((response) => {
-        if (!cancelled) {
-          setBenchmarkInstruments(response.instruments)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setBenchmarkInstruments([])
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [portfolioId])
-
-  useEffect(() => {
-    const asOfDate = holdingsWorkspace?.as_of_date ?? summary?.as_of_date
-    if (!portfolioId || !benchmarkInstrumentId || !asOfDate) {
-      setBenchmarkChart(null)
-      setBenchmarkLoading(false)
-      setBenchmarkError(null)
-      return
-    }
-
-    let cancelled = false
-    setBenchmarkLoading(true)
-    setBenchmarkError(null)
-
-    getPortfolioInstrumentPriceChart(portfolioId, benchmarkInstrumentId, {
-      as_of_date: asOfDate,
-      range: 'all',
-    })
-      .then((response) => {
-        if (!cancelled) {
-          setBenchmarkChart(response)
-        }
-      })
-      .catch((requestError) => {
-        if (!cancelled) {
-          setBenchmarkChart(null)
-          setBenchmarkError(requestError instanceof Error ? requestError.message : 'Failed to load benchmark history.')
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setBenchmarkLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [benchmarkInstrumentId, holdingsWorkspace?.as_of_date, portfolioId, summary?.as_of_date])
-
   const holdingsRows = holdingsWorkspace?.rows ?? []
   const nonCashHoldingsRows = useMemo(() => holdingsRows.filter((row) => !isCashHoldingRow(row)), [holdingsRows])
   const resolvedBaseCurrency =
-    summary?.base_currency ?? holdingsWorkspace?.base_currency ?? performanceWorkspace?.base_currency ?? 'USD'
+    summary?.base_currency ?? holdingsWorkspace?.base_currency ?? performanceWorkspace?.base_currency ?? ''
   const sortedHoldings = useMemo(
     () =>
       [...nonCashHoldingsRows].sort(
         (left, right) =>
           (right.allocation ?? 0) - (left.allocation ?? 0) ||
-          (right.market_value_base ?? right.market_value ?? 0) - (left.market_value_base ?? left.market_value ?? 0),
+          (right.market_value_base ?? 0) - (left.market_value_base ?? 0),
       ),
     [nonCashHoldingsRows],
   )
-  const holdingsMarketValueBase = useMemo(
-    () =>
-      nonCashHoldingsRows.reduce(
-        (sum, row) => sum + (row.market_value_base ?? row.market_value ?? 0),
-        0,
-      ),
-    [nonCashHoldingsRows],
-  )
-  const cashValueRaw = (summary?.nav ?? 0) - holdingsMarketValueBase
-  const cashValue = Math.abs(cashValueRaw) < 1 ? 0 : cashValueRaw
-  const cashWeight = summary?.nav ? cashValue / summary.nav : null
-  const top5Weight = sortedHoldings.slice(0, 5).reduce((sum, row) => sum + (row.allocation ?? 0), 0)
   const navChartPoints = useMemo(
     () =>
-      (performanceWorkspace?.daily_series ?? [])
-        .filter((point) => point.ending_nav != null)
-        .map((point) => ({
-          date: point.as_of_date,
-          value: point.ending_nav as number,
-        })),
+      (performanceWorkspace?.daily_series ?? []).map((point) => ({
+        date: point.as_of_date,
+        value: point.ending_nav,
+      })),
     [performanceWorkspace],
   )
   const twrIndexChartPoints = useMemo(
     () => buildTwrIndexPoints(performanceWorkspace?.daily_series ?? []),
     [performanceWorkspace],
   )
-  const benchmarkChartPoints = useMemo(
+  const drawdownChartPoints = useMemo(
     () =>
-      (benchmarkChart?.points ?? [])
-        .filter((point) => Number.isFinite(point.value))
-        .map((point) => ({
-          date: point.date,
-          value: point.value,
-        })),
-    [benchmarkChart],
+      (performanceWorkspace?.daily_series ?? []).map((point) => ({
+        date: point.as_of_date,
+        value: point.drawdown,
+      })),
+    [performanceWorkspace],
   )
 
   const defaultPlanningTaxonomyId =
@@ -836,8 +451,8 @@ export default function OverviewPage() {
     >()
 
     nonCashHoldingsRows.forEach((row) => {
-      const value = row.market_value_base ?? row.market_value ?? 0
-      const weight = row.allocation ?? ((summary?.nav ?? 0) > 0 ? value / (summary?.nav ?? 1) : 0)
+      const value = row.market_value_base ?? null
+      const weight = row.allocation ?? 0
       const assignment = assignmentByInstrumentId.get(row.instrument_core.instrument_id)
       const leafNode = assignment ? nodesById.get(assignment.taxonomy_node_id) ?? null : null
       const path = leafNode ? resolveNodePath(leafNode.taxonomy_node_id, nodesById) : []
@@ -874,7 +489,6 @@ export default function OverviewPage() {
     nonCashHoldingsRows,
     holdingsWorkspace?.as_of_date,
     summary?.as_of_date,
-    summary?.nav,
     taxonomyCatalog,
   ])
 
@@ -883,7 +497,9 @@ export default function OverviewPage() {
     label: bucket.label,
     value: bucket.weight,
     valueLabel: formatPercent(bucket.weight),
-    detail: `${bucket.holdingsCount} lines · ${formatCurrency(bucket.value, resolvedBaseCurrency)}`,
+    detail: bucket.baseValueComplete
+      ? `${bucket.holdingsCount} lines · ${formatCurrency(bucket.value, resolvedBaseCurrency)}`
+      : `${bucket.holdingsCount} lines · base value unavailable`,
   }))
   const topHoldingBarItems = sortedHoldings.slice(0, TOP_HOLDINGS_LIMIT).map((row) => ({
     id: row.line_id,
@@ -891,65 +507,57 @@ export default function OverviewPage() {
     subtitle: composition.assignedLabelByInstrumentId.get(row.instrument_core.instrument_id)?.leafLabel ?? formatLabel(row.instrument_core.instrument_type),
     value: row.allocation ?? 0,
     valueLabel: formatPercent(row.allocation),
-    detail: formatCurrency(row.market_value_base ?? row.market_value, resolvedBaseCurrency),
+    detail: formatCurrency(row.market_value_base, resolvedBaseCurrency),
   }))
-  const selectedBenchmarkInstrument =
-    benchmarkInstruments.find((instrument) => instrument.instrument_id === benchmarkInstrumentId) ?? null
-  const portfolioInceptionDate =
-    performanceWorkspace?.summary.start_date ??
-    performanceWorkspace?.daily_series.find((point) => point.ending_nav != null)?.as_of_date ??
-    null
-  const benchmarkEndDate = performanceWorkspace?.summary.end_date ?? holdingsWorkspace?.as_of_date ?? summary?.as_of_date ?? null
-  const benchmarkMetrics = useMemo(
-    () => buildBenchmarkMetrics(benchmarkChart?.points ?? [], portfolioInceptionDate, benchmarkEndDate) ?? null,
-    [benchmarkChart, benchmarkEndDate, portfolioInceptionDate],
+  const monthlyMatrixRows = useMemo(
+    () => buildReturnCalendarMatrixRows(returnCalendar?.buckets ?? []),
+    [returnCalendar],
   )
-  const portfolioReturnMetrics = useMemo(
-    () => buildPortfolioReturnMetrics(performanceWorkspace?.daily_series ?? []),
-    [performanceWorkspace],
+  const overviewPerformanceHistoryReliability =
+    performanceWorkspace?.summary.history_reliability ?? null
+  const overviewAnnualizedReturnEligible = annualizedReturnDisplayEligible(
+    overviewPerformanceHistoryReliability,
   )
-  const portfolioRiskMetrics = useMemo(
-    () => buildPortfolioRiskMetrics(performanceWorkspace?.daily_series ?? []),
-    [performanceWorkspace],
-  )
-  const monthlyBuckets = useMemo(
-    () => buildMonthlyBuckets(performanceWorkspace?.daily_series ?? []),
-    [performanceWorkspace],
-  )
-  const monthlyMatrixRows = useMemo(() => buildMonthlyReturnMatrixRows(monthlyBuckets), [monthlyBuckets])
+  const overviewAnnualizationMessage =
+    overviewPerformanceHistoryReliability?.annualization_message ??
+    'Annualized metrics are unavailable for this history window.'
 
   const overviewMetricGroups: Array<{ label: string; rows: OverviewMetricRow[] }> = [
     {
       label: 'Performance',
       rows: [
         {
-          label: '1W Return',
-          value: signedPercent(portfolioReturnMetrics.oneWeek),
-          benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.oneWeek),
-          emphasis: true,
-          toneClassName: signedValueClass(portfolioReturnMetrics.oneWeek),
-        },
-        {
-          label: 'MTD',
-          value: signedPercent(portfolioReturnMetrics.mtd),
-          benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.mtd),
-          emphasis: true,
-          toneClassName: signedValueClass(portfolioReturnMetrics.mtd),
-        },
-        {
-          label: 'YTD',
-          value: signedPercent(portfolioReturnMetrics.ytd),
-          benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.ytd),
-          emphasis: true,
-          toneClassName: signedValueClass(portfolioReturnMetrics.ytd),
-          title: portfolioReturnMetrics.ytd == null ? 'No year-start anchor.' : undefined,
-        },
-        {
-          label: 'Since Inception',
+          label: 'Reported Period TWR',
           value: signedPercent(performanceWorkspace?.summary.cumulative_twr),
-          benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.sinceInception),
           emphasis: true,
           toneClassName: signedValueClass(performanceWorkspace?.summary.cumulative_twr),
+        },
+        {
+          label: 'Annualized TWR',
+          value: overviewAnnualizedReturnEligible
+            ? signedPercent(performanceWorkspace?.summary.annualized_twr)
+            : 'N/A',
+          emphasis: true,
+          toneClassName: overviewAnnualizedReturnEligible
+            ? signedValueClass(performanceWorkspace?.summary.annualized_twr)
+            : undefined,
+          title: overviewAnnualizedReturnEligible
+            ? undefined
+            : overviewAnnualizationMessage,
+        },
+        {
+          label: 'IRR / MWRR',
+          value: overviewAnnualizedReturnEligible
+            ? `${signedPercent(performanceWorkspace?.summary.irr)} / ${signedPercent(performanceWorkspace?.summary.mwror)}`
+            : 'N/A',
+          title: overviewAnnualizedReturnEligible
+            ? undefined
+            : overviewAnnualizationMessage,
+        },
+        {
+          label: 'TWR Reliability',
+          value: formatLabel(performanceWorkspace?.summary.twr_reliability_status ?? 'unavailable'),
+          title: performanceWorkspace?.summary.twr_reliability_reasons.map(formatLabel).join(', ') || undefined,
         },
       ],
     },
@@ -959,36 +567,22 @@ export default function OverviewPage() {
         {
           label: 'Current DD',
           value: signedPercent(performanceWorkspace?.summary.current_drawdown),
-          benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.currentDrawdown),
           toneClassName: signedValueClass(performanceWorkspace?.summary.current_drawdown),
         },
         {
           label: 'Max DD',
           value: signedPercent(performanceWorkspace?.summary.max_drawdown),
-          benchmark: benchmarkNote(selectedBenchmarkInstrument, benchmarkLoading, benchmarkMetrics?.maxDrawdown),
           toneClassName: signedValueClass(performanceWorkspace?.summary.max_drawdown),
         },
         {
-          label: '1M VOL',
-          value: formatPercent(portfolioRiskMetrics.volatility1m),
-          benchmark: benchmarkNote(
-            selectedBenchmarkInstrument,
-            benchmarkLoading,
-            benchmarkMetrics?.volatility1m,
-            formatPercent,
-          ),
-          title: portfolioRiskMetrics.volatility1m == null ? 'Need full 1M history.' : undefined,
+          label: 'Annualized VOL',
+          value: formatPercent(performanceWorkspace?.summary.annualized_volatility),
+          title: 'Backend reported-period volatility.',
         },
         {
-          label: '3M VOL',
-          value: formatPercent(portfolioRiskMetrics.volatility3m),
-          benchmark: benchmarkNote(
-            selectedBenchmarkInstrument,
-            benchmarkLoading,
-            benchmarkMetrics?.volatility3m,
-            formatPercent,
-          ),
-          title: portfolioRiskMetrics.volatility3m == null ? 'Need full 3M history.' : undefined,
+          label: 'Downside VOL',
+          value: formatPercent(performanceWorkspace?.summary.annualized_downside_volatility),
+          title: 'Backend reported-period downside volatility.',
         },
       ],
     },
@@ -1002,8 +596,8 @@ export default function OverviewPage() {
           emphasis: true,
           toneClassName: signedValueClass(performanceWorkspace?.summary.total_pnl),
         },
-        { label: 'Cash Weight', value: formatPercent(cashWeight) },
-        { label: 'Top 5 Weight', value: formatPercent(top5Weight) },
+        { label: 'Base Currency', value: resolvedBaseCurrency || '—' },
+        { label: 'Position Lines', value: formatNumber(nonCashHoldingsRows.length, 0) },
       ],
     },
   ]
@@ -1042,34 +636,24 @@ export default function OverviewPage() {
     {
       key: 'market_value',
       label: TOP_HOLDING_COLUMN_LABELS.market_value,
-      render: (row) => formatCurrency(row.market_value_base ?? row.market_value, resolvedBaseCurrency),
+      render: (row) => formatCurrency(row.market_value_base, resolvedBaseCurrency),
     },
     {
       key: 'cost_basis',
       label: TOP_HOLDING_COLUMN_LABELS.cost_basis,
-      render: (row) => formatCurrency(row.cost_basis_base ?? row.cost_basis, resolvedBaseCurrency),
+      render: (row) => formatCurrency(row.cost_basis_base, resolvedBaseCurrency),
     },
     {
       key: 'unrealized_pnl',
       label: TOP_HOLDING_COLUMN_LABELS.unrealized_pnl,
-      render: (row) => {
-        const unrealized =
-          row.market_value_base != null && row.cost_basis_base != null
-            ? row.market_value_base - row.cost_basis_base
-            : null
-        return (
-          <span className={signedValueClass(unrealized)}>
-            {formatSignedCurrency(unrealized, resolvedBaseCurrency)}
-          </span>
-        )
-      },
+      render: () => <span title="Awaiting backend unrealized P&L projection">—</span>,
     },
     {
       key: 'day_change',
       label: TOP_HOLDING_COLUMN_LABELS.day_change,
       render: (row) => (
         <span className={signedValueClass(row.day_change_pct)}>
-          {formatSignedCurrency(row.day_change_value_base ?? row.day_change_value, resolvedBaseCurrency)} ({signedPercent(row.day_change_pct)})
+          {formatSignedCurrency(row.day_change_value_base, resolvedBaseCurrency)} ({signedPercent(row.day_change_pct)})
         </span>
       ),
     },
@@ -1138,25 +722,10 @@ export default function OverviewPage() {
                 <div className="overview-nav-grid">
                   <div className="overview-nav-chart-panel">
                     <div className="overview-chart-controls">
-                      <BenchmarkSearchBox
-                        instruments={benchmarkInstruments}
-                        selectedInstrumentId={benchmarkInstrumentId}
-                        searchValue={benchmarkSearch}
-                        onSearchChange={setBenchmarkSearch}
-                        onSelectInstrument={(instrument) => {
-                          setBenchmarkInstrumentId(instrument.instrument_id)
-                          setBenchmarkSearch(benchmarkInstrumentLabel(instrument))
-                          setBenchmarkError(null)
-                        }}
-                        onClear={() => {
-                          setBenchmarkInstrumentId('')
-                          setBenchmarkSearch('')
-                          setBenchmarkChart(null)
-                          setBenchmarkError(null)
-                        }}
-                      />
+                      <span className="portfolio-detail-meta">
+                        Benchmark-relative analytics are withheld until the backend comparison contract is available.
+                      </span>
                     </div>
-                    {benchmarkError ? <div className="overview-benchmark-error">{benchmarkError}</div> : null}
                     {performanceLoading && !performanceWorkspace ? (
                       <CalculationStatus />
                     ) : null}
@@ -1164,15 +733,10 @@ export default function OverviewPage() {
                       <PerformanceNavChart
                         points={navChartPoints}
                         twrPoints={twrIndexChartPoints}
-                        benchmarkPoints={benchmarkChartPoints}
-                        benchmarkLabel={
-                          selectedBenchmarkInstrument
-                            ? instrumentPrimaryIdentifier(selectedBenchmarkInstrument)
-                            : null
-                        }
+                        drawdownPoints={drawdownChartPoints}
+                        summary={performanceWorkspace.summary}
                         currency={resolvedBaseCurrency}
                         showRangeControls
-                        variant="overview"
                       />
                     ) : null}
                   </div>
@@ -1199,7 +763,6 @@ export default function OverviewPage() {
                                     .join(' ') || undefined}
                                 >
                                   <strong>{row.value}</strong>
-                                  {'benchmark' in row && row.benchmark ? <small>{row.benchmark}</small> : null}
                                 </td>
                               </tr>
                             ))}
@@ -1214,16 +777,18 @@ export default function OverviewPage() {
               <section className="performance-section-block">
                 <div className="portfolio-detail-toolbar performance-subsection-toolbar performance-section-toolbar">
                   <div className="panel-title">Monthly Return Matrix</div>
+                  <div className="portfolio-detail-meta">
+                    Backend calendar · {formatLabel(returnCalendar?.summary.twr_reliability_status ?? 'unavailable')}
+                  </div>
                 </div>
                 <div className="table-shell">
                   <table className="transactions-table performance-return-matrix-table">
                     <thead>
                       <tr>
                         <th>Year</th>
-                        {MONTH_LABELS.map((monthLabel) => (
+                        {RETURN_CALENDAR_MONTH_LABELS.map((monthLabel) => (
                           <th key={monthLabel}>{monthLabel}</th>
                         ))}
-                        <th title="Requires year-start anchor.">YTD</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1232,35 +797,35 @@ export default function OverviewPage() {
                           <tr key={row.year}>
                             <th scope="row">
                               <span>{row.year}</span>
-                              <span className={`coverage-dot ${coverageClassName(row.coverageState)}`} />
                             </th>
                             {row.months.map((bucket, index) => (
                               <td
-                                key={`${row.year}:${MONTH_LABELS[index]}`}
+                                key={`${row.year}:${RETURN_CALENDAR_MONTH_LABELS[index]}`}
                                 className={`performance-cell-number performance-return-cell ${signedValueClass(
                                   bucket?.cumulative_twr,
                                 )}`}
                                 title={
                                   bucket
                                     ? `${bucket.start_date} to ${bucket.end_date}; ${formatLabel(
-                                        bucket.coverage_state,
-                                      )}; ${formatNumber(bucket.observation_count, 0)} observations`
+                                        bucket.nav_coverage_state,
+                                      )}; ${formatLabel(bucket.twr_reliability_status)} TWR; ${formatNumber(
+                                        bucket.observation_count,
+                                        0,
+                                      )} observations${
+                                        bucket.twr_reliability_reasons.length
+                                          ? `; ${bucket.twr_reliability_reasons.map(formatLabel).join(', ')}`
+                                          : ''
+                                      }`
                                     : undefined
                                 }
                               >
                                 {signedPercent(bucket?.cumulative_twr)}
                               </td>
                             ))}
-                            <td
-                              className={`performance-cell-number performance-return-cell ${signedValueClass(row.ytd)}`}
-                              title={row.hasYearStartAnchor ? `${row.year} YTD` : 'No year-start anchor.'}
-                            >
-                              {signedPercent(row.ytd)}
-                            </td>
                           </tr>
                         ))
                       ) : (
-                        <TableStatusRow colSpan={14} label="No monthly returns." />
+                        <TableStatusRow colSpan={13} label="No authoritative monthly returns." />
                       )}
                     </tbody>
                   </table>
