@@ -44,6 +44,15 @@
 - 直接读取 `instrument_registry`
 - 在本地维护自己的 ledger、lots、performance、risk、taxonomy、target set、research
 
+## Same-Name Page Boundary
+
+Watchlist 与 Portfolio 会使用相同的投资术语，但这些页面不是同一个业务对象：
+
+- Watchlist Instrument Detail 位于 `/instruments/:instrumentId`，Performance / Risk 面向单一 fund 或 instrument 的 NAV、price、benchmark 和单资产统计。
+- Portfolio workspace 位于 `/portfolios/:portfolioId/...`，Overview / Performance / Risk / Research 面向组合账户、交易、现金流、持仓、TWR、归因、风险预算和规划求解。
+- 两边可以遵守相同的视觉基线，但不得互用业务计算、页面 fixture、截图或验收结果。
+- 修改或验收前必须同时确认 app、URL、源码目录与 API origin；页面标题相同不能证明页面身份相同。
+
 ## Shared Layer
 
 当前共享层分成三部分：

@@ -43,18 +43,20 @@ portfolio-operations-workbench/
   面向公司同事的使用手册，覆盖 Platform / Watchlist / Portfolio 的日常操作边界。
 - [docs/FRONTEND_DESIGN_BASELINE.md](./docs/FRONTEND_DESIGN_BASELINE.md)
   当前前端设计基线，约束白底数据终端、字体层级、tabs 与内容区节奏。
-- [docs/MAC_MIGRATION_FREEZE.md](./docs/MAC_MIGRATION_FREEZE.md)
-  WSL 到 Mac 迁移冻结清单，记录 Git 承载范围、本地状态边界和恢复步骤。
 - [docs/NEW_MACHINE_RESTORE.md](./docs/NEW_MACHINE_RESTORE.md)
   新电脑从 GitHub 私有仓库恢复项目的步骤参考。
 - [docs/LOCAL_MACOS_SERVICE.md](./docs/LOCAL_MACOS_SERVICE.md)
   macOS 本地后台服务、每日 21:00 行情刷新与自动重算任务的安装、状态检查、日志和卸载说明。
+- [docs/SERVER_DEPLOYMENT.md](./docs/SERVER_DEPLOYMENT.md)
+  Linux/systemd 服务部署、迁移和运行检查手册。
 - [apps/platform/README.md](./apps/platform/README.md)
   Platform app 的职责、启动命令和前端运行时配置。
 - [apps/watchlist/README.md](./apps/watchlist/README.md)
   Watchlist app 的当前实现基线、启动方式和行为边界。
 - [apps/portfolio/README.md](./apps/portfolio/README.md)
   Portfolio app 的领域范围、启动方式和导入/校验说明。
+- [apps/portfolio/docs/03_OPTIMIZATION_HANDOFF.md](./apps/portfolio/docs/03_OPTIMIZATION_HANDOFF.md)
+  当前仅针对 `apps/portfolio` 的下一轮优化临时执行 handoff；Watchlist 不在本 handoff 范围内，完成后按文档内规则退役。
 
 ## 当前边界
 

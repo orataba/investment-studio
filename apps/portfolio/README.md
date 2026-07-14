@@ -10,7 +10,7 @@
 - `Holdings / Accounts / Transactions / Performance` 已有真实 API 与页面支撑
   `Transactions` 当前支持 create / update / delete 原始事实；内部转仓仍按成对事实管理
 - `Risk` 已有真实工作台，包含 rolling annualized volatility / Sharpe、sample 相关性矩阵和 Current Drift；Production Risk Model 的风险窗口固定为 `1M / 3M / 6M / 12M / 24M`，协方差方法和风险贡献模式与 Research 使用同一组严格口径，相关性矩阵只暴露窗口和 scope，不混入协方差模型选择
-- `Taxonomies` 已有真实配置工作台，支持层级 sleeve tree、assignment、`TargetSet`、`default planning taxonomy` 与 `cash_bucket` 维护
+- `Taxonomies` 已有真实配置工作台，支持层级 sleeve tree、assignment、`TargetSet`、`default planning taxonomy` 与 `cash_bucket` 维护。锁定口径是现金可以参与 capital / weight target、但不进入 `risk_budget` target；当前 UI/backend 仍会生成或要求 `0%` cash risk 占位，这是待修偏差，不是有效产品规则，详见 [优化 handoff](./docs/03_OPTIMIZATION_HANDOFF.md#32-risk-target-excludes-cash)
 - `Research` 已有真实工作台，支持基于 planning taxonomy / TargetSet / 当前持仓的递归 target-weight solve、top sleeve bounds、vol target/cap、1W/1M/3M rebalance backtest、benchmark 动态比较、latest run 结果、风险预算求解诊断、回撤指标和调仓缺口。新 run 只有成功完成后才替换上一轮成功结果；失败 run 会保留上一轮 completed run 供继续查看。
 - `Overview` 已作为组合默认首页发布，主图按 `Portfolio Value / TWR Index` 两种组合管理口径展示，回撤固定基于 TWR；页面同时承载 sleeve 结构和 top holdings 总览，`Snapshot` 不再作为独立工作面保留
 
@@ -24,6 +24,8 @@
   Portfolio 当前 canonical 计算口径。
 - [docs/02_GIPS_ALIGNMENT.md](./docs/02_GIPS_ALIGNMENT.md)
   GIPS-informed 绩效方法治理边界。
+- [docs/03_OPTIMIZATION_HANDOFF.md](./docs/03_OPTIMIZATION_HANDOFF.md)
+  下一轮 Portfolio 优化的执行基线、已锁定产品决策、优先级和验收门槛；完成后应删除或归档，不作为永久规格叠加。
 
 ## 开发原则
 
@@ -104,8 +106,8 @@ npm --prefix apps/portfolio/frontend run build
 - Holdings 的 group / subtotal / total 行对 market value、cost basis、day change、unrealized P&L 等绝对量按组内明细加总；unrealized return 使用非现金 P&L 除以非现金成本，并在同一行包含现金时把现金 market value 纳入分母稀释，纯现金行不显示该比例。
 - `Risk` 的 rolling volatility / Sharpe、相关性矩阵和 Current Drift 是当前权重口径：使用当前非现金持仓权重乘以资产自身全历史收益窗口，不被组合成立日或真实持仓起始日截断。它不是 realized attribution；若需要真实持仓期间复盘，归入 Performance `Calculation`。Risk 排除仅由 stale price carry-forward 得到的非市场观察日；`sample_covariance` 使用样本协方差 `n - 1`，不使用总体协方差。混合频率和稀疏序列必须使用 Holdings workspace 的 `risk_basis` 对齐元数据解析 daily / weekly / monthly calculation basis，再按目标 period 的最后有效观测对齐，不跨期前向填充；协方差默认要求 active return matrix 是完整对齐样本，按完整样本的实际观察密度年化，不做 pairwise 拼矩阵或缺失收益补 0。Risk 窗口还必须满足最小收益样本数、窗口起点锚定和至少 80% elapsed-day 覆盖，不满足时显示 insufficient history，不计算替代值。区间风险贡献归入 Performance `Calculation` 的 realized risk attribution columns。
 - `Risk` Correlation Matrix 展示当前 scope 内完整覆盖窗口的 sample correlation；EWMA、vol shrinkage 和相关性收缩属于协方差估计模型，只用于 rolling risk、Current Drift risk gap 和 Risk Contribution，不作为相关性矩阵的用户选项。
-- `Risk` Current Drift 在 instrument-scope taxonomy 下把非现金 Holdings rows 与 Accounts workspace 现金账户合成当前 NAV；Holdings cash rows 只服务 Holdings 展示，不再作为 instrument exposure 参与 Risk 分母或分组，避免现金重复计入。
-- `Research` 的当前 target solve 从最末端 sleeve 递归向上求解；scope default 只使用该 scope 自身的默认目标维度，不静默切到另一个维度。多成员 scope 必须存在 active complete `SAA` 或 `TAA` target set；缺失目标、目标加总错误、strict missing-return policy 下出现单成员缺失、`complete_case_drop` 超过覆盖率/尾部新鲜度上限、risk-budget 求解不能满足 `1e-4` risk-share gap 阈值时，run 明确失败或标记 unavailable，不回退到目标权重、等权或旧算法。单成员 scope 只保留数学上唯一确定的 100% 权重，现金 risk budget 为 0。顶层 capital overlay 在风险 sleeve 权重求出后再按目标波动率、波动率上限或总敞口缩放，并把剩余权重放到系统 cash；top sleeve bounds 只作用于 root 直接 sleeve，违反上下限时 run 必须失败。Research backtest 使用同一 Production Risk Model 与 target solve 逻辑逐期重算，支持 1W / 1M / 3M rebalance；组合成员共同历史不足一个风险窗口时返回空 backtest warning，不生成越界日期或短窗口替代结果。已完成 run 可以在不重跑 target solve 的情况下切换 benchmark 做共同期比较；`excess_return` 保持组合共同期收益减基准共同期收益，tracking error / information ratio 来自 active return 序列。
+- `Risk` Current Drift 在 instrument-scope taxonomy 下把非现金 Holdings rows 与 Accounts workspace 现金账户合成当前 NAV。锁定目标行为是现金只参与 capital / weight drift；`Risk Target Gap` 只比较承担风险的非现金成员，现金不建 risk target row、不进入风险预算 100% 分母。当前页面仍可能因旧 `0%` cash risk 占位报错，属于 [handoff](./docs/03_OPTIMIZATION_HANDOFF.md#32-risk-target-excludes-cash) 已记录的实现偏差。
+- `Research` 的当前 target solve 从最末端 sleeve 递归向上求解；scope default 只使用该 scope 自身的默认目标维度，不静默切到另一个维度。多成员 scope 必须存在 active complete `SAA` 或 `TAA` target set；缺失目标、目标加总错误、strict missing-return policy 下出现单成员缺失、`complete_case_drop` 超过覆盖率/尾部新鲜度上限、risk-budget 求解不能满足 `1e-4` risk-share gap 阈值时，run 明确失败或标记 unavailable，不回退到目标权重、等权或旧算法。锁定目标行为是 `risk_budget` target 只包含非现金风险成员且合计 100%，纯现金 scope 没有风险预算；当前 solver 仍会注入 cash risk zero，是待修偏差。顶层 capital overlay 在风险 sleeve 权重求出后再按目标波动率、波动率上限或总敞口缩放，并把剩余权重放到系统 cash；这部分残余现金是求解输出，不是 risk target。top sleeve bounds 只作用于 root 直接 sleeve，违反上下限时 run 必须失败。Research backtest 使用同一 Production Risk Model 与 target solve 逻辑逐期重算，支持 1W / 1M / 3M rebalance；组合成员共同历史不足一个风险窗口时返回空 backtest warning，不生成越界日期或短窗口替代结果。已完成 run 可以在不重跑 target solve 的情况下切换 benchmark 做共同期比较；`excess_return` 保持组合共同期收益减基准共同期收益，tracking error / information ratio 来自 active return 序列。
 - `IRR / MWROR` 是资金效率补充指标；若数学上不可解，不应降低 TWR 口径的 coverage。
 - 绩效方法参考 Portfolio Performance 的账本模型，并吸收 GIPS 的 TWR 优先、外部现金流政策、估值频率和方法一致性原则；本项目不声称 GIPS compliance，详见 [docs/02_GIPS_ALIGNMENT.md](./docs/02_GIPS_ALIGNMENT.md)。
 

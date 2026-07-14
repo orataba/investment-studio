@@ -1,4 +1,8 @@
-# PMS 正式版计算口径规格
+# Portfolio 计算口径与目标规格
+
+> 文档状态：本文定义 Portfolio 的 canonical 计算合同和已确认的目标口径，不代表每一项都已在当前实现完成。已知实现偏差、实施顺序与验收门槛统一记录在 [`03_OPTIMIZATION_HANDOFF.md`](./03_OPTIMIZATION_HANDOFF.md)。标记为 future design 的对象不得被 UI、API 或其他文档描述成已上线能力。
+
+> 适用范围：仅适用于 `apps/portfolio` 的组合级 Overview / Holdings / Performance / Risk / Research。本文不定义 `apps/watchlist` 的 fund/instrument detail，也不能用 Watchlist 的同名 Performance / Risk tab 作为实现或验收依据。
 
 关联文档：
 
@@ -57,7 +61,7 @@
 #### 必要配置输入
 
 - `Portfolio / Account / Instrument metadata`
-- `Benchmark definition / portfolio benchmark assignment`
+- `Benchmark definition`；`portfolio benchmark assignment` 是尚未实现的 future design
 - `Portfolio taxonomies / target sets / alert-rule config`
 
 #### 派生结果
@@ -87,7 +91,7 @@
 - 不用目标权重、等权、历史旧算法或另一维度 target 替代 risk-budget 求解结果；
 - 不用 stale price、跨 period forward fill 或不同长度持有期收益补齐 covariance、correlation、Sharpe、target-volatility overlay 或 risk contribution；
 - 不在 `SAA` / `TAA`、`weight` / `risk_budget`、benchmark / target / alert rule 之间静默互相替代；
-- 单成员 scope 允许输出唯一确定的 100% 权重；现金成员在 covariance-based risk budget 中允许 `target_risk_share = 0`。除此之外，未配置目标不是默认等权目标；
+- 单成员非现金 scope 允许输出数学上唯一确定的 100% 权重；`risk_budget` target 只包含承担风险的非现金成员，现金不得建立 `target_risk_share = 0` 的占位行。纯现金 scope 没有可求解的风险预算；除此之外，未配置目标不是默认等权目标；
 - UI、API、export 必须展示结果状态与 coverage / solver 诊断，不能把失败条件包装成正常结果。
 
 ## 2. 总体约定
@@ -238,6 +242,13 @@
 - Daily volatility / tracking error：优先使用实际有效收益观察密度推断 `periods_per_year`
 - Weekly volatility：`52`
 - Monthly volatility：`12`
+
+累计测量期短于一年时：
+
+- 可以展示 period TWR / period MWR；
+- 不得发布 annualized TWR、annualized MWR / XIRR、Calmar 等依赖年化收益的指标；
+- API 必须返回 `null / unavailable` 及原因，不能只依赖前端隐藏；
+- 满一年门槛按实际日期计算，首选 `ACT/365.25 >= 1`，并在 API 与 UI 共用同一 eligibility 判定。
 
 若观察频率是稳定交易日频，`periods_per_year` 通常接近 `252`；若存在节假日、缺价或非交易日 carry-forward，系统必须记录并使用实际有效收益观察密度，避免把无市场观察的 0 return 当作风险样本。
 
@@ -611,7 +622,7 @@ $$
 R_{ann} = (1 + R_{cum})^{1/Y} - 1
 $$
 
-若 `Y` 接近 0，则年化结果记为 `unavailable`。
+只有当 `Y >= 1` 时才发布年化结果。若 `Y < 1`，`annualized_twr` 必须记为 `unavailable`；区间本身的 cumulative TWR 仍可展示。
 
 ### 5.5 IRR / MWROR
 
@@ -637,6 +648,7 @@ $$
 
 - IRR 反映资本使用效率；
 - TWR 反映经理在中性化 external flows 后的投资表现；
+- XIRR 数学结果天然是年化率；测量期不足一年时不得把它作为 annualized MWR 展示。若产品需要短期资金加权收益，必须另行计算并命名为 period MWR；
 - UI 不允许用 IRR 替代 TWR 展示“组合收益”。
 
 ### 5.6 Absolute Change 与 Delta
@@ -785,9 +797,11 @@ $$
 
 ### 6.2 Primary benchmark
 
-一个组合可以有多个 benchmark definition，但 canonical 计算必须先从 `PortfolioBenchmarkAssignment` 解析出当前生效的 `primary benchmark`。
+当前实现尚无持久化 `PortfolioBenchmarkAssignment`，只支持页面选择的 manual comparator。现阶段所有页面、API 和 export 必须使用 `Manual comparator` 命名，并执行 6.1 的币种、total-return basis、起点锚点和日期覆盖守卫；不得把手动选择描述成 canonical primary benchmark。
 
-以下指标必须始终基于 resolved `primary benchmark`：
+`PortfolioBenchmarkAssignment` 是 future design。只有完成持久化模型、生效区间解析、API contract、迁移和端到端测试后，才允许启用下面的 primary benchmark 规则。
+
+Future primary benchmark 上线后，以下指标必须始终基于 resolved `primary benchmark`：
 
 - benchmark return
 - excess return
@@ -806,10 +820,10 @@ $$
 
 系统不采用 `benchmark / target set / alert rule` 之间的静默互相替代。
 
-canonical 规则如下：
+当前 canonical 规则如下：
 
-- market-relative return / active contribution / snapshot relative columns：使用 `primary benchmark`
-- benchmark_active_weight / benchmark-relative exposure / benchmark-active bets：使用 `primary benchmark`，且仅在 benchmark composition 可用时启用
+- market-relative return / active contribution / snapshot relative columns：只在用户显式选择并通过完整守卫的 `Manual comparator` 上展示；否则 comparator missing
+- benchmark_active_weight / benchmark-relative exposure / benchmark-active bets：当前未实现；未来 primary benchmark composition 可用后再启用
 - target_weight_gap / construction drift / rebalance diagnostics：在 `Risk` 中分别使用 selected planning taxonomy 下 active `SAA` 与 active `TAA` 的 `weight` 维度
 - limit checks / alerts：使用 configured `AlertRule`
 - risk budget gap：在 `Risk` 中分别使用 selected planning taxonomy 下 active `SAA` 与 active `TAA` 的 `risk_budget` 维度
@@ -818,10 +832,10 @@ canonical 规则如下：
 其中：
 
 - 被用于 drift / risk budget gap 的 selected taxonomy 必须是 `planning_enabled = true`；
-- `Risk` 必须分别计算 selected planning taxonomy 下 active `SAA` 与 active `TAA` 的 `weight` / `risk_budget` comparator；UI 合并展示为 `Weight Target Gap` 与 `Risk Target Gap` 两个面板。每个 sleeve 只占一条 row，右侧同图并列展示当前值、`SAA` target 与 `TAA` target。任一来源或维度未配置时，只标记对应 comparator unavailable，不跨 `SAA` / `TAA` 或 `weight` / `risk_budget` 回退；
+- `Risk` 必须分别计算 selected planning taxonomy 下 active `SAA` 与 active `TAA` 的 `weight` / `risk_budget` comparator；UI 合并展示为 `Weight Target Gap` 与 `Risk Target Gap` 两个面板。每个风险 sleeve 只占一条 row，右侧同图并列展示当前值、`SAA` target 与 `TAA` target。现金可以出现在 Weight Target Gap，但不得出现在 Risk Target Gap。任一来源或维度未配置时，只标记对应 comparator unavailable，不跨 `SAA` / `TAA` 或 `weight` / `risk_budget` 回退；
 - period timeline 仍必须显式携带各段 target source 信息；若区间内来源随时间变化，则标记为 `mixed_timeline`
 - period analytics 必须把上述结果 materialize 为正式 `ResolvedTargetTimeline` / `ResolvedTargetSegment`，而不是匿名 timeline blob；
-- `TargetSet(type = taa)` 在存储层必须已物化为对已启用维度完整的目标集，运行时不做稀疏 overlay 解析；
+- `TargetSet(type = taa)` 在存储层必须已物化为对各维度 eligible members 完整的目标集，运行时不做稀疏 overlay 解析：`weight` 对全部资本成员完整，`risk_budget` 只对非现金风险成员完整；
 - period 内若 target 发生切换，系统必须按生效区间分段汇总，而不是拿单一期初或期末 target 解释整个区间；
 - 若用户切到纯分析 taxonomy，系统只能展示 `absolute only`，并标记 comparator missing。
 
@@ -1135,7 +1149,7 @@ $$
 - `RiskShare_i` 与 `TargetRiskShare_i` 必须使用同一风险分母和同一 contribution mode；首版 canonical top-level compare 的分母是 selected taxonomy 下的 portfolio-level forward risk share
 - 层级 sleeve 内部的 `25%` 这类 local risk budget 表示“占父 sleeve 内部风险的 25%”，不是全组合风险的 `25% × 父层预算`
 - 因而禁止通过祖先 `target_risk_share` 乘法把 local sleeve risk budget 铺平成全局 risk-budget target；若需要全局 leaf comparator，必须先由 solver / resolved implementation target 在全组合协方差下显式解出
-- risk budget gap 计算前必须先校验 resolved risk-budget target 可用，且其非现金节点的 `target_risk_share` 加总为 `100% ± epsilon`，现金节点 `target_risk_share = 0`
+- risk budget gap 计算前必须先校验 resolved risk-budget target 可用，且只包含承担风险的非现金节点；这些节点的 `target_risk_share` 加总为 `100% ± epsilon`。任何 cash / cash-bucket risk-target line 都是无效配置，不能用 `0%` 占位
 - `Risk` 的 `SAA Risk` 与 `TAA Risk` comparator 独立计算，并在 `Risk Target Gap` 面板合并展示；若某个 target source 未启用 `risk_budget` 维度，只有该 comparator 记为 `unavailable` / `comparator missing`
 
 说明：
@@ -1153,10 +1167,12 @@ $$
 - 首版默认在参与风险计算的头寸集合内归一化权重进入协方差风险计算；
 - 现金默认不贡献市场风险，除非显式建模为风险因子。
 
-如果 target-set 设计需要把 cash 作为 selected planning taxonomy 下的独立节点展示：
+如果 selected planning taxonomy 需要把 cash 作为独立节点展示：
 
-- 它可以在 SAA 或 TAA `target_weight` 中存在；
-- 但在 covariance-based forward risk share 中通常为 `0`；
+- 它可以在 SAA 或 TAA `target_weight` 中存在，用于资本配置和 weight drift；
+- 它不进入 `risk_budget` target，不建立 `target_risk_share = 0` 的行，也不进入 risk-budget target completeness 校验；
+- 当前现金 risk contribution 视为 `0` 并从风险分母和 `Risk Target Gap` comparator 中排除，除非未来显式把现金建模为风险因子；
+- Research 的 capital overlay 可以把非现金求解后的残余权重写入系统 cash-like member，但这是求解输出，不是 risk-budget target 输入；
 - UI 必须解释“capital share != risk share”。
 
 ### 10.7 Research target solve
@@ -1168,16 +1184,16 @@ Research current target solve 使用 planning taxonomy 的层级 scope 做递归
 - 若当前选中 scope 显式指定 `weight` 或 `risk_budget`，该 override 只作用于选中 scope；子 sleeve 仍按自己的 scope default 求解；
 - 多成员 scope 必须有 active complete `SAA` 或 `TAA` target set。`TAA` 优先于 `SAA`；两者都缺失、启用维度不完整或目标值加总不正确时，该 scope 求解失败，不生成等权或目标权重替代结果；
 - `weight` scope 使用该 scope direct members 的 `target_weight` 拟合本地权重；已启用的 `weight` 维度必须逐成员显式给出且合计为 `100%`；
-- `risk_budget` scope 使用非现金 direct members 的 `target_risk_share` 求本地目标权重，现金的 `target_risk_share` 必须为 `0`，非现金风险份额加总为 `100%`；
+- `risk_budget` scope 只使用承担风险的非现金 direct members 的 `target_risk_share` 求本地目标权重；risk target 中不得出现现金 member，非现金风险份额加总为 `100%`；
 - 若某个成员被标记为 frozen，优先使用该成员 as-of actual weight；若 actual weight 不存在，只能使用已配置的 `target_weight`，不能把 `target_risk_share` 当作资金权重；
 - risk-budget solve 至少需要两个完整对齐 return observations；`strict` policy 下任何 active member 缺失都会失败，`complete_case_drop` 只能在显式选择且通过缺失行比例、latest complete row 新鲜度和最小完整观测数约束后使用，不能把 target risk share 当作 target weight；
 - risk-budget solve、current risk-share estimate 与 target-volatility overlay 必须使用组合级 `Production Risk Model` 的 covariance model、lookback、frequency、missing-return policy 和 contribution mode；
 - risk-budget solve 的 achieved risk share 最大绝对误差必须在显式阈值内；当前阈值为 `1e-4` share units，即 `0.01 percentage points`。超过阈值或产生负 signed risk share 时，该 scope 求解失败，不切换到 `abs` mode，也不返回旧求解器状态；
 - Research `Solved Result` 的 `Look-through RC` 使用最终 leaf 权重在全组合 leaf covariance 上重新计算。父 scope 的风险预算求解误差仍以该父 scope 的本地 covariance 为准；当 covariance model 在每层重新做 correlation shrinkage 时，look-through RC 可以与父层本地 achieved risk share 有差异，UI 和报告必须明确区分两种口径；
-- 单成员 scope 只允许输出数学上唯一确定的本地目标：非现金/普通成员权重 `100%`，现金 risk budget `0%`；
+- 单成员非现金 scope 只允许输出数学上唯一确定的本地目标权重 `100%`；只有现金而没有非现金风险成员的 scope 进入 `no risky members / unavailable`，不生成现金 risk budget；
 - 根 scope 完成风险 sleeve 权重后，`target_volatility` / `volatility_cap` / `fixed_gross` capital overlay 才对非现金目标权重整体放缩，并把残差写入系统 cash-like member；root top sleeve bounds 只约束 root 的直接 sleeve，违反上下限或与 frozen/fixed gross 不可行时，该 run 必须失败。没有 cash-like member、目标波动率无法用正的估计波动率缩放或 overlay 后违反可行约束时，该 run 必须失败或显式 unavailable，不用 unit gross、等权或旧算法兜底。
 
-Research backtest 使用同一 Production Risk Model、planning taxonomy、TargetSet、frozen sleeves、top sleeve bounds 和 capital overlay 逐个 rebalance date 重算目标。支持 `1m` 与 `3m` rebalance；benchmark 历史只影响 benchmark 曲线和相对指标，不得推迟或阻断组合自身 backtest 起点。若组合成员共同历史不足完整 risk window，backtest 返回空 points 和 warning，不生成晚于 as-of 的 rebalance 日期，不用更短风险窗口替代。
+Research backtest 使用同一 Production Risk Model、planning taxonomy、TargetSet、frozen sleeves、top sleeve bounds 和 capital overlay 逐个 rebalance date 重算目标。支持 `1w`、`1m` 与 `3m` rebalance；benchmark 历史只影响 benchmark 曲线和相对指标，不得推迟或阻断组合自身 backtest 起点。若组合成员共同历史不足完整 risk window，backtest 返回空 points 和 warning，不生成晚于 as-of 的 rebalance 日期，不用更短风险窗口替代。
 
 每次 run 必须输出 root `solve_event` 和完整 `scope_solve_events`，用于复核每层 scope 的默认维度、实际维度、solver、RC mode、risk gap 与成员数。
 

@@ -265,6 +265,10 @@ Performance 反映真实历史组合，不是当前权重假设。若与 Risk �
 
 Risk 是当前权重口径的风险工作台，使用当前非现金持仓权重和资产历史收益窗口。它适合回答“现在这组持仓的风险结构如何”，不适合替代历史绩效归因。
 
+现金会进入组合 NAV 和 Weight Target / Current Drift 的资本权重，但不设置 Risk Target。`Risk Target Gap` 只比较承担市场风险的非现金 sleeve：现金不显示 risk-target row，不进入风险预算 100% 分母，默认风险贡献为 0。
+
+> 当前版本已知偏差：Taxonomies / Research 仍可能生成或要求现金 `0%` risk 占位，Risk 页面也可能因此显示 unsupported member。这个占位不代表正确业务口径；在 [Portfolio optimization handoff](../apps/portfolio/docs/03_OPTIMIZATION_HANDOFF.md#32-risk-target-excludes-cash) 的 Phase 1A 完成前，不要把现金 `0%` 当作需要维护的风险目标。
+
 常用内容：
 
 - rolling volatility / Sharpe：看风险和风险调整收益随时间变化。
@@ -296,6 +300,15 @@ Taxonomies 管理组合分类和目标体系。Research 的求解结构来自这
 5. 检查目标权重或风险预算是否完整。
 6. 设置 default planning taxonomy。
 7. 进入 Research 运行求解。
+
+TargetSet 的两个维度必须分开维护：
+
+- `weight` 表示资本配置，可以包含现金目标；
+- `risk budget` 只给承担风险的非现金 sleeve 设置目标，非现金目标风险份额合计 100%；
+- 不要为现金建立 `0%` risk target 占位行；
+- Research 在 risk-budget solve 完成后可以把 capital overlay 的剩余权重放入系统现金，但这是求解结果，不是现金风险目标。
+
+当前版本关于现金 risk 占位的实现偏差见上方提示；目标维护时仍以“现金无 Risk Target”为准。
 
 若 Research 报 scope 无成员、目标缺失或 top sleeve bounds 无法满足，通常要回到 Taxonomies 检查 assignment、TargetSet 和树结构。
 

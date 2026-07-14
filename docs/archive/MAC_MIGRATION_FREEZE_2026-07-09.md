@@ -1,4 +1,6 @@
-# Mac Migration Freeze
+# Mac Migration Freeze (Archived 2026-07-09)
+
+> Archived record. This file preserves the 2026-07-09 WSL-to-macOS migration snapshot and is not a current operating contract. For current restore and service procedures, use [`../NEW_MACHINE_RESTORE.md`](../NEW_MACHINE_RESTORE.md) and [`../LOCAL_MACOS_SERVICE.md`](../LOCAL_MACOS_SERVICE.md).
 
 > Security update (2026-07-10): the three real backend `.env` files were removed from the current tree and all reachable Git history. Statements below that describe committed secrets are superseded by this note. Git keeps only `.env.example`; real values live in a machine-local protected secret store.
 

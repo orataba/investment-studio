@@ -1,8 +1,11 @@
-# GIPS-Informed Performance Methodology
+# Portfolio GIPS-Informed Performance Methodology
+
+> 适用范围：仅适用于 `apps/portfolio` 的组合级绩效计算与呈现。Watchlist Instrument Detail 的 Performance 是单资产 NAV/price 与 benchmark 分析，不属于本文合同。
 
 关联文档：
 
 - [`01_CALCULATION_SPEC.md`](./01_CALCULATION_SPEC.md)
+- [`03_OPTIMIZATION_HANDOFF.md`](./03_OPTIMIZATION_HANDOFF.md)
 
 ## 1. 定位
 
@@ -21,7 +24,7 @@ GIPS 是 CFA Institute 维护的投资绩效呈现标准，核心目标是让投
 
 GIPS 对普通组合绩效呈现默认要求使用 time-weighted returns，只有在特定条件下才允许用 money-weighted returns 替代。
 
-本项目采用：
+本项目目标口径：
 
 - `TWR` 作为 `Overview / Performance` 的默认组合收益口径；
 - `IRR / MWROR` 作为资金使用效率补充指标；
@@ -31,10 +34,11 @@ GIPS 对普通组合绩效呈现默认要求使用 time-weighted returns，只�
 
 GIPS 强调 TWR 要中性化 client-driven external cash flows，避免把出入金时点误算为管理能力。
 
-本项目采用：
+本项目目标口径：
 
 - `deposit`、`withdrawal` 和真实组合边界分配为 external cash flow；
 - `buy / sell / dividend / coupon / fee / tax / internal transfer` 不作为组合级 external cash flow；
+- external cash flow 默认在实际收到或支付的日期生效；只有资金已预先获知且当日确实可投资，并且存在书面且一致执行的政策时，才允许使用更早日期；
 - 日频 TWR 公式固定为：
 
 ```text
@@ -63,7 +67,8 @@ GIPS 强调一致应用计算方法、建立政策，并披露方法边界。
 - materialized snapshot 可重建，不能成为不可解释的手填事实；
 - materialized snapshot / contribution slice schema 变化通过 `calculation_version` 失效重建，不在收益读路径保留旧 schema 兼容层；
 - materialized snapshot 刷新必须可重复、可追踪，并在更新并发到达时保留最新 stale 请求；
-- `coverage_state`、`stale_price_flag`、`stale_fx_flag` 必须随关键结果返回；
+- 公允价值估值、return chain、book P&L 与 attribution 必须分别返回 coverage / reliability；单一 `coverage_state` 不得让成本或归因缺口阻断本来完整的 fair-value NAV/TWR；
+- `stale_price_flag`、`stale_fx_flag` 及 requested/effective as-of 必须随关键结果返回；
 - 区间 daily series、summary、drawdown 必须使用同一组 window-rebased `daily_twr`。
 
 ### 2.5 成本法不得污染绩效收益率
@@ -94,12 +99,31 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 本项目采用：
 
 - portfolio realized volatility、rolling volatility 默认使用 `daily_twr` simple returns 做标准差并年化；Sharpe、Sortino 作为 additional risk measures，使用同一区间、同一 periodicity 的 arithmetic mean excess return 年化后除以年化 volatility / downside volatility（MVP `r_f = 0`）；
-- 若输出正式 GIPS Composite / Pooled Fund Report 风格披露，ex-post standard deviation 必须使用 monthly returns，组合与 benchmark 必须使用同一 periodicity 与同一计算方法；
+- 若输出正式 GIPS Composite / Pooled Fund Report 风格披露，3-year ex-post standard deviation 必须使用 36 个 monthly returns，组合与 benchmark 必须使用同一 periodicity 与同一计算方法；
 - 非市场观察日的 stale-price carry-forward 0 return 不进入风险样本；
 - `NAV_t` 只用于资产规模和现金流调节，不作为组合级波动率输入。
 - 手动 benchmark 对比只有在币种一致、起点锚点存在且 benchmark 覆盖组合 eligible return dates 时才输出；当前未接入后端 benchmark FX conversion / coverage reporting，不能用 stale-filled 或 raw-currency 序列替代。
 
-## 3. 当前实现映射
+### 2.7 少于一年不得年化
+
+本项目对 TWR 与 MWR 使用同一披露门槛：
+
+- 测量期不足一年时，可以展示 cumulative / period return；
+- 不得展示 annualized TWR、annualized MWR / XIRR、Calmar 或其他依赖年化收益的结果；
+- eligibility 必须由后端 canonical contract 返回，不能只在某一个页面隐藏；
+- 满一年后按 `ACT/365.25` 年分数计算并保持 API、UI、export 一致。
+
+### 2.8 费用口径必须明确
+
+当前交易模型只能证明已记录的 fees、taxes 与 transaction costs 已进入现金和 NAV，尚不能证明 investment-management fee accrual 完整，也没有足够分类生成正式 gross-of-fees / net-of-fees return。
+
+因此当前收益只能描述为 **after recorded expenses**。在费用分类与完整性校验完成前：
+
+- 不得标记为 GIPS gross-of-fees 或 net-of-fees；
+- transaction costs 不得从 gross return 中加回；
+- `fee_category` 缺失时返回 `unknown`，不能猜测 management / custody / transaction-cost 分类。
+
+## 3. 当前实现映射与已知偏差
 
 | 主题 | 当前实现 |
 | --- | --- |
@@ -116,6 +140,10 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 | MWR | `_solve_xirr()` 输出 `irr` / `mwror`，作为补充指标 |
 | Performance group TWR | `_daily_group_return_from_components()` 在 instrument / taxonomy / calculation detail 聚合间复用同一 flow-adjusted denominator |
 | Manual benchmark guard | Performance 页面要求同币种、起点锚点和 eligible return date 覆盖完整后才展示轻量 benchmark metrics |
+| External-flow effective date | 目标口径为实际收付日；当前通用 trade-date 路径是待修偏差，见 `03_OPTIMIZATION_HANDOFF.md` |
+| 少于一年年化 | 目标口径为后端直接 unavailable；当前 API / Research 偏差列在 `03_OPTIMIZATION_HANDOFF.md`，不得把 UI 隐藏视为已完成 |
+| 费用 basis | 当前只能标记 `after recorded expenses`，尚不支持正式 gross/net-of-fees 声明 |
+| Coverage 分层 | 目标口径要求 valuation / return / book-P&L / attribution 分离；当前混合状态是待修缺口 |
 
 ## 4. 暂不覆盖的 GIPS 能力
 
@@ -136,11 +164,15 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 任何改动 portfolio 计算层的 PR 都应检查：
 
 - 是否改变了 external cash flow 分类；
+- external cash flow 是否仍按实际收付日生效，例外是否有显式政策；
 - 是否改变了 `daily_twr` 的分母、分子或现金流时点；
 - 区间 summary 和 `daily_series` 是否都按查询窗口重新复合；
 - drawdown 是否基于 TWR growth index；
 - risk 是否只使用符合 `return_observation_eligible` 的 `daily_twr`；
 - `IRR / MWROR` 缺失是否被解释为补充指标不可用，而不是 TWR 失败；
+- 少于一年时后端是否拒绝发布 annualized TWR / MWR / Calmar；
+- 收益 basis 是否仍只描述为 after recorded expenses，除非 fee classification 与完整性已被证明；
+- valuation / return / book-P&L / attribution coverage 是否保持分离；
 - materialized read path 和动态重建校验路径是否结果一致；
 - Research 是否拒绝缺失 target set、目标加总错误、历史不足或风险预算求解误差过大的 scope；
 - `sample_covariance` 是否仍使用 `n - 1` 样本估计；

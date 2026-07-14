@@ -11,6 +11,13 @@
 - `Portfolio`
   是独立业务 app，header 和 workspace 层级可以更重；tabs 以下的内容节奏需要和 fund detail 保持一致。
 
+同名页面不代表同一业务页面：
+
+- Portfolio `Overview / Performance / Risk / Research` 属于 `/portfolios/:portfolioId/...`，数据来自组合账户、交易、持仓、现金流和组合 read models。
+- Watchlist fund/instrument detail 的同名 tab 属于 `/instruments/:instrumentId`，数据来自单资产主档、NAV/price series、benchmark 和 Watchlist-local research facts。
+- 两者可以共享视觉节奏或已经稳定的底层 UI primitive，但不得共享 TWR、现金流、归因、风险预算等业务计算，也不得用一个 app 的页面验收另一个 app。
+- 修改前必须确认 app header、URL、源码目录和 API origin；相同的 `Performance` 标题不能作为页面身份。
+
 ## Visual System
 
 - 页面背景使用白色，不再使用米黄、沙色、暖灰渐变或装饰性底色。
@@ -33,6 +40,14 @@
 - 选项、modal、表格视图和字段选择器默认只显示名称；不展示解释性小字、备注提示或长 tooltip，除非缺少它会导致错误操作。
 - 错误、校验失败、不可用原因可以保留，但必须是可执行或可诊断的信息。
 - 不用页面内说明文字解释功能、键盘操作、内部计算流程或实现细节；这些内容放在文档或测试里。
+
+## Portfolio Metric Presentation
+
+- 普通组合收益率、区间收益率和风险调整收益默认保留两位小数；不能因为内部计算或审计保留更多精度而把四位以上普通收益直接暴露到主页面。
+- 单位净值、价格、输入参数和 Mean Daily Return 等有独立业务语义的字段可以使用不同精度；显示精度与源事实/计算精度分开管理。
+- Weight Target / Current Drift 可以展示现金资本权重；Risk Target Gap 完全排除现金。若同一布局为上下文保留现金行，Risk Target 单元格显示 `— / N/A`，不能显示可配置的 `0.00%`。
+- Performance 主页面保留 scorecard、风险摘要、区间图和 Calculation attribution。逐日计算审计、publication lineage、rounding trace 等内部诊断不得作为主页面常驻内容；必要时进入受控 drilldown、日志或开发诊断面。
+- Overview、Holdings、Performance、Risk、Taxonomies、Research 等成熟页面发生结构或指标改动时，必须有真实渲染的 DOM/browser contract test；只读取 TSX 源码并做字符串断言不能作为页面回归保护。
 
 ## Tabs And Content Rhythm
 
