@@ -12,7 +12,12 @@ from watchlist_app.db.models.read_models import (
     InstrumentSummaryReadModel,
     WatchlistRowReadModel,
 )
-from watchlist_app.db.models.recalc import RecalcJob
+from watchlist_app.db.models.recalc import (
+    RecalcInvalidationState,
+    RecalcJob,
+    RecalcSourceEventInbox,
+    RecalcWorkerRegistration,
+)
 from watchlist_app.db.models.research_ratings import InstrumentResearchRating
 from watchlist_app.db.models.watchlists import (
     FieldCategory,
@@ -43,7 +48,10 @@ __all__ = [
     "InstrumentTaxonomyNode",
     "PayloadReadModelMixin",
     "PerformanceSnapshot",
+    "RecalcInvalidationState",
     "RecalcJob",
+    "RecalcSourceEventInbox",
+    "RecalcWorkerRegistration",
     "RiskSnapshot",
     "TimestampMixin",
     "Watchlist",

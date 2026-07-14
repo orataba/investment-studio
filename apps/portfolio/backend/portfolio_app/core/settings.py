@@ -18,12 +18,21 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops"
     alembic_database_url: str | None = None
     database_schema: str | None = "portfolio"
-    research_outputs_root: Path = WORKSPACE_ROOT / "backend" / "research_outputs"
+    allocation_research_outputs_root: Path = (
+        WORKSPACE_ROOT / "backend" / "allocation_research_outputs"
+    )
     sql_echo: bool = False
     default_trade_timezone: str = "Asia/Shanghai"
     default_trade_time: str = "12:00"
     daily_market_valuation_quote_max_age_days: int = 5
     fund_valuation_quote_max_age_days: int = 45
+    fx_valuation_quote_max_age_days: int = 5
+    calculation_job_max_attempts: int = 3
+    calculation_worker_lease_seconds: int = 120
+    calculation_worker_heartbeat_seconds: int = 30
+    calculation_worker_poll_milliseconds: int = 500
+    calculation_job_retry_delay_seconds: int = 15
+    calculation_worker_readiness_max_age_seconds: int = 90
     cors_origins: list[str] = ["http://127.0.0.1:5174", "http://localhost:5174"]
 
     model_config = SettingsConfigDict(
@@ -68,6 +77,7 @@ class Settings(BaseSettings):
     @field_validator(
         "daily_market_valuation_quote_max_age_days",
         "fund_valuation_quote_max_age_days",
+        "fx_valuation_quote_max_age_days",
     )
     @classmethod
     def _validate_valuation_quote_max_age_days(cls, value: int) -> int:
@@ -75,6 +85,54 @@ class Settings(BaseSettings):
         if not 1 <= resolved <= 366:
             raise ValueError("valuation quote max age must be between 1 and 366 days.")
         return resolved
+
+    @field_validator("calculation_job_max_attempts")
+    @classmethod
+    def _validate_calculation_job_max_attempts(cls, value: int) -> int:
+        resolved = int(value)
+        if not 1 <= resolved <= 20:
+            raise ValueError("calculation_job_max_attempts must be between 1 and 20.")
+        return resolved
+
+    @field_validator(
+        "calculation_worker_lease_seconds",
+        "calculation_worker_heartbeat_seconds",
+        "calculation_job_retry_delay_seconds",
+        "calculation_worker_readiness_max_age_seconds",
+    )
+    @classmethod
+    def _validate_calculation_worker_seconds(cls, value: int) -> int:
+        resolved = int(value)
+        if not 1 <= resolved <= 86_400:
+            raise ValueError(
+                "calculation worker durations must be between 1 and 86400 seconds"
+            )
+        return resolved
+
+    @field_validator("calculation_worker_poll_milliseconds")
+    @classmethod
+    def _validate_calculation_worker_poll_milliseconds(cls, value: int) -> int:
+        resolved = int(value)
+        if not 50 <= resolved <= 60_000:
+            raise ValueError(
+                "calculation worker poll interval must be between 50 and 60000 milliseconds"
+            )
+        return resolved
+
+    @model_validator(mode="after")
+    def _validate_calculation_worker_timing(self) -> "Settings":
+        if self.calculation_worker_heartbeat_seconds * 2 >= self.calculation_worker_lease_seconds:
+            raise ValueError(
+                "calculation worker heartbeat must be less than half the lease duration"
+            )
+        if (
+            self.calculation_worker_readiness_max_age_seconds
+            < self.calculation_worker_heartbeat_seconds * 2
+        ):
+            raise ValueError(
+                "worker readiness max age must cover at least two heartbeat intervals"
+            )
+        return self
 
     @field_validator("database_schema", mode="before")
     @classmethod

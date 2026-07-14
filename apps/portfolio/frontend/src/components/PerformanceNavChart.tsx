@@ -1,11 +1,19 @@
 import { useMemo, useState, type MouseEvent } from 'react'
 
 import { formatCurrency, formatPercent, formatSignedCurrency } from '../lib/format'
-import type { PortfolioPerformanceSummary } from '../lib/api'
 
 export type PerformanceNavChartPoint = {
   date: string
   value: number | null
+}
+
+export type PerformanceNavChartSummary = {
+  start_date: string | null
+  end_date: string | null
+  cumulative_twr: number | null
+  absolute_change: number | null
+  current_drawdown: number | null
+  max_drawdown: number | null
 }
 
 type PerformanceNavChartProps = {
@@ -13,15 +21,7 @@ type PerformanceNavChartProps = {
   currency: string
   twrPoints?: PerformanceNavChartPoint[]
   drawdownPoints?: PerformanceNavChartPoint[]
-  summary?: Pick<
-    PortfolioPerformanceSummary,
-    | 'start_date'
-    | 'end_date'
-    | 'cumulative_twr'
-    | 'absolute_change'
-    | 'current_drawdown'
-    | 'max_drawdown'
-  > | null
+  summary?: PerformanceNavChartSummary | null
   showRangeControls?: boolean
 }
 

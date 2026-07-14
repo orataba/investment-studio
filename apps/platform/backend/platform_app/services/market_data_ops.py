@@ -17,6 +17,7 @@ import threading
 import time
 from typing import Any
 
+from portfolio_ops_instrument_core.quote_revisions import quote_numeric_evidence
 from platform_app.core.settings import get_settings
 from platform_app.services.instrument_store import (
     get_instrument,
@@ -89,7 +90,10 @@ class _BatchItemTimeout:
 
 def market_data_item_timeout(instrument_id: str) -> AbstractContextManager[None]:
     settings = get_settings()
-    return _BatchItemTimeout(settings.market_data_batch_item_timeout_seconds, instrument_id)
+    return _BatchItemTimeout(
+        settings.market_data_batch_item_timeout_seconds, instrument_id
+    )
+
 
 NAV_IMPORT_HEADER_MAP = {
     "date": "as_of_date",
@@ -238,6 +242,40 @@ def _parse_nav_decimal(value: object) -> Decimal | None:
         return None
 
 
+def _parse_quote_numeric_evidence(
+    value: object,
+) -> tuple[Decimal, int, str] | None:
+    normalized_value = value.replace(",", "") if isinstance(value, str) else value
+    decimal_value = _parse_nav_decimal(normalized_value)
+    if decimal_value is None:
+        return None
+    try:
+        evidence = quote_numeric_evidence(normalized_value)
+    except ValueError:
+        return None
+    return (
+        decimal_value,
+        evidence.value_input_scale,
+        evidence.numeric_scale_state,
+    )
+
+
+def _set_quote_value(
+    row: dict[str, object],
+    *,
+    key: str,
+    value: object,
+) -> bool:
+    evidence = _parse_quote_numeric_evidence(value)
+    if evidence is None:
+        return False
+    decimal_value, input_scale, scale_state = evidence
+    row[key] = decimal_value
+    row[f"{key}_input_scale"] = input_scale
+    row[f"{key}_numeric_scale_state"] = scale_state
+    return True
+
+
 def _format_total_return_nav_decimal(value: Decimal) -> Decimal:
     return value.quantize(TOTAL_RETURN_NAV_DECIMAL_PLACES, rounding=ROUND_HALF_UP)
 
@@ -255,7 +293,11 @@ def _split_delimited_line(line: str, delimiter: str) -> list[str]:
 
 
 def _matrix_from_text(raw_text: str) -> list[list[object]]:
-    lines = [line.strip() for line in raw_text.replace("\r\n", "\n").split("\n") if line.strip()]
+    lines = [
+        line.strip()
+        for line in raw_text.replace("\r\n", "\n").split("\n")
+        if line.strip()
+    ]
     if not lines:
         return []
     delimiter = _detect_delimiter(lines[0])
@@ -268,7 +310,10 @@ def _matrix_from_xlsx(file_bytes: bytes) -> list[list[object]]:
     workbook = load_workbook(BytesIO(file_bytes), data_only=True, read_only=False)
     for sheet in workbook.worksheets:
         matrix = [list(row) for row in sheet.iter_rows(values_only=True)]
-        if any(any(value is not None and str(value).strip() for value in row) for row in matrix):
+        if any(
+            any(value is not None and str(value).strip() for value in row)
+            for row in matrix
+        ):
             return matrix
     return []
 
@@ -316,7 +361,10 @@ def _parse_nav_rows_from_matrix(matrix: list[list[object]]) -> list[dict[str, ob
     header: list[str] | None = None
     start_index = 0
     for idx, row in enumerate(matrix[:12]):
-        mapped = [NAV_IMPORT_HEADER_MAP.get(_normalize_nav_header(str(cell)), "") for cell in row]
+        mapped = [
+            NAV_IMPORT_HEADER_MAP.get(_normalize_nav_header(str(cell)), "")
+            for cell in row
+        ]
         if "as_of_date" in mapped and any(
             key in mapped for key in ("nav", "cumulative_nav", "nav_with_dividend")
         ):
@@ -344,9 +392,8 @@ def _parse_nav_rows_from_matrix(matrix: list[list[object]]) -> list[dict[str, ob
                 if parsed_date is not None:
                     row_data["as_of_date"] = parsed_date.isoformat()
             elif column in {"nav", "cumulative_nav", "nav_with_dividend"}:
-                parsed_value = _parse_nav_decimal(cell)
-                if parsed_value is not None:
-                    row_data[column] = parsed_value
+                raw_cell = raw_row[index] if index < len(raw_row) else ""
+                _set_quote_value(row_data, key=column, value=raw_cell)
             elif column == "currency" and cell:
                 row_data["currency"] = cell.upper()
             elif column == "frequency" and cell:
@@ -362,14 +409,16 @@ def _parse_nav_rows_from_matrix(matrix: list[list[object]]) -> list[dict[str, ob
     return rows
 
 
-def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> list[dict[str, object]]:
+def _parse_nav_rows_from_label_snapshot_matrix(
+    matrix: list[list[object]],
+) -> list[dict[str, object]]:
     if not matrix:
         return []
 
     found_date: date | None = None
-    found_nav: Decimal | None = None
-    found_cumulative_nav: Decimal | None = None
-    found_total_return_nav: Decimal | None = None
+    found_nav: tuple[Decimal, int, str] | None = None
+    found_cumulative_nav: tuple[Decimal, int, str] | None = None
+    found_total_return_nav: tuple[Decimal, int, str] | None = None
     normalized_aliases = {
         field: tuple(_normalize_nav_header(alias) for alias in aliases)
         for field, aliases in LABEL_SNAPSHOT_FIELD_ALIASES.items()
@@ -381,34 +430,46 @@ def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> li
             continue
         for index, cell in enumerate(string_values):
             normalized_cell = _normalize_nav_header(cell)
-            next_value = string_values[index + 1] if index + 1 < len(string_values) else ""
+            next_value = (
+                string_values[index + 1] if index + 1 < len(string_values) else ""
+            )
+            next_raw_value = row[index + 1] if index + 1 < len(row) else ""
 
-            if found_date is None and normalized_cell in normalized_aliases["as_of_date"]:
+            if (
+                found_date is None
+                and normalized_cell in normalized_aliases["as_of_date"]
+            ):
                 found_date = _parse_nav_date(next_value)
             if found_nav is None and normalized_cell in normalized_aliases["nav"]:
-                found_nav = _parse_nav_decimal(next_value)
+                found_nav = _parse_quote_numeric_evidence(next_raw_value)
             if (
                 found_cumulative_nav is None
                 and normalized_cell in normalized_aliases["cumulative_nav"]
             ):
-                found_cumulative_nav = _parse_nav_decimal(next_value)
+                found_cumulative_nav = _parse_quote_numeric_evidence(next_raw_value)
             if (
                 found_total_return_nav is None
                 and normalized_cell in normalized_aliases["nav_with_dividend"]
             ):
-                found_total_return_nav = _parse_nav_decimal(next_value)
+                found_total_return_nav = _parse_quote_numeric_evidence(next_raw_value)
 
-            if found_date is None and any(alias in cell for alias in LABEL_SNAPSHOT_FIELD_ALIASES["as_of_date"]):
-                found_date = _parse_nav_date(
-                    re.sub(r"^.*?[：:]\s*", "", cell).strip()
-                )
+            if found_date is None and any(
+                alias in cell for alias in LABEL_SNAPSHOT_FIELD_ALIASES["as_of_date"]
+            ):
+                found_date = _parse_nav_date(re.sub(r"^.*?[：:]\s*", "", cell).strip())
             if found_nav is None:
-                found_nav = _extract_numeric_from_text("单位净值", cell)
+                embedded = _extract_numeric_from_text("单位净值", cell)
+                if embedded is not None:
+                    found_nav = _parse_quote_numeric_evidence(embedded)
             if found_cumulative_nav is None:
-                found_cumulative_nav = _extract_numeric_from_text("累计单位净值", cell)
+                embedded = _extract_numeric_from_text("累计单位净值", cell)
+                if embedded is not None:
+                    found_cumulative_nav = _parse_quote_numeric_evidence(embedded)
             if found_total_return_nav is None:
                 for label in ("复权单位净值", "分红再投资净值", "复利净值"):
-                    found_total_return_nav = _extract_numeric_from_text(label, cell)
+                    embedded = _extract_numeric_from_text(label, cell)
+                    if embedded is not None:
+                        found_total_return_nav = _parse_quote_numeric_evidence(embedded)
                     if found_total_return_nav is not None:
                         break
 
@@ -417,14 +478,20 @@ def _parse_nav_rows_from_label_snapshot_matrix(matrix: list[list[object]]) -> li
 
     row: dict[str, object] = {
         "as_of_date": found_date.isoformat(),
-        "nav": found_nav,
         "currency": "CNY",
         "frequency": "daily",
     }
-    if found_cumulative_nav is not None:
-        row["cumulative_nav"] = found_cumulative_nav
-    if found_total_return_nav is not None:
-        row["nav_with_dividend"] = found_total_return_nav
+    for key, evidence in (
+        ("nav", found_nav),
+        ("cumulative_nav", found_cumulative_nav),
+        ("nav_with_dividend", found_total_return_nav),
+    ):
+        if evidence is None:
+            continue
+        decimal_value, input_scale, scale_state = evidence
+        row[key] = decimal_value
+        row[f"{key}_input_scale"] = input_scale
+        row[f"{key}_numeric_scale_state"] = scale_state
     return [row]
 
 
@@ -464,13 +531,19 @@ def _parse_nav_rows_from_attachment(
     lower_name = attachment_name.lower()
     if parser_profile == "label_nav_snapshot":
         if lower_name.endswith(".xls"):
-            return _parse_nav_rows_from_label_snapshot_matrix(_matrix_from_xls(attachment_bytes))
+            return _parse_nav_rows_from_label_snapshot_matrix(
+                _matrix_from_xls(attachment_bytes)
+            )
         if lower_name.endswith(".xlsx"):
-            return _parse_nav_rows_from_label_snapshot_matrix(_matrix_from_xlsx(attachment_bytes))
+            return _parse_nav_rows_from_label_snapshot_matrix(
+                _matrix_from_xlsx(attachment_bytes)
+            )
         return []
 
     if lower_name.endswith((".csv", ".tsv", ".txt")):
-        return _parse_nav_rows_from_text(attachment_bytes.decode("utf-8", errors="ignore"))
+        return _parse_nav_rows_from_text(
+            attachment_bytes.decode("utf-8", errors="ignore")
+        )
     if lower_name.endswith(".xlsx"):
         return _parse_nav_rows_from_xlsx(attachment_bytes)
     if lower_name.endswith(".xls"):
@@ -518,7 +591,9 @@ def _fetch_message_bytes(mailbox, uid: int, request: str) -> bytes | None:
         (
             bytes(item[1])
             for item in fetch_data
-            if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray))
+            if isinstance(item, tuple)
+            and len(item) >= 2
+            and isinstance(item[1], (bytes, bytearray))
         ),
         None,
     )
@@ -541,7 +616,9 @@ def _normalize_text_token(value: str) -> str:
     return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", value.lower())
 
 
-def _normalized_email_rules(source_settings: dict[str, object]) -> list[dict[str, object]]:
+def _normalized_email_rules(
+    source_settings: dict[str, object],
+) -> list[dict[str, object]]:
     raw_rules = source_settings.get("source_email_rules", [])
     if not isinstance(raw_rules, list):
         return []
@@ -550,14 +627,30 @@ def _normalized_email_rules(source_settings: dict[str, object]) -> list[dict[str
         if not isinstance(rule, dict):
             continue
         normalized = {
-            "sender_equals": [str(item).strip().lower() for item in rule.get("sender_equals", []) if str(item).strip()],
-            "subject_contains": [str(item).strip().lower() for item in rule.get("subject_contains", []) if str(item).strip()],
-            "subject_excludes": [str(item).strip().lower() for item in rule.get("subject_excludes", []) if str(item).strip()],
+            "sender_equals": [
+                str(item).strip().lower()
+                for item in rule.get("sender_equals", [])
+                if str(item).strip()
+            ],
+            "subject_contains": [
+                str(item).strip().lower()
+                for item in rule.get("subject_contains", [])
+                if str(item).strip()
+            ],
+            "subject_excludes": [
+                str(item).strip().lower()
+                for item in rule.get("subject_excludes", [])
+                if str(item).strip()
+            ],
             "attachment_name_contains": [
-                str(item).strip().lower() for item in rule.get("attachment_name_contains", []) if str(item).strip()
+                str(item).strip().lower()
+                for item in rule.get("attachment_name_contains", [])
+                if str(item).strip()
             ],
             "attachment_name_excludes": [
-                str(item).strip().lower() for item in rule.get("attachment_name_excludes", []) if str(item).strip()
+                str(item).strip().lower()
+                for item in rule.get("attachment_name_excludes", [])
+                if str(item).strip()
             ],
             "attachment_extensions": [
                 str(item).strip().lower().lstrip(".")
@@ -589,7 +682,10 @@ def _normalized_email_rules(source_settings: dict[str, object]) -> list[dict[str
                 for item in rule.get("row_name_excludes", [])
                 if str(item).strip()
             ],
-            "parser_profile": str(rule.get("parser_profile") or "generic_nav_table").strip() or "generic_nav_table",
+            "parser_profile": str(
+                rule.get("parser_profile") or "generic_nav_table"
+            ).strip()
+            or "generic_nav_table",
         }
         rules.append(normalized)
     return rules
@@ -612,7 +708,9 @@ def _row_matches_rule(
         return False
 
     required_name_contains = list(rule.get("row_name_contains", []))
-    if required_name_contains and not any(token and token in row_name for token in required_name_contains):
+    if required_name_contains and not any(
+        token and token in row_name for token in required_name_contains
+    ):
         return False
 
     excluded_name_tokens = list(rule.get("row_name_excludes", []))
@@ -631,7 +729,12 @@ def _filter_rows_for_rule(
         return []
     has_row_selectors = any(
         list(rule.get(key, []))
-        for key in ("row_code_equals", "row_name_equals", "row_name_contains", "row_name_excludes")
+        for key in (
+            "row_code_equals",
+            "row_name_equals",
+            "row_name_contains",
+            "row_name_excludes",
+        )
     )
     if not has_row_selectors:
         return rows
@@ -648,9 +751,15 @@ def _message_matches_rule(
     sender_equals = list(rule.get("sender_equals", []))
     if sender_equals and sender_email not in sender_equals:
         return False
-    if any(keyword not in normalized_subject for keyword in list(rule.get("subject_contains", []))):
+    if any(
+        keyword not in normalized_subject
+        for keyword in list(rule.get("subject_contains", []))
+    ):
         return False
-    if any(keyword in normalized_subject for keyword in list(rule.get("subject_excludes", []))):
+    if any(
+        keyword in normalized_subject
+        for keyword in list(rule.get("subject_excludes", []))
+    ):
         return False
     return True
 
@@ -668,17 +777,28 @@ def _attachment_matches_rule(
         extension = normalized_name.rsplit(".", 1)[-1] if "." in normalized_name else ""
         if extension not in required_extensions:
             return False
-    if any(keyword not in normalized_name for keyword in list(rule.get("attachment_name_contains", []))):
+    if any(
+        keyword not in normalized_name
+        for keyword in list(rule.get("attachment_name_contains", []))
+    ):
         return False
-    if any(keyword in normalized_name for keyword in list(rule.get("attachment_name_excludes", []))):
+    if any(
+        keyword in normalized_name
+        for keyword in list(rule.get("attachment_name_excludes", []))
+    ):
         return False
-    if any(keyword not in normalized_text for keyword in list(rule.get("attachment_content_contains", []))):
+    if any(
+        keyword not in normalized_text
+        for keyword in list(rule.get("attachment_content_contains", []))
+    ):
         return False
     return True
 
 
 def _normalize_import_status(rows: list[dict[str, object]], fallback: str) -> str:
-    if any(row.get("nav") is None or row.get("nav_with_dividend") is None for row in rows):
+    if any(
+        row.get("nav") is None or row.get("nav_with_dividend") is None for row in rows
+    ):
         return "partial"
     return fallback
 
@@ -772,9 +892,7 @@ def _apply_reinvested_total_return_correction(
             continue
 
         cash_distribution = (
-            row_cumulative_nav - row_nav
-            if row_cumulative_nav is not None
-            else None
+            row_cumulative_nav - row_nav if row_cumulative_nav is not None else None
         )
         if explicit_total_return_nav is not None:
             if row_nav != 0:
@@ -813,7 +931,11 @@ def _apply_reinvested_total_return_correction(
 
         formatted_total_nav = _format_total_return_nav_decimal(reinvested_total_nav)
         applied = True
-        corrected_row["nav_with_dividend"] = formatted_total_nav
+        _set_quote_value(
+            corrected_row,
+            key="nav_with_dividend",
+            value=formatted_total_nav,
+        )
         corrected_rows.append(corrected_row)
 
     return corrected_rows, applied
@@ -852,7 +974,8 @@ def _filter_rows_for_instrument(
         return []
 
     has_row_identity = any(
-        str(row.get("instrument_code") or "").strip() or str(row.get("instrument_name") or "").strip()
+        str(row.get("instrument_code") or "").strip()
+        or str(row.get("instrument_name") or "").strip()
         for row in rows
     )
     if not has_row_identity:
@@ -863,9 +986,13 @@ def _filter_rows_for_instrument(
         for item in list(instrument.get("identifiers", []))
         if str(item.get("identifier_value") or "").strip()
     }
-    identifier_candidates.add(str(instrument.get("instrument_id") or "").strip().upper())
+    identifier_candidates.add(
+        str(instrument.get("instrument_id") or "").strip().upper()
+    )
 
-    instrument_name = _normalize_text_token(str(instrument.get("instrument_name") or ""))
+    instrument_name = _normalize_text_token(
+        str(instrument.get("instrument_name") or "")
+    )
     filtered: list[dict[str, object]] = []
     for row in rows:
         row_code = str(row.get("instrument_code") or "").strip().upper()
@@ -925,7 +1052,9 @@ def _search_uids_for_rule(
     matched: set[int] = set()
     criteria_suffix = () if search_criteria == ("ALL",) else search_criteria
     for sender in sender_equals:
-        search_status, search_data = mailbox.uid("search", None, "FROM", sender, *criteria_suffix)
+        search_status, search_data = mailbox.uid(
+            "search", None, "FROM", sender, *criteria_suffix
+        )
         if search_status != "OK":
             return fallback_uids
         raw_uid_list = search_data[0] if search_data and search_data[0] else b""
@@ -990,13 +1119,17 @@ def _tushare_profile_enabled(source_settings: dict[str, object]) -> bool:
 
 def _tushare_identifier_code(instrument: dict[str, object]) -> str | None:
     identifiers = [
-        item for item in list(instrument.get("identifiers", [])) if isinstance(item, dict)
+        item
+        for item in list(instrument.get("identifiers", []))
+        if isinstance(item, dict)
     ]
     ordered_identifiers = sorted(
         identifiers,
         key=lambda item: (
             0 if bool(item.get("is_primary")) else 1,
-            0 if str(item.get("identifier_type") or "").strip().lower() == "ticker" else 1,
+            0
+            if str(item.get("identifier_type") or "").strip().lower() == "ticker"
+            else 1,
         ),
     )
     for identifier in ordered_identifiers:
@@ -1062,9 +1195,13 @@ def _call_tushare_api(
 ) -> list[dict[str, object]]:
     settings = get_settings()
     if not settings.tushare_ready:
-        raise TushareRefreshError("Tushare token is not configured. Set PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN first.")
+        raise TushareRefreshError(
+            "Tushare token is not configured. Set PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN first."
+        )
     if ts is None:
-        raise TushareRefreshError("Tushare SDK is not installed. Install the backend dependency first.")
+        raise TushareRefreshError(
+            "Tushare SDK is not installed. Install the backend dependency first."
+        )
 
     try:
         pro = ts.pro_api(
@@ -1108,7 +1245,9 @@ def _tushare_nav_rows(
 ) -> list[dict[str, object]]:
     prepared_rows: list[dict[str, object]] = []
     for row in rows:
-        point_date = _parse_nav_date(row.get("nav_date") or row.get("end_date") or row.get("ann_date"))
+        point_date = _parse_nav_date(
+            row.get("nav_date") or row.get("end_date") or row.get("ann_date")
+        )
         if point_date is None:
             continue
         if point_date < TUSHARE_HISTORY_START_DATE:
@@ -1117,21 +1256,28 @@ def _tushare_nav_rows(
         # reinvested total-return series forward without discontinuity.
         if latest_date is not None and point_date < latest_date:
             continue
-        nav = _parse_nav_decimal(row.get("unit_nav"))
-        cumulative_nav = _parse_nav_decimal(row.get("accum_nav"))
-        total_return_nav = _parse_nav_decimal(row.get("adj_nav"))
+        nav = _parse_quote_numeric_evidence(row.get("unit_nav"))
+        cumulative_nav = _parse_quote_numeric_evidence(row.get("accum_nav"))
+        total_return_nav = _parse_quote_numeric_evidence(row.get("adj_nav"))
         if nav is None and cumulative_nav is None and total_return_nav is None:
             continue
-        prepared_rows.append(
-            {
-                "as_of_date": point_date.isoformat(),
-                "nav": nav,
-                "cumulative_nav": cumulative_nav,
-                "nav_with_dividend": total_return_nav,
-                "currency": "CNY",
-                "frequency": "daily",
-            }
-        )
+        prepared_row: dict[str, object] = {
+            "as_of_date": point_date.isoformat(),
+            "currency": "CNY",
+            "frequency": "daily",
+        }
+        for key, evidence in (
+            ("nav", nav),
+            ("cumulative_nav", cumulative_nav),
+            ("nav_with_dividend", total_return_nav),
+        ):
+            if evidence is None:
+                continue
+            decimal_value, input_scale, scale_state = evidence
+            prepared_row[key] = decimal_value
+            prepared_row[f"{key}_input_scale"] = input_scale
+            prepared_row[f"{key}_numeric_scale_state"] = scale_state
+        prepared_rows.append(prepared_row)
     merged_rows = _merge_rows_by_date(prepared_rows)
     corrected_rows, _ = _apply_reinvested_total_return_correction(
         instrument_id=instrument_id,
@@ -1158,13 +1304,16 @@ def _tushare_price_rows(
             continue
         if latest_date is not None and point_date <= latest_date:
             continue
-        close_value = _parse_nav_decimal(row.get("close"))
-        if close_value is None:
+        close_evidence = _parse_quote_numeric_evidence(row.get("close"))
+        if close_evidence is None:
             continue
+        close_value, input_scale, scale_state = close_evidence
         prepared_rows.append(
             {
                 "as_of_date": point_date,
                 "value": close_value,
+                "value_input_scale": input_scale,
+                "numeric_scale_state": scale_state,
             }
         )
     return sorted(prepared_rows, key=lambda item: item["as_of_date"])
@@ -1235,7 +1384,9 @@ def _detect_tushare_share_splits(
         if relative_ratio_error > Decimal("0.005"):
             continue
 
-        prior_close_dates = [point_date for point_date in close_dates if point_date < effective_date]
+        prior_close_dates = [
+            point_date for point_date in close_dates if point_date < effective_date
+        ]
         if effective_date not in close_by_date or not prior_close_dates:
             continue
         prior_close_date = prior_close_dates[-1]
@@ -1311,7 +1462,9 @@ def _stored_qfq_latest_factor(instrument: dict[str, object]) -> Decimal | None:
         if match is None or point_date is None:
             continue
         factor = _parse_nav_decimal(match.group(1))
-        if factor is not None and (latest_point is None or point_date > latest_point[0]):
+        if factor is not None and (
+            latest_point is None or point_date > latest_point[0]
+        ):
             latest_point = (point_date, factor)
     return latest_point[1] if latest_point is not None else None
 
@@ -1423,7 +1576,9 @@ def _changed_nav_rows_since_date(
         incoming_nav = _parse_nav_decimal(row.get("nav"))
         incoming_cumulative_nav = _parse_nav_decimal(row.get("cumulative_nav"))
         incoming_total_nav = _parse_nav_decimal(row.get("nav_with_dividend"))
-        nav_changed = incoming_nav is not None and incoming_nav != existing_row.get("nav")
+        nav_changed = incoming_nav is not None and incoming_nav != existing_row.get(
+            "nav"
+        )
         cumulative_nav_changed = (
             incoming_cumulative_nav is not None
             and incoming_cumulative_nav != existing_row.get("cumulative_nav")
@@ -1477,7 +1632,9 @@ def _import_rows_from_email_rules(
             subject = str(header_message.get("subject") or "")
             sender = str(header_message.get("from") or "")
             sender_email = parseaddr(sender)[1].strip().lower()
-            if not _message_matches_rule(rule=rule, subject=subject, sender_email=sender_email):
+            if not _message_matches_rule(
+                rule=rule, subject=subject, sender_email=sender_email
+            ):
                 continue
             raw_bytes = _fetch_message_bytes(mailbox, uid, "(RFC822)")
             if raw_bytes is None:
@@ -1487,7 +1644,9 @@ def _import_rows_from_email_rules(
 
             attachment_candidates = _extract_email_attachment_candidates(message)
             for attachment_name, attachment_bytes in attachment_candidates:
-                attachment_text = _extract_attachment_text(attachment_name, attachment_bytes)
+                attachment_text = _extract_attachment_text(
+                    attachment_name, attachment_bytes
+                )
                 if not _attachment_matches_rule(
                     rule=rule,
                     attachment_name=attachment_name,
@@ -1513,15 +1672,21 @@ def _import_rows_from_email_rules(
                 if not rows:
                     continue
                 matched_rows.extend(rows)
-                matched_batches.append((f"{uid}:{attachment_name}", attachment_name, rows))
+                matched_batches.append(
+                    (f"{uid}:{attachment_name}", attachment_name, rows)
+                )
                 break
 
     merged_rows = _merge_rows_by_date(matched_rows)
     if not merged_rows:
         return None
-    if not full_history and nav_since_date is not None and not _filter_rows_since_nav_date(
-        merged_rows,
-        nav_since_date=nav_since_date,
+    if (
+        not full_history
+        and nav_since_date is not None
+        and not _filter_rows_since_nav_date(
+            merged_rows,
+            nav_since_date=nav_since_date,
+        )
     ):
         return update_refresh_status(
             instrument_id=instrument_id,
@@ -1550,9 +1715,11 @@ def _import_rows_from_email_rules(
             updated_by=updated_by,
             mode="email",
         )
-    merged_rows, reinvested_correction_applied = _apply_reinvested_total_return_correction(
-        instrument_id=instrument_id,
-        rows=merged_rows,
+    merged_rows, reinvested_correction_applied = (
+        _apply_reinvested_total_return_correction(
+            instrument_id=instrument_id,
+            rows=merged_rows,
+        )
     )
     if not full_history:
         merged_rows = _changed_nav_rows_since_date(
@@ -1614,7 +1781,9 @@ def _import_rows_from_email_rules(
             f"recent email attachments{since_text}."
         )
     if reinvested_correction_applied:
-        message = f"{message} Recalculated total_return_nav using dividend reinvestment."
+        message = (
+            f"{message} Recalculated total_return_nav using dividend reinvestment."
+        )
     return replace_nav_history(
         instrument_id=instrument_id,
         rows=merged_rows,
@@ -1637,7 +1806,9 @@ def import_nav_text(
     updated_by: str | None,
 ) -> dict[str, object] | None:
     rows = _parse_nav_rows_from_text(raw_text)
-    _, prepared_rows = _prepare_nav_rows_for_instrument(instrument_id=instrument_id, rows=rows)
+    _, prepared_rows = _prepare_nav_rows_for_instrument(
+        instrument_id=instrument_id, rows=rows
+    )
     normalized_status = _normalize_import_status(prepared_rows, status)
     return replace_nav_history(
         instrument_id=instrument_id,
@@ -1661,11 +1832,15 @@ def preview_nav_import(
     if raw_text is not None:
         rows = _parse_nav_rows_from_text(raw_text)
     elif file_name is not None and file_bytes is not None:
-        rows = _parse_nav_rows_from_uploaded_file(file_name=file_name, file_bytes=file_bytes)
+        rows = _parse_nav_rows_from_uploaded_file(
+            file_name=file_name, file_bytes=file_bytes
+        )
     else:
         raise ValueError("Provide NAV import text or a NAV file payload.")
 
-    instrument, prepared_rows = _prepare_nav_rows_for_instrument(instrument_id=instrument_id, rows=rows)
+    instrument, prepared_rows = _prepare_nav_rows_for_instrument(
+        instrument_id=instrument_id, rows=rows
+    )
     if instrument is None:
         return None
     return prepared_rows
@@ -1680,8 +1855,12 @@ def import_nav_file(
     status: str,
     updated_by: str | None,
 ) -> dict[str, object] | None:
-    rows = _parse_nav_rows_from_uploaded_file(file_name=file_name, file_bytes=file_bytes)
-    _, prepared_rows = _prepare_nav_rows_for_instrument(instrument_id=instrument_id, rows=rows)
+    rows = _parse_nav_rows_from_uploaded_file(
+        file_name=file_name, file_bytes=file_bytes
+    )
+    _, prepared_rows = _prepare_nav_rows_for_instrument(
+        instrument_id=instrument_id, rows=rows
+    )
     normalized_status = _normalize_import_status(prepared_rows, status)
     return replace_nav_history(
         instrument_id=instrument_id,
@@ -1752,7 +1931,9 @@ def refresh_market_data(
             mode="api",
         )
 
-    location = str(source_settings.get("source_location") or "Database Dashboard").strip()
+    location = str(
+        source_settings.get("source_location") or "Database Dashboard"
+    ).strip()
     return update_refresh_status(
         instrument_id=instrument_id,
         status="awaiting_manual_import",
@@ -1782,7 +1963,9 @@ def refresh_market_data_with_timeout(
         refresh_mode = (
             "email"
             if normalized_source == "email"
-            else "api" if normalized_source == "tushare" else None
+            else "api"
+            if normalized_source == "tushare"
+            else None
         )
         LOGGER.warning(
             "market data item timed out instrument_id=%s source=%s message=%s",
@@ -1854,14 +2037,15 @@ def _refresh_tushare_listed_security(
     factors = _tushare_adjustment_factors(factor_rows)
     previous_latest_factor = _stored_qfq_latest_factor(instrument)
     current_latest_factor = factors[max(factors)] if factors else previous_latest_factor
-    factor_changed = (
-        current_latest_factor is not None
-        and (
-            previous_latest_factor is None
-            or current_latest_factor != previous_latest_factor
-        )
+    factor_changed = current_latest_factor is not None and (
+        previous_latest_factor is None
+        or current_latest_factor != previous_latest_factor
     )
-    if current_latest_factor is not None and (full_history or factor_changed) and query_start > TUSHARE_HISTORY_START_DATE:
+    if (
+        current_latest_factor is not None
+        and (full_history or factor_changed)
+        and query_start > TUSHARE_HISTORY_START_DATE
+    ):
         full_factor_rows = _call_tushare_api(
             api_name=factor_api_name,
             params={
@@ -1886,13 +2070,16 @@ def _refresh_tushare_listed_security(
         {
             "metric_family": "price",
             "quote_basis": "close",
-            "as_of_date": point_date,
-            "value": value,
+            "as_of_date": row["as_of_date"],
+            "value": row["value"],
+            "value_input_scale": row.get("value_input_scale"),
+            "numeric_scale_state": row.get("numeric_scale_state"),
             "currency": "CNY",
             "source_ref": f"tushare:{price_api_name}",
             "status": "complete",
         }
-        for point_date, value in fetched_close_by_date.items()
+        for row in close_rows
+        if isinstance(row.get("as_of_date"), date)
     ]
     if current_latest_factor is not None:
         adjusted_dates = (
@@ -2003,7 +2190,9 @@ def _refresh_from_tushare(
     suffix = ts_code.rsplit(".", 1)[-1]
     try:
         if instrument_type == "fund" and suffix == "OF":
-            latest_date = None if full_history else _latest_nav_date_from_instrument(instrument)
+            latest_date = (
+                None if full_history else _latest_nav_date_from_instrument(instrument)
+            )
             rows = _call_tushare_api(
                 api_name="fund_nav",
                 params={"ts_code": ts_code},
@@ -2058,14 +2247,20 @@ def _refresh_from_tushare(
             )
 
         if instrument_type == "index" and suffix in TUSHARE_INDEX_SUFFIXES:
-            latest_date = None if full_history else _latest_market_data_date_from_instrument(
-                instrument,
-                metric_family="price",
-                quote_bases={"close"},
+            latest_date = (
+                None
+                if full_history
+                else _latest_market_data_date_from_instrument(
+                    instrument,
+                    metric_family="price",
+                    quote_bases={"close"},
+                )
             )
             params = {"ts_code": ts_code}
             params["start_date"] = _format_tushare_date(
-                _tushare_query_start_date(latest_date=latest_date, full_history=full_history)
+                _tushare_query_start_date(
+                    latest_date=latest_date, full_history=full_history
+                )
             )
             params["end_date"] = _format_tushare_date(date.today())
             rows = _call_tushare_api(
@@ -2123,6 +2318,8 @@ def _upsert_tushare_price_rows(
                 "quote_basis": "close",
                 "as_of_date": row["as_of_date"],
                 "value": row["value"],
+                "value_input_scale": row.get("value_input_scale"),
+                "numeric_scale_state": row.get("numeric_scale_state"),
                 "currency": "CNY",
                 "source_ref": f"tushare:{api_name}",
                 "status": "complete",
@@ -2156,7 +2353,9 @@ def _matches_batch_source(instrument: dict[str, object], source: str) -> bool:
     if normalized_source == "tushare":
         return source_mode == "api" and _tushare_profile_enabled(source_settings)
     if normalized_source == "all":
-        return source_mode == "email" or (source_mode == "api" and _tushare_profile_enabled(source_settings))
+        return source_mode == "email" or (
+            source_mode == "api" and _tushare_profile_enabled(source_settings)
+        )
     return False
 
 
@@ -2181,8 +2380,12 @@ class _EmailMailboxSession:
         self.settings = settings
         self._mailbox: imaplib.IMAP4 | imaplib.IMAP4_SSL | None = None
         self._selected_folder: str | None = None
-        self._search_cache: dict[tuple[str, tuple[object, ...]], tuple[object, object]] = {}
-        self._message_cache: OrderedDict[tuple[str, int, str], bytes | None] = OrderedDict()
+        self._search_cache: dict[
+            tuple[str, tuple[object, ...]], tuple[object, object]
+        ] = {}
+        self._message_cache: OrderedDict[tuple[str, int, str], bytes | None] = (
+            OrderedDict()
+        )
         self._message_cache_bytes = 0
         self._message_cache_limit_bytes = 64 * 1024 * 1024
         self._attachment_rows_cache: dict[
@@ -2206,7 +2409,9 @@ class _EmailMailboxSession:
                 pass
 
     def _connect(self) -> imaplib.IMAP4 | imaplib.IMAP4_SSL:
-        mailbox_cls = imaplib.IMAP4_SSL if self.settings.email_imap_use_ssl else imaplib.IMAP4
+        mailbox_cls = (
+            imaplib.IMAP4_SSL if self.settings.email_imap_use_ssl else imaplib.IMAP4
+        )
         mailbox = mailbox_cls(
             self.settings.email_imap_host,
             self.settings.email_imap_port,
@@ -2399,11 +2604,15 @@ def _run_tushare_refresh_process_batch(
     if not targets:
         return []
     context = multiprocessing.get_context("spawn")
-    max_workers = min(max(1, int(getattr(settings, "tushare_batch_max_workers", 4))), len(targets))
+    max_workers = min(
+        max(1, int(getattr(settings, "tushare_batch_max_workers", 4))), len(targets)
+    )
     configured_item_timeout = int(
         getattr(settings, "market_data_batch_item_timeout_seconds", 300) or 0
     )
-    request_timeout = max(1, int(getattr(settings, "tushare_timeout_seconds", 30) or 30))
+    request_timeout = max(
+        1, int(getattr(settings, "tushare_timeout_seconds", 30) or 30)
+    )
     item_timeout = (
         configured_item_timeout
         if configured_item_timeout > 0
@@ -2531,7 +2740,9 @@ def refresh_market_data_batch(
     if normalized_source == "configured":
         normalized_source = "all"
     instruments = list_instruments(include_inactive=include_inactive)
-    targets = [item for item in instruments if _matches_batch_source(item, normalized_source)]
+    targets = [
+        item for item in instruments if _matches_batch_source(item, normalized_source)
+    ]
     LOGGER.info(
         "market data batch targets source=%s target_count=%s skipped_count=%s",
         normalized_source,
@@ -2539,7 +2750,9 @@ def refresh_market_data_batch(
         len(instruments) - len(targets),
     )
     if normalized_source == "tushare" and targets:
-        max_workers = min(getattr(settings, "tushare_batch_max_workers", 4), len(targets))
+        max_workers = min(
+            getattr(settings, "tushare_batch_max_workers", 4), len(targets)
+        )
         LOGGER.info(
             "tushare batch executing in isolated processes target_count=%s max_workers=%s item_timeout=%s batch_timeout=%s",
             len(targets),
@@ -2565,7 +2778,8 @@ def refresh_market_data_batch(
                     "instrument_name": refreshed["instrument_name"],
                     "instrument_type": refreshed["instrument_type"],
                     "source_mode": source_settings.get("source_mode") or "manual",
-                    "source_api_profile": source_settings.get("source_api_profile") or "",
+                    "source_api_profile": source_settings.get("source_api_profile")
+                    or "",
                     "status": refresh_status.get("status") or "idle",
                     "message": refresh_status.get("message") or "",
                 }
@@ -2580,7 +2794,9 @@ def refresh_market_data_batch(
         }
     results: list[dict[str, object]] = []
     has_email_targets = any(
-        str(dict(item.get("source_settings", {})).get("source_mode") or "").strip().lower()
+        str(dict(item.get("source_settings", {})).get("source_mode") or "")
+        .strip()
+        .lower()
         == "email"
         for item in targets
     )
@@ -2599,9 +2815,12 @@ def refresh_market_data_batch(
                 continue
             email_target_details[instrument_id] = detail
             detail_settings = dict(detail.get("source_settings", {}))
-            folder = str(
-                detail_settings.get("source_location") or settings.email_imap_folder
-            ).strip() or settings.email_imap_folder
+            folder = (
+                str(
+                    detail_settings.get("source_location") or settings.email_imap_folder
+                ).strip()
+                or settings.email_imap_folder
+            )
             cursor = _email_search_since_date(
                 instrument=detail,
                 nav_since_date=(
@@ -2638,7 +2857,9 @@ def refresh_market_data_batch(
                 )
                 email_batch_uids_by_folder[folder] = pending_uids
                 if email_session._selected_folder:
-                    email_batch_uids_by_folder[email_session._selected_folder] = pending_uids
+                    email_batch_uids_by_folder[email_session._selected_folder] = (
+                        pending_uids
+                    )
                 LOGGER.info(
                     "email batch snapshot folder=%s cursor=%s uid_count=%s",
                     folder,
@@ -2651,9 +2872,14 @@ def refresh_market_data_batch(
     try:
         for index, instrument in enumerate(targets, start=1):
             instrument_id = str(instrument.get("instrument_id") or "")
-            target_source_mode = str(
-                dict(instrument.get("source_settings", {})).get("source_mode") or "manual"
-            ).strip().lower()
+            target_source_mode = (
+                str(
+                    dict(instrument.get("source_settings", {})).get("source_mode")
+                    or "manual"
+                )
+                .strip()
+                .lower()
+            )
             LOGGER.info(
                 "market data batch item started source=%s index=%s/%s instrument_id=%s",
                 normalized_source,
@@ -2664,7 +2890,9 @@ def refresh_market_data_batch(
             try:
                 with market_data_item_timeout(instrument_id):
                     if target_source_mode == "email" and email_session is not None:
-                        current_instrument = email_target_details.get(instrument_id) or get_instrument(instrument_id)
+                        current_instrument = email_target_details.get(
+                            instrument_id
+                        ) or get_instrument(instrument_id)
                         if current_instrument is None:
                             refreshed = None
                         else:
@@ -2672,7 +2900,10 @@ def refresh_market_data_batch(
                                 current_instrument.get("source_settings", {})
                             )
                             if (
-                                str(current_source_settings.get("source_mode") or "manual")
+                                str(
+                                    current_source_settings.get("source_mode")
+                                    or "manual"
+                                )
                                 .strip()
                                 .lower()
                                 == "email"
@@ -2686,7 +2917,9 @@ def refresh_market_data_batch(
                                     mailbox_session=email_session,
                                     batch_pending_uids=email_batch_uids_by_folder.get(
                                         str(
-                                            current_source_settings.get("source_location")
+                                            current_source_settings.get(
+                                                "source_location"
+                                            )
                                             or settings.email_imap_folder
                                         ).strip()
                                         or settings.email_imap_folder
@@ -2749,7 +2982,8 @@ def refresh_market_data_batch(
                     "instrument_name": refreshed["instrument_name"],
                     "instrument_type": refreshed["instrument_type"],
                     "source_mode": source_settings.get("source_mode") or "manual",
-                    "source_api_profile": source_settings.get("source_api_profile") or "",
+                    "source_api_profile": source_settings.get("source_api_profile")
+                    or "",
                     "status": refresh_status.get("status") or "idle",
                     "message": refresh_status.get("message") or "",
                 }
@@ -2759,7 +2993,9 @@ def refresh_market_data_batch(
             email_session.close()
     return {
         "source": normalized_source,
-        "refreshed_count": sum(1 for item in results if item["status"] in {"imported", "refreshed"}),
+        "refreshed_count": sum(
+            1 for item in results if item["status"] in {"imported", "refreshed"}
+        ),
         "skipped_count": len(instruments) - len(targets),
         "results": results,
     }
@@ -2810,7 +3046,11 @@ def _refresh_from_email(
         for attempt in range(2):
             try:
                 mailbox = session.open_folder(preferred_folder)
-                nav_since_date = None if full_history else _latest_nav_date_from_instrument(instrument)
+                nav_since_date = (
+                    None
+                    if full_history
+                    else _latest_nav_date_from_instrument(instrument)
+                )
                 search_since_date = _email_search_since_date(
                     instrument=instrument,
                     nav_since_date=nav_since_date,
@@ -2822,11 +3062,19 @@ def _refresh_from_email(
                     else ("SINCE", _format_imap_since_date(search_since_date))
                 )
                 if batch_pending_uids is None:
-                    search_status, search_data = mailbox.uid("search", None, *search_criteria)
+                    search_status, search_data = mailbox.uid(
+                        "search", None, *search_criteria
+                    )
                     if not _imap_status_ok(search_status):
-                        raise _EmailMailboxConnectionError("unable to list mailbox messages.")
-                    raw_uid_list = search_data[0] if search_data and search_data[0] else b""
-                    available_uids = [int(item) for item in raw_uid_list.split() if item]
+                        raise _EmailMailboxConnectionError(
+                            "unable to list mailbox messages."
+                        )
+                    raw_uid_list = (
+                        search_data[0] if search_data and search_data[0] else b""
+                    )
+                    available_uids = [
+                        int(item) for item in raw_uid_list.split() if item
+                    ]
                     pending_uids = (
                         available_uids
                         if search_since_date is not None

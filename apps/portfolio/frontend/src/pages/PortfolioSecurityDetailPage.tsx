@@ -23,8 +23,7 @@ import {
   type PortfolioInstrumentHoldingRow,
   type PortfolioInstrumentHoldingProjectionResponse,
   type PortfolioInstrumentPriceChartResponse,
-  type PortfolioPositionLotListResponse,
-  type PortfolioPositionLotRecord,
+  type PortfolioDailyPublishedLotListResponse,
   type PortfolioTransactionListResponse,
   type PortfolioTransactionRecord,
 } from '../lib/api'
@@ -38,7 +37,7 @@ import {
   buildWatchlistInstrumentDetailUrl,
 } from '../lib/navigation'
 
-type SecurityDetailTab = 'overview' | 'transactions' | 'lots' | 'realizations'
+type SecurityDetailTab = 'overview' | 'transactions' | 'lots'
 
 function primaryIdentifier(row: PortfolioInstrumentHoldingRow) {
   return (
@@ -56,7 +55,7 @@ function parseChartRange(value: string | null): PortfolioInstrumentChartRangeKey
 }
 
 function parseDetailTab(value: string | null): SecurityDetailTab {
-  if (value === 'transactions' || value === 'lots' || value === 'realizations') {
+  if (value === 'transactions' || value === 'lots') {
     return value
   }
   return 'overview'
@@ -64,10 +63,6 @@ function parseDetailTab(value: string | null): SecurityDetailTab {
 
 function transactionAccountLabel(transaction: PortfolioTransactionRecord) {
   return transaction.account.account_name
-}
-
-function lotStatusClass(positionLot: PortfolioPositionLotRecord) {
-  return positionLot.status === 'open' ? 'coverage-pill-live' : 'coverage-pill-warning'
 }
 
 function TableStatusRow({
@@ -94,7 +89,7 @@ export default function PortfolioSecurityDetailPage() {
   const [workspace, setWorkspace] = useState<PortfolioInstrumentHoldingProjectionResponse | null>(null)
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
-  const [positionLotsWorkspace, setPositionLotsWorkspace] = useState<PortfolioPositionLotListResponse | null>(null)
+  const [positionLotsWorkspace, setPositionLotsWorkspace] = useState<PortfolioDailyPublishedLotListResponse | null>(null)
   const [positionLotsLoading, setPositionLotsLoading] = useState(false)
   const [positionLotsError, setPositionLotsError] = useState<string | null>(null)
   const [transactionsWorkspace, setTransactionsWorkspace] = useState<PortfolioTransactionListResponse | null>(null)
@@ -112,7 +107,7 @@ export default function PortfolioSecurityDetailPage() {
   const selectedPositionLots = positionLotsWorkspace?.position_lots ?? []
   const selectedTransactions = transactionsWorkspace?.transactions ?? []
   const selectedPositionLot =
-    selectedPositionLots.find((positionLot) => positionLot.position_lot_id === selectedPositionLotId) ??
+    selectedPositionLots.find((positionLot) => positionLot.lot_id === selectedPositionLotId) ??
     selectedPositionLots[0] ??
     null
   const resolvedAsOfDate = workspace?.as_of_date || requestedAsOfDate
@@ -142,13 +137,8 @@ export default function PortfolioSecurityDetailPage() {
     },
     {
       key: 'lots',
-      label: 'PositionLots',
-      meta: positionLotsLoading ? '...' : positionLotsWorkspace ? String(positionLotsWorkspace.summary.position_lot_count) : '0',
-    },
-    {
-      key: 'realizations',
-      label: 'Realizations',
-      meta: positionLotsLoading ? '...' : selectedPositionLot ? String(selectedPositionLot.realization_count) : '0',
+      label: 'Open Lots',
+      meta: positionLotsLoading ? '...' : positionLotsWorkspace ? String(positionLotsWorkspace.summary.lot_count) : '0',
     },
   ] as const
 
@@ -557,11 +547,13 @@ export default function PortfolioSecurityDetailPage() {
                         <strong>{accountNameById.get(slice.accountId) ?? slice.accountId}</strong>
                         <span>{formatNumber(slice.openPositionLotCount, 0)} open lots</span>
                       </div>
-                      <strong>{formatCurrency(slice.marketValue, selectedRow?.instrument_core.currency ?? baseCurrency)}</strong>
+                      <strong>
+                        {formatCurrency(slice.costBasisLocalExact, selectedRow?.instrument_core.currency ?? baseCurrency)}
+                      </strong>
                     </div>
                     <dl>
-                      <div><dt>Quantity</dt><dd>{formatQuantity(slice.quantity)}</dd></div>
-                      <div><dt>Remaining cost</dt><dd>{formatCurrency(slice.remainingCost, selectedRow?.instrument_core.currency ?? baseCurrency)}</dd></div>
+                      <div><dt>Open quantity</dt><dd>{formatQuantity(slice.quantityExact)}</dd></div>
+                      <div><dt>Open local cost</dt><dd>{formatCurrency(slice.costBasisLocalExact, selectedRow?.instrument_core.currency ?? baseCurrency)}</dd></div>
                     </dl>
                   </article>
                 )) : (
@@ -656,14 +648,16 @@ export default function PortfolioSecurityDetailPage() {
           >
             <div className="portfolio-detail-toolbar holdings-detail-toolbar">
               <div>
-                <div className="panel-title">PositionLots</div>
-                <div className="portfolio-detail-meta">{selectedRow?.instrument_core.instrument_name ?? instrumentId}</div>
+                <div className="panel-title">Published Open Lots</div>
+                <div className="portfolio-detail-meta">
+                  {selectedRow?.instrument_core.instrument_name ?? instrumentId} · {positionLotsWorkspace?.summary.as_of_date ?? resolvedAsOfDate}
+                </div>
               </div>
               {positionLotsLoading ? (
                 <div className="portfolio-detail-meta">Loading</div>
               ) : positionLotsWorkspace ? (
                 <div className="portfolio-detail-meta">
-                  {positionLotsWorkspace.summary.open_position_lot_count} open / {positionLotsWorkspace.summary.closed_position_lot_count} closed
+                  {positionLotsWorkspace.summary.lot_count} open lots · publication {positionLotsWorkspace.publication.publication_id}
                 </div>
               ) : null}
             </div>
@@ -672,13 +666,13 @@ export default function PortfolioSecurityDetailPage() {
                 <table className="holdings-table position-lots-table portfolio-security-lots-table">
                   <thead>
                     <tr>
-                      <th>Account / Status</th>
-                      <th>Life</th>
-                      <th>Entry / Remaining Qty</th>
-                      <th>Entry / Remaining Cost</th>
-                      <th>Market Value</th>
-                      <th>Realized / Unrealized P&amp;L</th>
-                      <th>Activity</th>
+                      <th>Account</th>
+                      <th>Acquisition</th>
+                      <th>Open Quantity</th>
+                      <th>Local Cost</th>
+                      <th>Unit Cost</th>
+                      <th>Base Cost</th>
+                      <th>Source Fact</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -689,46 +683,32 @@ export default function PortfolioSecurityDetailPage() {
                     ) : selectedPositionLots.length ? (
                       selectedPositionLots.map((positionLot) => (
                         <tr
-                          key={positionLot.position_lot_id}
+                          key={positionLot.lot_id}
                           tabIndex={0}
-                          aria-selected={selectedPositionLot?.position_lot_id === positionLot.position_lot_id}
-                          className={selectedPositionLot?.position_lot_id === positionLot.position_lot_id ? 'position-lots-row holdings-row-active' : 'position-lots-row'}
-                          onClick={() => updateSearchParam('position_lot_id', positionLot.position_lot_id)}
+                          aria-selected={selectedPositionLot?.lot_id === positionLot.lot_id}
+                          className={selectedPositionLot?.lot_id === positionLot.lot_id ? 'position-lots-row holdings-row-active' : 'position-lots-row'}
+                          onClick={() => updateSearchParam('position_lot_id', positionLot.lot_id)}
                           onKeyDown={(event) => {
                             if (event.key === 'Enter' || event.key === ' ') {
                               event.preventDefault()
-                              updateSearchParam('position_lot_id', positionLot.position_lot_id)
+                              updateSearchParam('position_lot_id', positionLot.lot_id)
                             }
                           }}
                         >
                           <td>
                             <div className="holding-name-stack">
                               <strong>{accountNameById.get(positionLot.account_id) ?? positionLot.account_id}</strong>
-                              <span><span className={`coverage-pill ${lotStatusClass(positionLot)}`}>{formatLabel(positionLot.status)}</span></span>
+                              <span className={`coverage-pill ${positionLot.measured_base_cost ? 'coverage-pill-live' : 'coverage-pill-warning'}`}>
+                                {formatLabel(positionLot.base_cost_coverage_state)}
+                              </span>
                             </div>
                           </td>
-                          <td>
-                            <div className="holding-name-stack">
-                              <span>{positionLot.opened_at}</span>
-                              <span className="holding-secondary">{positionLot.closed_at ? `Closed ${positionLot.closed_at}` : `${formatNumber(positionLot.holding_period_days)} days`}</span>
-                            </div>
-                          </td>
-                          <td>
-                            <div className="holding-name-stack"><span>{formatQuantity(positionLot.entry_quantity)}</span><span className="holding-secondary">Remain {formatQuantity(positionLot.remaining_quantity)}</span></div>
-                          </td>
-                          <td>
-                            <div className="holding-name-stack"><span>{formatCurrency(positionLot.entry_cost_basis, positionLot.currency)}</span><span className="holding-secondary">Remain {formatCurrency(positionLot.remaining_cost_basis, positionLot.currency)}</span></div>
-                          </td>
-                          <td>{formatCurrency(positionLot.current_market_value, positionLot.currency)}</td>
-                          <td>
-                            <div className="holding-name-stack">
-                              <span className={signedValueClass(positionLot.realized_pnl)}>{formatSignedCurrency(positionLot.realized_pnl, positionLot.currency)}</span>
-                              <span className={`${signedValueClass(positionLot.unrealized_pnl)} holding-secondary`}>Unrealized {formatSignedCurrency(positionLot.unrealized_pnl, positionLot.currency)}</span>
-                            </div>
-                          </td>
-                          <td>
-                            <div className="holding-name-stack"><span>{positionLot.realization_count} exits</span><span className="holding-secondary">{positionLot.linked_transaction_count} facts</span></div>
-                          </td>
+                          <td>{positionLot.acquisition_date}</td>
+                          <td>{formatQuantity(positionLot.open_quantity_exact)}</td>
+                          <td>{formatCurrency(positionLot.cost_basis_local_exact, positionLot.currency)}</td>
+                          <td>{formatUnitPrice(positionLot.unit_cost_local, positionLot.currency)}</td>
+                          <td>{formatCurrency(positionLot.cost_basis_base_exact, baseCurrency)}</td>
+                          <td>{positionLot.source_transaction_id}</td>
                         </tr>
                       ))
                     ) : (
@@ -743,94 +723,25 @@ export default function PortfolioSecurityDetailPage() {
                     <div className="position-lot-inspector-head">
                       <div>
                         <span className="portfolio-detail-meta">Selected lot</span>
-                        <strong>{selectedPositionLot.position_lot_id}</strong>
+                        <strong>{selectedPositionLot.lot_id}</strong>
                       </div>
-                      <span className={`coverage-pill ${lotStatusClass(selectedPositionLot)}`}>{formatLabel(selectedPositionLot.status)}</span>
+                      <span className={`coverage-pill ${selectedPositionLot.measured_base_cost ? 'coverage-pill-live' : 'coverage-pill-warning'}`}>
+                        {formatLabel(selectedPositionLot.base_cost_coverage_state)}
+                      </span>
                     </div>
                     <dl className="position-lot-inspector-metrics">
-                      <div><dt>Cost method</dt><dd>{formatLabel(selectedPositionLot.cost_basis_method)}</dd></div>
-                      <div><dt>Entry price</dt><dd>{formatUnitPrice(selectedPositionLot.entry_price, selectedPositionLot.currency)}</dd></div>
-                      <div><dt>Income</dt><dd>{formatCurrency(selectedPositionLot.income_cash_amount, selectedPositionLot.currency)}</dd></div>
-                      <div><dt>Expense</dt><dd>{formatCurrency(selectedPositionLot.expense_cash_amount, selectedPositionLot.currency)}</dd></div>
-                      <div><dt>Transferred qty</dt><dd>{formatQuantity(selectedPositionLot.transferred_quantity)}</dd></div>
-                      <div><dt>Realized qty</dt><dd>{formatQuantity(selectedPositionLot.realized_quantity)}</dd></div>
+                      <div><dt>Source revision</dt><dd>v{selectedPositionLot.source_revision_number} · {selectedPositionLot.source_revision_id}</dd></div>
+                      <div><dt>Custody revision</dt><dd>v{selectedPositionLot.custody_revision_number} · {selectedPositionLot.custody_revision_id}</dd></div>
+                      <div><dt>Acquisition FX</dt><dd>{selectedPositionLot.acquisition_fx_rate_exact ?? '—'}</dd></div>
+                      <div><dt>Local unit residual</dt><dd>{selectedPositionLot.unit_cost_local_rounding_residual_exact}</dd></div>
+                      <div><dt>Base unit cost</dt><dd>{formatCurrency(selectedPositionLot.unit_cost_base, baseCurrency, 4)}</dd></div>
+                      <div><dt>Coverage reasons</dt><dd>{selectedPositionLot.base_cost_reason_codes.map(formatLabel).join(' · ') || 'None'}</dd></div>
                     </dl>
-                    <button type="button" className="toolbar-link" onClick={() => updateSearchParam('detail_tab', 'realizations')}>
-                      View {selectedPositionLot.realization_count} realizations
-                    </button>
                   </>
                 ) : (
                   <div className="empty-state">Select a lot.</div>
                 )}
               </aside>
-            </div>
-          </div>
-        ) : null}
-
-        {detailTab === 'realizations' ? (
-          <div
-            id="portfolio-security-panel-realizations"
-            role="tabpanel"
-            aria-labelledby="portfolio-security-tab-realizations"
-          >
-            <div className="portfolio-detail-toolbar holdings-detail-toolbar">
-              <div>
-                <div className="panel-title">Realizations</div>
-                <div className="portfolio-detail-meta">
-                  {selectedPositionLot
-                    ? `${selectedPositionLot.position_lot_id} · ${selectedPositionLot.account_id} · ${formatLabel(selectedPositionLot.status)}`
-                    : 'Select a PositionLot'}
-                </div>
-              </div>
-              <div className="portfolio-detail-meta">
-                {positionLotsLoading
-                  ? 'Loading'
-                  : selectedPositionLot
-                    ? `${selectedPositionLot.realization_count} matched exits`
-                    : '0 matched exits'}
-              </div>
-            </div>
-            <div className="table-shell">
-              <table className="holdings-table position-lot-realizations-table">
-                <thead>
-                  <tr>
-                    <th>Trade / Type</th>
-                    <th>Quantity / Price</th>
-                    <th>Proceeds / Cost Released</th>
-                    <th>Realized P/L</th>
-                    <th>Remaining Position</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {positionLotsLoading ? (
-                    <TableStatusRow colSpan={6} label="Loading" />
-                  ) : positionLotsError ? (
-                    <TableStatusRow colSpan={6} label={positionLotsError} tone="error" />
-                  ) : selectedPositionLot?.realizations.length ? (
-                    selectedPositionLot.realizations.map((realization) => (
-                      <tr key={realization.realization_id}>
-                        <td><div className="holding-name-stack"><span>{realization.trade_date}</span><span className="holding-secondary">{formatLabel(realization.transaction_type)}</span></div></td>
-                        <td><div className="holding-name-stack"><span>{formatQuantity(realization.quantity)}</span><span className="holding-secondary">@ {formatUnitPrice(realization.price, selectedPositionLot.currency)}</span></div></td>
-                        <td><div className="holding-name-stack"><span>{formatCurrency(realization.proceeds, selectedPositionLot.currency)}</span><span className="holding-secondary">Cost {formatCurrency(realization.cost_basis_released, selectedPositionLot.currency)}</span></div></td>
-                        <td className={signedValueClass(realization.realized_pnl)}>
-                          {formatSignedCurrency(realization.realized_pnl, selectedPositionLot.currency)}
-                        </td>
-                        <td><div className="holding-name-stack"><span>{formatQuantity(realization.remaining_quantity_after)}</span><span className="holding-secondary">{formatCurrency(realization.remaining_cost_basis_after, selectedPositionLot.currency)}</span></div></td>
-                        <td>
-                          <span className={`coverage-pill ${realization.status_after === 'open' ? 'coverage-pill-live' : 'coverage-pill-warning'}`}>
-                            {formatLabel(realization.status_after)}
-                          </span>
-                        </td>
-                      </tr>
-                    ))
-                  ) : selectedPositionLot ? (
-                    <TableStatusRow colSpan={6} label="No realizations." />
-                  ) : (
-                    <TableStatusRow colSpan={6} label="No lot." />
-                  )}
-                </tbody>
-              </table>
             </div>
           </div>
         ) : null}

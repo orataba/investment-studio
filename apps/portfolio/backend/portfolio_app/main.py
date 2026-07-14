@@ -75,8 +75,8 @@ def transactions_page() -> RedirectResponse:
     return RedirectResponse(url=f"{settings.frontend_url}/portfolios", status_code=307)
 
 
-@app.get("/research")
-def research_page() -> RedirectResponse:
+@app.get("/allocation-research")
+def allocation_research_page() -> RedirectResponse:
     return RedirectResponse(url=f"{settings.frontend_url}/portfolios", status_code=307)
 
 

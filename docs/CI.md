@@ -16,15 +16,17 @@ PostgreSQL 迁移/集成测试/恢复生命周期测试全部成功后才通过�
 
 ## CI 分区
 
-`Application tests` 执行三个后端的快速测试和可移植基础设施测试。快速测试显式排除
-`postgresql_integration` marker，数据库专属行为不会在 SQLite 环境中伪装成已覆盖。
+`Application tests` 执行三个后端的快速测试和可移植基础设施测试。Platform/Watchlist
+保留各自的 isolated path；Portfolio 普通 DB/API tests 从已迁移、已 seed 的 session PostgreSQL
+template 为每例克隆隔离数据库。快速测试显式排除 `postgresql_integration` marker；后者继续覆盖
+专属迁移、约束、search_path、worker 并发与恢复生命周期。
 
 `Frontend tests and builds` 对 Platform、Portfolio、Watchlist 分别执行测试与生产构建。
 
 `PostgreSQL migrations, integration, and recovery` 在临时 PostgreSQL 服务中：
 
 1. 创建无 `CREATEDB` 的运行角色和仅具有 `CREATEDB` 的测试角色；
-2. 将三条 Alembic 链从空库升级至全部 head，并用 `alembic current --check-heads` 复核；
+2. 将四条 Alembic 链从空库升级至全部 head，并用 `alembic current --check-heads` 复核；
 3. 执行 PostgreSQL 专属约束测试；
 4. 解析 JUnit 报告，任何零收集或 skip 都使门禁失败；
 5. 执行数据库发布回滚和 dump 恢复回滚生命周期测试。
@@ -59,7 +61,7 @@ infra/scripts/verify_repository.sh postgres-integration all
 infra/scripts/verify_repository.sh database-lifecycle
 ```
 
-空库迁移验证还需要按 [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md) 设置三套应用连接和
+空库迁移验证还需要按 [DATABASE_WORKFLOW.md](./DATABASE_WORKFLOW.md) 设置三套应用连接、共享 calculation registry 连接和
 `PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE`，然后运行：
 
 ```bash

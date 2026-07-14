@@ -133,9 +133,9 @@ PostgreSQL
 
 在迁移完成前，现有 `platform / watchlist / portfolio` 可以继续作为物理边界，但新代码必须按上述领域模块组织，禁止新增跨 app 重复计算。
 
-`Research` 只可以是前端导航分组，不能成为一套包办所有投资方法的通用领域模型。当前
-Portfolio 中名为 `Research` 的能力，业务含义严格限定为 `Allocation Research`；基金研究
-仍归 `Fund Research`，ETF 轮动研究和实盘状态仍归外部项目。
+Portfolio 的资产配置入口统一命名为 `Allocation Lab`，后端 bounded context 统一为
+`allocation_research`；当前运行时不存在通用 `Research` 路由、模块或兼容别名。基金研究仍归
+`Fund Research`，ETF 轮动研究和实盘状态仍归外部项目。
 
 ## 5. 核心领域模型
 
@@ -154,6 +154,10 @@ Portfolio 中名为 `Research` 的能力，业务含义严格限定为 `Allocati
 
 ### 5.2 Portfolio Ledger
 
+- `PortfolioRecord.lifecycle_status`
+  组合只允许 `active / archived` 生命周期。归档从日常工作区移除组合，但保留账户、交易 revision、taxonomy、
+  sealed manifest 与不可变 publication；恢复只重新激活同一稳定 `portfolio_id`。生产接口不提供级联物理删除。
+  active 组合的展示顺序由数据库 partial unique constraint 和事务级排序锁共同保证为确定性 `0..n-1`。
 - `TransactionIdentity`
   稳定且不可复用的交易身份；修改和删除都不改变 `transaction_id`。
 - `TransactionRevisionGroup`
@@ -180,10 +184,10 @@ Portfolio 中名为 `Research` 的能力，业务含义严格限定为 `Allocati
 - `Portfolio Risk` 基于真实持仓和市场数据描述当前风险；`RiskModelVersion` 与
   `RiskPolicy` 分离，`RiskLimit`、`RiskBreach`、`RiskOverride` 形成监控闭环。
 - 除明确标记为 ETF 轮动策略组合的特殊组合外，组合 taxonomy 是分类、绩效归因、风险聚合和
-  日常跟踪的标准主轴；它不因为 Research 分域而消失。
+  日常跟踪的标准主轴；它不因为 Allocation Research 分域而消失。
 - `Allocation Research` 研究资产配置问题；`AssumptionSet`、`InvestmentView`、
   `ConstraintSet`、`AllocationRun` 形成证据链。
-- taxonomy 中的 planning 扩展、`TargetSet`、风险预算、权重缺口和 policy drift 只属于
+- taxonomy 中的 planning 扩展、`TargetSet`、风险预算、权重缺口和 `Allocation Policy Drift` 只属于
   `Allocation Research` 或已绑定 allocation policy 的组合；普通分类 taxonomy 不受此限制，
   但这些 planning 对象不能成为 ETF 轮动组合的必填字段。
 - 历史政策模拟统一标注数据范围、当前政策假设和实施成本是否纳入，并命名为
@@ -270,6 +274,11 @@ reliability_reasons[]
 - 交易数量、价格、金额、费用和 FX 使用明确 scale 的 Decimal/NUMERIC；禁止 binary float 进入账本、
   现金流、估值聚合或持久化结果。统计矩阵允许在方法规范中显式使用浮点线性代数，但输入转换、
   缺失值、正定性处理、容差和输出舍入必须版本化并有 golden tests。
+- 精度按用途分层，而不是追求无限小数：事实值保存进入系统时的十进制表示小数位，并受字段最大 scale
+  约束；`1.2300` 与 `1.23` 数值相等但证据表示不同。收益、权重和 FX 的发布值使用明确 scale；除法、
+  求根、幂和递归财富链使用固定 Decimal 方法精度与 HALF_EVEN。计算精度不等于来源准确度，系统不得
+  因内部使用更高精度而声称交割单、份额或净值具有更多有效小数。递归状态必须保存有界 method value
+  和显式 rounding evidence，禁止为每个日期保存不断增长的无限展开前缀。
 - 每个指标定义现金流时点、估值时点、时区、交易日历、币种、FX 路径、收益频率、年化因子、
   费用与税费处理、符号约定、最低样本和 fail-closed 条件；同名指标不得根据调用页面改变口径。
 - manifest 必须引用计算实际读取的 exact transaction revision、quote observation revision、FX leg、
@@ -301,13 +310,14 @@ reliability_reasons[]
 
 当前目标是先建立不会再次推倒的计算与模块骨架，再快速推进 Phase 4 和 Phase 5：
 
-1. **Phase 5A 稳定性门禁先行：** 固定 Python/Node/lock file，建立 GitHub CI、PostgreSQL 空库迁移、
+1. **Phase 5A 稳定性门禁（已完成）：** 已固定 Python/Node/lock file，建立 GitHub CI、PostgreSQL 空库迁移、
    专属约束测试零 skip 门禁，以及发布/恢复回滚测试。
-2. **Phase 2B / Phase 3B 精确计算主干：** 建立 Calculation Run、sealed Input Manifest、持久任务与
-   原子 Publication；第一个生产者是 Portfolio Daily，GET 路径只读已发布结果。
-3. **Phase 4 语义收窄：** 先抽离共享 market/risk math，再一次性完成 Allocation Research / Policy Replay /
+2. **Phase 2B / Phase 3B 精确计算主干（已完成）：** 已建立 Calculation Run、sealed Input Manifest、
+   持久任务与原子 Publication；第一个生产者是 Portfolio Daily，GET 路径只读已发布结果。
+3. **Phase 4 语义收窄（已完成）：** 已抽离共享 market/risk math，并一次性完成 Allocation Research / Policy Replay /
    Allocation Policy Drift 命名与 operating profile，不保留双轨别名。
-4. **Phase 5B 架构收敛：** 在上述稳定 contract 上收敛模块边界、worker/outbox 和少量同事使用所需的身份基础。
+4. **Phase 5B 架构收敛（运行骨架已完成）：** worker、transactional outbox、readiness、失败重试与
+   发布/恢复门禁已落地；身份、RBAC、生成式 API client 和关键 E2E 是下一批工作。
 5. **Phase 3C 后置增强：** 复杂 reconciliation workflow、严格历史审计 UI 和任意历史时点交互式 replay
    后续补充；它们不得阻塞当前稳定主干，也不得反向改变已定型的计算输入和发布模型。
 
@@ -336,7 +346,7 @@ reliability_reasons[]
 运行时不存在 dormant 通用穿透代码。Portfolio 真实持仓、除显式 ETF 轮动策略组合外所有普通组合的
 taxonomy、基金 NAV 表现与风险分析均保持不变；普通组合持有 ETF 不构成豁免。
 
-### Phase 2：时间、序列和指标可靠性（2A / 2D 已部署；2B / 2C 继续）
+### Phase 2：时间、序列和指标可靠性（2A / 2B / 2D 已收敛；2C 后续继续）
 
 #### Phase 2A：Canonical Fact Foundation
 
@@ -358,16 +368,11 @@ taxonomy、基金 NAV 表现与风险分析均保持不变；普通组合持有 
   经过 fresh re-anchor 后新窗口才可恢复计算。
 - Portfolio GET 不再同步写库或以同形 live fallback 隐藏 materialization 失败。
 
-当前进度：Portfolio daily snapshot 已保存 quote / FX dependency manifest、独立
-NAV / book-P&L / TWR 状态并支持全量确定性重建；Watchlist performance/risk pair 已有
-一致 fingerprint 和两轮 cohort convergence。现有 snapshot fingerprint 和 dependency JSON 只是
-过渡事实，不是完整 provenance。通用 registry、immutable publication、durable job，以及所有 GET
-读路径彻底移除同步 materialization，由 Phase 3B 一次性完成，不保留双轨实现。
-
-首个垂直切片固定为 Portfolio Daily：命令端创建 run 并冻结输入，worker 只读取 sealed manifest，
-计算结果写入新版本后原子切换 publication。事实若在运行中修订，该 run 标记 superseded 且不能发布；
-同一 manifest 的重试必须幂等。完成后删除现有进程内锁、请求内等待、GET 隐式 ensure、后台 task
-和 live fallback，不保留兼容路径。
+2026-07-14 当前状态：Portfolio Daily 已收敛到通用 registry、sealed typed manifest、durable
+lease/fencing job 和 immutable publication。事实修订在同一事务中推进 generation 并写入
+recompute intent；worker 只读 manifest，mid-run 修订使旧 run superseded，单一 current pointer 只发布
+完整 fenced outputs。旧 dependency JSON/原地覆盖日表、同步读路径重建、请求等待与 live
+fallback 均已替换，不是当前 runtime。
 
 #### Phase 2C：Contract Convergence
 
@@ -375,10 +380,10 @@ NAV / book-P&L / TWR 状态并支持全量确定性重建；Watchlist performanc
 - OpenAPI 生成共享 TypeScript client，删除三个前端手写的重复 DTO。
 - calculation current 必须等于当前 input fingerprint 与 methodology version，不以“有日期/有快照”代替。
 
-当前进度：Portfolio risk workspace、performance comparison/reliability、holdings unrealized
-P&L 和 Watchlist analytics 已返回 typed coverage / reliability / lineage；旧混合 coverage、裸
-AUM 和误导性 Reference Tape 已删除。OpenAPI 生成 TypeScript client 以及三个前端剩余手写
-DTO 的统一仍未完成，不以手写兼容 alias 作为过渡方案。
+当前状态：Portfolio published reporting、Risk Workspace、Holdings 和 Watchlist analytics 已返回
+typed coverage / reliability / lineage。Performance 使用一次 consolidated report 发布 TWR/XIRR/drawdown、
+monetary bridge、Frongello contribution 和 monthly/weekly calendar；benchmark-relative 目前 withheld。
+OpenAPI 生成 TypeScript client 与剩余手写 DTO 的统一仍属 2C，不以兼容 alias 过渡。
 
 #### Phase 2D：One Calculation Authority
 
@@ -386,14 +391,14 @@ DTO 的统一仍未完成，不以手写兼容 alias 作为过渡方案。
 - 删除 Watchlist 前端的 return、volatility、Sharpe/Sortino、drawdown 和 relative metric 重算。
 - 前端只做展示格式、图形坐标和交互；所有投资指标由后端 canonical calculation 输出。
 
-2026-07-13 部署结果：Portfolio Risk、benchmark comparison、年化资格、Calmar、组合/分组
-收益风险和 unrealized P&L 均已回收到后端；Watchlist 前端只消费 authoritative analytics，
-浏览器仅保留图形坐标、筛选、排序和格式化。前端 authority-boundary tests 防止公式回流。
+2026-07-14 当前结果：Portfolio Risk、Performance consolidated reporting、年化资格、
+XIRR、drawdown、贡献与 unrealized P&L 均已回收到后端；已删除的 benchmark comparison 不是当前能力。
+Watchlist 前端只消费 authoritative analytics，浏览器仅保留图形坐标、筛选、排序和格式化。
 
 验收：不满足数据条件时明确 unavailable；同一输入只有一个后端结果；同日修订、晚到旧日期修订、policy-only
 变更、计算竞态和方法升级均能产生可解释的 revision/manifest/state 变化。
 
-### Phase 3：交易修订、精确计算依赖与对账（3A 已部署；3B 当前主干；3C 后置）
+### Phase 3：交易修订、精确计算依赖与对账（3A 已部署；3B 主干已落地并收口；3C 后置）
 
 #### Phase 3A：版本化 Decimal 交易账本（已实现）
 
@@ -412,18 +417,18 @@ DTO 的统一仍未完成，不以手写兼容 alias 作为过渡方案。
   数据库约束；伪造 hash、孤腿/不镜像转账、单腿删除、转账 amend 和历史 group 重用均在数据库提交时拒绝。
 - Portfolio migration `20260713_0038` 将 0036 基线组的实现来源名精确归一化为 canonical `migration`，并让
   数据库、service 与 API 共用封闭的 actor source/type 语义；不保留旧值 alias 或 serializer 兜底。
-- 交易修订会把受影响的组合快照状态标记为 stale；当前仍按已有 dirty boundary 重建，不宣称已经具备
-  通用 calculation input manifest 的逐 revision 精确依赖失效。
+- 交易修订在事实事务内原子推进受影响组合的 calculation scope generation，并写入 durable
+  recompute intent；后续 run 的 sealed manifest 精确绑定采用的 transaction revisions。
 
 Phase 3A 验收已完成：API/UI 可以修改历史事实并查看 History；旧 revision、actor、原因、变更字段和
 mutation group 可追溯；并发修改不会静默覆盖，删除不会物理抹除历史。
 
-#### Phase 3B：Calculation Publication Spine（当前最高领域优先级）
+#### Phase 3B：Calculation Publication Spine（主干已落地，当前收敛精确数学与发布报表）
 
 建立跨领域可复用、先由 Portfolio Daily 投产的计算主干：
 
 - `calculation_run` 保存 calculation kind、scope、requested/effective as-of、methodology version、
-  状态、发起者、attempt 与运行元数据。
+  状态、发起者与运行元数据；attempt/fencing 只属于 durable job。
 - `calculation_input_manifest` 在计算开始前冻结并 seal，之后数据库禁止修改。依赖使用规范化 typed rows，
   精确记录 transaction revision/payload hash、portfolio/account/instrument/currency/benchmark/taxonomy
   配置快照、quote series/observation/revision/status/selection-policy revision、精确 FX legs、cut-off/time
@@ -433,24 +438,28 @@ mutation group 可追溯；并发修改不会静默覆盖，删除不会物理�
 - `calculation_job` 提供 durable queue、dedupe key、lease、heartbeat、retry 与 fencing token；崩溃恢复、
   重复投递和陈旧 worker 均不得产生第二个 active publication。
 - calculator 只能读取 sealed manifest 固定的输入，不得在运行中重新查询 current facts。
-- 结果按 run/version 不可变保存；`calculation_publication` 保存 canonical financial output hash，并在单一
-  数据库事务中切换 scope 的唯一 active publication。
+- 结果按 `(run_id, output_fencing_token, natural key)` 不可变保存；每次 retry/takeover 的 attempt 隔离，
+  旧 token 的部分结果不会阻塞或污染新 attempt。`calculation_publication` 绑定最终 fencing token、保存
+  canonical financial output hash，并在单一数据库事务中切换 scope 的唯一 active publication；
+  deferred commit 约束禁止指针与 run 状态半发布。
 - 运行期间若 fact、policy、配置或方法变化，旧 run 可以保留为取证记录，但必须标记 superseded，
   不能成为 current；系统为新 manifest 创建新 run。
 - 相同 sealed manifest 与 methodology 的重试必须得到相同 canonical financial output hash。
 - GET 只读取已发布结果，不同步写库、不等待计算、不启动进程内后台任务，也不以 live fallback
-  伪装 materialization 成功；命令端返回 `202 + run_id`，并提供 run status 查询。
-- 事实写入在同一事务中记录精确失效或重算意图；迁移完成后删除 `PortfolioCalculationStateModel`、
-  粗粒度 dirty/status 双轨、请求内 ensure、进程内锁和派生 header 状态，不留兼容路径。
+  伪装已发布结果；命令端返回 `202 + run_id`，并提供 run status 查询。
+- 事实写入在同一事务中记录精确失效或重算意图；旧 calculation-state table/model、粗粒度
+  dirty/status 双轨、请求内 ensure、进程内锁和派生 header 权威已从当前 runtime 删除。
 
 第一条端到端 producer 是 Portfolio Daily valuation/performance。registry、状态机、typed dependency
 与 publication contract 从第一天支持后续 risk、Watchlist 和 Allocation producer 接入；增加 producer
 只能增加 dependency/output 类型，不得修改主干生命周期或另建计算引擎。
 
-该首个 producer 必须在同一垂直切片消除当前 `ledger.py`、`performance.py`、canonical quote/FX
+该首个 producer 必须在同一垂直切片消除改造前由 `ledger.py`、已删除的 `performance.py`、canonical quote/FX
 转换与日频物化表中的 binary-float 会计链：账本、lot、现金、估值、损益、费用、税费、FX、TWR
-和 contribution 全程使用版本化 Decimal context；日频财务输出使用明确 scale 的 NUMERIC，JSON 使用
-canonical decimal string。只有统计/风险矩阵边界允许按正式方法契约转换为有序 float64 array。
+和 contribution 全程使用版本化 Decimal kernel：会计桥中的有限加减乘保留全部十进制位；除法、求根、
+幂和递归财富链使用固定 precision/rounding context，并把舍入差作为显式证据。日频财务输出使用有界、
+含义明确的 NUMERIC，JSON 使用 canonical decimal string；不得把会随历史长度增长的 exact wealth prefix
+保存为 TEXT。只有统计/风险矩阵边界允许按正式方法契约转换为有序 float64 array。
 
 Phase 3B 验收：
 
@@ -471,45 +480,51 @@ Phase 3B 验收：
 Phase 3C 不阻塞 Phase 4/5，也不得改变 Phase 3B 的数值口径或数据库主干。按 sealed manifest
 精确复算某个已发布 run 属于 Phase 3B，不得借 Phase 3C 名义后置。
 
-### Phase 4：Allocation Research 语义收窄（Phase 3B 首个垂直切片后立即推进）
+### Phase 4：Allocation Research 语义收窄（已完成，2026-07-14）
 
-先消除当前 `research_solver.py` 中 market/risk math 与 allocation solver 混合、Portfolio Risk
-反向依赖 Allocation 实现的问题：
+共享市场数据、风险数学与 Allocation 求解必须保持物理边界，Portfolio Risk 不得反向依赖
+Allocation 实现：
 
-- 提取共享 `portfolio_market_data.py` 与 `risk_math.py`；
-- 拆分 `allocation_solver.py`、`allocation_policy_replay.py` 与 `allocation_research.py`；
+- 已提取共享 `portfolio_market_data.py` 与 `risk_math.py`；
+- 已拆分 `allocation_solver.py`、`allocation_policy_replay.py`、`allocation_research.py` 与 `allocation_research_workbench.py`；
 - Portfolio Risk 只能依赖共享市场数据与风险数学模块，不能依赖 Allocation Research。
 
-随后以一次不兼容重构完成：
+已通过一次不兼容重构完成：
 
 - 后端领域名统一为 `allocation_research`，UI 使用 `Allocation Lab`。
-- 将现有 backtest 统一重命名为 `Policy Replay`。
-- 将 `Current Drift` 统一重命名为 `Allocation Policy Drift`，只对绑定有效 allocation policy 的组合出现。
+- 历史政策模拟的 canonical 名称统一为 `Policy Replay`。
+- 规划偏离的 canonical 名称统一为 `Allocation Policy Drift`，只对绑定有效 allocation policy 的组合出现。
 - 增加必填 portfolio operating profile：`standard_taxonomy / external_etf_rotation`；不根据名称或持仓推断。
-- 数据库、模型、API、DTO、路由、UI、测试和文档同时改名，不保留 `research` alias 或双轨接口。
+- 数据库、模型、API、DTO、路由、UI、测试和文档已同时改名；运行时不保留旧 `research.py`、`research_solver.py`、`/research` 路由、DTO alias 或双轨接口。
 
-验收：普通组合继续用 taxonomy 跟踪；`external_etf_rotation` 只豁免 allocation planning 能力，
-仍保留真实组合账本、绩效与风险跟踪；ETF Live 模型不进入本项目。
+验收结果：`standard_taxonomy` 组合继续以 taxonomy 跟踪，并通过 `/allocation-research` API 与
+`Allocation Lab` 使用 Allocation Research、Policy Replay 和 Allocation Policy Drift；
+`external_etf_rotation` 只豁免 allocation planning 能力，仍保留真实组合账本、持仓、绩效、滚动风险、
+相关性和 instrument-level risk contribution；ETF Live 模型不进入本项目。
 
-### Phase 5A：自动化质量与运行稳定性（当前批次）
+### Phase 5A：自动化质量与运行稳定性（已完成，2026-07-14）
 
 - 建立固定运行环境、统一验证入口、GitHub CI required gate、PostgreSQL 零 skip 集成测试与恢复演练；
   这是所有后续不兼容重构的先决门禁。
 - CI 覆盖三个后端、三个前端、生产构建、空库全迁移链和数据库发布/恢复生命周期；依赖全部锁定，
   PostgreSQL 测试 skip、零收集或 JUnit 无法读取时直接失败。
+- systemd 安装、数据库发布和恢复使用统一的 API readiness、Web smoke 与 Portfolio read-contract 门禁；
+  门禁失败会停止本次启动的服务。
 - `Required quality gate` 通过前不得合并。
 
-### Phase 5B：架构收敛与多用户基础（Phase 4 后）
+### Phase 5B：架构收敛与多用户基础（运行骨架已完成）
 
 - 统一 Web shell 和 API contract，逐步淘汰 app 间重复骨架。
 - OpenAPI 生成 TypeScript client，禁止手写重复 DTO。
 - 在已落地的交易 optimistic concurrency 与 client-asserted 本地 actor 基础上，加入认证身份、RBAC，
   并把审计查询扩展到其他关键事实；本地 actor 不能冒充认证主体。
-- 使用 transactional outbox 处理重算和通知。
+- 已使用 transactional outbox 将行情修订与 Watchlist 重算意图原子落库；独立 worker 提供租约、
+  心跳、有界重试、source-event 幂等、dead-letter 检测与受控恢复，API readiness 对其 fail closed。
 - 在精确计算 publication 路径稳定后补关键 E2E；建立加密异地备份和定期恢复演练。
 - 保持模块化单体；共享模块只能按领域依赖方向引用，不拆微服务，不用共享工具包绕过 bounded context。
 
-验收：可以安全开放给少量同事，且并发修改不会静默覆盖。
+当前尚未完成的 Phase 5B 项为认证身份、RBAC、OpenAPI 生成 client、关键 E2E 和加密异地备份；
+完成这些项目后，才达到“可以安全开放给少量同事”的完整验收标准。
 
 ## 9. 明确不做的事情
 

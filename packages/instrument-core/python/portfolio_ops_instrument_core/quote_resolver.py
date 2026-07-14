@@ -70,6 +70,9 @@ class QuoteRevisionCandidate:
     revision_number: int
     payload_hash: str
     value: Decimal | None
+    value_input_scale: int | None
+    numeric_scale_state: str | None
+    payload_schema_version: int
     status: str
     observation_date: date
     source_ref: str | None
@@ -101,7 +104,9 @@ def validate_freshness_policy(
     policy: QuoteFreshnessPolicy | Mapping[str, object],
 ) -> QuoteFreshnessPolicy:
     raw_policy = (
-        policy.model_dump() if isinstance(policy, QuoteFreshnessPolicy) else dict(policy)
+        policy.model_dump()
+        if isinstance(policy, QuoteFreshnessPolicy)
+        else dict(policy)
     )
     raw_version = str(raw_policy.get("policy_version") or "").strip()
     if raw_version != CANONICAL_QUOTE_FRESHNESS_POLICY_VERSION:
@@ -461,6 +466,11 @@ def resolve_explicit_quote_candidate(
         revision_number=candidate.revision_number if candidate else None,
         payload_hash=candidate.payload_hash if candidate else None,
         value=value,
+        value_input_scale=(candidate.value_input_scale if candidate else None),
+        numeric_scale_state=(candidate.numeric_scale_state if candidate else None),
+        payload_schema_version=(
+            candidate.payload_schema_version if candidate else None
+        ),
         observation_date=candidate.observation_date if candidate else None,
         source_ref=candidate.source_ref if candidate else None,
         source_published_at=candidate.source_published_at if candidate else None,
@@ -509,31 +519,39 @@ def _latest_current_candidate(
     quote_series_id: str,
     requested_as_of_date: date,
 ) -> QuoteRevisionCandidate | None:
-    row = session.execute(
-        select(
-            QuoteObservation.observation_id,
-            QuoteObservation.as_of_date,
-            QuoteObservationRevision.revision_id,
-            QuoteObservationRevision.revision_number,
-            QuoteObservationRevision.value,
-            QuoteObservationRevision.source_ref,
-            QuoteObservationRevision.status,
-            QuoteObservationRevision.source_published_at,
-            QuoteObservationRevision.ingested_at,
-            QuoteObservationRevision.payload_hash,
+    row = (
+        session.execute(
+            select(
+                QuoteObservation.observation_id,
+                QuoteObservation.as_of_date,
+                QuoteObservationRevision.revision_id,
+                QuoteObservationRevision.revision_number,
+                QuoteObservationRevision.value,
+                QuoteObservationRevision.value_input_scale,
+                QuoteObservationRevision.numeric_scale_state,
+                QuoteObservationRevision.payload_schema_version,
+                QuoteObservationRevision.source_ref,
+                QuoteObservationRevision.status,
+                QuoteObservationRevision.source_published_at,
+                QuoteObservationRevision.ingested_at,
+                QuoteObservationRevision.payload_hash,
+            )
+            .join(
+                QuoteObservationRevision,
+                QuoteObservationRevision.observation_id
+                == QuoteObservation.observation_id,
+            )
+            .where(
+                QuoteObservation.quote_series_id == quote_series_id,
+                QuoteObservation.as_of_date <= requested_as_of_date,
+                QuoteObservationRevision.is_current.is_(True),
+            )
+            .order_by(QuoteObservation.as_of_date.desc())
+            .limit(1)
         )
-        .join(
-            QuoteObservationRevision,
-            QuoteObservationRevision.observation_id == QuoteObservation.observation_id,
-        )
-        .where(
-            QuoteObservation.quote_series_id == quote_series_id,
-            QuoteObservation.as_of_date <= requested_as_of_date,
-            QuoteObservationRevision.is_current.is_(True),
-        )
-        .order_by(QuoteObservation.as_of_date.desc())
-        .limit(1)
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if row is None:
         return None
     return QuoteRevisionCandidate(
@@ -542,9 +560,14 @@ def _latest_current_candidate(
         revision_id=str(row["revision_id"]),
         revision_number=int(row["revision_number"]),
         payload_hash=str(row["payload_hash"]),
-        value=(
-            Decimal(str(row["value"])) if row["value"] is not None else None
+        value=(Decimal(str(row["value"])) if row["value"] is not None else None),
+        value_input_scale=(
+            int(row["value_input_scale"])
+            if row["value_input_scale"] is not None
+            else None
         ),
+        numeric_scale_state=row["numeric_scale_state"],
+        payload_schema_version=int(row["payload_schema_version"]),
         status=str(row["status"]),
         observation_date=row["as_of_date"],
         source_ref=row["source_ref"],
@@ -816,7 +839,11 @@ def resolve_role_quote(
     normalized_role = _normalize_role(role)
     normalized_instrument_id = str(instrument_id or "").strip()
     normalized_currency = str(currency or "").strip().upper()
-    if not normalized_instrument_id or not normalized_currency or len(normalized_currency) > 8:
+    if (
+        not normalized_instrument_id
+        or not normalized_currency
+        or len(normalized_currency) > 8
+    ):
         raise QuoteResolverError(
             "invalid_quote_identity",
             "Role resolution requires an instrument and currency.",
@@ -935,6 +962,9 @@ def _current_candidates_for_window(
             QuoteObservationRevision.revision_id,
             QuoteObservationRevision.revision_number,
             QuoteObservationRevision.value,
+            QuoteObservationRevision.value_input_scale,
+            QuoteObservationRevision.numeric_scale_state,
+            QuoteObservationRevision.payload_schema_version,
             QuoteObservationRevision.source_ref,
             QuoteObservationRevision.status,
             QuoteObservationRevision.source_published_at,
@@ -959,8 +989,7 @@ def _current_candidates_for_window(
             select(func.max(anchor_observation.as_of_date))
             .join(
                 anchor_revision,
-                anchor_revision.observation_id
-                == anchor_observation.observation_id,
+                anchor_revision.observation_id == anchor_observation.observation_id,
             )
             .where(
                 anchor_observation.quote_series_id == quote_series_id,
@@ -983,11 +1012,14 @@ def _current_candidates_for_window(
             revision_id=str(row["revision_id"]),
             revision_number=int(row["revision_number"]),
             payload_hash=str(row["payload_hash"]),
-            value=(
-                Decimal(str(row["value"]))
-                if row["value"] is not None
+            value=(Decimal(str(row["value"])) if row["value"] is not None else None),
+            value_input_scale=(
+                int(row["value_input_scale"])
+                if row["value_input_scale"] is not None
                 else None
             ),
+            numeric_scale_state=row["numeric_scale_state"],
+            payload_schema_version=int(row["payload_schema_version"]),
             status=str(row["status"]),
             observation_date=row["as_of_date"],
             source_ref=row["source_ref"],
@@ -1012,6 +1044,9 @@ def _series_point(candidate: QuoteRevisionCandidate) -> CanonicalQuoteSeriesPoin
         payload_hash=candidate.payload_hash,
         observation_date=candidate.observation_date,
         value=candidate.value,
+        value_input_scale=candidate.value_input_scale,
+        numeric_scale_state=candidate.numeric_scale_state,
+        payload_schema_version=candidate.payload_schema_version,
         source_ref=candidate.source_ref,
         source_published_at=candidate.source_published_at,
         ingested_at=candidate.ingested_at,
@@ -1029,6 +1064,9 @@ def _series_observation(
         payload_hash=candidate.payload_hash,
         observation_date=candidate.observation_date,
         value=candidate.value,
+        value_input_scale=candidate.value_input_scale,
+        numeric_scale_state=candidate.numeric_scale_state,
+        payload_schema_version=candidate.payload_schema_version,
         status=candidate.status,
         source_ref=candidate.source_ref,
         source_published_at=candidate.source_published_at,
@@ -1059,9 +1097,7 @@ def _series_dependency(
             continue
         revision_ids.append(candidate.revision_id)
         payload_hashes.append(candidate.payload_hash)
-    excluded_revision_ids = [
-        candidate.revision_id for candidate in excluded_candidates
-    ]
+    excluded_revision_ids = [candidate.revision_id for candidate in excluded_candidates]
     excluded_payload_hashes = [
         candidate.payload_hash for candidate in excluded_candidates
     ]
@@ -1178,10 +1214,7 @@ def resolve_role_quote_series(
         or not normalized_currency
         or len(normalized_currency) > 8
         or normalized_range_mode not in {"bounded", "since_inception"}
-        or (
-            normalized_range_mode == "bounded"
-            and not isinstance(start_date, date)
-        )
+        or (normalized_range_mode == "bounded" and not isinstance(start_date, date))
         or (normalized_range_mode == "since_inception" and start_date is not None)
         or not isinstance(end_date, date)
         or (start_date is not None and start_date > end_date)
@@ -1326,9 +1359,7 @@ def resolve_role_quote_series(
         if candidate.status != USABLE_CURRENT_STATUS or candidate.value is None
     ]
     points = [_series_point(candidate) for candidate in usable_candidates]
-    observations = [
-        _series_observation(candidate) for candidate in current_candidates
-    ]
+    observations = [_series_observation(candidate) for candidate in current_candidates]
     dependency_candidates = [
         candidate
         for candidate in [raw_anchor_candidate, *current_candidates, endpoint_candidate]
@@ -1343,8 +1374,7 @@ def resolve_role_quote_series(
     for reason_code in endpoint_resolution.reason_codes:
         append_reason(reason_code)
     anchor_is_usable = (
-        anchor_resolution is None
-        or anchor_resolution.resolution_status == "resolved"
+        anchor_resolution is None or anchor_resolution.resolution_status == "resolved"
     )
     if anchor_resolution is None:
         pass
@@ -1477,13 +1507,10 @@ def resolve_quote_series_observation_at(
             "invalid_as_of_date",
             "requested_as_of_date must be a date.",
         )
-    if (
-        requested_as_of_date > window.end_date
-        or (
-            window.range_mode == "bounded"
-            and window.start_date is not None
-            and requested_as_of_date < window.start_date
-        )
+    if requested_as_of_date > window.end_date or (
+        window.range_mode == "bounded"
+        and window.start_date is not None
+        and requested_as_of_date < window.start_date
     ):
         raise QuoteResolverError(
             "invalid_as_of_date",
@@ -1515,6 +1542,9 @@ def resolve_quote_series_observation_at(
             revision_number=observation.revision_number,
             payload_hash=observation.payload_hash,
             value=observation.value,
+            value_input_scale=observation.value_input_scale,
+            numeric_scale_state=observation.numeric_scale_state,
+            payload_schema_version=observation.payload_schema_version,
             status=observation.status,
             observation_date=observation.observation_date,
             source_ref=observation.source_ref,

@@ -70,15 +70,30 @@ run_backend_fast() {
   require_python
   local selected app
   selected="$(selected_apps "${1:-all}")"
+  local calculation_core_python="$PROJECT_ROOT/packages/calculation-core/python"
+  if [[ "${1:-all}" == "all" || "${1:-all}" == "portfolio" ]]; then
+    if [[ -z "${PORTFOLIO_OPS_TEST_POSTGRES_URL:-}" ]]; then
+      echo "Set PORTFOLIO_OPS_TEST_POSTGRES_URL explicitly for Portfolio backend tests." >&2
+      exit 64
+    fi
+  fi
   local apps=()
   while IFS= read -r app; do
     apps+=("$app")
   done <<< "$selected"
+  if [[ "${1:-all}" == "all" || "${1:-all}" == "portfolio" ]]; then
+    echo "Running calculation-core contract tests."
+    (
+      cd "$calculation_core_python"
+      PYTHONPATH="$calculation_core_python${PYTHONPATH:+:$PYTHONPATH}" \
+        "$PYTHON_BIN" -m pytest -ra
+    )
+  fi
   for app in "${apps[@]}"; do
     echo "Running $app backend tests without PostgreSQL integration cases."
     (
       cd "$PROJECT_ROOT/apps/$app/backend"
-      PYTHONPATH="$PROJECT_ROOT/apps/$app/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+      PYTHONPATH="$PROJECT_ROOT/apps/$app/backend:$PROJECT_ROOT/packages/instrument-core/python:$calculation_core_python${PYTHONPATH:+:$PYTHONPATH}" \
         "$PYTHON_BIN" -m pytest -m "not postgresql_integration" --strict-markers -ra
     )
   done
@@ -111,9 +126,12 @@ run_infra_portable() {
     infra/tests/test_bootstrap_local_database_permissions.sh
     infra/tests/test_launchd_control_local_services.sh
     infra/tests/test_launchd_market_data_refresh_runner.sh
+    infra/tests/test_launchd_portfolio_worker_runner.sh
     infra/tests/test_launchd_plist_generation.sh
     infra/tests/test_launchd_runtime_env_loader.sh
     infra/tests/test_migrate_all_env_precedence.sh
+    infra/tests/test_runtime_readiness_lifecycle.sh
+    infra/tests/test_systemd_app_services.sh
     infra/tests/test_systemd_market_data_refresh_timer.sh
     infra/tests/test_verify_repository_selection.sh
   )
@@ -135,8 +153,13 @@ run_migration_heads() {
       "$PYTHON_BIN" -m alembic current --check-heads
   )
   (
+    cd "$PROJECT_ROOT/infra/calculation_registry"
+    PYTHONPATH="$PROJECT_ROOT/packages/calculation-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+      "$PYTHON_BIN" -m alembic current --check-heads
+  )
+  (
     cd "$PROJECT_ROOT/apps/portfolio/backend"
-    PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+    PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/packages/instrument-core/python:$PROJECT_ROOT/packages/calculation-core/python${PYTHONPATH:+:$PYTHONPATH}" \
       "$PYTHON_BIN" -m alembic current --check-heads
   )
   (
@@ -161,12 +184,23 @@ run_postgres_integration() {
   mkdir -p "$JUNIT_DIR"
 
   local reports=()
+  if [[ "${1:-all}" == "all" || "${1:-all}" == "portfolio" ]]; then
+    report="$JUNIT_DIR/calculation-registry-postgres.xml"
+    rm -f "$report"
+    (
+      cd "$PROJECT_ROOT/infra/calculation_registry"
+      PYTHONPATH="$PROJECT_ROOT/packages/calculation-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+        "$PYTHON_BIN" -m pytest -m postgresql_integration \
+          --strict-markers -ra --junitxml="$report"
+    )
+    reports+=("$report")
+  fi
   for app in "${apps[@]}"; do
     report="$JUNIT_DIR/$app-postgres.xml"
     rm -f "$report"
     (
       cd "$PROJECT_ROOT/apps/$app/backend"
-      PYTHONPATH="$PROJECT_ROOT/apps/$app/backend:$PROJECT_ROOT/packages/instrument-core/python${PYTHONPATH:+:$PYTHONPATH}" \
+      PYTHONPATH="$PROJECT_ROOT/apps/$app/backend:$PROJECT_ROOT/packages/instrument-core/python:$PROJECT_ROOT/packages/calculation-core/python${PYTHONPATH:+:$PYTHONPATH}" \
         "$PYTHON_BIN" -m pytest -m postgresql_integration \
           --strict-markers -ra --junitxml="$report"
     )

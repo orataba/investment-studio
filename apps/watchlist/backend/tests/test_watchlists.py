@@ -1985,6 +1985,569 @@ def test_manual_recalc_enqueue_reuses_open_dedupe_job(client: TestClient) -> Non
     assert len(matching) == 1
 
 
+@pytest.mark.parametrize("terminal_status", ["completed", "failed"])
+def test_bulk_recalc_reuses_terminal_job_for_same_outbox_event(
+    client: TestClient,
+    terminal_status: str,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import (
+        SQLAlchemyRecalcJobRepository,
+    )
+    from watchlist_app.repositories.sqlalchemy.recalc_invalidations import (
+        SQLAlchemyRecalcInvalidationRepository,
+    )
+
+    watchlist_id = client.post(
+        "/api/watchlists",
+        json={"name": f"Outbox {terminal_status}", "description": None},
+    ).json()["watchlist_id"]
+    assert client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    request_payload = {
+        "instrument_ids": ["sxv264"],
+        "job_type": "all",
+        "trigger_type": "market_data_refresh",
+        "trigger_ref_type": " instrument_registry_outbox ",
+        "trigger_ref_id": f" outbox-event-{terminal_status} ",
+    }
+    first = client.post("/api/recalc/bulk", json=request_payload)
+    assert first.status_code == 200
+    assert first.json()["accepted_count"] == 1
+    assert first.json()["enqueued_instrument_ids"] == ["sxv264"]
+
+    repository = SQLAlchemyRecalcJobRepository()
+    session_factory = session_module.get_session_factory()
+    with session_factory() as session:
+        matching = [
+            job
+            for job in repository.list_recent(session)
+            if job.instrument_id == "sxv264"
+            and job.job_type == "all"
+            and job.trigger_ref_type == "instrument_registry_outbox"
+            and job.trigger_ref_id == f"outbox-event-{terminal_status}"
+        ]
+        assert len(matching) == 1
+        matching[0].job_status = terminal_status
+        matching[0].finished_at = datetime.now(UTC).replace(microsecond=0)
+        matching[0].error_message = (
+            "terminal test failure" if terminal_status == "failed" else None
+        )
+        session.commit()
+
+    repeated = client.post("/api/recalc/bulk", json=request_payload)
+    assert repeated.status_code == 200
+    assert repeated.json() == {
+        "requested_count": 1,
+        "accepted_count": 1,
+        "enqueued_instrument_ids": [],
+        "coalesced_instrument_ids": [],
+        "existing_instrument_ids": ["sxv264"],
+        "ignored_instrument_ids": [],
+        "missing_instrument_ids": [],
+    }
+
+    with session_factory() as session:
+        matching = [
+            job
+            for job in repository.list_recent(session)
+            if job.instrument_id == "sxv264"
+            and job.job_type == "all"
+            and job.trigger_ref_type == "instrument_registry_outbox"
+            and job.trigger_ref_id == f"outbox-event-{terminal_status}"
+        ]
+        assert len(matching) == 1
+        state = SQLAlchemyRecalcInvalidationRepository().get_state(
+            session,
+            instrument_id="sxv264",
+            job_type="all",
+        )
+        assert state is not None
+        assert state.requested_generation == 1
+
+
+@pytest.mark.parametrize("trigger_ref_type", [None, "   "])
+def test_bulk_recalc_rejects_event_id_without_event_type(
+    client: TestClient,
+    trigger_ref_type: str | None,
+) -> None:
+    response = client.post(
+        "/api/recalc/bulk",
+        json={
+            "instrument_ids": ["sxv264"],
+            "job_type": "all",
+            "trigger_type": "market_data_refresh",
+            "trigger_ref_type": trigger_ref_type,
+            "trigger_ref_id": "outbox-event-without-type",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "trigger_ref_type must be non-empty" in str(response.json())
+
+
+def test_bulk_source_event_coalesces_behind_running_job_and_enqueues_one_follow_up(
+    client: TestClient,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import (
+        SQLAlchemyRecalcJobRepository,
+    )
+    from watchlist_app.services.canonical_recalc import CanonicalRecalcService
+    from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key
+
+    watchlist_id = client.post(
+        "/api/watchlists",
+        json={"name": "Outbox deferred", "description": None},
+    ).json()["watchlist_id"]
+    assert client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    repository = SQLAlchemyRecalcJobRepository()
+    session_factory = session_module.get_session_factory()
+    running_job_id = "different-running-source-event"
+    with session_factory() as session:
+        running = repository.create(
+            session,
+            recalc_job_id=running_job_id,
+            job_type="all",
+            instrument_id="sxv264",
+            trigger_type="market_data_refresh",
+            trigger_ref_type="instrument_registry_outbox",
+            trigger_ref_id="older-outbox-event",
+            job_status="queued",
+            priority=100,
+            dedupe_key=make_recalc_dedupe_key(
+                job_type="all",
+                instrument_id="sxv264",
+            ),
+            payload_json={"requested_by": "test"},
+        )
+        repository.mark_running(session, running)
+        running_lease_token = str(running.lease_token)
+        session.commit()
+
+    request_payload = {
+        "instrument_ids": ["sxv264"],
+        "job_type": "all",
+        "trigger_type": "market_data_refresh",
+        "trigger_ref_type": "instrument_registry_outbox",
+        "trigger_ref_id": "newer-outbox-event",
+    }
+    accepted = client.post("/api/recalc/bulk", json=request_payload)
+    assert accepted.status_code == 200
+    assert accepted.json() == {
+        "requested_count": 1,
+        "accepted_count": 1,
+        "enqueued_instrument_ids": [],
+        "coalesced_instrument_ids": ["sxv264"],
+        "existing_instrument_ids": [],
+        "ignored_instrument_ids": [],
+        "missing_instrument_ids": [],
+    }
+
+    with session_factory() as session:
+        running = repository.get(session, running_job_id)
+        assert running is not None
+        assert repository.mark_completed(
+            session,
+            running,
+            lease_token=running_lease_token,
+            payload_json={"completed_for_test": True},
+        )
+        pending_generation = repository.complete_claimed_generation(session, running)
+        assert pending_generation == 1
+        CanonicalRecalcService()._enqueue_invalidation_follow_up(
+            session,
+            record=running,
+            requested_generation=pending_generation,
+        )
+        session.commit()
+
+    retried = client.post("/api/recalc/bulk", json=request_payload)
+    assert retried.status_code == 200
+    assert retried.json()["accepted_count"] == 1
+    assert retried.json()["enqueued_instrument_ids"] == []
+    assert retried.json()["existing_instrument_ids"] == ["sxv264"]
+
+    with session_factory() as session:
+        follow_ups = [
+            job
+            for job in repository.list_recent(session)
+            if job.instrument_id == "sxv264"
+            and job.job_type == "all"
+            and job.trigger_ref_type == "recalc_invalidation_generation"
+        ]
+        assert len(follow_ups) == 1
+        assert follow_ups[0].job_status == "queued"
+
+
+def test_bulk_recalc_integrity_race_recovers_same_source_event_job(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.api.routes import recalc as recalc_route
+
+    watchlist_id = client.post(
+        "/api/watchlists",
+        json={"name": "Outbox race", "description": None},
+    ).json()["watchlist_id"]
+    assert client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    source_lookup_calls: list[dict[str, object]] = []
+    source_lookup_results = iter(
+        [None, SimpleNamespace(source_event_inbox_id="concurrent-inbox-event")]
+    )
+
+    def _raise_source_event_conflict(*args, **kwargs):
+        raise IntegrityError("source event race", {}, RuntimeError("unique conflict"))
+
+    def _find_concurrent_source_event(*args, **kwargs):
+        source_lookup_calls.append(kwargs)
+        return next(source_lookup_results)
+
+    monkeypatch.setattr(
+        recalc_route.recalc_invalidation_repository,
+        "record_supported_source_event",
+        _raise_source_event_conflict,
+    )
+    monkeypatch.setattr(
+        recalc_route.recalc_invalidation_repository,
+        "get_source_event",
+        _find_concurrent_source_event,
+    )
+
+    response = client.post(
+        "/api/recalc/bulk",
+        json={
+            "instrument_ids": ["sxv264"],
+            "job_type": "all",
+            "trigger_type": "market_data_refresh",
+            "trigger_ref_type": "instrument_registry_outbox",
+            "trigger_ref_id": "outbox-race-event",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["accepted_count"] == 1
+    assert response.json()["enqueued_instrument_ids"] == []
+    assert response.json()["existing_instrument_ids"] == ["sxv264"]
+    assert response.json()["coalesced_instrument_ids"] == []
+    assert source_lookup_calls == [
+        {
+            "trigger_ref_type": "instrument_registry_outbox",
+            "trigger_ref_id": "outbox-race-event",
+            "instrument_id": "sxv264",
+            "job_type": "all",
+        },
+        {
+            "trigger_ref_type": "instrument_registry_outbox",
+            "trigger_ref_id": "outbox-race-event",
+            "instrument_id": "sxv264",
+            "job_type": "all",
+        },
+    ]
+
+
+def test_bulk_source_event_storm_is_consumed_by_one_generation_claim(
+    client: TestClient,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.db.models.recalc import RecalcSourceEventInbox
+    from watchlist_app.repositories.sqlalchemy.recalc_invalidations import (
+        SQLAlchemyRecalcInvalidationRepository,
+    )
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import (
+        SQLAlchemyRecalcJobRepository,
+    )
+
+    watchlist_id = client.post(
+        "/api/watchlists",
+        json={"name": "Source event storm", "description": None},
+    ).json()["watchlist_id"]
+    assert client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    for generation in range(1, 9):
+        response = client.post(
+            "/api/recalc/bulk",
+            json={
+                "instrument_ids": ["sxv264"],
+                "job_type": "all",
+                "trigger_type": "market_data_refresh",
+                "trigger_ref_type": "instrument_registry_outbox",
+                "trigger_ref_id": f"storm-event-{generation}",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["accepted_count"] == 1
+        expected_bucket = (
+            "enqueued_instrument_ids"
+            if generation == 1
+            else "coalesced_instrument_ids"
+        )
+        assert response.json()[expected_bucket] == ["sxv264"]
+
+    job_repository = SQLAlchemyRecalcJobRepository()
+    invalidation_repository = SQLAlchemyRecalcInvalidationRepository()
+    session_factory = session_module.get_session_factory()
+    with session_factory() as session:
+        jobs = [
+            job
+            for job in job_repository.list_recent(session)
+            if job.instrument_id == "sxv264"
+            and job.job_type == "all"
+            and job.trigger_ref_type
+            in {"instrument_registry_outbox", "recalc_invalidation_generation"}
+        ]
+        assert len(jobs) == 1
+        state = invalidation_repository.get_state(
+            session,
+            instrument_id="sxv264",
+            job_type="all",
+        )
+        assert state is not None
+        assert (state.requested_generation, state.completed_generation) == (8, 0)
+        assert session.query(RecalcSourceEventInbox).count() == 8
+
+        claimed = job_repository.claim_next_queued(session)
+        assert claimed is not None
+        assert claimed.claimed_generation == 8
+        lease_token = str(claimed.lease_token)
+        assert job_repository.mark_completed(
+            session,
+            claimed,
+            lease_token=lease_token,
+            payload_json={"completed_for_test": True},
+        )
+        assert job_repository.complete_claimed_generation(session, claimed) is None
+        session.commit()
+
+    with session_factory() as session:
+        state = invalidation_repository.get_state(
+            session,
+            instrument_id="sxv264",
+            job_type="all",
+        )
+        assert state is not None
+        assert (state.requested_generation, state.completed_generation) == (8, 8)
+        assert (
+            session.query(RecalcSourceEventInbox)
+            .filter(RecalcSourceEventInbox.consumed_at.is_(None))
+            .count()
+            == 0
+        )
+
+
+def test_bulk_materializes_supported_registry_asset_and_acks_unsupported_asset(
+    client: TestClient,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.db.models.instruments import InstrumentDetail
+    from watchlist_app.db.models.recalc import RecalcSourceEventInbox
+
+    seed_shared_instrument(
+        {
+            "instrument_id": "bulk-registry-etf",
+            "instrument_name": "Bulk Registry ETF",
+            "instrument_type": "etf",
+            "currency": "USD",
+            "identifiers": [
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "BRETF",
+                    "is_primary": True,
+                }
+            ],
+            "market_data": [],
+            "lifecycle_state": {"status": "active"},
+        }
+    )
+    seed_shared_instrument(
+        {
+            "instrument_id": "bulk-registry-equity",
+            "instrument_name": "Bulk Registry Equity",
+            "instrument_type": "equity",
+            "currency": "USD",
+            "identifiers": [
+                {
+                    "identifier_type": "ticker",
+                    "identifier_value": "BREQ",
+                    "is_primary": True,
+                }
+            ],
+            "market_data": [],
+            "lifecycle_state": {"status": "active"},
+        }
+    )
+
+    response = client.post(
+        "/api/recalc/bulk",
+        json={
+            "instrument_ids": [
+                "bulk-registry-etf",
+                "bulk-registry-equity",
+                "bulk-registry-missing",
+            ],
+            "job_type": "all",
+            "trigger_type": "market_data_refresh",
+            "trigger_ref_type": "instrument_registry_outbox",
+            "trigger_ref_id": "bulk-registry-materialization-event",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "requested_count": 3,
+        "accepted_count": 2,
+        "enqueued_instrument_ids": ["bulk-registry-etf"],
+        "coalesced_instrument_ids": [],
+        "existing_instrument_ids": [],
+        "ignored_instrument_ids": ["bulk-registry-equity"],
+        "missing_instrument_ids": ["bulk-registry-missing"],
+    }
+    session_factory = session_module.get_session_factory()
+    with session_factory() as session:
+        etf = session.get(InstrumentDetail, "bulk-registry-etf")
+        assert etf is not None
+        assert (etf.instrument_type, etf.detail_view_type) == ("etf", "fund")
+        assert session.get(InstrumentDetail, "bulk-registry-equity") is None
+        inbox = session.query(RecalcSourceEventInbox).filter(
+            RecalcSourceEventInbox.trigger_ref_id
+            == "bulk-registry-materialization-event"
+        ).all()
+        assert {record.instrument_id: record.disposition for record in inbox} == {
+            "bulk-registry-etf": "recalc",
+            "bulk-registry-equity": "ignored",
+        }
+
+
+def test_failed_generation_stays_pending_until_same_job_is_manually_retried(
+    client: TestClient,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.db.models.recalc import RecalcSourceEventInbox
+    from watchlist_app.repositories.sqlalchemy.recalc_invalidations import (
+        SQLAlchemyRecalcInvalidationRepository,
+    )
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import (
+        SQLAlchemyRecalcJobRepository,
+    )
+
+    watchlist_id = client.post(
+        "/api/watchlists",
+        json={"name": "Generation manual retry", "description": None},
+    ).json()["watchlist_id"]
+    assert client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    def send_event(event_id: str):
+        return client.post(
+            "/api/recalc/bulk",
+            json={
+                "instrument_ids": ["sxv264"],
+                "job_type": "all",
+                "trigger_type": "market_data_refresh",
+                "trigger_ref_type": "instrument_registry_outbox",
+                "trigger_ref_id": event_id,
+            },
+        )
+
+    first = send_event("failed-generation-1")
+    assert first.status_code == 200
+    assert first.json()["enqueued_instrument_ids"] == ["sxv264"]
+
+    job_repository = SQLAlchemyRecalcJobRepository()
+    invalidation_repository = SQLAlchemyRecalcInvalidationRepository()
+    session_factory = session_module.get_session_factory()
+    with session_factory() as session:
+        queued = job_repository.claim_next_queued(session)
+        assert queued is not None
+        queued.max_attempts = 1
+        session.flush()
+        assert queued.claimed_generation == 1
+        job_id = queued.recalc_job_id
+        assert (
+            job_repository.reschedule_after_failure(
+                session,
+                queued,
+                lease_token=str(queued.lease_token),
+                error_message="terminal test failure",
+                retry_delay_seconds=1,
+            )
+            == "failed"
+        )
+        session.commit()
+
+    second = send_event("failed-generation-2")
+    assert second.status_code == 200
+    assert second.json()["accepted_count"] == 1
+    assert second.json()["coalesced_instrument_ids"] == ["sxv264"]
+    with session_factory() as session:
+        state = invalidation_repository.get_state(
+            session,
+            instrument_id="sxv264",
+            job_type="all",
+        )
+        assert state is not None
+        assert (state.requested_generation, state.completed_generation) == (2, 0)
+        assert invalidation_repository.has_unserviceable_pending_invalidation(session)
+        assert len(
+            [
+                job
+                for job in job_repository.list_recent(session)
+                if job.recalc_job_id == job_id
+            ]
+        ) == 1
+
+    retried = client.post(
+        f"/api/recalc/jobs/{job_id}/retry",
+        json={"additional_attempts": 1},
+    )
+    assert retried.status_code == 200
+    assert retried.json()["recalc_job_id"] == job_id
+    with session_factory() as session:
+        claimed = job_repository.claim_next_queued(session)
+        assert claimed is not None
+        assert claimed.recalc_job_id == job_id
+        assert claimed.claimed_generation == 2
+        assert job_repository.mark_completed(
+            session,
+            claimed,
+            lease_token=str(claimed.lease_token),
+            payload_json={"completed_for_test": True},
+        )
+        assert job_repository.complete_claimed_generation(session, claimed) is None
+        session.commit()
+
+    with session_factory() as session:
+        state = invalidation_repository.get_state(
+            session,
+            instrument_id="sxv264",
+            job_type="all",
+        )
+        assert state is not None
+        assert (state.requested_generation, state.completed_generation) == (2, 2)
+        assert not invalidation_repository.has_unserviceable_pending_invalidation(
+            session
+        )
+        assert session.query(RecalcSourceEventInbox).filter(
+            RecalcSourceEventInbox.consumed_at.is_(None)
+        ).count() == 0
+
+
 def test_synchronous_recalc_reuses_queued_job(client: TestClient) -> None:
     created_watchlist = client.post(
         "/api/watchlists",
@@ -2213,6 +2776,196 @@ def test_process_next_recalc_job_refreshes_shared_metadata_drift(
         and job.trigger_type == "stale_read_repair"
         and job.job_status == "queued"
     ]
+
+
+def test_worker_retries_real_execution_failure_then_dead_letters_same_job(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import (
+        SQLAlchemyRecalcJobRepository,
+    )
+    from watchlist_app.services import recalc_worker
+    from watchlist_app.services.recalc_job_ids import make_recalc_dedupe_key
+
+    watchlist_id = client.post(
+        "/api/watchlists",
+        json={"name": "Retry execution", "description": None},
+    ).json()["watchlist_id"]
+    assert client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    repository = SQLAlchemyRecalcJobRepository()
+    session_factory = session_module.get_session_factory()
+    job_id = "source-event-retry-same-job"
+    with session_factory() as session:
+        repository.create(
+            session,
+            recalc_job_id=job_id,
+            job_type="all",
+            instrument_id="sxv264",
+            trigger_type="market_data_refresh",
+            trigger_ref_type="instrument_registry_outbox",
+            trigger_ref_id="retry-source-event",
+            job_status="queued",
+            priority=100,
+            dedupe_key=make_recalc_dedupe_key(
+                job_type="all",
+                instrument_id="sxv264",
+            ),
+            payload_json={"requested_by": "test"},
+            max_attempts=2,
+        )
+        session.commit()
+
+    def _raise_transient_error(*args, **kwargs):
+        raise RuntimeError("transient calculation failure")
+
+    monkeypatch.setattr(
+        recalc_worker.canonical_recalc_service,
+        "_execute_recalc_job",
+        _raise_transient_error,
+    )
+
+    assert recalc_worker.process_next_recalc_job() is True
+    with session_factory() as session:
+        retrying = repository.get(session, job_id)
+        assert retrying is not None
+        assert retrying.job_status == "queued"
+        assert retrying.attempt_count == 1
+        assert retrying.max_attempts == 2
+        assert retrying.available_at > retrying.enqueued_at
+        assert "transient calculation failure" in str(retrying.error_message)
+        assert repository.has_terminal_source_event_failure(session) is False
+
+    assert recalc_worker.process_next_recalc_job() is False
+
+    with session_factory() as session:
+        retrying = repository.get(session, job_id)
+        assert retrying is not None
+        retrying.available_at = datetime(2000, 1, 1, tzinfo=UTC)
+        session.commit()
+
+    assert recalc_worker.process_next_recalc_job() is True
+    with session_factory() as session:
+        dead = repository.get(session, job_id)
+        assert dead is not None
+        assert dead.job_status == "failed"
+        assert dead.attempt_count == 2
+        assert dead.max_attempts == 2
+        assert dead.finished_at is not None
+        assert repository.has_terminal_source_event_failure(session) is True
+        assert session.query(type(dead)).filter_by(
+            trigger_ref_type="instrument_registry_outbox",
+            trigger_ref_id="retry-source-event",
+            instrument_id="sxv264",
+            job_type="all",
+        ).count() == 1
+
+
+def test_failed_recalc_retry_api_extends_budget_without_resetting_attempts(
+    client: TestClient,
+) -> None:
+    from watchlist_app.db import session as session_module
+    from watchlist_app.repositories.sqlalchemy.recalc_jobs import (
+        SQLAlchemyRecalcJobRepository,
+    )
+
+    watchlist_id = client.post(
+        "/api/watchlists",
+        json={"name": "Manual dead-letter retry", "description": None},
+    ).json()["watchlist_id"]
+    assert client.post(
+        f"/api/watchlists/{watchlist_id}/items",
+        json={"instrument_ids": ["sxv264"]},
+    ).status_code == 200
+
+    repository = SQLAlchemyRecalcJobRepository()
+    session_factory = session_module.get_session_factory()
+    job_id = "failed-source-event-manual-retry"
+    with session_factory() as session:
+        failed = repository.create(
+            session,
+            recalc_job_id=job_id,
+            job_type="all",
+            instrument_id="sxv264",
+            trigger_type="market_data_refresh",
+            trigger_ref_type="instrument_registry_outbox",
+            trigger_ref_id="manual-retry-source-event",
+            job_status="failed",
+            priority=100,
+            dedupe_key=f"failed-source-event:{job_id}",
+            payload_json={"requested_by": "test"},
+            attempt_count=3,
+            max_attempts=3,
+        )
+        failed.error_message = "terminal calculation failure"
+        failed.finished_at = datetime.now(UTC).replace(microsecond=0)
+        session.commit()
+        assert repository.has_terminal_source_event_failure(session) is True
+
+    response = client.post(
+        f"/api/recalc/jobs/{job_id}/retry",
+        json={"additional_attempts": 2},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["recalc_job_id"] == job_id
+    assert payload["job_status"] == "queued"
+    assert payload["attempt_count"] == 3
+    assert payload["max_attempts"] == 5
+    assert payload["error_message"] == "terminal calculation failure"
+
+    repeated = client.post(
+        f"/api/recalc/jobs/{job_id}/retry",
+        json={"additional_attempts": 1},
+    )
+    assert repeated.status_code == 409
+
+    with session_factory() as session:
+        retried = repository.get(session, job_id)
+        assert retried is not None
+        assert retried.attempt_count == 3
+        assert retried.max_attempts == 5
+        assert repository.has_terminal_source_event_failure(session) is False
+
+        conflicting_failed = repository.create(
+            session,
+            recalc_job_id="failed-source-event-open-conflict",
+            job_type="all",
+            instrument_id="sxv264",
+            trigger_type="market_data_refresh",
+            trigger_ref_type="instrument_registry_outbox",
+            trigger_ref_id="manual-retry-conflicting-event",
+            job_status="failed",
+            priority=100,
+            dedupe_key=retried.dedupe_key,
+            payload_json={"requested_by": "test"},
+            attempt_count=3,
+            max_attempts=3,
+        )
+        conflicting_failed.finished_at = datetime.now(UTC).replace(microsecond=0)
+        session.commit()
+
+    conflict = client.post(
+        "/api/recalc/jobs/failed-source-event-open-conflict/retry",
+        json={"additional_attempts": 1},
+    )
+    assert conflict.status_code == 409
+    assert "Another open recalc job" in conflict.json()["detail"]
+
+    with session_factory() as session:
+        conflicting_failed = repository.get(
+            session,
+            "failed-source-event-open-conflict",
+        )
+        assert conflicting_failed is not None
+        assert conflicting_failed.job_status == "failed"
+        assert conflicting_failed.attempt_count == 3
+        assert conflicting_failed.max_attempts == 3
 
 
 def test_process_next_recalc_job_recovers_stale_running_job(

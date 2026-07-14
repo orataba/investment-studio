@@ -28,10 +28,10 @@ if parsed.isoformat() != sys.argv[1]:
     raise SystemExit(f"Release as-of date must be canonical YYYY-MM-DD: {sys.argv[1]}")
 PY
 
-PORTFOLIO_REBUILD="$PROJECT_ROOT/apps/portfolio/backend/scripts/rebuild_portfolio_daily_snapshots.py"
+PORTFOLIO_PUBLISH="$PROJECT_ROOT/apps/portfolio/backend/scripts/publish_portfolio_daily.py"
 WATCHLIST_REBUILD="$PROJECT_ROOT/apps/watchlist/backend/scripts/rebuild_watchlist_derived_state.py"
 AUDIT_SCRIPT="$PROJECT_ROOT/infra/scripts/audit_live_data.py"
-for required_file in "$PORTFOLIO_REBUILD" "$WATCHLIST_REBUILD" "$AUDIT_SCRIPT"; do
+for required_file in "$PORTFOLIO_PUBLISH" "$WATCHLIST_REBUILD" "$AUDIT_SCRIPT"; do
   if [[ ! -f "$required_file" ]]; then
     echo "Missing post-migration gate component: $required_file" >&2
     exit 1
@@ -52,11 +52,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Rebuilding all Portfolio derived state through $AS_OF_DATE."
-"$PYTHON_BIN" "$PORTFOLIO_REBUILD" \
+echo "Publishing every current Portfolio Daily generation for $AS_OF_DATE."
+PORTFOLIO_PYTHONPATH="$PROJECT_ROOT/apps/portfolio/backend:$PROJECT_ROOT/packages/instrument-core/python:$PROJECT_ROOT/packages/calculation-core/python"
+if [[ -n "${PYTHONPATH:-}" ]]; then
+  PORTFOLIO_PYTHONPATH="$PORTFOLIO_PYTHONPATH:$PYTHONPATH"
+fi
+PYTHONPATH="$PORTFOLIO_PYTHONPATH" "$PYTHON_BIN" "$PORTFOLIO_PUBLISH" \
   --as-of-date "$AS_OF_DATE" \
-  --all \
-  --continue-on-error
+  --timeout-seconds "${PORTFOLIO_OPS_RELEASE_PORTFOLIO_DRAIN_TIMEOUT_SECONDS:-3600}"
 
 echo "Rebuilding all active Watchlist derived state through $AS_OF_DATE."
 "$PYTHON_BIN" "$WATCHLIST_REBUILD" \

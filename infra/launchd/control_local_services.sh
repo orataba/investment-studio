@@ -11,15 +11,9 @@ STATE_FILE="$2"
 LABEL_PREFIX="${LABEL_PREFIX:-com.orataba.portfolio-ops}"
 LAUNCH_AGENTS_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 domain="gui/$UID"
-services=(
-  platform-api
-  watchlist-api
-  portfolio-api
-  platform-web
-  watchlist-web
-  portfolio-web
-  market-data-refresh
-)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../service_inventory.sh"
+services=("${PORTFOLIO_OPS_ALL_SERVICE_NAMES[@]}")
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "launchd service control is only available on macOS." >&2
@@ -42,7 +36,14 @@ is_known_service() {
 }
 
 is_scheduled_service() {
-  [[ "$1" == "market-data-refresh" ]]
+  local candidate="$1"
+  local service
+  for service in "${PORTFOLIO_OPS_SCHEDULED_SERVICE_NAMES[@]}"; do
+    if [[ "$candidate" == "$service" ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 bootstrap_service() {

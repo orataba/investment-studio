@@ -1,4 +1,5 @@
 import type { PortfolioEntryRecord } from './api'
+import { exactDecimalSum, exactDecimalToDisplayNumber } from './exactDecimal'
 
 export type PortfolioCurrencyTotal = {
   baseCurrency: string
@@ -19,9 +20,9 @@ export function groupPortfolioTotalsByBaseCurrency(
     {
       baseCurrency: string
       portfolioCount: number
-      nav: number
+      nav: string[]
       navComplete: boolean
-      dayChangeValue: number
+      dayChangeValue: string[]
       dayChangeComplete: boolean
     }
   >()
@@ -31,19 +32,19 @@ export function groupPortfolioTotalsByBaseCurrency(
     const group = groups.get(baseCurrency) ?? {
       baseCurrency,
       portfolioCount: 0,
-      nav: 0,
+      nav: [],
       navComplete: true,
-      dayChangeValue: 0,
+      dayChangeValue: [],
       dayChangeComplete: true,
     }
     group.portfolioCount += 1
-    if (typeof portfolio.nav === 'number' && Number.isFinite(portfolio.nav)) {
-      group.nav += portfolio.nav
+    if (portfolio.nav_exact != null) {
+      group.nav.push(portfolio.nav_exact)
     } else {
       group.navComplete = false
     }
-    if (typeof portfolio.day_change_value === 'number' && Number.isFinite(portfolio.day_change_value)) {
-      group.dayChangeValue += portfolio.day_change_value
+    if (portfolio.day_change_value_exact != null) {
+      group.dayChangeValue.push(portfolio.day_change_value_exact)
     } else {
       group.dayChangeComplete = false
     }
@@ -54,8 +55,10 @@ export function groupPortfolioTotalsByBaseCurrency(
     .map((group) => ({
       baseCurrency: group.baseCurrency,
       portfolioCount: group.portfolioCount,
-      nav: group.navComplete ? group.nav : null,
-      dayChangeValue: group.dayChangeComplete ? group.dayChangeValue : null,
+      nav: group.navComplete ? exactDecimalToDisplayNumber(exactDecimalSum(group.nav)) : null,
+      dayChangeValue: group.dayChangeComplete
+        ? exactDecimalToDisplayNumber(exactDecimalSum(group.dayChangeValue))
+        : null,
     }))
     .sort((left, right) => left.baseCurrency.localeCompare(right.baseCurrency))
 }

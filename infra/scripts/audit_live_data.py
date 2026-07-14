@@ -22,9 +22,10 @@ DEFAULT_DATABASE_URL = (
 )
 
 EXPECTED_MIGRATION_HEADS = {
-    "instrument_registry": "20260713_0011",
-    "portfolio": "20260713_0038",
-    "watchlist": "20260713_0030",
+    "instrument_registry": "20260714_0013",
+    "calculation_registry": "20260714_0001",
+    "portfolio": "20260714_0042",
+    "watchlist": "20260714_0034",
 }
 
 TRANSACTION_PAYLOAD_SCHEMA_VERSION = "transaction-revision.v1"
@@ -49,7 +50,16 @@ TRANSACTION_FACT_FIELDS = (
     "quantity",
     "price",
     "counter_amount",
-    "fx_rate",
+    "quoted_fx_rate",
+    "consideration_basis",
+    "numeric_scale_state",
+    "quantity_input_scale",
+    "price_input_scale",
+    "gross_amount_input_scale",
+    "counter_amount_input_scale",
+    "quoted_fx_rate_input_scale",
+    "fees_input_scale",
+    "taxes_input_scale",
     "transfer_scope",
     "transfer_object_type",
     "transfer_group_id",
@@ -61,7 +71,7 @@ TRANSACTION_DECIMAL_SCALES = {
     "price": 12,
     "gross_amount": 8,
     "counter_amount": 8,
-    "fx_rate": 18,
+    "quoted_fx_rate": 18,
     "fees": 8,
     "taxes": 8,
 }
@@ -82,9 +92,18 @@ INTERNAL_TRANSFER_MIRRORED_FIELDS = (
     "price",
     "gross_amount",
     "counter_amount",
-    "fx_rate",
+    "quoted_fx_rate",
     "fees",
     "taxes",
+    "consideration_basis",
+    "numeric_scale_state",
+    "quantity_input_scale",
+    "price_input_scale",
+    "gross_amount_input_scale",
+    "counter_amount_input_scale",
+    "quoted_fx_rate_input_scale",
+    "fees_input_scale",
+    "taxes_input_scale",
     "currency",
     "transfer_scope",
     "transfer_object_type",
@@ -193,40 +212,40 @@ WATCHLIST_BOUNDED_READ_MODEL_LINEAGE_QUERY = """
 """
 
 
-PORTFOLIO_RESEARCH_BACKTEST_METRICS_CONTRACT_QUERY = """
+PORTFOLIO_ALLOCATION_POLICY_REPLAY_METRICS_CONTRACT_QUERY = """
     WITH persisted_metrics AS (
         SELECT
-            run.research_run_id,
+            run.allocation_research_run_id,
             candidate.metric_path,
             candidate.metrics
-        FROM portfolio.research_run_record AS run
+        FROM portfolio.allocation_research_run_record AS run
         CROSS JOIN LATERAL (
             VALUES
                 (
-                    'backtest.metrics',
-                    run.detail_json::jsonb #> '{backtest,metrics}'
+                    'policy_replay.metrics',
+                    run.detail_json::jsonb #> '{policy_replay,metrics}'
                 ),
                 (
-                    'backtest_benchmark.metrics',
-                    run.detail_json::jsonb #> '{backtest_benchmark,metrics}'
+                    'policy_replay_benchmark.metrics',
+                    run.detail_json::jsonb #> '{policy_replay_benchmark,metrics}'
                 ),
                 (
-                    'backtest_relative_metrics',
-                    run.detail_json::jsonb -> 'backtest_relative_metrics'
+                    'policy_replay_relative_metrics',
+                    run.detail_json::jsonb -> 'policy_replay_relative_metrics'
                 )
         ) AS candidate(metric_path, metrics)
         WHERE candidate.metrics IS NOT NULL
           AND candidate.metrics <> 'null'::jsonb
     ), metric_parts AS (
         SELECT
-            research_run_id,
+            allocation_research_run_id,
             metric_path,
             metrics,
             metrics -> 'history_reliability' AS history
         FROM persisted_metrics
     ), typed_history AS (
         SELECT
-            research_run_id,
+            allocation_research_run_id,
             metric_path,
             metrics,
             history,
@@ -260,7 +279,7 @@ PORTFOLIO_RESEARCH_BACKTEST_METRICS_CONTRACT_QUERY = """
     FROM typed_history
     WHERE jsonb_typeof(metrics) IS DISTINCT FROM 'object'
        OR metrics ->> 'method_version' IS DISTINCT FROM
-          'research-backtest-metrics.v2.history-gated-arithmetic-sharpe'
+          'allocation-policy-replay-metrics.v3.history-gated-arithmetic-sharpe'
        OR jsonb_typeof(history) IS DISTINCT FROM 'object'
        OR (history ?& ARRAY[
               'start_date',
@@ -403,13 +422,32 @@ PORTFOLIO_RESEARCH_BACKTEST_METRICS_CONTRACT_QUERY = """
 """
 
 
-PORTFOLIO_TRANSACTION_LEDGER_OBJECTS_QUERY = """
+PORTFOLIO_RUNTIME_OBJECTS_QUERY = """
     WITH expected(relation_name, relation_kind) AS (
         VALUES
             ('transaction_identity_record', 'r'::"char"),
             ('transaction_revision_group_record', 'r'::"char"),
             ('transaction_revision_record', 'r'::"char"),
-            ('transaction_current', 'v'::"char")
+            ('transaction_current', 'v'::"char"),
+            ('portfolio_daily_config_input', 'r'::"char"),
+            ('portfolio_daily_account_input', 'r'::"char"),
+            ('portfolio_daily_transaction_input', 'r'::"char"),
+            ('portfolio_daily_instrument_input', 'r'::"char"),
+            ('portfolio_daily_corp_action_window', 'r'::"char"),
+            ('portfolio_daily_corp_action_input', 'r'::"char"),
+            ('portfolio_daily_quote_window', 'r'::"char"),
+            ('portfolio_daily_quote_candidate', 'r'::"char"),
+            ('portfolio_daily_fx_path', 'r'::"char"),
+            ('portfolio_daily_fx_leg', 'r'::"char"),
+            ('portfolio_daily_prior_publication', 'r'::"char"),
+            ('portfolio_daily_run_output', 'r'::"char"),
+            ('portfolio_daily_snapshot_output', 'r'::"char"),
+            ('portfolio_daily_holding_output', 'r'::"char"),
+            ('portfolio_daily_balance_output', 'r'::"char"),
+            ('portfolio_daily_lot_output', 'r'::"char"),
+            ('portfolio_daily_lot_disposition_output', 'r'::"char"),
+            ('portfolio_daily_contribution_output', 'r'::"char"),
+            ('portfolio_daily_dependency_subscription', 'r'::"char")
     ), actual AS (
         SELECT relation.relname AS relation_name, relation.relkind AS relation_kind
         FROM pg_class relation
@@ -430,7 +468,11 @@ PORTFOLIO_TRANSACTION_LEDGER_OBJECTS_QUERY = """
         WHERE namespace.nspname = 'portfolio'
           AND relation.relname IN (
               'transaction_record',
-              'transaction_record_legacy_0036'
+              'transaction_record_legacy_0036',
+              'portfolio_daily_snapshot',
+              'portfolio_daily_holding_snapshot',
+              'portfolio_daily_contribution_slice',
+              'portfolio_calculation_state'
           )
 
         UNION ALL
@@ -790,6 +832,10 @@ PORTFOLIO_TRANSACTION_PAYLOAD_QUERY = """
                     OR revision.gross_amount IS NULL
                     OR revision.fees IS NULL
                     OR revision.taxes IS NULL
+                    OR revision.numeric_scale_state IS NULL
+                    OR revision.gross_amount_input_scale IS NULL
+                    OR revision.fees_input_scale IS NULL
+                    OR revision.taxes_input_scale IS NULL
                     OR revision.currency IS NULL
                 )
            )
@@ -805,6 +851,21 @@ PORTFOLIO_TRANSACTION_PAYLOAD_QUERY = """
                 (revision.instrument_id IS NULL)
                 <> (revision.instrument_snapshot_json IS NULL)
            )
+           OR revision.consideration_basis NOT IN (
+                'exact_quantity_price', 'source_reported'
+           )
+           OR (
+                (
+                    revision.transaction_type IN (
+                        'buy', 'sell', 'dividend_reinvestment'
+                    )
+                    OR (
+                        revision.transaction_type = 'opening_balance'
+                        AND revision.instrument_id IS NOT NULL
+                    )
+                )
+                IS DISTINCT FROM (revision.consideration_basis IS NOT NULL)
+           )
            OR (
                 revision.revision_kind = 'amend'
                 AND predecessor.payload_hash = revision.payload_hash
@@ -815,22 +876,22 @@ PORTFOLIO_TRANSACTION_PAYLOAD_QUERY = """
 
 
 PORTFOLIO_TRANSACTION_DECIMAL_COLUMNS_QUERY = """
-    WITH expected(table_name, column_name, numeric_precision, numeric_scale) AS (
+    WITH expected(table_name, column_name, max_scale, integer_digits) AS (
         VALUES
-            ('transaction_revision_record', 'quantity', 38, 12),
-            ('transaction_revision_record', 'price', 38, 12),
-            ('transaction_revision_record', 'gross_amount', 38, 8),
-            ('transaction_revision_record', 'counter_amount', 38, 8),
-            ('transaction_revision_record', 'fx_rate', 38, 18),
-            ('transaction_revision_record', 'fees', 38, 8),
-            ('transaction_revision_record', 'taxes', 38, 8),
-            ('transaction_current', 'quantity', 38, 12),
-            ('transaction_current', 'price', 38, 12),
-            ('transaction_current', 'gross_amount', 38, 8),
-            ('transaction_current', 'counter_amount', 38, 8),
-            ('transaction_current', 'fx_rate', 38, 18),
-            ('transaction_current', 'fees', 38, 8),
-            ('transaction_current', 'taxes', 38, 8)
+            ('transaction_revision_record', 'quantity', 12, 26),
+            ('transaction_revision_record', 'price', 12, 26),
+            ('transaction_revision_record', 'gross_amount', 8, 30),
+            ('transaction_revision_record', 'counter_amount', 8, 30),
+            ('transaction_revision_record', 'quoted_fx_rate', 18, 20),
+            ('transaction_revision_record', 'fees', 8, 30),
+            ('transaction_revision_record', 'taxes', 8, 30),
+            ('transaction_current', 'quantity', 12, 26),
+            ('transaction_current', 'price', 12, 26),
+            ('transaction_current', 'gross_amount', 8, 30),
+            ('transaction_current', 'counter_amount', 8, 30),
+            ('transaction_current', 'quoted_fx_rate', 18, 20),
+            ('transaction_current', 'fees', 8, 30),
+            ('transaction_current', 'taxes', 8, 30)
     ), actual AS (
         SELECT table_name, column_name, data_type, numeric_precision, numeric_scale
         FROM information_schema.columns
@@ -839,13 +900,67 @@ PORTFOLIO_TRANSACTION_DECIMAL_COLUMNS_QUERY = """
               'transaction_revision_record', 'transaction_current'
           )
     )
-    SELECT count(*)
-    FROM expected
-    LEFT JOIN actual USING (table_name, column_name)
-    WHERE actual.column_name IS NULL
-       OR actual.data_type <> 'numeric'
-       OR actual.numeric_precision <> expected.numeric_precision
-       OR actual.numeric_scale <> expected.numeric_scale
+    , schema_violations AS (
+        SELECT expected.table_name, expected.column_name
+        FROM expected
+        LEFT JOIN actual USING (table_name, column_name)
+        WHERE actual.column_name IS NULL
+           OR actual.data_type <> 'numeric'
+           OR actual.numeric_precision IS NOT NULL
+           OR actual.numeric_scale IS NOT NULL
+    ), fact_violations AS (
+        SELECT revision.revision_id::text AS violation_id
+        FROM portfolio.transaction_revision_record revision
+        WHERE NOT revision.is_tombstone
+          AND (
+              revision.numeric_scale_state NOT IN ('declared', 'legacy_inferred')
+              OR (revision.quantity IS NULL) IS DISTINCT FROM (revision.quantity_input_scale IS NULL)
+              OR (revision.price IS NULL) IS DISTINCT FROM (revision.price_input_scale IS NULL)
+              OR (revision.gross_amount IS NULL) IS DISTINCT FROM (revision.gross_amount_input_scale IS NULL)
+              OR (revision.counter_amount IS NULL) IS DISTINCT FROM (revision.counter_amount_input_scale IS NULL)
+              OR (revision.quoted_fx_rate IS NULL) IS DISTINCT FROM (revision.quoted_fx_rate_input_scale IS NULL)
+              OR (revision.fees IS NULL) IS DISTINCT FROM (revision.fees_input_scale IS NULL)
+              OR (revision.taxes IS NULL) IS DISTINCT FROM (revision.taxes_input_scale IS NULL)
+              OR (revision.quantity IS NOT NULL AND (
+                    revision.quantity_input_scale NOT BETWEEN 0 AND 12
+                    OR revision.quantity <> trunc(revision.quantity, 12)
+                    OR revision.quantity <> trunc(revision.quantity, revision.quantity_input_scale)
+                    OR abs(revision.quantity) >= 1e26))
+              OR (revision.price IS NOT NULL AND (
+                    revision.price_input_scale NOT BETWEEN 0 AND 12
+                    OR revision.price <> trunc(revision.price, 12)
+                    OR revision.price <> trunc(revision.price, revision.price_input_scale)
+                    OR abs(revision.price) >= 1e26))
+              OR (revision.gross_amount IS NOT NULL AND (
+                    revision.gross_amount_input_scale NOT BETWEEN 0 AND 8
+                    OR revision.gross_amount <> trunc(revision.gross_amount, 8)
+                    OR revision.gross_amount <> trunc(revision.gross_amount, revision.gross_amount_input_scale)
+                    OR abs(revision.gross_amount) >= 1e30))
+              OR (revision.counter_amount IS NOT NULL AND (
+                    revision.counter_amount_input_scale NOT BETWEEN 0 AND 8
+                    OR revision.counter_amount <> trunc(revision.counter_amount, 8)
+                    OR revision.counter_amount <> trunc(revision.counter_amount, revision.counter_amount_input_scale)
+                    OR abs(revision.counter_amount) >= 1e30))
+              OR (revision.quoted_fx_rate IS NOT NULL AND (
+                    revision.quoted_fx_rate_input_scale NOT BETWEEN 0 AND 18
+                    OR revision.quoted_fx_rate <> trunc(revision.quoted_fx_rate, 18)
+                    OR revision.quoted_fx_rate <> trunc(revision.quoted_fx_rate, revision.quoted_fx_rate_input_scale)
+                    OR abs(revision.quoted_fx_rate) >= 1e20))
+              OR (revision.fees IS NOT NULL AND (
+                    revision.fees_input_scale NOT BETWEEN 0 AND 8
+                    OR revision.fees <> trunc(revision.fees, 8)
+                    OR revision.fees <> trunc(revision.fees, revision.fees_input_scale)
+                    OR abs(revision.fees) >= 1e30))
+              OR (revision.taxes IS NOT NULL AND (
+                    revision.taxes_input_scale NOT BETWEEN 0 AND 8
+                    OR revision.taxes <> trunc(revision.taxes, 8)
+                    OR revision.taxes <> trunc(revision.taxes, revision.taxes_input_scale)
+                    OR abs(revision.taxes) >= 1e30))
+          )
+    )
+    SELECT
+        (SELECT count(*) FROM schema_violations)
+        + (SELECT count(*) FROM fact_violations)
 """
 
 
@@ -1130,7 +1245,16 @@ PORTFOLIO_TRANSACTION_REVISION_AUDIT_QUERY = """
         quantity,
         price,
         counter_amount,
-        fx_rate,
+        quoted_fx_rate,
+        consideration_basis,
+        numeric_scale_state,
+        quantity_input_scale,
+        price_input_scale,
+        gross_amount_input_scale,
+        counter_amount_input_scale,
+        quoted_fx_rate_input_scale,
+        fees_input_scale,
+        taxes_input_scale,
         transfer_scope,
         transfer_object_type,
         transfer_group_id,
@@ -1167,7 +1291,16 @@ PORTFOLIO_TRANSACTION_CURRENT_TRANSFER_AUDIT_QUERY = """
         quantity,
         price,
         counter_amount,
-        fx_rate,
+        quoted_fx_rate,
+        consideration_basis,
+        numeric_scale_state,
+        quantity_input_scale,
+        price_input_scale,
+        gross_amount_input_scale,
+        counter_amount_input_scale,
+        quoted_fx_rate_input_scale,
+        fees_input_scale,
+        taxes_input_scale,
         transfer_scope,
         transfer_object_type,
         transfer_group_id,
@@ -1207,6 +1340,7 @@ def _schema_capability_gate(
         """
         WITH required(component, relation_name) AS (
             VALUES
+                ('calculation_registry', 'calculation_registry.alembic_version'),
                 ('instrument_registry', 'instrument_registry.alembic_version'),
                 ('portfolio', 'portfolio.alembic_version'),
                 ('watchlist', 'watchlist.alembic_version')
@@ -1244,7 +1378,7 @@ def _schema_capability_gate(
                     ),
                 ),
                 _skip_check(
-                    name="portfolio_transaction_revision_ledger_objects",
+                    name="portfolio_runtime_required_objects",
                     detail=(
                         "The 0037 transaction-ledger capability check requires all "
                         "managed migration version tables."
@@ -1274,6 +1408,11 @@ def _schema_capability_gate(
                count(*)::integer AS row_count,
                min(version_num)::text AS version_num
         FROM instrument_registry.alembic_version
+
+        UNION ALL
+
+        SELECT 'calculation_registry', count(*)::integer, min(version_num)::text
+        FROM calculation_registry.alembic_version
 
         UNION ALL
 
@@ -1320,7 +1459,7 @@ def _schema_capability_gate(
         checks.extend(
             (
                 _skip_check(
-                    name="portfolio_transaction_revision_ledger_objects",
+                    name="portfolio_runtime_required_objects",
                     detail=(
                         "The 0037 transaction-ledger capability check was skipped "
                         "because one or more managed schemas are at another head."
@@ -1346,11 +1485,12 @@ def _schema_capability_gate(
 
     ledger_objects = _count_check(
         cursor,
-        name="portfolio_transaction_revision_ledger_objects",
-        query=PORTFOLIO_TRANSACTION_LEDGER_OBJECTS_QUERY,
+        name="portfolio_runtime_required_objects",
+        query=PORTFOLIO_RUNTIME_OBJECTS_QUERY,
         detail=(
-            "The 0037 transaction ledger requires its append-only base objects, "
-            "one non-updatable current-fact view, and no legacy mutable table."
+            "Portfolio requires the append-only transaction ledger, exact sealed "
+            "Portfolio Daily inputs/outputs, dependency subscriptions, and no legacy "
+            "mutable materialization tables."
         ),
     )
     checks.append(ledger_objects)
@@ -1423,10 +1563,16 @@ def _mapping_rows(
 
 def _canonical_transaction_scalar(value: object, *, field_name: str) -> object:
     if isinstance(value, Decimal):
-        scale = TRANSACTION_DECIMAL_SCALES.get(field_name)
-        if scale is None:
+        if field_name not in TRANSACTION_DECIMAL_SCALES:
             raise ValueError(f"unexpected Decimal transaction field: {field_name}")
-        return format(value, f".{scale}f")
+        if not value.is_finite():
+            raise ValueError(f"{field_name} must be finite")
+        if value.is_zero():
+            return "0"
+        rendered = format(value, "f")
+        if "." in rendered:
+            rendered = rendered.rstrip("0").rstrip(".")
+        return rendered
     if isinstance(value, datetime):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError(f"{field_name} must be timezone-aware")
@@ -1756,6 +1902,7 @@ def run_audit(database_url: str) -> list[AuditCheck]:
                             SELECT 'schema', required.schema_name, owner.rolname
                             FROM (
                                 VALUES
+                                    ('calculation_registry'),
                                     ('instrument_registry'),
                                     ('portfolio'),
                                     ('watchlist')
@@ -1767,7 +1914,7 @@ def run_audit(database_url: str) -> list[AuditCheck]:
                         WHERE owner_name IS DISTINCT FROM current_user
                     """,
                     detail=(
-                        "The project database and all three managed schemas must be "
+                        "The project database and all four managed schemas must be "
                         "owned by the restricted application/migration role."
                     ),
                 )
@@ -1782,7 +1929,8 @@ def run_audit(database_url: str) -> list[AuditCheck]:
                         JOIN pg_namespace namespace ON namespace.oid = object.relnamespace
                         JOIN pg_roles owner ON owner.oid = object.relowner
                         WHERE namespace.nspname IN (
-                            'instrument_registry', 'portfolio', 'watchlist'
+                            'instrument_registry', 'calculation_registry',
+                            'portfolio', 'watchlist'
                         )
                           AND object.relkind IN ('r', 'p', 'v', 'm', 'S')
                           AND owner.rolname <> current_user
@@ -2165,6 +2313,20 @@ def run_audit(database_url: str) -> list[AuditCheck]:
                     query="""
                         SELECT count(*)
                         FROM (
+                            SELECT table_name AS violation
+                            FROM information_schema.tables
+                            WHERE table_schema = 'portfolio'
+                              AND table_name IN (
+                                  'portfolio_daily_snapshot',
+                                  'portfolio_daily_holding_snapshot',
+                                  'portfolio_daily_contribution_slice',
+                                  'portfolio_calculation_state',
+                                  'research_settings_record',
+                                  'research_run_record'
+                              )
+
+                            UNION ALL
+
                             SELECT table_name || '.' || column_name AS violation
                             FROM information_schema.columns
                             WHERE table_schema = 'portfolio'
@@ -2191,8 +2353,8 @@ def run_audit(database_url: str) -> list[AuditCheck]:
                             SELECT table_name || '.' || column_name
                             FROM information_schema.columns
                             WHERE table_schema = 'portfolio'
-                              AND table_name = 'research_settings_record'
-                              AND column_name = 'backtest_rebalance_frequency'
+                              AND table_name = 'allocation_research_settings_record'
+                              AND column_name = 'policy_replay_rebalance_frequency'
                               AND column_default IS NOT NULL
                         ) violations
                     """,
@@ -2213,9 +2375,9 @@ def run_audit(database_url: str) -> list[AuditCheck]:
                         ) AS (
                             VALUES
                                 (
-                                    'ix_portfolio_daily_holding_instrument_date',
-                                    'portfolio_daily_holding_snapshot', false,
-                                    ARRAY['portfolio_id', 'instrument_id', 'as_of_date']::text[],
+                                    'ix_pd_holding_portfolio_date',
+                                    'portfolio_daily_holding_output', false,
+                                    ARRAY['portfolio_id', 'as_of_date']::text[],
                                     NULL
                                 ),
                                 (
@@ -2437,8 +2599,9 @@ def run_audit(database_url: str) -> list[AuditCheck]:
                     name="portfolio_transaction_decimal_column_contract",
                     query=PORTFOLIO_TRANSACTION_DECIMAL_COLUMNS_QUERY,
                     detail=(
-                        "Revision storage and the current-fact view must expose exact "
-                        "NUMERIC(38, scale) transaction economics without floating-point columns."
+                        "Revision storage and the current-fact view must expose raw NUMERIC "
+                        "columns; each fact must satisfy its logical 38-digit domain and its "
+                        "declared input-scale evidence without implicit rounding."
                     ),
                 )
             )
@@ -2456,11 +2619,11 @@ def run_audit(database_url: str) -> list[AuditCheck]:
             checks.append(
                 _count_check(
                     cursor,
-                    name="portfolio_research_backtest_metrics_contract",
-                    query=PORTFOLIO_RESEARCH_BACKTEST_METRICS_CONTRACT_QUERY,
+                    name="portfolio_allocation_policy_replay_metrics_contract",
+                    query=PORTFOLIO_ALLOCATION_POLICY_REPLAY_METRICS_CONTRACT_QUERY,
                     detail=(
-                        "Every persisted Research backtest, benchmark, and relative "
-                        "metric object must use the exact v2 methodology, carry a "
+                        "Every persisted Allocation Policy Replay, benchmark, and relative "
+                        "metric object must use the exact v3 methodology, carry a "
                         "strict and boundary-consistent 365-day history-reliability "
                         "contract, and withhold annualized return and Calmar Ratio "
                         "whenever that history is ineligible."
@@ -2785,9 +2948,6 @@ def run_audit(database_url: str) -> list[AuditCheck]:
                             SELECT portfolio_id, upper(currency)
                             FROM portfolio.transaction_current
                             UNION
-                            SELECT portfolio_id, upper(currency)
-                            FROM portfolio.portfolio_daily_holding_snapshot
-                            UNION
                             SELECT
                                 universe.portfolio_id,
                                 upper(instrument.currency)
@@ -2958,582 +3118,317 @@ def run_audit(database_url: str) -> list[AuditCheck]:
                 )
             )
 
-            max_nav_error = float(
-                _scalar(
-                    cursor,
-                    """
-                    WITH holdings AS (
-                        SELECT
-                            portfolio_id,
-                            as_of_date,
-                            sum(market_value_base)::numeric AS market_value
-                        FROM portfolio.portfolio_daily_holding_snapshot
-                        GROUP BY portfolio_id, as_of_date
-                    )
-                    SELECT coalesce(max(abs(
-                        coalesce(holdings.market_value, 0)
-                        + (snapshot.snapshot_json ->> 'pending_settlement')::numeric
-                        - snapshot.nav::numeric
-                    )), 0)
-                    FROM portfolio.portfolio_daily_snapshot snapshot
-                    LEFT JOIN holdings USING (portfolio_id, as_of_date)
-                    """,
-                )
-                or 0.0
-            )
-            checks.append(
-                AuditCheck(
-                    name="portfolio_nav_reconciliation",
-                    status="pass" if max_nav_error <= 1e-6 else "fail",
-                    value=max_nav_error,
-                    limit=1e-6,
-                    detail="NAV must equal holding market value plus pending settlement.",
-                )
-            )
-
             checks.append(
                 _count_check(
                     cursor,
-                    name="portfolio_split_coverage_contract",
+                    name="portfolio_daily_current_publication",
                     query="""
                         SELECT count(*)
-                        FROM portfolio.portfolio_daily_snapshot snapshot
-                        WHERE json_typeof(snapshot.nav_coverage_reason_codes)
-                                IS DISTINCT FROM 'array'
-                           OR json_typeof(snapshot.book_pnl_coverage_reason_codes)
-                                IS DISTINCT FROM 'array'
-                           OR snapshot.snapshot_json::jsonb ? 'coverage_state'
-                           OR NOT snapshot.snapshot_json::jsonb ?& ARRAY[
-                                'nav_coverage_state',
-                                'nav_coverage_reason_codes',
-                                'book_pnl_coverage_state',
-                                'book_pnl_coverage_reason_codes',
-                                'realized_pnl',
-                                'income_cash_amount',
-                                'expense_cash_amount',
-                                'return_of_capital_amount',
-                                'total_pnl',
-                                'cash_currency_gains',
-                                'instrument_currency_gains'
-                              ]
-                           OR snapshot.snapshot_json ->> 'nav_coverage_state'
-                                IS DISTINCT FROM snapshot.nav_coverage_state
-                           OR snapshot.snapshot_json ->> 'book_pnl_coverage_state'
-                                IS DISTINCT FROM snapshot.book_pnl_coverage_state
-                           OR (snapshot.snapshot_json -> 'nav_coverage_reason_codes')::jsonb
-                                IS DISTINCT FROM
-                                snapshot.nav_coverage_reason_codes::jsonb
-                           OR snapshot.snapshot_json
-                                -> 'book_pnl_coverage_reason_codes' IS NULL
-                           OR (snapshot.snapshot_json
-                                -> 'book_pnl_coverage_reason_codes')::jsonb
-                                IS DISTINCT FROM
-                                snapshot.book_pnl_coverage_reason_codes::jsonb
-                           OR (
-                                snapshot.nav_coverage_state = 'complete'
-                                AND (
-                                    json_array_length(
-                                        snapshot.nav_coverage_reason_codes
-                                    ) <> 0
-                                    OR snapshot.nav IS NULL
-                                )
-                              )
-                           OR (
-                                snapshot.nav_coverage_state <> 'complete'
-                                AND json_array_length(
-                                    snapshot.nav_coverage_reason_codes
-                                ) = 0
-                              )
-                           OR (
-                                snapshot.book_pnl_coverage_state = 'complete'
-                                AND (
-                                    json_array_length(
-                                        snapshot.book_pnl_coverage_reason_codes
-                                    ) <> 0
-                                    OR (snapshot.snapshot_json -> 'realized_pnl')::jsonb
-                                        IS NOT DISTINCT FROM 'null'::jsonb
-                                    OR (snapshot.snapshot_json -> 'income_cash_amount')::jsonb
-                                        IS NOT DISTINCT FROM 'null'::jsonb
-                                    OR (snapshot.snapshot_json -> 'expense_cash_amount')::jsonb
-                                        IS NOT DISTINCT FROM 'null'::jsonb
-                                    OR (snapshot.snapshot_json -> 'return_of_capital_amount')::jsonb
-                                        IS NOT DISTINCT FROM 'null'::jsonb
-                                    OR (snapshot.snapshot_json -> 'total_pnl')::jsonb
-                                        IS NOT DISTINCT FROM 'null'::jsonb
-                                    OR snapshot.snapshot_json
-                                        -> 'cash_currency_gains' IS NULL
-                                    OR (snapshot.snapshot_json
-                                        -> 'cash_currency_gains')::jsonb
-                                        IS NOT DISTINCT FROM 'null'::jsonb
-                                    OR snapshot.snapshot_json
-                                        -> 'instrument_currency_gains' IS NULL
-                                    OR (snapshot.snapshot_json
-                                        -> 'instrument_currency_gains')::jsonb
-                                        IS NOT DISTINCT FROM 'null'::jsonb
-                                )
-                              )
-                           OR (
-                                snapshot.book_pnl_coverage_state <> 'complete'
-                                AND (
-                                    json_array_length(
-                                        snapshot.book_pnl_coverage_reason_codes
-                                    ) = 0
-                                    OR (snapshot.snapshot_json -> 'realized_pnl')::jsonb
-                                        IS DISTINCT FROM 'null'::jsonb
-                                    OR (snapshot.snapshot_json -> 'income_cash_amount')::jsonb
-                                        IS DISTINCT FROM 'null'::jsonb
-                                    OR (snapshot.snapshot_json -> 'expense_cash_amount')::jsonb
-                                        IS DISTINCT FROM 'null'::jsonb
-                                    OR (snapshot.snapshot_json -> 'return_of_capital_amount')::jsonb
-                                        IS DISTINCT FROM 'null'::jsonb
-                                    OR (snapshot.snapshot_json -> 'total_pnl')::jsonb
-                                        IS DISTINCT FROM 'null'::jsonb
-                                    OR snapshot.snapshot_json
-                                        -> 'cash_currency_gains' IS NULL
-                                    OR (snapshot.snapshot_json
-                                        -> 'cash_currency_gains')::jsonb
-                                        IS DISTINCT FROM 'null'::jsonb
-                                    OR snapshot.snapshot_json
-                                        -> 'instrument_currency_gains' IS NULL
-                                    OR (snapshot.snapshot_json
-                                        -> 'instrument_currency_gains')::jsonb
-                                        IS DISTINCT FROM 'null'::jsonb
-                                )
-                              )
+                        FROM portfolio.portfolio_record portfolio
+                        LEFT JOIN calculation_registry.calculation_current_publication current
+                          ON current.calculation_kind = 'portfolio_daily'
+                         AND current.scope_kind = 'portfolio'
+                         AND current.scope_id = portfolio.portfolio_id
+                        LEFT JOIN calculation_registry.calculation_publication publication
+                          ON publication.publication_id = current.publication_id
+                         AND publication.calculation_kind = current.calculation_kind
+                         AND publication.scope_kind = current.scope_kind
+                         AND publication.scope_id = current.scope_id
+                        LEFT JOIN calculation_registry.calculation_run run
+                          ON run.run_id = publication.run_id
+                        LEFT JOIN calculation_registry.calculation_scope_generation generation
+                          ON generation.calculation_kind = current.calculation_kind
+                         AND generation.scope_kind = current.scope_kind
+                         AND generation.scope_id = current.scope_id
+                        LEFT JOIN portfolio.portfolio_daily_run_output output
+                          ON output.run_id = publication.run_id
+                         AND output.output_fencing_token = publication.published_fencing_token
+                         AND output.portfolio_id = portfolio.portfolio_id
+                        WHERE current.publication_id IS NULL
+                           OR publication.publication_id IS NULL
+                           OR run.run_id IS NULL
+                           OR generation.scope_id IS NULL
+                           OR output.run_id IS NULL
+                           OR run.status <> 'published'
+                           OR run.captured_generation <> generation.generation
+                           OR run.published_output_hash IS DISTINCT FROM publication.canonical_output_hash
+                           OR output.canonical_output_hash IS DISTINCT FROM publication.canonical_output_hash
+                           OR publication.output_schema_version IS DISTINCT FROM run.output_schema_version
+                           OR output.output_schema_version IS DISTINCT FROM run.output_schema_version
+                           OR output.closure_status <> 'passed'
+                           OR output.ledger_balance_residual_exact <> 0
+                           OR output.nav_bridge_residual_exact <> 0
+                           OR output.pnl_residual_exact <> 0
+                           OR output.twr_residual_exact <> 0
+                           OR output.lot_residual_exact <> 0
                     """,
                     detail=(
-                        "Fair-value NAV coverage and book-P&L coverage must be "
-                        "independent, reason-coded, column/payload-consistent, and "
-                        "must not retain the superseded mixed coverage field."
+                        "Every portfolio must point to an immutable published run for "
+                        "its current generation, with one hash-consistent, closure-passed "
+                        "Portfolio Daily run output."
                     ),
                 )
             )
             checks.append(
                 _count_check(
                     cursor,
-                    name="portfolio_contribution_split_coverage_contract",
+                    name="portfolio_daily_publication_output_counts",
                     query="""
-                        SELECT count(*)
-                        FROM portfolio.portfolio_daily_contribution_slice slice
-                        WHERE json_typeof(slice.nav_coverage_reason_codes)
-                                IS DISTINCT FROM 'array'
-                           OR json_typeof(slice.book_pnl_coverage_reason_codes)
-                                IS DISTINCT FROM 'array'
-                           OR slice.slice_json::jsonb ? 'coverage_state'
-                           OR NOT slice.slice_json::jsonb ?& ARRAY[
-                                'nav_coverage_state',
-                                'nav_coverage_reason_codes',
-                                'book_pnl_coverage_state',
-                                'book_pnl_coverage_reason_codes',
-                                'total_pnl'
-                              ]
-                           OR slice.slice_json ->> 'nav_coverage_state'
-                                IS DISTINCT FROM slice.nav_coverage_state
-                           OR slice.slice_json ->> 'book_pnl_coverage_state'
-                                IS DISTINCT FROM slice.book_pnl_coverage_state
-                           OR (slice.slice_json
-                                -> 'nav_coverage_reason_codes')::jsonb
-                                IS DISTINCT FROM
-                                slice.nav_coverage_reason_codes::jsonb
-                           OR (slice.slice_json
-                                -> 'book_pnl_coverage_reason_codes')::jsonb
-                                IS DISTINCT FROM
-                                slice.book_pnl_coverage_reason_codes::jsonb
-                           OR (
-                                slice.nav_coverage_state = 'complete'
-                                AND json_array_length(
-                                    slice.nav_coverage_reason_codes
-                                ) <> 0
-                              )
-                           OR (
-                                slice.nav_coverage_state <> 'complete'
-                                AND json_array_length(
-                                    slice.nav_coverage_reason_codes
-                                ) = 0
-                              )
-                           OR (
-                                slice.book_pnl_coverage_state = 'complete'
-                                AND (
-                                    json_array_length(
-                                        slice.book_pnl_coverage_reason_codes
-                                    ) <> 0
-                                    OR slice.total_pnl IS NULL
-                                    OR (slice.slice_json -> 'total_pnl')::jsonb
-                                        IS NOT DISTINCT FROM 'null'::jsonb
-                                )
-                              )
-                           OR (
-                                slice.book_pnl_coverage_state <> 'complete'
-                                AND (
-                                    json_array_length(
-                                        slice.book_pnl_coverage_reason_codes
-                                    ) = 0
-                                    OR slice.total_pnl IS NOT NULL
-                                    OR (slice.slice_json -> 'total_pnl')::jsonb
-                                        IS DISTINCT FROM 'null'::jsonb
-                                )
-                              )
-                    """,
-                    detail=(
-                        "Contribution slices must persist the same independent NAV and "
-                        "book-P&L coverage contract and fail closed on book P&L."
-                    ),
-                )
-            )
-            checks.append(
-                _count_check(
-                    cursor,
-                    name="portfolio_fx_dependency_manifest",
-                    query="""
-                        SELECT count(*)
-                        FROM portfolio.portfolio_daily_snapshot snapshot
-                        WHERE json_typeof(
-                                snapshot.snapshot_json
-                                    -> 'fx_dependency_manifest'
-                              ) IS DISTINCT FROM 'object'
-                           OR json_typeof(
-                                snapshot.snapshot_json
-                                    -> 'fx_dependency_manifest'
-                                    -> 'dependencies'
-                              ) IS DISTINCT FROM 'array'
-                           OR coalesce(
-                                snapshot.snapshot_json
-                                    -> 'fx_dependency_manifest'
-                                    ->> 'fingerprint',
-                                ''
-                              ) !~ '^[0-9a-f]{64}$'
-                    """,
-                    detail=(
-                        "Every daily snapshot must retain a deterministic canonical "
-                        "FX dependency manifest and fingerprint for revision impact "
-                        "analysis."
-                    ),
-                )
-            )
-            checks.append(
-                _count_check(
-                    cursor,
-                    name="portfolio_invalid_daily_twr_domain",
-                    query="""
-                        SELECT count(*)
-                        FROM portfolio.portfolio_daily_snapshot
-                        WHERE daily_twr IS NOT NULL
-                          AND (
-                              daily_twr::text IN ('NaN', 'Infinity', '-Infinity')
-                              OR daily_twr <= -1
-                          )
-                    """,
-                    detail=(
-                        "Daily simple returns must be finite and greater than -100% "
-                        "before geometric linking."
-                    ),
-                )
-            )
-            checks.append(
-                _count_check(
-                    cursor,
-                    name="portfolio_twr_state_invariants",
-                    query="""
-                        SELECT count(*)
-                        FROM portfolio.portfolio_daily_snapshot snapshot
-                        WHERE coalesce(snapshot.snapshot_json ->> 'twr_state', '')
-                                NOT IN (
-                                    'linked', 'carry_forward', 'broken',
-                                    'reanchor', 'no_anchor'
-                                )
-                           OR coalesce(
-                                snapshot.snapshot_json ->> 'twr_reliability_status',
-                                ''
-                              ) NOT IN ('reliable', 'qualified', 'unavailable')
-                           OR coalesce(
-                                json_typeof(
-                                    snapshot.snapshot_json
-                                        -> 'twr_reliability_reasons'
-                                ),
-                                'missing'
-                              ) <> 'array'
-                           OR (
-                                snapshot.snapshot_json ->> 'twr_state'
-                                    IN ('broken', 'reanchor', 'no_anchor')
-                                AND snapshot.daily_twr IS NOT NULL
-                              )
-                           OR (
-                                snapshot.snapshot_json ->> 'twr_state'
-                                    IN ('linked', 'carry_forward')
-                                AND snapshot.daily_twr IS NULL
-                              )
-                           OR (
-                                snapshot.snapshot_json ->> 'twr_state' = 'linked'
-                                AND snapshot.snapshot_json
-                                    ->> 'twr_reliability_status' <> 'reliable'
-                              )
-                           OR (
-                                snapshot.snapshot_json ->> 'twr_state'
-                                    IN ('carry_forward', 'reanchor')
-                                AND snapshot.snapshot_json
-                                    ->> 'twr_reliability_status' <> 'qualified'
-                              )
-                           OR (
-                                snapshot.snapshot_json ->> 'twr_state' = 'broken'
-                                AND snapshot.snapshot_json
-                                    ->> 'twr_reliability_status' <> 'unavailable'
-                              )
-                           OR (
-                                snapshot.snapshot_json
-                                    ->> 'twr_reliability_status' = 'reliable'
-                                AND json_array_length(
-                                    CASE
-                                        WHEN json_typeof(
-                                            snapshot.snapshot_json
-                                                -> 'twr_reliability_reasons'
-                                        ) = 'array'
-                                        THEN snapshot.snapshot_json
-                                            -> 'twr_reliability_reasons'
-                                        ELSE '[]'::json
-                                    END
-                                ) <> 0
-                              )
-                           OR (
-                                snapshot.snapshot_json
-                                    ->> 'twr_reliability_status' = 'unavailable'
-                                AND json_array_length(
-                                    CASE
-                                        WHEN json_typeof(
-                                            snapshot.snapshot_json
-                                                -> 'twr_reliability_reasons'
-                                        ) = 'array'
-                                        THEN snapshot.snapshot_json
-                                            -> 'twr_reliability_reasons'
-                                        ELSE '[]'::json
-                                    END
-                                ) = 0
-                              )
-                           OR (
-                                snapshot.snapshot_json
-                                    ->> 'return_observation_eligible' = 'true'
-                                AND (
-                                    snapshot.snapshot_json
-                                        ->> 'twr_reliability_status' = 'unavailable'
-                                    OR snapshot.snapshot_json ->> 'twr_state'
-                                        NOT IN ('linked', 'carry_forward')
-                                )
-                              )
-                    """,
-                    detail=(
-                        "Every materialized daily return must have a coherent, typed "
-                        "TWR state/reliability envelope; unavailable boundaries cannot "
-                        "carry a return observation."
-                    ),
-                )
-            )
-            checks.append(
-                _count_check(
-                    cursor,
-                    name="portfolio_twr_boundary_linkage",
-                    query="""
-                        WITH first_broken_boundary AS (
-                            SELECT
-                                portfolio_id,
-                                min(as_of_date) AS first_broken_date
-                            FROM portfolio.portfolio_daily_snapshot
-                            WHERE snapshot_json ->> 'twr_state' = 'broken'
-                            GROUP BY portfolio_id
+                        WITH current_output AS (
+                            SELECT output.*
+                            FROM calculation_registry.calculation_current_publication current
+                            JOIN calculation_registry.calculation_publication publication
+                              ON publication.publication_id = current.publication_id
+                             AND publication.calculation_kind = current.calculation_kind
+                             AND publication.scope_kind = current.scope_kind
+                             AND publication.scope_id = current.scope_id
+                            JOIN portfolio.portfolio_daily_run_output output
+                              ON output.run_id = publication.run_id
+                             AND output.output_fencing_token = publication.published_fencing_token
+                             AND output.portfolio_id = current.scope_id
+                            WHERE current.calculation_kind = 'portfolio_daily'
+                              AND current.scope_kind = 'portfolio'
                         )
                         SELECT count(*)
-                        FROM portfolio.portfolio_daily_snapshot snapshot
-                        JOIN first_broken_boundary boundary USING (portfolio_id)
-                        WHERE snapshot.as_of_date >= boundary.first_broken_date
+                        FROM current_output output
+                        WHERE output.snapshot_count <> (
+                                SELECT count(*)
+                                FROM portfolio.portfolio_daily_snapshot_output row
+                                WHERE row.run_id = output.run_id
+                                  AND row.output_fencing_token = output.output_fencing_token
+                                  AND row.portfolio_id = output.portfolio_id
+                              )
+                           OR output.holding_count <> (
+                                SELECT count(*)
+                                FROM portfolio.portfolio_daily_holding_output row
+                                WHERE row.run_id = output.run_id
+                                  AND row.output_fencing_token = output.output_fencing_token
+                                  AND row.portfolio_id = output.portfolio_id
+                              )
+                           OR output.balance_count <> (
+                                SELECT count(*)
+                                FROM portfolio.portfolio_daily_balance_output row
+                                WHERE row.run_id = output.run_id
+                                  AND row.output_fencing_token = output.output_fencing_token
+                                  AND row.portfolio_id = output.portfolio_id
+                              )
+                           OR output.lot_count <> (
+                                SELECT count(*)
+                                FROM portfolio.portfolio_daily_lot_output row
+                                WHERE row.run_id = output.run_id
+                                  AND row.output_fencing_token = output.output_fencing_token
+                                  AND row.portfolio_id = output.portfolio_id
+                              )
+                           OR output.lot_disposition_count <> (
+                                SELECT count(*)
+                                FROM portfolio.portfolio_daily_lot_disposition_output row
+                                WHERE row.run_id = output.run_id
+                                  AND row.output_fencing_token = output.output_fencing_token
+                                  AND row.portfolio_id = output.portfolio_id
+                              )
+                           OR output.contribution_count <> (
+                                SELECT count(*)
+                                FROM portfolio.portfolio_daily_contribution_output row
+                                WHERE row.run_id = output.run_id
+                                  AND row.output_fencing_token = output.output_fencing_token
+                                  AND row.portfolio_id = output.portfolio_id
+                              )
+                    """,
+                    detail=(
+                        "The sealed current run's declared row counts must exactly match "
+                        "every immutable Portfolio Daily output table."
+                    ),
+                )
+            )
+            checks.append(
+                _count_check(
+                    cursor,
+                    name="portfolio_daily_method50_return_evidence",
+                    query="""
+                        SELECT count(*)
+                        FROM calculation_registry.calculation_current_publication current
+                        JOIN calculation_registry.calculation_publication publication
+                          ON publication.publication_id = current.publication_id
+                         AND publication.calculation_kind = current.calculation_kind
+                         AND publication.scope_kind = current.scope_kind
+                         AND publication.scope_id = current.scope_id
+                        JOIN portfolio.portfolio_daily_snapshot_output snapshot
+                          ON snapshot.run_id = publication.run_id
+                         AND snapshot.output_fencing_token = publication.published_fencing_token
+                         AND snapshot.portfolio_id = current.scope_id
+                        WHERE current.calculation_kind = 'portfolio_daily'
+                          AND current.scope_kind = 'portfolio'
                           AND (
-                              snapshot.cumulative_twr IS NOT NULL
-                              OR snapshot.drawdown IS NOT NULL
+                            snapshot.subperiod_twr_method50 < -1
+                            OR (snapshot.subperiod_twr_method50 IS NULL)
+                                <> (snapshot.subperiod_twr_published IS NULL)
+                            OR (snapshot.subperiod_twr_method50 IS NULL)
+                                <> (snapshot.wealth_chain_rounding_adjustment_exact IS NULL)
+                            OR (snapshot.cumulative_twr_method50 IS NULL)
+                                <> (snapshot.cumulative_twr_published IS NULL)
+                            OR (snapshot.wealth_index_method50 IS NULL)
+                                <> (snapshot.wealth_index_published IS NULL)
+                            OR (snapshot.peak_wealth_index_method50 IS NULL)
+                                <> (snapshot.peak_wealth_index_published IS NULL)
+                            OR (snapshot.drawdown_method50 IS NULL)
+                                <> (snapshot.drawdown_published IS NULL)
+                            OR (snapshot.cumulative_twr_method50 IS NULL)
+                                <> (snapshot.wealth_index_method50 IS NULL)
+                            OR (snapshot.wealth_index_method50 IS NULL)
+                                <> (snapshot.peak_wealth_index_method50 IS NULL)
+                            OR (snapshot.peak_wealth_index_method50 IS NULL)
+                                <> (snapshot.drawdown_method50 IS NULL)
+                            OR (
+                                snapshot.subperiod_twr_method50 IS NOT NULL
+                                AND (
+                                    snapshot.subperiod_twr_method50
+                                        <> calculation_registry.round_significant_half_even(
+                                            snapshot.subperiod_twr_method50,
+                                            50
+                                        )
+                                    OR snapshot.subperiod_twr_published IS DISTINCT FROM
+                                        calculation_registry.round_half_even(
+                                            snapshot.subperiod_twr_method50,
+                                            18
+                                        )
+                                )
+                            )
+                            OR (
+                                snapshot.cumulative_twr_method50 IS NOT NULL
+                                AND (
+                                    snapshot.wealth_index_method50 IS NULL
+                                    OR snapshot.peak_wealth_index_method50 IS NULL
+                                    OR snapshot.drawdown_method50 IS NULL
+                                    OR snapshot.wealth_index_method50 < 0
+                                    OR snapshot.peak_wealth_index_method50 <= 0
+                                    OR snapshot.peak_wealth_index_method50
+                                        < snapshot.wealth_index_method50
+                                    OR snapshot.wealth_index_method50
+                                        <> calculation_registry.round_significant_half_even(
+                                            snapshot.wealth_index_method50,
+                                            50
+                                        )
+                                    OR snapshot.peak_wealth_index_method50
+                                        <> calculation_registry.round_significant_half_even(
+                                            snapshot.peak_wealth_index_method50,
+                                            50
+                                        )
+                                    OR snapshot.cumulative_twr_method50
+                                        <> calculation_registry.round_significant_half_even(
+                                            snapshot.wealth_index_method50 - 1,
+                                            50
+                                        )
+                                    OR snapshot.drawdown_method50
+                                        <> calculation_registry.round_significant_half_even(
+                                            calculation_registry.round_significant_half_even(
+                                                snapshot.wealth_index_method50
+                                                    - snapshot.peak_wealth_index_method50,
+                                                50
+                                            ) / snapshot.peak_wealth_index_method50,
+                                            50
+                                        )
+                                    OR snapshot.cumulative_twr_published IS DISTINCT FROM
+                                        calculation_registry.round_half_even(
+                                            snapshot.cumulative_twr_method50,
+                                            18
+                                        )
+                                    OR snapshot.wealth_index_published IS DISTINCT FROM
+                                        calculation_registry.round_half_even(
+                                            snapshot.wealth_index_method50,
+                                            18
+                                        )
+                                    OR snapshot.peak_wealth_index_published IS DISTINCT FROM
+                                        calculation_registry.round_half_even(
+                                            snapshot.peak_wealth_index_method50,
+                                            18
+                                        )
+                                    OR snapshot.drawdown_published IS DISTINCT FROM
+                                        calculation_registry.round_half_even(
+                                            snapshot.drawdown_method50,
+                                            18
+                                        )
+                                )
+                            )
+                            OR (
+                                NOT (
+                                    (
+                                        snapshot.calculation_status = 'calculated'
+                                        AND snapshot.return_chain_status = 'active'
+                                        AND snapshot.subperiod_twr_method50 IS NOT NULL
+                                        AND snapshot.cumulative_twr_method50 IS NOT NULL
+                                        AND snapshot.wealth_index_method50 IS NOT NULL
+                                        AND snapshot.peak_wealth_index_method50 IS NOT NULL
+                                        AND snapshot.drawdown_method50 IS NOT NULL
+                                        AND snapshot.return_period_start_date IS NOT NULL
+                                        AND snapshot.return_period_end_date IS NOT NULL
+                                        AND snapshot.return_period_day_count IS NOT NULL
+                                    ) OR (
+                                        snapshot.calculation_status = 'reanchored'
+                                        AND snapshot.return_chain_status = 'reanchor'
+                                        AND snapshot.subperiod_twr_method50 IS NULL
+                                        AND snapshot.wealth_chain_rounding_adjustment_exact IS NULL
+                                        AND snapshot.cumulative_twr_method50 IS NOT NULL
+                                        AND snapshot.cumulative_twr_method50 = 0
+                                        AND snapshot.wealth_index_method50 IS NOT NULL
+                                        AND snapshot.wealth_index_method50 = 1
+                                        AND snapshot.peak_wealth_index_method50 IS NOT NULL
+                                        AND snapshot.peak_wealth_index_method50 = 1
+                                        AND snapshot.drawdown_method50 IS NOT NULL
+                                        AND snapshot.drawdown_method50 = 0
+                                        AND snapshot.reliable_anchor_date IS NOT NULL
+                                        AND snapshot.reliable_anchor_nav_exact IS NOT NULL
+                                        AND snapshot.reliable_anchor_nav IS NOT NULL
+                                        AND snapshot.return_period_start_date IS NULL
+                                        AND snapshot.return_period_end_date IS NULL
+                                        AND snapshot.return_period_day_count IS NULL
+                                    ) OR (
+                                        snapshot.calculation_status = 'broken'
+                                        AND snapshot.return_chain_status = 'broken'
+                                        AND snapshot.subperiod_twr_method50 IS NULL
+                                        AND snapshot.cumulative_twr_method50 IS NULL
+                                        AND snapshot.wealth_index_method50 IS NULL
+                                        AND snapshot.peak_wealth_index_method50 IS NULL
+                                        AND snapshot.drawdown_method50 IS NULL
+                                        AND snapshot.wealth_chain_rounding_adjustment_exact IS NULL
+                                        AND snapshot.return_period_start_date IS NULL
+                                        AND snapshot.return_period_end_date IS NULL
+                                        AND snapshot.return_period_day_count IS NULL
+                                    ) OR (
+                                        snapshot.calculation_status
+                                            = 'no_new_valuation'
+                                        AND snapshot.return_chain_status = 'no_new_valuation'
+                                        AND snapshot.subperiod_twr_method50 IS NULL
+                                        AND snapshot.wealth_chain_rounding_adjustment_exact IS NULL
+                                        AND snapshot.return_period_start_date IS NULL
+                                        AND snapshot.return_period_end_date IS NULL
+                                        AND snapshot.return_period_day_count IS NULL
+                                        AND (
+                                            (
+                                                snapshot.reliable_anchor_date IS NULL
+                                                AND snapshot.reliable_anchor_nav_exact IS NULL
+                                                AND snapshot.reliable_anchor_nav IS NULL
+                                                AND snapshot.cumulative_twr_method50 IS NULL
+                                            ) OR (
+                                                snapshot.reliable_anchor_date IS NOT NULL
+                                                AND snapshot.reliable_anchor_nav_exact IS NOT NULL
+                                                AND snapshot.reliable_anchor_nav IS NOT NULL
+                                                AND snapshot.cumulative_twr_method50 IS NOT NULL
+                                                AND snapshot.wealth_index_method50 > 0
+                                            )
+                                        )
+                                    )
+                                )
+                            )
                           )
                     """,
                     detail=(
-                        "Cumulative TWR and drawdown must remain unavailable from the "
-                        "first broken valuation/flow boundary; later fresh observations "
-                        "may only support a newly requested post-reanchor window."
+                        "Current method50 TWR evidence must stay inside the simple-return "
+                        "domain and close method/published values, wealth-chain shape, "
+                        "peak wealth, cumulative return and drawdown without binary-float "
+                        "recomputation."
                     ),
                 )
             )
-
-            checks.append(
-                _count_check(
-                    cursor,
-                    name="portfolio_twr_output_completeness",
-                    query="""
-                        WITH eligible AS (
-                            SELECT
-                                portfolio_id,
-                                as_of_date,
-                                cumulative_twr,
-                                exp(sum(ln(1 + daily_twr)) OVER (
-                                    PARTITION BY portfolio_id
-                                    ORDER BY as_of_date
-                                    ROWS UNBOUNDED PRECEDING
-                                )) - 1 AS recomputed_twr
-                            FROM portfolio.portfolio_daily_snapshot
-                            WHERE daily_twr IS NOT NULL
-                              AND daily_twr > -1
-                              AND daily_twr::text NOT IN (
-                                  'NaN', 'Infinity', '-Infinity'
-                              )
-                        )
-                        SELECT count(*)
-                        FROM eligible
-                        WHERE cumulative_twr IS NULL
-                           OR cumulative_twr::text IN (
-                                'NaN', 'Infinity', '-Infinity'
-                              )
-                           OR recomputed_twr IS NULL
-                    """,
-                    detail=(
-                        "Every eligible daily return observation must produce a finite "
-                        "stored cumulative TWR; aggregate max-error checks must not pass "
-                        "by ignoring NULL outputs."
-                    ),
-                )
-            )
-
-            max_twr_error = float(
-                _scalar(
-                    cursor,
-                    """
-                    WITH linked AS (
-                        SELECT
-                            portfolio_id,
-                            cumulative_twr,
-                            exp(sum(ln(1 + daily_twr)) OVER (
-                                PARTITION BY portfolio_id
-                                ORDER BY as_of_date
-                                ROWS UNBOUNDED PRECEDING
-                            )) - 1 AS recomputed_twr
-                        FROM portfolio.portfolio_daily_snapshot
-                        WHERE daily_twr IS NOT NULL
-                          AND daily_twr > -1
-                          AND daily_twr::text NOT IN (
-                              'NaN', 'Infinity', '-Infinity'
-                          )
-                    )
-                    SELECT coalesce(max(abs(cumulative_twr - recomputed_twr)), 0)
-                    FROM linked
-                    """,
-                )
-                or 0.0
-            )
-            checks.append(
-                AuditCheck(
-                    name="portfolio_twr_geometric_link",
-                    status="pass" if max_twr_error <= 1e-12 else "fail",
-                    value=max_twr_error,
-                    limit=1e-12,
-                    detail="Stored cumulative TWR must equal the geometric link of daily TWR.",
-                )
-            )
-
-            checks.append(
-                _count_check(
-                    cursor,
-                    name="portfolio_drawdown_output_completeness",
-                    query="""
-                        SELECT count(*)
-                        FROM portfolio.portfolio_daily_snapshot
-                        WHERE (cumulative_twr IS NULL) <> (drawdown IS NULL)
-                           OR drawdown::text IN (
-                                'NaN', 'Infinity', '-Infinity'
-                              )
-                    """,
-                    detail=(
-                        "Drawdown availability must exactly follow cumulative TWR "
-                        "availability and every stored drawdown must be finite."
-                    ),
-                )
-            )
-
-            max_drawdown_error = float(
-                _scalar(
-                    cursor,
-                    """
-                    WITH wealth AS (
-                        SELECT
-                            portfolio_id,
-                            as_of_date,
-                            drawdown,
-                            1 + cumulative_twr AS wealth_index,
-                            max(1 + cumulative_twr) OVER (
-                                PARTITION BY portfolio_id
-                                ORDER BY as_of_date
-                                ROWS UNBOUNDED PRECEDING
-                            ) AS peak_index
-                        FROM portfolio.portfolio_daily_snapshot
-                        WHERE cumulative_twr IS NOT NULL
-                    )
-                    SELECT coalesce(max(abs(
-                        drawdown - (wealth_index / peak_index - 1)
-                    )), 0)
-                    FROM wealth
-                    """,
-                )
-                or 0.0
-            )
-            checks.append(
-                AuditCheck(
-                    name="portfolio_drawdown_from_twr",
-                    status="pass" if max_drawdown_error <= 1e-12 else "fail",
-                    value=max_drawdown_error,
-                    limit=1e-12,
-                    detail="Drawdown must be derived from the TWR wealth index, not asset NAV.",
-                )
-            )
-
-            valuation_mismatches = int(
-                _scalar(
-                    cursor,
-                    """
-                    WITH holdings AS (
-                        SELECT
-                            snapshot.*,
-                            snapshot.holding_json ->> 'quote_basis' AS quote_basis
-                        FROM portfolio.portfolio_daily_holding_snapshot snapshot
-                        WHERE snapshot.instrument_id NOT LIKE 'cash:%'
-                    )
-                    SELECT count(*)
-                    FROM holdings
-                    LEFT JOIN LATERAL (
-                        SELECT CASE
-                            WHEN revision.status = 'complete'
-                             AND revision.value IS NOT NULL
-                            THEN revision.value::double precision
-                            ELSE NULL
-                        END AS expected_price
-                        FROM instrument_registry.quote_series series
-                        JOIN instrument_registry.quote_observation observation
-                          USING (quote_series_id)
-                        JOIN instrument_registry.quote_observation_revision revision
-                          USING (observation_id)
-                        WHERE series.instrument_id = holdings.instrument_id
-                          AND series.quote_basis = holdings.quote_basis
-                          AND series.currency = holdings.currency
-                          AND observation.as_of_date <= holdings.as_of_date
-                          AND revision.is_current
-                        ORDER BY observation.as_of_date DESC
-                        LIMIT 1
-                    ) selected_quote ON true
-                    WHERE selected_quote.expected_price IS NULL
-                       OR abs(holdings.last_price - selected_quote.expected_price) > 1e-10
-                    """,
-                )
-                or 0
-            )
-            checks.append(
-                AuditCheck(
-                    name="portfolio_valuation_quote_match",
-                    status="pass" if valuation_mismatches == 0 else "fail",
-                    value=valuation_mismatches,
-                    limit=0,
-                    detail="Holding valuation must match its declared unadjusted valuation basis.",
-                )
-            )
-
             checks.append(
                 _count_check(
                     cursor,
@@ -3625,20 +3520,30 @@ def run_audit(database_url: str) -> list[AuditCheck]:
                     cursor,
                     name="current_unassigned_taxonomy_holdings",
                     query="""
-                        WITH latest AS (
-                            SELECT portfolio_id, max(as_of_date) AS as_of_date
-                            FROM portfolio.portfolio_daily_snapshot
-                            GROUP BY portfolio_id
-                        ), current_holdings AS (
+                        WITH current_holdings AS (
                             SELECT DISTINCT
                                 holding.portfolio_id,
-                                holding.instrument_id,
-                                latest.as_of_date
-                            FROM portfolio.portfolio_daily_holding_snapshot holding
-                            JOIN latest
-                              ON latest.portfolio_id = holding.portfolio_id
-                             AND latest.as_of_date = holding.as_of_date
-                            WHERE holding.instrument_id NOT LIKE 'cash:%'
+                                holding.instrument_id
+                            FROM calculation_registry.calculation_current_publication current
+                            JOIN calculation_registry.calculation_publication publication
+                              ON publication.publication_id = current.publication_id
+                             AND publication.calculation_kind = current.calculation_kind
+                             AND publication.scope_kind = current.scope_kind
+                             AND publication.scope_id = current.scope_id
+                            JOIN portfolio.portfolio_daily_holding_output holding
+                              ON holding.run_id = publication.run_id
+                             AND holding.output_fencing_token = publication.published_fencing_token
+                             AND holding.portfolio_id = current.scope_id
+                            WHERE current.calculation_kind = 'portfolio_daily'
+                              AND current.scope_kind = 'portfolio'
+                              AND holding.as_of_date = (
+                                SELECT max(snapshot.as_of_date)
+                                FROM portfolio.portfolio_daily_snapshot_output snapshot
+                                WHERE snapshot.run_id = publication.run_id
+                                  AND snapshot.output_fencing_token = publication.published_fencing_token
+                                  AND snapshot.portfolio_id = current.scope_id
+                              )
+                              AND holding.quantity_exact <> 0
                         ), tracked_taxonomies AS (
                             SELECT taxonomy_id, portfolio_id
                             FROM portfolio.taxonomy_record

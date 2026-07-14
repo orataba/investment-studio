@@ -10,10 +10,6 @@ EMPTY_STORE = shared_store.EMPTY_STORE
 _normalize_store = shared_store._normalize_store
 
 
-def reset_store(data: dict[str, object] | None = None) -> None:
-    shared_store.reset_store(get_session_factory(), data)
-
-
 def list_instruments(
     *,
     search: str | None = None,
@@ -92,7 +88,7 @@ def upsert_market_data(
     metric_family: str,
     quote_basis: str,
     as_of_date,
-    value: str,
+    value: object,
     currency: str,
     source_ref: str | None,
     status: str,

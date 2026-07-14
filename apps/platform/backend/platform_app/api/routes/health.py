@@ -1,36 +1,30 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Response, status
+from sqlalchemy.orm import Session
 
 from platform_app.core.settings import get_settings
+from platform_app.db.session import get_db_session
+from platform_app.services.readiness import check_platform_readiness
 
 
 router = APIRouter()
 
 
 @router.get("/health")
-def get_health() -> dict[str, object]:
+def get_health() -> dict[str, str]:
     settings = get_settings()
-    missing_email_settings: list[str] = []
-    if not settings.email_imap_host:
-        missing_email_settings.append("PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_HOST")
-    if not settings.email_imap_username:
-        missing_email_settings.append("PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_USERNAME")
-    if not settings.email_imap_password:
-        missing_email_settings.append("PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD")
-
     return {
         "status": "ok",
         "app": settings.app_name,
         "environment": settings.environment,
-        "email_sync": {
-            "enabled": settings.email_sync_enabled,
-            "ready": settings.email_sync_enabled and settings.email_sync_ready,
-            "imap_folder": settings.email_imap_folder,
-            "imap_use_ssl": settings.email_imap_use_ssl,
-            "max_messages": settings.email_imap_max_messages,
-            "missing_required_settings": missing_email_settings,
-        },
-        "tushare_sync": {
-            "ready": settings.tushare_ready,
-            "api_url": settings.tushare_api_url,
-        },
     }
+
+
+@router.get("/readiness")
+def get_readiness(
+    response: Response,
+    session: Session = Depends(get_db_session),
+) -> dict[str, object]:
+    report = check_platform_readiness(session, get_settings())
+    if not report.ready:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return report.as_dict()

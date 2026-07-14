@@ -64,9 +64,9 @@ Portfolio integration test 已验证同一 HKD cash calculation 从 5 个快照�
 - 外部现金流日无法可靠换算时，TWR link 断开；
 - 历史 FX 归因不完整时，currency-gain 与依赖它的 total P&L 保持 null。
 
-fair-value NAV coverage、book P&L coverage 与 TWR reliability 是三个不同状态。migration `20260713_0034` 已以 breaking schema change 删除旧的 mixed `coverage_state`，snapshot / contribution slice 分别持久化 `nav_coverage_*` 与 `book_pnl_coverage_*`；旧派生行必须失效重建，不存在运行时 compatibility translation。
+fair-value NAV coverage、book P&L coverage 与 TWR reliability 是三个不同状态。Portfolio Daily exact output 分别保存对应 coverage/reason contract；旧 materialization 已由 `0039` 删除，不存在 runtime compatibility translation。
 
-每个 daily snapshot 还保存 locked FX dependency manifest 与 fingerprint。manifest 按 currency pair 记录 canonical identity/direct/inverse/USD-cross source legs、revision/payload lineage 和 consumer policy；相同事实窗口必须产生相同 fingerprint，任何 source revision 或路径变化都会改变 fingerprint。该 lineage 只证明本次计算依赖，不把 unavailable FX 伪造成 resolved。
+每个 sealed run 的 typed input manifest 按 currency pair 保存 canonical identity/direct/inverse/cross path、逐 leg observation/revision/payload lineage、effective rate、derivation residual 与 consumer policy；相同事实窗口必须产生相同 canonical manifest hash，任何 source revision 或路径变化都会改变 hash。该 lineage 只证明本次计算依赖，不把 unavailable FX 伪造成 resolved。
 
 ## 验证
 
@@ -74,5 +74,5 @@ fair-value NAV coverage、book P&L coverage 与 TWR reliability 是三个不同�
 uv run --project apps/portfolio/backend --extra test pytest -q \
   apps/portfolio/backend/tests/test_canonical_fx_foundation.py \
   apps/portfolio/backend/tests/test_ledger_read_performance.py \
-  apps/portfolio/backend/tests/test_performance_kernel.py
+  apps/portfolio/backend/tests/test_portfolio_daily_capture_fx.py
 ```

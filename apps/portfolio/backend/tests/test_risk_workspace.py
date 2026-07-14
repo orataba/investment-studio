@@ -2,13 +2,20 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from datetime import date
+from decimal import Decimal
+from uuid import UUID
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from portfolio_app.api.contracts import RiskWorkspaceErrorRecord, RiskWorkspaceResponse
 from portfolio_app.services import risk_workspace
-from portfolio_app.services.research_solver import ResearchMarketDataError
+from portfolio_app.services.published_holdings import (
+    PublishedHoldingPosition,
+    PublishedHoldingsStatement,
+)
+from portfolio_app.services.portfolio_market_data import PortfolioMarketDataError
 from portfolio_app.services.risk_model import portfolio_risk_model_snapshot
 
 
@@ -23,7 +30,12 @@ def _nav_series(pattern: str) -> pd.Series:
     return pd.Series(values, index=pd.Index(dates, dtype="object"), dtype="float64")
 
 
-def _install_workspace_facts(monkeypatch, *, include_second_assignment: bool = True):
+def _install_workspace_facts(
+    monkeypatch,
+    *,
+    include_second_assignment: bool = True,
+    operating_profile: str = "standard_taxonomy",
+):
     monkeypatch.setattr(
         risk_workspace,
         "get_portfolio",
@@ -31,6 +43,7 @@ def _install_workspace_facts(monkeypatch, *, include_second_assignment: bool = T
             "portfolio_id": "portfolio-1",
             "portfolio_name": "Portfolio 1",
             "base_currency": "CNY",
+            "operating_profile": operating_profile,
             "default_planning_taxonomy_id": "tax-1",
             "risk_policy_json": {
                 "covariance_model_id": "sample_covariance",
@@ -41,32 +54,60 @@ def _install_workspace_facts(monkeypatch, *, include_second_assignment: bool = T
             },
         },
     )
-    monkeypatch.setattr(risk_workspace, "list_accounts", lambda _portfolio_id: [])
-    monkeypatch.setattr(risk_workspace, "list_transactions", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         risk_workspace,
-        "build_holdings_report",
-        lambda *_args, **_kwargs: {
-            "positions": [
-                {
-                    "instrument_id": "instrument-a",
-                    "instrument_ref": {"instrument_name": "Instrument A", "instrument_type": "fund"},
-                    "market_value_base": 600.0,
-                    "portfolio_weight": 0.6,
-                },
-                {
-                    "instrument_id": "instrument-b",
-                    "instrument_ref": {"instrument_name": "Instrument B", "instrument_type": "fund"},
-                    "market_value_base": 400.0,
-                    "portfolio_weight": 0.4,
-                },
-            ]
-        },
-    )
-    monkeypatch.setattr(
-        risk_workspace,
-        "build_account_workspace",
-        lambda *_args, **_kwargs: {"accounts": []},
+        "read_current_published_holdings",
+        lambda *_args, **_kwargs: PublishedHoldingsStatement(
+            portfolio_id="portfolio-1",
+            base_currency="CNY",
+            valuation_timezone="Asia/Shanghai",
+            as_of_date=date(2026, 6, 30),
+            publication_id=UUID("00000000-0000-0000-0000-000000000001"),
+            run_id=UUID("00000000-0000-0000-0000-000000000002"),
+            manifest_id=UUID("00000000-0000-0000-0000-000000000003"),
+            captured_generation=1,
+            positions=(
+                PublishedHoldingPosition(
+                    instrument_id="instrument-a",
+                    instrument_name="Instrument A",
+                    instrument_type="fund",
+                    currency="CNY",
+                    quantity_exact=Decimal("6"),
+                    adopted_price_exact=Decimal("100"),
+                    market_value_local_exact=Decimal("600"),
+                    market_value_base_exact=Decimal("600"),
+                    cost_basis_local_exact=Decimal("500"),
+                    cost_basis_base_exact=Decimal("500"),
+                    portfolio_weight=Decimal("0.6"),
+                    account_ids=("account-1",),
+                    valuation_coverage_state="complete",
+                    valuation_reason_codes=(),
+                ),
+                PublishedHoldingPosition(
+                    instrument_id="instrument-b",
+                    instrument_name="Instrument B",
+                    instrument_type="fund",
+                    currency="CNY",
+                    quantity_exact=Decimal("4"),
+                    adopted_price_exact=Decimal("100"),
+                    market_value_local_exact=Decimal("400"),
+                    market_value_base_exact=Decimal("400"),
+                    cost_basis_local_exact=Decimal("350"),
+                    cost_basis_base_exact=Decimal("350"),
+                    portfolio_weight=Decimal("0.4"),
+                    account_ids=("account-1",),
+                    valuation_coverage_state="complete",
+                    valuation_reason_codes=(),
+                ),
+            ),
+            cash_accounts=(),
+            position_market_value_base_exact=Decimal("1000"),
+            settled_cash_base_exact=Decimal("0"),
+            pending_settlement_base_exact=Decimal("0"),
+            total_nav_base=Decimal("1000"),
+            nav_coverage_state="complete",
+            nav_reason_codes=(),
+        ),
     )
     monkeypatch.setattr(
         risk_workspace,
@@ -74,12 +115,18 @@ def _install_workspace_facts(monkeypatch, *, include_second_assignment: bool = T
         lambda _portfolio_id: [
             {
                 "instrument_id": "instrument-a",
-                "instrument_ref": {"instrument_name": "Instrument A", "instrument_type": "fund"},
+                "instrument_ref": {
+                    "instrument_name": "Instrument A",
+                    "instrument_type": "fund",
+                },
                 "status": "active",
             },
             {
                 "instrument_id": "instrument-b",
-                "instrument_ref": {"instrument_name": "Instrument B", "instrument_type": "fund"},
+                "instrument_ref": {
+                    "instrument_name": "Instrument B",
+                    "instrument_type": "fund",
+                },
                 "status": "active",
             },
         ],
@@ -138,7 +185,11 @@ def _install_workspace_facts(monkeypatch, *, include_second_assignment: bool = T
                 "status": "active",
             }
         )
-    monkeypatch.setattr(risk_workspace, "list_taxonomy_assignments", lambda *_args, **_kwargs: assignments)
+    monkeypatch.setattr(
+        risk_workspace,
+        "list_taxonomy_assignments",
+        lambda *_args, **_kwargs: assignments,
+    )
     monkeypatch.setattr(
         risk_workspace,
         "list_target_sets",
@@ -180,23 +231,29 @@ def _install_workspace_facts(monkeypatch, *, include_second_assignment: bool = T
 
     fake_session = object()
     fake_context = object()
-    monkeypatch.setattr(risk_workspace, "get_session_factory", lambda: lambda: nullcontext(fake_session))
+    monkeypatch.setattr(
+        risk_workspace, "get_session_factory", lambda: lambda: nullcontext(fake_session)
+    )
     lock_calls = []
 
     def fake_lock(session, **kwargs):
         lock_calls.append((session, kwargs))
         return fake_context
 
-    monkeypatch.setattr(risk_workspace, "lock_research_market_data_in_session", fake_lock)
+    monkeypatch.setattr(
+        risk_workspace, "lock_portfolio_market_data_in_session", fake_lock
+    )
 
     def fake_nav(context, *, instrument_id, **_kwargs):
         assert context is fake_context
         return _nav_series("a" if instrument_id == "instrument-a" else "b"), []
 
-    monkeypatch.setattr(risk_workspace, "build_canonical_total_return_nav_series", fake_nav)
+    monkeypatch.setattr(
+        risk_workspace, "build_canonical_total_return_nav_series", fake_nav
+    )
     monkeypatch.setattr(
         risk_workspace,
-        "research_market_data_manifest",
+        "portfolio_market_data_manifest",
         lambda context: {
             "policy_version": "test-policy",
             "base_currency": "CNY",
@@ -210,6 +267,7 @@ def _install_workspace_facts(monkeypatch, *, include_second_assignment: bool = T
     return fake_session, lock_calls
 
 
+@pytest.mark.no_database
 def test_risk_workspace_is_backend_authoritative_and_contract_valid(monkeypatch):
     fake_session, lock_calls = _install_workspace_facts(monkeypatch)
 
@@ -222,21 +280,32 @@ def test_risk_workspace_is_backend_authoritative_and_contract_valid(monkeypatch)
     response = RiskWorkspaceResponse.model_validate(payload)
 
     assert response.status == "ready"
+    assert response.operating_profile == "standard_taxonomy"
+    assert response.planning_taxonomy is not None
+    assert response.planning_taxonomy.taxonomy_id == "tax-1"
     assert response.rolling.status == "ready"
     assert response.rolling.portfolio_volatility_points
     assert response.matrix.status == "ready"
     assert len(response.matrix.groups) == 2
     assert response.risk_contribution.status == "ready"
     assert len(response.risk_contribution.rows) == 2
-    assert response.drift.status == "ready"
-    assert len(response.drift.weight_rows) == 2
+    assert {row.group_key for row in response.risk_contribution.rows} == {
+        "node-a",
+        "node-b",
+    }
+    assert response.allocation_policy_drift.status == "ready"
+    assert len(response.allocation_policy_drift.weight_rows) == 2
     assert response.coverage.market_data_role == "total_return"
-    assert response.calculation_lineage["engine_version"] == risk_workspace.RISK_WORKSPACE_ENGINE_VERSION
+    assert (
+        response.calculation_lineage["engine_version"]
+        == risk_workspace.RISK_WORKSPACE_ENGINE_VERSION
+    )
     assert len(lock_calls) == 1
     assert lock_calls[0][0] is fake_session
     assert lock_calls[0][1]["instrument_ids"] == ["instrument-a", "instrument-b"]
 
 
+@pytest.mark.no_database
 def test_risk_workspace_fails_taxonomy_sections_closed_without_assignment(monkeypatch):
     _install_workspace_facts(monkeypatch, include_second_assignment=False)
 
@@ -253,10 +322,77 @@ def test_risk_workspace_fails_taxonomy_sections_closed_without_assignment(monkey
     assert response.rolling.status == "ready"
     assert response.matrix.status == "ready"
     assert response.risk_contribution.status == "unavailable"
-    assert response.drift.status == "unavailable"
-    assert any("instrument-b" in error.message for error in response.risk_contribution.errors)
+    assert response.allocation_policy_drift.status == "unavailable"
+    assert any(
+        "instrument-b" in error.message for error in response.risk_contribution.errors
+    )
 
 
+@pytest.mark.no_database
+def test_external_etf_rotation_risk_is_instrument_scoped_without_taxonomy_dependencies(
+    monkeypatch,
+):
+    _install_workspace_facts(
+        monkeypatch,
+        operating_profile="external_etf_rotation",
+    )
+
+    def unexpected_taxonomy_dependency(*_args, **_kwargs):
+        raise AssertionError(
+            "external ETF rotation must not read allocation taxonomy facts"
+        )
+
+    for dependency_name in (
+        "list_taxonomies",
+        "list_taxonomy_nodes",
+        "list_taxonomy_assignments",
+        "list_target_sets",
+        "list_target_set_lines",
+    ):
+        monkeypatch.setattr(
+            risk_workspace,
+            dependency_name,
+            unexpected_taxonomy_dependency,
+        )
+
+    response = RiskWorkspaceResponse.model_validate(
+        risk_workspace.build_risk_workspace(
+            "portfolio-1",
+            as_of_date=date(2026, 6, 30),
+            rolling_lookback_days=30,
+            matrix_lookback_days=30,
+        )
+    )
+
+    assert response.status == "ready"
+    assert response.operating_profile == "external_etf_rotation"
+    assert response.planning_taxonomy is None
+    assert [option.model_dump() for option in response.matrix_scope_options] == [
+        {
+            "value": risk_workspace.ALL_INSTRUMENTS_SCOPE,
+            "label": "All Instruments",
+            "kind": "instrument",
+        }
+    ]
+    assert response.risk_contribution.status == "ready"
+    assert {row.group_key for row in response.risk_contribution.rows} == {
+        "instrument-a",
+        "instrument-b",
+    }
+    assert response.allocation_policy_drift.status == "not_applicable"
+    assert response.allocation_policy_drift.weight_rows == []
+    assert response.allocation_policy_drift.risk_rows == []
+    assert (
+        response.calculation_lineage["planning_taxonomy_basis"]
+        == "not_applicable_external_etf_rotation"
+    )
+    assert (
+        response.calculation_lineage["taxonomy_group_return_weighting"]
+        == "not_applicable_external_etf_rotation"
+    )
+
+
+@pytest.mark.no_database
 def test_risk_workspace_rejects_future_matrix_boundary():
     try:
         risk_workspace.build_risk_workspace(
@@ -289,10 +425,14 @@ def test_risk_workspace_api_requires_explicit_as_of_and_returns_lineage(client):
     payload = response.json()
     assert payload["as_of_date"] == "2026-04-15"
     assert payload["coverage"]["market_data_role"] == "total_return"
-    assert payload["calculation_lineage"]["engine_version"] == risk_workspace.RISK_WORKSPACE_ENGINE_VERSION
+    assert (
+        payload["calculation_lineage"]["engine_version"]
+        == risk_workspace.RISK_WORKSPACE_ENGINE_VERSION
+    )
     assert payload["data_lineage"]["policy_version"]
 
 
+@pytest.mark.no_database
 def test_explicit_matrix_date_survives_deterministic_option_sampling():
     dates = pd.bdate_range("2023-01-02", periods=600).date
     index = np.arange(len(dates), dtype="float64")
@@ -319,9 +459,7 @@ def test_explicit_matrix_date_survives_deterministic_option_sampling():
         risk_policy=policy,
     )
     requested_date = next(
-        item
-        for item in dates[60:-1]
-        if item not in set(sampled_dates)
+        item for item in dates[60:-1] if item not in set(sampled_dates)
     )
 
     section = risk_workspace._build_matrix_section(
@@ -339,9 +477,12 @@ def test_explicit_matrix_date_survives_deterministic_option_sampling():
     assert section["status"] == "ready"
     assert section["as_of_date"] == requested_date.isoformat()
     assert requested_date.isoformat() in section["available_as_of_dates"]
-    assert len(section["available_as_of_dates"]) <= risk_workspace.MAX_MATRIX_AS_OF_OPTIONS
+    assert (
+        len(section["available_as_of_dates"]) <= risk_workspace.MAX_MATRIX_AS_OF_OPTIONS
+    )
 
 
+@pytest.mark.no_database
 def test_canonical_market_data_error_keeps_auditable_dependency():
     dependency = {
         "policy_version": "canonical-total-return-v1",
@@ -349,7 +490,7 @@ def test_canonical_market_data_error_keeps_auditable_dependency():
         "quote_revision_id": "revision-1",
     }
     payload = risk_workspace._exception_error(
-        ResearchMarketDataError(
+        PortfolioMarketDataError(
             "Canonical total-return dependency is unavailable.",
             reason_codes=["missing_quote_series"],
             dependency=dependency,

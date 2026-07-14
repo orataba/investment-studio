@@ -60,7 +60,7 @@ _DECIMAL_SCALES = {
     "price": 12,
     "gross_amount": 8,
     "counter_amount": 8,
-    "fx_rate": 18,
+    "quoted_fx_rate": 18,
     "fees": 8,
     "taxes": 8,
 }
@@ -82,9 +82,18 @@ _OPTIONAL_FACT_FIELDS = (
     "price",
     "gross_amount",
     "counter_amount",
-    "fx_rate",
+    "quoted_fx_rate",
     "fees",
     "taxes",
+    "consideration_basis",
+    "numeric_scale_state",
+    "quantity_input_scale",
+    "price_input_scale",
+    "gross_amount_input_scale",
+    "counter_amount_input_scale",
+    "quoted_fx_rate_input_scale",
+    "fees_input_scale",
+    "taxes_input_scale",
     "currency",
     "transfer_scope",
     "transfer_object_type",
@@ -92,6 +101,55 @@ _OPTIONAL_FACT_FIELDS = (
     "counterparty_account_id",
     "note",
 )
+
+
+def _logical_numeric_domain(
+    column_name: str,
+    *,
+    precision: int,
+    scale: int,
+) -> str:
+    """CHECK equivalent to NUMERIC(p,s), without typmod pre-rounding."""
+
+    integer_digits = precision - scale
+    return (
+        f"({column_name} IS NULL OR ("
+        f"{column_name}::text NOT IN ('NaN', 'Infinity', '-Infinity') "
+        f"AND abs({column_name}) < 1e{integer_digits} "
+        f"AND {column_name} = trunc({column_name}, {scale})))"
+    )
+
+
+def _all_logical_numeric_domains(
+    column_names: tuple[str, ...],
+    *,
+    precision: int,
+    scale: int,
+) -> str:
+    return " AND ".join(
+        _logical_numeric_domain(
+            column_name,
+            precision=precision,
+            scale=scale,
+        )
+        for column_name in column_names
+    )
+
+
+def _all_values_fit_declared_input_scale(
+    column_names: tuple[str, ...],
+) -> str:
+    return " AND ".join(
+        f"({column_name} IS NULL OR {column_name} = "
+        f"trunc({column_name}, {column_name}_input_scale))"
+        for column_name in column_names
+    )
+
+
+def _exact_numeric_storage(*, scale: int) -> sa.Numeric:
+    """Preserve SQLite Decimal adapters while PostgreSQL sees raw NUMERIC."""
+
+    return sa.Numeric().with_variant(sa.Numeric(38, scale), "sqlite")
 
 
 def _utc_now() -> datetime:
@@ -176,6 +234,34 @@ def _timestamp_value(value: object, *, field: str, transaction_id: str) -> datet
     return parsed.astimezone(UTC)
 
 
+def _canonical_decimal_string(value: Decimal) -> str:
+    if value.is_zero():
+        return "0"
+    sign, digits, exponent = value.as_tuple()
+    normalized_digits = list(digits)
+    while normalized_digits and normalized_digits[-1] == 0:
+        normalized_digits.pop()
+        exponent += 1
+    coefficient = "".join(str(digit) for digit in normalized_digits) or "0"
+    if exponent >= 0:
+        rendered = coefficient + ("0" * exponent)
+    else:
+        split_at = len(coefficient) + exponent
+        rendered = (
+            f"{coefficient[:split_at]}.{coefficient[split_at:]}"
+            if split_at > 0
+            else f"0.{('0' * -split_at)}{coefficient}"
+        )
+    return f"-{rendered}" if sign else rendered
+
+
+def _inferred_input_scale(value: Decimal | None) -> int | None:
+    if value is None:
+        return None
+    canonical = Decimal(_canonical_decimal_string(value))
+    return max(-canonical.as_tuple().exponent, 0)
+
+
 def _decimal_value(
     value: object,
     *,
@@ -210,7 +296,7 @@ def _decimal_value(
     integer_digits = 1 if quantized == 0 else max(1, quantized.copy_abs().adjusted() + 1)
     if integer_digits > precision - scale:
         raise RuntimeError(f"{transaction_id}: {field} exceeds NUMERIC({precision},{scale}).")
-    return quantized
+    return Decimal(_canonical_decimal_string(quantized))
 
 
 def _json_object(value: object, *, transaction_id: str) -> dict[str, object] | None:
@@ -230,7 +316,7 @@ def _canonical_value(value: object, *, field_name: str) -> object:
     if value is None or isinstance(value, (str, bool, int, float, list, dict)):
         return value
     if isinstance(value, Decimal):
-        return format(value, f".{_DECIMAL_SCALES[field_name]}f")
+        return _canonical_decimal_string(value)
     if isinstance(value, datetime):
         if value.tzinfo is None:
             value = value.replace(tzinfo=UTC)
@@ -329,7 +415,7 @@ def _normalize_legacy_row(
         "price": _decimal_value(row["price"], field="price", transaction_id=transaction_id, precision=38, scale=12, normalizations=normalizations),
         "gross_amount": _decimal_value(row["gross_amount"], field="gross_amount", transaction_id=transaction_id, precision=38, scale=8, normalizations=normalizations, required=True),
         "counter_amount": _decimal_value(row["counter_amount"], field="counter_amount", transaction_id=transaction_id, precision=38, scale=8, normalizations=normalizations),
-        "fx_rate": _decimal_value(row["fx_rate"], field="fx_rate", transaction_id=transaction_id, precision=38, scale=18, normalizations=normalizations),
+        "quoted_fx_rate": _decimal_value(row["fx_rate"], field="quoted_fx_rate", transaction_id=transaction_id, precision=38, scale=18, normalizations=normalizations),
         "fees": _decimal_value(row["fees"], field="fees", transaction_id=transaction_id, precision=38, scale=8, normalizations=normalizations, required=True),
         "taxes": _decimal_value(row["taxes"], field="taxes", transaction_id=transaction_id, precision=38, scale=8, normalizations=normalizations, required=True),
         "currency": currency,
@@ -341,6 +427,22 @@ def _normalize_legacy_row(
         # byte at the string level instead of trimming or interpreting blanks.
         "note": None if row["note"] is None else str(row["note"]),
     }
+    payload["consideration_basis"] = (
+        "source_reported"
+        if transaction_type in {
+            "buy",
+            "sell",
+            "dividend_reinvestment",
+            "opening_balance",
+        }
+        and instrument_id is not None
+        else None
+    )
+    payload["numeric_scale_state"] = "legacy_inferred"
+    for field_name in _DECIMAL_SCALES:
+        payload[f"{field_name}_input_scale"] = _inferred_input_scale(
+            payload[field_name]  # type: ignore[arg-type]
+        )
     if not payload["trade_timezone"]:
         raise RuntimeError(f"{transaction_id}: missing trade_timezone.")
     return (
@@ -380,7 +482,7 @@ def _validate_normalized_payload(
     price = payload["price"]
     gross_amount = payload["gross_amount"]
     counter_amount = payload["counter_amount"]
-    fx_rate = payload["fx_rate"]
+    quoted_fx_rate = payload["quoted_fx_rate"]
     fees = payload["fees"]
     taxes = payload["taxes"]
     transfer_scope = payload["transfer_scope"]
@@ -438,7 +540,7 @@ def _validate_normalized_payload(
             message="acquisition_date is only valid for a security opening balance.",
         )
 
-    for field_name in ("quantity", "price", "counter_amount", "fx_rate"):
+    for field_name in ("quantity", "price", "counter_amount", "quoted_fx_rate"):
         value = payload[field_name]
         _require_payload(
             value is None or (isinstance(value, Decimal) and value > 0),
@@ -457,6 +559,36 @@ def _validate_normalized_payload(
         transaction_id=transaction_id,
         message="instrument_id and instrument_snapshot_json must be present together.",
     )
+    _require_payload(
+        payload["numeric_scale_state"] == "legacy_inferred",
+        transaction_id=transaction_id,
+        message="baseline numeric_scale_state must be legacy_inferred.",
+    )
+    for field_name, max_scale in _DECIMAL_SCALES.items():
+        value = payload[field_name]
+        input_scale = payload[f"{field_name}_input_scale"]
+        _require_payload(
+            (value is None and input_scale is None)
+            or (
+                isinstance(value, Decimal)
+                and isinstance(input_scale, int)
+                and not isinstance(input_scale, bool)
+                and 0 <= input_scale <= max_scale
+            ),
+            transaction_id=transaction_id,
+            message=f"invalid {field_name}_input_scale pairing.",
+        )
+    uses_consideration = (
+        transaction_type
+        in {"buy", "sell", "dividend_reinvestment", "opening_balance"}
+        and instrument_id is not None
+    )
+    _require_payload(
+        (uses_consideration and payload["consideration_basis"] == "source_reported")
+        or (not uses_consideration and payload["consideration_basis"] is None),
+        transaction_id=transaction_id,
+        message="invalid baseline consideration_basis.",
+    )
 
     is_fx = transaction_type == "fx_conversion"
     is_transfer = transaction_type in _TRANSFER_TYPES
@@ -467,7 +599,6 @@ def _validate_normalized_payload(
             and price is None
             and payload["settlement_cash_account_id"] is None
             and counter_amount is not None
-            and fx_rate is not None
             and counterparty_account_id is not None
             and gross_amount > 0
             and fees == 0
@@ -477,9 +608,9 @@ def _validate_normalized_payload(
         )
     else:
         _require_payload(
-            counter_amount is None and fx_rate is None,
+            counter_amount is None and quoted_fx_rate is None,
             transaction_id=transaction_id,
-            message="counter_amount/fx_rate are only valid for fx_conversion.",
+            message="counter_amount/quoted_fx_rate are only valid for fx_conversion.",
         )
 
     if is_transfer:
@@ -707,6 +838,19 @@ def _preflight_legacy_rows(
         "quantity",
         "price",
         "gross_amount",
+        "counter_amount",
+        "quoted_fx_rate",
+        "fees",
+        "taxes",
+        "consideration_basis",
+        "numeric_scale_state",
+        "quantity_input_scale",
+        "price_input_scale",
+        "gross_amount_input_scale",
+        "counter_amount_input_scale",
+        "quoted_fx_rate_input_scale",
+        "fees_input_scale",
+        "taxes_input_scale",
         "currency",
     )
     for (portfolio_id, transfer_group_id), items in transfer_groups.items():
@@ -774,11 +918,11 @@ def _create_ledger_tables(connection: sa.Connection) -> None:
         sa.Column("created_by", sa.String(), nullable=False),
         sa.CheckConstraint(
             "length(trim(transaction_id)) > 0",
-            name="ck_transaction_identity_record_transaction_id_nonblank",
+            name=op.f("ck_transaction_identity_record_transaction_id_nonblank"),
         ),
         sa.CheckConstraint(
             "length(trim(created_by)) > 0",
-            name="ck_transaction_identity_record_created_by_nonblank",
+            name=op.f("ck_transaction_identity_record_created_by_nonblank"),
         ),
         sa.ForeignKeyConstraint(
             ["portfolio_id"],
@@ -819,31 +963,31 @@ def _create_ledger_tables(connection: sa.Connection) -> None:
         sa.Column("source_ref", sa.String(), nullable=True),
         sa.CheckConstraint(
             "length(trim(revision_group_id)) > 0",
-            name="ck_transaction_revision_group_record_group_id_nonblank",
+            name=op.f("ck_transaction_revision_group_record_group_id_nonblank"),
         ),
         sa.CheckConstraint(
             "source_kind IN ('manual', 'import', 'reconciliation', 'migration', 'system')",
-            name="ck_transaction_revision_group_record_source_kind",
+            name=op.f("ck_transaction_revision_group_record_source_kind"),
         ),
         sa.CheckConstraint(
             "length(trim(change_reason)) > 0",
-            name="ck_transaction_revision_group_record_change_reason_nonblank",
+            name=op.f("ck_transaction_revision_group_record_change_reason_nonblank"),
         ),
         sa.CheckConstraint(
             "actor_type IN ('user', 'service', 'migration')",
-            name="ck_transaction_revision_group_record_actor_type",
+            name=op.f("ck_transaction_revision_group_record_actor_type"),
         ),
         sa.CheckConstraint(
             "length(trim(actor_id)) > 0",
-            name="ck_transaction_revision_group_record_actor_id_nonblank",
+            name=op.f("ck_transaction_revision_group_record_actor_id_nonblank"),
         ),
         sa.CheckConstraint(
             "length(trim(actor_display_name)) > 0",
-            name="ck_transaction_revision_group_record_actor_display_nonblank",
+            name=op.f("ck_transaction_revision_group_record_actor_display_nonblank"),
         ),
         sa.CheckConstraint(
             "length(trim(actor_source)) > 0",
-            name="ck_transaction_revision_group_record_actor_source_nonblank",
+            name=op.f("ck_transaction_revision_group_record_actor_source_nonblank"),
         ),
         sa.ForeignKeyConstraint(
             ["portfolio_id"],
@@ -902,13 +1046,25 @@ def _create_ledger_tables(connection: sa.Connection) -> None:
         sa.Column("settlement_cash_account_id", sa.String(), nullable=True),
         sa.Column("instrument_id", sa.String(), nullable=True),
         sa.Column("instrument_snapshot_json", sa.JSON(), nullable=True),
-        sa.Column("quantity", sa.Numeric(38, 12), nullable=True),
-        sa.Column("price", sa.Numeric(38, 12), nullable=True),
-        sa.Column("gross_amount", sa.Numeric(38, 8), nullable=True),
-        sa.Column("counter_amount", sa.Numeric(38, 8), nullable=True),
-        sa.Column("fx_rate", sa.Numeric(38, 18), nullable=True),
-        sa.Column("fees", sa.Numeric(38, 8), nullable=True),
-        sa.Column("taxes", sa.Numeric(38, 8), nullable=True),
+        # PostgreSQL NUMERIC(p,s) rounds before CHECK evaluation.  Persist the
+        # source value losslessly, then reject values outside the declared
+        # ledger domain with the explicit constraints installed below.
+        sa.Column("quantity", _exact_numeric_storage(scale=12), nullable=True),
+        sa.Column("price", _exact_numeric_storage(scale=12), nullable=True),
+        sa.Column("gross_amount", _exact_numeric_storage(scale=8), nullable=True),
+        sa.Column("counter_amount", _exact_numeric_storage(scale=8), nullable=True),
+        sa.Column("quoted_fx_rate", _exact_numeric_storage(scale=18), nullable=True),
+        sa.Column("fees", _exact_numeric_storage(scale=8), nullable=True),
+        sa.Column("taxes", _exact_numeric_storage(scale=8), nullable=True),
+        sa.Column("consideration_basis", sa.String(), nullable=True),
+        sa.Column("numeric_scale_state", sa.String(), nullable=True),
+        sa.Column("quantity_input_scale", sa.Integer(), nullable=True),
+        sa.Column("price_input_scale", sa.Integer(), nullable=True),
+        sa.Column("gross_amount_input_scale", sa.Integer(), nullable=True),
+        sa.Column("counter_amount_input_scale", sa.Integer(), nullable=True),
+        sa.Column("quoted_fx_rate_input_scale", sa.Integer(), nullable=True),
+        sa.Column("fees_input_scale", sa.Integer(), nullable=True),
+        sa.Column("taxes_input_scale", sa.Integer(), nullable=True),
         sa.Column("currency", sa.String(length=3), nullable=True),
         sa.Column("transfer_scope", sa.String(), nullable=True),
         sa.Column("transfer_object_type", sa.String(), nullable=True),
@@ -918,19 +1074,19 @@ def _create_ledger_tables(connection: sa.Connection) -> None:
         sa.CheckConstraint(
             "length(trim(revision_id)) > 0 AND length(trim(transaction_id)) > 0 "
             "AND length(trim(revision_group_id)) > 0",
-            name="ck_transaction_revision_record_identifiers_nonblank",
+            name=op.f("ck_transaction_revision_record_identifiers_nonblank"),
         ),
         sa.CheckConstraint(
             "revision_number > 0",
-            name="ck_transaction_revision_record_positive_revision_number",
+            name=op.f("ck_transaction_revision_record_positive_revision_number"),
         ),
         sa.CheckConstraint(
             "revision_kind IN ('baseline', 'create', 'amend', 'delete')",
-            name="ck_transaction_revision_record_revision_kind",
+            name=op.f("ck_transaction_revision_record_revision_kind"),
         ),
         sa.CheckConstraint(
             "is_tombstone = (revision_kind = 'delete')",
-            name="ck_transaction_revision_record_tombstone_kind",
+            name=op.f("ck_transaction_revision_record_tombstone_kind"),
         ),
         sa.CheckConstraint(
             "((revision_number = 1 AND revision_kind IN ('baseline', 'create') "
@@ -938,20 +1094,20 @@ def _create_ledger_tables(connection: sa.Connection) -> None:
             "OR (revision_number > 1 AND revision_kind IN ('amend', 'delete') "
             "AND supersedes_revision_id IS NOT NULL "
             "AND supersedes_revision_number = revision_number - 1))",
-            name="ck_transaction_revision_record_revision_chain_shape",
+            name=op.f("ck_transaction_revision_record_revision_chain_shape"),
         ),
         sa.CheckConstraint(
             "length(payload_hash) = 71 AND payload_hash LIKE 'sha256:%'",
-            name="ck_transaction_revision_record_payload_hash_shape",
+            name=op.f("ck_transaction_revision_record_payload_hash_shape"),
         ),
         sa.CheckConstraint(
             "payload_schema_version = 'transaction-revision.v1'",
-            name="ck_transaction_revision_record_payload_schema_version",
+            name=op.f("ck_transaction_revision_record_payload_schema_version"),
         ),
         sa.CheckConstraint(
             "NOT is_tombstone OR payload_hash = "
             f"'{_tombstone_payload_hash()}'",
-            name="ck_transaction_revision_record_tombstone_payload_hash",
+            name=op.f("ck_transaction_revision_record_tombstone_payload_hash"),
         ),
         sa.CheckConstraint(
             "((is_tombstone AND transaction_type IS NULL AND trade_date IS NULL "
@@ -961,8 +1117,14 @@ def _create_ledger_tables(connection: sa.Connection) -> None:
             "AND account_id IS NULL AND settlement_cash_account_id IS NULL "
             "AND instrument_id IS NULL AND instrument_snapshot_json IS NULL "
             "AND quantity IS NULL AND price IS NULL AND gross_amount IS NULL "
-            "AND counter_amount IS NULL AND fx_rate IS NULL AND fees IS NULL "
-            "AND taxes IS NULL AND currency IS NULL AND transfer_scope IS NULL "
+            "AND counter_amount IS NULL AND quoted_fx_rate IS NULL AND fees IS NULL "
+            "AND taxes IS NULL AND consideration_basis IS NULL "
+            "AND numeric_scale_state IS NULL AND quantity_input_scale IS NULL "
+            "AND price_input_scale IS NULL AND gross_amount_input_scale IS NULL "
+            "AND counter_amount_input_scale IS NULL "
+            "AND quoted_fx_rate_input_scale IS NULL "
+            "AND fees_input_scale IS NULL AND taxes_input_scale IS NULL "
+            "AND currency IS NULL AND transfer_scope IS NULL "
             "AND transfer_object_type IS NULL AND transfer_group_id IS NULL "
             "AND counterparty_account_id IS NULL AND note IS NULL) OR "
             "(NOT is_tombstone AND transaction_type IS NOT NULL "
@@ -970,8 +1132,9 @@ def _create_ledger_tables(connection: sa.Connection) -> None:
             "AND trade_at IS NOT NULL AND length(trim(trade_timezone)) > 0 "
             "AND trade_time_is_estimated IS NOT NULL AND settlement_date IS NOT NULL "
             "AND account_id IS NOT NULL AND gross_amount IS NOT NULL "
-            "AND fees IS NOT NULL AND taxes IS NOT NULL AND currency IS NOT NULL))",
-            name="ck_transaction_revision_record_tombstone_payload",
+            "AND fees IS NOT NULL AND taxes IS NOT NULL "
+            "AND numeric_scale_state IS NOT NULL AND currency IS NOT NULL))",
+            name=op.f("ck_transaction_revision_record_tombstone_payload"),
         ),
         sa.CheckConstraint(
             "transaction_type IS NULL OR transaction_type IN "
@@ -979,77 +1142,115 @@ def _create_ledger_tables(connection: sa.Connection) -> None:
             "'interest', 'return_of_capital', 'maturity_redemption', 'fee', "
             "'tax', 'deposit', 'withdrawal', 'fx_conversion', 'transfer_in', "
             "'transfer_out', 'opening_balance')",
-            name="ck_transaction_revision_record_transaction_type",
+            name=op.f("ck_transaction_revision_record_transaction_type"),
         ),
         sa.CheckConstraint(
             "is_tombstone OR settlement_date >= trade_date",
-            name="ck_transaction_revision_record_settlement_not_before_trade",
+            name=op.f("ck_transaction_revision_record_settlement_not_before_trade"),
         ),
         sa.CheckConstraint(
             "is_tombstone OR entitlement_date IS NULL OR entitlement_date <= trade_date",
-            name="ck_transaction_revision_record_entitlement_not_after_trade",
+            name=op.f("ck_transaction_revision_record_entitlement_not_after_trade"),
         ),
         sa.CheckConstraint(
             "is_tombstone OR acquisition_date IS NULL OR acquisition_date <= trade_date",
-            name="ck_transaction_revision_record_acquisition_not_after_trade",
+            name=op.f("ck_transaction_revision_record_acquisition_not_after_trade"),
         ),
         sa.CheckConstraint(
             "is_tombstone OR currency IN ('USD', 'HKD', 'CNY')",
-            name="ck_transaction_revision_record_supported_currency",
+            name=op.f("ck_transaction_revision_record_supported_currency"),
         ),
         sa.CheckConstraint(
             "quantity IS NULL OR quantity > 0",
-            name="ck_transaction_revision_record_positive_quantity",
+            name=op.f("ck_transaction_revision_record_positive_quantity"),
         ),
         sa.CheckConstraint(
             "price IS NULL OR price > 0",
-            name="ck_transaction_revision_record_positive_price",
+            name=op.f("ck_transaction_revision_record_positive_price"),
         ),
         sa.CheckConstraint(
             "gross_amount IS NULL OR gross_amount >= 0",
-            name="ck_transaction_revision_record_nonnegative_gross_amount",
+            name=op.f("ck_transaction_revision_record_nonnegative_gross_amount"),
         ),
         sa.CheckConstraint(
             "counter_amount IS NULL OR counter_amount > 0",
-            name="ck_transaction_revision_record_positive_counter_amount",
+            name=op.f("ck_transaction_revision_record_positive_counter_amount"),
         ),
         sa.CheckConstraint(
-            "fx_rate IS NULL OR fx_rate > 0",
-            name="ck_transaction_revision_record_positive_fx_rate",
+            "quoted_fx_rate IS NULL OR quoted_fx_rate > 0",
+            name=op.f("ck_transaction_revision_record_positive_quoted_fx_rate"),
         ),
         sa.CheckConstraint(
             "fees IS NULL OR fees >= 0",
-            name="ck_transaction_revision_record_nonnegative_fees",
+            name=op.f("ck_transaction_revision_record_nonnegative_fees"),
         ),
         sa.CheckConstraint(
             "taxes IS NULL OR taxes >= 0",
-            name="ck_transaction_revision_record_nonnegative_taxes",
+            name=op.f("ck_transaction_revision_record_nonnegative_taxes"),
+        ),
+        sa.CheckConstraint(
+            "numeric_scale_state IS NULL OR numeric_scale_state IN "
+            "('declared', 'legacy_inferred')",
+            name=op.f("ck_transaction_revision_record_numeric_scale_state"),
+        ),
+        sa.CheckConstraint(
+            "consideration_basis IS NULL OR consideration_basis IN "
+            "('exact_quantity_price', 'source_reported')",
+            name=op.f("ck_transaction_revision_record_consideration_basis"),
+        ),
+        sa.CheckConstraint(
+            "((quantity IS NULL AND quantity_input_scale IS NULL) OR "
+            "(quantity IS NOT NULL AND quantity_input_scale IS NOT NULL AND quantity_input_scale BETWEEN 0 AND 12)) "
+            "AND ((price IS NULL AND price_input_scale IS NULL) OR "
+            "(price IS NOT NULL AND price_input_scale IS NOT NULL AND price_input_scale BETWEEN 0 AND 12)) "
+            "AND ((gross_amount IS NULL AND gross_amount_input_scale IS NULL) OR "
+            "(gross_amount IS NOT NULL AND gross_amount_input_scale IS NOT NULL AND gross_amount_input_scale BETWEEN 0 AND 8)) "
+            "AND ((counter_amount IS NULL AND counter_amount_input_scale IS NULL) OR "
+            "(counter_amount IS NOT NULL AND counter_amount_input_scale IS NOT NULL AND counter_amount_input_scale BETWEEN 0 AND 8)) "
+            "AND ((quoted_fx_rate IS NULL AND quoted_fx_rate_input_scale IS NULL) OR "
+            "(quoted_fx_rate IS NOT NULL AND quoted_fx_rate_input_scale IS NOT NULL AND quoted_fx_rate_input_scale BETWEEN 0 AND 18)) "
+            "AND ((fees IS NULL AND fees_input_scale IS NULL) OR "
+            "(fees IS NOT NULL AND fees_input_scale IS NOT NULL AND fees_input_scale BETWEEN 0 AND 8)) "
+            "AND ((taxes IS NULL AND taxes_input_scale IS NULL) OR "
+            "(taxes IS NOT NULL AND taxes_input_scale IS NOT NULL AND taxes_input_scale BETWEEN 0 AND 8))",
+            name=op.f("ck_transaction_revision_record_numeric_input_scale_pairing"),
+        ),
+        sa.CheckConstraint(
+            "is_tombstone OR ((transaction_type IN "
+            "('buy', 'sell', 'dividend_reinvestment') OR "
+            "(transaction_type = 'opening_balance' AND instrument_id IS NOT NULL)) "
+            "AND consideration_basis IS NOT NULL AND quantity IS NOT NULL) OR "
+            "(transaction_type NOT IN ('buy', 'sell', 'dividend_reinvestment', "
+            "'opening_balance') AND consideration_basis IS NULL) OR "
+            "(transaction_type = 'opening_balance' AND instrument_id IS NULL "
+            "AND consideration_basis IS NULL)",
+            name=op.f("ck_transaction_revision_record_consideration_basis_scope"),
         ),
         sa.CheckConstraint(
             "is_tombstone OR entitlement_date IS NULL OR "
             "transaction_type IN ('dividend', 'coupon', 'fee', 'tax')",
-            name="ck_transaction_revision_record_entitlement_applicability",
+            name=op.f("ck_transaction_revision_record_entitlement_applicability"),
         ),
         sa.CheckConstraint(
             "is_tombstone OR entitlement_date IS NULL OR "
             "transaction_type NOT IN ('fee', 'tax') OR instrument_id IS NOT NULL",
-            name="ck_transaction_revision_record_expense_entitlement_instrument",
+            name=op.f("ck_transaction_revision_record_expense_entitlement_instrument"),
         ),
         sa.CheckConstraint(
             "is_tombstone OR acquisition_date IS NULL OR "
             "(transaction_type = 'opening_balance' AND instrument_id IS NOT NULL)",
-            name="ck_transaction_revision_record_acquisition_applicability",
+            name=op.f("ck_transaction_revision_record_acquisition_applicability"),
         ),
         sa.CheckConstraint(
             "is_tombstone OR ((transaction_type = 'fx_conversion' "
             "AND instrument_id IS NULL AND instrument_snapshot_json IS NULL "
             "AND quantity IS NULL AND price IS NULL "
             "AND settlement_cash_account_id IS NULL "
-            "AND counter_amount IS NOT NULL AND fx_rate IS NOT NULL "
+            "AND counter_amount IS NOT NULL "
             "AND counterparty_account_id IS NOT NULL AND fees = 0 AND taxes = 0) "
             "OR (transaction_type <> 'fx_conversion' AND counter_amount IS NULL "
-            "AND fx_rate IS NULL))",
-            name="ck_transaction_revision_record_fx_conversion_fields",
+            "AND quoted_fx_rate IS NULL))",
+            name=op.f("ck_transaction_revision_record_fx_conversion_fields"),
         ),
         sa.CheckConstraint(
             "is_tombstone OR ((transaction_type IN ('transfer_in', 'transfer_out') "
@@ -1062,12 +1263,12 @@ def _create_ledger_tables(connection: sa.Connection) -> None:
             "AND transfer_scope IS NULL AND transfer_object_type IS NULL "
             "AND transfer_group_id IS NULL "
             "AND (transaction_type = 'fx_conversion' OR counterparty_account_id IS NULL)))",
-            name="ck_transaction_revision_record_transfer_fields",
+            name=op.f("ck_transaction_revision_record_transfer_fields"),
         ),
         sa.CheckConstraint(
             "is_tombstone OR ("
             "(transaction_type IN ('buy', 'sell') AND instrument_id IS NOT NULL "
-            "AND quantity IS NOT NULL AND price IS NOT NULL AND gross_amount > 0) OR "
+            "AND quantity IS NOT NULL AND gross_amount > 0) OR "
             "(transaction_type IN ('dividend', 'coupon', 'return_of_capital') "
             "AND instrument_id IS NOT NULL AND quantity IS NULL AND price IS NULL) OR "
             "(transaction_type = 'dividend_reinvestment' AND instrument_id IS NOT NULL "
@@ -1087,7 +1288,7 @@ def _create_ledger_tables(connection: sa.Connection) -> None:
             "AND quantity IS NOT NULL AND acquisition_date IS NOT NULL) OR "
             "(instrument_id IS NULL AND quantity IS NULL AND price IS NULL "
             "AND acquisition_date IS NULL))))",
-            name="ck_transaction_revision_record_transaction_payload_type_shape",
+            name=op.f("ck_transaction_revision_record_transaction_payload_type_shape"),
         ),
         sa.CheckConstraint(
             "is_tombstone OR transaction_type NOT IN ('transfer_in', 'transfer_out') OR "
@@ -1095,15 +1296,15 @@ def _create_ledger_tables(connection: sa.Connection) -> None:
             "AND quantity IS NULL AND price IS NULL AND gross_amount > 0) OR "
             "(transfer_object_type = 'position' AND instrument_id IS NOT NULL "
             "AND quantity IS NOT NULL AND price IS NULL AND gross_amount >= 0))",
-            name="ck_transaction_revision_record_transfer_object_shape",
+            name=op.f("ck_transaction_revision_record_transfer_object_shape"),
         ),
         sa.CheckConstraint(
             "is_tombstone OR instrument_id IS NULL OR instrument_snapshot_json IS NOT NULL",
-            name="ck_transaction_revision_record_instrument_snapshot_required",
+            name=op.f("ck_transaction_revision_record_instrument_snapshot_required"),
         ),
         sa.CheckConstraint(
             "is_tombstone OR instrument_id IS NOT NULL OR instrument_snapshot_json IS NULL",
-            name="ck_transaction_revision_record_snapshot_without_instrument",
+            name=op.f("ck_transaction_revision_record_snapshot_without_instrument"),
         ),
         sa.ForeignKeyConstraint(
             ["portfolio_id", "transaction_id"],
@@ -1223,22 +1424,72 @@ def _create_ledger_tables(connection: sa.Connection) -> None:
                 referent_schema="instrument_registry",
             )
         op.create_check_constraint(
-            "ck_transaction_revision_record_payload_hash_hex",
+            op.f("ck_transaction_revision_record_payload_hash_hex"),
             "transaction_revision_record",
             "payload_hash ~ '^sha256:[0-9a-f]{64}$'",
         )
         op.create_check_constraint(
-            "ck_transaction_revision_record_instrument_snapshot_object",
+            op.f("ck_transaction_revision_record_instrument_snapshot_object"),
             "transaction_revision_record",
             "instrument_snapshot_json IS NULL OR "
             "json_typeof(instrument_snapshot_json) = 'object'",
         )
         op.create_check_constraint(
-            "ck_transaction_revision_record_trade_moment_consistency",
+            op.f("ck_transaction_revision_record_trade_moment_consistency"),
             "transaction_revision_record",
             "is_tombstone OR ("
             "trade_date = (trade_at AT TIME ZONE trade_timezone)::date AND "
             "trade_time = (trade_at AT TIME ZONE trade_timezone)::time)",
+        )
+        op.create_check_constraint(
+            op.f("ck_transaction_revision_record_quantity_price_exact_domain"),
+            "transaction_revision_record",
+            _all_logical_numeric_domains(
+                ("quantity", "price"),
+                precision=38,
+                scale=12,
+            ),
+        )
+        op.create_check_constraint(
+            op.f("ck_transaction_revision_record_amount_exact_domain"),
+            "transaction_revision_record",
+            _all_logical_numeric_domains(
+                ("gross_amount", "counter_amount", "fees", "taxes"),
+                precision=38,
+                scale=8,
+            ),
+        )
+        op.create_check_constraint(
+            op.f("ck_transaction_revision_record_quoted_fx_rate_exact_domain"),
+            "transaction_revision_record",
+            _logical_numeric_domain(
+                "quoted_fx_rate",
+                precision=38,
+                scale=18,
+            ),
+        )
+        op.create_check_constraint(
+            op.f("ck_transaction_revision_record_numeric_value_fits_input_scale"),
+            "transaction_revision_record",
+            _all_values_fit_declared_input_scale(
+                (
+                    "quantity",
+                    "price",
+                    "gross_amount",
+                    "counter_amount",
+                    "quoted_fx_rate",
+                    "fees",
+                    "taxes",
+                )
+            ),
+        )
+        op.create_check_constraint(
+            op.f("ck_transaction_revision_record_exact_consideration_contract"),
+            "transaction_revision_record",
+            "is_tombstone OR consideration_basis <> 'exact_quantity_price' OR "
+            "(price IS NOT NULL AND gross_amount = quantity * price AND "
+            "lower(instrument_snapshot_json ->> 'instrument_type') IN "
+            "('equity', 'fund', 'etf', 'exchange_traded_fund'))",
         )
 
 
@@ -1522,9 +1773,18 @@ def _create_current_view(connection: sa.Connection) -> None:
                 r.price,
                 r.gross_amount,
                 r.counter_amount,
-                r.fx_rate,
+                r.quoted_fx_rate,
                 r.fees,
                 r.taxes,
+                r.consideration_basis,
+                r.numeric_scale_state,
+                r.quantity_input_scale,
+                r.price_input_scale,
+                r.gross_amount_input_scale,
+                r.counter_amount_input_scale,
+                r.quoted_fx_rate_input_scale,
+                r.fees_input_scale,
+                r.taxes_input_scale,
                 r.currency,
                 r.transfer_scope,
                 r.transfer_object_type,

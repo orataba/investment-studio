@@ -18,12 +18,6 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = BACKEND_ROOT.parents[2]
 sys.path.insert(0, str(BACKEND_ROOT))
 
-from platform_app.services.downstream_notifications import (  # noqa: E402
-    DownstreamRequestFailure,
-    DownstreamRefreshError,
-    DownstreamRefreshResult,
-    notify_market_data_downstream_refresh,
-)
 from platform_app.services.market_data_ops import (  # noqa: E402
     refresh_market_data_batch,
     refresh_market_data_with_timeout,
@@ -99,40 +93,27 @@ def _write_json_atomic(target: Path, payload: dict[str, object]) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Refresh Portfolio Operations market data without a browser session.")
+    parser = argparse.ArgumentParser(
+        description="Refresh Portfolio Operations market data without a browser session."
+    )
     parser.add_argument(
         "--channel",
         choices=("all", "email", "tushare"),
         default="all",
         help="Data channel to refresh. all runs tushare first, then email.",
     )
-    parser.add_argument("--updated-by", default="scheduler", help="Audit label for refresh_status.")
-    parser.add_argument("--full-history", action="store_true", help="Request full history instead of incremental refresh.")
-    parser.add_argument("--include-inactive", action="store_true", help="Refresh inactive instruments as well.")
     parser.add_argument(
-        "--no-downstream-refresh",
+        "--updated-by", default="scheduler", help="Audit label for refresh_status."
+    )
+    parser.add_argument(
+        "--full-history",
         action="store_true",
-        help="Do not notify Watchlist/Portfolio after market data changes.",
+        help="Request full history instead of incremental refresh.",
     )
     parser.add_argument(
-        "--require-downstream-success",
+        "--include-inactive",
         action="store_true",
-        help=(
-            "Require the Portfolio refresh response and Watchlist recalc enqueue "
-            "acknowledgement; this does not wait for Watchlist workers to finish."
-        ),
-    )
-    parser.add_argument(
-        "--downstream-timeout-seconds",
-        type=float,
-        default=900.0,
-        help="Timeout used for the synchronous downstream Portfolio refresh.",
-    )
-    parser.add_argument(
-        "--watchlist-downstream-timeout-seconds",
-        type=float,
-        default=15.0,
-        help="Per-request timeout used while enqueueing downstream Watchlist recalculations.",
+        help="Refresh inactive instruments as well.",
     )
     parser.add_argument(
         "--fail-on-item-failure",
@@ -152,7 +133,9 @@ def _parse_args() -> argparse.Namespace:
         default=[],
         help="Refresh only these instrument ids. Repeat or use comma-separated values.",
     )
-    parser.add_argument("--json", action="store_true", help="Emit a JSON summary in addition to logs.")
+    parser.add_argument(
+        "--json", action="store_true", help="Emit a JSON summary in addition to logs."
+    )
     parser.add_argument(
         "--lock-file",
         type=Path,
@@ -204,9 +187,7 @@ def _requested_instrument_ids(raw_values: Iterable[str]) -> list[str]:
 
 def _failed_results(results: Iterable[dict[str, object]]) -> list[dict[str, object]]:
     return [
-        item
-        for item in results
-        if str(item.get("status") or "") in FAILED_STATUSES
+        item for item in results if str(item.get("status") or "") in FAILED_STATUSES
     ]
 
 
@@ -294,7 +275,12 @@ def _retry_failed_results(
         ]
         if not retry_ids:
             break
-        LOGGER.info("retrying failed items channel=%s attempt=%s count=%s", channel, attempt, len(retry_ids))
+        LOGGER.info(
+            "retrying failed items channel=%s attempt=%s count=%s",
+            channel,
+            attempt,
+            len(retry_ids),
+        )
         for instrument_id in retry_ids:
             record = refresh_market_data_with_timeout(
                 instrument_id=instrument_id,
@@ -333,7 +319,11 @@ def _run_refresh(
     all_results: list[dict[str, object]] = []
     all_updated_ids: list[str] = []
     seen_updated_ids: set[str] = set()
-    channels = ["configured"] if requested_instrument_ids and args.channel == "all" else _channels(args.channel)
+    channels = (
+        ["configured"]
+        if requested_instrument_ids and args.channel == "all"
+        else _channels(args.channel)
+    )
     for channel in channels:
         LOGGER.info("refreshing channel=%s", channel)
         if requested_instrument_ids:
@@ -345,7 +335,9 @@ def _run_refresh(
             )
             response = {
                 "source": channel,
-                "refreshed_count": sum(1 for item in results if item["status"] in UPDATED_STATUSES),
+                "refreshed_count": sum(
+                    1 for item in results if item["status"] in UPDATED_STATUSES
+                ),
                 "skipped_count": 0,
                 "results": results,
             }
@@ -373,9 +365,7 @@ def _run_refresh(
 
         counts = _status_counts(results)
         final_refreshed_count = sum(
-            1
-            for item in results
-            if str(item.get("status") or "") in UPDATED_STATUSES
+            1 for item in results if str(item.get("status") or "") in UPDATED_STATUSES
         )
         channel_summaries.append(
             {
@@ -404,38 +394,8 @@ def _run_refresh(
             item.get("message"),
         )
 
-    downstream_result = DownstreamRefreshResult()
-    should_notify_downstream = bool(all_updated_ids and not args.no_downstream_refresh)
-    refresh_all_portfolios = any(
-        str(item.get("status") or "") in UPDATED_STATUSES
-        and (
-            str(item.get("instrument_type") or "").strip().lower() == "fx"
-            or str(item.get("instrument_id") or "").strip().lower().startswith("fx-")
-        )
-        for item in all_results
-    )
-    if should_notify_downstream:
-        LOGGER.info(
-            "requesting Portfolio refresh and Watchlist recalc enqueue instrument_count=%s refresh_all_portfolios=%s",
-            len(all_updated_ids),
-            refresh_all_portfolios,
-        )
-        try:
-            downstream_result = notify_market_data_downstream_refresh(
-                instrument_ids=all_updated_ids,
-                refresh_all_portfolios=refresh_all_portfolios,
-                request_timeout_seconds=args.downstream_timeout_seconds,
-                watchlist_request_timeout_seconds=args.watchlist_downstream_timeout_seconds,
-                raise_on_error=args.require_downstream_success,
-            )
-        except DownstreamRefreshError as error:
-            downstream_result = error.result
-            LOGGER.error("Scheduled downstream refresh failed: %s", error)
-
     exit_code = 0
     if args.fail_on_item_failure and failures:
-        exit_code = 1
-    if args.require_downstream_success and downstream_result.failures:
         exit_code = 1
 
     summary = {
@@ -456,20 +416,7 @@ def _run_refresh(
             }
             for item in failures
         ],
-        "downstream_refresh": should_notify_downstream,
-        "downstream_delivery_semantics": (
-            "portfolio_refresh_response_and_watchlist_recalc_enqueue_acknowledgement"
-            if should_notify_downstream
-            else "not_requested"
-        ),
-        "watchlist_recalc_completed": False,
-        "downstream_request_count": downstream_result.request_count,
-        "downstream_failure_count": len(downstream_result.failures),
-        "downstream_failures": [
-            {"url": item.url, "message": item.message}
-            for item in downstream_result.failures
-        ],
-        "refresh_all_portfolios": refresh_all_portfolios,
+        "downstream_delivery_semantics": "instrument_registry_transactional_outbox",
     }
     return exit_code, summary
 
@@ -481,12 +428,6 @@ def main() -> int:
         stream=sys.stdout,
     )
     args = _parse_args()
-    if args.downstream_timeout_seconds <= 0:
-        LOGGER.error("--downstream-timeout-seconds must be positive.")
-        return 2
-    if args.watchlist_downstream_timeout_seconds <= 0:
-        LOGGER.error("--watchlist-downstream-timeout-seconds must be positive.")
-        return 2
     if args.retry_failed_attempts < 0:
         LOGGER.error("--retry-failed-attempts must not be negative.")
         return 2
@@ -514,7 +455,9 @@ def main() -> int:
             try:
                 _write_json_atomic(args.summary_file, summary)
             except Exception:
-                LOGGER.exception("Failed to write market data refresh summary: %s", args.summary_file)
+                LOGGER.exception(
+                    "Failed to write market data refresh summary: %s", args.summary_file
+                )
                 exit_code = 1
                 summary["status"] = "failed"
                 summary["exit_code"] = exit_code

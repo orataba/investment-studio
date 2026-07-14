@@ -1,11 +1,14 @@
 import {
   getHoldingsWorkspace,
   getPortfolioAccountsWorkspace,
-  getPortfolioPerformance,
-  getPortfolioResearchWorkbench,
+  getPortfolioPerformanceReport,
+  getPortfolioAllocationResearchWorkbench,
   getPortfolioTaxonomyCatalog,
   getPortfolioTransactionsWorkspace,
+  getPortfolios,
+  getWorkspaceSummaryForPortfolio,
 } from './api'
+import { loadOverviewPublishedBundle } from './overviewPublication'
 
 export type PortfolioPreloadSection =
   | 'Overview'
@@ -15,7 +18,7 @@ export type PortfolioPreloadSection =
   | 'Transactions'
   | 'Accounts'
   | 'Taxonomies'
-  | 'Research'
+  | 'Allocation Lab'
 
 type PreloadTask = () => Promise<unknown>
 
@@ -27,18 +30,26 @@ const routeModulePreloaders: Record<PortfolioPreloadSection, PreloadTask> = {
   Transactions: () => import('../pages/TransactionsPage'),
   Accounts: () => import('../pages/AccountsPage'),
   Taxonomies: () => import('../pages/TaxonomiesPage'),
-  Research: () => import('../pages/ResearchPage'),
+  'Allocation Lab': () => import('../pages/AllocationLabPage'),
 }
 
 const dataPreloaders: Record<PortfolioPreloadSection, (portfolioId: string) => Promise<unknown>> = {
-  Overview: (portfolioId) => getPortfolioPerformance(portfolioId),
+  Overview: (portfolioId) => loadOverviewPublishedBundle(portfolioId),
   Holdings: (portfolioId) => getHoldingsWorkspace(portfolioId),
-  Performance: (portfolioId) => getPortfolioPerformance(portfolioId),
-  Risk: (portfolioId) => getHoldingsWorkspace(portfolioId, { include_return_series: true }),
+  Performance: (portfolioId) =>
+    getPortfolioPerformanceReport(portfolioId, { axis: 'instrument', frequency: 'monthly' }),
+  Risk: (portfolioId) => getWorkspaceSummaryForPortfolio(portfolioId),
   Transactions: (portfolioId) => getPortfolioTransactionsWorkspace(portfolioId),
   Accounts: (portfolioId) => getPortfolioAccountsWorkspace(portfolioId),
   Taxonomies: (portfolioId) => getPortfolioTaxonomyCatalog(portfolioId),
-  Research: (portfolioId) => getPortfolioResearchWorkbench(portfolioId),
+  'Allocation Lab': async (portfolioId) => {
+    const portfolios = await getPortfolios({ includeArchived: true })
+    const portfolio = portfolios.find((item) => item.portfolio_id === portfolioId)
+    if (!portfolio || portfolio.operating_profile !== 'standard_taxonomy') {
+      return portfolio
+    }
+    return getPortfolioAllocationResearchWorkbench(portfolioId)
+  },
 }
 
 const loadedRouteModules = new Set<PortfolioPreloadSection>()

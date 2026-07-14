@@ -4,10 +4,19 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
-InstrumentType = Literal["fund", "etf", "index", "bond", "equity", "cash", "fx", "other"]
+InstrumentType = Literal[
+    "fund", "etf", "index", "bond", "equity", "cash", "fx", "other"
+]
 IdentifierType = Literal[
     "ticker",
     "exchange_ticker",
@@ -41,6 +50,7 @@ QuoteRole = Literal["trading", "valuation", "total_return", "chart", "reference"
 DataStatus = Literal["complete", "partial", "unavailable"]
 SourceObservationStatus = Literal["complete", "partial", "rejected"]
 QuoteRevisionStatus = Literal["complete", "partial", "rejected", "withdrawn"]
+QuoteNumericScaleState = Literal["declared", "binary_inferred", "legacy_inferred"]
 QuoteFreshnessMode = Literal["exact_only", "calendar_day_carry_forward"]
 ObservationFreshnessStatus = Literal["current", "late", "missing"]
 QuoteIngestionStatus = Literal["current", "unknown"]
@@ -83,9 +93,7 @@ VALUATION_PROHIBITED_TOTAL_RETURN_BASES = frozenset(
         "reinvested_nav",
     }
 )
-CASH_CUMULATIVE_NAV_BASES = frozenset(
-    {"cumulative_nav", "accumulated_nav", "cum_nav"}
-)
+CASH_CUMULATIVE_NAV_BASES = frozenset({"cumulative_nav", "accumulated_nav", "cum_nav"})
 TOTAL_RETURN_QUOTE_BASES = frozenset(
     {
         "adjusted_close",
@@ -146,7 +154,9 @@ class QuoteSelectionPolicy(BaseModel):
             values = getattr(self, role)
             if len(values) != len(set(values)):
                 raise ValueError(f"{role} quote bases must not contain duplicates")
-        invalid = sorted(set(self.valuation).intersection(VALUATION_PROHIBITED_TOTAL_RETURN_BASES))
+        invalid = sorted(
+            set(self.valuation).intersection(VALUATION_PROHIBITED_TOTAL_RETURN_BASES)
+        )
         if invalid:
             raise ValueError(
                 "valuation cannot use total-return quote bases: " + ", ".join(invalid)
@@ -183,6 +193,9 @@ class MarketDataPoint(BaseModel):
     quote_basis: QuoteBasis
     as_of_date: date
     value: Decimal
+    value_input_scale: int = Field(ge=0)
+    numeric_scale_state: QuoteNumericScaleState
+    payload_schema_version: Literal[1, 2]
     currency: CanonicalCurrencyCode
     source_ref: str | None = None
     status: Literal["complete"] = "complete"
@@ -230,6 +243,9 @@ class CanonicalQuoteResolution(BaseModel):
     revision_number: int | None = Field(default=None, ge=1)
     payload_hash: str | None = None
     value: Decimal | None = None
+    value_input_scale: int | None = Field(default=None, ge=0)
+    numeric_scale_state: QuoteNumericScaleState | None = None
+    payload_schema_version: Literal[1, 2] | None = None
     observation_date: date | None = None
     source_ref: str | None = None
     source_published_at: datetime | None = None
@@ -245,21 +261,15 @@ class CanonicalQuoteResolution(BaseModel):
     @model_validator(mode="after")
     def validate_resolution_state(self) -> "CanonicalQuoteResolution":
         if self.resolution_kind == "quote_role":
-            if (
-                self.role is None
-                or self.quote_selection_policy_version is None
-            ):
+            if self.role is None or self.quote_selection_policy_version is None:
                 raise ValueError(
                     "quote_role resolution requires role and policy version"
                 )
-            if (
-                not self.quote_selection_policy_revision
-                and not {
-                    "instrument_not_found",
-                    "non_canonical_instrument_id",
-                    "missing_quote_policy",
-                }.intersection(self.reason_codes)
-            ):
+            if not self.quote_selection_policy_revision and not {
+                "instrument_not_found",
+                "non_canonical_instrument_id",
+                "missing_quote_policy",
+            }.intersection(self.reason_codes):
                 raise ValueError("quote_role resolution requires policy revision")
         elif self.metric_family is None or self.quote_basis is None:
             raise ValueError(
@@ -312,10 +322,14 @@ class CanonicalQuoteResolution(BaseModel):
             }
             if missing_series_reasons.intersection(self.reason_codes):
                 if any(value is not None for value in identity_fields):
-                    raise ValueError("missing series must not expose quote identity ids")
+                    raise ValueError(
+                        "missing series must not expose quote identity ids"
+                    )
             elif "missing_observation" in self.reason_codes:
                 if self.quote_series_id is None:
-                    raise ValueError("missing observation must retain selected series id")
+                    raise ValueError(
+                        "missing observation must retain selected series id"
+                    )
                 if any(
                     value is not None
                     for value in (
@@ -330,6 +344,25 @@ class CanonicalQuoteResolution(BaseModel):
                 raise ValueError(
                     "late or non-complete observation must retain full revision lineage"
                 )
+        if self.revision_id is None:
+            if any(
+                value is not None
+                for value in (
+                    self.value_input_scale,
+                    self.numeric_scale_state,
+                    self.payload_schema_version,
+                )
+            ):
+                raise ValueError("missing observation must not expose numeric lineage")
+        else:
+            if self.payload_schema_version is None:
+                raise ValueError("resolved revision requires a payload schema version")
+            if (self.value_input_scale is None) != (self.numeric_scale_state is None):
+                raise ValueError(
+                    "quote numeric scale and state must be present together"
+                )
+            if self.value is not None and self.value_input_scale is None:
+                raise ValueError("resolved quote value requires numeric lineage")
         return self
 
 
@@ -341,6 +374,9 @@ class CanonicalQuoteSeriesPoint(BaseModel):
     payload_hash: str = Field(min_length=1)
     observation_date: date
     value: Decimal = Field(gt=0)
+    value_input_scale: int = Field(ge=0)
+    numeric_scale_state: QuoteNumericScaleState
+    payload_schema_version: Literal[1, 2]
     source_ref: str | None = None
     source_published_at: datetime | None = None
     ingested_at: datetime | None = None
@@ -354,6 +390,9 @@ class CanonicalQuoteSeriesObservation(BaseModel):
     payload_hash: str = Field(min_length=1)
     observation_date: date
     value: Decimal | None = None
+    value_input_scale: int | None = Field(default=None, ge=0)
+    numeric_scale_state: QuoteNumericScaleState | None = None
+    payload_schema_version: Literal[1, 2]
     status: QuoteRevisionStatus
     source_ref: str | None = None
     source_published_at: datetime | None = None
@@ -362,10 +401,21 @@ class CanonicalQuoteSeriesObservation(BaseModel):
     @model_validator(mode="after")
     def validate_status_value(self) -> "CanonicalQuoteSeriesObservation":
         if self.status == "withdrawn":
-            if self.value is not None:
-                raise ValueError("withdrawn observation must have a null value")
+            if any(
+                value is not None
+                for value in (
+                    self.value,
+                    self.value_input_scale,
+                    self.numeric_scale_state,
+                )
+            ):
+                raise ValueError(
+                    "withdrawn observation must not carry numeric evidence"
+                )
         elif self.value is None or self.value <= 0:
             raise ValueError("non-withdrawn observation requires a positive value")
+        elif self.value_input_scale is None or self.numeric_scale_state is None:
+            raise ValueError("non-withdrawn observation requires numeric lineage")
         return self
 
 
@@ -395,7 +445,9 @@ class CanonicalQuoteSeriesCalculationDependency(BaseModel):
         if self.start_date is not None and self.start_date > self.end_date:
             raise ValueError("dependency start_date cannot be after end_date")
         if len(self.revision_ids) != len(self.payload_hashes):
-            raise ValueError("series dependency revisions and payload hashes must align")
+            raise ValueError(
+                "series dependency revisions and payload hashes must align"
+            )
         if len(self.revision_ids) != len(set(self.revision_ids)):
             raise ValueError("series dependency revision ids must be unique")
         if len(self.excluded_revision_ids) != len(self.excluded_payload_hashes):
@@ -443,13 +495,10 @@ class CanonicalQuoteSeriesResolution(BaseModel):
             raise ValueError("since_inception must not use an artificial start_date")
         if self.start_date is not None and self.start_date > self.end_date:
             raise ValueError("series resolution start_date cannot be after end_date")
-        if (
-            not self.quote_selection_policy_revision
-            and not {
-                "instrument_not_found",
-                "non_canonical_instrument_id",
-            }.intersection(self.reason_codes)
-        ):
+        if not self.quote_selection_policy_revision and not {
+            "instrument_not_found",
+            "non_canonical_instrument_id",
+        }.intersection(self.reason_codes):
             raise ValueError("series resolution requires policy revision")
         if self.quote_series_id is None:
             if self.metric_family is not None or self.quote_basis is not None:
@@ -464,8 +513,12 @@ class CanonicalQuoteSeriesResolution(BaseModel):
         else:
             if self.metric_family is None or self.quote_basis is None:
                 raise ValueError("selected series requires metric family and basis")
-            if any(point.quote_series_id != self.quote_series_id for point in self.points):
-                raise ValueError("series window cannot contain points from another series")
+            if any(
+                point.quote_series_id != self.quote_series_id for point in self.points
+            ):
+                raise ValueError(
+                    "series window cannot contain points from another series"
+                )
             if any(
                 observation.quote_series_id != self.quote_series_id
                 for observation in self.observations
@@ -519,11 +572,17 @@ class CanonicalQuoteSeriesResolution(BaseModel):
                 raise ValueError(
                     "series observations must be ordered and inside the window"
                 )
-            if self.first_observation_date != dates[0] or self.last_observation_date != dates[-1]:
+            if (
+                self.first_observation_date != dates[0]
+                or self.last_observation_date != dates[-1]
+            ):
                 raise ValueError(
                     "series coverage boundary dates do not match observations"
                 )
-        elif self.first_observation_date is not None or self.last_observation_date is not None:
+        elif (
+            self.first_observation_date is not None
+            or self.last_observation_date is not None
+        ):
             raise ValueError("empty series window cannot expose boundary dates")
         complete_revision_ids = {
             observation.revision_id
@@ -536,7 +595,9 @@ class CanonicalQuoteSeriesResolution(BaseModel):
             )
         if self.resolution_status == "resolved":
             if not self.points or self.coverage_status == "unavailable":
-                raise ValueError("resolved series requires available in-window observations")
+                raise ValueError(
+                    "resolved series requires available in-window observations"
+                )
         elif not self.reason_codes or self.coverage_status == "complete":
             raise ValueError(
                 "unavailable series requires reasons and cannot claim complete coverage"

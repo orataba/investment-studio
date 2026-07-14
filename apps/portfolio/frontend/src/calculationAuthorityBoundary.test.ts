@@ -5,19 +5,27 @@ import performanceNavChartSource from './components/PerformanceNavChart.tsx?raw'
 import portfolioWorkspaceLayoutSource from './components/PortfolioWorkspaceLayout.tsx?raw'
 import apiSource from './lib/api.ts?raw'
 import formatSource from './lib/format.ts?raw'
-import performanceSeriesSource from './lib/performanceSeries.ts?raw'
+import overviewPublicationSource from './lib/overviewPublication.ts?raw'
+import positionLotAggregationSource from './lib/positionLotAggregation.ts?raw'
+import accountsSource from './pages/AccountsPage.tsx?raw'
 import overviewSource from './pages/OverviewPage.tsx?raw'
 import performanceSource from './pages/PerformancePage.tsx?raw'
 import portfolioHomeSource from './pages/PortfolioHomePage.tsx?raw'
 import portfolioSecurityDetailSource from './pages/PortfolioSecurityDetailPage.tsx?raw'
 import portfoliosSource from './pages/PortfoliosPage.tsx?raw'
-import researchSource from './pages/ResearchPage.tsx?raw'
+import allocationLabSource from './pages/AllocationLabPage.tsx?raw'
 import riskSource from './pages/RiskPage.tsx?raw'
+import transactionsSource from './pages/TransactionsPage.tsx?raw'
 
 describe('portfolio frontend calculation authority boundary', () => {
-  it('uses the backend return calendar and has no daily-return calendar engine', () => {
-    expect(apiSource).toContain('/performance/calendar')
-    expect(overviewSource).toContain('getPortfolioReturnCalendar')
+  it('uses one published report for Overview performance and its return calendar', () => {
+    expect(apiSource).toContain('/performance/report')
+    expect(overviewSource).toContain('loadOverviewPublishedBundle')
+    expect(overviewPublicationSource).toContain('getPortfolioPerformanceReport')
+    expect(overviewPublicationSource).toContain("axis: 'instrument'")
+    expect(overviewPublicationSource).toContain("frequency: 'monthly'")
+    expect(overviewSource).not.toContain('getPortfolioPerformance(')
+    expect(overviewSource).not.toContain('getPortfolioReturnCalendar')
     expect(overviewSource).not.toContain("from '../lib/monthlyReturns'")
     expect(overviewSource).not.toContain('buildMonthlyBuckets')
     expect(overviewSource).not.toContain('buildMonthlyReturnMatrixRows')
@@ -39,10 +47,16 @@ describe('portfolio frontend calculation authority boundary', () => {
     expect(overviewSource).not.toMatch(/day_change_value_base\s*\?\?\s*row\.day_change_value/)
   })
 
-  it('builds the TWR display index exclusively from cumulative TWR', () => {
-    expect(performanceSeriesSource).toContain('point.cumulative_twr')
-    expect(performanceSeriesSource).not.toContain('daily_twr')
-    expect(performanceSeriesSource).not.toContain('compounded')
+  it('plots only published NAV and bounded method50 wealth/drawdown facts', () => {
+    expect(overviewSource).toContain('point.closing_nav')
+    expect(overviewSource).toContain('point.wealth_index_method50')
+    expect(overviewSource).toContain('point.drawdown_method50')
+    expect(overviewSource).toContain(
+      'performanceReport?.portfolio_bridge?.economic_pnl_exact',
+    )
+    expect(overviewSource).toContain('exactDecimalToDisplayNumber')
+    expect(overviewSource).not.toContain('buildTwrIndexPoints')
+    expect(overviewSource).not.toContain("from '../lib/performanceSeries'")
   })
 
   it('does not derive chart returns or drawdowns from plotted points', () => {
@@ -54,7 +68,7 @@ describe('portfolio frontend calculation authority boundary', () => {
     expect(instrumentChartSource).not.toContain('activePoint.value - firstPoint.value')
   })
 
-  it('does not synthesize missing research metrics from backtest points', () => {
+  it('does not synthesize missing allocation research metrics from policy replay points', () => {
     ;[
       'drawdownPoints',
       'currentDrawdownFromPoints',
@@ -62,7 +76,7 @@ describe('portfolio frontend calculation authority boundary', () => {
       'activeCurrentDrawdown',
       'metricDifference',
       'excessReturnMetric',
-    ].forEach((forbidden) => expect(researchSource).not.toContain(forbidden))
+    ].forEach((forbidden) => expect(allocationLabSource).not.toContain(forbidden))
   })
 
   it('renders Risk exclusively from the backend-authoritative risk workspace', () => {
@@ -88,17 +102,13 @@ describe('portfolio frontend calculation authority boundary', () => {
     expect(riskSource).not.toContain('getPortfolioTaxonomyCatalog')
   })
 
-  it('does not calculate benchmark or relative performance in the browser', () => {
-    expect(apiSource).toContain('/performance/comparison')
-    expect(performanceSource).toContain('getPortfolioPerformanceComparison')
-    expect(performanceSource).toContain('comparison.differences')
-    expect(performanceSource).toContain('summary.calmar_ratio')
-    expect(performanceSource).toContain(
-      'annualizedReturnDisplayEligible(historyReliability)',
-    )
-    expect(performanceSource).toContain('comparison?.history_reliability')
-    expect(performanceSource).toContain('benchmarkComparison.coverage.benchmark_quote_basis')
-    expect(performanceSource).toContain('benchmarkComparison.unavailable_reasons')
+  it('renders authoritative Decimal performance facts without browser-side benchmark math', () => {
+    expect(performanceSource).toContain('getPortfolioPerformanceReport')
+    expect(performanceSource).toContain('performance?.cumulative_twr?.method50')
+    expect(performanceSource).toContain('statistics?.annualized_volatility?.method50')
+    expect(performanceSource).toContain('xirr.rate?.method50')
+    expect(performanceSource).toContain('bridge?.economic_pnl_exact')
+    expect(performanceSource).toContain('exactDecimalToDisplayNumber')
     ;[
       'sampleStddev',
       'sampleCovariance',
@@ -114,6 +124,8 @@ describe('portfolio frontend calculation authority boundary', () => {
       'getPortfolioInstrumentPriceChart',
       'buildPerformanceHistoryReliability',
       'MIN_ANNUALIZED_RETURN_HISTORY_DAYS',
+      'getPortfolioPerformanceComparison',
+      'comparison.differences',
       'Date.parse',
     ].forEach((forbidden) => expect(performanceSource).not.toContain(forbidden))
     expect(performanceSource).not.toMatch(/summary\.[a-z_]+\s*-\s*benchmark/)
@@ -157,5 +169,53 @@ describe('portfolio frontend calculation authority boundary', () => {
     expect(overviewSource).toContain('defaultPlanningTaxonomyId')
     expect(overviewSource).not.toMatch(/instrument_type\s*===\s*['\"]etf['\"]/i)
     expect(overviewSource).not.toMatch(/rotation/i)
+  })
+
+  it('uses only the taxonomy snapshot sealed with Overview holdings', () => {
+    expect(overviewSource).toContain('sealed_display_config.taxonomy')
+    expect(overviewSource).not.toContain('getPortfolioTaxonomyCatalog')
+    expect(overviewSource).not.toContain('getWorkspaceSummaryForPortfolio')
+    expect(overviewPublicationSource).not.toContain('getPortfolioTaxonomyCatalog')
+    expect(overviewPublicationSource).not.toContain('getWorkspaceSummaryForPortfolio')
+  })
+
+  it('keeps Accounts on the exact current Portfolio Daily publication', () => {
+    expect(accountsSource).toContain('workspace.publication.publication_id')
+    expect(accountsSource).toContain('account_value_base_exact')
+    expect(accountsSource).toContain('settled_cash_local')
+    expect(accountsSource).toContain('cost_basis_local_exact')
+    expect(accountsSource).not.toContain('derived_cash_balance')
+    expect(accountsSource).not.toContain('ledger_postings')
+    expect(accountsSource).not.toContain('LedgerPosting')
+  })
+
+  it('does not live-replay lots or postings in the transaction workspace', () => {
+    expect(transactionsSource).not.toContain('position-preview')
+    expect(transactionsSource).not.toContain('positionPreview')
+    expect(transactionsSource).not.toContain('ledger_postings')
+    expect(transactionsSource).not.toContain("inspectorTab === 'lots'")
+    expect(transactionsSource).not.toContain("inspectorTab === 'postings'")
+  })
+
+  it('keeps market quotes as references and transaction evidence as exact strings', () => {
+    expect(apiSource).toContain('suggested_transaction_price: string | null')
+    expect(apiSource).toContain('rate: string')
+    expect(transactionsSource).toContain('exactDecimalMultiply')
+    expect(transactionsSource).toContain('counter_amount: actualCounterAmount')
+    expect(transactionsSource).not.toContain('computedCounterAmount')
+    expect(transactionsSource).not.toContain('exactDecimalQuantizeHalfEven')
+    expect(transactionsSource).not.toContain('sharedFxRate.rate.toFixed')
+    expect(transactionsSource).not.toMatch(/Math\.abs\(targetAmount\s*-\s*sourceAmount\s*\*/)
+  })
+
+  it('models published positions and open lots as exact decimal strings', () => {
+    expect(apiSource).toContain('type PortfolioDailyPublishedPositionRecord')
+    expect(apiSource).toContain('type PortfolioDailyPublishedLotRecord')
+    expect(apiSource).toContain('open_quantity_exact: string')
+    expect(apiSource).toContain('cost_basis_local_exact: string')
+    expect(positionLotAggregationSource).toContain('exactDecimalSum')
+    ;['remaining_quantity: number', 'realizations:', 'current_market_value', 'status: \'closed\''].forEach(
+      (forbidden) => expect(apiSource).not.toContain(forbidden),
+    )
   })
 })

@@ -50,6 +50,7 @@ fi
 
 for package_root in \
   "$PROJECT_ROOT/packages/instrument-core/python" \
+  "$PROJECT_ROOT/packages/calculation-core/python" \
   "$PROJECT_ROOT/apps/platform/backend" \
   "$PROJECT_ROOT/apps/watchlist/backend" \
   "$PROJECT_ROOT/apps/portfolio/backend"; do

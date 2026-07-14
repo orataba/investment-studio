@@ -24,22 +24,79 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from portfolio_app.db.base import Base
 
 
+def _logical_numeric_domain(
+    column_name: str,
+    *,
+    precision: int,
+    scale: int,
+) -> str:
+    """Fail closed on PostgreSQL without NUMERIC(p,s) pre-CHECK rounding."""
+
+    integer_digits = precision - scale
+    return (
+        f"({column_name} IS NULL OR ("
+        f"{column_name}::text NOT IN ('NaN', 'Infinity', '-Infinity') "
+        f"AND abs({column_name}) < 1e{integer_digits} "
+        f"AND {column_name} = trunc({column_name}, {scale})))"
+    )
+
+
+def _all_logical_numeric_domains(
+    column_names: tuple[str, ...],
+    *,
+    precision: int,
+    scale: int,
+) -> str:
+    return " AND ".join(
+        _logical_numeric_domain(
+            column_name,
+            precision=precision,
+            scale=scale,
+        )
+        for column_name in column_names
+    )
+
+
+def _all_values_fit_declared_input_scale(
+    column_names: tuple[str, ...],
+) -> str:
+    return " AND ".join(
+        f"({column_name} IS NULL OR {column_name} = "
+        f"trunc({column_name}, {column_name}_input_scale))"
+        for column_name in column_names
+    )
+
+
+def _exact_numeric_storage(*, scale: int) -> Numeric:
+    """Keep SQLite migration fixtures stable; PostgreSQL checks raw NUMERIC."""
+
+    return Numeric().with_variant(Numeric(38, scale), "sqlite")
+
+
 class PortfolioRecordModel(Base):
     __tablename__ = "portfolio_record"
+    __table_args__ = (
+        CheckConstraint(
+            "operating_profile IN ('standard_taxonomy', 'external_etf_rotation')",
+            name="ck_portfolio_record_operating_profile",
+        ),
+    )
 
     portfolio_id: Mapped[str] = mapped_column(String, primary_key=True)
     portfolio_name: Mapped[str] = mapped_column(String, nullable=False)
     base_currency: Mapped[str] = mapped_column(String, nullable=False)
+    operating_profile: Mapped[str] = mapped_column(String(32), nullable=False)
     valuation_timezone: Mapped[str] = mapped_column(String, nullable=False)
     valuation_cutoff_policy: Mapped[str] = mapped_column(String, nullable=False)
-    as_of_date: Mapped[date | None] = mapped_column(Date)
-    nav: Mapped[float | None] = mapped_column(default=0.0)
-    day_change_value: Mapped[float | None] = mapped_column(default=0.0)
-    day_change_pct: Mapped[float | None] = mapped_column(default=0.0)
-    securities_count: Mapped[int] = mapped_column(nullable=False, default=0)
     sort_order: Mapped[int] = mapped_column(nullable=False, default=0)
     default_planning_taxonomy_id: Mapped[str | None] = mapped_column(String)
     risk_policy_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+    )
 
     accounts: Mapped[list["AccountRecordModel"]] = relationship(
         back_populates="portfolio",
@@ -52,31 +109,18 @@ class PortfolioRecordModel(Base):
         back_populates="portfolio",
         cascade="all, delete-orphan",
     )
-    research_settings: Mapped["ResearchSettingsRecordModel | None"] = relationship(
+    allocation_research_settings: Mapped[
+        "AllocationResearchSettingsRecordModel | None"
+    ] = relationship(
         back_populates="portfolio",
         cascade="all, delete-orphan",
         uselist=False,
     )
-    research_runs: Mapped[list["ResearchRunRecordModel"]] = relationship(
+    allocation_research_runs: Mapped[
+        list["AllocationResearchRunRecordModel"]
+    ] = relationship(
         back_populates="portfolio",
         cascade="all, delete-orphan",
-    )
-    daily_snapshots: Mapped[list["PortfolioDailySnapshotModel"]] = relationship(
-        back_populates="portfolio",
-        cascade="all, delete-orphan",
-    )
-    daily_holding_snapshots: Mapped[list["PortfolioDailyHoldingSnapshotModel"]] = relationship(
-        back_populates="portfolio",
-        cascade="all, delete-orphan",
-    )
-    daily_contribution_slices: Mapped[list["PortfolioDailyContributionSliceModel"]] = relationship(
-        back_populates="portfolio",
-        cascade="all, delete-orphan",
-    )
-    calculation_state: Mapped["PortfolioCalculationStateModel | None"] = relationship(
-        back_populates="portfolio",
-        cascade="all, delete-orphan",
-        uselist=False,
     )
     table_view_stores: Mapped[list["PortfolioTableViewStoreModel"]] = relationship(
         back_populates="portfolio",
@@ -86,131 +130,6 @@ class PortfolioRecordModel(Base):
         back_populates="portfolio",
         cascade="all, delete-orphan",
     )
-
-
-class PortfolioDailySnapshotModel(Base):
-    __tablename__ = "portfolio_daily_snapshot"
-    __table_args__ = (
-        CheckConstraint(
-            "nav_coverage_state IN ('complete', 'partial', 'unavailable')",
-            name="ck_portfolio_daily_snapshot_nav_coverage_state",
-        ),
-        CheckConstraint(
-            "book_pnl_coverage_state IN ('complete', 'partial', 'unavailable')",
-            name="ck_portfolio_daily_snapshot_book_pnl_coverage_state",
-        ),
-        Index(
-            "ix_portfolio_daily_snapshot_portfolio_nav_coverage",
-            "portfolio_id",
-            "nav_coverage_state",
-            "as_of_date",
-        ),
-    )
-
-    portfolio_id: Mapped[str] = mapped_column(
-        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    as_of_date: Mapped[date] = mapped_column(Date, primary_key=True)
-    nav_coverage_state: Mapped[str] = mapped_column(String, nullable=False)
-    nav_coverage_reason_codes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-    book_pnl_coverage_state: Mapped[str] = mapped_column(String, nullable=False)
-    book_pnl_coverage_reason_codes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-    nav: Mapped[float | None]
-    beginning_nav: Mapped[float | None]
-    ending_nav: Mapped[float | None]
-    daily_twr: Mapped[float | None]
-    cumulative_twr: Mapped[float | None]
-    drawdown: Mapped[float | None]
-    snapshot_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
-    calculated_at: Mapped[str] = mapped_column(String, nullable=False)
-
-    portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="daily_snapshots")
-
-
-class PortfolioDailyHoldingSnapshotModel(Base):
-    __tablename__ = "portfolio_daily_holding_snapshot"
-    __table_args__ = (
-        Index("ix_portfolio_daily_holding_portfolio_date", "portfolio_id", "as_of_date"),
-        Index("ix_portfolio_daily_holding_instrument_date", "portfolio_id", "instrument_id", "as_of_date"),
-        Index("ix_portfolio_daily_holding_account_date", "portfolio_id", "account_id", "as_of_date"),
-    )
-
-    portfolio_id: Mapped[str] = mapped_column(
-        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    as_of_date: Mapped[date] = mapped_column(Date, primary_key=True)
-    account_id: Mapped[str] = mapped_column(String, primary_key=True)
-    instrument_id: Mapped[str] = mapped_column(String, primary_key=True)
-    currency: Mapped[str] = mapped_column(String, nullable=False)
-    quantity: Mapped[float] = mapped_column(nullable=False, default=0.0)
-    cost_basis: Mapped[float | None]
-    cost_basis_base: Mapped[float | None]
-    last_price: Mapped[float | None]
-    market_value: Mapped[float | None]
-    market_value_base: Mapped[float | None]
-    portfolio_weight: Mapped[float | None]
-    holding_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
-    calculated_at: Mapped[str] = mapped_column(String, nullable=False)
-
-    portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="daily_holding_snapshots")
-
-
-class PortfolioDailyContributionSliceModel(Base):
-    __tablename__ = "portfolio_daily_contribution_slice"
-    __table_args__ = (
-        CheckConstraint(
-            "nav_coverage_state IN ('complete', 'partial', 'unavailable')",
-            name="ck_portfolio_daily_contribution_slice_nav_coverage_state",
-        ),
-        CheckConstraint(
-            "book_pnl_coverage_state IN ('complete', 'partial', 'unavailable')",
-            name="ck_portfolio_daily_contribution_slice_book_pnl_coverage_state",
-        ),
-        Index("ix_portfolio_daily_contribution_axis_date", "portfolio_id", "axis", "as_of_date"),
-        Index("ix_portfolio_daily_contribution_group_date", "portfolio_id", "axis", "group_key", "as_of_date"),
-    )
-
-    portfolio_id: Mapped[str] = mapped_column(
-        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    as_of_date: Mapped[date] = mapped_column(Date, primary_key=True)
-    axis: Mapped[str] = mapped_column(String, primary_key=True)
-    group_key: Mapped[str] = mapped_column(String, primary_key=True)
-    group_label: Mapped[str] = mapped_column(String, nullable=False)
-    nav_coverage_state: Mapped[str] = mapped_column(String, nullable=False)
-    nav_coverage_reason_codes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-    book_pnl_coverage_state: Mapped[str] = mapped_column(String, nullable=False)
-    book_pnl_coverage_reason_codes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-    total_pnl: Mapped[float | None]
-    daily_contribution: Mapped[float | None]
-    slice_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
-    calculated_at: Mapped[str] = mapped_column(String, nullable=False)
-
-    portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="daily_contribution_slices")
-
-
-class PortfolioCalculationStateModel(Base):
-    __tablename__ = "portfolio_calculation_state"
-
-    portfolio_id: Mapped[str] = mapped_column(
-        ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    daily_snapshot_status: Mapped[str] = mapped_column(String, nullable=False, default="stale")
-    dirty_from: Mapped[date | None] = mapped_column(Date)
-    refreshed_from: Mapped[date | None] = mapped_column(Date)
-    refreshed_to: Mapped[date | None] = mapped_column(Date)
-    refreshed_at: Mapped[str | None] = mapped_column(String)
-    refresh_request_id: Mapped[str | None] = mapped_column(String)
-    refresh_started_at: Mapped[str | None] = mapped_column(String)
-    refresh_completed_at: Mapped[str | None] = mapped_column(String)
-    source_market_data_updated_at: Mapped[str | None] = mapped_column(String)
-    error_message: Mapped[str | None] = mapped_column(String)
-
-    portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="calculation_state")
 
 
 class TransactionIdAllocatorModel(Base):
@@ -513,6 +432,48 @@ class TransactionRevisionRecordModel(Base):
             name="payload_hash_shape",
         ),
         CheckConstraint(
+            _all_logical_numeric_domains(
+                ("quantity", "price"),
+                precision=38,
+                scale=12,
+            ),
+            name="quantity_price_exact_domain",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            _all_logical_numeric_domains(
+                ("gross_amount", "counter_amount", "fees", "taxes"),
+                precision=38,
+                scale=8,
+            ),
+            name="amount_exact_domain",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            _logical_numeric_domain(
+                "quoted_fx_rate",
+                precision=38,
+                scale=18,
+            ),
+            name="quoted_fx_rate_exact_domain",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            _all_values_fit_declared_input_scale(
+                (
+                    "quantity",
+                    "price",
+                    "gross_amount",
+                    "counter_amount",
+                    "quoted_fx_rate",
+                    "fees",
+                    "taxes",
+                )
+            ),
+            name="numeric_value_fits_input_scale",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "payload_hash ~ '^sha256:[0-9a-f]{64}$'",
+            name="payload_hash_hex",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
             "payload_schema_version = 'transaction-revision.v1'",
             name="payload_schema_version",
         ),
@@ -529,8 +490,14 @@ class TransactionRevisionRecordModel(Base):
             "AND account_id IS NULL AND settlement_cash_account_id IS NULL "
             "AND instrument_id IS NULL AND instrument_snapshot_json IS NULL "
             "AND quantity IS NULL AND price IS NULL AND gross_amount IS NULL "
-            "AND counter_amount IS NULL AND fx_rate IS NULL AND fees IS NULL "
-            "AND taxes IS NULL AND currency IS NULL AND transfer_scope IS NULL "
+            "AND counter_amount IS NULL AND quoted_fx_rate IS NULL AND fees IS NULL "
+            "AND taxes IS NULL AND consideration_basis IS NULL "
+            "AND numeric_scale_state IS NULL AND quantity_input_scale IS NULL "
+            "AND price_input_scale IS NULL AND gross_amount_input_scale IS NULL "
+            "AND counter_amount_input_scale IS NULL "
+            "AND quoted_fx_rate_input_scale IS NULL "
+            "AND fees_input_scale IS NULL AND taxes_input_scale IS NULL "
+            "AND currency IS NULL AND transfer_scope IS NULL "
             "AND transfer_object_type IS NULL AND transfer_group_id IS NULL "
             "AND counterparty_account_id IS NULL AND note IS NULL) OR "
             "(NOT is_tombstone AND transaction_type IS NOT NULL "
@@ -538,7 +505,8 @@ class TransactionRevisionRecordModel(Base):
             "AND trade_at IS NOT NULL AND length(trim(trade_timezone)) > 0 "
             "AND trade_time_is_estimated IS NOT NULL AND settlement_date IS NOT NULL "
             "AND account_id IS NOT NULL AND gross_amount IS NOT NULL "
-            "AND fees IS NOT NULL AND taxes IS NOT NULL AND currency IS NOT NULL))",
+            "AND fees IS NOT NULL AND taxes IS NOT NULL "
+            "AND numeric_scale_state IS NOT NULL AND currency IS NOT NULL))",
             name="tombstone_payload",
         ),
         CheckConstraint(
@@ -562,6 +530,12 @@ class TransactionRevisionRecordModel(Base):
             name="acquisition_not_after_trade",
         ),
         CheckConstraint(
+            "is_tombstone OR ("
+            "trade_date = (trade_at AT TIME ZONE trade_timezone)::date AND "
+            "trade_time = (trade_at AT TIME ZONE trade_timezone)::time)",
+            name="trade_moment_consistency",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
             "is_tombstone OR currency IN ('USD', 'HKD', 'CNY')",
             name="supported_currency",
         ),
@@ -572,9 +546,57 @@ class TransactionRevisionRecordModel(Base):
         CheckConstraint("price IS NULL OR price > 0", name="positive_price"),
         CheckConstraint("gross_amount IS NULL OR gross_amount >= 0", name="nonnegative_gross_amount"),
         CheckConstraint("counter_amount IS NULL OR counter_amount > 0", name="positive_counter_amount"),
-        CheckConstraint("fx_rate IS NULL OR fx_rate > 0", name="positive_fx_rate"),
+        CheckConstraint(
+            "quoted_fx_rate IS NULL OR quoted_fx_rate > 0",
+            name="positive_quoted_fx_rate",
+        ),
         CheckConstraint("fees IS NULL OR fees >= 0", name="nonnegative_fees"),
         CheckConstraint("taxes IS NULL OR taxes >= 0", name="nonnegative_taxes"),
+        CheckConstraint(
+            "numeric_scale_state IS NULL OR numeric_scale_state IN "
+            "('declared', 'legacy_inferred')",
+            name="numeric_scale_state",
+        ),
+        CheckConstraint(
+            "consideration_basis IS NULL OR consideration_basis IN "
+            "('exact_quantity_price', 'source_reported')",
+            name="consideration_basis",
+        ),
+        CheckConstraint(
+            "((quantity IS NULL AND quantity_input_scale IS NULL) OR "
+            "(quantity IS NOT NULL AND quantity_input_scale IS NOT NULL AND quantity_input_scale BETWEEN 0 AND 12)) "
+            "AND ((price IS NULL AND price_input_scale IS NULL) OR "
+            "(price IS NOT NULL AND price_input_scale IS NOT NULL AND price_input_scale BETWEEN 0 AND 12)) "
+            "AND ((gross_amount IS NULL AND gross_amount_input_scale IS NULL) OR "
+            "(gross_amount IS NOT NULL AND gross_amount_input_scale IS NOT NULL AND gross_amount_input_scale BETWEEN 0 AND 8)) "
+            "AND ((counter_amount IS NULL AND counter_amount_input_scale IS NULL) OR "
+            "(counter_amount IS NOT NULL AND counter_amount_input_scale IS NOT NULL AND counter_amount_input_scale BETWEEN 0 AND 8)) "
+            "AND ((quoted_fx_rate IS NULL AND quoted_fx_rate_input_scale IS NULL) OR "
+            "(quoted_fx_rate IS NOT NULL AND quoted_fx_rate_input_scale IS NOT NULL AND quoted_fx_rate_input_scale BETWEEN 0 AND 18)) "
+            "AND ((fees IS NULL AND fees_input_scale IS NULL) OR "
+            "(fees IS NOT NULL AND fees_input_scale IS NOT NULL AND fees_input_scale BETWEEN 0 AND 8)) "
+            "AND ((taxes IS NULL AND taxes_input_scale IS NULL) OR "
+            "(taxes IS NOT NULL AND taxes_input_scale IS NOT NULL AND taxes_input_scale BETWEEN 0 AND 8))",
+            name="numeric_input_scale_pairing",
+        ),
+        CheckConstraint(
+            "is_tombstone OR ((transaction_type IN "
+            "('buy', 'sell', 'dividend_reinvestment') OR "
+            "(transaction_type = 'opening_balance' AND instrument_id IS NOT NULL)) "
+            "AND consideration_basis IS NOT NULL AND quantity IS NOT NULL) OR "
+            "(transaction_type NOT IN ('buy', 'sell', 'dividend_reinvestment', "
+            "'opening_balance') AND consideration_basis IS NULL) OR "
+            "(transaction_type = 'opening_balance' AND instrument_id IS NULL "
+            "AND consideration_basis IS NULL)",
+            name="consideration_basis_scope",
+        ),
+        CheckConstraint(
+            "is_tombstone OR consideration_basis <> 'exact_quantity_price' OR "
+            "(price IS NOT NULL AND gross_amount = quantity * price AND "
+            "lower(instrument_snapshot_json ->> 'instrument_type') IN "
+            "('equity', 'fund', 'etf', 'exchange_traded_fund'))",
+            name="exact_consideration_contract",
+        ).ddl_if(dialect="postgresql"),
         CheckConstraint(
             "is_tombstone OR entitlement_date IS NULL OR transaction_type IN ('dividend', 'coupon', 'fee', 'tax')",
             name="entitlement_applicability",
@@ -594,10 +616,10 @@ class TransactionRevisionRecordModel(Base):
             "AND instrument_id IS NULL AND instrument_snapshot_json IS NULL "
             "AND quantity IS NULL AND price IS NULL "
             "AND settlement_cash_account_id IS NULL "
-            "AND counter_amount IS NOT NULL AND fx_rate IS NOT NULL "
+            "AND counter_amount IS NOT NULL "
             "AND counterparty_account_id IS NOT NULL AND fees = 0 AND taxes = 0) "
             "OR (transaction_type <> 'fx_conversion' AND counter_amount IS NULL "
-            "AND fx_rate IS NULL))",
+            "AND quoted_fx_rate IS NULL))",
             name="fx_conversion_fields",
         ),
         CheckConstraint(
@@ -616,7 +638,7 @@ class TransactionRevisionRecordModel(Base):
         CheckConstraint(
             "is_tombstone OR ("
             "(transaction_type IN ('buy', 'sell') AND instrument_id IS NOT NULL "
-            "AND quantity IS NOT NULL AND price IS NOT NULL AND gross_amount > 0) OR "
+            "AND quantity IS NOT NULL AND gross_amount > 0) OR "
             "(transaction_type IN ('dividend', 'coupon', 'return_of_capital') "
             "AND instrument_id IS NOT NULL AND quantity IS NULL AND price IS NULL) OR "
             "(transaction_type = 'dividend_reinvestment' AND instrument_id IS NOT NULL "
@@ -654,6 +676,11 @@ class TransactionRevisionRecordModel(Base):
             "is_tombstone OR instrument_id IS NOT NULL OR instrument_snapshot_json IS NULL",
             name="snapshot_without_instrument",
         ),
+        CheckConstraint(
+            "instrument_snapshot_json IS NULL OR "
+            "json_typeof(instrument_snapshot_json) = 'object'",
+            name="instrument_snapshot_object",
+        ).ddl_if(dialect="postgresql"),
         Index(
             "ix_transaction_revision_portfolio_trade",
             "portfolio_id",
@@ -726,13 +753,39 @@ class TransactionRevisionRecordModel(Base):
     settlement_cash_account_id: Mapped[str | None] = mapped_column(String)
     instrument_id: Mapped[str | None] = mapped_column(String)
     instrument_snapshot_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
-    quantity: Mapped[Decimal | None] = mapped_column(Numeric(38, 12))
-    price: Mapped[Decimal | None] = mapped_column(Numeric(38, 12))
-    gross_amount: Mapped[Decimal | None] = mapped_column(Numeric(38, 8))
-    counter_amount: Mapped[Decimal | None] = mapped_column(Numeric(38, 8))
-    fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
-    fees: Mapped[Decimal | None] = mapped_column(Numeric(38, 8))
-    taxes: Mapped[Decimal | None] = mapped_column(Numeric(38, 8))
+    # Physical PostgreSQL NUMERIC is deliberately unbounded.  NUMERIC(p,s)
+    # rounds before CHECK evaluation, so the exact logical domains above must
+    # enforce the ledger's 38,12 / 38,8 / 38,18 boundaries instead.
+    quantity: Mapped[Decimal | None] = mapped_column(
+        _exact_numeric_storage(scale=12)
+    )
+    price: Mapped[Decimal | None] = mapped_column(
+        _exact_numeric_storage(scale=12)
+    )
+    gross_amount: Mapped[Decimal | None] = mapped_column(
+        _exact_numeric_storage(scale=8)
+    )
+    counter_amount: Mapped[Decimal | None] = mapped_column(
+        _exact_numeric_storage(scale=8)
+    )
+    quoted_fx_rate: Mapped[Decimal | None] = mapped_column(
+        _exact_numeric_storage(scale=18)
+    )
+    fees: Mapped[Decimal | None] = mapped_column(
+        _exact_numeric_storage(scale=8)
+    )
+    taxes: Mapped[Decimal | None] = mapped_column(
+        _exact_numeric_storage(scale=8)
+    )
+    consideration_basis: Mapped[str | None] = mapped_column(String)
+    numeric_scale_state: Mapped[str | None] = mapped_column(String)
+    quantity_input_scale: Mapped[int | None] = mapped_column(Integer)
+    price_input_scale: Mapped[int | None] = mapped_column(Integer)
+    gross_amount_input_scale: Mapped[int | None] = mapped_column(Integer)
+    counter_amount_input_scale: Mapped[int | None] = mapped_column(Integer)
+    quoted_fx_rate_input_scale: Mapped[int | None] = mapped_column(Integer)
+    fees_input_scale: Mapped[int | None] = mapped_column(Integer)
+    taxes_input_scale: Mapped[int | None] = mapped_column(Integer)
     currency: Mapped[str | None] = mapped_column(String(3))
     transfer_scope: Mapped[str | None] = mapped_column(String)
     transfer_object_type: Mapped[str | None] = mapped_column(String)
@@ -786,13 +839,39 @@ class TransactionCurrentModel(Base):
     settlement_cash_account_id: Mapped[str | None] = mapped_column(String)
     instrument_id: Mapped[str | None] = mapped_column(String)
     instrument_snapshot_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
-    quantity: Mapped[Decimal | None] = mapped_column(Numeric(38, 12))
-    price: Mapped[Decimal | None] = mapped_column(Numeric(38, 12))
-    gross_amount: Mapped[Decimal] = mapped_column(Numeric(38, 8), nullable=False)
-    counter_amount: Mapped[Decimal | None] = mapped_column(Numeric(38, 8))
-    fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
-    fees: Mapped[Decimal] = mapped_column(Numeric(38, 8), nullable=False)
-    taxes: Mapped[Decimal] = mapped_column(Numeric(38, 8), nullable=False)
+    quantity: Mapped[Decimal | None] = mapped_column(
+        _exact_numeric_storage(scale=12)
+    )
+    price: Mapped[Decimal | None] = mapped_column(
+        _exact_numeric_storage(scale=12)
+    )
+    gross_amount: Mapped[Decimal] = mapped_column(
+        _exact_numeric_storage(scale=8),
+        nullable=False,
+    )
+    counter_amount: Mapped[Decimal | None] = mapped_column(
+        _exact_numeric_storage(scale=8)
+    )
+    quoted_fx_rate: Mapped[Decimal | None] = mapped_column(
+        _exact_numeric_storage(scale=18)
+    )
+    fees: Mapped[Decimal] = mapped_column(
+        _exact_numeric_storage(scale=8),
+        nullable=False,
+    )
+    taxes: Mapped[Decimal] = mapped_column(
+        _exact_numeric_storage(scale=8),
+        nullable=False,
+    )
+    consideration_basis: Mapped[str | None] = mapped_column(String)
+    numeric_scale_state: Mapped[str] = mapped_column(String, nullable=False)
+    quantity_input_scale: Mapped[int | None] = mapped_column(Integer)
+    price_input_scale: Mapped[int | None] = mapped_column(Integer)
+    gross_amount_input_scale: Mapped[int] = mapped_column(Integer, nullable=False)
+    counter_amount_input_scale: Mapped[int | None] = mapped_column(Integer)
+    quoted_fx_rate_input_scale: Mapped[int | None] = mapped_column(Integer)
+    fees_input_scale: Mapped[int] = mapped_column(Integer, nullable=False)
+    taxes_input_scale: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     transfer_scope: Mapped[str | None] = mapped_column(String)
     transfer_object_type: Mapped[str | None] = mapped_column(String)
@@ -952,16 +1031,16 @@ class TargetSetLineRecordModel(Base):
     target_set: Mapped[TargetSetRecordModel] = relationship(back_populates="lines")
 
 
-class ResearchSettingsRecordModel(Base):
-    __tablename__ = "research_settings_record"
+class AllocationResearchSettingsRecordModel(Base):
+    __tablename__ = "allocation_research_settings_record"
     __table_args__ = (
         CheckConstraint(
             "as_of_mode IN ('dynamic', 'pinned')",
-            name="ck_research_settings_as_of_mode",
+            name="ck_allocation_research_settings_as_of_mode",
         ),
         CheckConstraint(
             "lookback_days IN (30, 90, 180, 366, 730)",
-            name="ck_research_settings_supported_lookback",
+            name="ck_allocation_research_settings_supported_lookback",
         ),
     )
 
@@ -983,25 +1062,34 @@ class ResearchSettingsRecordModel(Base):
     max_gross_exposure: Mapped[float | None]
     frozen_taxonomy_node_ids_json: Mapped[list[str] | None] = mapped_column(JSON)
     top_sleeve_weight_bounds_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
-    backtest_rebalance_frequency: Mapped[str] = mapped_column(String, nullable=False, default="1m")
-    backtest_benchmark_instrument_id: Mapped[str | None] = mapped_column(String)
+    policy_replay_rebalance_frequency: Mapped[str] = mapped_column(
+        String, nullable=False, default="1m"
+    )
+    policy_replay_benchmark_instrument_id: Mapped[str | None] = mapped_column(String)
     notes: Mapped[str | None] = mapped_column(String)
     updated_at: Mapped[str | None] = mapped_column(String)
 
-    portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="research_settings")
+    portfolio: Mapped[PortfolioRecordModel] = relationship(
+        back_populates="allocation_research_settings"
+    )
 
 
-class ResearchRunRecordModel(Base):
-    __tablename__ = "research_run_record"
+class AllocationResearchRunRecordModel(Base):
+    __tablename__ = "allocation_research_run_record"
     __table_args__ = (
-        Index("ix_research_run_record_portfolio_requested", "portfolio_id", "requested_at", "research_run_id"),
+        Index(
+            "ix_allocation_research_run_record_portfolio_requested",
+            "portfolio_id",
+            "requested_at",
+            "allocation_research_run_id",
+        ),
         CheckConstraint(
             "lookback_days IN (30, 90, 180, 366, 730)",
-            name="ck_research_run_supported_lookback",
+            name="ck_allocation_research_run_supported_lookback",
         ),
     )
 
-    research_run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    allocation_research_run_id: Mapped[str] = mapped_column(String, primary_key=True)
     portfolio_id: Mapped[str] = mapped_column(
         ForeignKey("portfolio_record.portfolio_id", ondelete="CASCADE"),
         nullable=False,
@@ -1021,4 +1109,6 @@ class ResearchRunRecordModel(Base):
     request_payload_json: Mapped[dict[str, object] | None] = mapped_column(JSON)
     error_message: Mapped[str | None] = mapped_column(String)
 
-    portfolio: Mapped[PortfolioRecordModel] = relationship(back_populates="research_runs")
+    portfolio: Mapped[PortfolioRecordModel] = relationship(
+        back_populates="allocation_research_runs"
+    )

@@ -3,20 +3,15 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Mapping
 
-from portfolio_app.services.performance import PerformanceDataIntegrityError
-
-
 MIN_ANNUALIZED_RETURN_HISTORY_DAYS = 365
 HISTORY_WINDOW_UNAVAILABLE = "performance_history_window_unavailable"
 ANNUALIZED_RETURN_HISTORY_BELOW_MINIMUM = (
     "annualized_return_history_below_minimum"
 )
-_HISTORY_GATED_SUMMARY_FIELDS = (
-    "annualized_twr",
-    "irr",
-    "mwror",
-    "calmar_ratio",
-)
+
+
+class PerformanceReliabilityError(ValueError):
+    """A published performance summary violates its reliability contract."""
 
 
 def _optional_date(value: object, *, field_name: str) -> date | None:
@@ -32,10 +27,10 @@ def _optional_date(value: object, *, field_name: str) -> date | None:
             try:
                 return date.fromisoformat(normalized)
             except ValueError as error:
-                raise PerformanceDataIntegrityError(
+                raise PerformanceReliabilityError(
                     f"Performance summary {field_name} must be an ISO date."
                 ) from error
-    raise PerformanceDataIntegrityError(
+    raise PerformanceReliabilityError(
         f"Performance summary {field_name} must be a date or null."
     )
 
@@ -46,7 +41,7 @@ def _non_negative_count(
 ) -> int:
     value = summary.get(field_name)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise PerformanceDataIntegrityError(
+        raise PerformanceReliabilityError(
             f"Performance summary {field_name} must be a non-negative integer."
         )
     return value
@@ -73,7 +68,7 @@ def build_performance_history_reliability(
     if start_date is None or end_date is None:
         reasons.append(HISTORY_WINDOW_UNAVAILABLE)
     elif end_date < start_date:
-        raise PerformanceDataIntegrityError(
+        raise PerformanceReliabilityError(
             "Performance summary end_date must be on or after start_date."
         )
     else:
@@ -128,23 +123,10 @@ def build_performance_history_reliability(
     }
 
 
-def apply_performance_history_reliability(
-    summary: Mapping[str, object],
-) -> dict[str, object]:
-    """Publish annualized return metrics only when the observed window qualifies."""
-    payload = dict(summary)
-    reliability = build_performance_history_reliability(summary)
-    payload["history_reliability"] = reliability
-    if not reliability["annualized_return_eligible"]:
-        for field_name in _HISTORY_GATED_SUMMARY_FIELDS:
-            payload[field_name] = None
-    return payload
-
-
 __all__ = [
     "ANNUALIZED_RETURN_HISTORY_BELOW_MINIMUM",
     "HISTORY_WINDOW_UNAVAILABLE",
     "MIN_ANNUALIZED_RETURN_HISTORY_DAYS",
-    "apply_performance_history_reliability",
+    "PerformanceReliabilityError",
     "build_performance_history_reliability",
 ]

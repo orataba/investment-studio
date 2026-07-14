@@ -4,8 +4,10 @@ set -euo pipefail
 LABEL_PREFIX="${LABEL_PREFIX:-com.orataba.portfolio-ops}"
 LAUNCH_AGENTS_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 domain="gui/$UID"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../service_inventory.sh"
 
-for service in platform-api watchlist-api portfolio-api platform-web watchlist-web portfolio-web market-data-refresh; do
+for service in "${PORTFOLIO_OPS_ALL_SERVICE_NAMES[@]}"; do
   label="$LABEL_PREFIX.$service"
   launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
   rm -f "$LAUNCH_AGENTS_DIR/$label.plist"

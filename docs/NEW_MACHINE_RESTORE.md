@@ -65,6 +65,10 @@ raw data directory 放入 Git。
 
 当前 Git 恢复点是 `2026-07-09 16:53 Asia/Shanghai` 的项目级快照，来自本地 `portfolio_ops` PostgreSQL 数据库，已包含 A 股 ETF 核心池导入、初始行情补数、All Covered watchlist 物化和本地数据库改名清理后的 Portfolio Operations 数据。它只包含 `instrument_registry`、`portfolio`、`watchlist` 三个 schema，不包含 `public` 或其他非项目 schema。
 
+这是一个明确支持的 legacy 三-schema 恢复点。恢复包装器会保留这三套业务数据，再按固定顺序执行
+`instrument_registry -> calculation_registry -> portfolio -> watchlist` 四条迁移链，创建新的
+`calculation_registry`；当前格式的四-schema dump 也可直接恢复。
+
 先校验 dump：
 
 ```bash
@@ -94,7 +98,7 @@ PORTFOLIO_OPS_RESTORE_AS_OF_DATE=YYYY-MM-DD \
 进程环境导出 `PORTFOLIO_OPS_DB_PASSWORD`，不要把值写入文档或 Git。
 
 恢复脚本会再次校验 checksum 和目标数据库，停止已安装的 launchd/systemd
-应用服务，断开残留连接，并在破坏性操作前把当前三个 schema 备份到
+应用服务，断开残留连接，并在破坏性操作前把当前实际存在的项目 schema（legacy 为三套，当前为四套）备份到
 `${XDG_STATE_HOME:-~/.local/state}/portfolio-operations-workbench/postgres-backups/`。
 恢复、Alembic 升级、Portfolio/Watchlist 全量重建或零告警审计任一步失败时，脚本会自动清理半恢复状态、还原该备份，
 然后再启动原先运行的服务。若自动回滚本身失败，服务会保持停止，且日志会
@@ -135,7 +139,7 @@ npm --prefix apps/portfolio/frontend install
 
 ## 7. 启动后端
 
-三个终端分别运行，均使用第 5 步的 venv：
+六个终端分别运行三个 API 和三个独立 worker，均使用第 5 步的 venv：
 
 ```bash
 source .venv/bin/activate
@@ -149,7 +153,22 @@ source .venv/bin/activate
 
 ```bash
 source .venv/bin/activate
+(cd apps/watchlist/backend && python -m watchlist_app.services.recalc_worker --worker-id-prefix manual-watchlist-recalc)
+```
+
+```bash
+source .venv/bin/activate
+(cd apps/platform/backend && python scripts/run_market_data_outbox_worker.py --worker-id-prefix manual-platform-market-data-outbox)
+```
+
+```bash
+source .venv/bin/activate
 (cd apps/portfolio/backend && uvicorn portfolio_app.main:app --host 127.0.0.1 --port 8001 --reload)
+```
+
+```bash
+source .venv/bin/activate
+(cd apps/portfolio/backend && python -m portfolio_app.calculations.portfolio_daily.worker --worker-id-prefix manual-portfolio-daily)
 ```
 
 ## 8. 启动前端
@@ -173,12 +192,18 @@ Vite 默认仅监听本机回环地址；如需跨设备访问，请通过受控
 ## 9. 健康检查
 
 ```bash
-curl --noproxy '*' http://127.0.0.1:8002/api/health
-curl --noproxy '*' http://127.0.0.1:8000/api/health
-curl --noproxy '*' http://127.0.0.1:8001/api/health
+curl --noproxy '*' http://127.0.0.1:8002/api/readiness
+curl --noproxy '*' http://127.0.0.1:8000/api/readiness
+curl --noproxy '*' http://127.0.0.1:8001/api/readiness
 ```
 
 如果健康检查失败，先看外部秘密目录中的对应运行时配置、数据库连接和 venv 依赖。
+使用 systemd 自定义端口时，恢复命令同时传入 installer 使用的
+`PLATFORM_API_PORT / WATCHLIST_API_PORT / PORTFOLIO_API_PORT` 与三个 `*_WEB_PORT`；
+恢复后的 readiness、页面 smoke 和 Portfolio 读契约会按这些端口执行。
+如 installer 使用了具体的 `API_HOST / WEB_HOST` 或单独的
+`API_HEALTH_HOST / WEB_HEALTH_HOST`，恢复命令也必须传入相同值；通配绑定地址会自动
+通过 `127.0.0.1` 探测。
 
 ## 10. 刷新快照之后的新数据
 
@@ -192,7 +217,6 @@ PYTHONPATH=/path/to/pm/apps/platform/backend:/path/to/pm/packages/instrument-cor
   --updated-by restore \
   --retry-failed-attempts 2 \
   --fail-on-item-failure \
-  --require-downstream-success \
   --json
 ```
 
@@ -200,7 +224,7 @@ PYTHONPATH=/path/to/pm/apps/platform/backend:/path/to/pm/packages/instrument-cor
 
 ## 11. 重建后台服务与定时任务
 
-macOS 在仓库根目录执行统一安装器。它会安装六个常驻 LaunchAgent，并注册每天
+macOS 在仓库根目录执行统一安装器。它会安装九个常驻 LaunchAgent，并注册每天
 本地时间 `21:00` 的独立行情刷新/自动重算任务；安装过程不会立即触发定时任务：
 
 ```bash

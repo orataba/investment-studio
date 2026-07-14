@@ -54,7 +54,7 @@ Clone the GitHub repository, then install:
 
 ### 2. Start PostgreSQL
 
-The repository includes a local Docker profile that creates the `portfolio_ops` database, `portfolio_ops` user, and the three schemas used by this workspace.
+The repository includes a local Docker profile that creates the `portfolio_ops` database, `portfolio_ops` user, and the four schemas used by this workspace.
 
 ```bash
 (cd infra/postgres && docker compose up -d)
@@ -64,7 +64,7 @@ until pg_isready -h 127.0.0.1 -p 5432 -U portfolio_ops -d portfolio_ops; do
 done
 ```
 
-Do not run `./infra/postgres/rebuild_local_schemas.sh` after restoring the dump unless you intentionally want to wipe the restored data. That script drops and recreates `instrument_registry`, `portfolio`, and `watchlist`.
+Do not run `./infra/postgres/rebuild_local_schemas.sh` after restoring the dump unless you intentionally want to wipe the restored data. That script drops and recreates `instrument_registry`, `calculation_registry`, `portfolio`, and `watchlist`.
 
 ### 3. Restore The Freeze Data
 
@@ -95,8 +95,9 @@ PORTFOLIO_OPS_RESTORE_AS_OF_DATE=YYYY-MM-DD \
 The restore wrapper does not accept a database URL; it constructs one from the
 explicit `PORTFOLIO_OPS_DB_*` target above and verifies `current_database()`
 before destructive work. It stops the installed local jobs, validates the dump
-checksum/archive, and takes a private pre-restore backup. It restores only the
-three project schemas, runs all current migrations, rebuilds Portfolio and
+checksum/archive, and takes a private pre-restore backup. It restores the
+legacy three-schema freeze, runs all four current migration chains (creating
+`calculation_registry`), rebuilds Portfolio and
 Watchlist for the explicit as-of date, and requires a zero-failure/zero-warning
 audit before restarting the jobs. A restore, migration, rebuild, or audit
 failure first rolls the database back; a successful rollback restores the

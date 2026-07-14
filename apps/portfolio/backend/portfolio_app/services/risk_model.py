@@ -10,18 +10,18 @@ import pandas as pd
 from portfolio_app.db.models import PortfolioRecordModel
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.calculation_frequency import CalculationFrequency
-from portfolio_app.services.performance import is_cash_holding_instrument_id
-from portfolio_app.services.research_solver import (
-    RESEARCH_COVARIANCE_MODEL_ID,
-    RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
-    RESEARCH_RISK_CONTRIBUTION_MODE,
-    SUPPORTED_RESEARCH_LOOKBACK_DAYS,
+from portfolio_app.services.holding_identity import is_cash_holding_instrument_id
+from portfolio_app.services.risk_math import (
+    DEFAULT_COVARIANCE_MODEL_ID,
+    DEFAULT_MISSING_RETURN_POLICY,
+    DEFAULT_RISK_CONTRIBUTION_MODE,
+    SUPPORTED_RISK_LOOKBACK_DAYS,
+    covariance_parameters_for_window,
     estimate_covariance,
     infer_periods_per_year,
+    min_observations_for_window,
     normalize_missing_return_policy,
     prepare_return_window_for_covariance,
-    research_covariance_parameters_for_window,
-    research_min_observations_for_window,
     risk_contribution_shares,
 )
 
@@ -61,8 +61,8 @@ def _safe_int(value: object, fallback: int) -> int:
 
 def _normalize_risk_window(value: object) -> int:
     lookback_days = _safe_int(value, DEFAULT_PORTFOLIO_RISK_LOOKBACK_DAYS)
-    if lookback_days not in SUPPORTED_RESEARCH_LOOKBACK_DAYS:
-        labels = ", ".join(PORTFOLIO_RISK_WINDOW_LABELS[days] for days in sorted(SUPPORTED_RESEARCH_LOOKBACK_DAYS))
+    if lookback_days not in SUPPORTED_RISK_LOOKBACK_DAYS:
+        labels = ", ".join(PORTFOLIO_RISK_WINDOW_LABELS[days] for days in sorted(SUPPORTED_RISK_LOOKBACK_DAYS))
         raise ValueError(f"Risk window must be one of {labels}.")
     return lookback_days
 
@@ -73,31 +73,31 @@ def _normalized_calculation_frequency(value: object) -> str:
 
 
 def _normalized_covariance_model(value: object) -> str:
-    normalized = str(value or RESEARCH_COVARIANCE_MODEL_ID).strip().lower()
-    return normalized if normalized in SUPPORTED_COVARIANCE_MODELS else RESEARCH_COVARIANCE_MODEL_ID
+    normalized = str(value or DEFAULT_COVARIANCE_MODEL_ID).strip().lower()
+    return normalized if normalized in SUPPORTED_COVARIANCE_MODELS else DEFAULT_COVARIANCE_MODEL_ID
 
 
 def _normalized_contribution_mode(value: object) -> str:
-    normalized = str(value or RESEARCH_RISK_CONTRIBUTION_MODE).strip().lower()
-    return normalized if normalized in SUPPORTED_CONTRIBUTION_MODES else RESEARCH_RISK_CONTRIBUTION_MODE
+    normalized = str(value or DEFAULT_RISK_CONTRIBUTION_MODE).strip().lower()
+    return normalized if normalized in SUPPORTED_CONTRIBUTION_MODES else DEFAULT_RISK_CONTRIBUTION_MODE
 
 
 def normalize_portfolio_risk_policy(
     raw_policy: dict[str, object] | None,
 ) -> dict[str, object]:
     source: dict[str, object] = {
-        "covariance_model_id": RESEARCH_COVARIANCE_MODEL_ID,
+        "covariance_model_id": DEFAULT_COVARIANCE_MODEL_ID,
         "lookback_days": DEFAULT_PORTFOLIO_RISK_LOOKBACK_DAYS,
         "calculation_frequency": "auto",
-        "missing_return_policy": RESEARCH_DEFAULT_MISSING_RETURN_POLICY,
-        "contribution_mode": RESEARCH_RISK_CONTRIBUTION_MODE,
+        "missing_return_policy": DEFAULT_MISSING_RETURN_POLICY,
+        "contribution_mode": DEFAULT_RISK_CONTRIBUTION_MODE,
     }
     if isinstance(raw_policy, dict):
         source.update({key: value for key, value in raw_policy.items() if value is not None})
 
     lookback_days = _normalize_risk_window(source.get("lookback_days"))
     missing_return_policy = normalize_missing_return_policy(
-        source.get("missing_return_policy") or RESEARCH_DEFAULT_MISSING_RETURN_POLICY
+        source.get("missing_return_policy") or DEFAULT_MISSING_RETURN_POLICY
     )
     return {
         "model_name": str(source.get("model_name") or PORTFOLIO_RISK_POLICY_MODEL_NAME),
@@ -120,7 +120,7 @@ def risk_min_observations_for_window(
     calculation_frequency: CalculationFrequency,
     lookback_days: int,
 ) -> int:
-    return research_min_observations_for_window(calculation_frequency, lookback_days)
+    return min_observations_for_window(calculation_frequency, lookback_days)
 
 
 def risk_window_label(lookback_days: int) -> str:
@@ -131,7 +131,7 @@ def risk_policy_covariance_parameters(
     calculation_frequency: CalculationFrequency,
     lookback_days: int,
 ) -> dict[str, object]:
-    return research_covariance_parameters_for_window(calculation_frequency, lookback_days)
+    return covariance_parameters_for_window(calculation_frequency, lookback_days)
 
 
 def portfolio_risk_model_snapshot(

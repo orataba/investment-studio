@@ -55,11 +55,17 @@ def test_instrument_registry_revisions_do_not_import_runtime_modules() -> None:
                 for package in RUNTIME_PACKAGE_NAMES
             )
         )
-        assert not offenders, f"{migration_path.name} imports runtime packages: {offenders}"
+        assert not offenders, (
+            f"{migration_path.name} imports runtime packages: {offenders}"
+        )
 
 
-def test_instrument_registry_migrations_upgrade_an_empty_database(tmp_path, monkeypatch) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'instrument-registry-migrations.db'}"
+def test_instrument_registry_migrations_upgrade_an_empty_database(
+    tmp_path, monkeypatch
+) -> None:
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'instrument-registry-migrations.db'}"
+    )
     monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
     monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "")
 
@@ -70,38 +76,52 @@ def test_instrument_registry_migrations_upgrade_an_empty_database(tmp_path, monk
     engine = create_engine(database_url)
     with engine.connect() as connection:
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        instruments = connection.execute(
-            text(
-                """
+        instruments = (
+            connection.execute(
+                text(
+                    """
                 SELECT instrument_id, instrument_name, instrument_type, currency,
                        quote_selection_policy_json, source_settings_json,
                        refresh_status_json, lifecycle_state_json
                 FROM instrument
                 ORDER BY instrument_id
                 """
+                )
             )
-        ).mappings().all()
-        identifiers = connection.execute(
-            text(
-                """
+            .mappings()
+            .all()
+        )
+        identifiers = (
+            connection.execute(
+                text(
+                    """
                 SELECT instrument_id, identifier_type, identifier_value, is_primary
                 FROM instrument_identifier
                 ORDER BY instrument_id
                 """
+                )
             )
-        ).mappings().all()
-        fact_counts = connection.execute(
-            text(
+            .mappings()
+            .all()
+        )
+        fact_counts = (
+            connection.execute(
+                text(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM quote_series) AS series_count,
+                        (SELECT COUNT(*) FROM quote_observation) AS observation_count,
+                        (SELECT COUNT(*) FROM quote_observation_revision) AS revision_count,
+                        (SELECT COUNT(*) FROM market_data_outbox_event) AS outbox_count,
+                        (SELECT COUNT(*) FROM market_data_outbox_worker_heartbeat) AS worker_count
                 """
-                SELECT
-                    (SELECT COUNT(*) FROM quote_series) AS series_count,
-                    (SELECT COUNT(*) FROM quote_observation) AS observation_count,
-                    (SELECT COUNT(*) FROM quote_observation_revision) AS revision_count
-                """
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
 
-    assert revision == "20260713_0011"
+    assert revision == "20260714_0013"
     assert [row["instrument_id"] for row in instruments] == [
         "fx-usd-cny",
         "fx-usd-hkd",
@@ -135,14 +155,184 @@ def test_instrument_registry_migrations_upgrade_an_empty_database(tmp_path, monk
         "series_count": 0,
         "observation_count": 0,
         "revision_count": 0,
+        "outbox_count": 0,
+        "worker_count": 0,
     }
     inspector = inspect(engine)
-    assert {
-        item["name"] for item in inspector.get_check_constraints("instrument")
-    } >= {"ck_instrument_currency_iso_code"}
+    assert {item["name"] for item in inspector.get_check_constraints("instrument")} >= {
+        "ck_instrument_currency_iso_code"
+    }
     assert {
         item["name"] for item in inspector.get_check_constraints("quote_series")
     } >= {"ck_quote_series_currency_iso_code"}
+    outbox_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("market_data_outbox_event")
+    }
+    assert outbox_columns["quote_revision_id"]["nullable"] is True
+    assert outbox_columns["source_kind"]["nullable"] is False
+    assert outbox_columns["source_version"]["nullable"] is False
+    worker_columns = {
+        column["name"]
+        for column in inspector.get_columns("market_data_outbox_worker_heartbeat")
+    }
+    assert {"last_successful_poll_at", "last_poll_error"} <= worker_columns
+
+
+def test_sqlite_outbox_policy_trigger_is_changed_only_scoped_and_lineaged(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'outbox-policy-trigger.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "")
+    config = _migration_config(database_url)
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    initial_policy = {
+        "trading": ["last", "close"],
+        "valuation": ["close", "last"],
+        "total_return": ["adjusted_close"],
+        "chart": ["adjusted_close", "close", "last"],
+        "reference": ["close", "last"],
+    }
+    changed_policy = {
+        "trading": ["close"],
+        "valuation": ["close"],
+        "total_return": ["adjusted_close"],
+        "chart": ["adjusted_close", "close"],
+        "reference": ["close"],
+    }
+    instrument_types = {
+        "policy-fund": "fund",
+        "policy-etf": "etf",
+        "policy-index": "index",
+        "policy-equity": "equity",
+    }
+    with engine.begin() as connection:
+        for instrument_id, instrument_type in instrument_types.items():
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO instrument (
+                        instrument_id, instrument_name, instrument_type, currency,
+                        quote_selection_policy_json, source_settings_json,
+                        refresh_status_json, lifecycle_state_json,
+                        market_data_updated_at
+                    ) VALUES (
+                        :instrument_id, :instrument_id, :instrument_type, 'USD',
+                        :policy, '{}', '{}', '{"status": "active"}', NULL
+                    )
+                    """
+                ),
+                {
+                    "instrument_id": instrument_id,
+                    "instrument_type": instrument_type,
+                    "policy": json.dumps(initial_policy),
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    UPDATE instrument
+                    SET quote_selection_policy_json = :policy,
+                        market_data_updated_at = :watermark
+                    WHERE instrument_id = :instrument_id
+                    """
+                ),
+                {
+                    "instrument_id": instrument_id,
+                    "policy": json.dumps(changed_policy),
+                    "watermark": f"{instrument_id}-v2",
+                },
+            )
+
+    with engine.connect() as connection:
+        events = (
+            connection.execute(
+                text(
+                    """
+                    SELECT instrument_id, quote_revision_id, source_kind,
+                           source_version, status
+                    FROM market_data_outbox_event
+                    ORDER BY instrument_id
+                    """
+                )
+            )
+            .mappings()
+            .all()
+        )
+        trigger_names = set(
+            connection.scalars(
+                text(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type = 'trigger'
+                      AND name LIKE 'trg_quote_%_market_data_outbox'
+                    """
+                )
+            )
+        )
+    assert [event["instrument_id"] for event in events] == [
+        "policy-etf",
+        "policy-fund",
+        "policy-index",
+    ]
+    assert all(event["quote_revision_id"] is None for event in events)
+    assert all(event["source_kind"] == "quote_selection_policy" for event in events)
+    assert [event["source_version"] for event in events] == [
+        "policy-etf-v2",
+        "policy-fund-v2",
+        "policy-index-v2",
+    ]
+    assert all(event["status"] == "pending" for event in events)
+    assert trigger_names == {
+        "trg_quote_policy_market_data_outbox",
+        "trg_quote_revision_market_data_outbox",
+    }
+
+    reordered_policy = {
+        "reference": ["close"],
+        "chart": ["adjusted_close", "close"],
+        "total_return": ["adjusted_close"],
+        "valuation": ["close"],
+        "trading": ["close"],
+    }
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE instrument
+                SET quote_selection_policy_json = :policy,
+                    market_data_updated_at = 'policy-fund-v3'
+                WHERE instrument_id = 'policy-fund'
+                """
+            ),
+            {"policy": json.dumps(reordered_policy)},
+        )
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT COUNT(*) FROM market_data_outbox_event"))
+            == 3
+        )
+
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO market_data_outbox_event (
+                        event_id, event_type, instrument_id, quote_revision_id,
+                        source_kind, source_version
+                    ) VALUES (
+                        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                        'watchlist_market_data_refresh_requested',
+                        'policy-fund', NULL, 'quote_revision', 'invalid-lineage'
+                    )
+                    """
+                )
+            )
 
 
 def test_currency_constraint_migration_rejects_ambiguous_existing_facts(
@@ -176,7 +366,10 @@ def test_currency_constraint_migration_rejects_ambiguous_existing_facts(
     with pytest.raises(RuntimeError, match="explicit three-letter uppercase facts"):
         command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260713_0010"
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "20260713_0010"
+        )
 
 
 def test_corporate_action_migration_seeds_confirmed_semiconductor_etf_splits(
@@ -209,17 +402,21 @@ def test_corporate_action_migration_seeds_confirmed_semiconductor_etf_splits(
 
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        rows = connection.execute(
-            text(
-                """
+        rows = (
+            connection.execute(
+                text(
+                    """
                 SELECT effective_date, record_date, new_units, old_units,
                        quantity_rounding, status, source
                 FROM corporate_action_event
                 WHERE instrument_id = '159516-sz'
                 ORDER BY effective_date
                 """
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
 
     assert [str(row["effective_date"]) for row in rows] == ["2026-03-30", "2026-07-10"]
     assert [str(row["record_date"]) for row in rows] == ["2026-03-27", "2026-07-09"]
@@ -239,7 +436,9 @@ def _migration_config(database_url: str) -> Config:
     return config
 
 
-def _seed_legacy_instrument(connection, *, instrument_id: str = "migration-fund") -> None:
+def _seed_legacy_instrument(
+    connection, *, instrument_id: str = "migration-fund"
+) -> None:
     connection.execute(
         text(
             """
@@ -302,9 +501,10 @@ def test_quote_revision_migration_backfills_deterministic_identity_and_unknown_i
         revision_number=1,
     )
     with engine.connect() as connection:
-        row = connection.execute(
-            text(
-                """
+        row = (
+            connection.execute(
+                text(
+                    """
                 SELECT s.quote_series_id, s.data_updated_at,
                        o.observation_id, o.as_of_date,
                        r.revision_id, r.revision_number, r.value, r.source_ref,
@@ -314,12 +514,15 @@ def test_quote_revision_migration_backfills_deterministic_identity_and_unknown_i
                 JOIN quote_observation o USING (quote_series_id)
                 JOIN quote_observation_revision r USING (observation_id)
                 """
-            ).columns(
-                quote_series_id=Uuid(as_uuid=False),
-                observation_id=Uuid(as_uuid=False),
-                revision_id=Uuid(as_uuid=False),
+                ).columns(
+                    quote_series_id=Uuid(as_uuid=False),
+                    observation_id=Uuid(as_uuid=False),
+                    revision_id=Uuid(as_uuid=False),
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
 
     assert row["quote_series_id"] == expected_series_id
     assert row["observation_id"] == expected_observation_id
@@ -448,16 +651,20 @@ def test_quote_revision_migration_backfill_is_batched_at_order_of_magnitude(
         f"{elapsed_seconds:.3f}s"
     )
     with engine.connect() as connection:
-        counts = connection.execute(
-            text(
-                """
+        counts = (
+            connection.execute(
+                text(
+                    """
                 SELECT
                     (SELECT COUNT(*) FROM quote_series) AS series_count,
                     (SELECT COUNT(*) FROM quote_observation) AS observation_count,
                     (SELECT COUNT(*) FROM quote_observation_revision) AS revision_count
                 """
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
     assert counts == {
         "series_count": 1,
         "observation_count": row_count,
@@ -484,7 +691,9 @@ def test_quote_revision_migration_preflight_rejects_invalid_identity_or_value(
     value: str,
     message: str,
 ) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / f'preflight-{quote_basis}-{currency}.db'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / f'preflight-{quote_basis}-{currency}.db'}"
+    )
     monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL", database_url)
     monkeypatch.setenv("PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA", "")
     config = _migration_config(database_url)
@@ -546,6 +755,11 @@ def test_sqlite_quote_schema_enforces_exact_numeric_identity_and_immutability(
             {"value": exact_value, "source_ref": long_source_ref},
         )
 
+    command.upgrade(config, "20260713_0011")
+    with engine.connect() as connection:
+        legacy_payload_hash = connection.scalar(
+            text("SELECT payload_hash FROM quote_observation_revision")
+        )
     command.upgrade(config, "head")
     schema = inspect(engine)
     revision_columns = {
@@ -564,15 +778,25 @@ def test_sqlite_quote_schema_enforces_exact_numeric_identity_and_immutability(
     }
 
     with engine.connect() as connection:
-        row = connection.execute(
-            text(
-                """
-                SELECT revision_id, observation_id, value, source_ref, payload_hash
+        row = (
+            connection.execute(
+                text(
+                    """
+                SELECT revision_id, observation_id, value, value_input_scale,
+                       numeric_scale_state, payload_schema_version,
+                       source_ref, payload_hash
                 FROM quote_observation_revision
                 """
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
     assert row["value"] == exact_value
+    assert row["value_input_scale"] == 29
+    assert row["numeric_scale_state"] == "legacy_inferred"
+    assert row["payload_schema_version"] == 1
+    assert row["payload_hash"] == legacy_payload_hash
     assert row["source_ref"] == long_source_ref
 
     with pytest.raises(DBAPIError, match="quote_revision_immutable_violation"):
@@ -610,11 +834,12 @@ def test_sqlite_quote_schema_enforces_exact_numeric_identity_and_immutability(
                 """
                 INSERT INTO quote_observation_revision (
                     revision_id, observation_id, revision_number, value,
+                    value_input_scale, numeric_scale_state, payload_schema_version,
                     source_ref, status, source_published_at, ingested_at,
                     payload_hash, is_current, superseded_at
                 ) VALUES (
                     '22222222222222222222222222222222', :observation_id, 2,
-                    :value, :source_ref, 'complete', NULL,
+                    :value, 100, 'declared', 2, :source_ref, 'complete', NULL,
                     '2026-07-13T00:00:00Z', :payload_hash, 1, NULL
                 )
                 """
@@ -627,12 +852,15 @@ def test_sqlite_quote_schema_enforces_exact_numeric_identity_and_immutability(
             },
         )
     with engine.connect() as connection:
-        assert connection.scalar(
-            text(
-                "SELECT value FROM quote_observation_revision "
-                "WHERE revision_number = 2"
+        assert (
+            connection.scalar(
+                text(
+                    "SELECT value FROM quote_observation_revision "
+                    "WHERE revision_number = 2"
+                )
             )
-        ) == exact_value + "123"
+            == exact_value + "123"
+        )
 
     with pytest.raises(DBAPIError, match="quote_revision_insert_violation"):
         with engine.begin() as connection:
@@ -641,10 +869,12 @@ def test_sqlite_quote_schema_enforces_exact_numeric_identity_and_immutability(
                     """
                     INSERT INTO quote_observation_revision (
                         revision_id, observation_id, revision_number, value,
+                        value_input_scale, numeric_scale_state, payload_schema_version,
                         source_ref, status, payload_hash, is_current, superseded_at
                     ) VALUES (
                         '55555555555555555555555555555555', :observation_id, 3,
-                        '125', 'unclosed', 'complete', 'sha256:unclosed', 1, NULL
+                        '125', 0, 'declared', 2,
+                        'unclosed', 'complete', 'sha256:unclosed', 1, NULL
                     )
                     """
                 ),
@@ -666,22 +896,24 @@ def test_sqlite_quote_schema_enforces_exact_numeric_identity_and_immutability(
                     """
                     INSERT INTO quote_observation_revision (
                         revision_id, observation_id, revision_number, value,
+                        value_input_scale, numeric_scale_state, payload_schema_version,
                         source_ref, status, payload_hash, is_current, superseded_at
                     ) VALUES (
                         '66666666666666666666666666666666', :observation_id, 4,
-                        '126', 'skipped', 'complete', 'sha256:skipped', 1, NULL
+                        '126', 0, 'declared', 2,
+                        'skipped', 'complete', 'sha256:skipped', 1, NULL
                     )
                     """
                 ),
                 {"observation_id": row["observation_id"]},
             )
     with engine.connect() as connection:
-        assert connection.scalar(
-            text(
-                "SELECT COUNT(*) FROM quote_observation_revision "
-                "WHERE is_current"
+        assert (
+            connection.scalar(
+                text("SELECT COUNT(*) FROM quote_observation_revision WHERE is_current")
             )
-        ) == 1
+            == 1
+        )
 
     with pytest.raises(IntegrityError):
         with engine.begin() as connection:
@@ -690,10 +922,12 @@ def test_sqlite_quote_schema_enforces_exact_numeric_identity_and_immutability(
                     """
                     INSERT INTO quote_observation_revision (
                         revision_id, observation_id, revision_number, value,
+                        value_input_scale, numeric_scale_state, payload_schema_version,
                         source_ref, status, payload_hash, is_current, superseded_at
                     ) VALUES (
                         '33333333333333333333333333333333', :observation_id, 3,
-                        '0', 'zero', 'complete', 'sha256:zero', 0,
+                        '0', 0, 'declared', 2,
+                        'zero', 'complete', 'sha256:zero', 0,
                         '2026-07-13T00:00:00Z'
                     )
                     """
@@ -787,16 +1021,20 @@ def test_strict_total_return_policy_migration_is_atomic_and_advances_watermark(
 
     command.upgrade(config, "20260713_0009")
     with engine.connect() as connection:
-        rows = connection.execute(
-            text(
-                """
+        rows = (
+            connection.execute(
+                text(
+                    """
                 SELECT instrument_id, quote_selection_policy_json,
                        market_data_updated_at
                 FROM instrument
                 ORDER BY instrument_id
                 """
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         global_watermark = connection.scalar(
             text(
                 "SELECT market_data_updated_at FROM registry_metadata "
@@ -875,9 +1113,7 @@ def test_strict_policy_migration_validates_full_policy_before_any_update(
             )
         )
         current_revision = connection.scalar(
-            text(
-                "SELECT version_num FROM alembic_version"
-            )
+            text("SELECT version_num FROM alembic_version")
         )
     assert json.loads(stored) == valid_needs_update
     assert current_revision == "20260713_0008"
@@ -953,22 +1189,23 @@ def test_canonical_fx_identity_migration_fails_closed_before_any_insert(
 
     with engine.connect() as connection:
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        existing = connection.execute(
-            text(
-                """
+        existing = (
+            connection.execute(
+                text(
+                    """
                 SELECT instrument_type, currency, quote_selection_policy_json,
                        lifecycle_state_json, source_settings_json,
                        refresh_status_json, market_data_updated_at
                 FROM instrument
                 WHERE instrument_id = 'fx-usd-hkd'
                 """
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         missing_leg_count = connection.scalar(
-            text(
-                "SELECT COUNT(*) FROM instrument "
-                "WHERE instrument_id = 'fx-usd-cny'"
-            )
+            text("SELECT COUNT(*) FROM instrument WHERE instrument_id = 'fx-usd-cny'")
         )
     assert revision == "20260713_0009"
     assert existing["instrument_type"] == instrument_type
@@ -1041,9 +1278,10 @@ def test_canonical_fx_identity_migration_is_idempotent_and_preserves_business_da
 
     with engine.connect() as connection:
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        rows = connection.execute(
-            text(
-                """
+        rows = (
+            connection.execute(
+                text(
+                    """
                 SELECT instrument_id, instrument_name, quote_selection_policy_json,
                        source_settings_json, refresh_status_json,
                        lifecycle_state_json, market_data_updated_at
@@ -1051,27 +1289,38 @@ def test_canonical_fx_identity_migration_is_idempotent_and_preserves_business_da
                 WHERE instrument_id IN ('fx-usd-hkd', 'fx-usd-cny')
                 ORDER BY instrument_id
                 """
+                )
             )
-        ).mappings().all()
-        identifiers = connection.execute(
-            text(
-                """
+            .mappings()
+            .all()
+        )
+        identifiers = (
+            connection.execute(
+                text(
+                    """
                 SELECT instrument_identifier_id, instrument_id, identifier_value,
                        is_primary
                 FROM instrument_identifier
                 WHERE instrument_id IN ('fx-usd-hkd', 'fx-usd-cny')
                 ORDER BY instrument_id
                 """
+                )
             )
-        ).mappings().all()
-        registry = connection.execute(
-            text(
-                """
+            .mappings()
+            .all()
+        )
+        registry = (
+            connection.execute(
+                text(
+                    """
                 SELECT registry_name, market_data_updated_at
                 FROM registry_metadata WHERE registry_key = 'shared'
                 """
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         fx_series_count = connection.scalar(
             text(
                 "SELECT COUNT(*) FROM quote_series "
@@ -1079,7 +1328,7 @@ def test_canonical_fx_identity_migration_is_idempotent_and_preserves_business_da
             )
         )
 
-    assert revision == "20260713_0011"
+    assert revision == "20260714_0013"
     assert [row["instrument_id"] for row in rows] == ["fx-usd-cny", "fx-usd-hkd"]
     hkd = rows[1]
     assert hkd["instrument_name"] == "Treasury USD/HKD Reference"
@@ -1193,10 +1442,7 @@ def test_canonical_fx_identity_migration_rejects_second_primary_identifier(
     with engine.connect() as connection:
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
         cny_count = connection.scalar(
-            text(
-                "SELECT COUNT(*) FROM instrument "
-                "WHERE instrument_id = 'fx-usd-cny'"
-            )
+            text("SELECT COUNT(*) FROM instrument WHERE instrument_id = 'fx-usd-cny'")
         )
         ticker_count = connection.scalar(
             text(

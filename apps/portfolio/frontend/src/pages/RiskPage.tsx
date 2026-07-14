@@ -509,10 +509,11 @@ export default function RiskPage() {
 
         {workspace ? (
           <>
+            {workspace.planning_taxonomy && workspace.allocation_policy_drift.status === 'ready' ? (
             <section className="performance-section-block">
               <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar">
                 <div>
-                  <div className="panel-title">Current Drift</div>
+                  <div className="panel-title">Allocation Policy Drift</div>
                   <div className="portfolio-detail-meta">
                     {workspace.planning_taxonomy
                       ? `${workspace.planning_taxonomy.name}; ${workspace.as_of_date}; ${workspace.frequency_profile.status_label}; Production Risk Model; ${modelMeta}`
@@ -524,8 +525,8 @@ export default function RiskPage() {
                 <div className="risk-target-panel">
                   <div className="risk-matrix-panel-title">Weight Target Gap</div>
                   <TargetGapPanel
-                    rows={workspace.drift.weight_rows}
-                    errors={workspace.drift.errors}
+                    rows={workspace.allocation_policy_drift.weight_rows}
+                    errors={workspace.allocation_policy_drift.errors}
                     currency={workspace.base_currency}
                     ariaLabel="Weight target drift"
                     emptyLabel="No weight target."
@@ -534,8 +535,8 @@ export default function RiskPage() {
                 <div className="risk-target-panel">
                   <div className="risk-matrix-panel-title">Risk Target Gap</div>
                   <TargetGapPanel
-                    rows={workspace.drift.risk_rows}
-                    errors={workspace.drift.errors}
+                    rows={workspace.allocation_policy_drift.risk_rows}
+                    errors={workspace.allocation_policy_drift.errors}
                     currency={workspace.base_currency}
                     ariaLabel="Risk budget target gap"
                     emptyLabel="No risk target."
@@ -544,6 +545,7 @@ export default function RiskPage() {
                 </div>
               </div>
             </section>
+            ) : null}
 
             <section className="performance-section-block risk-rolling-section">
               <div className="portfolio-detail-toolbar performance-subsection-toolbar risk-section-toolbar risk-rolling-toolbar">

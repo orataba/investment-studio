@@ -94,6 +94,18 @@ if [[ -z "${PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL:-}" ]]; then
 fi
 export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA="${PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA:-${PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA:-instrument_registry}}"
 
+if [[ -z "${PORTFOLIO_OPS_CALCULATION_REGISTRY_DATABASE_URL:-}" ]]; then
+  if [[ -n "${PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL:-}" ]]; then
+    export PORTFOLIO_OPS_CALCULATION_REGISTRY_DATABASE_URL="$PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL"
+  elif [[ -n "${PORTFOLIO_OPS_PLATFORM_DATABASE_URL:-}" ]]; then
+    export PORTFOLIO_OPS_CALCULATION_REGISTRY_DATABASE_URL="$PORTFOLIO_OPS_PLATFORM_DATABASE_URL"
+  else
+    echo "Set PORTFOLIO_OPS_CALCULATION_REGISTRY_DATABASE_URL or a Workbench database URL." >&2
+    exit 1
+  fi
+fi
+export PORTFOLIO_OPS_CALCULATION_REGISTRY_SCHEMA=calculation_registry
+
 run_migration() {
   local label="$1"
   local migration_root="$2"
@@ -113,17 +125,22 @@ run_migration() {
 }
 
 INSTRUMENT_CORE_PYTHON="$PROJECT_ROOT/packages/instrument-core/python"
+CALCULATION_CORE_PYTHON="$PROJECT_ROOT/packages/calculation-core/python"
 run_migration \
   "instrument registry" \
   "$PROJECT_ROOT/infra/instrument_registry" \
   "$INSTRUMENT_CORE_PYTHON"
 run_migration \
+  "calculation registry" \
+  "$PROJECT_ROOT/infra/calculation_registry" \
+  "$CALCULATION_CORE_PYTHON"
+run_migration \
   "portfolio" \
   "$PROJECT_ROOT/apps/portfolio/backend" \
-  "$PROJECT_ROOT/apps/portfolio/backend:$INSTRUMENT_CORE_PYTHON"
+  "$PROJECT_ROOT/apps/portfolio/backend:$INSTRUMENT_CORE_PYTHON:$CALCULATION_CORE_PYTHON"
 run_migration \
   "watchlist" \
   "$PROJECT_ROOT/apps/watchlist/backend" \
-  "$PROJECT_ROOT/apps/watchlist/backend:$INSTRUMENT_CORE_PYTHON"
+  "$PROJECT_ROOT/apps/watchlist/backend:$INSTRUMENT_CORE_PYTHON:$CALCULATION_CORE_PYTHON"
 
 echo "All release migrations completed successfully."

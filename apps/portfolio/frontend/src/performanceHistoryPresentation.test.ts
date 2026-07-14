@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest'
 import type { PortfolioPerformanceHistoryReliability } from './lib/api'
 import {
   annualizedReturnDisplayEligible,
-  selectPerformanceHistoryReliability,
 } from './lib/performanceHistoryPresentation'
 
 function reliability(
@@ -33,18 +32,4 @@ describe('performance history presentation', () => {
     expect(annualizedReturnDisplayEligible(undefined)).toBe(false)
   })
 
-  it('prefers comparison-window reliability when the backend supplies it', () => {
-    const summaryReliability = reliability(true, 'summary window')
-    const comparisonReliability = reliability(false, 'comparison window')
-
-    expect(
-      selectPerformanceHistoryReliability(
-        summaryReliability,
-        comparisonReliability,
-      ),
-    ).toBe(comparisonReliability)
-    expect(
-      selectPerformanceHistoryReliability(summaryReliability, undefined),
-    ).toBe(summaryReliability)
-  })
 })

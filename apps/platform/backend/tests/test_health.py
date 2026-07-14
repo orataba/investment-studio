@@ -5,45 +5,29 @@ from fastapi.testclient import TestClient
 from platform_app.main import app
 
 
-def test_health_reports_email_readiness(monkeypatch) -> None:
+def test_health_is_a_database_independent_liveness_check(monkeypatch) -> None:
     from platform_app.api.routes import health
+    from platform_app.services import readiness as readiness_service
 
     class StubSettings:
         app_name = "Portfolio Operations Platform API"
         environment = "test"
-        email_sync_enabled = True
-        email_sync_ready = False
-        email_imap_folder = "NAV"
-        email_imap_use_ssl = True
-        email_imap_max_messages = 20
-        email_imap_host = None
-        email_imap_username = None
-        email_imap_password = None
-        tushare_ready = False
-        tushare_api_url = "https://fastapic.stockai888.top"
 
     monkeypatch.setattr(health, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        readiness_service,
+        "_read_instrument_registry_database_heads",
+        lambda session: (_ for _ in ()).throw(
+            AssertionError("health must not inspect the database")
+        ),
+    )
 
-    client = TestClient(app)
-    response = client.get("/api/health")
+    with TestClient(app) as client:
+        response = client.get("/api/health")
+
     assert response.status_code == 200
-
-    payload = response.json()
-    assert payload["status"] == "ok"
-    assert payload["environment"] == "test"
-    assert payload["email_sync"] == {
-        "enabled": True,
-        "ready": False,
-        "imap_folder": "NAV",
-        "imap_use_ssl": True,
-        "max_messages": 20,
-        "missing_required_settings": [
-            "PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_HOST",
-            "PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_USERNAME",
-            "PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD",
-        ],
-    }
-    assert payload["tushare_sync"] == {
-        "ready": False,
-        "api_url": "https://fastapic.stockai888.top",
+    assert response.json() == {
+        "status": "ok",
+        "app": "Portfolio Operations Platform API",
+        "environment": "test",
     }

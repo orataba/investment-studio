@@ -1,4 +1,5 @@
 from base64 import b64encode
+from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
@@ -42,7 +43,9 @@ def test_nav_file_requests_enforce_decoded_size_limit(
 def test_quote_policy_rejects_total_return_basis_for_valuation(
     invalid_basis: str,
 ) -> None:
-    with pytest.raises(ValidationError, match="valuation cannot use total-return quote bases"):
+    with pytest.raises(
+        ValidationError, match="valuation cannot use total-return quote bases"
+    ):
         contracts.PlatformQuoteSelectionPolicyUpdateRequest.model_validate(
             {
                 "quote_selection_policy": {
@@ -57,7 +60,9 @@ def test_quote_policy_rejects_total_return_basis_for_valuation(
 
 
 @pytest.mark.parametrize("role", ["total_return", "chart"])
-@pytest.mark.parametrize("invalid_basis", ["cumulative_nav", "accumulated_nav", "cum_nav"])
+@pytest.mark.parametrize(
+    "invalid_basis", ["cumulative_nav", "accumulated_nav", "cum_nav"]
+)
 def test_quote_policy_rejects_cash_cumulative_nav_as_total_return(
     role: str,
     invalid_basis: str,
@@ -87,6 +92,9 @@ def test_market_data_point_contract_requires_canonical_revision_identity() -> No
             "quote_basis": "official_nav",
             "as_of_date": "2026-07-10",
             "value": "100.00",
+            "value_input_scale": 2,
+            "numeric_scale_state": "declared",
+            "payload_schema_version": 2,
             "currency": "USD",
             "source_ref": "issuer-file",
             "status": "complete",
@@ -98,6 +106,8 @@ def test_market_data_point_contract_requires_canonical_revision_identity() -> No
     assert point.quote_series_id == "series-1"
     assert point.source_ref == "issuer-file"
     assert point.revision_number == 2
+    assert point.value_input_scale == 2
+    assert point.numeric_scale_state == "declared"
 
 
 def test_currency_contract_normalizes_ingress_once_and_rejects_non_iso_shape() -> None:
@@ -123,6 +133,47 @@ def test_currency_contract_normalizes_ingress_once_and_rejects_non_iso_shape() -
                     "currency": invalid_currency,
                 }
             )
+
+
+@pytest.mark.parametrize(
+    ("model", "field", "payload"),
+    [
+        (
+            contracts.PlatformMarketDataUpsertRequest,
+            "value",
+            {
+                "metric_family": "nav",
+                "quote_basis": "official_nav",
+                "as_of_date": "2026-07-10",
+                "currency": "USD",
+            },
+        ),
+        (
+            contracts.PlatformFxRateUpsertRequest,
+            "rate",
+            {
+                "base_currency": "USD",
+                "quote_currency": "HKD",
+                "as_of_date": "2026-07-10",
+            },
+        ),
+    ],
+)
+def test_market_decimal_write_contracts_require_plain_json_strings(
+    model: type,
+    field: str,
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="JSON strings"):
+        model.model_validate({**payload, field: 1.23})
+
+    request = model.model_validate({**payload, field: "1.2300"})
+    assert getattr(request, field) == Decimal("1.2300")
+    assert getattr(request, field).as_tuple().exponent == -4
+
+    for invalid in ("1e-4", ".123", "01.23"):
+        with pytest.raises(ValidationError, match="plain decimal notation"):
+            model.model_validate({**payload, field: invalid})
 
 
 def test_platform_write_contract_rejects_removed_provider_field() -> None:

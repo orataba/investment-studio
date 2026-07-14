@@ -1,6 +1,6 @@
 # Calculation Publication Spine Specification
 
-状态：Phase 3B 实施契约
+状态：Phase 3B 当前运行契约
 
 版本：2026-07-14
 
@@ -133,19 +133,24 @@ worker 使用 `FOR UPDATE SKIP LOCKED` claim；每次取得或接管 lease 都�
 
 ### 3.4 Immutable publication
 
-domain output rows 的主键必须包含 `run_id`，写入后禁止 UPDATE/DELETE。`calculation_publication` 是不可变
-发布记录，保存 run、manifest、output schema、canonical financial output hash 和 published_at。
+domain output rows 的主键必须包含 `(run_id, output_fencing_token, ...natural key...)`，每行同时保存
+worker identity，写入后禁止 UPDATE/DELETE。每次 job attempt 使用独立 token；旧 worker 已提交的部分结果
+可以保留用于诊断，但新 attempt 不会与其主键冲突，closure/hash 和 reader 也绝不能跨 token 混合。
+`calculation_publication` 是不可变发布记录，保存 run、manifest、最终 `published_fencing_token`、output schema、
+canonical financial output hash 和 published_at。fencing/worker metadata 不进入 canonical financial hash。
 
 `calculation_current_publication` 是唯一可变指针，以 `(calculation_kind, scope_kind, scope_id)` 为主键。
 publish 在一个 `SERIALIZABLE` 或等价显式锁事务中完成：
 
-1. 验证 run、manifest、job lease/fence 与 captured generation；
-2. 验证全部输出、闭合不变量与 canonical output hash；
+1. 验证 run、manifest、job 最终 fence 与 captured generation；
+2. 只针对该 final fencing token 验证全部输出、闭合不变量与 canonical output hash；
 3. 插入 immutable publication；
 4. CAS 更新 current pointer；
 5. 将 run/job 标为 published/succeeded。
 
-reader 只从 current pointer 进入输出，因此只能看到完整 old publication 或完整 new publication，绝不看到
+current pointer 的 commit-time deferred constraint 必须确认对应 run 已在同一事务进入 `published` 且 hash
+一致，禁止跨事务留下“指针已切换、run 尚未发布”的半状态。reader 只从 current pointer 取得
+`(run_id, published_fencing_token)` 再进入输出，因此只能看到完整 old publication 或完整 new publication，绝不看到
 部分新 run。失败、超时或 superseded run 不改变旧指针。
 
 ## 4. Portfolio Daily manifest
@@ -173,7 +178,7 @@ calculator 不得读取可变 current row。quote/FX dependency 同时登记 ser
 
 ### 5.1 Decimal 会计边界
 
-新增唯一 `calculation_numeric` 模块，所有财务 calculator 在显式 local context 中运行：
+唯一 `calculation_numeric` 模块按金融字段用途管理精度，不把小数位数越长误当作越专业。会计事实和金额有明确字段 quantum；有限十进制金额的加、减、乘保留可验证精确性。除法、求根、幂、XIRR、Frongello 和递归财富链等 method calculation 进入以下有界 local context：
 
 ```text
 precision = 50
@@ -187,12 +192,33 @@ trap = FloatOperation, InvalidOperation, DivisionByZero, Overflow
 - amount / fee / tax：8 位小数；
 - FX rate：18 位小数。
 
-内部 lot、cash、market value、cost、realized/unrealized P&L、income、fee、tax、FX、NAV、TWR 与 contribution
-不做隐式 quantize。只有事实接收边界和发布字段边界按版本化字段 scale 做 HALF_EVEN。日频派生财务字段
-使用明确的 NUMERIC scale，API 返回 plain canonical decimal string：禁止 scientific notation、NaN、Infinity、
-`-0` 和 JSON number。
+Portfolio Daily 的 method state 逻辑域是 `NUMERIC(132,100)`（32 位整数域），每步仍只允许 50 个
+有效数字；两个 method 操作数的未舍入乘积/差值证据逻辑域是 `NUMERIC(232,200)`。数据库物理列
+使用无 typmod 的 `NUMERIC`，再由 CHECK 显式限制整数位、小数位和有效数字；这是因为 PostgreSQL 会在
+CHECK 前先按 `NUMERIC(p,s)` typmod 舍入，不能用它实现 fail-closed。100/200 位是为了在明确的指数域内
+无二次存储舍入地重放 Decimal50，不是业务展示精度，也不代替上述 8/12/18 位金融字段边界。超出 32 位
+整数、100 位小数或 50 个有效数字的 method 值必须直接拒绝，不由数据库静默舍入。
+逻辑小数位按数值的非零尾数判断：多余尾随零不改变可表示性，并由 canonical decimal 序列化移除。
 
-当前 `ledger.py`、`performance.py`、canonical quote/FX 转换和三张日频 Float 物化表必须在首个 producer
+Portfolio Daily 的 pre-publication `NUMERIC` 按语义分域，不能再使用一个通用 `EXACT` 类型：
+
+| 逻辑域 | 容量 | 用途 |
+| --- | --- | --- |
+| source price | `38,12` | 被采用的原始价格 |
+| source rate | `38,18` | 拆分比例与被采用的原始 FX quote |
+| exact quantity | `50,12` | 聚合数量、合约乘数和 price factor |
+| derived rate evidence | `132,100` | inverse/cross path 及其下游采用 FX；cross exact product 可超过 50 个有效数字 |
+| accounting evidence | `242,200` | NAV、成本、现金流、PnL、市值与金额闭合证据 |
+| method evidence | `232,200` | ratio/method 舍入与闭合证据 |
+
+这些容量是 fail-closed 的技术可重放域，不是展示精度，也不会把 provider price/NAV 或 FX 强制量化到
+12/18 位。物理列使用无 typmod `NUMERIC` 并在应用和 CHECK 中做 exact-fit；超域直接拒绝。只有未采用的
+quote candidate 与 rejected FX leg 的原始 provider 数值保持无界封存，一旦被采用就必须通过对应 source
+domain，不能先舍入再参与计算。
+
+事实接收边界、method value 和 published value 是三个不同边界。收益、权重、归因等对外字段以 18 位 published value 表达；Decimal50/HALF_EVEN method 运算的舍入必须以显式 rounding/balancing evidence 留存。数据库 CHECK 对 method-domain 除法的重放必须调用版本化 `calculation_registry.divide_significant_half_even`，不能先采用 PostgreSQL 原生 `/` 的默认商精度、再做有效位舍入。递归链只保存有界 method state 与每步 evidence，禁止将随历史长度增长的小数前缀保存为 TEXT。API 返回 plain canonical decimal string：禁止 scientific notation、NaN、Infinity、`-0` 和 JSON number。
+
+改造前由 `ledger.py`、现已删除的 `performance.py`、canonical quote/FX 转换和三张日频 Float 物化表承担的计算权威必须在首个 producer
 迁移中同时删除/替换；不能把旧 float calculator 包装进新 registry 后称为完成。
 
 ### 5.2 统计边界
@@ -216,9 +242,11 @@ trap = FloatOperation, InvalidOperation, DivisionByZero, Overflow
 r_t = (MVE_t + CF_out,t) / (MVB_t + CF_in,t) - 1
 ```
 
-外部流入视为期初，外部流出视为期末。没有可信日内时间戳时不宣称 true intraday TWR，也不切换
-Modified Dietz。denominator `<= 0`、输入不完整、现金流边界估值 stale/carry-forward、FX 不可用或跨 broken
-boundary 时 fail closed；删除现有用 `1e-9` 掩盖 binary-float 尾差的判断。fresh re-anchor 后才恢复新窗口。
+外部流入视为期初，外部流出视为期末。没有可信日内时间戳时不声称具有日内时点精度，也不切换
+Modified Dietz。denominator `<= 0`、现金流边界估值 stale/carry-forward/incomplete 或跨 broken boundary
+时 fail closed；删除现有用 `1e-9` 掩盖 binary-float 尾差的判断。没有 external flow 的非 fresh 日期不制造
+0 收益，也不自动切断：保留 last reliable anchor，下一 fresh endpoint 计算明确起止日期的多日子期收益。
+真正 broken 后必须 fresh re-anchor 才恢复新窗口。
 
 每个 run 至少验证并记录以下闭合不变量：
 
@@ -227,6 +255,12 @@ boundary 时 fail closed；删除现有用 `1e-9` 掩盖 binary-float 尾差的�
 - cash、cost、realized/unrealized、income、fee、tax 与 FX 影响按同一符号契约闭合；
 - external flow neutral TWR 不因注资/赎回本身产生收益；
 - 所有残差不超过输出 quantum；超限残差显式失败，不吸收到某一行。
+
+### 5.4 Published performance report
+
+`GET /api/portfolios/{portfolio_id}/performance/report` 一次读取同一 fenced publication，并以同一区间 gate 返回 TWR/XIRR/drawdown、exact finite monetary bridge、Frongello-linked contribution、monthly/weekly calendar 和 daily audit trail。monthly/weekly 统计只使用完整日历 bucket，partial/unavailable bucket 只披露 coverage；年分数统一为 Actual/365。少于 365 effective elapsed days 时 annualized TWR 不发布；数学上唯一可解的 XIRR 可保留为明确标记的 supplemental 结果。
+
+当前 benchmark-relative 结果 withheld。已删除的旧 comparison contract 不是 fallback；未来 benchmark 只有在 canonical total-return series/revision、FX legs 与覆盖能被冻结进相容 publication 契约后才能发布。
 
 ## 6. API 与读写语义
 
@@ -238,8 +272,8 @@ GET  /api/calculations/runs/{run_id}   -> status/manifest/publication metadata
 ```
 
 同 dedupe key 已 queued/running 时返回现有 run；API 不等待 calculator。旧同步
-`/api/portfolios/snapshots/daily/refresh` 直接删除，不保留 alias。Platform market-data notification 改为提交
-recompute intent。
+`/api/portfolios/snapshots/daily/refresh` 直接删除，不保留 alias。Platform 不再向 Portfolio 发 HTTP；共享
+market-data 写事务由数据库 dependency trigger 原子递增 generation 并提交 recompute intent。
 
 所有 Portfolio Overview/Holdings/Performance/period/group/calendar/entry GET：
 
@@ -286,10 +320,11 @@ golden case 必须来自可手算样例或独立参考实现；只用当前函�
 
 - NUMERIC scale、FK/check/state transition、sealed manifest 与 output immutability；
 - concurrent enqueue dedupe、`SKIP LOCKED` claim、heartbeat takeover 与 lease fencing；
+- token-1 部分输出已提交后崩溃，token-2 接管可写相同 natural keys；token-1 不能发布且 reader 只见 token-2；
 - fact write + generation + intent 的同事务回滚；
 - mid-run transaction/quote/config revision 使旧 run superseded 并创建 replacement；
 - retry same manifest 的 output hash 相同；
-- 并发 reader 只看到完整 old 或 new publication；failed run 保留 old pointer；
+- 并发 reader 只看到完整 old 或 new publication；只切 pointer 而未将 run 标为 published 的事务在 commit 失败；failed run 保留 old pointer；
 - PostgreSQL JUnit 有 skip、零收集或损坏时 CI 必须失败。
 
 ### API / migration / operations

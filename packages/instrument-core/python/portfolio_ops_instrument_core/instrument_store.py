@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -15,6 +15,8 @@ from portfolio_ops_instrument_core.db_models import (
     CorporateActionEvent,
     Instrument,
     InstrumentIdentifier,
+    MarketDataOutboxEvent,
+    MarketDataOutboxWorkerHeartbeat,
     QuoteObservation,
     QuoteObservationRevision,
     QuoteSeries,
@@ -27,10 +29,10 @@ from portfolio_ops_instrument_core.models import (
     VALUATION_PROHIBITED_TOTAL_RETURN_BASES,
 )
 from portfolio_ops_instrument_core.quote_revisions import (
+    QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
     SOURCE_OBSERVATION_STATUSES,
     USABLE_CURRENT_STATUS,
     WITHDRAWN_STATUS,
-    canonical_decimal_text,
     canonical_timestamp,
     make_quote_observation_id,
     make_quote_revision_id,
@@ -39,6 +41,7 @@ from portfolio_ops_instrument_core.quote_revisions import (
     normalize_revision_status,
     normalize_source_ref,
     quote_revision_payload_hash,
+    quote_numeric_evidence,
     VALID_METRIC_FAMILIES,
     VALID_QUOTE_BASES,
 )
@@ -149,10 +152,14 @@ def _updated_refresh_status(
     previous_mode_fallback: str,
 ) -> dict[str, object]:
     normalized_mode = str(mode or "manual").strip().lower() or "manual"
-    previous_cursor = str(previous.get("last_successful_requested_at") or "").strip() or None
+    previous_cursor = (
+        str(previous.get("last_successful_requested_at") or "").strip() or None
+    )
     if previous_cursor is None:
         previous_status = str(previous.get("status") or "").strip().lower()
-        previous_mode = str(previous.get("mode") or previous_mode_fallback).strip().lower()
+        previous_mode = (
+            str(previous.get("mode") or previous_mode_fallback).strip().lower()
+        )
         previous_requested_at = str(previous.get("requested_at") or "").strip() or None
         if (
             previous_mode == "email"
@@ -162,7 +169,10 @@ def _updated_refresh_status(
             previous_cursor = previous_requested_at
 
     last_successful_requested_at = previous_cursor
-    if normalized_mode == "email" and status.strip().lower() in EMAIL_REFRESH_SUCCESS_STATUSES:
+    if (
+        normalized_mode == "email"
+        and status.strip().lower() in EMAIL_REFRESH_SUCCESS_STATUSES
+    ):
         last_successful_requested_at = requested_at
 
     return {
@@ -267,8 +277,13 @@ QUOTE_SELECTION_POLICY_DEFAULTS: dict[str, dict[str, list[str]]] = {
     },
 }
 
+
 def _default_quote_selection_policy(instrument_type: str) -> dict[str, object]:
-    normalized_instrument_type = instrument_type if instrument_type in QUOTE_SELECTION_POLICY_DEFAULTS else "other"
+    normalized_instrument_type = (
+        instrument_type
+        if instrument_type in QUOTE_SELECTION_POLICY_DEFAULTS
+        else "other"
+    )
     return deepcopy(QUOTE_SELECTION_POLICY_DEFAULTS[normalized_instrument_type])
 
 
@@ -281,9 +296,7 @@ def validate_quote_selection_policy(quote_selection_policy: dict[str, object]) -
         raw_values = quote_selection_policy.get(role)
         if not isinstance(raw_values, list):
             raise ValueError(f"quote_selection_policy.{role} must be a list.")
-        normalized_values = [
-            str(value or "").strip().lower() for value in raw_values
-        ]
+        normalized_values = [str(value or "").strip().lower() for value in raw_values]
         unsupported = sorted(
             basis for basis in normalized_values if basis not in VALID_QUOTE_BASES
         )
@@ -406,7 +419,17 @@ def _normalized_corporate_actions(item: dict[str, object]) -> list[dict[str, obj
         new_units = str(event.get("new_units") or "").strip()
         old_units = str(event.get("old_units") or "").strip()
         source = str(event.get("source") or "").strip()
-        if not all((event_id, instrument_id, action_type, effective_date, new_units, old_units, source)):
+        if not all(
+            (
+                event_id,
+                instrument_id,
+                action_type,
+                effective_date,
+                new_units,
+                old_units,
+                source,
+            )
+        ):
             continue
         normalized.append(
             {
@@ -421,7 +444,9 @@ def _normalized_corporate_actions(item: dict[str, object]) -> list[dict[str, obj
                 "old_units": old_units,
                 "quantity_rounding": str(event.get("quantity_rounding") or "exact"),
                 "quantity_precision": int(event.get("quantity_precision") or 0),
-                "cost_basis_treatment": str(event.get("cost_basis_treatment") or "carry"),
+                "cost_basis_treatment": str(
+                    event.get("cost_basis_treatment") or "carry"
+                ),
                 "source": source,
                 "external_event_id": event.get("external_event_id"),
                 "status": str(event.get("status") or "confirmed"),
@@ -456,13 +481,37 @@ def _normalized_market_data(item: dict[str, object]) -> list[dict[str, object]]:
             continue
         try:
             status = normalize_revision_status(point.get("status"))
-            value = (
+            numeric_evidence = (
                 None
                 if status == WITHDRAWN_STATUS
-                else canonical_decimal_text(point.get("value"))
+                else quote_numeric_evidence(point.get("value"))
             )
+            value = numeric_evidence.value if numeric_evidence is not None else None
             if value is not None and Decimal(value) <= 0:
                 raise ValueError("quote value must be positive")
+            stored_scale = point.get("value_input_scale")
+            stored_scale_state = point.get("numeric_scale_state")
+            stored_payload_version = point.get("payload_schema_version")
+            if numeric_evidence is None:
+                value_input_scale = None
+                numeric_scale_state = None
+            elif stored_scale is not None and stored_scale_state is not None:
+                value_input_scale = int(stored_scale)
+                numeric_scale_state = str(stored_scale_state)
+                if value_input_scale < 0 or numeric_scale_state not in {
+                    "declared",
+                    "binary_inferred",
+                    "legacy_inferred",
+                }:
+                    raise ValueError("invalid persisted quote numeric evidence")
+            else:
+                value_input_scale = numeric_evidence.value_input_scale
+                numeric_scale_state = numeric_evidence.numeric_scale_state
+            payload_schema_version = int(
+                stored_payload_version or QUOTE_REVISION_PAYLOAD_SCHEMA_V2
+            )
+            if payload_schema_version not in {1, 2}:
+                raise ValueError("invalid quote payload schema version")
         except ValueError:
             continue
         normalized_points.append(
@@ -475,6 +524,9 @@ def _normalized_market_data(item: dict[str, object]) -> list[dict[str, object]]:
                 "quote_basis": quote_basis,
                 "as_of_date": str(point.get("as_of_date") or ""),
                 "value": value,
+                "value_input_scale": value_input_scale,
+                "numeric_scale_state": numeric_scale_state,
+                "payload_schema_version": payload_schema_version,
                 "currency": _normalize_required_currency(
                     point.get("currency") or instrument_currency,
                     context=f"Instrument '{instrument_id}' market-data point",
@@ -508,6 +560,12 @@ def reset_store(
     session_factory: SessionFactory,
     data: dict[str, object] | None = None,
 ) -> None:
+    """Destructively replace the whole registry for tests/bootstrap only.
+
+    Runtime write paths must use the granular commands below; this boundary
+    intentionally discards durable outbox delivery and worker-heartbeat state.
+    """
+
     payload = data if data is not None else EMPTY_STORE
     normalized = _normalize_store(deepcopy(payload))
     with session_factory() as session:
@@ -546,10 +604,14 @@ def _instrument_to_store_dict(
             "corporate_action_event_id": event.corporate_action_event_id,
             "instrument_id": event.instrument_id,
             "action_type": event.action_type,
-            "announcement_date": event.announcement_date.isoformat() if event.announcement_date else None,
+            "announcement_date": event.announcement_date.isoformat()
+            if event.announcement_date
+            else None,
             "record_date": event.record_date.isoformat() if event.record_date else None,
             "effective_date": event.effective_date.isoformat(),
-            "payable_date": event.payable_date.isoformat() if event.payable_date else None,
+            "payable_date": event.payable_date.isoformat()
+            if event.payable_date
+            else None,
             "new_units": event.new_units,
             "old_units": event.old_units,
             "quantity_rounding": event.quantity_rounding,
@@ -583,12 +645,36 @@ def _instrument_to_store_dict(
 def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
     normalized = _normalize_store(data)
 
-    session.execute(delete(CorporateActionEvent))
-    session.execute(delete(QuoteObservationRevision))
-    session.execute(delete(QuoteObservation))
-    session.execute(delete(QuoteSeries))
-    session.execute(delete(InstrumentIdentifier))
-    session.execute(delete(Instrument))
+    if session.get_bind().dialect.name == "postgresql":
+        # The controlled full-reset boundary must bypass immutable revision row
+        # triggers. All registry-owned dependents are truncated together; new
+        # seed revisions then create fresh outbox events through the normal
+        # trigger. Callers must run this before installing cross-schema facts.
+        session.execute(
+            text(
+                """
+                TRUNCATE TABLE
+                    market_data_outbox_worker_heartbeat,
+                    market_data_outbox_event,
+                    corporate_action_event,
+                    quote_observation_revision,
+                    quote_observation,
+                    quote_series,
+                    instrument_identifier,
+                    instrument
+                RESTART IDENTITY
+                """
+            )
+        )
+    else:
+        session.execute(delete(MarketDataOutboxWorkerHeartbeat))
+        session.execute(delete(MarketDataOutboxEvent))
+        session.execute(delete(CorporateActionEvent))
+        session.execute(delete(QuoteObservationRevision))
+        session.execute(delete(QuoteObservation))
+        session.execute(delete(QuoteSeries))
+        session.execute(delete(InstrumentIdentifier))
+        session.execute(delete(Instrument))
 
     metadata_record = session.get(RegistryMetadata, "shared")
     reset_watermark = _utcnow_iso()
@@ -600,7 +686,9 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
         )
         session.add(metadata_record)
     else:
-        metadata_record.registry_name = str(normalized.get("registry_name") or DEFAULT_REGISTRY_NAME)
+        metadata_record.registry_name = str(
+            normalized.get("registry_name") or DEFAULT_REGISTRY_NAME
+        )
         metadata_record.market_data_updated_at = reset_watermark
 
     for raw_item in list(normalized.get("instruments", [])):
@@ -649,9 +737,7 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
                 )
             )
 
-        normalized_points: dict[
-            tuple[str, str, date, str], dict[str, object]
-        ] = {}
+        normalized_points: dict[tuple[str, str, date, str], dict[str, object]] = {}
         for raw_point in _normalized_market_data(item):
             try:
                 point_date = date.fromisoformat(str(raw_point.get("as_of_date") or ""))
@@ -669,7 +755,12 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
             normalized_points[key] = raw_point
 
         quote_series_by_key: dict[tuple[str, str, str], QuoteSeries] = {}
-        for (metric_family, quote_basis, point_date, currency), raw_point in normalized_points.items():
+        for (
+            metric_family,
+            quote_basis,
+            point_date,
+            currency,
+        ), raw_point in normalized_points.items():
             series_key = (metric_family, quote_basis, currency)
             quote_series = quote_series_by_key.get(series_key)
             if quote_series is None:
@@ -695,11 +786,26 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
                 as_of_date=point_date,
             )
             status = normalize_revision_status(raw_point.get("status"))
-            value = (
+            numeric_evidence = (
                 None
                 if status == WITHDRAWN_STATUS
-                else canonical_decimal_text(raw_point.get("value"))
+                else quote_numeric_evidence(raw_point.get("value"))
             )
+            # A destructive reset is a new v2 ingestion event.  It may copy an
+            # exact v2 representation, but legacy-inferred metadata cannot be
+            # promoted to declared evidence merely by replaying a fixture.
+            if (
+                numeric_evidence is not None
+                and raw_point.get("payload_schema_version") == 2
+                and raw_point.get("numeric_scale_state")
+                in {"declared", "binary_inferred"}
+            ):
+                numeric_evidence = type(numeric_evidence)(
+                    value=numeric_evidence.value,
+                    value_input_scale=int(raw_point["value_input_scale"]),
+                    numeric_scale_state=str(raw_point["numeric_scale_state"]),
+                )
+            value = numeric_evidence.value if numeric_evidence is not None else None
             source_ref = normalize_source_ref(raw_point.get("source_ref"))
             source_published_at = normalize_optional_timestamp(
                 raw_point.get("source_published_at")
@@ -720,6 +826,17 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
                     observation_id=observation_id,
                     revision_number=1,
                     value=value,
+                    value_input_scale=(
+                        numeric_evidence.value_input_scale
+                        if numeric_evidence is not None
+                        else None
+                    ),
+                    numeric_scale_state=(
+                        numeric_evidence.numeric_scale_state
+                        if numeric_evidence is not None
+                        else None
+                    ),
+                    payload_schema_version=QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
                     source_ref=source_ref,
                     status=status,
                     source_published_at=source_published_at,
@@ -730,6 +847,17 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
                         source_ref=source_ref,
                         status=status,
                         source_published_at=source_published_at,
+                        payload_schema_version=QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
+                        value_input_scale=(
+                            numeric_evidence.value_input_scale
+                            if numeric_evidence is not None
+                            else None
+                        ),
+                        numeric_scale_state=(
+                            numeric_evidence.numeric_scale_state
+                            if numeric_evidence is not None
+                            else None
+                        ),
                     ),
                     is_current=True,
                     superseded_at=None,
@@ -758,7 +886,9 @@ def _save_store_to_db(session: Session, data: dict[str, object]) -> None:
                 continue
             session.add(
                 CorporateActionEvent(
-                    corporate_action_event_id=str(raw_event["corporate_action_event_id"]),
+                    corporate_action_event_id=str(
+                        raw_event["corporate_action_event_id"]
+                    ),
                     instrument_id=instrument.instrument_id,
                     action_type=str(raw_event["action_type"]),
                     announcement_date=announcement_date,
@@ -831,9 +961,13 @@ def _normalized_source_settings(item: dict[str, object]) -> dict[str, object]:
 
 def _normalized_refresh_status(item: dict[str, object]) -> dict[str, object]:
     source_settings = _normalized_source_settings(item)
-    refresh_status = dict(_default_refresh_status(str(source_settings.get("source_mode") or "manual")))
+    refresh_status = dict(
+        _default_refresh_status(str(source_settings.get("source_mode") or "manual"))
+    )
     refresh_status.update(dict(item.get("refresh_status", {})))
-    refresh_status["mode"] = str(refresh_status.get("mode") or source_settings.get("source_mode") or "manual")
+    refresh_status["mode"] = str(
+        refresh_status.get("mode") or source_settings.get("source_mode") or "manual"
+    )
     return refresh_status
 
 
@@ -845,7 +979,9 @@ def _normalized_lifecycle_state(item: dict[str, object]) -> dict[str, object]:
     canonical_instrument_id: str | None = None
 
     if isinstance(raw_lifecycle, dict):
-        status = str(raw_lifecycle.get("status") or "active").strip().lower() or "active"
+        status = (
+            str(raw_lifecycle.get("status") or "active").strip().lower() or "active"
+        )
         raw_changed_at = raw_lifecycle.get("changed_at")
         raw_changed_by = raw_lifecycle.get("changed_by")
         raw_canonical_id = raw_lifecycle.get("canonical_instrument_id")
@@ -917,10 +1053,7 @@ def _instrument_query(*, include_market_data: bool = True):
         selectinload(Instrument.identifiers),
         selectinload(Instrument.corporate_action_events),
     ]
-    return (
-        select(Instrument)
-        .options(*eager_loads)
-    )
+    return select(Instrument).options(*eager_loads)
 
 
 def _serialize_market_data_row(row: Any) -> dict[str, object]:
@@ -933,6 +1066,9 @@ def _serialize_market_data_row(row: Any) -> dict[str, object]:
         "quote_basis": str(row["quote_basis"]),
         "as_of_date": row["as_of_date"].isoformat(),
         "value": str(row["value"]),
+        "value_input_scale": int(row["value_input_scale"]),
+        "numeric_scale_state": str(row["numeric_scale_state"]),
+        "payload_schema_version": int(row["payload_schema_version"]),
         "currency": str(row["currency"]),
         "source_ref": row["source_ref"],
         "status": str(row["status"]),
@@ -963,6 +1099,11 @@ def _market_data_for_instruments(
             QuoteObservationRevision.revision_id.label("revision_id"),
             QuoteObservationRevision.revision_number.label("revision_number"),
             QuoteObservationRevision.value.label("value"),
+            QuoteObservationRevision.value_input_scale.label("value_input_scale"),
+            QuoteObservationRevision.numeric_scale_state.label("numeric_scale_state"),
+            QuoteObservationRevision.payload_schema_version.label(
+                "payload_schema_version"
+            ),
             QuoteObservationRevision.source_ref.label("source_ref"),
             QuoteObservationRevision.status.label("status"),
             QuoteObservationRevision.source_published_at.label("source_published_at"),
@@ -986,23 +1127,22 @@ def _market_data_for_instruments(
     )
     statement = current_points
     if latest_only:
-        ranked = (
-            current_points.add_columns(
+        ranked = current_points.add_columns(
             func.row_number()
             .over(
-                    partition_by=QuoteSeries.quote_series_id,
+                partition_by=QuoteSeries.quote_series_id,
                 order_by=(
-                        QuoteObservation.as_of_date.desc(),
-                        QuoteObservationRevision.revision_number.desc(),
+                    QuoteObservation.as_of_date.desc(),
+                    QuoteObservationRevision.revision_number.desc(),
                 ),
             )
             .label("row_number"),
-        )
-        .subquery()
-        )
+        ).subquery()
         statement = select(ranked).where(ranked.c.row_number == 1)
     rows = session.execute(statement).mappings()
-    result: dict[str, list[dict[str, object]]] = {instrument_id: [] for instrument_id in instrument_ids}
+    result: dict[str, list[dict[str, object]]] = {
+        instrument_id: [] for instrument_id in instrument_ids
+    }
     for row in rows:
         result[str(row["instrument_id"])].append(_serialize_market_data_row(row))
     for points in result.values():
@@ -1019,15 +1159,21 @@ def list_instruments(
     include_inactive: bool = False,
 ) -> list[dict[str, object]]:
     normalized_search = search.strip().lower() if search else ""
-    normalized_instrument_type = instrument_type.strip().lower() if instrument_type else None
+    normalized_instrument_type = (
+        instrument_type.strip().lower() if instrument_type else None
+    )
 
     with session_factory() as session:
         statement = _instrument_query(include_market_data=False)
         if not include_inactive:
             lifecycle_status = Instrument.lifecycle_state_json["status"].as_string()
-            statement = statement.where(func.coalesce(lifecycle_status, "active") != "archived")
+            statement = statement.where(
+                func.coalesce(lifecycle_status, "active") != "archived"
+            )
         if normalized_instrument_type:
-            statement = statement.where(func.lower(Instrument.instrument_type) == normalized_instrument_type)
+            statement = statement.where(
+                func.lower(Instrument.instrument_type) == normalized_instrument_type
+            )
         if normalized_search:
             pattern = f"%{normalized_search}%"
             statement = statement.where(
@@ -1038,13 +1184,19 @@ def list_instruments(
                     func.lower(Instrument.currency).like(pattern),
                     Instrument.identifiers.any(
                         or_(
-                            func.lower(InstrumentIdentifier.identifier_type).like(pattern),
-                            func.lower(InstrumentIdentifier.identifier_value).like(pattern),
+                            func.lower(InstrumentIdentifier.identifier_type).like(
+                                pattern
+                            ),
+                            func.lower(InstrumentIdentifier.identifier_value).like(
+                                pattern
+                            ),
                         )
                     ),
                 )
             )
-        statement = statement.order_by(Instrument.instrument_name, Instrument.instrument_id)
+        statement = statement.order_by(
+            Instrument.instrument_name, Instrument.instrument_id
+        )
         if limit is not None:
             statement = statement.limit(limit)
         instrument_rows = list(session.scalars(statement).all())
@@ -1095,14 +1247,17 @@ def list_active_instrument_ids(
                 func.lower(Instrument.instrument_type).in_(normalized_types)
             )
         statement = statement.order_by(Instrument.instrument_id)
-        return [str(instrument_id) for instrument_id in session.scalars(statement).all()]
+        return [
+            str(instrument_id) for instrument_id in session.scalars(statement).all()
+        ]
 
 
-def get_instrument(session_factory: SessionFactory, instrument_id: str) -> dict[str, object] | None:
+def get_instrument(
+    session_factory: SessionFactory, instrument_id: str
+) -> dict[str, object] | None:
     with session_factory() as session:
         target = session.scalar(
-            _instrument_query()
-            .where(Instrument.instrument_id == instrument_id)
+            _instrument_query().where(Instrument.instrument_id == instrument_id)
         )
         if target is None:
             return None
@@ -1124,11 +1279,14 @@ def instrument_exists(session_factory: SessionFactory, instrument_id: str) -> bo
     if not normalized_id:
         return False
     with session_factory() as session:
-        return session.scalar(
-            select(Instrument.instrument_id).where(
-                Instrument.instrument_id == normalized_id
+        return (
+            session.scalar(
+                select(Instrument.instrument_id).where(
+                    Instrument.instrument_id == normalized_id
+                )
             )
-        ) is not None
+            is not None
+        )
 
 
 def get_instrument_details(
@@ -1195,6 +1353,13 @@ def list_quote_observation_revisions(
                 QuoteObservationRevision.revision_id.label("revision_id"),
                 QuoteObservationRevision.revision_number.label("revision_number"),
                 QuoteObservationRevision.value.label("value"),
+                QuoteObservationRevision.value_input_scale.label("value_input_scale"),
+                QuoteObservationRevision.numeric_scale_state.label(
+                    "numeric_scale_state"
+                ),
+                QuoteObservationRevision.payload_schema_version.label(
+                    "payload_schema_version"
+                ),
                 QuoteObservationRevision.source_ref.label("source_ref"),
                 QuoteObservationRevision.status.label("status"),
                 QuoteObservationRevision.source_published_at.label(
@@ -1242,11 +1407,16 @@ def list_quote_observation_revisions(
                 "revision_id": str(row["revision_id"]),
                 "revision_number": int(row["revision_number"]),
                 "value": row["value"],
+                "value_input_scale": (
+                    int(row["value_input_scale"])
+                    if row["value_input_scale"] is not None
+                    else None
+                ),
+                "numeric_scale_state": row["numeric_scale_state"],
+                "payload_schema_version": int(row["payload_schema_version"]),
                 "source_ref": row["source_ref"],
                 "status": str(row["status"]),
-                "source_published_at": canonical_timestamp(
-                    row["source_published_at"]
-                ),
+                "source_published_at": canonical_timestamp(row["source_published_at"]),
                 "ingested_at": canonical_timestamp(row["ingested_at"]),
                 "payload_hash": str(row["payload_hash"]),
                 "is_current": bool(row["is_current"]),
@@ -1296,10 +1466,16 @@ def list_corporate_actions(
                 "corporate_action_event_id": event.corporate_action_event_id,
                 "instrument_id": event.instrument_id,
                 "action_type": event.action_type,
-                "announcement_date": event.announcement_date.isoformat() if event.announcement_date else None,
-                "record_date": event.record_date.isoformat() if event.record_date else None,
+                "announcement_date": event.announcement_date.isoformat()
+                if event.announcement_date
+                else None,
+                "record_date": event.record_date.isoformat()
+                if event.record_date
+                else None,
                 "effective_date": event.effective_date.isoformat(),
-                "payable_date": event.payable_date.isoformat() if event.payable_date else None,
+                "payable_date": event.payable_date.isoformat()
+                if event.payable_date
+                else None,
                 "new_units": event.new_units,
                 "old_units": event.old_units,
                 "quantity_rounding": event.quantity_rounding,
@@ -1349,7 +1525,9 @@ def upsert_corporate_action_event(
         ratio_new = Decimal(str(new_units))
         ratio_old = Decimal(str(old_units))
     except (InvalidOperation, ValueError) as error:
-        raise ValueError("Corporate-action ratio must contain valid decimals.") from error
+        raise ValueError(
+            "Corporate-action ratio must contain valid decimals."
+        ) from error
     now = _utcnow_iso()
     candidate_payload = {
         "corporate_action_event_id": (
@@ -1390,7 +1568,9 @@ def upsert_corporate_action_event(
         incoming_provenance = deepcopy(provenance or {})
         if event is None:
             event = CorporateActionEvent(
-                corporate_action_event_id=str(candidate_payload["corporate_action_event_id"]),
+                corporate_action_event_id=str(
+                    candidate_payload["corporate_action_event_id"]
+                ),
                 instrument_id=normalized_instrument_id,
                 action_type=action_type,
                 announcement_date=announcement_date,
@@ -1480,7 +1660,9 @@ def find_instrument_by_identifier(
             func.lower(InstrumentIdentifier.identifier_value) == normalized_value,
         ]
         if normalized_type:
-            identifier_filters.append(func.lower(InstrumentIdentifier.identifier_type) == normalized_type)
+            identifier_filters.append(
+                func.lower(InstrumentIdentifier.identifier_type) == normalized_type
+            )
         candidates = session.scalars(
             _instrument_query()
             .join(InstrumentIdentifier)
@@ -1501,8 +1683,12 @@ def find_instrument_by_identifier(
                 continue
             identifiers = list(item.get("identifiers", []))
             for identifier in identifiers:
-                current_value = str(identifier.get("identifier_value") or "").strip().lower()
-                current_type = str(identifier.get("identifier_type") or "").strip().lower()
+                current_value = (
+                    str(identifier.get("identifier_value") or "").strip().lower()
+                )
+                current_type = (
+                    str(identifier.get("identifier_type") or "").strip().lower()
+                )
                 if current_value != normalized_value:
                     continue
                 if normalized_type and current_type != normalized_type:
@@ -1539,7 +1725,9 @@ def create_instrument(
         not item["identifier_type"] or not item["identifier_value"]
         for item in normalized_identifiers
     ):
-        raise ValueError("Every instrument identifier requires a non-blank type and value.")
+        raise ValueError(
+            "Every instrument identifier requires a non-blank type and value."
+        )
     if sum(1 for item in normalized_identifiers if bool(item.get("is_primary"))) != 1:
         raise ValueError("Exactly one instrument identifier must be primary.")
 
@@ -1552,7 +1740,9 @@ def create_instrument(
             continue
         normalized_identifier = (identifier_type.lower(), identifier_value.lower())
         if normalized_identifier in seen_identifiers:
-            raise ValueError(f'Duplicate identifier "{identifier_type}:{identifier_value}" in request.')
+            raise ValueError(
+                f'Duplicate identifier "{identifier_type}:{identifier_value}" in request.'
+            )
         seen_identifiers.add(normalized_identifier)
 
         existing = find_instrument_by_identifier(
@@ -1568,7 +1758,9 @@ def create_instrument(
             )
 
     with session_factory() as session:
-        existing_ids = {item for item in session.scalars(select(Instrument.instrument_id)).all()}
+        existing_ids = {
+            item for item in session.scalars(select(Instrument.instrument_id)).all()
+        }
         primary_identifier = next(
             (
                 str(item.get("identifier_value") or "")
@@ -1644,7 +1836,9 @@ def create_instrument(
             session.commit()
         except IntegrityError as error:
             session.rollback()
-            raise ValueError("Instrument identifiers or generated id conflict with an existing instrument.") from error
+            raise ValueError(
+                "Instrument identifiers or generated id conflict with an existing instrument."
+            ) from error
         return _serialize_record(record)
 
 
@@ -1695,14 +1889,21 @@ def _normalize_market_data_upserts(
             )
         status = normalize_revision_status(row.get("status"))
         if status == WITHDRAWN_STATUS and not allow_withdrawn:
-            raise ValueError("withdrawn revisions may only be created by replacement workflows")
+            raise ValueError(
+                "withdrawn revisions may only be created by replacement workflows"
+            )
         if status != WITHDRAWN_STATUS and status not in SOURCE_OBSERVATION_STATUSES:
             raise ValueError(f'unsupported source observation status "{status}"')
-        value = (
+        numeric_evidence = (
             None
             if status == WITHDRAWN_STATUS
-            else canonical_decimal_text(row.get("value"))
+            else quote_numeric_evidence(
+                row.get("value"),
+                value_input_scale=row.get("value_input_scale"),
+                numeric_scale_state=row.get("numeric_scale_state"),
+            )
         )
+        value = numeric_evidence.value if numeric_evidence is not None else None
         if value is not None and Decimal(value) <= 0:
             raise ValueError("quote value must be positive")
         source_ref = normalize_source_ref(row.get("source_ref"))
@@ -1717,6 +1918,17 @@ def _normalize_market_data_upserts(
             )
         normalized_by_key[key] = {
             "value": value,
+            "value_input_scale": (
+                numeric_evidence.value_input_scale
+                if numeric_evidence is not None
+                else None
+            ),
+            "numeric_scale_state": (
+                numeric_evidence.numeric_scale_state
+                if numeric_evidence is not None
+                else None
+            ),
+            "payload_schema_version": QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
             "source_ref": source_ref,
             "status": status,
             "source_published_at": source_published_at,
@@ -1725,6 +1937,17 @@ def _normalize_market_data_upserts(
                 source_ref=source_ref,
                 status=status,
                 source_published_at=source_published_at,
+                payload_schema_version=QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
+                value_input_scale=(
+                    numeric_evidence.value_input_scale
+                    if numeric_evidence is not None
+                    else None
+                ),
+                numeric_scale_state=(
+                    numeric_evidence.numeric_scale_state
+                    if numeric_evidence is not None
+                    else None
+                ),
             ),
         }
     return normalized_by_key
@@ -1830,7 +2053,12 @@ def _append_market_data_revisions(
     changed_count = 0
     changed_series: dict[str, QuoteSeries] = {}
     pending_revisions: list[QuoteObservationRevision] = []
-    for (metric_family, quote_basis, point_date, currency), payload in normalized_by_key.items():
+    for (
+        metric_family,
+        quote_basis,
+        point_date,
+        currency,
+    ), payload in normalized_by_key.items():
         series = series_by_key[(metric_family, quote_basis, currency)]
         observation = observations_by_key[(series.quote_series_id, point_date)]
         current = current_by_observation_id.get(observation.observation_id)
@@ -1853,6 +2081,9 @@ def _append_market_data_revisions(
                 observation_id=observation.observation_id,
                 revision_number=revision_number,
                 value=payload["value"],
+                value_input_scale=payload["value_input_scale"],
+                numeric_scale_state=payload["numeric_scale_state"],
+                payload_schema_version=int(payload["payload_schema_version"]),
                 source_ref=payload["source_ref"],
                 status=str(payload["status"]),
                 source_published_at=payload["source_published_at"],
@@ -1884,7 +2115,7 @@ def upsert_market_data(
     metric_family: str,
     quote_basis: str,
     as_of_date: date,
-    value: str,
+    value: object,
     currency: str,
     source_ref: str | None,
     status: str,
@@ -1972,7 +2203,9 @@ def upsert_source_settings(
         if source_email is not None:
             source_settings["source_email"] = source_email.strip()
         if source_location is not None:
-            source_settings["source_location"] = source_location.strip() or "Shared data ops"
+            source_settings["source_location"] = (
+                source_location.strip() or "Shared data ops"
+            )
         if source_api_profile is not None:
             source_settings["source_api_profile"] = source_api_profile.strip()
         if source_email_rules is not None:
@@ -2076,6 +2309,10 @@ def replace_nav_history(
                         "quote_basis": quote_basis,
                         "as_of_date": point_date,
                         "value": row_value,
+                        "value_input_scale": row.get(f"{row_key}_input_scale"),
+                        "numeric_scale_state": row.get(
+                            f"{row_key}_numeric_scale_state"
+                        ),
                         "currency": row_currency,
                         "source_ref": point_source_ref,
                         "status": point_status,

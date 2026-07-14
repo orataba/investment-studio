@@ -56,17 +56,13 @@ LAUNCH_AGENTS_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 SYSTEMD_UNIT_PREFIX="${UNIT_PREFIX:-portfolio-ops}"
 HEALTH_ATTEMPTS="${PORTFOLIO_OPS_RELEASE_HEALTH_ATTEMPTS:-30}"
 
-PROJECT_SCHEMAS=(instrument_registry portfolio watchlist)
-SYSTEMD_UNITS=(
-  "$SYSTEMD_UNIT_PREFIX-platform-api.service"
-  "$SYSTEMD_UNIT_PREFIX-watchlist-api.service"
-  "$SYSTEMD_UNIT_PREFIX-portfolio-api.service"
-  "$SYSTEMD_UNIT_PREFIX-platform-web.service"
-  "$SYSTEMD_UNIT_PREFIX-watchlist-web.service"
-  "$SYSTEMD_UNIT_PREFIX-portfolio-web.service"
-  "$SYSTEMD_UNIT_PREFIX-market-data-refresh.timer"
-  "$SYSTEMD_UNIT_PREFIX-market-data-refresh.service"
-)
+PROJECT_SCHEMAS=(instrument_registry calculation_registry portfolio watchlist)
+source "$PROJECT_ROOT/infra/service_inventory.sh"
+source "$PROJECT_ROOT/infra/scripts/runtime_readiness.sh"
+SYSTEMD_UNITS=()
+for unit_suffix in "${PORTFOLIO_OPS_SYSTEMD_MANAGED_UNIT_SUFFIXES[@]}"; do
+  SYSTEMD_UNITS+=("$SYSTEMD_UNIT_PREFIX-$unit_suffix")
+done
 
 ACTIVE_SERVICE_MANAGER=none
 WORK_DIR=""
@@ -156,6 +152,17 @@ stop_managed_services() {
   services_stopped="true"
 }
 
+is_managed_systemd_unit() {
+  local candidate="$1"
+  local managed_unit
+  for managed_unit in "${SYSTEMD_UNITS[@]}"; do
+    if [[ "$candidate" == "$managed_unit" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 start_previously_active_services() {
   case "$ACTIVE_SERVICE_MANAGER" in
     none) return 0 ;;
@@ -167,22 +174,15 @@ start_previously_active_services() {
       local unit active_units=()
       while IFS= read -r unit || [[ -n "$unit" ]]; do
         [[ -n "$unit" ]] || continue
-        case "$unit" in
-          "$SYSTEMD_UNIT_PREFIX"-platform-api.service|\
-          "$SYSTEMD_UNIT_PREFIX"-watchlist-api.service|\
-          "$SYSTEMD_UNIT_PREFIX"-portfolio-api.service|\
-          "$SYSTEMD_UNIT_PREFIX"-platform-web.service|\
-          "$SYSTEMD_UNIT_PREFIX"-watchlist-web.service|\
-          "$SYSTEMD_UNIT_PREFIX"-portfolio-web.service|\
-          "$SYSTEMD_UNIT_PREFIX"-market-data-refresh.timer|\
-          "$SYSTEMD_UNIT_PREFIX"-market-data-refresh.service)
-            active_units+=("$unit")
-            ;;
-          *)
-            echo "Invalid unit in release state: $unit" >&2
-            return 1
-            ;;
-        esac
+        if ! is_managed_systemd_unit "$unit"; then
+          echo "Invalid unit in release state: $unit" >&2
+          return 1
+        fi
+        if [[ "$unit" == "$SYSTEMD_UNIT_PREFIX-market-data-refresh.service" ]]; then
+          echo "The in-flight market-data refresh was fenced and was not replayed automatically."
+          continue
+        fi
+        active_units+=("$unit")
       done < "$SERVICE_STATE_FILE"
       if [[ ${#active_units[@]} -gt 0 ]]; then
         systemctl --user start "${active_units[@]}"
@@ -192,158 +192,59 @@ start_previously_active_services() {
 }
 
 force_stop_managed_services() {
+  local stop_status=0
   case "$ACTIVE_SERVICE_MANAGER" in
     none) return 0 ;;
     launchd)
       local service
-      for service in platform-api watchlist-api portfolio-api platform-web watchlist-web portfolio-web market-data-refresh; do
-        launchctl bootout "gui/$UID/$LABEL_PREFIX.$service" >/dev/null 2>&1 || true
+      for service in "${PORTFOLIO_OPS_ALL_SERVICE_NAMES[@]}"; do
+        if launchctl print "gui/$UID/$LABEL_PREFIX.$service" >/dev/null 2>&1 \
+          && ! launchctl bootout "gui/$UID/$LABEL_PREFIX.$service" >/dev/null 2>&1; then
+          stop_status=1
+        fi
       done
       ;;
     systemd)
-      systemctl --user stop "${SYSTEMD_UNITS[@]}" >/dev/null 2>&1 || true
+      if ! systemctl --user stop "${SYSTEMD_UNITS[@]}" >/dev/null 2>&1; then
+        stop_status=1
+      fi
       ;;
   esac
+  return "$stop_status"
 }
 
-health_urls_for_previous_services() {
-  local item
-  while IFS= read -r item || [[ -n "$item" ]]; do
-    case "$item" in
-      platform-api) printf '%s\n' 'http://127.0.0.1:8002/api/health' ;;
-      watchlist-api) printf '%s\n' 'http://127.0.0.1:8000/api/health' ;;
-      portfolio-api) printf '%s\n' 'http://127.0.0.1:8001/api/health' ;;
-      platform-web) printf '%s\n' 'http://127.0.0.1:5172/' ;;
-      watchlist-web) printf '%s\n' 'http://127.0.0.1:5173/' ;;
-      portfolio-web) printf '%s\n' 'http://127.0.0.1:5174/' ;;
-      "$SYSTEMD_UNIT_PREFIX-platform-api.service") printf '%s\n' 'http://127.0.0.1:8102/api/health' ;;
-      "$SYSTEMD_UNIT_PREFIX-watchlist-api.service") printf '%s\n' 'http://127.0.0.1:8100/api/health' ;;
-      "$SYSTEMD_UNIT_PREFIX-portfolio-api.service") printf '%s\n' 'http://127.0.0.1:8101/api/health' ;;
-      "$SYSTEMD_UNIT_PREFIX-platform-web.service") printf '%s\n' 'http://127.0.0.1:3100/' ;;
-      "$SYSTEMD_UNIT_PREFIX-watchlist-web.service") printf '%s\n' 'http://127.0.0.1:3101/' ;;
-      "$SYSTEMD_UNIT_PREFIX-portfolio-web.service") printf '%s\n' 'http://127.0.0.1:3102/' ;;
-    esac
-  done < "$SERVICE_STATE_FILE"
-}
-
-wait_for_health() {
-  local urls=() url attempt healthy
-  while IFS= read -r url || [[ -n "$url" ]]; do
-    [[ -n "$url" ]] && urls+=("$url")
-  done < <(health_urls_for_previous_services)
-  if [[ ${#urls[@]} -eq 0 ]]; then
-    echo "No previously active HTTP services require a health check."
-    return 0
-  fi
-  if ! command -v curl >/dev/null 2>&1; then
-    echo "curl is required for post-release health checks." >&2
-    return 1
-  fi
-  for ((attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt += 1)); do
-    healthy="true"
-    for url in "${urls[@]}"; do
-      if ! curl --noproxy '*' --max-time 2 --fail --silent --output /dev/null "$url"; then
-        healthy="false"
-        break
-      fi
-    done
-    if [[ "$healthy" == "true" ]]; then
-      echo "All previously active HTTP services passed health checks."
+managed_services_are_inactive() {
+  local service unit state
+  case "$ACTIVE_SERVICE_MANAGER" in
+    none)
       return 0
-    fi
-    sleep 1
-  done
-  echo "One or more post-release health checks did not become ready." >&2
-  return 1
-}
-
-portfolio_api_base_for_previous_services() {
-  local item
-  while IFS= read -r item || [[ -n "$item" ]]; do
-    case "$item" in
-      portfolio-api)
-        printf '%s\n' 'http://127.0.0.1:8001'
-        return 0
-        ;;
-      "$SYSTEMD_UNIT_PREFIX-portfolio-api.service")
-        printf '%s\n' 'http://127.0.0.1:8101'
-        return 0
-        ;;
-    esac
-  done < "$SERVICE_STATE_FILE"
-}
-
-verify_portfolio_read_contract() {
-  local base_url
-  base_url="$(portfolio_api_base_for_previous_services)"
-  if [[ -z "$base_url" ]]; then
-    echo "No previously active Portfolio API requires a read-contract smoke test."
-    return 0
-  fi
-  "$PYTHON_BIN" - "$base_url" <<'PY'
-from __future__ import annotations
-
-import json
-import sys
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote
-from urllib.request import ProxyHandler, build_opener
-
-
-base_url = sys.argv[1].rstrip("/")
-opener = build_opener(ProxyHandler({}))
-
-
-def get_json(path: str) -> object:
-    url = f"{base_url}{path}"
-    try:
-        with opener.open(url, timeout=10) as response:
-            if response.status != 200:
-                raise SystemExit(f"Portfolio read smoke returned HTTP {response.status}: {url}")
-            return json.load(response)
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"Portfolio read smoke failed for {url}: {exc}") from exc
-
-
-portfolios = get_json("/api/portfolios")
-if not isinstance(portfolios, list):
-    raise SystemExit("Portfolio list response is not a JSON array")
-
-transaction_count = 0
-history_count = 0
-for portfolio in portfolios:
-    if not isinstance(portfolio, dict) or not isinstance(portfolio.get("portfolio_id"), str):
-        raise SystemExit("Portfolio list contains an invalid portfolio identity")
-    portfolio_id = quote(portfolio["portfolio_id"], safe="")
-    transaction_response = get_json(f"/api/portfolios/{portfolio_id}/transactions")
-    if not isinstance(transaction_response, dict) or not isinstance(
-        transaction_response.get("transactions"), list
-    ):
-        raise SystemExit("Portfolio transaction response has an invalid envelope")
-    transactions = transaction_response["transactions"]
-    transaction_count += len(transactions)
-    for transaction in transactions:
-        if not isinstance(transaction, dict) or not isinstance(
-            transaction.get("transaction_id"), str
-        ):
-            raise SystemExit("Portfolio transaction response contains an invalid identity")
-        transaction_id = quote(transaction["transaction_id"], safe="")
-        history = get_json(
-            f"/api/portfolios/{portfolio_id}/transactions/{transaction_id}/revisions"
-        )
-        if not isinstance(history, dict) or not isinstance(history.get("revisions"), list):
-            raise SystemExit("Transaction revision history response has an invalid envelope")
-        revisions = history["revisions"]
-        if not revisions:
-            raise SystemExit("Transaction revision history is unexpectedly empty")
-        history_count += len(revisions)
-
-print(
-    "Portfolio read-contract smoke passed: "
-    f"{len(portfolios)} portfolios, {transaction_count} current transactions, "
-    f"{history_count} revisions."
-)
-PY
+      ;;
+    launchd)
+      if ! launchctl print "gui/$UID" >/dev/null 2>&1; then
+        echo "Cannot verify the launchd user domain while fencing managed services." >&2
+        return 1
+      fi
+      for service in "${PORTFOLIO_OPS_ALL_SERVICE_NAMES[@]}"; do
+        if launchctl print "gui/$UID/$LABEL_PREFIX.$service" >/dev/null 2>&1; then
+          echo "Managed service is still loaded: $LABEL_PREFIX.$service" >&2
+          return 1
+        fi
+      done
+      ;;
+    systemd)
+      for unit in "${SYSTEMD_UNITS[@]}"; do
+        state="$(systemctl --user is-active "$unit" 2>/dev/null || true)"
+        case "$state" in
+          inactive|failed|unknown) ;;
+          *)
+            echo "Managed service is not inactive: $unit ($state)" >&2
+            return 1
+            ;;
+        esac
+      done
+      ;;
+  esac
+  return 0
 }
 
 sha256_file() {
@@ -357,10 +258,11 @@ sha256_file() {
 
 verify_dump() {
   local dump_path="$1"
+  shift
   local list_path="$WORK_DIR/$(basename "$dump_path").list"
   local schema
   "$PG_RESTORE_BIN" --list "$dump_path" > "$list_path"
-  for schema in "${PROJECT_SCHEMAS[@]}"; do
+  for schema in "$@"; do
     if ! grep -Eq "^[0-9]+; [0-9]+ [0-9]+ SCHEMA - ${schema} " "$list_path"; then
       echo "Backup is missing required schema: $schema" >&2
       return 1
@@ -370,7 +272,17 @@ verify_dump() {
 
 create_verified_backup() {
   local label="$1" path_variable="$2" checksum_variable="$3"
-  local timestamp backup_path checksum_path checksum
+  shift 3
+  local schemas=("$@")
+  local schema_args=()
+  local schema timestamp backup_path checksum_path checksum
+  if [[ ${#schemas[@]} -eq 0 ]]; then
+    echo "Cannot create a project backup without an explicit schema set." >&2
+    return 1
+  fi
+  for schema in "${schemas[@]}"; do
+    schema_args+=(--schema="$schema")
+  done
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   backup_path="$BACKUP_ROOT/${DATABASE_NAME}-${label}-${timestamp}-$$.pgdump"
   checksum_path="$backup_path.sha256"
@@ -379,12 +291,10 @@ create_verified_backup() {
     --no-owner \
     --no-acl \
     "${PSQL_CONNECTION_ARGS[@]}" \
-    --schema=instrument_registry \
-    --schema=portfolio \
-    --schema=watchlist \
+    "${schema_args[@]}" \
     --file "$backup_path"
   chmod 600 "$backup_path"
-  verify_dump "$backup_path"
+  verify_dump "$backup_path" "${schemas[@]}"
   checksum="$(sha256_file "$backup_path")"
   printf '%s  %s\n' "$checksum" "$(basename "$backup_path")" > "$checksum_path"
   chmod 600 "$checksum_path"
@@ -405,6 +315,7 @@ drop_project_schemas() {
     --command '
       DROP SCHEMA IF EXISTS watchlist CASCADE;
       DROP SCHEMA IF EXISTS portfolio CASCADE;
+      DROP SCHEMA IF EXISTS calculation_registry CASCADE;
       DROP SCHEMA IF EXISTS instrument_registry CASCADE;
     '
 }
@@ -421,7 +332,7 @@ restore_pre_release_backup() {
     echo "Cannot roll back: pre-release backup checksum mismatch." >&2
     return 1
   fi
-  verify_dump "$PRE_BACKUP_PATH"
+  verify_dump "$PRE_BACKUP_PATH" "${PRE_RELEASE_SCHEMAS[@]}"
   "$PSQL_BIN" "${PSQL_CONNECTION_ARGS[@]}" \
     --no-password \
     --set ON_ERROR_STOP=1 \
@@ -444,14 +355,20 @@ restore_pre_release_backup() {
 }
 
 cleanup_on_exit() {
-  local status=$? rollback_failed="false" restart_failed="false"
+  local status=$? rollback_failed="false" restart_failed="false" fence_failed="false"
   trap - EXIT HUP INT TERM
   set +e
   if [[ $status -ne 0 && "$services_stopped" == "true" ]]; then
-    force_stop_managed_services
+    if ! force_stop_managed_services; then
+      echo "One or more managed-service stop commands failed; verifying the fence." >&2
+    fi
   fi
   if [[ $status -ne 0 && "$database_mutation_started" == "true" && "$release_complete" != "true" ]]; then
-    if ! restore_pre_release_backup; then
+    if ! managed_services_are_inactive; then
+      fence_failed="true"
+      echo "AUTOMATIC ROLLBACK SKIPPED. Managed writer inactivity could not be verified." >&2
+      echo "Recovery artifact: $PRE_BACKUP_PATH" >&2
+    elif ! restore_pre_release_backup; then
       rollback_failed="true"
       echo "AUTOMATIC ROLLBACK FAILED. All managed services remain stopped." >&2
       echo "Recovery artifact: $PRE_BACKUP_PATH" >&2
@@ -465,7 +382,7 @@ cleanup_on_exit() {
     fi
   fi
   [[ -n "$WORK_DIR" ]] && rm -rf "$WORK_DIR"
-  if [[ "$rollback_failed" == "true" ]]; then
+  if [[ "$rollback_failed" == "true" || "$fence_failed" == "true" ]]; then
     status=70
   elif [[ "$restart_failed" == "true" && $status -eq 0 ]]; then
     status=1
@@ -584,6 +501,22 @@ if [[ "$remaining_connections" != "0" && "$ALLOW_ACTIVE_CONNECTIONS" != "true" ]
   echo "Refusing release while $remaining_connections other database connection(s) remain active." >&2
   exit 1
 fi
+EXISTING_SCHEMAS_PATH="$WORK_DIR/existing-project-schemas"
+"$PSQL_BIN" "${PSQL_CONNECTION_ARGS[@]}" --no-password --set ON_ERROR_STOP=1 \
+  --tuples-only --no-align --command "
+    SELECT nspname FROM pg_namespace
+    WHERE nspname IN ('instrument_registry', 'calculation_registry', 'portfolio', 'watchlist')
+    ORDER BY CASE nspname
+      WHEN 'instrument_registry' THEN 1
+      WHEN 'calculation_registry' THEN 2
+      WHEN 'portfolio' THEN 3
+      WHEN 'watchlist' THEN 4
+    END;
+  " > "$EXISTING_SCHEMAS_PATH"
+PRE_RELEASE_SCHEMAS=()
+while IFS= read -r schema || [[ -n "$schema" ]]; do
+  [[ -n "$schema" ]] && PRE_RELEASE_SCHEMAS+=("$schema")
+done < "$EXISTING_SCHEMAS_PATH"
 schema_count="$(
   "$PSQL_BIN" "${PSQL_CONNECTION_ARGS[@]}" --no-password --set ON_ERROR_STOP=1 \
     --tuples-only --no-align --command "
@@ -592,11 +525,13 @@ schema_count="$(
     "
 )"
 if [[ "$schema_count" != "3" ]]; then
-  echo "Release requires all three project schemas; found $schema_count." >&2
+  echo "Release requires the three legacy core schemas; found $schema_count." >&2
   exit 1
 fi
 
-create_verified_backup pre-release PRE_BACKUP_PATH PRE_BACKUP_CHECKSUM_PATH
+create_verified_backup \
+  pre-release PRE_BACKUP_PATH PRE_BACKUP_CHECKSUM_PATH \
+  "${PRE_RELEASE_SCHEMAS[@]}"
 
 DATABASE_URL="$(
   DB_URL_USER="$DATABASE_USER" DB_URL_PASSWORD="$DATABASE_PASSWORD" \
@@ -618,6 +553,9 @@ export PORTFOLIO_OPS_LOCAL_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA=instrument_registry
+export PORTFOLIO_OPS_CALCULATION_REGISTRY_DATABASE_URL="$DATABASE_URL"
+export PORTFOLIO_OPS_CALCULATION_REGISTRY_ALEMBIC_DATABASE_URL="$DATABASE_URL"
+export PORTFOLIO_OPS_CALCULATION_REGISTRY_SCHEMA=calculation_registry
 export PORTFOLIO_OPS_PLATFORM_DATABASE_URL="$DATABASE_URL"
 export PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA=instrument_registry
 export PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL="$DATABASE_URL"
@@ -629,7 +567,7 @@ export PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA=watchlist
 export PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE="$DATABASE_NAME"
 
 database_mutation_started="true"
-echo "Applying all three migration chains."
+echo "Applying all four migration chains."
 PROJECT_ROOT="$PROJECT_ROOT" PYTHON_BIN="$PYTHON_BIN" ENV_ROOT="" "$MIGRATION_RUNNER"
 
 audit_timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -653,11 +591,15 @@ if (
     raise SystemExit("Retained audit evidence is not a zero-failure, zero-warning pass")
 PY
 
-create_verified_backup post-release POST_BACKUP_PATH POST_BACKUP_CHECKSUM_PATH
+create_verified_backup \
+  post-release POST_BACKUP_PATH POST_BACKUP_CHECKSUM_PATH \
+  "${PROJECT_SCHEMAS[@]}"
 
 start_previously_active_services
-wait_for_health
-verify_portfolio_read_contract
+portfolio_ops_wait_for_service_state_readiness \
+  "$SERVICE_STATE_FILE" "$SYSTEMD_UNIT_PREFIX" "$HEALTH_ATTEMPTS"
+portfolio_ops_verify_portfolio_read_contract_for_service_state \
+  "$SERVICE_STATE_FILE" "$SYSTEMD_UNIT_PREFIX" "$PYTHON_BIN"
 release_complete="true"
 services_stopped="false"
 

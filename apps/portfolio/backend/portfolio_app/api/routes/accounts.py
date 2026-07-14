@@ -2,24 +2,31 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 
 from portfolio_app.api.assemblers import serialize_transaction, summarize_transactions
 from portfolio_app.api.contracts import (
     AccountCreateRequest,
     AccountListResponse,
     AccountRecord,
-    AccountPositionRecord,
     AccountUpdateRequest,
     AccountsWorkspaceResponse,
     AccountWorkspaceAccount,
-    DerivationBoundaryStatus,
-    LedgerPostingRecord,
+    PortfolioDailyPublishedAccountBalanceRecord,
+    PortfolioDailyPublishedAccountPositionRecord,
 )
-from portfolio_app.services.instrument_registry import InstrumentRegistryError
-from portfolio_app.services.fact_currency import PortfolioFactCurrencyError
-from portfolio_app.services.ledger import LedgerDataIntegrityError, build_account_workspace
-from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
+from portfolio_app.api.published_portfolio_daily import (
+    confirm_published_read_context,
+    read_published_latest,
+)
+from portfolio_app.api.transaction_command_errors import (
+    raise_transaction_command_validation_error,
+)
+from portfolio_app.calculations.portfolio_daily.published_views import (
+    publication_metadata_response,
+)
+from portfolio_app.db.session import get_db_session
 from portfolio_app.services.portfolio_store import (
     create_account,
     get_account,
@@ -27,6 +34,13 @@ from portfolio_app.services.portfolio_store import (
     list_accounts,
     list_transactions,
     update_account,
+)
+from portfolio_app.services.published_accounts import (
+    PublishedAccountsIntegrityError,
+    build_published_accounts_workspace,
+)
+from portfolio_app.services.transaction_command_validator import (
+    TransactionCommandValidationError,
 )
 
 
@@ -41,10 +55,8 @@ def _transactions_booked_to_account(
         transaction
         for transaction in transactions
         if str(transaction.get("account_id") or "") == account_id
-        or (
-            str(transaction.get("transaction_type") or "") == "fx_conversion"
-            and str(transaction.get("counterparty_account_id") or "") == account_id
-        )
+        or str(transaction.get("settlement_cash_account_id") or "") == account_id
+        or str(transaction.get("counterparty_account_id") or "") == account_id
     ]
 
 
@@ -80,7 +92,6 @@ def list_account_records(portfolio_id: str) -> AccountListResponse:
 def create_account_record(
     portfolio_id: str,
     payload: AccountCreateRequest,
-    background_tasks: BackgroundTasks,
 ) -> AccountRecord:
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -106,7 +117,6 @@ def create_account_record(
         closed_at=payload.closed_at,
         status=payload.status,
     )
-    background_tasks.add_task(refresh_portfolio_daily_snapshots, portfolio_id)
     return AccountRecord.model_validate(record)
 
 
@@ -115,7 +125,6 @@ def update_account_record(
     portfolio_id: str,
     account_id: str,
     payload: AccountUpdateRequest,
-    background_tasks: BackgroundTasks,
 ) -> AccountRecord:
     if get_portfolio(portfolio_id) is None:
         raise HTTPException(status_code=404, detail="Portfolio not found")
@@ -167,21 +176,23 @@ def update_account_record(
             else existing_account.get("allowed_instrument_types")
         )
 
-    record = update_account(
-        portfolio_id=portfolio_id,
-        account_id=account_id,
-        account_name=account_name,
-        institution=institution if isinstance(institution, str) else None,
-        default_settlement_cash_account_id=settlement_account_id if isinstance(settlement_account_id, str) else None,
-        cost_basis_method=cost_basis_method,
-        allowed_instrument_types=allowed_instrument_types if isinstance(allowed_instrument_types, list) else None,
-        opened_at=opened_at if isinstance(opened_at, date) else date.fromisoformat(str(opened_at)) if opened_at else None,
-        closed_at=closed_at if isinstance(closed_at, date) else date.fromisoformat(str(closed_at)) if closed_at else None,
-        status=str(status or "active"),
-    )
+    try:
+        record = update_account(
+            portfolio_id=portfolio_id,
+            account_id=account_id,
+            account_name=account_name,
+            institution=institution if isinstance(institution, str) else None,
+            default_settlement_cash_account_id=settlement_account_id if isinstance(settlement_account_id, str) else None,
+            cost_basis_method=cost_basis_method,
+            allowed_instrument_types=allowed_instrument_types if isinstance(allowed_instrument_types, list) else None,
+            opened_at=opened_at if isinstance(opened_at, date) else date.fromisoformat(str(opened_at)) if opened_at else None,
+            closed_at=closed_at if isinstance(closed_at, date) else date.fromisoformat(str(closed_at)) if closed_at else None,
+            status=str(status or "active"),
+        )
+    except TransactionCommandValidationError as error:
+        raise_transaction_command_validation_error(error)
     if record is None:
         raise HTTPException(status_code=404, detail="Account not found")
-    background_tasks.add_task(refresh_portfolio_daily_snapshots, portfolio_id)
     return AccountRecord.model_validate(record)
 
 
@@ -190,35 +201,42 @@ def get_accounts_workspace(
     portfolio_id: str,
     account_id: str | None = None,
     as_of_date: date | None = None,
+    session: Session = Depends(get_db_session),
 ) -> AccountsWorkspaceResponse:
+    if get_portfolio(portfolio_id) is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    accounts = list_accounts(portfolio_id)
+    if account_id and not any(item["account_id"] == account_id for item in accounts):
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    publication = read_published_latest(
+        session,
+        portfolio_id=portfolio_id,
+        as_of_date=as_of_date,
+        tables=("snapshots", "holdings", "balances", "lots"),
+    )
+    publication_as_of_date = publication.snapshots[0].as_of_date
+    transactions = list_transactions(
+        portfolio_id,
+        end_date=publication_as_of_date,
+    )
     try:
-        portfolio = get_portfolio(portfolio_id)
-        if portfolio is None:
-            raise HTTPException(status_code=404, detail="Portfolio not found")
-
-        accounts = list_accounts(portfolio_id)
-        if account_id and not any(item["account_id"] == account_id for item in accounts):
-            raise HTTPException(status_code=404, detail="Account not found")
-
-        portfolio_as_of_date = (
-            date.fromisoformat(str(portfolio.get("as_of_date")))
-            if portfolio.get("as_of_date")
-            else None
-        )
-        resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
-        transactions = list_transactions(portfolio_id, end_date=resolved_as_of_date)
-        workspace = build_account_workspace(
-            portfolio_id,
-            accounts,
-            transactions,
+        workspace = build_published_accounts_workspace(
+            session,
+            publication,
+            accounts=accounts,
+            transactions=transactions,
             selected_account_id=account_id,
-            base_currency=str(portfolio["base_currency"]),
-            as_of_date=resolved_as_of_date,
         )
-    except (PortfolioFactCurrencyError, LedgerDataIntegrityError) as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    except InstrumentRegistryError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
+    except PublishedAccountsIntegrityError as error:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "published_account_workspace_integrity_error",
+                "portfolio_id": portfolio_id,
+            },
+        ) from error
 
     selected_account_id = str(workspace.get("selected_account_id") or "") or None
     linked_transactions_raw = (
@@ -227,17 +245,26 @@ def get_accounts_workspace(
         else []
     )
     account_lookup = {str(item["account_id"]): item for item in accounts}
-    return AccountsWorkspaceResponse(
+    response = AccountsWorkspaceResponse(
         portfolio_id=portfolio_id,
         base_currency=workspace["base_currency"],
+        as_of_date=workspace["as_of_date"],
+        publication=publication_metadata_response(publication.metadata),
         summary=workspace["summary"],
-        derivation_boundary=DerivationBoundaryStatus.model_validate(workspace["derivation_boundary"]),
         selected_account_id=selected_account_id,
         accounts=[AccountWorkspaceAccount.model_validate(item) for item in workspace["accounts"]],
-        ledger_postings=[LedgerPostingRecord.model_validate(item) for item in workspace["ledger_postings"]],
-        positions=[AccountPositionRecord.model_validate(item) for item in workspace["positions"]],
+        balances=[
+            PortfolioDailyPublishedAccountBalanceRecord.model_validate(item)
+            for item in workspace["balances"]
+        ],
+        positions=[
+            PortfolioDailyPublishedAccountPositionRecord.model_validate(item)
+            for item in workspace["positions"]
+        ],
         linked_transactions_summary=summarize_transactions(linked_transactions_raw) if selected_account_id else None,
         linked_transactions=[
             serialize_transaction(portfolio_id, item, account_lookup) for item in linked_transactions_raw
         ],
     )
+    confirm_published_read_context(session, publication)
+    return response

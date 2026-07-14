@@ -28,8 +28,8 @@ GIPS 对普通组合绩效呈现默认要求使用 time-weighted returns，只�
 本项目采用：
 
 - `TWR` 作为 `Overview / Performance` 的默认组合收益口径；
-- `IRR / MWROR` 作为资金使用效率补充指标；
-- UI 不允许用 IRR 替代 TWR 展示“组合收益”。
+- `XIRR / MWRR` 作为资金使用效率补充指标；
+- UI 不允许用 XIRR 替代 TWR 展示“组合收益”。
 
 ### 2.2 外部现金流必须被中性化
 
@@ -50,16 +50,16 @@ r_t = (MVE_t + CF_out,t) / (MVB_t + CF_in,t) - 1
 
 GIPS 要求至少月度计算 TWR；如果不计算日收益，则大额外部现金流发生时要做子期间估值，并把子期间收益几何链接。最佳实践是尽可能在所有外部现金流日期估值。
 
-本项目采用 daily snapshot engine：
+本项目采用 Portfolio Daily immutable publication：
 
-- 每个 `as_of_date` 都生成 end-of-day snapshot；
-- 每个 daily snapshot 显式保留 `beginning_nav` 与 `ending_nav`，用户选择区间时用首日 `beginning_nav` 作为 initial value、末日 `ending_nav` 作为 final value；
+- worker 只读 sealed manifest，以 EOD `as_of_date` 生成 daily output，并与 holding、balance、lot 和 contribution 在同一 fenced publication 内发布；
+- 每个 published daily output 显式保留 `beginning_nav` 与 `ending_nav`，用户选择区间时用首日 `beginning_nav` 作为 initial value、末日 `ending_nav` 作为 final value；
 - 外部现金流发生日天然拥有当日估值；
 - 当前系统不另设 large cash flow threshold；
 - 现金流事实当前只有日期、没有可信的日内时间戳；计算政策先把 external flow 的业务日期固定为
   cash value / `settlement_date`，再把 `deposit` 视为该估值日期初流入、把 `withdrawal` 视为该估值日期末流出。
-  因此这是带明确时点假设的日估值 TWR，不声称能还原任意日内
-  现金流顺序，也不使用 `true TWR` 作为合规性或精度标签；
+  因此这是带明确时点假设的 valuation-subperiod TWR，不声称能还原任意日内
+  现金流顺序，也不把日内时间加权精度作为合规性标签；
 - 因为本系统不使用 Modified Dietz 等区间估算方法，所以任何外部现金流边界都必须有
   fresh complete valuation。无论是 resolver 明示 stale，还是周末、节假日、周频/月频 NAV 的正常 calendar
   carry，只要当日发生 deposit / withdrawal，都不能把 carried NAV 代入公式；该日及所有跨越断点的 linked
@@ -79,11 +79,12 @@ GIPS 强调一致应用计算方法、建立政策，并披露方法边界。
 本项目采用：
 
 - `01_CALCULATION_SPEC.md` 作为 canonical 计算政策；
-- materialized snapshot 可重建，不能成为不可解释的手填事实；
-- materialized snapshot / contribution slice schema 变化通过 `calculation_version` 失效重建，不在收益读路径保留旧 schema 兼容层；
-- materialized snapshot 刷新必须可重复、可追踪，并在更新并发到达时保留最新 stale 请求；
+- daily / holding / balance / lot / contribution 是 sealed manifest 的可复算不可变输出，不是手填事实；
+- output schema 或方法变化时必须提升显式版本并生成新 run；历史 output 保留取证，读路径不翻译旧 schema；
+- 事实修订在同一 PostgreSQL 事务中推进 scope generation 并写入 durable recompute intent；worker 的 lease/fencing 保证陈旧 attempt 不能发布；
+- GET 只读 current publication，没有 publication 时 fail closed，pending 新 generation 时可返回带 stale/pending lineage 的旧 publication，但不同步计算或写库；
 - fair-value `nav_coverage_state`、book-P&L `book_pnl_coverage_state`、TWR reliability、`stale_price_flag` 与 `stale_fx_flag` 必须分别随关键结果返回；三者不能互相代理或降级；
-- 区间 daily series、summary、drawdown 必须使用同一组 window-rebased `daily_twr`。
+- 区间 daily series、summary、drawdown、calendar 与 contribution 必须由一次 consolidated performance report 读取同一 publication 和同一 window gate。
 
 ### 2.5 成本法不得污染绩效收益率
 
@@ -92,11 +93,12 @@ GIPS-informed 绩效口径以 fair value、外部现金流中性化和几何链�
 本项目采用：
 
 - 账户级成本法只影响 `Cost Basis`、`Avg Cost`、realized capital gain、unrealized P&L 和 lot 展示；
-- 组合级 TWR、annualized TWR、drawdown、IRR/MWROR 的 fair-value calculation 不读取 FIFO/MA 作为收益率分支；
-- 修改账户成本法时，系统从 transaction facts 重算成本相关 read models，而不是保留历史算法兼容层。
+- 组合级 TWR、annualized TWR、drawdown、XIRR/MWRR 的 fair-value calculation 不读取 FIFO/MA 作为收益率分支；
+- 修改账户成本法时，事实事务使 Portfolio Daily publication 失效，worker 从 transaction revisions 重算成本相关输出，而不是保留历史算法兼容层。
 
-Performance `Calculation` 使用 period bridge：`Initial Value + Net External Flow + Period P&L = Final Value`。其中 capital gain 使用 fair-value period basis：期初已有持仓按期初市值重置，区间内买入按成交 gross amount 建立期间成本，期末仍持有部分形成 unrealized gain。这个拆分服务绩效解释，不读取 FIFO / moving average 的 book cost 分支。
-Calculation 的 group axis 包括 instrument、instrument type、currency、account 与 planning taxonomy；TWR 和 contribution 必须在后端按目标轴从 daily slices 计算，不能在前端简单汇总 instrument rows。Group daily return 必须使用组内 `total_pnl / (beginning_value + period capital flow in)`，taxonomy regroup 与 calculation detail 聚合也必须保留同一 capital-flow denominator。taxonomy period view 优先使用区间期末 assignment；期末已清仓且期末不再有 active assignment 的 instrument，使用其区间内有效 assignment 承接历史 P&L，避免把 closed-position attribution 误列为 Unassigned。
+Performance 的 portfolio monetary bridge 使用同一会计符号契约闭合：`Initial Value + Net External Flow + Period P&L = Final Value`。金额桥与各轴 contribution 来自同一 publication 的 daily outputs，不从另一份 summary 重构。
+
+Performance 的 attribution axis 包括 instrument、currency、account 与 taxonomy。每日返回贡献先精确闭合到 portfolio subperiod return，再以 Decimal50 Frongello 链接到所选区间，并显式披露 balancing / rounding evidence；不再发布独立的 group TWR contract。taxonomy 归因只读 sealed manifest 中的 assignment snapshot，不用 live taxonomy 重分组已发布贡献。
 
 Holdings 只作为当前持仓状态表。资产级 TWR、区间 contribution、realized gain、income 和 closed positions 必须从 `Performance` 或 security detail 读取，避免把 current holdings 和 period performance 混成一个口径。
 
@@ -104,7 +106,7 @@ Holdings 中允许出现 `Chart 6M`、`1W Return / MTD / YTD / 1Y` 和 `Current 
 
 Risk / Research 的风险统计也必须保持估值频率一致性：先按 daily / weekly / monthly calculation basis 对齐目标 period，再用 period-end 有效观测计算收益；共同节假日不生成样本，单资产缺价默认进入 `strict` missing-return 诊断。不得用跨 period stale price、缺失收益补 0、pairwise covariance entry 或不同长度持有期收益去补 covariance、correlation、Sharpe 或 target-volatility overlay。Research 只有在用户显式选择 `complete_case_drop` 且通过缺失行比例、latest complete row 新鲜度和最小完整观测数约束时，才允许整行删除缺失 period 后继续求解。
 
-Research target solve 不允许把不可解问题包装成正常 target：多成员 scope 必须有完整有效的 `SAA` 或 `TAA` target set；`sample_covariance` 使用同一组完整对齐收益的样本估计量 `n - 1`；risk-budget 求解在完整有效收益不足、目标加总错误、missing-return policy 失败、求解误差超过 `1e-4` share units 或 signed risk share 为负时必须失败或显式 unavailable，不回退到目标权重、等权或 alternate contribution mode。
+Allocation Research target solve 不允许把不可解问题包装成正常 target：多成员 scope 必须有完整有效的 `SAA` 或 `TAA` target set；`sample_covariance` 使用同一组完整对齐收益的样本估计量 `n - 1`；risk-budget 求解在完整有效收益不足、目标加总错误、missing-return policy 失败、求解误差超过 `1e-4` share units 或 signed risk share 为负时必须失败或显式 unavailable，不回退到目标权重、等权或 alternate contribution mode。
 
 ### 2.6 风险统计必须来自收益序列
 
@@ -112,33 +114,33 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 
 本项目采用：
 
-- portfolio realized volatility、rolling volatility 默认使用 `daily_twr` simple returns 做标准差并年化；Sharpe、Sortino 作为 additional risk measures，使用同一区间、同一 periodicity 的 arithmetic mean excess return 年化后除以年化 volatility / downside volatility（MVP `r_f = 0`）；
+- Performance consolidated report 使用完整 monthly 或 weekly calendar buckets 的 simple returns 计算标准差和 target-zero downside deviation，年化因子分别为 `12` 或 `52`；完整 bucket 的 effective return 必须从首日前一日 EOD 或更早的可靠 anchor 开始，并由 fresh endpoint 或保持同一可靠链的正常 calendar carry 覆盖到末日；首次 anchor / re-anchor 位于 bucket 中间时为 partial；partial / unavailable bucket 可展示 coverage，但不进入统计；
 - 若输出正式 GIPS Composite / Pooled Fund Report 风格披露，ex-post standard deviation 必须使用 monthly returns，组合与 benchmark 必须使用同一 periodicity 与同一计算方法；
 - 纯 calendar carry 日因没有新市场观察而不进入风险样本；resolver 明示 stale 的观察也必须排除。混合频率
   组合中，若一个 sleeve 有真实新观察而另一个 sleeve 仅按既定 cadence carry，calendar carry 不自动否定该日
   的 realized risk observation；
 - `NAV_t` 只用于资产规模和现金流调节，不作为组合级波动率输入。
-- 手动 benchmark 对比由后端以物化组合 TWR 和 canonical `total_return` role 统一计算；只有双方 reliability 为 `reliable`、币种一致、起点锚点合格且 benchmark 精确覆盖全部组合 eligible return dates 时才输出，并披露 coverage 与 quote/snapshot lineage。当前未接入 benchmark FX conversion，不能用 stale-filled、price/chart basis 或 raw-currency 序列替代。
-- 少于一年的 observed period 不作为 annualized-return headline 展示；后端 `PerformanceSummary.history_reliability` 统一计算 365 elapsed-day eligibility、跨度、样本事实和 reason codes，并在不合格时将 annualized TWR、IRR / MWRR 与依赖年化收益的 Calmar 直接置为 `null`，前端不再自行计算日期跨度或阈值。Benchmark comparison 必须按所选区间自己的 boundary 与 aligned end date 独立判断，不能沿用组合全历史资格。该规则服务于当前 workbench 展示纪律，不替代正式 GIPS report 的完整披露与验证要求。
-- Allocation Research 的 Policy Replay 属于假设模拟，不是 GIPS-compliant 实盘业绩；但仍采用同一反虚假精确度纪律。`research-backtest-metrics.v2.history-gated-arithmetic-sharpe` 在不足 365 elapsed days 时只发布 period return，不发布 geometric annualized return 或依赖它的 Calmar；annualized volatility 与 Sharpe 属于频率明确的风险统计，Sharpe 分子使用同频收益算术均值年化，不借用几何年化收益。
+- 当前 Performance 不发布 benchmark-relative 结果。后续只能在 canonical total-return benchmark 被冻结进同一 publication 契约、币种/FX 与窗口覆盖可验证时启用，不得用 stale-filled、price/chart/valuation basis 或 raw-currency 序列代替。
+- 少于一年的 observed period 不作为 annualized-return headline 展示；后端按 effective elapsed days 统一判断 365 日资格。annualized TWR 不合格时为 null；XIRR 的唯一数学解可以作为明确标注的 supplemental 结果保留，但不得冒充 headline。前端不计算日期跨度或阈值。该规则服务于当前 workbench 展示纪律，不替代正式 GIPS report 的完整披露与验证要求。
+- Allocation Research 的 Policy Replay 属于假设模拟，不是 GIPS-compliant 实盘业绩；但仍采用同一反虚假精确度纪律。`allocation-policy-replay-metrics.v3.history-gated-arithmetic-sharpe` 在不足 365 elapsed days 时只发布 period return，不发布 geometric annualized return 或依赖它的 Calmar；annualized volatility 与 Sharpe 属于频率明确的风险统计，Sharpe 分子使用同频收益算术均值年化，不借用几何年化收益。
 
 ## 3. 当前实现映射
 
 | 主题 | 当前实现 |
 | --- | --- |
-| 日频 TWR | `build_daily_portfolio_snapshots()` 生成 `daily_twr` |
-| 几何复合 | `_compound_daily_twr()` 与区间 `daily_series.cumulative_twr` |
-| 区间 rebasing | `_rebased_twr_series()` 对查询窗口重算 TWR index 和 drawdown |
-| 区间边界 | daily `beginning_nav` / `ending_nav` 支撑 initial / final value |
-| 回撤 | `_drawdown_stats()` 基于 TWR growth index，不基于 NAV |
-| 风险样本 | `return_observation_eligible` 控制 realized risk 的有效收益观察 |
+| Valuation-subperiod TWR | `calculations/portfolio_daily/twr.py` |
+| 不可变计算发布 | sealed manifest、durable worker、fenced Portfolio Daily publication |
+| 区间复合与 rebasing | `calculations/portfolio_daily/reporting_engine.py` |
+| Monetary bridge / return contribution | exact finite monetary bridge + Decimal50 Frongello linking and explicit balancing evidence |
+| 回撤 | range-rebased method wealth index，不基于 NAV 规模 |
+| 风险样本 | 完整 monthly/weekly calendar return buckets；partial bucket 不进入统计 |
 | 样本协方差 | Risk 页与 Research `sample_covariance` 使用 `n - 1` 样本估计 |
-| Research target solve | `_resolve_dimension_target_rows()` 校验完整 target set，`_solve_risk_budget_weights()` 在历史不足或求解失败时抛错 |
-| 物化读模型 | `PortfolioDailySnapshotModel` / holding snapshot / contribution slice |
-| 刷新治理 | `PortfolioCalculationStateModel.refresh_request_id` 对 stale 请求去重，刷新串行 claim；计算期间若收到新请求会再跑一轮 |
-| MWR | `_solve_xirr()` 输出 `irr` / `mwror`，作为补充指标 |
-| Performance group TWR | `_daily_group_return_from_components()` 在 instrument / taxonomy / calculation detail 聚合间复用同一 flow-adjusted denominator |
-| Manual benchmark guard | Performance 后端要求 canonical total-return basis、可靠 TWR、同币种、合格锚点和 eligible return date 完整覆盖；失败时整组相对指标为 null |
+| Allocation Research target solve | `_resolve_dimension_target_rows()` 校验完整 target set，`_solve_risk_budget_weights()` 在历史不足或求解失败时抛错 |
+| 已发布读模型 | 按 `(run_id, output_fencing_token, natural key)` 不可变保存的 daily / holding / balance / lot / contribution outputs |
+| 刷新治理 | 事实写事务原子递增 scope generation 并创建 durable recompute intent；worker 以 lease/fencing 计算，单一 current publication 指针 CAS 发布 |
+| MWR | `reporting_engine.py` 使用 Actual/365 Decimal50 XIRR；少于 365 日的可解结果仅作为 supplemental |
+| Performance group contribution | account / instrument / currency / taxonomy 日贡献先逐期闭合到同一 portfolio TWR，再以 Frongello 跨期链接 |
+| Manual benchmark guard | 当前不发布 benchmark-relative 指标；后续只有接入同 publication 语义的 canonical total-return benchmark 后才能启用，price/chart/valuation series 不得替代 |
 
 ## 4. 暂不覆盖的 GIPS 能力
 
@@ -160,11 +162,11 @@ GIPS 的 ex-post risk disclosure 与行业实践都要求风险统计基于收�
 
 - 是否改变了 external cash flow 分类；
 - 是否改变了 `daily_twr` 的分母、分子或现金流时点；
-- 区间 summary 和 `daily_series` 是否都按查询窗口重新复合；
+- consolidated report 的 summary、`daily_series`、calendar 和 contribution 是否读取同一 publication 并按同一窗口重新复合；
 - drawdown 是否基于 TWR growth index；
-- risk 是否只使用符合 `return_observation_eligible` 的 `daily_twr`；
-- `IRR / MWROR` 缺失是否被解释为补充指标不可用，而不是 TWR 失败；
-- materialized read path 和动态重建校验路径是否结果一致；
+- Performance 统计是否只使用完整的显式 monthly / weekly calendar buckets；
+- `XIRR / MWRR` 缺失是否被解释为补充指标不可用，而不是 TWR 失败；
+- worker 是否只读 sealed manifest，业务 GET 是否保持零计算、零写入且不使用 live fallback；
 - Research 是否拒绝缺失 target set、目标加总错误、历史不足或风险预算求解误差过大的 scope；
 - `sample_covariance` 是否仍使用 `n - 1` 样本估计；
 - 文档中的 canonical 口径是否同步更新。

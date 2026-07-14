@@ -89,7 +89,11 @@ def test_execution_quote_endpoint_uses_policy_selected_unadjusted_series(client)
     assert payload["portfolio_id"] == "portfolio-ops"
     assert payload["instrument_id"] == INSTRUMENT_ID
     assert payload["selection_role"] == "trading"
-    assert payload["value"] == pytest.approx(206.47)
+    assert payload["value"] == "206.47"
+    assert payload["suggested_transaction_price"] == "206.47"
+    assert payload["suggested_transaction_price_scale"] == 12
+    assert payload["suggested_transaction_price_rounding"] == "ROUND_HALF_EVEN"
+    assert payload["suggested_transaction_price_was_rounded"] is False
     assert payload["quote_date"] == requested_date.isoformat()
     assert payload["quote_basis"] == "close"
     assert payload["currency"] == "USD"
@@ -107,6 +111,27 @@ def test_execution_quote_endpoint_uses_policy_selected_unadjusted_series(client)
     assert payload["revision_number"] == 1
     assert payload["payload_hash"]
     assert payload["calculation_dependency"]["fingerprint"]
+
+
+def test_execution_quote_preserves_source_precision_and_labels_price_rounding(client):
+    requested_date = date(2026, 3, 27)
+    _set_policy(trading=["close"])
+    _upsert_point(
+        quote_basis="close",
+        as_of_date=requested_date,
+        value="123.1234567890125001",
+        source_ref="test:high-precision-close",
+    )
+
+    response = _get_quote(client, as_of_date=requested_date)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["value"] == "123.1234567890125001"
+    assert payload["suggested_transaction_price"] == "123.123456789013"
+    assert payload["suggested_transaction_price_scale"] == 12
+    assert payload["suggested_transaction_price_rounding"] == "ROUND_HALF_EVEN"
+    assert payload["suggested_transaction_price_was_rounded"] is True
 
 
 def test_execution_quote_endpoint_does_not_cross_policy_series_boundary(client):

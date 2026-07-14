@@ -158,13 +158,25 @@ def _install_postgresql_hash_contract(connection: sa.Connection) -> None:
                         'settlement_cash_account_id', row_value.settlement_cash_account_id,
                         'instrument_id', row_value.instrument_id,
                         'instrument_snapshot_json', row_value.instrument_snapshot_json,
-                        'quantity', row_value.quantity::text,
-                        'price', row_value.price::text,
-                        'gross_amount', row_value.gross_amount::text,
-                        'counter_amount', row_value.counter_amount::text,
-                        'fx_rate', row_value.fx_rate::text,
-                        'fees', row_value.fees::text,
-                        'taxes', row_value.taxes::text,
+                        -- Value and representation precision are separate
+                        -- facts. trim_scale yields the canonical numeric value;
+                        -- *_input_scale preserves the source representation.
+                        'quantity', trim_scale(row_value.quantity)::text,
+                        'price', trim_scale(row_value.price)::text,
+                        'gross_amount', trim_scale(row_value.gross_amount)::text,
+                        'counter_amount', trim_scale(row_value.counter_amount)::text,
+                        'quoted_fx_rate', trim_scale(row_value.quoted_fx_rate)::text,
+                        'fees', trim_scale(row_value.fees)::text,
+                        'taxes', trim_scale(row_value.taxes)::text,
+                        'consideration_basis', row_value.consideration_basis,
+                        'numeric_scale_state', row_value.numeric_scale_state,
+                        'quantity_input_scale', row_value.quantity_input_scale,
+                        'price_input_scale', row_value.price_input_scale,
+                        'gross_amount_input_scale', row_value.gross_amount_input_scale,
+                        'counter_amount_input_scale', row_value.counter_amount_input_scale,
+                        'quoted_fx_rate_input_scale', row_value.quoted_fx_rate_input_scale,
+                        'fees_input_scale', row_value.fees_input_scale,
+                        'taxes_input_scale', row_value.taxes_input_scale,
                         'currency', row_value.currency,
                         'transfer_scope', row_value.transfer_scope,
                         'transfer_object_type', row_value.transfer_object_type,
@@ -384,9 +396,18 @@ def _install_postgresql_transfer_contract(connection: sa.Connection) -> None:
                    OR outbound.price IS DISTINCT FROM inbound.price
                    OR outbound.gross_amount IS DISTINCT FROM inbound.gross_amount
                    OR outbound.counter_amount IS DISTINCT FROM inbound.counter_amount
-                   OR outbound.fx_rate IS DISTINCT FROM inbound.fx_rate
+                   OR outbound.quoted_fx_rate IS DISTINCT FROM inbound.quoted_fx_rate
                    OR outbound.fees IS DISTINCT FROM inbound.fees
                    OR outbound.taxes IS DISTINCT FROM inbound.taxes
+                   OR outbound.consideration_basis IS DISTINCT FROM inbound.consideration_basis
+                   OR outbound.numeric_scale_state IS DISTINCT FROM inbound.numeric_scale_state
+                   OR outbound.quantity_input_scale IS DISTINCT FROM inbound.quantity_input_scale
+                   OR outbound.price_input_scale IS DISTINCT FROM inbound.price_input_scale
+                   OR outbound.gross_amount_input_scale IS DISTINCT FROM inbound.gross_amount_input_scale
+                   OR outbound.counter_amount_input_scale IS DISTINCT FROM inbound.counter_amount_input_scale
+                   OR outbound.quoted_fx_rate_input_scale IS DISTINCT FROM inbound.quoted_fx_rate_input_scale
+                   OR outbound.fees_input_scale IS DISTINCT FROM inbound.fees_input_scale
+                   OR outbound.taxes_input_scale IS DISTINCT FROM inbound.taxes_input_scale
                    OR outbound.currency IS DISTINCT FROM inbound.currency
                    OR outbound.transfer_scope IS DISTINCT FROM inbound.transfer_scope
                    OR outbound.transfer_object_type IS DISTINCT FROM inbound.transfer_object_type

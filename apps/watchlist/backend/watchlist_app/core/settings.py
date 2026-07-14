@@ -18,11 +18,12 @@ class Settings(BaseSettings):
     database_schema: str | None = "watchlist"
     sql_echo: bool = False
     cors_origins: list[str] = ["http://127.0.0.1:5173", "http://localhost:5173"]
-    recalc_worker_enabled: bool = True
     recalc_worker_poll_interval_seconds: float = 1.0
-    recalc_worker_shutdown_timeout_seconds: float = 5.0
     recalc_worker_running_job_timeout_seconds: float = 300.0
     recalc_worker_heartbeat_interval_seconds: float = 30.0
+    recalc_worker_readiness_max_age_seconds: float = 90.0
+    recalc_worker_retry_base_seconds: int = 5
+    recalc_worker_retry_max_seconds: int = 300
     daily_market_quote_max_age_days: int = 5
     fund_quote_max_age_days: int = 45
     document_storage_root: Path = WORKSPACE_ROOT / "var" / "watchlist-documents"
@@ -60,9 +61,9 @@ class Settings(BaseSettings):
 
     @field_validator(
         "recalc_worker_poll_interval_seconds",
-        "recalc_worker_shutdown_timeout_seconds",
         "recalc_worker_running_job_timeout_seconds",
         "recalc_worker_heartbeat_interval_seconds",
+        "recalc_worker_readiness_max_age_seconds",
         mode="before",
     )
     @classmethod
@@ -72,6 +73,18 @@ class Settings(BaseSettings):
         numeric = float(value)
         if numeric <= 0:
             raise ValueError("worker timing values must be positive.")
+        return numeric
+
+    @field_validator(
+        "recalc_worker_retry_base_seconds",
+        "recalc_worker_retry_max_seconds",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_positive_retry_seconds(cls, value: object) -> int:
+        numeric = int(value)
+        if numeric <= 0:
+            raise ValueError("retry timing values must be positive.")
         return numeric
 
     @field_validator("document_upload_max_bytes", mode="before")
@@ -99,9 +112,32 @@ class Settings(BaseSettings):
         environment = self.environment.strip().lower()
         if environment not in {"development", "dev", "local", "test"} and "*" in self.cors_origins:
             raise ValueError("cors_origins must not contain '*' outside development/test.")
-        if self.recalc_worker_heartbeat_interval_seconds >= self.recalc_worker_running_job_timeout_seconds:
-            raise ValueError("recalc worker heartbeat interval must be shorter than the running-job timeout.")
+        if (
+            self.recalc_worker_heartbeat_interval_seconds * 2
+            >= self.recalc_worker_running_job_timeout_seconds
+        ):
+            raise ValueError(
+                "recalc worker heartbeat must be less than half the running-job timeout."
+            )
+        if (
+            self.recalc_worker_readiness_max_age_seconds
+            < self.recalc_worker_heartbeat_interval_seconds * 2
+        ):
+            raise ValueError(
+                "recalc worker readiness max age must cover at least two heartbeat intervals."
+            )
+        if self.recalc_worker_retry_max_seconds < self.recalc_worker_retry_base_seconds:
+            raise ValueError(
+                "recalc worker retry max must be greater than or equal to retry base."
+            )
         return self
+
+    def recalc_retry_delay_seconds(self, attempt_count: int) -> int:
+        exponent = min(max(attempt_count - 1, 0), 30)
+        return min(
+            self.recalc_worker_retry_max_seconds,
+            self.recalc_worker_retry_base_seconds * (2**exponent),
+        )
 
     @property
     def cors_allow_credentials(self) -> bool:

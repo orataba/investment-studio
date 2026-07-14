@@ -8,15 +8,16 @@ LAUNCH_AGENTS_DIR="${LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 LOG_DIR="${LOG_DIR:-$HOME/Library/Logs/portfolio-operations-workbench}"
 PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
 domain="gui/$UID"
+source "$PROJECT_ROOT/infra/service_inventory.sh"
 
-for service in platform-api watchlist-api portfolio-api platform-web watchlist-web portfolio-web; do
+for service in "${PORTFOLIO_OPS_RUNTIME_SERVICE_NAMES[@]}"; do
   label="$LABEL_PREFIX.$service"
   if details="$(launchctl print "$domain/$label" 2>/dev/null)"; then
     state="$(sed -n 's/^[[:space:]]*state = //p' <<<"$details" | head -n 1)"
     pid="$(awk '/^[[:space:]]*pid = / { print $3; exit }' <<<"$details")"
-    printf '%-15s state=%-8s pid=%s\n' "$service" "${state:-unknown}" "${pid:--}"
+    printf '%-23s state=%-8s pid=%s\n' "$service" "${state:-unknown}" "${pid:--}"
   else
-    printf '%-15s not installed\n' "$service"
+    printf '%-23s not installed\n' "$service"
   fi
 done
 
@@ -76,9 +77,9 @@ fi
 
 printf '\nHealth checks:\n'
 for url in \
-  http://127.0.0.1:8002/api/health \
-  http://127.0.0.1:8000/api/health \
-  http://127.0.0.1:8001/api/health \
+  http://127.0.0.1:8002/api/readiness \
+  http://127.0.0.1:8000/api/readiness \
+  http://127.0.0.1:8001/api/readiness \
   http://127.0.0.1:5172/ \
   http://127.0.0.1:5173/ \
   http://127.0.0.1:5174/; do

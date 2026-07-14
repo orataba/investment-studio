@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
+from numbers import Integral, Real
+from typing import Literal, cast
 from uuid import UUID, uuid5
 
 
@@ -33,6 +36,105 @@ VALID_QUOTE_BASES: dict[str, str] = {
     "dirty_price": "price",
     "par": "price",
 }
+
+QUOTE_REVISION_PAYLOAD_SCHEMA_V1 = 1
+QUOTE_REVISION_PAYLOAD_SCHEMA_V2 = 2
+NumericScaleState = Literal["declared", "binary_inferred", "legacy_inferred"]
+CURRENT_NUMERIC_SCALE_STATES = frozenset({"declared", "binary_inferred"})
+
+
+@dataclass(frozen=True)
+class QuoteNumericEvidence:
+    """Canonical quote value plus the scale of the representation we received.
+
+    ``value`` is deliberately canonicalized for arithmetic and storage, while
+    ``value_input_scale`` remains separate so ``1.2300`` is not silently made
+    indistinguishable from ``1.23``.  A binary floating-point input can only be
+    labelled ``binary_inferred``; it is converted through Python's stable
+    shortest round-trip representation and never masquerades as provider-
+    declared decimal precision.
+    """
+
+    value: str
+    value_input_scale: int
+    numeric_scale_state: NumericScaleState
+
+
+def _input_decimal_and_state(value: object) -> tuple[Decimal, NumericScaleState]:
+    if isinstance(value, bool):
+        raise ValueError("quote value must be a decimal, not a boolean")
+    if isinstance(value, Decimal):
+        return value, "declared"
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("quote value must be a valid decimal")
+        try:
+            return Decimal(normalized), "declared"
+        except InvalidOperation as error:
+            raise ValueError("quote value must be a valid decimal") from error
+    if isinstance(value, Integral):
+        return Decimal(int(value)), "declared"
+    if isinstance(value, Real):
+        # ``repr(float(...))`` is Python's stable shortest decimal that round-
+        # trips to the same binary value.  It is reproducible, but explicitly
+        # not evidence of the source system's reported decimal scale.
+        return Decimal(repr(float(value))), "binary_inferred"
+    raise ValueError(
+        "quote value must be supplied as decimal text, Decimal, integer, or float"
+    )
+
+
+def quote_numeric_evidence(
+    value: object,
+    *,
+    value_input_scale: object = None,
+    numeric_scale_state: object = None,
+) -> QuoteNumericEvidence:
+    resolved, scale_state = _input_decimal_and_state(value)
+    if not resolved.is_finite():
+        raise ValueError("quote value must be finite")
+    inferred_scale = max(-resolved.as_tuple().exponent, 0)
+    if value_input_scale is None and numeric_scale_state is None:
+        input_scale = inferred_scale
+    elif value_input_scale is None or numeric_scale_state is None:
+        raise ValueError("quote input scale and state must be supplied together")
+    else:
+        if isinstance(value_input_scale, bool):
+            raise ValueError("quote input scale must be a non-negative integer")
+        if isinstance(value_input_scale, Integral):
+            input_scale = int(value_input_scale)
+        elif isinstance(value_input_scale, str):
+            normalized_scale = value_input_scale.strip()
+            if not (
+                normalized_scale == "0"
+                or (
+                    normalized_scale[:1] in "123456789"
+                    and (not normalized_scale[1:] or normalized_scale[1:].isdigit())
+                )
+            ):
+                raise ValueError("quote input scale must be a non-negative integer")
+            input_scale = int(normalized_scale)
+        else:
+            raise ValueError("quote input scale must be a non-negative integer")
+        if input_scale < 0 or input_scale < max(
+            -Decimal(canonical_decimal_text(resolved)).as_tuple().exponent,
+            0,
+        ):
+            raise ValueError("quote input scale is inconsistent with its decimal value")
+        normalized_state = str(numeric_scale_state).strip()
+        if normalized_state not in CURRENT_NUMERIC_SCALE_STATES:
+            raise ValueError(
+                "new quote numeric evidence must be declared or binary_inferred"
+            )
+        if scale_state == "binary_inferred" and normalized_state != "binary_inferred":
+            raise ValueError("binary floating-point input cannot be marked declared")
+        scale_state = cast(NumericScaleState, normalized_state)
+    return QuoteNumericEvidence(
+        value=canonical_decimal_text(resolved),
+        value_input_scale=input_scale,
+        numeric_scale_state=scale_state,
+    )
 
 
 def canonical_decimal_text(value: object) -> str:
@@ -129,8 +231,16 @@ def quote_revision_payload_hash(
     source_ref: object,
     status: object,
     source_published_at: object = None,
+    payload_schema_version: int = QUOTE_REVISION_PAYLOAD_SCHEMA_V1,
+    value_input_scale: int | None = None,
+    numeric_scale_state: NumericScaleState | None = None,
 ) -> str:
     normalized_status = normalize_revision_status(status)
+    if payload_schema_version not in {
+        QUOTE_REVISION_PAYLOAD_SCHEMA_V1,
+        QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
+    }:
+        raise ValueError("unsupported quote revision payload schema version")
     payload = {
         "kind": "withdrawn" if normalized_status == WITHDRAWN_STATUS else "observation",
         "source_published_at": canonical_timestamp(source_published_at),
@@ -138,6 +248,32 @@ def quote_revision_payload_hash(
         "status": normalized_status,
         "value": None if value is None else canonical_decimal_text(value),
     }
+    if payload_schema_version == QUOTE_REVISION_PAYLOAD_SCHEMA_V2:
+        if normalized_status == WITHDRAWN_STATUS:
+            if (
+                value is not None
+                or value_input_scale is not None
+                or numeric_scale_state is not None
+            ):
+                raise ValueError(
+                    "withdrawn quote payload must not carry numeric evidence"
+                )
+        else:
+            if value is None:
+                raise ValueError("non-withdrawn quote payload requires a value")
+            if value_input_scale is None or value_input_scale < 0:
+                raise ValueError("quote payload requires a non-negative input scale")
+            if numeric_scale_state not in CURRENT_NUMERIC_SCALE_STATES:
+                raise ValueError(
+                    "quote payload scale state must be declared or binary_inferred"
+                )
+        payload.update(
+            {
+                "numeric_scale_state": numeric_scale_state,
+                "payload_schema_version": payload_schema_version,
+                "value_input_scale": value_input_scale,
+            }
+        )
     encoded = json.dumps(
         payload,
         ensure_ascii=False,

@@ -14,6 +14,16 @@ AUDIT_CAPTURE_PATH="$TEST_ROOT/audit-ran"
 SENTINEL_PATH="$TEST_ROOT/unsafe-env-executed"
 LOCK_PATH="$PROJECT_ROOT/var/market-data-refresh.lock"
 ENV_ROOT="$TEST_ROOT/secure env"
+CLI_HELP_PATH="$TEST_ROOT/refresh-cli-help.txt"
+CONTRACT_PYTHON="${PYTHON_BIN:-$REPOSITORY_ROOT/.venv/bin/python}"
+if [[ ! -x "$CONTRACT_PYTHON" ]]; then
+  echo "Python environment for the refresh CLI contract is missing: $CONTRACT_PYTHON" >&2
+  exit 1
+fi
+PYTHONPATH="$REPOSITORY_ROOT/apps/platform/backend:$REPOSITORY_ROOT/packages/instrument-core/python" \
+  "$CONTRACT_PYTHON" \
+  "$REPOSITORY_ROOT/apps/platform/backend/scripts/refresh_market_data_scheduled.py" \
+  --help > "$CLI_HELP_PATH"
 mkdir -p \
   "$(dirname "$REFRESH_SCRIPT")" \
   "$(dirname "$AUDIT_SCRIPT")" \
@@ -41,7 +51,6 @@ printf '%s\n' \
   '    "database_schema": os.environ.get("PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA"),' \
   '    "environment": os.environ.get("PORTFOLIO_OPS_PLATFORM_ENVIRONMENT"),' \
   '    "watchlist_api_url": os.environ.get("PORTFOLIO_OPS_PLATFORM_WATCHLIST_API_URL"),' \
-  '    "portfolio_api_url": os.environ.get("PORTFOLIO_OPS_PLATFORM_PORTFOLIO_API_URL"),' \
   '    "tushare_token": os.environ.get("PORTFOLIO_OPS_PLATFORM_TUSHARE_TOKEN"),' \
   '    "email_sync_enabled": os.environ.get("PORTFOLIO_OPS_PLATFORM_EMAIL_SYNC_ENABLED"),' \
   '    "email_password": os.environ.get("PORTFOLIO_OPS_PLATFORM_EMAIL_IMAP_PASSWORD"),' \
@@ -70,7 +79,7 @@ if [[ ! -e "$AUDIT_CAPTURE_PATH" ]]; then
   exit 1
 fi
 
-CAPTURE_PATH="$CAPTURE_PATH" PROJECT_ROOT="$PROJECT_ROOT" LOCK_PATH="$LOCK_PATH" python3 - <<'PY'
+CAPTURE_PATH="$CAPTURE_PATH" PROJECT_ROOT="$PROJECT_ROOT" LOCK_PATH="$LOCK_PATH" CLI_HELP_PATH="$CLI_HELP_PATH" python3 - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -78,6 +87,7 @@ from pathlib import Path
 
 payload = json.loads(Path(os.environ["CAPTURE_PATH"]).read_text(encoding="utf-8"))
 arguments = payload["argv"]
+help_text = Path(os.environ["CLI_HELP_PATH"]).read_text(encoding="utf-8")
 assert arguments[arguments.index("--channel") + 1] == "all"
 assert arguments[arguments.index("--updated-by") + 1] == "launchd-scheduler"
 assert arguments[arguments.index("--retry-failed-attempts") + 1] == "2"
@@ -85,14 +95,17 @@ assert arguments[arguments.index("--lock-file") + 1] == os.environ["LOCK_PATH"]
 assert arguments[arguments.index("--summary-file") + 1] == str(
     Path(os.environ["PROJECT_ROOT"]) / "var" / "market-data-refresh-summary.json"
 )
-assert "--require-downstream-success" in arguments
 assert "--fail-on-item-failure" in arguments
 assert "--json" in arguments
+for argument in arguments:
+    if argument.startswith("--"):
+        assert argument in help_text, f"runner passed an option absent from CLI --help: {argument}"
+assert "--require-downstream-success" not in arguments
+assert "--require-downstream-success" not in help_text
 assert payload["database_url"] == "postgresql+psycopg://explicit/local"
 assert payload["database_schema"] == "instrument_registry"
 assert payload["environment"] == "local"
 assert payload["watchlist_api_url"] == "http://127.0.0.1:8000"
-assert payload["portfolio_api_url"] == "http://127.0.0.1:8001"
 assert payload["tushare_token"] == "test-token-loaded"
 assert payload["email_sync_enabled"] == "true"
 assert payload["email_password"].startswith("$(touch ")

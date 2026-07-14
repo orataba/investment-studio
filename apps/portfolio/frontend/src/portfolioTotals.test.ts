@@ -13,12 +13,19 @@ function portfolio(
     portfolio_id: id,
     portfolio_name: id,
     base_currency: baseCurrency,
+    operating_profile: 'standard_taxonomy',
     as_of_date: '2026-07-13',
     nav,
+    nav_exact: String(nav),
     day_change_value: dayChangeValue,
+    day_change_value_exact: dayChangeValue == null ? null : String(dayChangeValue),
     day_change_pct: null,
+    day_change_pct_method50: null,
+    day_change_pct_published: null,
     securities_count: 0,
     sort_order: 0,
+    lifecycle_status: 'active',
+    calculation_status: 'published',
   }
 }
 
@@ -43,5 +50,21 @@ describe('portfolio currency totals', () => {
         portfolio('usd-2', 'USD', 50, null),
       ])[0],
     ).toEqual({ baseCurrency: 'USD', portfolioCount: 2, nav: 150, dayChangeValue: null })
+  })
+
+  it('adds canonical source decimals before converting the display total', () => {
+    const first = portfolio('usd-1', 'USD', 0.1, 0.1)
+    const second = portfolio('usd-2', 'USD', 0.2, 0.2)
+    first.nav_exact = '0.1'
+    first.day_change_value_exact = '0.1'
+    second.nav_exact = '0.2'
+    second.day_change_value_exact = '0.2'
+
+    expect(groupPortfolioTotalsByBaseCurrency([first, second])[0]).toEqual({
+      baseCurrency: 'USD',
+      portfolioCount: 2,
+      nav: 0.3,
+      dayChangeValue: 0.3,
+    })
   })
 })

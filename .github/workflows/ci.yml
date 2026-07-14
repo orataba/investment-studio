@@ -19,6 +19,22 @@ jobs:
     name: Application tests
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17.10-bookworm
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PORTFOLIO_OPS_TEST_POSTGRES_URL: postgresql+psycopg://portfolio_ops_test:portfolio_ops_test@127.0.0.1:5432/postgres
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -39,6 +55,32 @@ jobs:
 
       - name: Synchronize locked Python environment
         run: infra/scripts/sync_python_env.sh
+
+      - name: Create least-privilege application test role
+        env:
+          PORTFOLIO_OPS_POSTGRES_ADMIN_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/postgres
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+
+          engine = create_engine(
+              os.environ["PORTFOLIO_OPS_POSTGRES_ADMIN_URL"],
+              isolation_level="AUTOCOMMIT",
+          )
+          try:
+              with engine.connect() as connection:
+                  connection.execute(
+                      text(
+                          "CREATE ROLE portfolio_ops_test "
+                          "LOGIN CREATEDB NOSUPERUSER NOCREATEROLE "
+                          "NOREPLICATION NOBYPASSRLS "
+                          "PASSWORD 'portfolio_ops_test'"
+                      )
+                  )
+          finally:
+              engine.dispose()
+          PY
 
       - name: Run backend fast suites
         run: infra/scripts/verify_repository.sh backend-fast all
@@ -164,6 +206,9 @@ jobs:
           PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
           PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
           PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA: instrument_registry
+          PORTFOLIO_OPS_CALCULATION_REGISTRY_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_CALCULATION_REGISTRY_ALEMBIC_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
+          PORTFOLIO_OPS_CALCULATION_REGISTRY_SCHEMA: calculation_registry
           PORTFOLIO_OPS_PLATFORM_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci
           PORTFOLIO_OPS_PLATFORM_DATABASE_SCHEMA: instrument_registry
           PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL: postgresql+psycopg://portfolio_ops:portfolio_ops@127.0.0.1:5432/portfolio_ops_ci

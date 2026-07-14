@@ -26,12 +26,7 @@ def get_shared_fx_rates(portfolio_id: str) -> SharedFxRatesResponse:
         supported_currencies=list(payload.get("supported_currencies", [])),
         maintained_pairs=list(payload.get("maintained_pairs", [])),
         rates=[
-            SharedFxRateRecord.model_validate(
-                {
-                    **dict(item),
-                    "rate": float(item.get("rate") or 0.0),
-                }
-            )
+            SharedFxRateRecord.model_validate(dict(item))
             for item in rates
             if isinstance(item, dict)
         ],

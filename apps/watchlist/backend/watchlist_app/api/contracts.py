@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, model_validator
@@ -162,11 +162,27 @@ class RecalcExecuteRequest(BaseModel):
 
 
 class RecalcBulkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
     instrument_ids: list[str] = Field(min_length=1, max_length=2000)
     job_type: Literal["performance", "all"] = "all"
     trigger_type: str = "market_data_refresh"
     trigger_ref_type: str | None = "shared_market_data"
     trigger_ref_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_source_event_identity(self) -> "RecalcBulkRequest":
+        if self.trigger_ref_id and not self.trigger_ref_type:
+            raise ValueError(
+                "trigger_ref_type must be non-empty when trigger_ref_id is provided"
+            )
+        return self
+
+
+class RecalcJobRetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    additional_attempts: int = Field(default=1, ge=1, le=10)
 
 
 class ManualProfileUpsertRequest(BaseModel):

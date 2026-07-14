@@ -154,7 +154,6 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", f"sqlite+pysqlite:///{database_path}")
     monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
     monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_EMAIL_SYNC_ENABLED", "false")
-    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_RECALC_WORKER_ENABLED", "false")
     monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DOCUMENT_STORAGE_ROOT", str(tmp_path / "documents"))
 
     from watchlist_app.core import settings as settings_module

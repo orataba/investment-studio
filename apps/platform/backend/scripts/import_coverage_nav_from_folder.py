@@ -24,7 +24,6 @@ from portfolio_ops_instrument_core.instrument_store import (  # noqa: E402
     _default_refresh_status,
     _default_source_settings,
 )
-from platform_app.services.downstream_notifications import notify_market_data_downstream_refresh  # noqa: E402
 
 
 def _normalize_name(value: str) -> str:
@@ -68,7 +67,9 @@ def _load_coverage_instruments() -> dict[str, dict[str, str]]:
                 "instrument_id": str(row["instrument_id"]),
                 "instrument_name": str(row["instrument_name"]),
                 "instrument_type": str(row["instrument_type"] or "fund"),
-                "identifier_value": str(row["identifier_value"] or row["instrument_id"]).strip().upper(),
+                "identifier_value": str(row["identifier_value"] or row["instrument_id"])
+                .strip()
+                .upper(),
                 "currency": "CNY",
             }
             for row in rows
@@ -112,7 +113,10 @@ def _resolve_instrument_id(
     if not name_candidates:
         normalized_file_name = _normalize_name(file_name)
         for normalized_instrument_name, instrument_ids in name_index.items():
-            if normalized_instrument_name and normalized_instrument_name in normalized_file_name:
+            if (
+                normalized_instrument_name
+                and normalized_instrument_name in normalized_file_name
+            ):
                 name_candidates.update(instrument_ids)
 
     candidates = code_candidates | name_candidates
@@ -131,7 +135,9 @@ def _ensure_instrument(instrument_data: dict[str, str]) -> None:
                 instrument_name=instrument_data["instrument_name"],
                 instrument_type=instrument_data["instrument_type"],
                 currency=instrument_data["currency"],
-                quote_selection_policy_json=_default_quote_selection_policy(instrument_data["instrument_type"]),
+                quote_selection_policy_json=_default_quote_selection_policy(
+                    instrument_data["instrument_type"]
+                ),
                 source_settings_json=_default_source_settings(),
                 refresh_status_json=_default_refresh_status(),
                 lifecycle_state_json=_default_lifecycle_state(),
@@ -145,23 +151,27 @@ def _ensure_instrument(instrument_data: dict[str, str]) -> None:
 
         existing_identifier = session.scalar(
             select(InstrumentIdentifier).where(
-                InstrumentIdentifier.identifier_value == instrument_data["identifier_value"],
+                InstrumentIdentifier.identifier_value
+                == instrument_data["identifier_value"],
                 InstrumentIdentifier.instrument_id != instrument_data["instrument_id"],
             )
         )
         if existing_identifier is not None:
             raise RuntimeError(
-                f'Identifier {instrument_data["identifier_value"]} already belongs to {existing_identifier.instrument_id}.'
+                f"Identifier {instrument_data['identifier_value']} already belongs to {existing_identifier.instrument_id}."
             )
 
         identifiers = session.scalars(
-            select(InstrumentIdentifier).where(InstrumentIdentifier.instrument_id == instrument_data["instrument_id"])
+            select(InstrumentIdentifier).where(
+                InstrumentIdentifier.instrument_id == instrument_data["instrument_id"]
+            )
         ).all()
         matched = next(
             (
                 item
                 for item in identifiers
-                if item.identifier_value == instrument_data["identifier_value"] and item.identifier_type == "ticker"
+                if item.identifier_value == instrument_data["identifier_value"]
+                and item.identifier_type == "ticker"
             ),
             None,
         )
@@ -203,7 +213,9 @@ def main() -> int:
             unmatched_files.append(f"{path.name}: no rows parsed")
             continue
 
-        instrument_id = _resolve_instrument_id(file_name=path.name, rows=rows, instruments=instruments)
+        instrument_id = _resolve_instrument_id(
+            file_name=path.name, rows=rows, instruments=instruments
+        )
         if instrument_id is None:
             unmatched_files.append(f"{path.name}: no coverage instrument match")
             continue
@@ -216,7 +228,9 @@ def main() -> int:
         instrument = instruments[instrument_id]
         _ensure_instrument(instrument)
         merged_rows = market_data_ops._merge_rows_by_date(rows)
-        normalized_status = market_data_ops._normalize_import_status(merged_rows, "complete")
+        normalized_status = market_data_ops._normalize_import_status(
+            merged_rows, "complete"
+        )
         replace_nav_history(
             instrument_id=instrument_id,
             rows=merged_rows,
@@ -237,20 +251,6 @@ def main() -> int:
                 str(merged_rows[0]["as_of_date"]),
                 str(merged_rows[-1]["as_of_date"]),
             )
-        )
-
-    imported_dirty_dates = [
-        parsed
-        for parsed in (
-            market_data_ops._parse_nav_date(first_nav)
-            for _, _, first_nav, _ in imported_instruments
-        )
-        if parsed is not None
-    ]
-    if imported_instruments:
-        notify_market_data_downstream_refresh(
-            instrument_ids=[instrument_id for instrument_id, _, _, _ in imported_instruments],
-            dirty_from=min(imported_dirty_dates) if imported_dirty_dates else None,
         )
 
     print("Imported instruments:")

@@ -10,8 +10,12 @@ from pathlib import Path
 import pytest
 
 
-SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "refresh_market_data_scheduled.py"
-SPEC = importlib.util.spec_from_file_location("refresh_market_data_scheduled", SCRIPT_PATH)
+SCRIPT_PATH = (
+    Path(__file__).resolve().parents[1] / "scripts" / "refresh_market_data_scheduled.py"
+)
+SPEC = importlib.util.spec_from_file_location(
+    "refresh_market_data_scheduled", SCRIPT_PATH
+)
 assert SPEC is not None and SPEC.loader is not None
 scheduled_refresh = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(scheduled_refresh)
@@ -23,10 +27,6 @@ def _args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "updated_by": "test-scheduler",
         "full_history": False,
         "include_inactive": False,
-        "no_downstream_refresh": False,
-        "require_downstream_success": True,
-        "downstream_timeout_seconds": 30.0,
-        "watchlist_downstream_timeout_seconds": 7.0,
         "fail_on_item_failure": True,
         "retry_failed_attempts": 0,
         "instrument_ids": [],
@@ -50,9 +50,10 @@ def _updated_result(instrument_id: str, instrument_type: str) -> dict[str, objec
     }
 
 
-def test_all_channels_merge_into_one_downstream_notification(monkeypatch, tmp_path: Path) -> None:
-    calls: list[dict[str, object]] = []
-
+def test_all_channels_use_transactional_outbox_delivery_semantics(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     def fake_batch(*, source, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
         result = (
@@ -62,63 +63,16 @@ def test_all_channels_merge_into_one_downstream_notification(monkeypatch, tmp_pa
         )
         return {"refreshed_count": 1, "skipped_count": 0, "results": [result]}
 
-    def fake_notify(**kwargs):  # type: ignore[no-untyped-def]
-        calls.append(kwargs)
-        return scheduled_refresh.DownstreamRefreshResult(request_count=2)
-
     monkeypatch.setattr(scheduled_refresh, "refresh_market_data_batch", fake_batch)
-    monkeypatch.setattr(scheduled_refresh, "notify_market_data_downstream_refresh", fake_notify)
 
     exit_code, summary = scheduled_refresh._run_refresh(_args(tmp_path))
 
     assert exit_code == 0
-    assert len(calls) == 1
-    assert calls[0]["instrument_ids"] == ["fund-a", "fx-usdcny"]
-    assert calls[0]["refresh_all_portfolios"] is True
-    assert calls[0]["raise_on_error"] is True
-    assert calls[0]["request_timeout_seconds"] == 30.0
-    assert calls[0]["watchlist_request_timeout_seconds"] == 7.0
     assert summary["updated_instrument_count"] == 2
-    assert summary["downstream_request_count"] == 2
-    assert summary["refresh_all_portfolios"] is True
-
-
-def test_strict_downstream_failure_sets_failed_summary(monkeypatch, tmp_path: Path) -> None:
-    result = scheduled_refresh.DownstreamRefreshResult(
-        request_count=2,
-        failures=(
-            scheduled_refresh.DownstreamRequestFailure(
-                url="http://portfolio.local/refresh",
-                message="timed out",
-            ),
-        ),
+    assert (
+        summary["downstream_delivery_semantics"]
+        == "instrument_registry_transactional_outbox"
     )
-
-    monkeypatch.setattr(
-        scheduled_refresh,
-        "refresh_market_data_batch",
-        lambda **kwargs: {
-            "refreshed_count": 1 if kwargs["source"] == "tushare" else 0,
-            "skipped_count": 0,
-            "results": (
-                [_updated_result("fund-a", "fund")]
-                if kwargs["source"] == "tushare"
-                else []
-            ),
-        },
-    )
-
-    def fail_notify(**kwargs):  # type: ignore[no-untyped-def]
-        del kwargs
-        raise scheduled_refresh.DownstreamRefreshError(result)
-
-    monkeypatch.setattr(scheduled_refresh, "notify_market_data_downstream_refresh", fail_notify)
-
-    exit_code, summary = scheduled_refresh._run_refresh(_args(tmp_path))
-
-    assert exit_code == 1
-    assert summary["status"] == "failed"
-    assert summary["downstream_failure_count"] == 1
 
 
 def test_channel_summary_uses_final_retry_result(monkeypatch, tmp_path: Path) -> None:
@@ -145,12 +99,6 @@ def test_channel_summary_uses_final_retry_result(monkeypatch, tmp_path: Path) ->
             "refresh_status": {"status": "refreshed", "message": "updated on retry"},
         },
     )
-    monkeypatch.setattr(
-        scheduled_refresh,
-        "notify_market_data_downstream_refresh",
-        lambda **kwargs: scheduled_refresh.DownstreamRefreshResult(request_count=2),
-    )
-
     exit_code, summary = scheduled_refresh._run_refresh(
         _args(tmp_path, retry_failed_attempts=1)
     )
@@ -162,7 +110,9 @@ def test_channel_summary_uses_final_retry_result(monkeypatch, tmp_path: Path) ->
     assert summary["updated_instrument_count"] == 1
 
 
-def test_retry_timeout_keeps_failed_result_and_continues_to_next_item(monkeypatch) -> None:
+def test_retry_timeout_keeps_failed_result_and_continues_to_next_item(
+    monkeypatch,
+) -> None:
     calls: list[str] = []
 
     def fake_refresh_with_timeout(**kwargs):  # type: ignore[no-untyped-def]

@@ -548,9 +548,10 @@ function dayChangeBaseForRow(row: PortfolioHoldingRow, workspace: HoldingsWorksp
 }
 
 function dayChangeDisplayValue(row: PortfolioHoldingRow, workspace: HoldingsWorkspaceResponse) {
-  if (isCashHoldingRow(row)) {
+  const baseValue = dayChangeBaseForRow(row, workspace)
+  if (baseValue != null) {
     return {
-      value: dayChangeBaseForRow(row, workspace),
+      value: baseValue,
       currency: workspace.base_currency,
     }
   }
@@ -2368,7 +2369,7 @@ export default function PortfolioHomePage() {
     setLoading(true)
 
     Promise.allSettled([
-      getHoldingsWorkspace(portfolioId || undefined, {
+      getHoldingsWorkspace(portfolioId, {
         as_of_date: requestedAsOfDate || undefined,
       }),
       getPortfolioTaxonomyCatalog(portfolioId),

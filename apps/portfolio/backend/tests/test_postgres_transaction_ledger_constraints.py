@@ -3,9 +3,13 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, date, datetime, time
+from decimal import Decimal
+from hashlib import sha256
+import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
 from threading import Barrier
 from typing import Iterator
 from uuid import uuid4
@@ -13,7 +17,7 @@ from uuid import uuid4
 from alembic import command
 from alembic.config import Config
 import pytest
-from sqlalchemy import create_engine, insert, select, text
+from sqlalchemy import Numeric, create_engine, func, insert, select, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
@@ -31,7 +35,8 @@ from portfolio_app.services.transaction_revisions import (
     DeleteTransactionRevision,
     TransactionFactPayload,
     TransactionRevisionContext,
-    append_transaction_revision_batch,
+    append_transaction_revision_batch_unchecked,
+    canonical_transaction_payload,
     tombstone_payload_hash,
     transaction_payload_hash,
 )
@@ -45,6 +50,13 @@ DEFAULT_POSTGRES_URL = (
     "postgresql+psycopg://portfolio_ops_test:portfolio_ops_test@127.0.0.1:5432/portfolio_ops"
 )
 PAYLOAD_SCHEMA_VERSION = "transaction-revision.v1"
+AUDIT_PATH = WORKSPACE_ROOT / "infra" / "scripts" / "audit_live_data.py"
+AUDIT_MODULE_NAME = "portfolio_ops_postgres_ledger_audit_test"
+AUDIT_SPEC = importlib.util.spec_from_file_location(AUDIT_MODULE_NAME, AUDIT_PATH)
+assert AUDIT_SPEC is not None and AUDIT_SPEC.loader is not None
+audit = importlib.util.module_from_spec(AUDIT_SPEC)
+sys.modules[AUDIT_MODULE_NAME] = audit
+AUDIT_SPEC.loader.exec_module(audit)
 
 
 def _admin_database_url(database_url: str) -> str:
@@ -69,6 +81,16 @@ def _run_migrations(database_url: str) -> None:
         str(WORKSPACE_ROOT / "infra" / "instrument_registry" / "alembic"),
     )
     command.upgrade(instrument_config, "head")
+
+    calculation_config = Config(
+        str(WORKSPACE_ROOT / "infra" / "calculation_registry" / "alembic.ini")
+    )
+    calculation_config.set_main_option(
+        "script_location",
+        str(WORKSPACE_ROOT / "infra" / "calculation_registry" / "alembic"),
+    )
+    calculation_config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(calculation_config, "head")
 
     portfolio_config = Config(str(BACKEND_ROOT / "alembic.ini"))
     portfolio_config.set_main_option(
@@ -95,7 +117,11 @@ def postgres_ledger_env() -> Iterator[dict[str, object]]:
         for name in (
             "PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE",
             "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL",
+            "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL",
             "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA",
+            "PORTFOLIO_OPS_CALCULATION_REGISTRY_DATABASE_URL",
+            "PORTFOLIO_OPS_CALCULATION_REGISTRY_ALEMBIC_DATABASE_URL",
+            "PORTFOLIO_OPS_CALCULATION_REGISTRY_SCHEMA",
             "PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL",
             "PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL",
             "PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA",
@@ -118,7 +144,11 @@ def postgres_ledger_env() -> Iterator[dict[str, object]]:
             {
                 "PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE": database_name,
                 "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_DATABASE_URL": database_url,
+                "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_ALEMBIC_DATABASE_URL": database_url,
                 "PORTFOLIO_OPS_INSTRUMENT_REGISTRY_SCHEMA": "instrument_registry",
+                "PORTFOLIO_OPS_CALCULATION_REGISTRY_DATABASE_URL": database_url,
+                "PORTFOLIO_OPS_CALCULATION_REGISTRY_ALEMBIC_DATABASE_URL": database_url,
+                "PORTFOLIO_OPS_CALCULATION_REGISTRY_SCHEMA": "calculation_registry",
                 "PORTFOLIO_OPS_PORTFOLIO_DATABASE_URL": database_url,
                 "PORTFOLIO_OPS_PORTFOLIO_ALEMBIC_DATABASE_URL": database_url,
                 "PORTFOLIO_OPS_PORTFOLIO_DATABASE_SCHEMA": "portfolio",
@@ -177,6 +207,24 @@ def _context(reason: str) -> TransactionRevisionContext:
     )
 
 
+def test_postgres_executes_transaction_audit_queries(
+    postgres_ledger_env: dict[str, object],
+) -> None:
+    engine = postgres_ledger_env["engine"]
+    assert isinstance(engine, Engine)
+
+    with engine.connect() as connection:
+        decimal_violations = connection.scalar(
+            text(audit.PORTFOLIO_TRANSACTION_DECIMAL_COLUMNS_QUERY)
+        )
+        payload_violations = connection.scalar(
+            text(audit.PORTFOLIO_TRANSACTION_PAYLOAD_QUERY)
+        )
+
+    assert decimal_violations == 0
+    assert payload_violations == 0
+
+
 def _seed_portfolio(
     session_factory: sessionmaker,
     *,
@@ -185,13 +233,19 @@ def _seed_portfolio(
     outbound_account_id = f"{portfolio_id}-out"
     inbound_account_id = f"{portfolio_id}-in"
     with session_factory() as session:
+        next_sort_order = session.scalar(
+            select(func.coalesce(func.max(PortfolioRecordModel.sort_order), -1) + 1)
+        )
+        assert next_sort_order is not None
         session.add(
             PortfolioRecordModel(
                 portfolio_id=portfolio_id,
                 portfolio_name=portfolio_id,
                 base_currency="USD",
+                operating_profile="standard_taxonomy",
                 valuation_timezone="UTC",
                 valuation_cutoff_policy="latest_complete_eod",
+                sort_order=next_sort_order,
             )
         )
         for account_id in (outbound_account_id, inbound_account_id):
@@ -281,7 +335,7 @@ def _create_pair(
     )
     context = _context("Create a valid service transfer pair")
     with session_factory() as session:
-        append_transaction_revision_batch(
+        append_transaction_revision_batch_unchecked(
             session,
             portfolio_id=portfolio_id,
             context=context,
@@ -516,6 +570,23 @@ def _live_revision_values(
     return values
 
 
+def _payload_hash_with_fact_overrides(
+    facts: TransactionFactPayload,
+    **overrides: object,
+) -> str:
+    payload = json.loads(canonical_transaction_payload(facts))
+    payload["facts"].update(overrides)
+    return "sha256:" + sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _tombstone_revision_values(
     *,
     portfolio_id: str,
@@ -536,6 +607,339 @@ def _tombstone_revision_values(
         "supersedes_revision_number": 1,
         "payload_schema_version": PAYLOAD_SCHEMA_VERSION,
         "payload_hash": tombstone_payload_hash(),
+    }
+
+
+def test_postgres_transaction_numeric_domains_are_unbounded_and_fail_closed(
+    postgres_ledger_env: dict[str, object],
+) -> None:
+    engine = postgres_ledger_env["engine"]
+    session_factory = postgres_ledger_env["session_factory"]
+    assert isinstance(engine, Engine)
+    assert isinstance(session_factory, sessionmaker)
+    portfolio_id = "ledger-exact-numeric-domains"
+    source_account_id, target_account_id = _seed_portfolio(
+        session_factory,
+        portfolio_id=portfolio_id,
+    )
+    instrument_id = "ledger-exact-domain-instrument"
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO instrument_registry.instrument (
+                    instrument_id,
+                    instrument_name,
+                    instrument_type,
+                    currency,
+                    quote_selection_policy_json,
+                    source_settings_json,
+                    refresh_status_json,
+                    lifecycle_state_json
+                ) VALUES (
+                    :instrument_id,
+                    'Ledger exact-domain instrument',
+                    'equity',
+                    'USD',
+                    '{}'::json,
+                    '{}'::json,
+                    '{}'::json,
+                    '{}'::json
+                )
+                """
+            ),
+            {"instrument_id": instrument_id},
+        )
+
+    common = {
+        "trade_date": date(2026, 7, 13),
+        "trade_time": time(9, 30),
+        "trade_at": datetime(2026, 7, 13, 9, 30, tzinfo=UTC),
+        "trade_timezone": "UTC",
+        "trade_time_is_estimated": False,
+        "settlement_date": date(2026, 7, 13),
+        "fees": "0.00000000",
+        "taxes": "0.00000000",
+        "currency": "USD",
+    }
+    opening = TransactionFactPayload(
+        transaction_type="opening_balance",
+        account_id=source_account_id,
+        instrument_id=instrument_id,
+        instrument_snapshot_json={
+            "instrument_id": instrument_id,
+            "instrument_name": "Ledger exact-domain instrument",
+            "instrument_type": "equity",
+            "currency": "USD",
+        },
+        acquisition_date=date(2026, 7, 13),
+        quantity="1.000000000000",
+        price="1.000000000000",
+        gross_amount="1.00000000",
+        consideration_basis="source_reported",
+        **common,
+    )
+    deposit = _deposit(account_id=source_account_id)
+    conversion = TransactionFactPayload(
+        transaction_type="fx_conversion",
+        account_id=source_account_id,
+        counterparty_account_id=target_account_id,
+        gross_amount="100.00000000",
+        counter_amount="110.00000000",
+        quoted_fx_rate="1.100000000000000000",
+        **common,
+    )
+    cases = (
+        (
+            "quantity",
+            "1.0000000000001",
+            opening,
+            "ck_transaction_revision_record_quantity_price_exact_domain",
+        ),
+        (
+            "gross_amount",
+            "123.456700001",
+            deposit,
+            "ck_transaction_revision_record_amount_exact_domain",
+        ),
+        (
+            "quoted_fx_rate",
+            "1.1000000000000000001",
+            conversion,
+            "ck_transaction_revision_record_quoted_fx_rate_exact_domain",
+        ),
+    )
+    for field_name, extra_scale_value, facts, expected_constraint in cases:
+        transaction_id = f"extra-scale-{field_name}"
+        revision_group_id = f"extra-scale-{field_name}-group"
+        values = _live_revision_values(
+            portfolio_id=portfolio_id,
+            transaction_id=transaction_id,
+            revision_id=f"{transaction_id}-r1",
+            revision_group_id=revision_group_id,
+            facts=facts,
+            # The v1 hash is canonicalized to the field's fixed scale.  Each
+            # adversarial value below would previously have been silently
+            # rounded to exactly this hashed fact by NUMERIC(p,s).
+            payload_hash=_payload_hash_with_fact_overrides(
+                facts,
+                **{field_name: extra_scale_value},
+            ),
+        )
+        values[field_name] = Decimal(extra_scale_value)
+        with pytest.raises(IntegrityError) as exc_info:
+            with engine.begin() as connection:
+                _insert_identity(
+                    connection,
+                    portfolio_id=portfolio_id,
+                    transaction_id=transaction_id,
+                )
+                _insert_group(
+                    connection,
+                    portfolio_id=portfolio_id,
+                    revision_group_id=revision_group_id,
+                    reason=f"Attempt extra-scale {field_name}",
+                )
+                connection.execute(
+                    insert(TransactionRevisionRecordModel.__table__),
+                    values,
+                )
+        assert any(
+            constraint_name in str(exc_info.value)
+            for constraint_name in (
+                expected_constraint,
+                "ck_transaction_revision_record_numeric_value_fits_input_scale",
+            )
+        )
+
+    invalid_scale_transaction_id = "value-exceeds-declared-input-scale"
+    invalid_scale_group_id = f"{invalid_scale_transaction_id}-group"
+    invalid_scale_values = _live_revision_values(
+        portfolio_id=portfolio_id,
+        transaction_id=invalid_scale_transaction_id,
+        revision_id=f"{invalid_scale_transaction_id}-r1",
+        revision_group_id=invalid_scale_group_id,
+        facts=deposit,
+    )
+    invalid_scale_values["gross_amount"] = Decimal("1.23")
+    invalid_scale_values["gross_amount_input_scale"] = 1
+    invalid_scale_values["payload_hash"] = _payload_hash_with_fact_overrides(
+        deposit,
+        gross_amount="1.23",
+        gross_amount_input_scale=1,
+    )
+    with pytest.raises(IntegrityError) as exc_info:
+        with engine.begin() as connection:
+            _insert_identity(
+                connection,
+                portfolio_id=portfolio_id,
+                transaction_id=invalid_scale_transaction_id,
+            )
+            _insert_group(
+                connection,
+                portfolio_id=portfolio_id,
+                revision_group_id=invalid_scale_group_id,
+                reason="Reject value beyond its declared input scale",
+            )
+            connection.execute(
+                insert(TransactionRevisionRecordModel.__table__),
+                invalid_scale_values,
+            )
+    assert "ck_transaction_revision_record_numeric_value_fits_input_scale" in str(
+        exc_info.value
+    )
+
+    missing_scale_transaction_id = "nonnull-value-missing-input-scale"
+    missing_scale_group_id = f"{missing_scale_transaction_id}-group"
+    missing_scale_values = _live_revision_values(
+        portfolio_id=portfolio_id,
+        transaction_id=missing_scale_transaction_id,
+        revision_id=f"{missing_scale_transaction_id}-r1",
+        revision_group_id=missing_scale_group_id,
+        facts=deposit,
+    )
+    missing_scale_values["gross_amount_input_scale"] = None
+    missing_scale_values["payload_hash"] = _payload_hash_with_fact_overrides(
+        deposit,
+        gross_amount_input_scale=None,
+    )
+    with pytest.raises(IntegrityError) as exc_info:
+        with engine.begin() as connection:
+            _insert_identity(
+                connection,
+                portfolio_id=portfolio_id,
+                transaction_id=missing_scale_transaction_id,
+            )
+            _insert_group(
+                connection,
+                portfolio_id=portfolio_id,
+                revision_group_id=missing_scale_group_id,
+                reason="Reject non-null value without input scale",
+            )
+            connection.execute(
+                insert(TransactionRevisionRecordModel.__table__),
+                missing_scale_values,
+            )
+    assert "ck_transaction_revision_record_numeric_input_scale_pairing" in str(
+        exc_info.value
+    )
+
+    # A representable value with additional trailing zeroes is not an
+    # extra-precision fact.  Its physical dscale may differ, but payload v1
+    # must still serialize to the canonical eight-place amount string.
+    canonical_transaction_id = "representable-trailing-zero"
+    canonical_group_id = "representable-trailing-zero-group"
+    representable_values = _live_revision_values(
+        portfolio_id=portfolio_id,
+        transaction_id=canonical_transaction_id,
+        revision_id=f"{canonical_transaction_id}-r1",
+        revision_group_id=canonical_group_id,
+        facts=deposit,
+    )
+    representable_values["gross_amount"] = Decimal("123.456700000")
+    with engine.begin() as connection:
+        _insert_identity(
+            connection,
+            portfolio_id=portfolio_id,
+            transaction_id=canonical_transaction_id,
+        )
+        _insert_group(
+            connection,
+            portfolio_id=portfolio_id,
+            revision_group_id=canonical_group_id,
+            reason="Persist representable trailing zero",
+        )
+        connection.execute(
+            insert(TransactionRevisionRecordModel.__table__),
+            representable_values,
+        )
+    with engine.connect() as connection:
+        assert connection.scalar(
+            text(
+                """
+                SELECT payload_hash = transaction_revision_payload_hash_v1(revision)
+                FROM transaction_revision_record AS revision
+                WHERE revision.transaction_id = :transaction_id
+                """
+            ),
+            {"transaction_id": canonical_transaction_id},
+        ) is True
+
+    numeric_columns = {
+        "quantity",
+        "price",
+        "gross_amount",
+        "counter_amount",
+        "quoted_fx_rate",
+        "fees",
+        "taxes",
+    }
+    for model in (TransactionRevisionRecordModel, TransactionCurrentModel):
+        for column_name in numeric_columns:
+            column_type = model.__table__.c[column_name].type
+            assert isinstance(column_type, Numeric)
+            assert column_type.precision is None
+            assert column_type.scale is None
+
+    with engine.connect() as connection:
+        physical_domains = {
+            (row.table_name, row.column_name): (
+                row.numeric_precision,
+                row.numeric_scale,
+            )
+            for row in connection.execute(
+                text(
+                    """
+                    SELECT table_name, column_name, numeric_precision, numeric_scale
+                    FROM information_schema.columns
+                    WHERE table_schema = 'portfolio'
+                      AND table_name IN (
+                          'transaction_revision_record',
+                          'transaction_current'
+                      )
+                      AND column_name IN (
+                          'quantity', 'price', 'gross_amount',
+                          'counter_amount', 'quoted_fx_rate', 'fees', 'taxes'
+                      )
+                    """
+                )
+            )
+        }
+        database_constraints = {
+            row.conname
+            for row in connection.execute(
+                text(
+                    """
+                    SELECT constraint_record.conname
+                    FROM pg_constraint AS constraint_record
+                    JOIN pg_class AS table_record
+                      ON table_record.oid = constraint_record.conrelid
+                    JOIN pg_namespace AS namespace_record
+                      ON namespace_record.oid = table_record.relnamespace
+                    WHERE namespace_record.nspname = 'portfolio'
+                      AND table_record.relname = 'transaction_revision_record'
+                      AND constraint_record.contype = 'c'
+                    """
+                )
+            )
+        }
+    assert set(physical_domains) == {
+        (table_name, column_name)
+        for table_name in ("transaction_revision_record", "transaction_current")
+        for column_name in numeric_columns
+    }
+    assert set(physical_domains.values()) == {(None, None)}
+    expected_constraints = {
+        "ck_transaction_revision_record_quantity_price_exact_domain",
+        "ck_transaction_revision_record_amount_exact_domain",
+        "ck_transaction_revision_record_quoted_fx_rate_exact_domain",
+        "ck_transaction_revision_record_numeric_value_fits_input_scale",
+    }
+    assert expected_constraints <= database_constraints
+    assert expected_constraints <= {
+        str(constraint.name)
+        for constraint in TransactionRevisionRecordModel.__table__.constraints
+        if getattr(constraint, "name", None) is not None
     }
 
 
@@ -821,7 +1225,7 @@ def test_postgres_rejects_transfer_amend_and_historical_group_reuse(
         ).all()
         current_by_id = {row.transaction_id: row for row in current_rows}
         delete_context = _context("Delete a valid pair before testing group reuse")
-        append_transaction_revision_batch(
+        append_transaction_revision_batch_unchecked(
             session,
             portfolio_id=portfolio_id,
             context=delete_context,

@@ -8,7 +8,6 @@ Create Date: 2026-04-22 00:02:00
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
 
 from alembic import op
 import sqlalchemy as sa

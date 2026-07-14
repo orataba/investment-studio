@@ -9,6 +9,10 @@ import sys
 from typing import Any
 
 import psycopg
+import pytest
+
+
+pytestmark = pytest.mark.no_database
 
 
 PORTFOLIO_BACKEND = Path(__file__).resolve().parents[1]
@@ -33,6 +37,20 @@ assert AUDIT_SPEC is not None and AUDIT_SPEC.loader is not None
 audit = importlib.util.module_from_spec(AUDIT_SPEC)
 sys.modules[AUDIT_MODULE_NAME] = audit
 AUDIT_SPEC.loader.exec_module(audit)
+
+
+def test_portfolio_daily_audit_uses_bounded_method50_return_schema() -> None:
+    source = AUDIT_PATH.read_text(encoding="utf-8")
+    for removed_column in (
+        "subperiod_twr_exact",
+        "cumulative_twr_exact",
+        "wealth_index_exact",
+        "peak_wealth_index_exact",
+    ):
+        assert removed_column not in source
+    assert "snapshot.subperiod_twr_method50 < -1" in source
+    assert "snapshot.wealth_chain_rounding_adjustment_exact" in source
+    assert "round_significant_half_even" in source
 
 
 def _transfer_leg(
@@ -136,14 +154,13 @@ def test_payload_hash_recomputation_matches_runtime_canonical_rules() -> None:
         instrument_id="instrument-rich",
         instrument_snapshot_json={
             "instrument_id": "instrument-rich",
-            "nested": {"unicode": "均成", "float": 1.25},
+            "nested": {"unicode": "均成", "decimal": "1.25"},
             "identifiers": ["ABC", 7],
         },
         quantity="1.234567890123",
         price="12.345678901234",
         gross_amount="15.24157875",
-        counter_amount="100.12345678",
-        fx_rate="7.123456789012345678",
+        consideration_basis="source_reported",
         fees="0.12345678",
         taxes="0.00000001",
         currency="usd",
@@ -154,11 +171,37 @@ def test_payload_hash_recomputation_matches_runtime_canonical_rules() -> None:
         "payload_hash": transaction_payload_hash(rich_facts),
         **rich_facts.as_record_values(),
     }
+    fx_facts = TransactionFactPayload(
+        transaction_type="fx_conversion",
+        trade_date=date(2026, 7, 14),
+        trade_time=time(15, 0),
+        trade_at=datetime.fromisoformat("2026-07-14T15:00:00+08:00"),
+        trade_timezone="Asia/Shanghai",
+        trade_time_is_estimated=False,
+        settlement_date=date(2026, 7, 14),
+        account_id="cash-usd",
+        counterparty_account_id="cash-cny",
+        gross_amount="100.00000000",
+        counter_amount="712.34567890",
+        quoted_fx_rate="7.123456789012345678",
+        fees="0.00000000",
+        taxes="0.00000000",
+        currency="usd",
+    )
+    fx_revision = {
+        "is_tombstone": False,
+        "payload_hash": transaction_payload_hash(fx_facts),
+        **fx_facts.as_record_values(),
+    }
 
     assert audit._recompute_transaction_payload_hash(revision) == revision["payload_hash"]
     assert (
         audit._recompute_transaction_payload_hash(rich_revision)
         == rich_revision["payload_hash"]
+    )
+    assert (
+        audit._recompute_transaction_payload_hash(fx_revision)
+        == fx_revision["payload_hash"]
     )
     assert (
         audit._recompute_transaction_payload_hash(_tombstone(revision))
@@ -231,7 +274,7 @@ class _SchemaGateCursor:
     def __init__(
         self,
         *,
-        portfolio_head: str = "20260713_0038",
+        portfolio_head: str = "20260714_0042",
         object_violations: int = 0,
         authority_violations: int = 0,
     ) -> None:
@@ -244,6 +287,11 @@ class _SchemaGateCursor:
         if "WITH required(component, relation_name)" in query:
             self.rows = [
                 (
+                    "calculation_registry",
+                    "calculation_registry.alembic_version",
+                    object(),
+                ),
+                (
                     "instrument_registry",
                     "instrument_registry.alembic_version",
                     object(),
@@ -254,9 +302,10 @@ class _SchemaGateCursor:
             return
         if "FROM instrument_registry.alembic_version" in query:
             self.rows = [
-                ("instrument_registry", 1, "20260713_0011"),
+                ("calculation_registry", 1, "20260714_0001"),
+                ("instrument_registry", 1, "20260714_0013"),
                 ("portfolio", 1, self.portfolio_head),
-                ("watchlist", 1, "20260713_0030"),
+                ("watchlist", 1, "20260714_0034"),
             ]
             return
         if "WITH expected(relation_name, relation_kind)" in query:
@@ -283,7 +332,7 @@ def test_old_head_returns_structured_fail_and_skips_schema_queries() -> None:
     checks_by_name = {check.name: check for check in checks}
     assert checks_by_name["database_migration_version_tables"].status == "pass"
     assert checks_by_name["database_migration_heads"].status == "fail"
-    assert checks_by_name["portfolio_transaction_revision_ledger_objects"].status == "skip"
+    assert checks_by_name["portfolio_runtime_required_objects"].status == "skip"
     assert checks_by_name["portfolio_transaction_0037_database_authority"].status == "skip"
     assert checks_by_name["database_schema_dependent_checks"].status == "skip"
 
@@ -296,7 +345,7 @@ def test_missing_0037_objects_returns_fail_and_skip() -> None:
     assert ready is False
     checks_by_name = {check.name: check for check in checks}
     assert checks_by_name["database_migration_heads"].status == "pass"
-    assert checks_by_name["portfolio_transaction_revision_ledger_objects"].status == "fail"
+    assert checks_by_name["portfolio_runtime_required_objects"].status == "fail"
     assert checks_by_name["portfolio_transaction_0037_database_authority"].status == "skip"
     assert checks_by_name["database_schema_dependent_checks"].status == "skip"
 
@@ -308,7 +357,7 @@ def test_missing_0037_database_authority_returns_fail_and_skip() -> None:
 
     assert ready is False
     checks_by_name = {check.name: check for check in checks}
-    assert checks_by_name["portfolio_transaction_revision_ledger_objects"].status == "pass"
+    assert checks_by_name["portfolio_runtime_required_objects"].status == "pass"
     assert checks_by_name["portfolio_transaction_0037_database_authority"].status == "fail"
     assert checks_by_name["database_schema_dependent_checks"].status == "skip"
 

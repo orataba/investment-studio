@@ -63,6 +63,14 @@ PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE=portfolio_ops PYTHONPATH=. alembic upg
 uvicorn watchlist_app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+另开一个终端启动独立 recalc worker；FastAPI 进程不会代为启动 worker：
+
+```bash
+cd apps/watchlist/backend
+source .venv/bin/activate
+python -m watchlist_app.services.recalc_worker --worker-id-prefix local-watchlist-recalc
+```
+
 说明：
 
 - 运行时数据库连接以 `PORTFOLIO_OPS_WATCHLIST_DATABASE_URL` 为准；如迁移需要单独连接，可设置 `PORTFOLIO_OPS_WATCHLIST_ALEMBIC_DATABASE_URL`
@@ -71,6 +79,11 @@ uvicorn watchlist_app.main:app --reload --host 127.0.0.1 --port 8000
 - 数据库结构只通过 `alembic upgrade head` 管理；如果要清空旧数据，使用仓库根目录的 `./infra/postgres/rebuild_local_schemas.sh`
 - FastAPI 根路径会重定向到前端 `watchlists`
 - backend 顶层包名现在是 `watchlist_app`
+- recalc 失败会在同一 job 上按指数退避有界重试；退避基数与上限分别由 `PORTFOLIO_OPS_WATCHLIST_RECALC_WORKER_RETRY_BASE_SECONDS`、`PORTFOLIO_OPS_WATCHLIST_RECALC_WORKER_RETRY_MAX_SECONDS` 控制
+- `/api/recalc/bulk` 对带 `trigger_ref_type + trigger_ref_id` 的上游事件先写 durable inbox，再按 `instrument_id + job_type` 分配单调 generation。queued/running job 会直接确认接收并合并事件；worker claim 固化当时 generation，完成后只消费不高于该 generation 的事件，运行期间新增的 generation 最多生成一个 follow-up job
+- bulk 响应把每个输入严格且互斥地归入 `enqueued / coalesced / existing / ignored / missing`。共享 registry 中受支持但尚未落本地的 fund、ETF、index 会在同一事务内最小化物化；明确不受支持的资产类型会 durable ack 为 `ignored`，真正不存在的资产才是 `missing`
+- `/api/health` 只检查 API 进程存活；`/api/readiness` 还要求 migration 位于当前 head、worker heartbeat 与成功 poll 均新鲜、不存在未解决的 terminal source-event dead letter，并且每个未消费 generation 都有可继续执行的 queued/running job；否则 fail-closed
+- dead-letter job 只能通过 `POST /api/recalc/jobs/{job_id}/retry` 受控恢复；该操作扩展 `max_attempts`，不会清零累计 `attempt_count` 或创建替代 job
 
 ### 2. 前端
 

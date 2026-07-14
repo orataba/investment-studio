@@ -1,6 +1,9 @@
 # macOS 本地后台服务
 
-项目提供六个用户级 `launchd` 常驻服务，在登录后自动启动三个 API 与三个前端；另有一个独立的一次性 LaunchAgent，每天本地时间 `21:00` 刷新行情并触发 Watchlist 与 Portfolio 下游重算。所有端口只绑定到 `127.0.0.1`，不会暴露给局域网。
+项目提供九个用户级 `launchd` 常驻服务，在登录后自动启动三个 API、三个前端、
+Portfolio Daily 计算 worker、Watchlist recalc worker 与 Platform market-data outbox worker；另有一个独立的一次性 LaunchAgent，每天本地时间
+`21:00` 刷新行情并触发 Watchlist 与 Portfolio 下游重算。所有端口只绑定到
+`127.0.0.1`，不会暴露给局域网。
 
 ## 依赖
 
@@ -28,7 +31,7 @@ PORTFOLIO_OPS_RELEASE_AS_OF_DATE=YYYY-MM-DD \
 
 `CONFIRM_RELEASE` 必须与 URL 解析出的 `database@host:port` 完全一致；日期必须是本次
 Portfolio/Watchlist 全量重建采用的显式估值日期。安装器会校验并初始化本地数据库，
-停止六个常驻 job 和定时刷新 job，再调用安全发布编排器创建已校验的发布前备份、
+停止九个常驻 job 和定时刷新 job，再调用安全发布编排器创建已校验的发布前备份、
 执行全部 Alembic 迁移、重建 Portfolio/Watchlist、通过零失败零告警审计并创建已校验的
 发布后备份。随后才重建三个前端、更新并启动 `launchd` 服务。服务停止后的任一步失败
 都会保持全部托管服务停止，供人工检查。安全数据库发布本身若在变更后失败，会先尝试
@@ -67,7 +70,7 @@ Platform API 和定时任务都会读取当前
 `PORTFOLIO_OPS_PLATFORM_*` 赋值，把值作为纯文本导入，不会执行 `$()`、反引号
 等 shell 语法。安装器不会把 Tushare token、邮件密码等秘密复制进 plist；plist
 只保存环境文件目录和本地数据库连接覆盖值。为了避免 Pydantic 再从第二来源补入
-配置，安装器、三个 API runner 和定时 runner 都会拒绝任一 backend 目录中存在
+配置，安装器、三个 API runner、三个 worker runner 和定时 runner 都会拒绝任一 backend 目录中存在
 `.env` 文件或软链接；先把其中的值迁移到外部秘密目录并删除该文件后再安装。
 
 入口地址：
@@ -94,7 +97,11 @@ infra/launchd/uninstall_local_services.sh
 - 最近一次运行摘要：`var/market-data-refresh-summary.json`
 
 `status_local_services.sh` 会把定时任务的实际 plist 时间、运行次数、最近退出码及
-摘要状态一起显示。需要立即手工执行同一任务时，可以运行：
+摘要状态一起显示；三个 API 的 `/api/health` 都只表示进程存活。Platform 的
+`/api/readiness` 会检查 instrument registry migration head、fresh outbox worker、dead event
+以及 oldest pending/processing event 的端到端滞留上限；Watchlist 与 Portfolio 的
+`/api/readiness` 分别验证各自数据库依赖、migration head 和 worker 心跳。需要立即手工执行
+同一任务时，可以运行：
 
 ```bash
 launchctl kickstart "gui/$UID/com.orataba.portfolio-ops.market-data-refresh"
@@ -118,9 +125,11 @@ PORTFOLIO_OPS_RESTORE_AS_OF_DATE=YYYY-MM-DD \
   infra/postgres/restore_project_dump.sh
 ```
 
-恢复脚本会临时卸载当前已加载的六个常驻 job 和定时刷新 job，校验 checksum、archive
-和实际数据库身份，创建恢复前安全备份，只恢复三个项目 schema，再执行全部迁移、
+恢复脚本会临时卸载当前已加载的九个常驻 job 和定时刷新 job，校验 checksum、archive
+和实际数据库身份，创建恢复前安全备份，恢复 legacy 三-schema 或当前四-schema dump，
+再执行四条迁移链、
 Portfolio/Watchlist 全量重建和零失败零告警审计。完整成功后才重新加载原先运行的 job；
+重新加载后还必须通过三个 API readiness、原先运行的前端页面 smoke 和 Portfolio 读契约；
 恢复定时 job 时只重新注册日历计划，不会立即触发刷新。恢复、迁移、重建或审计失败会
 先自动回滚数据库；回滚成功后恢复先前服务，回滚本身失败时服务保持停止并打印恢复
 备份路径，避免在半恢复数据库上继续写入。

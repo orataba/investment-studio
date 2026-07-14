@@ -8,20 +8,11 @@ import RiskRankedBars from '../components/RiskRankedBars'
 import Sparkline from '../../../../../packages/ui/src/Sparkline'
 import { useModalDialog } from '../../../../../packages/ui/src/useModalDialog'
 import {
-  getHoldingsWorkspace,
-  getPortfolioPerformance,
-  getPortfolioReturnCalendar,
-  getPortfolioTaxonomyCatalog,
-  getWorkspaceSummaryForPortfolio,
-  type HoldingsWorkspaceResponse,
   type PortfolioHoldingRow,
-  type PortfolioPerformanceResponse,
-  type PortfolioReturnCalendarResponse,
   type PortfolioTaxonomyAssignmentRecord,
-  type PortfolioTaxonomyCatalogResponse,
   type PortfolioTaxonomyNodeRecord,
-  type PortfolioWorkspaceSummary,
 } from '../lib/api'
+import { exactDecimalToDisplayNumber } from '../lib/exactDecimal'
 import {
   formatCurrency,
   formatLabel,
@@ -32,8 +23,10 @@ import {
   formatUnitPrice,
   signedValueClass,
 } from '../lib/format'
-import { buildTwrIndexPoints } from '../lib/performanceSeries'
-import { annualizedReturnDisplayEligible } from '../lib/performanceHistoryPresentation'
+import {
+  loadOverviewPublishedBundle,
+  type OverviewPublishedBundle,
+} from '../lib/overviewPublication'
 import {
   buildReturnCalendarMatrixRows,
   RETURN_CALENDAR_MONTH_LABELS,
@@ -149,6 +142,10 @@ function signedPercent(value: number | null | undefined, digits = 2) {
     return `-${absolute}`
   }
   return absolute
+}
+
+function exactDecimalForDisplay(value: string | null | undefined) {
+  return value == null ? null : exactDecimalToDisplayNumber(value)
 }
 
 function StrategySleeveDonut({
@@ -278,15 +275,9 @@ function accumulateBucket(
 
 export default function OverviewPage() {
   const { portfolioId = '' } = useParams()
-  const [summary, setSummary] = useState<PortfolioWorkspaceSummary | null>(null)
-  const [holdingsWorkspace, setHoldingsWorkspace] = useState<HoldingsWorkspaceResponse | null>(null)
-  const [taxonomyCatalog, setTaxonomyCatalog] = useState<PortfolioTaxonomyCatalogResponse | null>(null)
+  const [overviewBundle, setOverviewBundle] = useState<OverviewPublishedBundle | null>(null)
   const [workspaceLoading, setWorkspaceLoading] = useState(true)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
-  const [performanceWorkspace, setPerformanceWorkspace] = useState<PortfolioPerformanceResponse | null>(null)
-  const [returnCalendar, setReturnCalendar] = useState<PortfolioReturnCalendarResponse | null>(null)
-  const [performanceLoading, setPerformanceLoading] = useState(false)
-  const [performanceError, setPerformanceError] = useState<string | null>(null)
   const [topHoldingColumns, setTopHoldingColumns] = useState<TopHoldingColumnKey[]>(DEFAULT_TOP_HOLDING_COLUMNS)
   const [topHoldingColumnDraft, setTopHoldingColumnDraft] = useState<TopHoldingColumnKey[]>(DEFAULT_TOP_HOLDING_COLUMNS)
   const [topHoldingColumnsOpen, setTopHoldingColumnsOpen] = useState(false)
@@ -297,37 +288,31 @@ export default function OverviewPage() {
 
   useEffect(() => {
     if (!portfolioId) {
-      setSummary(null)
-      setHoldingsWorkspace(null)
-      setTaxonomyCatalog(null)
+      setOverviewBundle(null)
       setWorkspaceLoading(false)
       setWorkspaceError('Portfolio id is required.')
       return
     }
 
     let cancelled = false
+    setOverviewBundle(null)
+    setWorkspaceError(null)
     setWorkspaceLoading(true)
 
-    Promise.all([
-      getWorkspaceSummaryForPortfolio(portfolioId),
-      getHoldingsWorkspace(portfolioId),
-      getPortfolioTaxonomyCatalog(portfolioId),
-    ])
-      .then(([summaryResponse, holdingsResponse, taxonomyResponse]) => {
+    loadOverviewPublishedBundle(portfolioId)
+      .then((bundle) => {
         if (cancelled) {
           return
         }
-        setSummary(summaryResponse)
-        setHoldingsWorkspace(holdingsResponse)
-        setTaxonomyCatalog(taxonomyResponse)
+        // One state transition is the UI commit boundary for all financial
+        // and sealed-display data used by Overview.
+        setOverviewBundle(bundle)
         setWorkspaceError(null)
       })
       .catch((requestError) => {
         if (!cancelled) {
           setWorkspaceError(requestError instanceof Error ? requestError.message : 'Failed to load portfolio overview.')
-          setSummary(null)
-          setHoldingsWorkspace(null)
-          setTaxonomyCatalog(null)
+          setOverviewBundle(null)
         }
       })
       .finally(() => {
@@ -341,59 +326,13 @@ export default function OverviewPage() {
     }
   }, [portfolioId])
 
-  useEffect(() => {
-    const asOfDate = holdingsWorkspace?.as_of_date ?? summary?.as_of_date
-    if (!portfolioId || !asOfDate) {
-      setPerformanceWorkspace(null)
-      setReturnCalendar(null)
-      setPerformanceLoading(false)
-      setPerformanceError(null)
-      return
-    }
-
-    let cancelled = false
-    setPerformanceWorkspace(null)
-    setReturnCalendar(null)
-    setPerformanceError(null)
-    setPerformanceLoading(true)
-
-    Promise.all([
-      getPortfolioPerformance(portfolioId, { end_date: asOfDate }),
-      getPortfolioReturnCalendar(portfolioId, { end_date: asOfDate, frequency: 'monthly' }),
-    ])
-      .then(([performanceResponse, calendarResponse]) => {
-        if (!cancelled) {
-          setPerformanceWorkspace(performanceResponse)
-          setReturnCalendar(calendarResponse)
-          setPerformanceError(null)
-        }
-      })
-      .catch((requestError) => {
-        if (!cancelled) {
-          setPerformanceError(
-            requestError instanceof Error
-              ? requestError.message
-              : 'Failed to load authoritative performance and return calendar.',
-          )
-          setPerformanceWorkspace(null)
-          setReturnCalendar(null)
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setPerformanceLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [holdingsWorkspace?.as_of_date, portfolioId, summary?.as_of_date])
-
+  const holdingsWorkspace = overviewBundle?.holdings ?? null
+  const performanceReport = overviewBundle?.performance ?? null
+  const sealedTaxonomy = holdingsWorkspace?.sealed_display_config.taxonomy ?? null
   const holdingsRows = holdingsWorkspace?.rows ?? []
   const nonCashHoldingsRows = useMemo(() => holdingsRows.filter((row) => !isCashHoldingRow(row)), [holdingsRows])
-  const resolvedBaseCurrency =
-    summary?.base_currency ?? holdingsWorkspace?.base_currency ?? performanceWorkspace?.base_currency ?? ''
+  const resolvedBaseCurrency = holdingsWorkspace?.base_currency ?? performanceReport?.base_currency ?? ''
+  const performanceBaseCurrency = performanceReport?.base_currency ?? resolvedBaseCurrency
   const sortedHoldings = useMemo(
     () =>
       [...nonCashHoldingsRows].sort(
@@ -405,33 +344,36 @@ export default function OverviewPage() {
   )
   const navChartPoints = useMemo(
     () =>
-      (performanceWorkspace?.daily_series ?? []).map((point) => ({
+      (performanceReport?.daily_series ?? []).map((point) => ({
         date: point.as_of_date,
-        value: point.ending_nav,
+        value: point.closing_nav == null ? null : exactDecimalToDisplayNumber(point.closing_nav),
       })),
-    [performanceWorkspace],
+    [performanceReport],
   )
   const twrIndexChartPoints = useMemo(
-    () => buildTwrIndexPoints(performanceWorkspace?.daily_series ?? []),
-    [performanceWorkspace],
+    () =>
+      (performanceReport?.rebased_wealth_series ?? []).map((point) => ({
+        date: point.as_of_date,
+        value: exactDecimalToDisplayNumber(point.wealth_index_method50),
+      })),
+    [performanceReport],
   )
   const drawdownChartPoints = useMemo(
     () =>
-      (performanceWorkspace?.daily_series ?? []).map((point) => ({
+      (performanceReport?.rebased_wealth_series ?? []).map((point) => ({
         date: point.as_of_date,
-        value: point.drawdown,
+        value: exactDecimalToDisplayNumber(point.drawdown_method50),
       })),
-    [performanceWorkspace],
+    [performanceReport],
   )
 
-  const defaultPlanningTaxonomyId =
-    summary?.default_planning_taxonomy_id ?? taxonomyCatalog?.default_planning_taxonomy_id ?? null
+  const defaultPlanningTaxonomyId = sealedTaxonomy?.default_planning_taxonomy_id ?? null
 
   const composition = useMemo(() => {
     const nodesById = new Map<string, PortfolioTaxonomyNodeRecord>(
-      (taxonomyCatalog?.taxonomy_nodes ?? []).map((node) => [node.taxonomy_node_id, node]),
+      (sealedTaxonomy?.taxonomy_nodes ?? []).map((node) => [node.taxonomy_node_id, node]),
     )
-    const activeAssignments = (taxonomyCatalog?.taxonomy_assignments ?? []).filter(
+    const activeAssignments = (sealedTaxonomy?.taxonomy_assignments ?? []).filter(
       (assignment) =>
         assignment.taxonomy_id === defaultPlanningTaxonomyId &&
         assignment.target_scope === 'instrument' &&
@@ -488,8 +430,7 @@ export default function OverviewPage() {
     defaultPlanningTaxonomyId,
     nonCashHoldingsRows,
     holdingsWorkspace?.as_of_date,
-    summary?.as_of_date,
-    taxonomyCatalog,
+    sealedTaxonomy,
   ])
 
   const sleeveRibbonSegments = composition.topLevelBuckets.map((bucket) => ({
@@ -510,17 +451,39 @@ export default function OverviewPage() {
     detail: formatCurrency(row.market_value_base, resolvedBaseCurrency),
   }))
   const monthlyMatrixRows = useMemo(
-    () => buildReturnCalendarMatrixRows(returnCalendar?.buckets ?? []),
-    [returnCalendar],
+    () => buildReturnCalendarMatrixRows(performanceReport?.return_calendar ?? []),
+    [performanceReport],
   )
-  const overviewPerformanceHistoryReliability =
-    performanceWorkspace?.summary.history_reliability ?? null
-  const overviewAnnualizedReturnEligible = annualizedReturnDisplayEligible(
-    overviewPerformanceHistoryReliability,
+  const performanceSummary = performanceReport?.performance ?? null
+  const portfolioEconomicPnl = exactDecimalForDisplay(
+    performanceReport?.portfolio_bridge?.economic_pnl_exact,
   )
-  const overviewAnnualizationMessage =
-    overviewPerformanceHistoryReliability?.annualization_message ??
-    'Annualized metrics are unavailable for this history window.'
+  const cumulativeTwr = exactDecimalForDisplay(performanceSummary?.cumulative_twr?.method50)
+  const annualizedTwr = exactDecimalForDisplay(performanceSummary?.annualized_twr?.method50)
+  const xirr = performanceReport?.xirr.annualized_headline_eligible
+    ? exactDecimalForDisplay(performanceReport.xirr.rate?.method50)
+    : null
+  const currentDrawdown = exactDecimalForDisplay(performanceSummary?.current_drawdown?.method50)
+  const maxDrawdown = exactDecimalForDisplay(performanceSummary?.max_drawdown?.method50)
+  const annualizedVolatility = exactDecimalForDisplay(
+    performanceReport?.statistics.annualized_volatility?.method50,
+  )
+  const annualizedDownsideDeviation = exactDecimalForDisplay(
+    performanceReport?.statistics.annualized_downside_deviation?.method50,
+  )
+  const reportedClosingNav = exactDecimalForDisplay(
+    performanceReport?.portfolio_bridge?.closing_nav_exact,
+  )
+  const chartSummary = performanceSummary
+    ? {
+        start_date: performanceSummary.start_date,
+        end_date: performanceSummary.end_date,
+        cumulative_twr: cumulativeTwr,
+        absolute_change: portfolioEconomicPnl,
+        current_drawdown: currentDrawdown,
+        max_drawdown: maxDrawdown,
+      }
+    : null
 
   const overviewMetricGroups: Array<{ label: string; rows: OverviewMetricRow[] }> = [
     {
@@ -528,36 +491,31 @@ export default function OverviewPage() {
       rows: [
         {
           label: 'Reported Period TWR',
-          value: signedPercent(performanceWorkspace?.summary.cumulative_twr),
+          value: signedPercent(cumulativeTwr),
           emphasis: true,
-          toneClassName: signedValueClass(performanceWorkspace?.summary.cumulative_twr),
+          toneClassName: signedValueClass(cumulativeTwr),
         },
         {
           label: 'Annualized TWR',
-          value: overviewAnnualizedReturnEligible
-            ? signedPercent(performanceWorkspace?.summary.annualized_twr)
-            : 'N/A',
+          value: annualizedTwr == null ? 'N/A' : signedPercent(annualizedTwr),
           emphasis: true,
-          toneClassName: overviewAnnualizedReturnEligible
-            ? signedValueClass(performanceWorkspace?.summary.annualized_twr)
+          toneClassName: annualizedTwr == null ? undefined : signedValueClass(annualizedTwr),
+          title: annualizedTwr == null
+            ? performanceSummary?.reason_codes.map(formatLabel).join(', ') || 'Unavailable in the published report.'
             : undefined,
-          title: overviewAnnualizedReturnEligible
-            ? undefined
-            : overviewAnnualizationMessage,
         },
         {
-          label: 'IRR / MWRR',
-          value: overviewAnnualizedReturnEligible
-            ? `${signedPercent(performanceWorkspace?.summary.irr)} / ${signedPercent(performanceWorkspace?.summary.mwror)}`
-            : 'N/A',
-          title: overviewAnnualizedReturnEligible
-            ? undefined
-            : overviewAnnualizationMessage,
+          label: 'XIRR',
+          value: xirr == null ? 'N/A' : signedPercent(xirr),
+          toneClassName: xirr == null ? undefined : signedValueClass(xirr),
+          title: xirr == null
+            ? performanceReport?.xirr.reason_codes.map(formatLabel).join(', ') || 'Annualized XIRR requires at least 365 elapsed days.'
+            : undefined,
         },
         {
           label: 'TWR Reliability',
-          value: formatLabel(performanceWorkspace?.summary.twr_reliability_status ?? 'unavailable'),
-          title: performanceWorkspace?.summary.twr_reliability_reasons.map(formatLabel).join(', ') || undefined,
+          value: formatLabel(performanceSummary?.status ?? 'unavailable'),
+          title: performanceSummary?.reason_codes.map(formatLabel).join(', ') || undefined,
         },
       ],
     },
@@ -566,22 +524,22 @@ export default function OverviewPage() {
       rows: [
         {
           label: 'Current DD',
-          value: signedPercent(performanceWorkspace?.summary.current_drawdown),
-          toneClassName: signedValueClass(performanceWorkspace?.summary.current_drawdown),
+          value: signedPercent(currentDrawdown),
+          toneClassName: signedValueClass(currentDrawdown),
         },
         {
           label: 'Max DD',
-          value: signedPercent(performanceWorkspace?.summary.max_drawdown),
-          toneClassName: signedValueClass(performanceWorkspace?.summary.max_drawdown),
+          value: signedPercent(maxDrawdown),
+          toneClassName: signedValueClass(maxDrawdown),
         },
         {
           label: 'Annualized VOL',
-          value: formatPercent(performanceWorkspace?.summary.annualized_volatility),
+          value: formatPercent(annualizedVolatility),
           title: 'Backend reported-period volatility.',
         },
         {
-          label: 'Downside VOL',
-          value: formatPercent(performanceWorkspace?.summary.annualized_downside_volatility),
+          label: 'Downside Deviation',
+          value: formatPercent(annualizedDownsideDeviation),
           title: 'Backend reported-period downside volatility.',
         },
       ],
@@ -589,14 +547,14 @@ export default function OverviewPage() {
     {
       label: 'Portfolio',
       rows: [
-        { label: 'Total NAV', value: formatCurrency(summary?.nav, resolvedBaseCurrency), emphasis: true },
+        { label: 'Total NAV', value: formatCurrency(reportedClosingNav, performanceBaseCurrency), emphasis: true },
         {
           label: 'Total P&L',
-          value: formatSignedCurrency(performanceWorkspace?.summary.total_pnl, resolvedBaseCurrency),
+          value: formatSignedCurrency(portfolioEconomicPnl, performanceBaseCurrency),
           emphasis: true,
-          toneClassName: signedValueClass(performanceWorkspace?.summary.total_pnl),
+          toneClassName: signedValueClass(portfolioEconomicPnl),
         },
-        { label: 'Base Currency', value: resolvedBaseCurrency || '—' },
+        { label: 'Base Currency', value: performanceBaseCurrency || '—' },
         { label: 'Position Lines', value: formatNumber(nonCashHoldingsRows.length, 0) },
       ],
     },
@@ -707,7 +665,6 @@ export default function OverviewPage() {
     <PortfolioWorkspaceLayout activeSection="Overview" toolbarLabel="View: Portfolio Overview">
       <section className="portfolio-detail-surface portfolio-overview-surface">
         {workspaceError ? <div className="inline-notice inline-notice-error">{workspaceError}</div> : null}
-        {performanceError ? <div className="inline-notice inline-notice-error">{performanceError}</div> : null}
 
         {workspaceLoading ? <CalculationStatus /> : null}
 
@@ -726,16 +683,13 @@ export default function OverviewPage() {
                         Benchmark-relative analytics are withheld until the backend comparison contract is available.
                       </span>
                     </div>
-                    {performanceLoading && !performanceWorkspace ? (
-                      <CalculationStatus />
-                    ) : null}
-                    {!performanceLoading && performanceWorkspace ? (
+                    {performanceReport ? (
                       <PerformanceNavChart
                         points={navChartPoints}
                         twrPoints={twrIndexChartPoints}
                         drawdownPoints={drawdownChartPoints}
-                        summary={performanceWorkspace.summary}
-                        currency={resolvedBaseCurrency}
+                        summary={chartSummary}
+                        currency={performanceBaseCurrency}
                         showRangeControls
                       />
                     ) : null}
@@ -778,7 +732,7 @@ export default function OverviewPage() {
                 <div className="portfolio-detail-toolbar performance-subsection-toolbar performance-section-toolbar">
                   <div className="panel-title">Monthly Return Matrix</div>
                   <div className="portfolio-detail-meta">
-                    Backend calendar · {formatLabel(returnCalendar?.summary.twr_reliability_status ?? 'unavailable')}
+                    Published calendar · {formatLabel(performanceSummary?.status ?? 'unavailable')}
                   </div>
                 </div>
                 <div className="table-shell">
@@ -802,24 +756,27 @@ export default function OverviewPage() {
                               <td
                                 key={`${row.year}:${RETURN_CALENDAR_MONTH_LABELS[index]}`}
                                 className={`performance-cell-number performance-return-cell ${signedValueClass(
-                                  bucket?.cumulative_twr,
+                                  exactDecimalForDisplay(bucket?.cumulative_twr?.method50),
                                 )}`}
                                 title={
                                   bucket
-                                    ? `${bucket.start_date} to ${bucket.end_date}; ${formatLabel(
-                                        bucket.nav_coverage_state,
-                                      )}; ${formatLabel(bucket.twr_reliability_status)} TWR; ${formatNumber(
+                                    ? `${bucket.calendar_start_date} to ${bucket.calendar_end_date}; ${formatLabel(
+                                        bucket.status,
+                                      )} TWR; ${formatNumber(
                                         bucket.observation_count,
                                         0,
                                       )} observations${
-                                        bucket.twr_reliability_reasons.length
-                                          ? `; ${bucket.twr_reliability_reasons.map(formatLabel).join(', ')}`
+                                        bucket.coverage_reason_codes.length + bucket.reason_codes.length
+                                          ? `; ${[
+                                              ...bucket.coverage_reason_codes,
+                                              ...bucket.reason_codes,
+                                            ].map(formatLabel).join(', ')}`
                                           : ''
                                       }`
                                     : undefined
                                 }
                               >
-                                {signedPercent(bucket?.cumulative_twr)}
+                                {signedPercent(exactDecimalForDisplay(bucket?.cumulative_twr?.method50))}
                               </td>
                             ))}
                           </tr>

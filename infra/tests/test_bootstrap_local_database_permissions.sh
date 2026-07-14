@@ -37,7 +37,9 @@ grep -q 'ALTER ROLE workbench_runtime WITH LOGIN NOCREATEDB NOSUPERUSER NOCREATE
 grep -q 'ALTER ROLE workbench_test WITH LOGIN CREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS' "$CALL_LOG"
 grep -q 'ALTER DATABASE workbench_db OWNER TO workbench_runtime' "$CALL_LOG"
 grep -q 'CREATE SCHEMA IF NOT EXISTS instrument_registry AUTHORIZATION workbench_runtime' "$CALL_LOG"
+grep -q 'CREATE SCHEMA IF NOT EXISTS calculation_registry AUTHORIZATION workbench_runtime' "$CALL_LOG"
 grep -q 'ALTER SCHEMA instrument_registry OWNER TO workbench_runtime' "$CALL_LOG"
+grep -q 'ALTER SCHEMA calculation_registry OWNER TO workbench_runtime' "$CALL_LOG"
 grep -q 'ALTER SCHEMA portfolio OWNER TO workbench_runtime' "$CALL_LOG"
 grep -q 'ALTER SCHEMA watchlist OWNER TO workbench_runtime' "$CALL_LOG"
 

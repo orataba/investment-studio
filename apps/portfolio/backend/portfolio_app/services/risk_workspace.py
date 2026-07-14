@@ -9,6 +9,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
+from portfolio_app.core.operating_profiles import require_portfolio_operating_profile
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.calculation_frequency import (
     CalculationFrequency,
@@ -17,26 +18,31 @@ from portfolio_app.services.calculation_frequency import (
     infer_observation_frequency,
 )
 from portfolio_app.services.fact_currency import require_portfolio_fact_currency
-from portfolio_app.services.ledger import build_account_workspace
-from portfolio_app.services.performance import build_holdings_report, is_cash_holding_instrument_id
+from portfolio_app.services.holding_identity import is_cash_holding_instrument_id
+from portfolio_app.services.published_holdings import (
+    PublishedCashAccountValue,
+    PublishedHoldingsStatement,
+    PublishedHoldingsUnavailableError,
+    read_current_published_holdings,
+)
 from portfolio_app.services.portfolio_store import (
     get_portfolio,
-    list_accounts,
     list_portfolio_instrument_universe,
     list_target_set_lines,
     list_target_sets,
     list_taxonomies,
     list_taxonomy_assignments,
     list_taxonomy_nodes,
-    list_transactions,
 )
-from portfolio_app.services.research_solver import (
-    ResearchMarketDataError,
-    align_nav_series_to_calculation_frequency,
+from portfolio_app.services.portfolio_market_data import (
+    PortfolioMarketDataError,
     build_canonical_total_return_nav_series,
-    lock_research_market_data_in_session,
+    lock_portfolio_market_data_in_session,
+    portfolio_market_data_manifest,
+)
+from portfolio_app.services.risk_math import (
+    align_nav_series_to_calculation_frequency,
     prepare_return_window_for_covariance,
-    research_market_data_manifest,
 )
 from portfolio_app.services.risk_model import (
     estimate_risk_statistics,
@@ -102,7 +108,7 @@ def _error_payload(
 
 
 def _exception_error(error: Exception) -> dict[str, object]:
-    if isinstance(error, ResearchMarketDataError):
+    if isinstance(error, PortfolioMarketDataError):
         return _error_payload(
             str(error),
             reason_codes=list(error.reason_codes),
@@ -119,58 +125,32 @@ def _ready_section(**values: object) -> dict[str, object]:
     return {"status": "ready", "errors": [], **values}
 
 
-def _instrument_ref(position: dict[str, object]) -> dict[str, object]:
-    value = position.get("instrument_ref")
-    return value if isinstance(value, dict) else {}
+def _not_applicable_section(**values: object) -> dict[str, object]:
+    return {"status": "not_applicable", "errors": [], **values}
 
 
-def _is_cash_position(position: dict[str, object]) -> bool:
-    instrument_id = str(position.get("instrument_id") or "").strip()
-    instrument_type = str(_instrument_ref(position).get("instrument_type") or "").strip().lower()
-    return instrument_type == "cash" or is_cash_holding_instrument_id(instrument_id)
-
-
-def _current_holding_records(statement: dict[str, object]) -> list[dict[str, object]]:
-    by_instrument: dict[str, dict[str, object]] = {}
-    for raw_position in list(statement.get("positions") or []):
-        if not isinstance(raw_position, dict) or _is_cash_position(raw_position):
-            continue
-        instrument_id = str(raw_position.get("instrument_id") or "").strip()
-        if not instrument_id:
-            continue
-        market_value = _safe_float(raw_position.get("market_value_base"))
-        weight = _safe_float(raw_position.get("portfolio_weight"))
-        has_exposure = abs(market_value or 0.0) > 1e-9 or abs(weight or 0.0) > 1e-9
+def _current_holding_records(
+    statement: PublishedHoldingsStatement,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for position in statement.positions:
+        market_value = _safe_float(position.market_value_base_exact)
+        weight = _safe_float(position.portfolio_weight)
+        has_exposure = (
+            position.quantity_exact != 0
+            or abs(market_value or 0.0) > 1e-9
+            or abs(weight or 0.0) > 1e-9
+        )
         if not has_exposure:
             continue
-        instrument = _instrument_ref(raw_position)
-        current = by_instrument.setdefault(
-            instrument_id,
+        rows.append(
             {
-                "instrument_id": instrument_id,
-                "label": str(instrument.get("instrument_name") or instrument_id),
-                "market_value_base": 0.0,
-                "weight": 0.0,
-                "market_value_complete": True,
-                "weight_complete": True,
-            },
+                "instrument_id": position.instrument_id,
+                "label": position.instrument_name,
+                "market_value_base": market_value,
+                "weight": weight,
+            }
         )
-        if market_value is None:
-            current["market_value_complete"] = False
-        else:
-            current["market_value_base"] = float(current["market_value_base"]) + market_value
-        if weight is None:
-            current["weight_complete"] = False
-        else:
-            current["weight"] = float(current["weight"]) + weight
-
-    rows: list[dict[str, object]] = []
-    for instrument_id, record in by_instrument.items():
-        if not bool(record.pop("market_value_complete")):
-            record["market_value_base"] = None
-        if not bool(record.pop("weight_complete")):
-            record["weight"] = None
-        rows.append(record)
     return sorted(rows, key=lambda item: (-abs(_safe_float(item.get("weight")) or 0.0), str(item["label"])))
 
 
@@ -633,7 +613,7 @@ def _risk_contribution_section(
 ) -> dict[str, object]:
     if group_frame.empty or not group_metadata:
         return _unavailable_section(
-            _error_payload("Risk contribution requires taxonomy-group return history."),
+            _error_payload("Risk contribution requires grouped return history."),
             rows=[],
         )
     metadata_by_key = {str(item["key"]): item for item in group_metadata}
@@ -647,7 +627,7 @@ def _risk_contribution_section(
             as_of_date=as_of_date,
             calculation_frequency=calculation_frequency,
             risk_policy=risk_policy,
-            label="Current taxonomy risk contribution",
+            label="Current portfolio risk contribution",
         )
         covariance: pd.DataFrame = result["covariance"]
         contribution = weighted_risk_contribution(
@@ -691,7 +671,7 @@ def _risk_contribution_section(
 def _planning_groups(
     *,
     holdings: list[dict[str, object]],
-    account_workspace: dict[str, object],
+    cash_accounts: tuple[PublishedCashAccountValue, ...],
     assignments: dict[tuple[str, str], dict[str, object]],
     nodes_by_id: dict[str, dict[str, object]],
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
@@ -710,14 +690,9 @@ def _planning_groups(
                 "cash_like": False,
             }
         )
-    for raw_row in list(account_workspace.get("accounts") or []):
-        if not isinstance(raw_row, dict):
-            continue
-        account = raw_row.get("account") if isinstance(raw_row.get("account"), dict) else {}
-        if str((account or {}).get("account_type") or "") != "deposit_account":
-            continue
-        account_id = str((account or {}).get("account_id") or "").strip()
-        value = _safe_float(raw_row.get("account_value_base"))
+    for cash_account in cash_accounts:
+        account_id = cash_account.account_id
+        value = _safe_float(cash_account.value_base_exact)
         if value is None:
             errors.append(_error_payload(f"Current account value is unavailable for cash account {account_id}."))
             continue
@@ -879,13 +854,18 @@ def _drift_section(
     risk_contribution: dict[str, object],
     nodes_by_id: dict[str, dict[str, object]],
 ) -> dict[str, object]:
-    if planning_errors:
-        return _unavailable_section(*planning_errors, weight_rows=[], risk_rows=[])
     root_sets = [
         item
         for item in target_sets
         if str(item.get("status") or "active") == "active" and not item.get("comparator_taxonomy_node_id")
     ]
+    if not any(
+        bool(item.get("weight_enabled")) or bool(item.get("risk_budget_enabled"))
+        for item in root_sets
+    ):
+        return _not_applicable_section(weight_rows=[], risk_rows=[])
+    if planning_errors:
+        return _unavailable_section(*planning_errors, weight_rows=[], risk_rows=[])
     selected: dict[str, dict[str, object] | None] = {}
     errors: list[dict[str, object]] = []
     for target_type in ("saa", "taa"):
@@ -950,32 +930,35 @@ def build_risk_workspace(
     portfolio = get_portfolio(portfolio_id)
     if portfolio is None:
         raise RiskWorkspaceNotFoundError("Portfolio not found.")
+    operating_profile = require_portfolio_operating_profile(
+        portfolio.get("operating_profile"),
+        context=f"Portfolio '{portfolio_id}'",
+    )
+    uses_allocation_policy = operating_profile == "standard_taxonomy"
     base_currency = require_portfolio_fact_currency(
         portfolio.get("base_currency"),
         context=f"Portfolio '{portfolio_id}' base",
     )
-    accounts = list_accounts(portfolio_id)
-    transactions = list_transactions(portfolio_id, end_date=as_of_date)
-    statement = build_holdings_report(
-        portfolio,
-        accounts,
-        transactions,
-        as_of_date=as_of_date,
-        include_cash_rows=False,
-        calculation_frequency="daily",
-    )
-    account_workspace = build_account_workspace(
-        portfolio_id,
-        accounts,
-        transactions,
-        base_currency=base_currency,
-        as_of_date=as_of_date,
-    )
+    try:
+        statement = read_current_published_holdings(
+            portfolio_id,
+            as_of_date=as_of_date,
+        )
+    except PublishedHoldingsUnavailableError as error:
+        raise RiskWorkspaceRequestError(str(error)) from error
+    if statement.base_currency != base_currency:
+        raise RiskWorkspaceRequestError(
+            "Published holdings base currency does not match the portfolio fact."
+        )
     holdings = _current_holding_records(statement)
     universe = _universe_records(list_portfolio_instrument_universe(portfolio_id), holdings)
 
-    taxonomies = list_taxonomies(portfolio_id)
-    taxonomy_id = str(portfolio.get("default_planning_taxonomy_id") or "").strip()
+    taxonomies = list_taxonomies(portfolio_id) if uses_allocation_policy else []
+    taxonomy_id = (
+        str(portfolio.get("default_planning_taxonomy_id") or "").strip()
+        if uses_allocation_policy
+        else ""
+    )
     taxonomy = next(
         (
             item
@@ -987,21 +970,23 @@ def build_risk_workspace(
         None,
     )
     taxonomy_errors: list[dict[str, object]] = []
-    if not taxonomy_id:
+    if uses_allocation_policy and not taxonomy_id:
         taxonomy_errors.append(
             _error_payload(
                 "Portfolio Risk requires a default planning taxonomy.",
                 reason_codes=["planning_taxonomy_required"],
             )
         )
-    elif taxonomy is None:
+    elif uses_allocation_policy and taxonomy is None:
         taxonomy_errors.append(
             _error_payload(
                 "The default planning taxonomy is missing, inactive, or not planning-enabled.",
                 reason_codes=["planning_taxonomy_unavailable"],
             )
         )
-    elif str(taxonomy.get("primary_assignment_scope") or "") != "instrument":
+    elif uses_allocation_policy and str(
+        taxonomy.get("primary_assignment_scope") or ""
+    ) != "instrument":
         taxonomy_errors.append(
             _error_payload(
                 "Portfolio Risk requires an instrument-scoped planning taxonomy.",
@@ -1020,9 +1005,17 @@ def build_risk_workspace(
             list_taxonomy_assignments(portfolio_id, taxonomy_id=taxonomy_id) if taxonomy_id else [],
             taxonomy_id=taxonomy_id,
         )
-        scope_options = _matrix_scope_options(active_nodes) if not taxonomy_errors else [
-            {"value": ALL_INSTRUMENTS_SCOPE, "label": "All Instruments", "kind": "instrument"}
-        ]
+        scope_options = (
+            _matrix_scope_options(active_nodes)
+            if uses_allocation_policy and not taxonomy_errors
+            else [
+                {
+                    "value": ALL_INSTRUMENTS_SCOPE,
+                    "label": "All Instruments",
+                    "kind": "instrument",
+                }
+            ]
+        )
     except ValueError as error:
         assignments = {}
         scope_options = [{"value": ALL_INSTRUMENTS_SCOPE, "label": "All Instruments", "kind": "instrument"}]
@@ -1045,7 +1038,7 @@ def build_risk_workspace(
     series_errors_by_id: dict[str, dict[str, object]] = {}
     series_warnings_by_id: dict[str, list[str]] = {}
     with get_session_factory()() as market_session:
-        market_context = lock_research_market_data_in_session(
+        market_context = lock_portfolio_market_data_in_session(
             market_session,
             instrument_ids=all_instrument_ids,
             base_currency=base_currency,
@@ -1064,7 +1057,7 @@ def build_risk_workspace(
                 )
                 nav_by_id[instrument_id] = nav
                 series_warnings_by_id[instrument_id] = warnings
-            except (ResearchMarketDataError, ValueError) as error:
+            except (PortfolioMarketDataError, ValueError) as error:
                 series_errors_by_id[instrument_id] = _exception_error(error)
 
         holding_frequencies = [
@@ -1103,7 +1096,7 @@ def build_risk_workspace(
                 except ValueError as error:
                     series_errors_by_id[instrument_id] = _exception_error(error)
 
-        lineage = research_market_data_manifest(market_context)
+        lineage = portfolio_market_data_manifest(market_context)
 
     model_snapshot = portfolio_risk_model_snapshot(
         policy,
@@ -1200,8 +1193,21 @@ def build_risk_workspace(
     )
     top_group_frame = pd.DataFrame()
     top_group_metadata: list[dict[str, object]] = []
-    group_errors = [*taxonomy_errors, *holding_input_errors]
-    if not group_errors:
+    group_errors = [*holding_input_errors]
+    if not uses_allocation_policy and not group_errors:
+        top_group_frame = instrument_frame
+        top_group_metadata = [
+            {
+                "key": str(item["instrument_id"]),
+                "label": str(item["label"]),
+                "weight": float(item["weight"]),
+            }
+            for item in holdings
+            if str(item["instrument_id"]) in instrument_frame.columns
+        ]
+    elif uses_allocation_policy:
+        group_errors = [*taxonomy_errors, *group_errors]
+    if uses_allocation_policy and not group_errors:
         top_group_frame, top_group_metadata, group_errors = _taxonomy_group_frame(
             instrument_frame=instrument_frame,
             holdings=holdings,
@@ -1305,26 +1311,40 @@ def build_risk_workspace(
             )
         )
 
-    current_groups, planning_errors = (
-        _planning_groups(
-            holdings=holdings,
-            account_workspace=account_workspace,
-            assignments=assignments,
+    if uses_allocation_policy:
+        current_groups, planning_errors = (
+            _planning_groups(
+                holdings=holdings,
+                cash_accounts=statement.cash_accounts,
+                assignments=assignments,
+                nodes_by_id=active_nodes,
+            )
+            if not taxonomy_errors
+            else ([], list(taxonomy_errors))
+        )
+        target_sets = (
+            list_target_sets(portfolio_id, taxonomy_id=taxonomy_id)
+            if taxonomy_id
+            else []
+        )
+        target_lines = (
+            list_target_set_lines(portfolio_id, taxonomy_id=taxonomy_id)
+            if taxonomy_id
+            else []
+        )
+        allocation_policy_drift = _drift_section(
+            current_groups=current_groups,
+            planning_errors=planning_errors,
+            target_sets=target_sets,
+            target_lines=target_lines,
+            risk_contribution=risk_contribution,
             nodes_by_id=active_nodes,
         )
-        if not taxonomy_errors
-        else ([], list(taxonomy_errors))
-    )
-    target_sets = list_target_sets(portfolio_id, taxonomy_id=taxonomy_id) if taxonomy_id else []
-    target_lines = list_target_set_lines(portfolio_id, taxonomy_id=taxonomy_id) if taxonomy_id else []
-    drift = _drift_section(
-        current_groups=current_groups,
-        planning_errors=planning_errors,
-        target_sets=target_sets,
-        target_lines=target_lines,
-        risk_contribution=risk_contribution,
-        nodes_by_id=active_nodes,
-    )
+    else:
+        allocation_policy_drift = _not_applicable_section(
+            weight_rows=[],
+            risk_rows=[],
+        )
 
     coverage_rows = []
     holding_id_set = set(holding_ids)
@@ -1359,13 +1379,25 @@ def build_risk_workspace(
             }
         )
 
-    sections = [rolling, matrix, risk_contribution, drift]
-    ready_count = sum(1 for section in sections if section.get("status") == "ready")
-    status = "ready" if ready_count == len(sections) else "partial" if ready_count else "unavailable"
+    sections = [rolling, matrix, risk_contribution, allocation_policy_drift]
+    applicable_sections = [
+        section for section in sections if section.get("status") != "not_applicable"
+    ]
+    ready_count = sum(
+        1 for section in applicable_sections if section.get("status") == "ready"
+    )
+    status = (
+        "ready"
+        if ready_count == len(applicable_sections)
+        else "partial"
+        if ready_count
+        else "unavailable"
+    )
     return {
         "portfolio_id": portfolio_id,
         "portfolio_name": str(portfolio.get("portfolio_name") or portfolio_id),
         "base_currency": base_currency,
+        "operating_profile": operating_profile,
         "as_of_date": as_of_date.isoformat(),
         "status": status,
         "planning_taxonomy": (
@@ -1382,7 +1414,7 @@ def build_risk_workspace(
         "rolling": rolling,
         "matrix": matrix,
         "risk_contribution": risk_contribution,
-        "drift": drift,
+        "allocation_policy_drift": allocation_policy_drift,
         "coverage": {
             "market_data_role": "total_return",
             "instrument_count": len(coverage_rows),
@@ -1391,7 +1423,8 @@ def build_risk_workspace(
         },
         "calculation_lineage": {
             "engine_version": RISK_WORKSPACE_ENGINE_VERSION,
-            "mathematical_kernel": "portfolio_app.services.risk_model + research_solver",
+            "mathematical_kernel": "portfolio_app.services.risk_model + portfolio_app.services.risk_math",
+            "operating_profile": operating_profile,
             "as_of_date": as_of_date.isoformat(),
             "rolling_lookback_days": rolling_window,
             "rolling_output_point_limit": MAX_ROLLING_OUTPUT_POINTS,
@@ -1402,10 +1435,22 @@ def build_risk_workspace(
             "benchmark_instrument_id": normalized_benchmark_id,
             "holdings_source": "point-in-time portfolio ledger replay",
             "instrument_universe_basis": "current active portfolio instrument universe",
-            "planning_taxonomy_basis": "current active unversioned planning taxonomy and assignments",
-            "planning_target_basis": "current active unversioned target sets",
+            "planning_taxonomy_basis": (
+                "current active unversioned planning taxonomy and assignments"
+                if uses_allocation_policy
+                else "not_applicable_external_etf_rotation"
+            ),
+            "planning_target_basis": (
+                "current active unversioned target sets"
+                if uses_allocation_policy
+                else "not_applicable_external_etf_rotation"
+            ),
             "portfolio_return_weighting": "current_static_weights",
-            "taxonomy_group_return_weighting": "current_static_weights_normalized_within_group",
+            "taxonomy_group_return_weighting": (
+                "current_static_weights_normalized_within_group"
+                if uses_allocation_policy
+                else "not_applicable_external_etf_rotation"
+            ),
             "taxonomy_id": taxonomy_id or None,
             "risk_policy_role": "production",
             "covariance_model_id": str(model_snapshot["covariance_model_id"]),

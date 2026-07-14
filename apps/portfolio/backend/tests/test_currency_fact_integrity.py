@@ -2,30 +2,26 @@ from __future__ import annotations
 
 import re
 from copy import deepcopy
-from datetime import UTC, date
+from datetime import UTC
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import CheckConstraint, inspect, select
 from sqlalchemy.exc import IntegrityError
 
-from portfolio_app.api.routes import accounts as account_routes
-from portfolio_app.api.routes import ledger_postings as ledger_posting_routes
 from portfolio_app.db.models import (
-    AccountRecordModel,
-    PortfolioCalculationStateModel,
-    PortfolioDailyHoldingSnapshotModel,
+    TransactionIdentityRecordModel,
+    TransactionRevisionGroupRecordModel,
     TransactionRevisionRecordModel,
 )
-from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import daily_snapshots, ledger, performance, portfolio_store
+from portfolio_app.db.session import get_engine, get_session_factory
+from portfolio_app.services import holding_identity, portfolio_store
 from portfolio_app.services.fact_currency import PortfolioFactCurrencyError
-from portfolio_app.services.ledger import LedgerDataIntegrityError
 from portfolio_app.services.transaction_revisions import (
     AmendTransactionRevision,
     TransactionFactPayload,
     TransactionRevisionContext,
-    append_transaction_revision_batch,
+    append_transaction_revision_batch_unchecked,
 )
 from tests.store_fixture import TEST_PORTFOLIO_STORE
 
@@ -63,18 +59,6 @@ def test_reset_store_rejects_missing_or_noncanonical_fact_currency_before_writin
 
     # Validation precedes the delete-and-replace unit of work.
     assert portfolio_store.get_portfolio("portfolio-ops") is not None
-
-
-def test_live_rollup_rejects_corrupt_persisted_account_currency() -> None:
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        account = session.get(AccountRecordModel, "cash-usd-main")
-        assert account is not None
-        account.currency = ""
-        session.commit()
-
-    with pytest.raises(PortfolioFactCurrencyError, match="cash-usd-main"):
-        portfolio_store.get_portfolio_live_summary("portfolio-ops")
 
 
 def test_revision_append_rejects_noncanonical_transaction_currency() -> None:
@@ -120,10 +104,19 @@ def test_revision_append_rejects_noncanonical_transaction_currency() -> None:
             price=transaction.price,
             gross_amount=transaction.gross_amount,
             counter_amount=transaction.counter_amount,
-            fx_rate=transaction.fx_rate,
+            quoted_fx_rate=transaction.quoted_fx_rate,
             fees=transaction.fees,
             taxes=transaction.taxes,
             currency="EUR",
+            consideration_basis=transaction.consideration_basis,
+            numeric_scale_state=transaction.numeric_scale_state,
+            quantity_input_scale=transaction.quantity_input_scale,
+            price_input_scale=transaction.price_input_scale,
+            gross_amount_input_scale=transaction.gross_amount_input_scale,
+            counter_amount_input_scale=transaction.counter_amount_input_scale,
+            quoted_fx_rate_input_scale=transaction.quoted_fx_rate_input_scale,
+            fees_input_scale=transaction.fees_input_scale,
+            taxes_input_scale=transaction.taxes_input_scale,
             transfer_scope=transaction.transfer_scope,
             transfer_object_type=transaction.transfer_object_type,
             transfer_group_id=transaction.transfer_group_id,
@@ -131,7 +124,7 @@ def test_revision_append_rejects_noncanonical_transaction_currency() -> None:
             note=transaction.note,
         )
         with pytest.raises(IntegrityError, match="supported_currency"):
-            append_transaction_revision_batch(
+            append_transaction_revision_batch_unchecked(
                 session,
                 portfolio_id="portfolio-ops",
                 context=TransactionRevisionContext(
@@ -158,120 +151,37 @@ def test_revision_append_rejects_noncanonical_transaction_currency() -> None:
     assert current["currency"] == "USD"
 
 
-def test_accounts_workspace_maps_ledger_currency_integrity_failure_to_422(
-    client,
-    monkeypatch,
-) -> None:
-    def fail_workspace(*args, **kwargs):
-        del args, kwargs
-        raise LedgerDataIntegrityError("account currency is not canonical")
+def test_transaction_ledger_check_constraint_names_match_runtime_metadata() -> None:
+    inspector = inspect(get_engine())
+    for model in (
+        TransactionIdentityRecordModel,
+        TransactionRevisionGroupRecordModel,
+        TransactionRevisionRecordModel,
+    ):
+        expected_names = {
+            str(constraint.name)
+            for constraint in model.__table__.constraints
+            if isinstance(constraint, CheckConstraint)
+        }
+        actual_names = {
+            str(constraint["name"])
+            for constraint in inspector.get_check_constraints(model.__tablename__)
+        }
+        assert actual_names == expected_names
 
-    monkeypatch.setattr(account_routes, "build_account_workspace", fail_workspace)
 
-    response = client.get("/api/portfolios/portfolio-ops/accounts/workspace")
-
-    assert response.status_code == 422
-    assert response.json()["detail"] == "account currency is not canonical"
-
-
-def test_ledger_postings_maps_ledger_currency_integrity_failure_to_422(
-    client,
-    monkeypatch,
-) -> None:
-    def fail_postings(*args, **kwargs):
-        del args, kwargs
-        raise LedgerDataIntegrityError("transaction currency is not canonical")
-
-    monkeypatch.setattr(
-        ledger_posting_routes,
-        "list_ledger_postings",
-        fail_postings,
-    )
-
+def test_legacy_ledger_postings_route_is_removed(client) -> None:
     response = client.get("/api/portfolios/portfolio-ops/ledger-postings")
 
-    assert response.status_code == 422
-    assert response.json()["detail"] == "transaction currency is not canonical"
-
-
-def test_accounts_workspace_maps_persisted_fact_currency_failure_to_422(client) -> None:
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        account = session.get(AccountRecordModel, "cash-usd-main")
-        assert account is not None
-        account.currency = "usd"
-        session.commit()
-
-    response = client.get("/api/portfolios/portfolio-ops/accounts/workspace")
-
-    assert response.status_code == 422
-    assert "cash-usd-main" in response.json()["detail"]
-
-
-def test_holding_snapshot_requires_explicit_currency_even_for_cash_identity() -> None:
-    holding = {
-        "currency": None,
-        "instrument_ref": {
-            "instrument_id": "cash:USD",
-            "instrument_name": "Cash (USD)",
-            "instrument_type": "cash",
-            "currency": "USD",
-        },
-    }
-
-    with pytest.raises(
-        performance.PerformanceDataIntegrityError,
-        match="requires an explicit canonical currency",
-    ):
-        daily_snapshots._holding_snapshot_currency(
-            holding,
-            portfolio_id="portfolio-ops",
-            as_of_date=date(2026, 4, 15),
-            account_id="cash:USD",
-            instrument_id="cash:USD",
-        )
+    assert response.status_code == 404
 
 
 @pytest.mark.parametrize("bad_currency", (None, "", "usd", " USD ", "EUR"))
-def test_ledger_and_performance_currency_boundaries_share_exact_canonical_policy(
+def test_cash_identity_boundary_requires_exact_canonical_currency(
     bad_currency: object,
 ) -> None:
-    with pytest.raises(LedgerDataIntegrityError):
-        ledger._required_currency(bad_currency, fact_name="persisted ledger fact")
-    with pytest.raises(performance.PerformanceDataIntegrityError):
-        performance._required_currency(
-            bad_currency,
-            fact_name="persisted performance fact",
-        )
-
-
-def test_materialized_holding_rejects_column_payload_currency_mismatch() -> None:
-    row = PortfolioDailyHoldingSnapshotModel(
-        portfolio_id="portfolio-ops",
-        as_of_date=date(2026, 4, 15),
-        account_id="broker-us-core",
-        instrument_id="equity-us-abbv",
-        currency="USD",
-        quantity=1.0,
-        holding_json={
-            "account_id": "broker-us-core",
-            "instrument_id": "equity-us-abbv",
-            "currency": "HKD",
-            "instrument_ref": {
-                "instrument_id": "equity-us-abbv",
-                "instrument_name": "AbbVie Inc",
-                "instrument_type": "equity",
-                "currency": "HKD",
-            },
-        },
-        calculated_at="2026-04-15T00:00:00Z",
-    )
-
-    with pytest.raises(
-        performance.PerformanceDataIntegrityError,
-        match="column currency does not match its payload",
-    ):
-        daily_snapshots._aggregate_holding_rows([row], total_nav_base=1.0)
+    with pytest.raises(PortfolioFactCurrencyError):
+        holding_identity.cash_holding_instrument_id(bad_currency)
 
 
 def test_calculation_sources_do_not_restore_currency_fallbacks() -> None:
@@ -280,9 +190,8 @@ def test_calculation_sources_do_not_restore_currency_fallbacks() -> None:
         (backend_root / relative_path).read_text(encoding="utf-8")
         for relative_path in (
             "portfolio_app/services/portfolio_store.py",
-            "portfolio_app/services/daily_snapshots.py",
-            "portfolio_app/services/performance.py",
-            "portfolio_app/services/ledger.py",
+            "portfolio_app/services/holding_identity.py",
+            "portfolio_app/services/published_holdings.py",
             "portfolio_app/api/routes/accounts.py",
             "portfolio_app/api/routes/performance.py",
             "portfolio_app/api/routes/workspace.py",
@@ -305,18 +214,25 @@ def test_calculation_sources_do_not_restore_currency_fallbacks() -> None:
 
 
 def test_explicit_new_portfolio_and_synthetic_cash_currency_are_legal() -> None:
-    created = portfolio_store.create_portfolio("Explicit currency policy", base_currency="CNY")
+    created = portfolio_store.create_portfolio(
+        "Explicit currency policy",
+        base_currency="CNY",
+        operating_profile="standard_taxonomy",
+    )
     assert created["base_currency"] == "CNY"
 
     with pytest.raises(PortfolioFactCurrencyError):
-        portfolio_store.create_portfolio("Missing currency", base_currency="")
+        portfolio_store.create_portfolio(
+            "Missing currency",
+            base_currency="",
+            operating_profile="standard_taxonomy",
+        )
 
-    cash_ref = performance._cash_holding_instrument_ref("HKD")
-    assert cash_ref["currency"] == "HKD"
-    assert cash_ref["instrument_id"] == "cash:HKD"
+    cash_instrument_id = holding_identity.cash_holding_instrument_id("HKD")
+    assert cash_instrument_id == "cash:HKD"
 
-    with pytest.raises(performance.PerformanceDataIntegrityError):
-        performance._cash_holding_instrument_ref("")
+    with pytest.raises(PortfolioFactCurrencyError):
+        holding_identity.cash_holding_instrument_id("")
 
 
 def test_portfolio_create_api_requires_an_explicit_base_currency(client) -> None:
@@ -328,7 +244,11 @@ def test_portfolio_create_api_requires_an_explicit_base_currency(client) -> None
 
     created = client.post(
         "/api/portfolios",
-        json={"name": "Explicit CNY portfolio", "base_currency": "CNY"},
+        json={
+            "name": "Explicit CNY portfolio",
+            "base_currency": "CNY",
+            "operating_profile": "standard_taxonomy",
+        },
     )
     assert created.status_code == 200, created.json()
     assert created.json()["base_currency"] == "CNY"

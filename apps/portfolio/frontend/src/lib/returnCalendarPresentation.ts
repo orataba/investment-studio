@@ -1,4 +1,4 @@
-import type { PortfolioReturnCalendarBucket } from './api'
+import type { PortfolioDailyPublishedReturnCalendarBucket } from './api'
 
 export const RETURN_CALENDAR_MONTH_LABELS = [
   'Jan',
@@ -17,7 +17,7 @@ export const RETURN_CALENDAR_MONTH_LABELS = [
 
 export type ReturnCalendarMatrixRow = {
   year: string
-  months: Array<PortfolioReturnCalendarBucket | null>
+  months: Array<PortfolioDailyPublishedReturnCalendarBucket | null>
 }
 
 /**
@@ -25,7 +25,7 @@ export type ReturnCalendarMatrixRow = {
  * not link, compound, annualize, or otherwise reinterpret backend returns.
  */
 export function buildReturnCalendarMatrixRows(
-  buckets: readonly PortfolioReturnCalendarBucket[],
+  buckets: readonly PortfolioDailyPublishedReturnCalendarBucket[],
 ): ReturnCalendarMatrixRow[] {
   const rowsByYear = new Map<string, ReturnCalendarMatrixRow>()
 

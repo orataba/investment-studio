@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
 from portfolio_ops_instrument_core import instrument_store as shared_store
 from portfolio_ops_instrument_core.db_models import (
@@ -30,6 +30,7 @@ from portfolio_ops_instrument_core.quote_resolver import (
     resolve_role_quote_series,
 )
 from portfolio_ops_instrument_core.quote_revisions import (
+    QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
     make_quote_observation_id,
     make_quote_revision_id,
     make_quote_series_id,
@@ -129,6 +130,9 @@ def test_explicit_candidate_distinguishes_carry_ingestion_and_reliability() -> N
         revision_number=1,
         payload_hash="sha256:payload",
         value=Decimal("100.12345678901234567890123456789"),
+        value_input_scale=29,
+        numeric_scale_state="declared",
+        payload_schema_version=2,
         status="complete",
         observation_date=date(2026, 7, 12),
         source_ref="issuer:statement",
@@ -150,6 +154,9 @@ def test_explicit_candidate_distinguishes_carry_ingestion_and_reliability() -> N
 
     assert resolution.resolution_status == "resolved"
     assert resolution.value == candidate.value
+    assert resolution.value_input_scale == 29
+    assert resolution.numeric_scale_state == "declared"
+    assert resolution.payload_schema_version == 2
     assert resolution.freshness_status == "current"
     assert resolution.ingestion_status == "unknown"
     assert resolution.reliability_status == "qualified"
@@ -269,6 +276,9 @@ def test_window_exposes_all_current_states_and_applies_anchor_freshness(
         "partial",
         "complete",
     ]
+    assert [item.value_input_scale for item in window.observations] == [0, 1, 0]
+    assert all(item.numeric_scale_state == "declared" for item in window.observations)
+    assert all(item.payload_schema_version == 2 for item in window.observations)
     assert [item.observation_date for item in window.points] == [
         date(2026, 7, 11),
         date(2026, 7, 13),
@@ -368,6 +378,9 @@ def test_in_session_resolver_reads_uncommitted_uow_state(quote_registry) -> None
         value=value,
         source_ref="uow",
         status="complete",
+        payload_schema_version=QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
+        value_input_scale=max(-Decimal(value).as_tuple().exponent, 0),
+        numeric_scale_state="declared",
     )
     with factory() as session:
         session.add(
@@ -407,6 +420,9 @@ def test_in_session_resolver_reads_uncommitted_uow_state(quote_registry) -> None
                 observation_id=observation_id,
                 revision_number=1,
                 value=Decimal(value),
+                value_input_scale=max(-Decimal(value).as_tuple().exponent, 0),
+                numeric_scale_state="declared",
+                payload_schema_version=QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
                 source_ref="uow",
                 status="complete",
                 source_published_at=None,

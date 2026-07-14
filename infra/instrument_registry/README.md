@@ -38,4 +38,4 @@
 整笔失败，不会替换业务来源配置，也不会把冲突记录自动“修好”。该迁移不可逆，避免在
 identity 已被组合或行情引用后由 downgrade 级联删除业务事实。
 
-迁移头 `20260713_0011` 进一步要求 Instrument 与 QuoteSeries 的 `currency` 都是显式三位大写代码。升级前若发现缺失或歧义币种会整笔失败，不会默认成 USD 或自动猜测。
+迁移头 `20260714_0012` 在三位大写币种约束之外，为每条行情 revision 分离保存进入 registry 时的十进制位数和 `declared / binary_inferred / legacy_inferred` 状态。数值仍按精确 Decimal 保存；`1.2300` 不会因规范化成 `1.23` 而丢失来源表示精度，历史 v1 payload hash 也不会被重算。

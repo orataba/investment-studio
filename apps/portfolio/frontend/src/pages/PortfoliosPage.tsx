@@ -4,11 +4,13 @@ import { Link, useNavigate } from 'react-router-dom'
 import {
   createPortfolio,
   copyPortfolio,
-  deletePortfolio,
+  archivePortfolio,
   getPortfolios,
   reorderPortfolios,
+  restorePortfolio,
   SUPPORTED_PORTFOLIO_CURRENCIES,
   type PortfolioEntryRecord,
+  type PortfolioOperatingProfile,
 } from '../lib/api'
 import { formatCurrency, formatPercent, formatSignedCurrency } from '../lib/format'
 import { buildPortfolioSectionPath, PLATFORM_HOME_URL } from '../lib/navigation'
@@ -32,15 +34,19 @@ function formatAsOfDate(value: string | null | undefined) {
 export default function PortfoliosPage() {
   const navigate = useNavigate()
   const [portfolios, setPortfolios] = useState<PortfolioEntryRecord[]>([])
+  const [archivedPortfolios, setArchivedPortfolios] = useState<PortfolioEntryRecord[]>([])
   const [error, setError] = useState<string | null>(null)
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<PortfolioEntryRecord | null>(null)
-  const [deleting, setDeleting] = useState(false)
+  const [pendingArchive, setPendingArchive] = useState<PortfolioEntryRecord | null>(null)
+  const [archiving, setArchiving] = useState(false)
+  const [restoringId, setRestoringId] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [createName, setCreateName] = useState('')
   const [createBaseCurrency, setCreateBaseCurrency] = useState('')
+  const [createOperatingProfile, setCreateOperatingProfile] =
+    useState<PortfolioOperatingProfile>('standard_taxonomy')
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
@@ -56,10 +62,13 @@ export default function PortfoliosPage() {
   useEffect(() => {
     let cancelled = false
 
-    getPortfolios()
+    getPortfolios({ includeArchived: true })
       .then((response) => {
         if (!cancelled) {
-          setPortfolios(response)
+          setPortfolios(response.filter((portfolio) => portfolio.lifecycle_status === 'active'))
+          setArchivedPortfolios(
+            response.filter((portfolio) => portfolio.lifecycle_status === 'archived'),
+          )
           setError(null)
         }
       })
@@ -128,7 +137,14 @@ export default function PortfoliosPage() {
             ? requestError.message
             : 'Failed to reorder portfolios.',
         )
-        void getPortfolios().then(setPortfolios).catch(() => undefined)
+        void getPortfolios({ includeArchived: true })
+          .then((response) => {
+            setPortfolios(response.filter((portfolio) => portfolio.lifecycle_status === 'active'))
+            setArchivedPortfolios(
+              response.filter((portfolio) => portfolio.lifecycle_status === 'archived'),
+            )
+          })
+          .catch(() => undefined)
       })
     }
   }
@@ -153,6 +169,7 @@ export default function PortfoliosPage() {
       const created = await createPortfolio({
         name,
         base_currency: createBaseCurrency as (typeof SUPPORTED_PORTFOLIO_CURRENCIES)[number],
+        operating_profile: createOperatingProfile,
       })
       setPortfolios((current) => [...current, created])
       setNotice(`Created portfolio "${created.portfolio_name}".`)
@@ -169,24 +186,46 @@ export default function PortfoliosPage() {
     }
   }
 
-  async function handleDeletePortfolio() {
-    if (!pendingDelete || deleting) {
+  async function handleArchivePortfolio() {
+    if (!pendingArchive || archiving) {
       return
     }
-    setDeleting(true)
+    setArchiving(true)
     try {
-      await deletePortfolio(pendingDelete.portfolio_id)
+      const archived = await archivePortfolio(pendingArchive.portfolio_id)
       setPortfolios((current) =>
-        current.filter((item) => item.portfolio_id !== pendingDelete.portfolio_id),
+        current.filter((item) => item.portfolio_id !== pendingArchive.portfolio_id),
       )
-      setNotice(`Deleted portfolio "${pendingDelete.portfolio_name}".`)
-      setPendingDelete(null)
+      setArchivedPortfolios((current) => [...current, archived])
+      setNotice(`Archived portfolio "${pendingArchive.portfolio_name}".`)
+      setPendingArchive(null)
     } catch (requestError) {
       setNotice(
-        requestError instanceof Error ? requestError.message : 'Failed to delete portfolio.',
+        requestError instanceof Error ? requestError.message : 'Failed to archive portfolio.',
       )
     } finally {
-      setDeleting(false)
+      setArchiving(false)
+    }
+  }
+
+  async function handleRestorePortfolio(portfolio: PortfolioEntryRecord) {
+    if (restoringId) {
+      return
+    }
+    setRestoringId(portfolio.portfolio_id)
+    try {
+      const restored = await restorePortfolio(portfolio.portfolio_id)
+      setArchivedPortfolios((current) =>
+        current.filter((item) => item.portfolio_id !== portfolio.portfolio_id),
+      )
+      setPortfolios((current) => [...current, restored])
+      setNotice(`Restored portfolio "${portfolio.portfolio_name}".`)
+    } catch (requestError) {
+      setNotice(
+        requestError instanceof Error ? requestError.message : 'Failed to restore portfolio.',
+      )
+    } finally {
+      setRestoringId(null)
     }
   }
 
@@ -290,11 +329,11 @@ export default function PortfoliosPage() {
                     <button
                       type="button"
                       onClick={() => {
-                        setPendingDelete(portfolio)
+                        setPendingArchive(portfolio)
                         setMenuOpenId(null)
                       }}
                     >
-                      Delete Portfolio
+                      Archive Portfolio
                     </button>
                   </div>
                 ) : null}
@@ -326,6 +365,7 @@ export default function PortfoliosPage() {
             onClick={() => {
               setCreateName('')
               setCreateBaseCurrency('')
+              setCreateOperatingProfile('standard_taxonomy')
               setCreateError(null)
               setCreateOpen(true)
             }}
@@ -334,6 +374,33 @@ export default function PortfoliosPage() {
           </button>
         </div>
       </section>
+      {archivedPortfolios.length ? (
+        <section className="portfolio-entry-list-shell" aria-label="Archived portfolios">
+          <div className="portfolio-entry-create-card">
+            <strong>Archived Portfolios</strong>
+            <span>Preserved outside the active investment workspace.</span>
+          </div>
+          {archivedPortfolios.map((portfolio) => (
+            <article key={portfolio.portfolio_id} className="portfolio-entry-card">
+              <div className="portfolio-entry-card-main">
+                <div className="portfolio-entry-card-title-stack">
+                  <strong>{portfolio.portfolio_name}</strong>
+                  <span>
+                    {portfolio.base_currency} · archived with its complete calculation history
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  disabled={restoringId !== null}
+                  onClick={() => void handleRestorePortfolio(portfolio)}
+                >
+                  {restoringId === portfolio.portfolio_id ? 'Restoring…' : 'Restore Portfolio'}
+                </button>
+              </div>
+            </article>
+          ))}
+        </section>
+      ) : null}
       {createOpen ? (
         <div
           className="portfolio-settings-modal-backdrop"
@@ -381,6 +448,19 @@ export default function PortfoliosPage() {
                     ))}
                   </select>
                 </label>
+                <label>
+                  <span>Operating Profile</span>
+                  <select
+                    value={createOperatingProfile}
+                    disabled={creating}
+                    onChange={(event) =>
+                      setCreateOperatingProfile(event.target.value as PortfolioOperatingProfile)
+                    }
+                  >
+                    <option value="standard_taxonomy">Standard Taxonomy</option>
+                    <option value="external_etf_rotation">External ETF Rotation</option>
+                  </select>
+                </label>
               </div>
               <div className="portfolio-settings-modal-actions">
                 <button type="button" disabled={creating} onClick={closeCreateDialog}>Cancel</button>
@@ -393,19 +473,19 @@ export default function PortfoliosPage() {
         </div>
       ) : null}
       <ConfirmDialog
-        open={Boolean(pendingDelete)}
-        title="Delete Portfolio"
+        open={Boolean(pendingArchive)}
+        title="Archive Portfolio"
         description={
           <>
-            This permanently deletes the portfolio, including its accounts, transactions,
-            classifications, and snapshots. This action cannot be undone.
+            This removes the portfolio from active workspaces while preserving its accounts,
+            transactions, classifications, and published calculation history. It can be restored.
           </>
         }
-        confirmLabel="Delete Portfolio"
-        confirmationText={pendingDelete?.portfolio_name}
-        busy={deleting}
-        onCancel={() => setPendingDelete(null)}
-        onConfirm={handleDeletePortfolio}
+        confirmLabel="Archive Portfolio"
+        confirmationText={pendingArchive?.portfolio_name}
+        busy={archiving}
+        onCancel={() => setPendingArchive(null)}
+        onConfirm={handleArchivePortfolio}
       />
     </section>
   )

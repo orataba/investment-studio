@@ -5,7 +5,16 @@ import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
+from decimal import (
+    Context,
+    Decimal,
+    DivisionByZero,
+    FloatOperation,
+    InvalidOperation,
+    Overflow,
+    ROUND_HALF_EVEN,
+    localcontext,
+)
 from types import MappingProxyType
 from typing import Literal
 
@@ -40,12 +49,81 @@ CANONICAL_FX_RESOLVER_STRATEGY_VERSION = "canonical_fx_resolver.v1"
 CANONICAL_FX_QUOTE_ROLE = "valuation"
 CANONICAL_FX_METRIC_FAMILY = "fx"
 CANONICAL_FX_QUOTE_BASIS = "spot"
+# This context applies only to a non-terminating inverse-leg division.  Direct
+# rates and the finite product of effective legs are never rounded by it.
+CANONICAL_FX_RATE_PRECISION = 50
+CANONICAL_FX_RATE_ROUNDING = ROUND_HALF_EVEN
+
+_FX_RATE_CONTEXT = Context(
+    prec=CANONICAL_FX_RATE_PRECISION,
+    rounding=CANONICAL_FX_RATE_ROUNDING,
+)
+for _signal in (FloatOperation, InvalidOperation, DivisionByZero, Overflow):
+    _FX_RATE_CONTEXT.traps[_signal] = True
 
 FxPathKind = Literal["identity", "direct", "inverse", "cross", "unavailable"]
 FxLegOperation = Literal["multiply", "divide"]
 FxResolutionStatus = Literal["resolved", "unavailable"]
 FxFreshnessStatus = Literal["current", "late", "missing"]
 FxReliabilityStatus = Literal["reliable", "qualified", "unavailable"]
+
+
+def effective_fx_leg_rate(quoted_rate: Decimal, *, inverted: bool) -> Decimal:
+    """Return one exact direct rate or one versioned 50-digit inverse rate."""
+
+    if not isinstance(quoted_rate, Decimal) or not quoted_rate.is_finite():
+        raise CanonicalFxResolverError(
+            "invalid_fx_leg_rate",
+            "FX leg rate must be a finite Decimal.",
+        )
+    if quoted_rate <= 0:
+        raise CanonicalFxResolverError(
+            "invalid_fx_leg_rate",
+            "FX leg rate must be positive.",
+        )
+    if not inverted:
+        return quoted_rate
+    with localcontext(_FX_RATE_CONTEXT):
+        return +(Decimal("1") / quoted_rate)
+
+
+def _exact_decimal_product(values: Iterable[Decimal]) -> Decimal:
+    """Multiply finite decimals without consulting any Decimal context."""
+
+    coefficient = 1
+    exponent = 0
+    for value in values:
+        if not isinstance(value, Decimal) or not value.is_finite():
+            raise CanonicalFxResolverError(
+                "invalid_fx_leg_rate",
+                "FX effective leg rate must be a finite Decimal.",
+            )
+        sign, digits, item_exponent = value.as_tuple()
+        item_coefficient = 0
+        for digit in digits:
+            item_coefficient = item_coefficient * 10 + digit
+        coefficient *= -item_coefficient if sign else item_coefficient
+        exponent += item_exponent
+    digits = tuple(int(character) for character in str(abs(coefficient)))
+    return Decimal((1 if coefficient < 0 else 0, digits, exponent))
+
+
+def compose_effective_fx_rate(
+    legs: Iterable[tuple[Decimal, bool]],
+) -> Decimal:
+    """Compose legs without re-rounding their finite decimal product.
+
+    Each inverted leg is first divided under the versioned precision-50,
+    HALF_EVEN contract.  Direct legs retain their adopted quote exactly.  The
+    resulting finite effective rates are then multiplied exactly: applying
+    the division context to that terminating product would discard real
+    digits and make a cross rate depend on an unnecessary second rounding.
+    """
+
+    return _exact_decimal_product(
+        effective_fx_leg_rate(quoted_rate, inverted=inverted)
+        for quoted_rate, inverted in legs
+    )
 
 
 class CanonicalFxResolverError(ValueError):
@@ -285,16 +363,12 @@ class CanonicalFxResolution(BaseModel):
         ):
             raise ValueError("FX resolution does not match its calculation dependency")
         if self.resolution_status == "resolved":
-            numerator = Decimal("1")
-            denominator = Decimal("1")
             for leg in self.legs:
                 if leg.rate is None or leg.observation_date is None:
                     raise ValueError("resolved FX contains an incomplete leg")
-                if leg.operation == "multiply":
-                    numerator *= leg.rate
-                else:
-                    denominator *= leg.rate
-            expected_rate = numerator / denominator
+            expected_rate = compose_effective_fx_rate(
+                (leg.rate, leg.inverted) for leg in self.legs if leg.rate is not None
+            )
             expected_effective_date = (
                 min(leg.observation_date for leg in self.legs)
                 if self.legs
@@ -819,19 +893,16 @@ class CanonicalFxWindowBook:
         )
         rate: Decimal | None = None
         if all_legs_resolved:
-            numerator = Decimal("1")
-            denominator = Decimal("1")
-            for leg in legs:
-                if leg.rate is None:
-                    raise CanonicalFxResolverError(
-                        "invalid_fx_leg",
-                        "Resolved FX leg is missing its adopted Decimal rate.",
-                    )
-                if leg.operation == "multiply":
-                    numerator *= leg.rate
-                else:
-                    denominator *= leg.rate
-            rate = numerator / denominator
+            if any(leg.rate is None for leg in legs):
+                raise CanonicalFxResolverError(
+                    "invalid_fx_leg",
+                    "Resolved FX leg is missing its adopted Decimal rate.",
+                )
+            rate = compose_effective_fx_rate(
+                (leg.rate, leg.inverted)
+                for leg in legs
+                if leg.rate is not None
+            )
         effective_as_of_date = (
             min(
                 leg.observation_date

@@ -9,7 +9,7 @@
 - `apps/watchlist`
   已有可运行的前后端、数据库迁移、测试与文档，承载 fund/ETF/index watchlist、local detail、人工研究评级、monitoring、recalc 与 read model；Copilot 当前只保留后端扩展接口，默认 UI 不对外开放。
 - `apps/portfolio`
-  已有可运行的前后端、数据库迁移、交易、绩效、持仓、风险与研究工作台，以及成体系的领域文档。
+  已有可运行的前后端、数据库迁移、交易、绩效、持仓、风险、Allocation Lab 与 Policy Replay，以及成体系的领域文档。
 
 当前架构约束：
 
@@ -69,11 +69,13 @@ portfolio-operations-workbench/
 - `apps/watchlist`
   承载 fund/ETF/index watchlist / local detail / manual research rating / monitoring / read model / recalc 语境；Copilot 仅保留后端接口边界，不作为当前已发布 UI 能力。
 - `apps/portfolio`
-  承载 portfolio / account / transaction / performance / risk / research 语境。
+  承载 portfolio / account / transaction / performance / risk / allocation research 语境；资产配置入口统一命名为 `Allocation Lab`，历史政策模拟统一命名为 `Policy Replay`。
 - `apps/platform`
   平台 landing / app switcher 与 `Database Dashboard`；只维护共享资产，不承载其他 app 的业务编排。
 - `packages/instrument-core`
   当前承载共享资产 contract、持久化 model 与 shared store helper：`instrument_id`、`name`、identifiers、`instrument_type`、`currency`、typed `market_data` 与最小 `quote_selection_policy`。
+- `packages/calculation-core`
+  承载跨领域 calculation run、sealed manifest、durable job/fencing、immutable publication 与 current pointer 的共享数据库契约和 lifecycle repository；不承载 Portfolio/Risk/Watchlist 公式。
 - `packages/ui`
   当前承载跨 app 的前端共享能力：语言上下文、语言选择器和通用样式；后续再扩展统一设计系统和 UI primitives。
 - `packages/copilot`
@@ -82,10 +84,11 @@ portfolio-operations-workbench/
 ## 当前原则
 
 - 两个 app 保持解耦，不做业务模型融合。
-- `Watchlist` 与 `Portfolio` 直接访问同一个 PostgreSQL 中的 `instrument_registry` + 各自私有 schema，不通过 app-to-app HTTP 互相取数。
+- `Watchlist` 与 `Portfolio` 直接访问同一个 PostgreSQL 中的 `instrument_registry`、共享 `calculation_registry` + 各自私有 schema，不通过 app-to-app HTTP 互相取数。
 - 共享资产身份与 typed market facts / selector policy，不共享上层业务 read model。
 - `Watchlist` 继续 fund/ETF/index 的研究与监测语境，不承载 portfolio 业务事实。
-- `Portfolio` 继续 portfolio/account/transaction/performance/risk/research 语境。
+- `Portfolio` 继续 portfolio/account/transaction/performance/risk/allocation research 语境。
+- Portfolio 创建和修改必须显式选择 `standard_taxonomy` 或 `external_etf_rotation`。前者以 taxonomy、`TargetSet`、Allocation Lab 和 `Allocation Policy Drift` 管理配置政策；后者仍使用账本、持仓、绩效、滚动风险和相关性，但不适用 allocation planning 能力。系统不根据组合名称、持仓或 ETF 类型推断运行模式。
 - 前端视觉基线统一为白底、冷中性灰线条和表格优先的信息密度；不要再引入米黄、沙色或暖灰页面背景。
 
 ## 开发工作流
@@ -104,16 +107,19 @@ portfolio-operations-workbench/
 
 - `instrument_registry`
   共享资产、行情、净值、FX 等主事实。
+- `calculation_registry`
+  共享计算运行、输入封存、任务租约/fencing 与不可变发布生命周期；领域 dependency/output 仍留在各自 schema。
 - `watchlist`
   watchlist 自己的 read model、research rating、monitoring 和 recalc job 等私有数据。
 - `portfolio`
-  portfolio / account / transaction / performance / research 等私有数据。
+  portfolio / account / transaction / performance / allocation research 等私有数据。
 
 ### 后端迁移
 
 ```bash
 export PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE=portfolio_ops
 (cd infra/instrument_registry && alembic upgrade head)
+(cd infra/calculation_registry && PYTHONPATH=../../packages/calculation-core/python alembic upgrade head)
 (cd apps/portfolio/backend && PYTHONPATH=. alembic upgrade head)
 (cd apps/watchlist/backend && PYTHONPATH=. alembic upgrade head)
 ```
@@ -134,7 +140,7 @@ PORTFOLIO_OPS_LOCAL_POSTGRES_URL='postgresql://portfolio_ops:portfolio_ops@127.0
   ./infra/postgres/rebuild_local_schemas.sh
 ```
 
-这个脚本会销毁并重建 `instrument_registry / portfolio / watchlist` 三个 schema。
+这个脚本会销毁并重建 `instrument_registry / calculation_registry / portfolio / watchlist` 四个 schema。
 
 重建完成后：
 
@@ -159,8 +165,8 @@ infra/scripts/sync_python_env.sh
 
 补充：
 
-- 上面这组测试主要是快速 SQLite / isolated path。
-- `instrument_registry` 的 cross-schema FK 和 search_path 需要额外用 PostgreSQL integration tests 验证，命令见 [docs/DATABASE_WORKFLOW.md](./docs/DATABASE_WORKFLOW.md)。
+- Platform/Watchlist 的可移植测试仍使用 isolated path；Portfolio 普通 DB/API tests 使用已迁移、已 seed 的 session PostgreSQL template，并为每个测试克隆隔离数据库，需显式提供 `PORTFOLIO_OPS_TEST_POSTGRES_URL`。
+- `postgresql_integration` marker 继续覆盖专属迁移、约束、search_path、worker 并发和恢复生命周期，命令见 [docs/DATABASE_WORKFLOW.md](./docs/DATABASE_WORKFLOW.md)。
 
 ### 统一质量门禁
 
@@ -185,8 +191,8 @@ npm --prefix apps/watchlist/frontend run build
 
 ### macOS 本地后台服务
 
-本机 PostgreSQL 就绪后，可一次完成迁移、前端构建、六个 `launchd`
-常驻服务及每日 `21:00` 刷新/重算任务的安装或更新：
+本机 PostgreSQL 就绪后，可一次完成迁移、前端构建、九个 `launchd`
+常驻服务（含三个独立 worker）及每日 `21:00` 刷新/重算任务的安装或更新：
 
 ```bash
 CONFIRM_RELEASE='portfolio_ops@127.0.0.1:5432' \

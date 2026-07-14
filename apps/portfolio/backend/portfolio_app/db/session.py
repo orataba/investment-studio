@@ -12,7 +12,7 @@ from portfolio_app.core.settings import get_settings
 
 def _search_path_fragments(schema: str | None) -> list[str]:
     fragments: list[str] = []
-    for candidate in [schema, "instrument_registry", "public"]:
+    for candidate in [schema, "calculation_registry", "instrument_registry", "public"]:
         if not candidate:
             continue
         normalized = candidate.strip()

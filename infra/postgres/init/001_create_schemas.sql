@@ -25,9 +25,11 @@ $$;
 ALTER DATABASE portfolio_ops OWNER TO portfolio_ops;
 
 CREATE SCHEMA IF NOT EXISTS instrument_registry AUTHORIZATION portfolio_ops;
+CREATE SCHEMA IF NOT EXISTS calculation_registry AUTHORIZATION portfolio_ops;
 CREATE SCHEMA IF NOT EXISTS portfolio AUTHORIZATION portfolio_ops;
 CREATE SCHEMA IF NOT EXISTS watchlist AUTHORIZATION portfolio_ops;
 
 ALTER SCHEMA instrument_registry OWNER TO portfolio_ops;
+ALTER SCHEMA calculation_registry OWNER TO portfolio_ops;
 ALTER SCHEMA portfolio OWNER TO portfolio_ops;
 ALTER SCHEMA watchlist OWNER TO portfolio_ops;

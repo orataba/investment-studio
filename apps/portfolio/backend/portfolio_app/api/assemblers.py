@@ -126,9 +126,25 @@ def serialize_transaction(
             record.get("counter_amount"),
             field_name="counter_amount",
         ),
-        fx_rate=_optional_decimal_fact(record.get("fx_rate"), field_name="fx_rate"),
+        quoted_fx_rate=_optional_decimal_fact(
+            record.get("quoted_fx_rate"),
+            field_name="quoted_fx_rate",
+        ),
         fees=_decimal_fact(record.get("fees", Decimal("0")), field_name="fees"),
         taxes=_decimal_fact(record.get("taxes", Decimal("0")), field_name="taxes"),
+        consideration_basis=(
+            str(record.get("consideration_basis"))
+            if record.get("consideration_basis") is not None
+            else None
+        ),
+        numeric_scale_state=str(record.get("numeric_scale_state") or ""),
+        quantity_input_scale=record.get("quantity_input_scale"),
+        price_input_scale=record.get("price_input_scale"),
+        gross_amount_input_scale=record.get("gross_amount_input_scale"),
+        counter_amount_input_scale=record.get("counter_amount_input_scale"),
+        quoted_fx_rate_input_scale=record.get("quoted_fx_rate_input_scale"),
+        fees_input_scale=record.get("fees_input_scale"),
+        taxes_input_scale=record.get("taxes_input_scale"),
         currency=str(record.get("currency") or ""),
         transfer_scope=str(record.get("transfer_scope")) if record.get("transfer_scope") else None,
         transfer_object_type=(

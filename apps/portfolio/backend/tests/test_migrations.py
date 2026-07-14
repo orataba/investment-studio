@@ -439,7 +439,7 @@ def _assert_split_coverage_schema(engine: Engine) -> None:
     ]["column_names"] == ["portfolio_id", "nav_coverage_state", "as_of_date"]
 
 
-def test_split_coverage_migration_reaches_head_on_empty_database(
+def test_split_coverage_migration_reaches_last_sqlite_revision_on_empty_database(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -450,7 +450,7 @@ def test_split_coverage_migration_reaches_head_on_empty_database(
         monkeypatch,
     )
     try:
-        command.upgrade(portfolio_config, "head")
+        command.upgrade(portfolio_config, "20260713_0038")
         _assert_split_coverage_schema(engine)
         with engine.connect() as connection:
             assert connection.scalar(
@@ -701,7 +701,7 @@ def test_research_metrics_migration_invalidates_unversioned_outputs(
                 },
             )
 
-        command.upgrade(portfolio_config, "head")
+        command.upgrade(portfolio_config, "20260713_0038")
 
         with engine.connect() as connection:
             row = connection.execute(
@@ -856,7 +856,7 @@ def test_revisioned_decimal_transaction_ledger_migrates_legacy_rows_on_sqlite(
         assert before_0038["group"]["actor_source"] == "alembic"
         assert before_0038["current"]["actor_source"] == "alembic"
 
-        command.upgrade(portfolio_config, "head")
+        command.upgrade(portfolio_config, "20260713_0038")
 
         inspector = inspect(engine)
         assert {
@@ -1048,12 +1048,21 @@ def test_revisioned_decimal_transaction_ledger_migrates_legacy_rows_on_sqlite(
             },
             "quantity": "1.234567890123",
             "price": "12.345678901234",
-            "gross_amount": "15.24157875",
-            "counter_amount": None,
-            "fx_rate": None,
-            "fees": "0.12345678",
-            "taxes": "0.00000001",
-            "currency": "USD",
+                "gross_amount": "15.24157875",
+                "counter_amount": None,
+                "quoted_fx_rate": None,
+                "fees": "0.12345678",
+                "taxes": "0.00000001",
+                "consideration_basis": "source_reported",
+                "numeric_scale_state": "legacy_inferred",
+                "quantity_input_scale": 12,
+                "price_input_scale": 12,
+                "gross_amount_input_scale": 8,
+                "counter_amount_input_scale": None,
+                "quoted_fx_rate_input_scale": None,
+                "fees_input_scale": 8,
+                "taxes_input_scale": 8,
+                "currency": "USD",
             "transfer_scope": None,
             "transfer_object_type": None,
             "transfer_group_id": None,
@@ -1094,48 +1103,6 @@ def test_revisioned_decimal_transaction_ledger_migrates_legacy_rows_on_sqlite(
             "refresh_completed_at": None,
             "error_message": None,
         }
-
-        from portfolio_app.api.routes import transactions as transaction_routes
-        from portfolio_app.db import session as session_module
-
-        session_module.get_session_factory.cache_clear()
-        session_module.get_engine.cache_clear()
-        api_engine = session_module.get_engine()
-        try:
-            transaction_list = transaction_routes.list_transaction_records(
-                "migration-test-portfolio",
-                account_id=None,
-                transaction_type=None,
-                instrument_id=None,
-                start_date=None,
-                end_date=None,
-            )
-            transaction_list_payload = json.loads(transaction_list.model_dump_json())
-            assert transaction_list_payload["portfolio_id"] == "migration-test-portfolio"
-            assert len(transaction_list_payload["transactions"]) == 1
-            assert transaction_list_payload["transactions"][0]["last_actor"] == {
-                "actor_type": "migration",
-                "actor_id": "system:migration:20260713_0036",
-                "display_name": "Portfolio ledger migration 0036",
-                "actor_source": "migration",
-            }
-
-            revision_history = transaction_routes.get_transaction_revision_records(
-                "migration-test-portfolio",
-                "txn-migration-0036",
-            )
-            revision_history_payload = json.loads(revision_history.model_dump_json())
-            assert revision_history_payload["current_revision_id"] == revision["revision_id"]
-            assert revision_history_payload["revisions"][0]["actor"] == {
-                "actor_type": "migration",
-                "actor_id": "system:migration:20260713_0036",
-                "display_name": "Portfolio ledger migration 0036",
-                "actor_source": "migration",
-            }
-        finally:
-            api_engine.dispose()
-            session_module.get_session_factory.cache_clear()
-            session_module.get_engine.cache_clear()
 
         expected_triggers = {
             f"trg_{table_name}_{operation}_forbidden"

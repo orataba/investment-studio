@@ -15,38 +15,295 @@ export type WorkspaceSection = {
   status: string
 }
 
+export type PortfolioDailyPublicationMetadata = {
+  publication_id: string
+  run_id: string
+  manifest_id: string
+  methodology_version: string
+  published_fencing_token: number
+  published_at: string
+  calculated_at: string
+  requested_as_of: string
+  effective_as_of: string
+  output_range_start: string
+  output_range_end: string
+  output_schema_version: string
+  canonical_output_hash: string
+  captured_generation: number
+  current_generation: number
+  stale: boolean
+  pending: boolean
+  pending_generation: number | null
+  pending_run_id: string | null
+  pending_run_status: string | null
+  pending_intent_id: string | null
+  pending_intent_status: 'pending' | 'materialized' | null
+  coverage_state: 'complete' | 'partial' | 'unavailable'
+  reason_codes: string[]
+}
+
+export type PortfolioDailyPublishedAttributionAxis =
+  | 'portfolio'
+  | 'account'
+  | 'instrument'
+  | 'currency'
+  | 'taxonomy'
+
+export type PortfolioDailyPublishedCalendarFrequency = 'monthly' | 'weekly'
+export type PortfolioDailyPublishedStatus = 'ready' | 'unavailable'
+export type PortfolioDailyPublishedCoverageState = 'complete' | 'partial' | 'unavailable'
+
+export type PortfolioDailyPublishedDecimalMetric = {
+  method50: string
+  published: string
+  rounding_adjustment_exact: string
+}
+
+export type PortfolioDailyPublishedPerformanceSummary = {
+  status: PortfolioDailyPublishedStatus
+  start_date: string | null
+  end_date: string | null
+  effective_return_start_date: string | null
+  effective_return_end_date: string | null
+  elapsed_days: number | null
+  snapshot_count: number
+  measured_nav_count: number
+  measured_return_count: number
+  cumulative_twr: PortfolioDailyPublishedDecimalMetric | null
+  annualized_twr: PortfolioDailyPublishedDecimalMetric | null
+  current_drawdown: PortfolioDailyPublishedDecimalMetric | null
+  max_drawdown: PortfolioDailyPublishedDecimalMetric | null
+  return_chain_status: string | null
+  coverage_state: PortfolioDailyPublishedCoverageState
+  reason_codes: string[]
+}
+
+export type PortfolioDailyPublishedPerformanceStatistics = {
+  status: PortfolioDailyPublishedStatus
+  method_version: string
+  reason_codes: string[]
+  frequency: PortfolioDailyPublishedCalendarFrequency
+  observation_count: number
+  excluded_partial_bucket_count: number
+  excluded_unavailable_bucket_count: number
+  periods_per_year: PortfolioDailyPublishedDecimalMetric | null
+  mean_period_return: PortfolioDailyPublishedDecimalMetric | null
+  annualized_arithmetic_mean: PortfolioDailyPublishedDecimalMetric | null
+  annualized_volatility: PortfolioDailyPublishedDecimalMetric | null
+  annualized_downside_deviation: PortfolioDailyPublishedDecimalMetric | null
+}
+
+export type PortfolioDailyPublishedXirrResult = {
+  status: PortfolioDailyPublishedStatus
+  method_version: string
+  reason_codes: string[]
+  cash_flow_count: number
+  annualized_headline_eligible: boolean
+  rate: PortfolioDailyPublishedDecimalMetric | null
+  xnpv_residual_exact: string | null
+}
+
+export type PortfolioDailyPublishedRebasedWealthPoint = {
+  as_of_date: string
+  wealth_index_method50: string
+  peak_wealth_index_method50: string
+  drawdown_method50: string
+  wealth_chain_rounding_adjustment_exact: string | null
+  return_chain_status: string
+}
+
+export type PortfolioDailyPublishedSnapshotRecord = {
+  as_of_date: string
+  base_currency: string
+  measured_nav: boolean
+  measured_position_market_value: boolean
+  measured_book_pnl: boolean
+  measured_return: boolean
+  measured_external_flows: boolean
+  unavailable_component_count: number
+  opening_nav: string | null
+  closing_nav: string | null
+  position_market_value: string | null
+  settled_cash: string | null
+  pending_receivable: string | null
+  pending_payable: string | null
+  accrual_receivable: string | null
+  accrual_payable: string | null
+  external_flow_in: string | null
+  external_flow_out: string | null
+  economic_pnl: string | null
+  realized_pnl_daily: string | null
+  unrealized_pnl_beginning: string | null
+  unrealized_pnl_ending: string | null
+  unrealized_pnl_change: string | null
+  gross_income_daily: string | null
+  return_of_capital_daily: string | null
+  capitalized_fee_daily: string | null
+  capitalized_tax_daily: string | null
+  expensed_fee_daily: string | null
+  expensed_tax_daily: string | null
+  local_price_effect_daily: string | null
+  position_fx_effect_daily: string | null
+  cash_fx_effect_daily: string | null
+  pending_fx_effect_daily: string | null
+  accrual_fx_effect_daily: string | null
+  fx_conversion_effect_daily: string | null
+  subperiod_twr_method50: string | null
+  subperiod_twr_published: string | null
+  cumulative_twr_method50: string | null
+  cumulative_twr_published: string | null
+  wealth_index_method50: string | null
+  wealth_index_published: string | null
+  peak_wealth_index_method50: string | null
+  peak_wealth_index_published: string | null
+  drawdown_method50: string | null
+  drawdown_published: string | null
+  wealth_chain_rounding_adjustment_exact: string | null
+  reliable_anchor_date: string | null
+  return_period_start_date: string | null
+  return_period_end_date: string | null
+  return_period_day_count: number | null
+  calculation_status: string
+  return_chain_status: string
+  nav_coverage_state: PortfolioDailyPublishedCoverageState
+  nav_reason_codes: string[]
+  book_pnl_coverage_state: PortfolioDailyPublishedCoverageState
+  book_pnl_reason_codes: string[]
+  return_coverage_state: PortfolioDailyPublishedCoverageState
+  return_reason_codes: string[]
+  flow_coverage_state: PortfolioDailyPublishedCoverageState
+  flow_reason_codes: string[]
+  valuation_endpoint_status: 'fresh' | 'carry_forward' | 'stale' | 'unavailable'
+  valuation_reason_codes: string[]
+}
+
+export type PortfolioDailyPublishedAttributionGroup = {
+  axis: PortfolioDailyPublishedAttributionAxis
+  group_key: string
+  group_label: string
+  opening_nav_exact: string
+  closing_nav_exact: string
+  external_flow_in_exact: string
+  external_flow_out_exact: string
+  internal_flow_in_exact: string
+  internal_flow_out_exact: string
+  economic_pnl_exact: string
+  linked_contribution_method50: string
+  linking_adjustment_exact: string
+  linked_contribution_effective: string
+  closure_residual_exact: string
+}
+
+export type PortfolioDailyPublishedAttributionSummary = {
+  status: PortfolioDailyPublishedStatus
+  method_version: string
+  axis: PortfolioDailyPublishedAttributionAxis
+  effective_start_date: string | null
+  effective_end_date: string | null
+  observation_count: number
+  cumulative_twr_method50: string | null
+  total_linked_contribution_effective: string | null
+  total_linking_adjustment_exact: string | null
+  closure_residual_exact: string | null
+  reason_codes: string[]
+}
+
+export type PortfolioDailyPublishedReturnCalendarBucket = {
+  bucket_key: string
+  frequency: PortfolioDailyPublishedCalendarFrequency
+  calendar_start_date: string
+  calendar_end_date: string
+  coverage_state: PortfolioDailyPublishedCoverageState
+  coverage_reason_codes: string[]
+  status: PortfolioDailyPublishedStatus
+  effective_return_start_date: string | null
+  effective_return_end_date: string | null
+  observation_count: number
+  cumulative_twr: PortfolioDailyPublishedDecimalMetric | null
+  current_drawdown: PortfolioDailyPublishedDecimalMetric | null
+  max_drawdown: PortfolioDailyPublishedDecimalMetric | null
+  reason_codes: string[]
+}
+
+export type PortfolioDailyPublishedAttributionCalendarBucket = {
+  bucket_key: string
+  frequency: PortfolioDailyPublishedCalendarFrequency
+  calendar_start_date: string
+  calendar_end_date: string
+  coverage_state: PortfolioDailyPublishedCoverageState
+  coverage_reason_codes: string[]
+  summary: PortfolioDailyPublishedAttributionSummary
+  groups: PortfolioDailyPublishedAttributionGroup[]
+}
+
+export type PortfolioDailyPublishedPerformanceReportResponse = {
+  portfolio_id: string
+  publication: PortfolioDailyPublicationMetadata
+  base_currency: string
+  valuation_timezone: string
+  axis: PortfolioDailyPublishedAttributionAxis
+  selected_group_key: string | null
+  frequency: PortfolioDailyPublishedCalendarFrequency
+  performance: PortfolioDailyPublishedPerformanceSummary
+  statistics: PortfolioDailyPublishedPerformanceStatistics
+  xirr: PortfolioDailyPublishedXirrResult
+  portfolio_bridge: PortfolioDailyPublishedAttributionGroup | null
+  rebased_wealth_series: PortfolioDailyPublishedRebasedWealthPoint[]
+  daily_series: PortfolioDailyPublishedSnapshotRecord[]
+  attribution: PortfolioDailyPublishedAttributionSummary
+  attribution_groups: PortfolioDailyPublishedAttributionGroup[]
+  return_calendar: PortfolioDailyPublishedReturnCalendarBucket[]
+  attribution_calendar: PortfolioDailyPublishedAttributionCalendarBucket[]
+}
+
 export type TaxonomyAssignmentScope = 'instrument' | 'account' | 'cash_bucket'
+export type PortfolioOperatingProfile = 'standard_taxonomy' | 'external_etf_rotation'
 
 export type PortfolioWorkspaceSummary = {
   portfolio_id: string
   portfolio_name: string
   base_currency: string
+  operating_profile: PortfolioOperatingProfile
   as_of_date: string
-  nav: number
+  nav: number | null
+  nav_exact: string | null
   day_change_value: number | null
+  day_change_value_exact: string | null
   day_change_pct: number | null
+  day_change_pct_method50: string | null
+  day_change_pct_published: string | null
   default_planning_taxonomy_id?: string | null
   toolbar_label: string
   badges: string[]
   sections: WorkspaceSection[]
+  publication?: PortfolioDailyPublicationMetadata | null
 }
 
 export type PortfolioEntryRecord = {
   portfolio_id: string
   portfolio_name: string
   base_currency: string
-  as_of_date: string
-  nav: number
+  operating_profile: PortfolioOperatingProfile
+  as_of_date: string | null
+  nav: number | null
+  nav_exact: string | null
   day_change_value: number | null
+  day_change_value_exact: string | null
   day_change_pct: number | null
+  day_change_pct_method50: string | null
+  day_change_pct_published: string | null
   securities_count: number
   sort_order: number
+  lifecycle_status: 'active' | 'archived'
   default_planning_taxonomy_id?: string | null
+  calculation_status: 'not_ready' | 'published' | 'stale'
+  publication?: PortfolioDailyPublicationMetadata | null
 }
 
 export type PortfolioCreatePayload = {
   name: string
   base_currency: (typeof SUPPORTED_PORTFOLIO_CURRENCIES)[number]
+  operating_profile: PortfolioOperatingProfile
 }
 
 export type HoldingsSummaryCard = {
@@ -103,7 +360,11 @@ export type PortfolioTransactionExecutionQuoteResponse = {
   instrument_id: string
   requested_as_of_date: string
   selection_role: 'trading' | 'valuation' | null
-  value: number | null
+  value: string | null
+  suggested_transaction_price: string | null
+  suggested_transaction_price_scale: 12
+  suggested_transaction_price_rounding: 'ROUND_HALF_EVEN'
+  suggested_transaction_price_was_rounded: boolean
   quote_date: string | null
   quote_basis: QuoteBasis | null
   metric_family: MetricFamily | null
@@ -131,57 +392,6 @@ export type PortfolioTransactionExecutionQuoteResponse = {
   calculation_dependency: Record<string, unknown>
 }
 
-export type PortfolioPerformanceCoverageState = 'complete' | 'partial' | 'unavailable'
-
-export type PortfolioTwrState = 'linked' | 'carry_forward' | 'broken' | 'reanchor' | 'no_anchor'
-
-export type PortfolioTwrReliabilityStatus = 'reliable' | 'qualified' | 'unavailable'
-
-export type PortfolioTwrReliabilityReason =
-  | 'stale_valuation_on_external_flow'
-  | 'incomplete_valuation_on_external_flow'
-  | 'awaiting_fresh_valuation_anchor'
-  | 'fresh_valuation_reanchor'
-  | 'invalid_return_denominator'
-  | 'crosses_broken_twr_boundary'
-  | 'stale_valuation_without_external_flow'
-  | 'carried_forward_valuation_without_external_flow'
-  | 'carried_forward_valuation_on_external_flow'
-
-export type PortfolioDailyPerformancePoint = {
-  as_of_date: string
-  nav_coverage_state: PortfolioPerformanceCoverageState
-  nav_coverage_reason_codes: string[]
-  book_pnl_coverage_state: PortfolioPerformanceCoverageState
-  book_pnl_coverage_reason_codes: string[]
-  stale_price_flag: boolean
-  stale_fx_flag: boolean
-  market_observation_count: number
-  return_observation_eligible: boolean
-  twr_state: PortfolioTwrState
-  twr_reliability_status: PortfolioTwrReliabilityStatus
-  twr_reliability_reasons: PortfolioTwrReliabilityReason[]
-  beginning_nav: number | null
-  ending_nav: number | null
-  pending_settlement: number | null
-  realized_pnl: number | null
-  unrealized_pnl: number | null
-  income_cash_amount: number | null
-  expense_cash_amount: number | null
-  cash_currency_gains: number | null
-  instrument_currency_gains: number | null
-  return_of_capital_amount: number | null
-  total_pnl: number | null
-  external_cash_in: number
-  external_cash_out: number
-  net_external_inflow: number
-  absolute_change: number | null
-  delta: number | null
-  daily_twr: number | null
-  cumulative_twr: number | null
-  drawdown: number | null
-}
-
 export type PortfolioPerformanceHistoryReliability = {
   start_date: string | null
   end_date: string | null
@@ -195,229 +405,6 @@ export type PortfolioPerformanceHistoryReliability = {
   sample_label: string
   annualization_message: string | null
 }
-
-export type PortfolioPerformanceSummary = {
-  start_date: string | null
-  end_date: string | null
-  nav_coverage_state: PortfolioPerformanceCoverageState
-  nav_coverage_reason_codes: string[]
-  book_pnl_coverage_state: PortfolioPerformanceCoverageState
-  book_pnl_coverage_reason_codes: string[]
-  twr_state: PortfolioTwrState
-  twr_reliability_status: PortfolioTwrReliabilityStatus
-  twr_reliability_reasons: PortfolioTwrReliabilityReason[]
-  history_reliability: PortfolioPerformanceHistoryReliability
-  snapshot_count: number
-  return_observation_count: number
-  risk_return_observation_count: number
-  risk_annualization_periods_per_year: number | null
-  latest_complete_as_of_date: string | null
-  start_nav: number | null
-  end_nav: number | null
-  external_cash_in: number
-  external_cash_out: number
-  net_external_inflow: number
-  cumulative_twr: number | null
-  annualized_twr: number | null
-  irr: number | null
-  mwror: number | null
-  absolute_change: number | null
-  delta: number | null
-  realized_pnl: number | null
-  unrealized_pnl: number | null
-  income_cash_amount: number | null
-  expense_cash_amount: number | null
-  cash_currency_gains: number | null
-  instrument_currency_gains: number | null
-  return_of_capital_amount: number | null
-  total_pnl: number | null
-  mean_daily_return: number | null
-  annualized_return_from_daily_mean: number | null
-  annualized_volatility: number | null
-  annualized_downside_volatility: number | null
-  sharpe_ratio: number | null
-  sortino_ratio: number | null
-  calmar_ratio: number | null
-  current_drawdown: number | null
-  max_drawdown: number | null
-  max_drawdown_days: number | null
-  drawdown_duration_days: number | null
-  quality_warnings: string[]
-}
-
-export type PortfolioPerformanceResponse = {
-  portfolio_id: string
-  base_currency: string
-  valuation_timezone: string
-  valuation_cutoff_policy: string
-  summary: PortfolioPerformanceSummary
-  daily_series: PortfolioDailyPerformancePoint[]
-}
-
-export type PortfolioPerformanceComparisonMetrics = {
-  period_return: number | null
-  annualized_return: number | null
-  annualized_volatility: number | null
-  annualized_downside_volatility: number | null
-  sharpe_ratio: number | null
-  sortino_ratio: number | null
-  current_drawdown: number | null
-  max_drawdown: number | null
-  calmar_ratio: number | null
-}
-
-export type PortfolioPerformanceRelativeMetrics = {
-  excess_return: number | null
-  tracking_error: number | null
-  information_ratio: number | null
-  beta: number | null
-  correlation: number | null
-  upside_capture: number | null
-  downside_capture: number | null
-  capture_ratio: number | null
-}
-
-export type PortfolioPerformanceComparisonResponse = {
-  portfolio_id: string
-  benchmark_instrument_id: string
-  benchmark_name: string | null
-  base_currency: string
-  benchmark_currency: string | null
-  market_data_role: 'total_return'
-  requested_start_date: string
-  requested_end_date: string
-  as_of_date: string
-  status: 'ready' | 'unavailable'
-  unavailable_reasons: string[]
-  history_reliability: PortfolioPerformanceHistoryReliability
-  coverage: {
-    required_observation_count: number
-    aligned_observation_count: number
-    coverage_ratio: number | null
-    comparison_start_boundary_date: string
-    benchmark_start_anchor_date: string | null
-    benchmark_start_anchor_gap_days: number | null
-    calculation_frequency: 'daily' | 'weekly' | 'monthly' | null
-    first_aligned_date: string | null
-    last_aligned_date: string | null
-    benchmark_currency: string | null
-    benchmark_quote_basis: string | null
-    benchmark_metric_family: string | null
-    benchmark_resolution_status: 'resolved' | 'unavailable' | null
-    benchmark_coverage_status: 'complete' | 'partial' | 'unavailable' | null
-    benchmark_freshness_status: 'current' | 'late' | 'missing' | null
-    benchmark_reliability_status: 'reliable' | 'qualified' | 'unavailable' | null
-    benchmark_reason_codes: string[]
-    portfolio_twr_reliability_status: PortfolioTwrReliabilityStatus | null
-    portfolio_twr_reliability_reasons: PortfolioTwrReliabilityReason[]
-  }
-  portfolio_metrics: PortfolioPerformanceComparisonMetrics
-  benchmark_metrics: PortfolioPerformanceComparisonMetrics
-  relative_metrics: PortfolioPerformanceRelativeMetrics
-  differences: PortfolioPerformanceComparisonMetrics
-  points: Array<{
-    date: string
-    portfolio_index: number
-    benchmark_index: number
-    difference: number
-  }>
-  lineage: {
-    method_version: string
-    portfolio: Record<string, unknown>
-    benchmark: Record<string, unknown> | null
-    fingerprint: string
-  }
-}
-
-export type PortfolioReturnCalendarFrequency = 'monthly' | 'weekly'
-
-export type PortfolioReturnCalendarBucket = {
-  bucket_key: string
-  frequency: PortfolioReturnCalendarFrequency
-  start_date: string
-  end_date: string
-  nav_coverage_state: PortfolioPerformanceCoverageState
-  nav_coverage_reason_codes: string[]
-  twr_state: PortfolioTwrState
-  twr_reliability_status: PortfolioTwrReliabilityStatus
-  twr_reliability_reasons: PortfolioTwrReliabilityReason[]
-  observation_count: number
-  start_nav: number | null
-  end_nav: number | null
-  external_cash_in: number
-  external_cash_out: number
-  net_external_inflow: number
-  absolute_change: number | null
-  delta: number | null
-  cumulative_twr: number | null
-}
-
-export type PortfolioReturnCalendarSummary = {
-  frequency: PortfolioReturnCalendarFrequency
-  twr_state: PortfolioTwrState
-  twr_reliability_status: PortfolioTwrReliabilityStatus
-  twr_reliability_reasons: PortfolioTwrReliabilityReason[]
-  bucket_count: number
-  complete_bucket_count: number
-  partial_bucket_count: number
-  unavailable_bucket_count: number
-  start_date: string | null
-  end_date: string | null
-}
-
-export type PortfolioReturnCalendarResponse = {
-  portfolio_id: string
-  base_currency: string
-  valuation_timezone: string
-  valuation_cutoff_policy: string
-  summary: PortfolioReturnCalendarSummary
-  buckets: PortfolioReturnCalendarBucket[]
-}
-
-export type PortfolioPeriodCalculationLine = {
-  key: string
-  label: string
-  amount: number | null
-  line_kind: 'boundary' | 'performance' | 'external' | 'detail'
-  parent_key: string | null
-  sort_order: number
-}
-
-export type PortfolioPeriodCalculationSummary = {
-  start_date: string | null
-  end_date: string | null
-  nav_coverage_state: PortfolioPerformanceCoverageState
-  nav_coverage_reason_codes: string[]
-  book_pnl_coverage_state: PortfolioPerformanceCoverageState
-  book_pnl_coverage_reason_codes: string[]
-  stale_price_flag: boolean
-  stale_fx_flag: boolean
-  initial_value: number | null
-  final_value: number | null
-  delta: number | null
-  capital_gains: number | null
-  realized_capital_gains: number | null
-  unrealized_capital_gains: number | null
-  earnings: number | null
-  fees: number | null
-  taxes: number | null
-  cash_currency_gains: number | null
-  instrument_currency_gains: number | null
-  deposits: number
-  withdrawals: number
-  net_external_inflow: number
-}
-
-export type PortfolioPerformanceCalculationResponse = {
-  portfolio_id: string
-  base_currency: string
-  valuation_timezone: string
-  valuation_cutoff_policy: string
-  summary: PortfolioPeriodCalculationSummary
-  lines: PortfolioPeriodCalculationLine[]
-}
-
-export type PortfolioContributionAxis = 'instrument' | 'account' | 'instrument_type' | 'currency' | 'taxonomy'
 export type PortfolioCalculationFrequency = 'daily' | 'weekly' | 'monthly'
 export type PortfolioRiskCalculationFrequency = 'auto' | PortfolioCalculationFrequency
 export type PortfolioRiskCovarianceModel =
@@ -433,7 +420,7 @@ export type PortfolioRiskPolicyRecord = {
   lookback_days: number
   calculation_frequency: PortfolioRiskCalculationFrequency
   resolved_calculation_frequency: PortfolioCalculationFrequency
-  missing_return_policy: PortfolioResearchMissingReturnPolicy
+  missing_return_policy: PortfolioRiskMissingReturnPolicy
   contribution_mode: PortfolioRiskContributionMode
   parameters: Record<string, unknown>
   parameters_by_frequency: Record<string, Record<string, unknown>>
@@ -465,6 +452,7 @@ export type PortfolioRiskWorkspaceResponse = {
   portfolio_id: string
   portfolio_name: string
   base_currency: string
+  operating_profile: PortfolioOperatingProfile
   as_of_date: string
   status: 'ready' | 'partial' | 'unavailable'
   planning_taxonomy: { taxonomy_id: string; name: string } | null
@@ -522,8 +510,8 @@ export type PortfolioRiskWorkspaceResponse = {
     portfolio_volatility: number | null
     observation_count: number | null
   }
-  drift: {
-    status: 'ready' | 'unavailable'
+  allocation_policy_drift: {
+    status: 'ready' | 'unavailable' | 'not_applicable'
     errors: PortfolioRiskWorkspaceError[]
     weight_rows: PortfolioRiskWorkspaceTargetGapRow[]
     risk_rows: PortfolioRiskWorkspaceTargetGapRow[]
@@ -555,213 +543,6 @@ export type PortfolioForwardRiskSummary = {
   portfolio_variance?: number | null
   portfolio_volatility?: number | null
   observation_count?: number | null
-}
-
-export type PortfolioPeriodCalculationGroupMetrics = {
-  beginning_weight: number | null
-  average_weight: number | null
-  ending_weight: number | null
-  period_return: number | null
-  initial_value: number | null
-  final_value: number | null
-  delta: number | null
-  residual_delta: number | null
-  capital_gains: number | null
-  realized_capital_gains: number | null
-  unrealized_pnl_change: number | null
-  earnings: number | null
-  expense_cash_amount: number | null
-  fees: number | null
-  taxes: number | null
-  cash_currency_gains: number | null
-  instrument_currency_gains: number | null
-  total_pnl: number | null
-  period_contribution: number | null
-  risk_calculation_frequency: PortfolioCalculationFrequency
-  risk_return_observation_count: number
-  risk_annualization_periods_per_year: number | null
-  annualized_volatility: number | null
-  sharpe_ratio: number | null
-  correlation_to_portfolio: number | null
-  beta_to_portfolio: number | null
-  realized_risk_contribution: number | null
-}
-
-export type PortfolioPeriodCalculationGroupChildRecord = PortfolioPeriodCalculationGroupMetrics & {
-  axis: PortfolioContributionAxis
-  taxonomy_id: string | null
-  parent_group_key: string
-  parent_group_label: string
-  item_key: string
-  item_label: string
-  item_kind: 'instrument' | 'cash'
-}
-
-export type PortfolioPeriodCalculationGroupRecord = PortfolioPeriodCalculationGroupMetrics & {
-  axis: PortfolioContributionAxis
-  taxonomy_id: string | null
-  group_key: string
-  group_label: string
-  children: PortfolioPeriodCalculationGroupChildRecord[]
-}
-
-export type PortfolioPeriodCalculationGroupsSummary = {
-  axis: PortfolioContributionAxis
-  taxonomy_id: string | null
-  group_key: string | null
-  group_label: string | null
-  start_date: string | null
-  end_date: string | null
-  group_count: number
-  total_initial_value: number | null
-  total_final_value: number | null
-  total_delta: number | null
-  total_residual_delta: number | null
-  total_pnl: number | null
-  total_period_contribution: number | null
-  contribution_residual: number | null
-  risk_calculation_frequency: PortfolioCalculationFrequency
-  risk_frequency_status_label: string | null
-  risk_return_observation_count: number
-  risk_annualization_periods_per_year: number | null
-  annualized_volatility: number | null
-  sharpe_ratio: number | null
-}
-
-export type PortfolioPerformanceCalculationGroupsResponse = {
-  portfolio_id: string
-  base_currency: string
-  valuation_timezone: string
-  valuation_cutoff_policy: string
-  summary: PortfolioPeriodCalculationGroupsSummary
-  groups: PortfolioPeriodCalculationGroupRecord[]
-}
-
-export type PortfolioPeriodBoundaryHoldingRecord = {
-  position_id: string
-  instrument_id: string
-  instrument_ref: InstrumentCore
-  quantity: number
-  cost_basis: number | null
-  cost_basis_base: number | null
-  unrealized_pnl: number | null
-  unrealized_pnl_base: number | null
-  unrealized_return: number | null
-  last_price: number | null
-  market_value: number | null
-  market_value_base: number | null
-  currency: string
-  portfolio_weight: number | null
-  account_ids: string[]
-  account_count: number
-  open_position_lot_count: number
-}
-
-export type PortfolioPeriodBoundaryHoldingsSummary = {
-  axis: PortfolioContributionAxis | null
-  taxonomy_id: string | null
-  group_key: string | null
-  group_label: string | null
-  start_date: string | null
-  start_boundary_date?: string | null
-  end_date: string | null
-  start_position_count: number
-  end_position_count: number
-  start_total_market_value_base: number | null
-  end_total_market_value_base: number | null
-}
-
-export type PortfolioPeriodBoundaryHoldingsResponse = {
-  portfolio_id: string
-  base_currency: string
-  valuation_timezone: string
-  valuation_cutoff_policy: string
-  summary: PortfolioPeriodBoundaryHoldingsSummary
-  start_positions: PortfolioPeriodBoundaryHoldingRecord[]
-  end_positions: PortfolioPeriodBoundaryHoldingRecord[]
-}
-
-export type PortfolioContributionLineRecord = {
-  axis: PortfolioContributionAxis
-  group_key: string
-  group_label: string
-  start_value_base: number | null
-  end_value_base: number | null
-  beginning_weight: number | null
-  average_weight: number | null
-  ending_weight: number | null
-  realized_pnl: number | null
-  unrealized_pnl_change: number | null
-  income_cash_amount: number | null
-  expense_cash_amount: number | null
-  fee_amount: number | null
-  tax_amount: number | null
-  cash_currency_gains: number | null
-  instrument_currency_gains: number | null
-  total_pnl: number | null
-  period_contribution: number | null
-}
-
-export type PortfolioContributionReportSummary = {
-  axis: PortfolioContributionAxis
-  taxonomy_id: string | null
-  group_key: string | null
-  group_label: string | null
-  start_date: string | null
-  end_date: string | null
-  nav_coverage_state: PortfolioPerformanceCoverageState
-  nav_coverage_reason_codes: string[]
-  book_pnl_coverage_state: PortfolioPerformanceCoverageState
-  book_pnl_coverage_reason_codes: string[]
-  slice_count: number
-  group_count: number
-  observation_count: number
-  start_nav: number | null
-  end_nav: number | null
-  portfolio_arithmetic_return: number | null
-  portfolio_cumulative_twr: number | null
-  total_period_contribution: number | null
-  contribution_residual: number | null
-}
-
-export type PortfolioContributionReportResponse = {
-  portfolio_id: string
-  base_currency: string
-  valuation_timezone: string
-  valuation_cutoff_policy: string
-  summary: PortfolioContributionReportSummary
-  lines: PortfolioContributionLineRecord[]
-  daily_slices: Array<{
-    as_of_date: string
-    axis: PortfolioContributionAxis
-    group_key: string
-    group_label: string
-    nav_coverage_state: PortfolioPerformanceCoverageState
-    nav_coverage_reason_codes: string[]
-    book_pnl_coverage_state: PortfolioPerformanceCoverageState
-    book_pnl_coverage_reason_codes: string[]
-    market_observation_count: number
-    return_observation_eligible: boolean
-    beginning_value_base: number | null
-    ending_value_base: number | null
-    beginning_weight: number | null
-    ending_weight: number | null
-    cash_balance_base: number | null
-    position_market_value_base: number | null
-    open_cost_basis_base: number | null
-    realized_pnl: number | null
-    unrealized_pnl: number | null
-    unrealized_pnl_change: number | null
-    income_cash_amount: number | null
-    expense_cash_amount: number | null
-    fee_amount: number | null
-    tax_amount: number | null
-    cash_currency_gains: number | null
-    instrument_currency_gains: number | null
-    total_pnl: number | null
-    daily_return: number | null
-    daily_contribution: number | null
-  }>
 }
 
 export type PortfolioHoldingRow = {
@@ -800,6 +581,7 @@ export type PortfolioHoldingRow = {
   day_change_pct: number | null
   day_change_value: number | null
   day_change_value_base?: number | null
+  portfolio_return_contribution?: number | null
   cost_basis_method?: 'fifo' | 'moving_average' | 'mixed' | string | null
   cost_basis: number | null
   cost_basis_base?: number | null
@@ -841,6 +623,22 @@ export type PortfolioHoldingRow = {
   account_ids?: string[]
   account_count?: number
   open_position_lot_count?: number
+  exact_values?: {
+    quantity: string
+    last_price: string | null
+    market_value: string | null
+    market_value_base: string | null
+    day_change_pct: string | null
+    day_change_value: string | null
+    day_change_value_base: string | null
+    portfolio_return_contribution: string | null
+    cost_basis: string | null
+    cost_basis_base: string | null
+    unrealized_pnl: string | null
+    unrealized_pnl_base: string | null
+    unrealized_return: string | null
+    allocation: string | null
+  }
 }
 
 export type HoldingsWorkspaceResponse = {
@@ -851,6 +649,9 @@ export type HoldingsWorkspaceResponse = {
   view_label: string
   coverage_note: string
   quality_warnings: string[]
+  sealed_display_config: {
+    taxonomy: PortfolioSealedTaxonomyDisplayConfig
+  }
   risk_basis?: {
     requested_frequency: 'auto' | PortfolioCalculationFrequency
     resolved_frequency: PortfolioCalculationFrequency
@@ -870,7 +671,17 @@ export type HoldingsWorkspaceResponse = {
     unrealized_pnl_base?: number | null
     unrealized_return?: number | null
     allocation: number | null
+    exact_values?: {
+      market_value: string | null
+      day_change_pct: string | null
+      day_change_value: string | null
+      cost_basis: string | null
+      unrealized_pnl_base: string | null
+      unrealized_return: string | null
+      allocation: string | null
+    }
   }
+  publication: PortfolioDailyPublicationMetadata
 }
 
 export type PortfolioInstrumentHoldingRow = Omit<
@@ -890,7 +701,6 @@ export type PortfolioInstrumentHoldingProjectionResponse = {
 
 export type HoldingsWorkspaceFilters = {
   as_of_date?: string
-  include_return_series?: boolean
 }
 
 export type SharedMarketDataPoint = {
@@ -937,7 +747,7 @@ export type SupportedPortfolioCurrency = (typeof SUPPORTED_PORTFOLIO_CURRENCIES)
 export type PortfolioSharedFxRateRecord = {
   base_currency: SupportedPortfolioCurrency
   quote_currency: SupportedPortfolioCurrency
-  rate: number
+  rate: string
   as_of_date: string
   source_kind: string
   instrument_id?: string | null
@@ -986,6 +796,13 @@ export type PortfolioTaxonomyAssignmentRecord = {
   target_entity_id: string
   taxonomy_node_id: string
   status: string
+}
+
+export type PortfolioSealedTaxonomyDisplayConfig = {
+  default_planning_taxonomy_id: string | null
+  taxonomies: PortfolioTaxonomyRecord[]
+  taxonomy_nodes: PortfolioTaxonomyNodeRecord[]
+  taxonomy_assignments: PortfolioTaxonomyAssignmentRecord[]
 }
 
 export type PortfolioTargetSetType = 'saa' | 'taa'
@@ -1073,23 +890,23 @@ export type PortfolioInstrumentUniverseCreatePayload = {
   instrument_id: string
 }
 
-export type PortfolioResearchRunStatus = 'running' | 'completed' | 'failed'
-export type PortfolioResearchTargetDimension = 'scope_default' | 'weight' | 'risk_budget'
-export type PortfolioResearchCapitalMode = 'unit_notional' | 'fixed_gross' | 'target_volatility' | 'volatility_cap'
-export type PortfolioResearchCalculationFrequency = 'auto' | 'daily' | 'weekly' | 'monthly'
-export type PortfolioResearchMissingReturnPolicy = 'strict' | 'complete_case_drop'
-export type PortfolioResearchBacktestRebalanceFrequency = '1w' | '1m' | '3m'
-export type PortfolioResearchArtifactPreviewKind = 'text' | 'html' | 'binary'
-export type PortfolioResearchAsOfMode = 'dynamic' | 'pinned'
+export type PortfolioAllocationResearchRunStatus = 'running' | 'completed' | 'failed'
+export type PortfolioAllocationResearchTargetDimension = 'scope_default' | 'weight' | 'risk_budget'
+export type PortfolioAllocationResearchCapitalMode = 'unit_notional' | 'fixed_gross' | 'target_volatility' | 'volatility_cap'
+export type PortfolioAllocationResearchCalculationFrequency = 'auto' | 'daily' | 'weekly' | 'monthly'
+export type PortfolioRiskMissingReturnPolicy = 'strict' | 'complete_case_drop'
+export type PortfolioPolicyReplayRebalanceFrequency = '1w' | '1m' | '3m'
+export type PortfolioAllocationResearchArtifactPreviewKind = 'text' | 'html' | 'binary'
+export type PortfolioAllocationResearchAsOfMode = 'dynamic' | 'pinned'
 
-export type PortfolioResearchPlanningTaxonomyOption = {
+export type PortfolioAllocationResearchPlanningTaxonomyOption = {
   taxonomy_id: string
   name: string
   taxonomy_type: string
   budgeting_level?: string | null
 }
 
-export type PortfolioResearchPlanningScopeOption = {
+export type PortfolioAllocationResearchPlanningScopeOption = {
   taxonomy_node_id?: string | null
   label: string
   path: string
@@ -1098,72 +915,72 @@ export type PortfolioResearchPlanningScopeOption = {
   has_children: boolean
 }
 
-export type PortfolioResearchSettingsRecord = {
+export type PortfolioAllocationResearchSettingsRecord = {
   portfolio_id: string
   planning_taxonomy_id?: string | null
   planning_taxonomy_name?: string | null
   comparator_taxonomy_node_id?: string | null
   comparator_taxonomy_node_name?: string | null
-  as_of_mode: PortfolioResearchAsOfMode
+  as_of_mode: PortfolioAllocationResearchAsOfMode
   as_of_date?: string | null
   pinned_as_of_date?: string | null
   lookback_days: number
-  calculation_frequency: PortfolioResearchCalculationFrequency
-  missing_return_policy: PortfolioResearchMissingReturnPolicy
-  target_dimension: PortfolioResearchTargetDimension
-  capital_mode: PortfolioResearchCapitalMode
+  calculation_frequency: PortfolioAllocationResearchCalculationFrequency
+  missing_return_policy: PortfolioRiskMissingReturnPolicy
+  target_dimension: PortfolioAllocationResearchTargetDimension
+  capital_mode: PortfolioAllocationResearchCapitalMode
   gross_exposure?: number | null
   target_volatility?: number | null
   max_gross_exposure?: number | null
   frozen_taxonomy_node_ids: string[]
-  top_sleeve_weight_bounds: PortfolioResearchTopSleeveWeightBoundRecord[]
-  backtest_rebalance_frequency: PortfolioResearchBacktestRebalanceFrequency
-  backtest_benchmark_instrument_id?: string | null
+  top_sleeve_weight_bounds: PortfolioAllocationResearchTopSleeveWeightBoundRecord[]
+  policy_replay_rebalance_frequency: PortfolioPolicyReplayRebalanceFrequency
+  policy_replay_benchmark_instrument_id?: string | null
   notes?: string | null
   updated_at?: string | null
 }
 
-export type PortfolioResearchSettingsUpdatePayload = {
+export type PortfolioAllocationResearchSettingsUpdatePayload = {
   planning_taxonomy_id?: string | null
   comparator_taxonomy_node_id?: string | null
-  as_of_mode: PortfolioResearchAsOfMode
+  as_of_mode: PortfolioAllocationResearchAsOfMode
   as_of_date?: string | null
   lookback_days: number
-  calculation_frequency?: PortfolioResearchCalculationFrequency
-  missing_return_policy?: PortfolioResearchMissingReturnPolicy
+  calculation_frequency?: PortfolioAllocationResearchCalculationFrequency
+  missing_return_policy?: PortfolioRiskMissingReturnPolicy
   covariance_model_id?: PortfolioRiskCovarianceModel
   contribution_mode?: PortfolioRiskContributionMode
-  target_dimension?: PortfolioResearchTargetDimension
-  capital_mode?: PortfolioResearchCapitalMode
+  target_dimension?: PortfolioAllocationResearchTargetDimension
+  capital_mode?: PortfolioAllocationResearchCapitalMode
   gross_exposure?: number | null
   target_volatility?: number | null
   max_gross_exposure?: number | null
   frozen_taxonomy_node_ids?: string[] | null
-  top_sleeve_weight_bounds?: PortfolioResearchTopSleeveWeightBoundRecord[] | null
-  backtest_rebalance_frequency?: PortfolioResearchBacktestRebalanceFrequency
-  backtest_benchmark_instrument_id?: string | null
+  top_sleeve_weight_bounds?: PortfolioAllocationResearchTopSleeveWeightBoundRecord[] | null
+  policy_replay_rebalance_frequency?: PortfolioPolicyReplayRebalanceFrequency
+  policy_replay_benchmark_instrument_id?: string | null
   notes?: string | null
 }
 
-export type PortfolioResearchTopSleeveWeightBoundRecord = {
+export type PortfolioAllocationResearchTopSleeveWeightBoundRecord = {
   taxonomy_node_id: string
   min_weight?: number | null
   max_weight?: number | null
 }
 
-export type PortfolioResearchContextSignalRecord = {
+export type PortfolioAllocationResearchContextSignalRecord = {
   label: string
   value: string
   tone: string
 }
 
-export type PortfolioResearchCalculationFrequencyProfile = {
-  requested_frequency: PortfolioResearchCalculationFrequency
-  resolved_frequency: Exclude<PortfolioResearchCalculationFrequency, 'auto'>
-  default_frequency: Exclude<PortfolioResearchCalculationFrequency, 'auto'>
+export type PortfolioAllocationResearchCalculationFrequencyProfile = {
+  requested_frequency: PortfolioAllocationResearchCalculationFrequency
+  resolved_frequency: Exclude<PortfolioAllocationResearchCalculationFrequency, 'auto'>
+  default_frequency: Exclude<PortfolioAllocationResearchCalculationFrequency, 'auto'>
   source_frequency_counts: Record<string, number>
   options: Array<{
-    frequency: Exclude<PortfolioResearchCalculationFrequency, 'auto'>
+    frequency: Exclude<PortfolioAllocationResearchCalculationFrequency, 'auto'>
     label: string
     available: boolean
     reason?: string | null
@@ -1171,7 +988,7 @@ export type PortfolioResearchCalculationFrequencyProfile = {
   status_label: string
 }
 
-export type PortfolioResearchHoldingSnapshotRecord = {
+export type PortfolioAllocationResearchHoldingSnapshotRecord = {
   instrument_id: string
   instrument_name: string
   instrument_type?: string | null
@@ -1182,7 +999,7 @@ export type PortfolioResearchHoldingSnapshotRecord = {
   price?: number | null
 }
 
-export type PortfolioResearchPlanningGroupSnapshotRecord = {
+export type PortfolioAllocationResearchPlanningGroupSnapshotRecord = {
   group_key: string
   group_label: string
   start_allocation?: number | null
@@ -1197,12 +1014,12 @@ export type PortfolioResearchPlanningGroupSnapshotRecord = {
   position_count: number
 }
 
-export type PortfolioResearchFindingRecord = {
+export type PortfolioAllocationResearchFindingRecord = {
   title: string
   detail: string
 }
 
-export type PortfolioResearchCurrentContextSummary = {
+export type PortfolioAllocationResearchCurrentContextSummary = {
   period_return?: number | null
   annualized_volatility?: number | null
   current_drawdown?: number | null
@@ -1211,13 +1028,13 @@ export type PortfolioResearchCurrentContextSummary = {
   end_nav?: number | null
 }
 
-export type PortfolioResearchPlanningTargetSummary = {
+export type PortfolioAllocationResearchPlanningTargetSummary = {
   root_saa_configured: boolean
   root_taa_configured: boolean
   scoped_target_set_count: number
 }
 
-export type PortfolioResearchCurrentContextRecord = {
+export type PortfolioAllocationResearchCurrentContextRecord = {
   portfolio_id: string
   portfolio_name: string
   base_currency: string
@@ -1227,14 +1044,14 @@ export type PortfolioResearchCurrentContextRecord = {
   nav?: number | null
   holdings_count: number
   planning_group_count: number
-  summary: PortfolioResearchCurrentContextSummary
-  planning_target_summary?: PortfolioResearchPlanningTargetSummary | null
+  summary: PortfolioAllocationResearchCurrentContextSummary
+  planning_target_summary?: PortfolioAllocationResearchPlanningTargetSummary | null
   quality_warnings: string[]
-  top_holdings: PortfolioResearchHoldingSnapshotRecord[]
-  planning_groups: PortfolioResearchPlanningGroupSnapshotRecord[]
+  top_holdings: PortfolioAllocationResearchHoldingSnapshotRecord[]
+  planning_groups: PortfolioAllocationResearchPlanningGroupSnapshotRecord[]
 }
 
-export type PortfolioResearchScopeSelectionRecord = {
+export type PortfolioAllocationResearchScopeSelectionRecord = {
   taxonomy_node_id?: string | null
   label: string
   path: string
@@ -1243,14 +1060,14 @@ export type PortfolioResearchScopeSelectionRecord = {
   member_source: string
 }
 
-export type PortfolioResearchMemberTargetRecord = {
+export type PortfolioAllocationResearchMemberTargetRecord = {
   member_type: string
   member_id: string
   label: string
   scope_path?: string | null
   member_path?: string | null
   default_target_dimension?: 'weight' | 'risk_budget' | null
-  selected_target_dimension?: PortfolioResearchTargetDimension | null
+  selected_target_dimension?: PortfolioAllocationResearchTargetDimension | null
   source_target_set_type?: 'saa' | 'taa' | null
   current_weight?: number | null
   current_risk_share?: number | null
@@ -1261,7 +1078,7 @@ export type PortfolioResearchMemberTargetRecord = {
   selected_target_value?: number | null
 }
 
-export type PortfolioResearchSolvedResultRowRecord = {
+export type PortfolioAllocationResearchSolvedResultRowRecord = {
   member_type: string
   member_id: string
   label: string
@@ -1272,7 +1089,7 @@ export type PortfolioResearchSolvedResultRowRecord = {
   forward_risk_contribution?: number | null
 }
 
-export type PortfolioResearchSolvedResultGroupRecord = {
+export type PortfolioAllocationResearchSolvedResultGroupRecord = {
   top_sleeve_id?: string | null
   top_sleeve_label: string
   solved_weight?: number | null
@@ -1281,10 +1098,10 @@ export type PortfolioResearchSolvedResultGroupRecord = {
   min_weight?: number | null
   max_weight?: number | null
   bound_status?: string | null
-  rows: PortfolioResearchSolvedResultRowRecord[]
+  rows: PortfolioAllocationResearchSolvedResultRowRecord[]
 }
 
-export type PortfolioResearchSolveEventRecord = {
+export type PortfolioAllocationResearchSolveEventRecord = {
   as_of_date: string
   scope_node_id?: string | null
   scope_label: string
@@ -1292,14 +1109,14 @@ export type PortfolioResearchSolveEventRecord = {
   scope_depth?: number | null
   requested_target_dimension?: string | null
   taxonomy_default_target_dimension?: 'weight' | 'risk_budget' | null
-  target_dimension?: PortfolioResearchTargetDimension | null
+  target_dimension?: PortfolioAllocationResearchTargetDimension | null
   solver_kind?: string | null
   solver_detail?: string | null
   solver_message?: string | null
   covariance_model?: string | null
   covariance_observations?: number | null
   risk_contribution_mode?: string | null
-  missing_return_policy?: PortfolioResearchMissingReturnPolicy | null
+  missing_return_policy?: PortfolioRiskMissingReturnPolicy | null
   return_rows_before_policy?: number | null
   return_rows_after_policy?: number | null
   missing_return_row_count?: number | null
@@ -1307,7 +1124,7 @@ export type PortfolioResearchSolveEventRecord = {
   dropped_return_rows?: Array<{ date: string; missing_members: string[] }> | null
   latest_complete_return_date?: string | null
   trailing_complete_return_staleness_days?: number | null
-  calculation_frequency?: Exclude<PortfolioResearchCalculationFrequency, 'auto'> | null
+  calculation_frequency?: Exclude<PortfolioAllocationResearchCalculationFrequency, 'auto'> | null
   gap_turnover?: number | null
   current_weight_total?: number | null
   target_weight_total?: number | null
@@ -1321,7 +1138,7 @@ export type PortfolioResearchSolveEventRecord = {
   scope_solve_count?: number | null
 }
 
-export type PortfolioResearchTargetWeightGapRecord = {
+export type PortfolioAllocationResearchTargetWeightGapRecord = {
   member_type: string
   member_id: string
   label: string
@@ -1335,14 +1152,14 @@ export type PortfolioResearchTargetWeightGapRecord = {
   execution_note?: string | null
 }
 
-export type PortfolioResearchTargetRowRecord = {
+export type PortfolioAllocationResearchTargetRowRecord = {
   member_type: string
   member_id: string
   label: string
   current_weight?: number | null
   current_value_base?: number | null
   default_target_dimension?: 'weight' | 'risk_budget' | null
-  selected_target_dimension?: PortfolioResearchTargetDimension | null
+  selected_target_dimension?: PortfolioAllocationResearchTargetDimension | null
   source_target_set_type?: 'saa' | 'taa' | null
   source_target_set_id?: string | null
   source_label?: string | null
@@ -1356,23 +1173,23 @@ export type PortfolioResearchTargetRowRecord = {
   execution_note?: string | null
 }
 
-export type PortfolioResearchBacktestPointRecord = {
+export type PortfolioPolicyReplayPointRecord = {
   date: string
   value?: number | null
 }
 
-export type PortfolioResearchBacktestSleeveValueRecord = {
+export type PortfolioPolicyReplaySleeveValueRecord = {
   top_sleeve_id?: string | null
   top_sleeve_label: string
   value?: number | null
 }
 
-export type PortfolioResearchBacktestSleevePointRecord = {
+export type PortfolioPolicyReplaySleevePointRecord = {
   date: string
-  sleeves: PortfolioResearchBacktestSleeveValueRecord[]
+  sleeves: PortfolioPolicyReplaySleeveValueRecord[]
 }
 
-export type PortfolioResearchBacktestMetricsRecord = {
+export type PortfolioPolicyReplayMetricsRecord = {
   start_date?: string | null
   end_date?: string | null
   history_reliability: PortfolioPerformanceHistoryReliability
@@ -1391,74 +1208,74 @@ export type PortfolioResearchBacktestMetricsRecord = {
   calmar_ratio?: number | null
 }
 
-export type PortfolioResearchBacktestRecord = {
-  rebalance_frequency: PortfolioResearchBacktestRebalanceFrequency
+export type PortfolioPolicyReplayRecord = {
+  rebalance_frequency: PortfolioPolicyReplayRebalanceFrequency
   common_history_start_date?: string | null
   start_date?: string | null
   end_date?: string | null
   lookback_days: number
-  points: PortfolioResearchBacktestPointRecord[]
-  metrics?: PortfolioResearchBacktestMetricsRecord | null
-  top_sleeve_weight_points: PortfolioResearchBacktestSleevePointRecord[]
-  top_sleeve_contribution_points: PortfolioResearchBacktestSleevePointRecord[]
+  points: PortfolioPolicyReplayPointRecord[]
+  metrics?: PortfolioPolicyReplayMetricsRecord | null
+  top_sleeve_weight_points: PortfolioPolicyReplaySleevePointRecord[]
+  top_sleeve_contribution_points: PortfolioPolicyReplaySleevePointRecord[]
   warnings: string[]
 }
 
-export type PortfolioResearchBacktestBenchmarkRecord = {
+export type PortfolioPolicyReplayBenchmarkRecord = {
   instrument_id?: string | null
   label?: string | null
-  points: PortfolioResearchBacktestPointRecord[]
-  metrics?: PortfolioResearchBacktestMetricsRecord | null
+  points: PortfolioPolicyReplayPointRecord[]
+  metrics?: PortfolioPolicyReplayMetricsRecord | null
   warnings: string[]
 }
 
-export type PortfolioResearchBacktestRelativeMetricsRecord = PortfolioResearchBacktestMetricsRecord & {
+export type PortfolioPolicyReplayRelativeMetricsRecord = PortfolioPolicyReplayMetricsRecord & {
   excess_return?: number | null
   tracking_error?: number | null
   information_ratio?: number | null
 }
 
-export type PortfolioResearchBacktestBenchmarkComparisonResponse = {
-  backtest_benchmark?: PortfolioResearchBacktestBenchmarkRecord | null
-  backtest_relative_metrics?: PortfolioResearchBacktestRelativeMetricsRecord | null
+export type PortfolioPolicyReplayBenchmarkComparisonResponse = {
+  policy_replay_benchmark?: PortfolioPolicyReplayBenchmarkRecord | null
+  policy_replay_relative_metrics?: PortfolioPolicyReplayRelativeMetricsRecord | null
 }
 
-export type PortfolioResearchRunDetailRecord = {
+export type PortfolioAllocationResearchRunDetailRecord = {
   headline?: string | null
   coverage_note?: string | null
-  signals: PortfolioResearchContextSignalRecord[]
-  findings: PortfolioResearchFindingRecord[]
+  signals: PortfolioAllocationResearchContextSignalRecord[]
+  findings: PortfolioAllocationResearchFindingRecord[]
   next_questions: string[]
-  top_holdings: PortfolioResearchHoldingSnapshotRecord[]
-  planning_groups: PortfolioResearchPlanningGroupSnapshotRecord[]
-  selected_scope?: PortfolioResearchScopeSelectionRecord | null
+  top_holdings: PortfolioAllocationResearchHoldingSnapshotRecord[]
+  planning_groups: PortfolioAllocationResearchPlanningGroupSnapshotRecord[]
+  selected_scope?: PortfolioAllocationResearchScopeSelectionRecord | null
   target_assumptions: string[]
-  target_rows: PortfolioResearchTargetRowRecord[]
-  member_targets: PortfolioResearchMemberTargetRecord[]
-  leaf_targets: PortfolioResearchMemberTargetRecord[]
-  solved_result_groups: PortfolioResearchSolvedResultGroupRecord[]
-  solve_event?: PortfolioResearchSolveEventRecord | null
-  scope_solve_events: PortfolioResearchSolveEventRecord[]
-  target_weight_gaps: PortfolioResearchTargetWeightGapRecord[]
-  backtest?: PortfolioResearchBacktestRecord | null
-  backtest_benchmark?: PortfolioResearchBacktestBenchmarkRecord | null
-  backtest_relative_metrics?: PortfolioResearchBacktestRelativeMetricsRecord | null
+  target_rows: PortfolioAllocationResearchTargetRowRecord[]
+  member_targets: PortfolioAllocationResearchMemberTargetRecord[]
+  leaf_targets: PortfolioAllocationResearchMemberTargetRecord[]
+  solved_result_groups: PortfolioAllocationResearchSolvedResultGroupRecord[]
+  solve_event?: PortfolioAllocationResearchSolveEventRecord | null
+  scope_solve_events: PortfolioAllocationResearchSolveEventRecord[]
+  target_weight_gaps: PortfolioAllocationResearchTargetWeightGapRecord[]
+  policy_replay?: PortfolioPolicyReplayRecord | null
+  policy_replay_benchmark?: PortfolioPolicyReplayBenchmarkRecord | null
+  policy_replay_relative_metrics?: PortfolioPolicyReplayRelativeMetricsRecord | null
   warnings: string[]
 }
 
-export type PortfolioResearchArtifactRecord = {
+export type PortfolioAllocationResearchArtifactRecord = {
   artifact_id: string
   label: string
   path: string
   media_type: string
-  preview_kind: PortfolioResearchArtifactPreviewKind
+  preview_kind: PortfolioAllocationResearchArtifactPreviewKind
 }
 
-export type PortfolioResearchRunRecord = {
-  research_run_id: string
+export type PortfolioAllocationResearchRunRecord = {
+  allocation_research_run_id: string
   portfolio_id: string
   job_type: string
-  status: PortfolioResearchRunStatus
+  status: PortfolioAllocationResearchRunStatus
   requested_at?: string | null
   started_at?: string | null
   finished_at?: string | null
@@ -1473,36 +1290,36 @@ export type PortfolioResearchRunRecord = {
   is_current: boolean
   reliability_reasons: string[]
   artifact_count: number
-  artifacts: PortfolioResearchArtifactRecord[]
-  detail?: PortfolioResearchRunDetailRecord | null
+  artifacts: PortfolioAllocationResearchArtifactRecord[]
+  detail?: PortfolioAllocationResearchRunDetailRecord | null
 }
 
-export type PortfolioResearchRunCreatePayload = {
+export type PortfolioAllocationResearchRunCreatePayload = {
   requested_by?: string | null
 }
 
-export type PortfolioResearchWorkbenchResponse = {
+export type PortfolioAllocationResearchWorkbenchResponse = {
   portfolio_id: string
   portfolio_name: string
   base_currency: string
   as_of_date: string
   default_planning_taxonomy_id?: string | null
-  planning_taxonomy_options: PortfolioResearchPlanningTaxonomyOption[]
-  planning_scope_options: PortfolioResearchPlanningScopeOption[]
-  calculation_frequency: PortfolioResearchCalculationFrequencyProfile
-  settings: PortfolioResearchSettingsRecord
+  planning_taxonomy_options: PortfolioAllocationResearchPlanningTaxonomyOption[]
+  planning_scope_options: PortfolioAllocationResearchPlanningScopeOption[]
+  calculation_frequency: PortfolioAllocationResearchCalculationFrequencyProfile
+  settings: PortfolioAllocationResearchSettingsRecord
   risk_policy: PortfolioRiskPolicyRecord
-  current_context: PortfolioResearchCurrentContextRecord
-  runs: PortfolioResearchRunRecord[]
-  selected_run?: PortfolioResearchRunRecord | null
+  current_context: PortfolioAllocationResearchCurrentContextRecord
+  runs: PortfolioAllocationResearchRunRecord[]
+  selected_run?: PortfolioAllocationResearchRunRecord | null
 }
 
-export type PortfolioResearchArtifactContentResponse = {
+export type PortfolioAllocationResearchArtifactContentResponse = {
   filename: string
   path: string
   media_type: string
   encoding: 'text'
-  preview_kind: PortfolioResearchArtifactPreviewKind
+  preview_kind: PortfolioAllocationResearchArtifactPreviewKind
   content: string
 }
 
@@ -1632,90 +1449,134 @@ export type PortfolioAccountUpdatePayload = {
   status?: string | null
 }
 
-export type PortfolioLedgerPostingRecord = {
-  posting_id: string
-  transaction_id: string
-  portfolio_id: string
-  account_id: string
-  posting_role: string
-  source_transaction_type: string
-  trade_date: string
-  settlement_date: string
-  instrument_id?: string | null
-  instrument_ref?: InstrumentCore | null
-  cash_amount_delta?: number | null
-  quantity_delta?: number | null
-  cost_basis_delta?: number | null
-  currency: string
-  transfer_group_id?: string | null
-  note?: string | null
-}
-
-export type PortfolioAccountPositionRecord = {
-  position_id?: string | null
+export type PortfolioPublishedAccountPositionRecord = {
+  as_of_date: string
   account_id: string
   instrument_id: string
-  instrument_ref: InstrumentCore
-  quantity: number
-  cost_basis?: number | null
-  last_price?: number | null
-  market_value?: number | null
+  instrument_name: string
+  instrument_type: string
   currency: string
-  cost_basis_method?: 'moving_average' | 'fifo' | null
-  open_position_lot_count?: number
+  quantity_exact: string
+  measured_price: boolean
+  adopted_price_exact: string | null
+  measured_market_value: boolean
+  market_value_local_exact: string | null
+  market_value_base_exact: string | null
+  measured_base_cost: boolean
+  cost_basis_local_exact: string
+  cost_basis_base_exact: string | null
+  open_lot_count: number
+  valuation_coverage_state: PortfolioDailyPublishedCoverageState
+  valuation_reason_codes: string[]
+  base_cost_coverage_state: 'complete' | 'unavailable'
+  base_cost_reason_codes: string[]
+}
+
+export type PortfolioPublishedAccountBalanceRecord = {
+  as_of_date: string
+  account_id: string
+  component_type:
+    | 'settled_cash'
+    | 'pending_receivable'
+    | 'pending_payable'
+    | 'income_accrual'
+    | 'fee_accrual'
+    | 'tax_accrual'
+    | 'other_accrual'
+  component_key: string
+  currency: string
+  local_amount: string
+  measured_base_amount: boolean
+  base_amount_exact: string | null
+  coverage_state: PortfolioDailyPublishedCoverageState
+  reason_codes: string[]
 }
 
 export type PortfolioAccountWorkspaceAccount = {
   account: PortfolioAccountRecord
   default_settlement_cash_account_name?: string | null
   linked_transaction_count: number
-  linked_posting_count: number
-  derived_cash_balance: number
-  derived_cash_balance_base?: number | null
-  pending_settlement: number
-  pending_settlement_base?: number | null
-  account_value_base?: number | null
+  balance_component_count: number
   position_line_count: number
-  position_market_value?: number | null
-  position_market_value_currency?: string | null
+  open_lot_count: number
+  settled_cash_local: string | null
+  settled_cash_base_exact: string | null
+  pending_receivable_local: string | null
+  pending_receivable_base_exact: string | null
+  pending_payable_local: string | null
+  pending_payable_base_exact: string | null
+  accrual_receivable_local: string | null
+  accrual_receivable_base_exact: string | null
+  accrual_payable_local: string | null
+  accrual_payable_base_exact: string | null
+  position_market_value_local_exact: string | null
+  position_market_value_base_exact: string | null
+  cost_basis_local_exact: string | null
+  cost_basis_base_exact: string | null
+  account_value_base_exact: string | null
+  valuation_coverage_state: PortfolioDailyPublishedCoverageState
+  valuation_reason_codes: string[]
+  cost_basis_coverage_state: 'complete' | 'unavailable'
+  cost_basis_reason_codes: string[]
 }
 
 export type PortfolioAccountsWorkspaceResponse = {
   portfolio_id: string
   base_currency: string
+  as_of_date: string
+  publication: PortfolioDailyPublicationMetadata
   summary: {
     account_count: number
     deposit_account_count: number
     securities_account_count: number
-    ledger_posting_count: number
+    balance_component_count: number
     position_line_count: number
-  }
-  derivation_boundary: {
-    ledger_postings: string
-    positions: string
-    position_lots?: string
-    holdings: string
-    snapshot: string
+    open_lot_count: number
+    valuation_coverage_state: PortfolioDailyPublishedCoverageState
   }
   selected_account_id?: string | null
   accounts: PortfolioAccountWorkspaceAccount[]
-  ledger_postings: PortfolioLedgerPostingRecord[]
-  positions: PortfolioAccountPositionRecord[]
+  balances: PortfolioPublishedAccountBalanceRecord[]
+  positions: PortfolioPublishedAccountPositionRecord[]
   linked_transactions_summary?: PortfolioTransactionListResponse['summary'] | null
   linked_transactions: PortfolioTransactionRecord[]
 }
 
-export type PortfolioLedgerPostingListResponse = {
-  portfolio_id: string
-  summary: {
-    posting_count: number
-    cash_posting_count: number
-    position_posting_count: number
-  }
-  ledger_postings: PortfolioLedgerPostingRecord[]
-}
-
 export type PortfolioTransactionDecimal = string
+export type PortfolioTransactionConsiderationBasis =
+  | 'source_reported'
+  | 'exact_quantity_price'
+export type PortfolioTransactionNumericScaleState = 'declared' | 'legacy_inferred'
+
+export function restorePortfolioTransactionInputScale(
+  value: PortfolioTransactionDecimal | null | undefined,
+  inputScale: number | null | undefined,
+  options?: { zeroAsEmpty?: boolean },
+): string {
+  if (value == null) {
+    return ''
+  }
+  const normalized = value.trim()
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(normalized)) {
+    throw new Error(`Invalid transaction decimal response: ${value}`)
+  }
+  if (inputScale == null || !Number.isSafeInteger(inputScale) || inputScale < 0) {
+    throw new Error(`Invalid transaction decimal input scale: ${String(inputScale)}`)
+  }
+  const [integerPart, fraction = ''] = normalized.split('.')
+  if (fraction.length > inputScale) {
+    throw new Error(
+      `Transaction decimal ${normalized} exceeds its recorded input scale ${inputScale}.`,
+    )
+  }
+  if (options?.zeroAsEmpty && /^0(?:\.0+)?$/.test(normalized)) {
+    return ''
+  }
+  if (fraction.length === inputScale) {
+    return normalized
+  }
+  return `${integerPart}${inputScale ? `.${fraction.padEnd(inputScale, '0')}` : ''}`
+}
 
 export type PortfolioTransactionActorInput = {
   actor_id: string
@@ -1759,9 +1620,18 @@ export type PortfolioTransactionRecord = {
   price?: PortfolioTransactionDecimal | null
   gross_amount: PortfolioTransactionDecimal
   counter_amount?: PortfolioTransactionDecimal | null
-  fx_rate?: PortfolioTransactionDecimal | null
+  quoted_fx_rate?: PortfolioTransactionDecimal | null
   fees: PortfolioTransactionDecimal
   taxes: PortfolioTransactionDecimal
+  consideration_basis?: PortfolioTransactionConsiderationBasis | null
+  numeric_scale_state: PortfolioTransactionNumericScaleState
+  quantity_input_scale?: number | null
+  price_input_scale?: number | null
+  gross_amount_input_scale: number
+  counter_amount_input_scale?: number | null
+  quoted_fx_rate_input_scale?: number | null
+  fees_input_scale: number
+  taxes_input_scale: number
   currency: string
   transfer_scope?: string | null
   transfer_object_type?: string | null
@@ -1787,144 +1657,110 @@ export type PortfolioTransactionListResponse = {
     external_cash_flows: number
     opening_balance_records: number
   }
-  derivation_boundary: {
-    ledger_postings: string
-    positions: string
-    position_lots?: string
-    holdings: string
-    snapshot: string
-  }
   transactions: PortfolioTransactionRecord[]
 }
 
 export type PortfolioTransactionWorkspaceResponse = {
   portfolio_id: string
   summary: PortfolioTransactionListResponse['summary']
-  derivation_boundary: PortfolioTransactionListResponse['derivation_boundary']
   selected_transaction_id?: string | null
   transactions: PortfolioTransactionRecord[]
   selected_transaction?: PortfolioTransactionRecord | null
-  ledger_summary: PortfolioLedgerPostingListResponse['summary']
-  ledger_postings: PortfolioLedgerPostingRecord[]
-  related_position_lot_summary: PortfolioPositionLotListResponse['summary']
-  related_position_lots: PortfolioPositionLotRecord[]
 }
 
-export type PortfolioTransactionPositionPreviewResponse = {
-  portfolio_id: string
+export type PortfolioDailyPublishedPositionRecord = {
+  as_of_date: string
   account_id: string
   instrument_id: string
-  as_of_date: string
-  trade_at: string
-  quantity: number
-}
-
-export type PortfolioPositionRecord = {
-  position_id: string
-  portfolio_id: string
-  instrument_id: string
-  instrument_ref: InstrumentCore
-  quantity: number
-  cost_basis?: number | null
-  last_price?: number | null
-  market_value?: number | null
   currency: string
-  account_ids: string[]
-  account_count: number
-  open_position_lot_count: number
+  quantity_exact: string
+  quantity: string
+  measured_price: boolean
+  measured_market_value: boolean
+  measured_book_pnl: boolean
+  adopted_price_exact: string | null
+  price: string | null
+  contract_multiplier_exact: string | null
+  price_factor_exact: string | null
+  adopted_fx_rate_exact: string | null
+  market_value_local_exact: string | null
+  market_value_base_exact: string | null
+  cost_basis_local: string | null
+  cost_basis_base: string | null
+  economic_pnl_daily_base: string | null
+  portfolio_weight: string | null
+  return_contribution: string | null
+  valuation_coverage_state: PortfolioDailyPublishedCoverageState
+  valuation_coverage_reason_codes: string[]
+  book_pnl_coverage_state: PortfolioDailyPublishedCoverageState
+  book_pnl_reason_codes: string[]
+  valuation_endpoint_status: 'fresh' | 'carry_forward' | 'stale' | 'unavailable'
+  valuation_reason_codes: string[]
 }
 
-export type PortfolioPositionListResponse = {
+export type PortfolioDailyPublishedPositionListResponse = {
   portfolio_id: string
+  publication: PortfolioDailyPublicationMetadata
   summary: {
+    as_of_date: string
     position_count: number
     priced_position_count: number
-    open_position_lot_count: number
+    account_count: number
+    measured_market_value: boolean
+    market_value_base_exact: string | null
   }
-  positions: PortfolioPositionRecord[]
+  positions: PortfolioDailyPublishedPositionRecord[]
 }
 
-export type PortfolioPositionLotRealizationRecord = {
-  realization_id: string
-  transaction_id: string
-  transaction_type: string
-  trade_date: string
-  quantity: number
-  proceeds?: number | null
-  cost_basis_released: number
-  realized_pnl?: number | null
-  price?: number | null
-  remaining_quantity_after: number
-  remaining_cost_basis_after: number
-  status_after: 'open' | 'closed'
-  note?: string | null
-}
-
-export type PortfolioPositionLotRecord = {
-  position_lot_id: string
-  portfolio_id: string
+export type PortfolioDailyPublishedLotRecord = {
+  as_of_date: string
   account_id: string
   instrument_id: string
-  instrument_ref: InstrumentCore
+  lot_id: string
+  source_transaction_id: string
+  source_revision_id: string
+  source_revision_number: number
+  custody_transaction_id: string
+  custody_revision_id: string
+  custody_revision_number: number
+  acquisition_date: string
   currency: string
-  cost_basis_method: 'moving_average' | 'fifo'
-  opened_by_transaction_id: string
-  opening_transaction_type: string
-  opened_at: string
-  closed_at?: string | null
-  status: 'open' | 'closed'
-  close_reason?: 'disposed' | 'transferred' | 'corporate_action' | null
-  source_position_lot_id?: string | null
-  corporate_action_event_id?: string | null
-  corporate_action_event?: Record<string, unknown> | null
-  corporate_action_quantity_out?: number | null
-  corporate_action_cost_basis_out?: number | null
-  predecessor_quantity?: number | null
-  unit_cost_basis_before?: number | null
-  unit_cost_basis_after?: number | null
-  entry_quantity: number
-  remaining_quantity: number
-  realized_quantity: number
-  transferred_quantity: number
-  entry_gross_amount: number
-  entry_fee_amount: number
-  entry_tax_amount: number
-  entry_cost_basis: number
-  entry_cost_per_unit?: number | null
-  remaining_cost_basis: number
-  realized_cost_basis: number
-  transferred_cost_basis: number
-  realized_proceeds: number
-  realized_pnl: number
-  income_cash_amount: number
-  expense_cash_amount: number
-  return_of_capital_amount: number
-  entry_price?: number | null
-  average_exit_price?: number | null
-  current_market_value?: number | null
-  unrealized_pnl?: number | null
-  holding_period_days?: number | null
-  linked_transaction_count: number
-  realization_count: number
-  realizations: PortfolioPositionLotRealizationRecord[]
+  open_quantity_exact: string
+  open_quantity: string
+  measured_base_cost: boolean
+  acquisition_fx_rate_exact: string | null
+  cost_basis_local_exact: string
+  cost_basis_local: string
+  unit_cost_local: string
+  unit_cost_local_rounding_residual_exact: string
+  cost_basis_base_exact: string | null
+  cost_basis_base: string | null
+  unit_cost_base: string | null
+  unit_cost_base_rounding_residual_exact: string | null
+  base_cost_coverage_state: 'complete' | 'unavailable'
+  base_cost_reason_codes: string[]
 }
 
-export type PortfolioPositionLotFilters = {
+export type PortfolioDailyPublishedLotFilters = {
   account_id?: string
   instrument_id?: string
-  status?: 'open' | 'closed'
+  status?: 'open'
   as_of_date?: string
 }
 
-export type PortfolioPositionLotListResponse = {
+export type PortfolioDailyPublishedLotListResponse = {
   portfolio_id: string
+  publication: PortfolioDailyPublicationMetadata
   summary: {
-    position_lot_count: number
-    open_position_lot_count: number
-    closed_position_lot_count: number
-    realized_pnl: number
+    as_of_date: string
+    lot_count: number
+    account_count: number
+    instrument_count: number
+    measured_base_cost: boolean
+    open_quantity_exact: string
+    cost_basis_base_exact: string | null
   }
-  position_lots: PortfolioPositionLotRecord[]
+  position_lots: PortfolioDailyPublishedLotRecord[]
 }
 
 export type PortfolioTransactionFilters = {
@@ -1949,7 +1785,8 @@ export type PortfolioTransactionFactPayload = {
   price?: PortfolioTransactionDecimal | null
   gross_amount: PortfolioTransactionDecimal
   counter_amount?: PortfolioTransactionDecimal | null
-  fx_rate?: PortfolioTransactionDecimal | null
+  quoted_fx_rate?: PortfolioTransactionDecimal | null
+  consideration_basis?: PortfolioTransactionConsiderationBasis | null
   fees?: PortfolioTransactionDecimal
   taxes?: PortfolioTransactionDecimal
   currency: string
@@ -1993,7 +1830,7 @@ export type PortfolioInternalTransferCreatePayload = {
   to_account_id: string
   instrument_id?: string | null
   quantity?: PortfolioTransactionDecimal | null
-  gross_amount?: PortfolioTransactionDecimal | null
+  gross_amount: PortfolioTransactionDecimal
   note?: string | null
   transfer_group_id?: string | null
   actor: PortfolioTransactionActorInput
@@ -2018,9 +1855,18 @@ export type PortfolioTransactionRevisionSnapshot = {
   price?: PortfolioTransactionDecimal | null
   gross_amount: PortfolioTransactionDecimal
   counter_amount?: PortfolioTransactionDecimal | null
-  fx_rate?: PortfolioTransactionDecimal | null
+  quoted_fx_rate?: PortfolioTransactionDecimal | null
   fees: PortfolioTransactionDecimal
   taxes: PortfolioTransactionDecimal
+  consideration_basis?: PortfolioTransactionConsiderationBasis | null
+  numeric_scale_state: PortfolioTransactionNumericScaleState
+  quantity_input_scale?: number | null
+  price_input_scale?: number | null
+  gross_amount_input_scale: number
+  counter_amount_input_scale?: number | null
+  quoted_fx_rate_input_scale?: number | null
+  fees_input_scale: number
+  taxes_input_scale: number
   currency: string
   transfer_scope?: string | null
   transfer_object_type?: string | null
@@ -2255,27 +2101,807 @@ function buildQuery(filters: Record<string, string | undefined>) {
   return queryString ? `?${queryString}` : ''
 }
 
-export function getWorkspaceSummary() {
-  return fetchJson<PortfolioWorkspaceSummary>(API_BASE_URL, '/api/workspace/summary')
+const CANONICAL_DECIMAL_TEXT = /^(0|-?([1-9][0-9]*(\.[0-9]*[1-9])?|0\.[0-9]*[1-9]))$/
+
+function exactDecimalString(value: unknown, fieldName: string): string | null {
+  if (value == null) {
+    return null
+  }
+  if (typeof value !== 'string' || !CANONICAL_DECIMAL_TEXT.test(value)) {
+    throw new Error(`${fieldName} is not a canonical exact decimal string.`)
+  }
+  return value
 }
 
-export function getWorkspaceSummaryForPortfolio(portfolioId: string) {
-  return fetchJson<PortfolioWorkspaceSummary>(
-    API_BASE_URL,
-    `/api/workspace/summary?portfolio_id=${encodeURIComponent(portfolioId)}`,
+function exactDecimalForDisplay(value: string | null, fieldName: string): number | null {
+  if (value == null) {
+    return null
+  }
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${fieldName} is outside the browser display range.`)
+  }
+  return parsed
+}
+
+function objectRecord(value: unknown, fieldName: string): Record<string, unknown> {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an object.`)
+  }
+  return value as Record<string, unknown>
+}
+
+function objectArray(value: unknown, fieldName: string): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array.`)
+  }
+  return value
+}
+
+function requiredText(value: unknown, fieldName: string): string {
+  if (typeof value !== 'string' || !value.trim() || value !== value.trim()) {
+    throw new Error(`${fieldName} must be non-empty canonical text.`)
+  }
+  return value
+}
+
+function optionalText(value: unknown, fieldName: string): string | null {
+  return value == null ? null : requiredText(value, fieldName)
+}
+
+function requiredBoolean(value: unknown, fieldName: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new Error(`${fieldName} must be a boolean.`)
+  }
+  return value
+}
+
+function requiredInteger(value: unknown, fieldName: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    throw new Error(`${fieldName} must be a safe integer.`)
+  }
+  return value
+}
+
+function normalizeSealedTaxonomyDisplayConfig(
+  value: unknown,
+  portfolioId: string,
+): PortfolioSealedTaxonomyDisplayConfig {
+  const source = objectRecord(value, 'holdings.sealed_display_config.taxonomy')
+  const taxonomies = objectArray(
+    source.taxonomies,
+    'holdings.sealed_display_config.taxonomy.taxonomies',
+  ).map((value, index): PortfolioTaxonomyRecord => {
+    const fieldName = `holdings.sealed_display_config.taxonomy.taxonomies[${index}]`
+    const row = objectRecord(value, fieldName)
+    const rowPortfolioId = requiredText(row.portfolio_id, `${fieldName}.portfolio_id`)
+    if (rowPortfolioId !== portfolioId) {
+      throw new Error(`${fieldName}.portfolio_id does not match the holdings portfolio.`)
+    }
+    const primaryScope = requiredText(
+      row.primary_assignment_scope,
+      `${fieldName}.primary_assignment_scope`,
+    )
+    if (!['instrument', 'account', 'cash_bucket'].includes(primaryScope)) {
+      throw new Error(`${fieldName}.primary_assignment_scope is invalid.`)
+    }
+    const targetDimension = requiredText(
+      row.root_default_target_dimension,
+      `${fieldName}.root_default_target_dimension`,
+    )
+    if (!['weight', 'risk_budget'].includes(targetDimension)) {
+      throw new Error(`${fieldName}.root_default_target_dimension is invalid.`)
+    }
+    return {
+      taxonomy_id: requiredText(row.taxonomy_id, `${fieldName}.taxonomy_id`),
+      portfolio_id: rowPortfolioId,
+      name: requiredText(row.name, `${fieldName}.name`),
+      taxonomy_type: requiredText(row.taxonomy_type, `${fieldName}.taxonomy_type`),
+      purpose: optionalText(row.purpose, `${fieldName}.purpose`),
+      primary_assignment_scope: primaryScope as TaxonomyAssignmentScope,
+      planning_enabled: requiredBoolean(row.planning_enabled, `${fieldName}.planning_enabled`),
+      budgeting_level: optionalText(row.budgeting_level, `${fieldName}.budgeting_level`),
+      root_default_target_dimension: targetDimension as 'weight' | 'risk_budget',
+      status: requiredText(row.status, `${fieldName}.status`),
+      source_template_ref: optionalText(row.source_template_ref, `${fieldName}.source_template_ref`),
+    }
+  })
+  const taxonomiesById = new Map(taxonomies.map((row) => [row.taxonomy_id, row]))
+  if (taxonomiesById.size !== taxonomies.length) {
+    throw new Error('holdings.sealed_display_config.taxonomy has duplicate taxonomy ids.')
+  }
+
+  const taxonomyNodes = objectArray(
+    source.taxonomy_nodes,
+    'holdings.sealed_display_config.taxonomy.taxonomy_nodes',
+  ).map((value, index): PortfolioTaxonomyNodeRecord => {
+    const fieldName = `holdings.sealed_display_config.taxonomy.taxonomy_nodes[${index}]`
+    const row = objectRecord(value, fieldName)
+    const taxonomyId = requiredText(row.taxonomy_id, `${fieldName}.taxonomy_id`)
+    if (!taxonomiesById.has(taxonomyId)) {
+      throw new Error(`${fieldName}.taxonomy_id is not present in the sealed taxonomies.`)
+    }
+    const targetDimension = requiredText(
+      row.default_target_dimension,
+      `${fieldName}.default_target_dimension`,
+    )
+    if (!['weight', 'risk_budget'].includes(targetDimension)) {
+      throw new Error(`${fieldName}.default_target_dimension is invalid.`)
+    }
+    return {
+      taxonomy_node_id: requiredText(row.taxonomy_node_id, `${fieldName}.taxonomy_node_id`),
+      taxonomy_id: taxonomyId,
+      parent_taxonomy_node_id: optionalText(
+        row.parent_taxonomy_node_id,
+        `${fieldName}.parent_taxonomy_node_id`,
+      ),
+      node_name: requiredText(row.node_name, `${fieldName}.node_name`),
+      node_code: optionalText(row.node_code, `${fieldName}.node_code`),
+      sort_order: requiredInteger(row.sort_order, `${fieldName}.sort_order`),
+      is_terminal: requiredBoolean(row.is_terminal, `${fieldName}.is_terminal`),
+      default_target_dimension: targetDimension as 'weight' | 'risk_budget',
+      status: requiredText(row.status, `${fieldName}.status`),
+    }
+  })
+  const nodesById = new Map(taxonomyNodes.map((row) => [row.taxonomy_node_id, row]))
+  if (nodesById.size !== taxonomyNodes.length) {
+    throw new Error('holdings.sealed_display_config.taxonomy has duplicate taxonomy node ids.')
+  }
+  taxonomyNodes.forEach((row) => {
+    if (row.parent_taxonomy_node_id == null) {
+      return
+    }
+    const parent = nodesById.get(row.parent_taxonomy_node_id)
+    if (parent?.taxonomy_id !== row.taxonomy_id) {
+      throw new Error(`Sealed taxonomy node ${row.taxonomy_node_id} has an invalid parent.`)
+    }
+  })
+
+  const taxonomyAssignments = objectArray(
+    source.taxonomy_assignments,
+    'holdings.sealed_display_config.taxonomy.taxonomy_assignments',
+  ).map((value, index): PortfolioTaxonomyAssignmentRecord => {
+    const fieldName = `holdings.sealed_display_config.taxonomy.taxonomy_assignments[${index}]`
+    const row = objectRecord(value, fieldName)
+    const taxonomyId = requiredText(row.taxonomy_id, `${fieldName}.taxonomy_id`)
+    const nodeId = requiredText(row.taxonomy_node_id, `${fieldName}.taxonomy_node_id`)
+    const targetScope = requiredText(row.target_scope, `${fieldName}.target_scope`)
+    if (!['instrument', 'account', 'cash_bucket'].includes(targetScope)) {
+      throw new Error(`${fieldName}.target_scope is invalid.`)
+    }
+    if (nodesById.get(nodeId)?.taxonomy_id !== taxonomyId) {
+      throw new Error(`${fieldName}.taxonomy_node_id is outside its sealed taxonomy.`)
+    }
+    return {
+      assignment_id: requiredText(row.assignment_id, `${fieldName}.assignment_id`),
+      taxonomy_id: taxonomyId,
+      target_scope: targetScope as TaxonomyAssignmentScope,
+      target_entity_id: requiredText(row.target_entity_id, `${fieldName}.target_entity_id`),
+      taxonomy_node_id: nodeId,
+      status: requiredText(row.status, `${fieldName}.status`),
+    }
+  })
+  const assignmentIds = new Set(taxonomyAssignments.map((row) => row.assignment_id))
+  if (assignmentIds.size !== taxonomyAssignments.length) {
+    throw new Error('holdings.sealed_display_config.taxonomy has duplicate assignment ids.')
+  }
+
+  const defaultPlanningTaxonomyId = optionalText(
+    source.default_planning_taxonomy_id,
+    'holdings.sealed_display_config.taxonomy.default_planning_taxonomy_id',
+  )
+  if (defaultPlanningTaxonomyId != null && !taxonomiesById.has(defaultPlanningTaxonomyId)) {
+    throw new Error(
+      'holdings.sealed_display_config.taxonomy.default_planning_taxonomy_id is not sealed.',
+    )
+  }
+  return {
+    default_planning_taxonomy_id: defaultPlanningTaxonomyId,
+    taxonomies,
+    taxonomy_nodes: taxonomyNodes,
+    taxonomy_assignments: taxonomyAssignments,
+  }
+}
+
+function normalizedExactFields(
+  value: unknown,
+  fieldName: string,
+  nullableFields: readonly string[],
+  requiredFields: readonly string[] = [],
+) {
+  const source = objectRecord(value, fieldName)
+  const normalized: Record<string, unknown> = { ...source }
+  nullableFields.forEach((key) => {
+    normalized[key] = exactDecimalString(source[key], `${fieldName}.${key}`)
+  })
+  requiredFields.forEach((key) => {
+    const exact = exactDecimalString(source[key], `${fieldName}.${key}`)
+    if (exact == null) {
+      throw new Error(`${fieldName}.${key} must be available.`)
+    }
+    normalized[key] = exact
+  })
+  return normalized
+}
+
+function normalizePublishedDecimalMetric(
+  value: unknown,
+  fieldName: string,
+): PortfolioDailyPublishedDecimalMetric | null {
+  if (value == null) {
+    return null
+  }
+  return normalizedExactFields(
+    value,
+    fieldName,
+    [],
+    ['method50', 'published', 'rounding_adjustment_exact'],
+  ) as PortfolioDailyPublishedDecimalMetric
+}
+
+function normalizePublishedPerformanceSummary(
+  value: unknown,
+): PortfolioDailyPublishedPerformanceSummary {
+  const fieldName = 'performance_report.performance'
+  const normalized = objectRecord(value, fieldName)
+  const metricFields = [
+    'cumulative_twr',
+    'annualized_twr',
+    'current_drawdown',
+    'max_drawdown',
+  ] as const
+  return {
+    ...normalized,
+    ...Object.fromEntries(
+      metricFields.map((key) => [
+        key,
+        normalizePublishedDecimalMetric(normalized[key], `${fieldName}.${key}`),
+      ]),
+    ),
+  } as PortfolioDailyPublishedPerformanceSummary
+}
+
+function normalizePublishedStatistics(
+  value: unknown,
+): PortfolioDailyPublishedPerformanceStatistics {
+  const normalized = objectRecord(value, 'performance_report.statistics')
+  const metricFields = [
+    'periods_per_year',
+    'mean_period_return',
+    'annualized_arithmetic_mean',
+    'annualized_volatility',
+    'annualized_downside_deviation',
+  ] as const
+  return {
+    ...normalized,
+    ...Object.fromEntries(
+      metricFields.map((key) => [
+        key,
+        normalizePublishedDecimalMetric(
+          normalized[key],
+          `performance_report.statistics.${key}`,
+        ),
+      ]),
+    ),
+  } as PortfolioDailyPublishedPerformanceStatistics
+}
+
+function normalizePublishedXirr(value: unknown): PortfolioDailyPublishedXirrResult {
+  const normalized = normalizedExactFields(
+    value,
+    'performance_report.xirr',
+    ['xnpv_residual_exact'],
+  )
+  normalized.rate = normalizePublishedDecimalMetric(
+    normalized.rate,
+    'performance_report.xirr.rate',
+  )
+  return normalized as PortfolioDailyPublishedXirrResult
+}
+
+function normalizePublishedAttributionGroup(
+  value: unknown,
+  fieldName: string,
+): PortfolioDailyPublishedAttributionGroup {
+  return normalizedExactFields(
+    value,
+    fieldName,
+    [],
+    [
+      'opening_nav_exact',
+      'closing_nav_exact',
+      'external_flow_in_exact',
+      'external_flow_out_exact',
+      'internal_flow_in_exact',
+      'internal_flow_out_exact',
+      'economic_pnl_exact',
+      'linked_contribution_method50',
+      'linking_adjustment_exact',
+      'linked_contribution_effective',
+      'closure_residual_exact',
+    ],
+  ) as PortfolioDailyPublishedAttributionGroup
+}
+
+function normalizePublishedAttributionSummary(
+  value: unknown,
+  fieldName: string,
+): PortfolioDailyPublishedAttributionSummary {
+  return normalizedExactFields(
+    value,
+    fieldName,
+    [
+      'cumulative_twr_method50',
+      'total_linked_contribution_effective',
+      'total_linking_adjustment_exact',
+      'closure_residual_exact',
+    ],
+  ) as PortfolioDailyPublishedAttributionSummary
+}
+
+function normalizePublishedSnapshot(
+  value: unknown,
+  index: number,
+): PortfolioDailyPublishedSnapshotRecord {
+  return normalizedExactFields(
+    value,
+    `performance_report.daily_series[${index}]`,
+    [
+      'opening_nav',
+      'closing_nav',
+      'position_market_value',
+      'settled_cash',
+      'pending_receivable',
+      'pending_payable',
+      'accrual_receivable',
+      'accrual_payable',
+      'external_flow_in',
+      'external_flow_out',
+      'economic_pnl',
+      'realized_pnl_daily',
+      'unrealized_pnl_beginning',
+      'unrealized_pnl_ending',
+      'unrealized_pnl_change',
+      'gross_income_daily',
+      'return_of_capital_daily',
+      'capitalized_fee_daily',
+      'capitalized_tax_daily',
+      'expensed_fee_daily',
+      'expensed_tax_daily',
+      'local_price_effect_daily',
+      'position_fx_effect_daily',
+      'cash_fx_effect_daily',
+      'pending_fx_effect_daily',
+      'accrual_fx_effect_daily',
+      'fx_conversion_effect_daily',
+      'subperiod_twr_method50',
+      'subperiod_twr_published',
+      'cumulative_twr_method50',
+      'cumulative_twr_published',
+      'wealth_index_method50',
+      'wealth_index_published',
+      'peak_wealth_index_method50',
+      'peak_wealth_index_published',
+      'drawdown_method50',
+      'drawdown_published',
+      'wealth_chain_rounding_adjustment_exact',
+    ],
+  ) as PortfolioDailyPublishedSnapshotRecord
+}
+
+function normalizePublishedReturnCalendarBucket(
+  value: unknown,
+  index: number,
+): PortfolioDailyPublishedReturnCalendarBucket {
+  const fieldName = `performance_report.return_calendar[${index}]`
+  const normalized = objectRecord(value, fieldName)
+  const metricFields = [
+    'cumulative_twr',
+    'current_drawdown',
+    'max_drawdown',
+  ] as const
+  return {
+    ...normalized,
+    ...Object.fromEntries(
+      metricFields.map((key) => [
+        key,
+        normalizePublishedDecimalMetric(normalized[key], `${fieldName}.${key}`),
+      ]),
+    ),
+  } as PortfolioDailyPublishedReturnCalendarBucket
+}
+
+function normalizePublishedAttributionCalendarBucket(
+  value: unknown,
+  index: number,
+): PortfolioDailyPublishedAttributionCalendarBucket {
+  const fieldName = `performance_report.attribution_calendar[${index}]`
+  const source = objectRecord(value, fieldName)
+  return {
+    ...source,
+    summary: normalizePublishedAttributionSummary(
+      source.summary,
+      `${fieldName}.summary`,
+    ),
+    groups: objectArray(source.groups, `${fieldName}.groups`).map((group, groupIndex) =>
+      normalizePublishedAttributionGroup(
+        group,
+        `${fieldName}.groups[${groupIndex}]`,
+      ),
+    ),
+  } as PortfolioDailyPublishedAttributionCalendarBucket
+}
+
+function normalizePublishedPerformanceReport(
+  value: unknown,
+): PortfolioDailyPublishedPerformanceReportResponse {
+  const source = objectRecord(value, 'performance_report')
+  const bridge = source.portfolio_bridge
+  return {
+    ...source,
+    performance: normalizePublishedPerformanceSummary(source.performance),
+    statistics: normalizePublishedStatistics(source.statistics),
+    xirr: normalizePublishedXirr(source.xirr),
+    portfolio_bridge:
+      bridge == null
+        ? null
+        : normalizePublishedAttributionGroup(
+            bridge,
+            'performance_report.portfolio_bridge',
+          ),
+    rebased_wealth_series: objectArray(
+      source.rebased_wealth_series,
+      'performance_report.rebased_wealth_series',
+    ).map((point, index) =>
+      normalizedExactFields(
+        point,
+        `performance_report.rebased_wealth_series[${index}]`,
+        ['wealth_chain_rounding_adjustment_exact'],
+        ['wealth_index_method50', 'peak_wealth_index_method50', 'drawdown_method50'],
+      ) as PortfolioDailyPublishedRebasedWealthPoint,
+    ),
+    daily_series: objectArray(
+      source.daily_series,
+      'performance_report.daily_series',
+    ).map(normalizePublishedSnapshot),
+    attribution: normalizePublishedAttributionSummary(
+      source.attribution,
+      'performance_report.attribution',
+    ),
+    attribution_groups: objectArray(
+      source.attribution_groups,
+      'performance_report.attribution_groups',
+    ).map((group, index) =>
+      normalizePublishedAttributionGroup(
+        group,
+        `performance_report.attribution_groups[${index}]`,
+      ),
+    ),
+    return_calendar: objectArray(
+      source.return_calendar,
+      'performance_report.return_calendar',
+    ).map(normalizePublishedReturnCalendarBucket),
+    attribution_calendar: objectArray(
+      source.attribution_calendar,
+      'performance_report.attribution_calendar',
+    ).map(normalizePublishedAttributionCalendarBucket),
+  } as PortfolioDailyPublishedPerformanceReportResponse
+}
+
+type PortfolioWorkspaceSummaryWire = Omit<
+  PortfolioWorkspaceSummary,
+  | 'nav'
+  | 'nav_exact'
+  | 'day_change_value'
+  | 'day_change_value_exact'
+  | 'day_change_pct'
+  | 'day_change_pct_method50'
+  | 'day_change_pct_published'
+  | 'badges'
+> & {
+  nav: unknown
+  economic_pnl: unknown
+  subperiod_twr_method50: unknown
+  subperiod_twr_published: unknown
+  nav_coverage_state?: string
+  return_coverage_state?: string
+  valuation_endpoint_status?: string
+  valuation_reason_codes?: string[]
+  badges?: string[]
+}
+
+function normalizeWorkspaceSummary(wire: PortfolioWorkspaceSummaryWire): PortfolioWorkspaceSummary {
+  const navExact = exactDecimalString(wire.nav, 'workspace.nav')
+  const dayChangeValueExact = exactDecimalString(wire.economic_pnl, 'workspace.economic_pnl')
+  const dayChangePctMethod50 = exactDecimalString(
+    wire.subperiod_twr_method50,
+    'workspace.subperiod_twr_method50',
+  )
+  const dayChangePctPublished = exactDecimalString(
+    wire.subperiod_twr_published,
+    'workspace.subperiod_twr_published',
+  )
+  const badges = [...(wire.badges ?? [])]
+  if (wire.publication?.stale) {
+    badges.push('Published calculation is stale')
+  }
+  if (wire.publication?.pending) {
+    badges.push('Recalculation pending')
+  }
+  if (wire.nav_coverage_state && wire.nav_coverage_state !== 'complete') {
+    badges.push(`NAV coverage: ${wire.nav_coverage_state}`)
+  }
+  if (wire.return_coverage_state && wire.return_coverage_state !== 'complete') {
+    badges.push(`Return coverage: ${wire.return_coverage_state}`)
+  }
+  if (wire.valuation_endpoint_status && wire.valuation_endpoint_status !== 'fresh') {
+    badges.push(`Valuation: ${wire.valuation_endpoint_status}`)
+  }
+  return {
+    ...wire,
+    operating_profile: portfolioOperatingProfile(wire.operating_profile),
+    nav: exactDecimalForDisplay(navExact, 'workspace.nav'),
+    nav_exact: navExact,
+    day_change_value: exactDecimalForDisplay(dayChangeValueExact, 'workspace.economic_pnl'),
+    day_change_value_exact: dayChangeValueExact,
+    day_change_pct: exactDecimalForDisplay(
+      dayChangePctPublished,
+      'workspace.subperiod_twr_published',
+    ),
+    day_change_pct_method50: dayChangePctMethod50,
+    day_change_pct_published: dayChangePctPublished,
+    badges: [...new Set(badges)],
+  }
+}
+
+type PortfolioEntryWire = Omit<
+  PortfolioEntryRecord,
+  | 'nav'
+  | 'nav_exact'
+  | 'day_change_value'
+  | 'day_change_value_exact'
+  | 'day_change_pct'
+  | 'day_change_pct_method50'
+  | 'day_change_pct_published'
+  | 'securities_count'
+  | 'calculation_status'
+  | 'lifecycle_status'
+> & {
+  nav?: unknown
+  economic_pnl?: unknown
+  subperiod_twr_method50?: unknown
+  subperiod_twr_published?: unknown
+  holding_count?: number
+  calculation_status?: PortfolioEntryRecord['calculation_status']
+  lifecycle_status: unknown
+}
+
+function portfolioLifecycleStatus(value: unknown): PortfolioEntryRecord['lifecycle_status'] {
+  if (value === 'active' || value === 'archived') {
+    return value
+  }
+  throw new Error('portfolio.lifecycle_status must be active or archived')
+}
+
+function portfolioOperatingProfile(value: unknown): PortfolioOperatingProfile {
+  if (value === 'standard_taxonomy' || value === 'external_etf_rotation') {
+    return value
+  }
+  throw new Error(
+    'portfolio.operating_profile must be standard_taxonomy or external_etf_rotation',
   )
 }
 
+function normalizePortfolioEntry(wire: PortfolioEntryWire): PortfolioEntryRecord {
+  const navExact = exactDecimalString(wire.nav, 'portfolio.nav')
+  const dayChangeValueExact = exactDecimalString(wire.economic_pnl, 'portfolio.economic_pnl')
+  const dayChangePctMethod50 = exactDecimalString(
+    wire.subperiod_twr_method50,
+    'portfolio.subperiod_twr_method50',
+  )
+  const dayChangePctPublished = exactDecimalString(
+    wire.subperiod_twr_published,
+    'portfolio.subperiod_twr_published',
+  )
+  return {
+    ...wire,
+    operating_profile: portfolioOperatingProfile(wire.operating_profile),
+    as_of_date: wire.as_of_date ?? null,
+    nav: exactDecimalForDisplay(navExact, 'portfolio.nav'),
+    nav_exact: navExact,
+    day_change_value: exactDecimalForDisplay(dayChangeValueExact, 'portfolio.economic_pnl'),
+    day_change_value_exact: dayChangeValueExact,
+    day_change_pct: exactDecimalForDisplay(
+      dayChangePctPublished,
+      'portfolio.subperiod_twr_published',
+    ),
+    day_change_pct_method50: dayChangePctMethod50,
+    day_change_pct_published: dayChangePctPublished,
+    securities_count: wire.holding_count ?? 0,
+    calculation_status: wire.calculation_status ?? 'not_ready',
+    lifecycle_status: portfolioLifecycleStatus(wire.lifecycle_status),
+  }
+}
+
+type PortfolioHoldingRowWire = Omit<
+  PortfolioHoldingRow,
+  | 'quantity'
+  | 'last_price'
+  | 'market_value'
+  | 'market_value_base'
+  | 'day_change_pct'
+  | 'day_change_value'
+  | 'day_change_value_base'
+  | 'portfolio_return_contribution'
+  | 'cost_basis'
+  | 'cost_basis_base'
+  | 'unrealized_pnl'
+  | 'unrealized_pnl_base'
+  | 'unrealized_return'
+  | 'allocation'
+  | 'exact_values'
+> & {
+  quantity: unknown
+  last_price: unknown
+  market_value: unknown
+  market_value_base?: unknown
+  day_change_pct: unknown
+  day_change_value: unknown
+  day_change_value_base?: unknown
+  portfolio_return_contribution?: unknown
+  cost_basis: unknown
+  cost_basis_base?: unknown
+  unrealized_pnl?: unknown
+  unrealized_pnl_base?: unknown
+  unrealized_return?: unknown
+  allocation: unknown
+}
+
+function normalizeHoldingRow(wire: PortfolioHoldingRowWire): PortfolioHoldingRow {
+  const exactValues = {
+    quantity: exactDecimalString(wire.quantity, 'holding.quantity'),
+    last_price: exactDecimalString(wire.last_price, 'holding.last_price'),
+    market_value: exactDecimalString(wire.market_value, 'holding.market_value'),
+    market_value_base: exactDecimalString(wire.market_value_base, 'holding.market_value_base'),
+    day_change_pct: exactDecimalString(wire.day_change_pct, 'holding.day_change_pct'),
+    day_change_value: exactDecimalString(wire.day_change_value, 'holding.day_change_value'),
+    day_change_value_base: exactDecimalString(
+      wire.day_change_value_base,
+      'holding.day_change_value_base',
+    ),
+    portfolio_return_contribution: exactDecimalString(
+      wire.portfolio_return_contribution,
+      'holding.portfolio_return_contribution',
+    ),
+    cost_basis: exactDecimalString(wire.cost_basis, 'holding.cost_basis'),
+    cost_basis_base: exactDecimalString(wire.cost_basis_base, 'holding.cost_basis_base'),
+    unrealized_pnl: exactDecimalString(wire.unrealized_pnl, 'holding.unrealized_pnl'),
+    unrealized_pnl_base: exactDecimalString(
+      wire.unrealized_pnl_base,
+      'holding.unrealized_pnl_base',
+    ),
+    unrealized_return: exactDecimalString(wire.unrealized_return, 'holding.unrealized_return'),
+    allocation: exactDecimalString(wire.allocation, 'holding.allocation'),
+  }
+  if (exactValues.quantity == null) {
+    throw new Error('holding.quantity must be available.')
+  }
+  return {
+    ...wire,
+    quantity: exactDecimalForDisplay(exactValues.quantity, 'holding.quantity') ?? 0,
+    last_price: exactDecimalForDisplay(exactValues.last_price, 'holding.last_price'),
+    market_value: exactDecimalForDisplay(exactValues.market_value, 'holding.market_value'),
+    market_value_base: exactDecimalForDisplay(
+      exactValues.market_value_base,
+      'holding.market_value_base',
+    ),
+    day_change_pct: exactDecimalForDisplay(exactValues.day_change_pct, 'holding.day_change_pct'),
+    day_change_value: exactDecimalForDisplay(exactValues.day_change_value, 'holding.day_change_value'),
+    day_change_value_base: exactDecimalForDisplay(
+      exactValues.day_change_value_base,
+      'holding.day_change_value_base',
+    ),
+    portfolio_return_contribution: exactDecimalForDisplay(
+      exactValues.portfolio_return_contribution,
+      'holding.portfolio_return_contribution',
+    ),
+    cost_basis: exactDecimalForDisplay(exactValues.cost_basis, 'holding.cost_basis'),
+    cost_basis_base: exactDecimalForDisplay(exactValues.cost_basis_base, 'holding.cost_basis_base'),
+    unrealized_pnl: exactDecimalForDisplay(exactValues.unrealized_pnl, 'holding.unrealized_pnl'),
+    unrealized_pnl_base: exactDecimalForDisplay(
+      exactValues.unrealized_pnl_base,
+      'holding.unrealized_pnl_base',
+    ),
+    unrealized_return: exactDecimalForDisplay(exactValues.unrealized_return, 'holding.unrealized_return'),
+    allocation: exactDecimalForDisplay(exactValues.allocation, 'holding.allocation'),
+    exact_values: { ...exactValues, quantity: exactValues.quantity },
+  }
+}
+
+type HoldingsWorkspaceWire = Omit<HoldingsWorkspaceResponse, 'rows' | 'totals'> & {
+  rows: PortfolioHoldingRowWire[]
+  totals: {
+    market_value: unknown
+    day_change_pct: unknown
+    day_change_value: unknown
+    cost_basis: unknown
+    unrealized_pnl_base?: unknown
+    unrealized_return?: unknown
+    allocation: unknown
+  }
+}
+
+function normalizeHoldingsWorkspace(wire: HoldingsWorkspaceWire): HoldingsWorkspaceResponse {
+  const portfolioId = requiredText(wire.portfolio_id, 'holdings.portfolio_id')
+  const publication = objectRecord(wire.publication, 'holdings.publication')
+  requiredText(publication.publication_id, 'holdings.publication.publication_id')
+  const sealedDisplayConfig = objectRecord(
+    wire.sealed_display_config,
+    'holdings.sealed_display_config',
+  )
+  const sealedTaxonomy = normalizeSealedTaxonomyDisplayConfig(
+    sealedDisplayConfig.taxonomy,
+    portfolioId,
+  )
+  const exactValues = {
+    market_value: exactDecimalString(wire.totals.market_value, 'holdings.totals.market_value'),
+    day_change_pct: exactDecimalString(wire.totals.day_change_pct, 'holdings.totals.day_change_pct'),
+    day_change_value: exactDecimalString(wire.totals.day_change_value, 'holdings.totals.day_change_value'),
+    cost_basis: exactDecimalString(wire.totals.cost_basis, 'holdings.totals.cost_basis'),
+    unrealized_pnl_base: exactDecimalString(
+      wire.totals.unrealized_pnl_base,
+      'holdings.totals.unrealized_pnl_base',
+    ),
+    unrealized_return: exactDecimalString(
+      wire.totals.unrealized_return,
+      'holdings.totals.unrealized_return',
+    ),
+    allocation: exactDecimalString(wire.totals.allocation, 'holdings.totals.allocation'),
+  }
+  return {
+    ...wire,
+    portfolio_id: portfolioId,
+    publication: publication as PortfolioDailyPublicationMetadata,
+    sealed_display_config: { taxonomy: sealedTaxonomy },
+    rows: wire.rows.map(normalizeHoldingRow),
+    totals: {
+      ...wire.totals,
+      market_value: exactDecimalForDisplay(exactValues.market_value, 'holdings.totals.market_value'),
+      day_change_pct: exactDecimalForDisplay(exactValues.day_change_pct, 'holdings.totals.day_change_pct'),
+      day_change_value: exactDecimalForDisplay(exactValues.day_change_value, 'holdings.totals.day_change_value'),
+      cost_basis: exactDecimalForDisplay(exactValues.cost_basis, 'holdings.totals.cost_basis'),
+      unrealized_pnl_base: exactDecimalForDisplay(
+        exactValues.unrealized_pnl_base,
+        'holdings.totals.unrealized_pnl_base',
+      ),
+      unrealized_return: exactDecimalForDisplay(
+        exactValues.unrealized_return,
+        'holdings.totals.unrealized_return',
+      ),
+      allocation: exactDecimalForDisplay(exactValues.allocation, 'holdings.totals.allocation'),
+      exact_values: exactValues,
+    },
+  }
+}
+
+export function getWorkspaceSummaryForPortfolio(portfolioId: string) {
+  return fetchJson<PortfolioWorkspaceSummaryWire>(
+    API_BASE_URL,
+    `/api/workspace/summary?portfolio_id=${encodeURIComponent(portfolioId)}`,
+  ).then(normalizeWorkspaceSummary)
+}
+
 export function getHoldingsWorkspace(
-  portfolioId?: string,
+  portfolioId: string,
   filters: HoldingsWorkspaceFilters = {},
 ) {
   const query = buildQuery({
     portfolio_id: portfolioId,
     as_of_date: filters.as_of_date,
-    include_return_series: filters.include_return_series ? 'true' : undefined,
   })
-  return fetchJson<HoldingsWorkspaceResponse>(API_BASE_URL, `/api/workspace/holdings${query}`)
+  return fetchJson<HoldingsWorkspaceWire>(API_BASE_URL, `/api/workspace/holdings${query}`).then(
+    normalizeHoldingsWorkspace,
+  )
 }
 
 export function getPortfolioInstrumentHoldingProjection(
@@ -2288,34 +2914,46 @@ export function getPortfolioInstrumentHoldingProjection(
     instrument_id: instrumentId,
     as_of_date: filters.as_of_date,
   })
-  return fetchJson<PortfolioInstrumentHoldingProjectionResponse>(
+  return fetchJson<
+    Omit<PortfolioInstrumentHoldingProjectionResponse, 'row'> & {
+      row: PortfolioHoldingRowWire | null
+    }
+  >(
     API_BASE_URL,
     `/api/workspace/holdings/instrument${query}`,
+  ).then((wire) => ({
+    ...wire,
+    row: wire.row == null ? null : normalizeHoldingRow(wire.row),
+  }))
+}
+
+export function getPortfolios(options: { includeArchived?: boolean } = {}) {
+  const query = buildQuery({
+    include_archived: options.includeArchived ? 'true' : undefined,
+  })
+  return fetchJson<PortfolioEntryWire[]>(API_BASE_URL, `/api/portfolios${query}`).then((rows) =>
+    rows.map(normalizePortfolioEntry),
   )
 }
 
-export function getPortfolios() {
-  return fetchJson<PortfolioEntryRecord[]>(API_BASE_URL, '/api/portfolios')
-}
-
 export function createPortfolio(payload: PortfolioCreatePayload) {
-  return fetchJson<PortfolioEntryRecord>(API_BASE_URL, '/api/portfolios', {
+  return fetchJson<PortfolioEntryWire>(API_BASE_URL, '/api/portfolios', {
     method: 'POST',
     body: JSON.stringify(payload),
-  })
+  }).then(normalizePortfolioEntry)
 }
 
 export function copyPortfolio(portfolioId: string) {
-  return fetchJson<PortfolioEntryRecord>(API_BASE_URL, `/api/portfolios/${portfolioId}/copy`, {
+  return fetchJson<PortfolioEntryWire>(API_BASE_URL, `/api/portfolios/${portfolioId}/copy`, {
     method: 'POST',
-  })
+  }).then(normalizePortfolioEntry)
 }
 
 export type PortfolioRiskPolicyUpdatePayload = {
   covariance_model_id: PortfolioRiskCovarianceModel
   lookback_days: number
   calculation_frequency: PortfolioRiskCalculationFrequency
-  missing_return_policy: PortfolioResearchMissingReturnPolicy
+  missing_return_policy: PortfolioRiskMissingReturnPolicy
   contribution_mode: PortfolioRiskContributionMode
 }
 
@@ -2330,21 +2968,23 @@ export function updatePortfolioRiskPolicy(portfolioId: string, payload: Portfoli
   })
 }
 
-export function deletePortfolio(portfolioId: string) {
-  return fetchJson<{ portfolio_id: string; deleted: boolean }>(
-    API_BASE_URL,
-    `/api/portfolios/${portfolioId}`,
-    {
-      method: 'DELETE',
-    },
-  )
+export function archivePortfolio(portfolioId: string) {
+  return fetchJson<PortfolioEntryWire>(API_BASE_URL, `/api/portfolios/${portfolioId}/archive`, {
+    method: 'POST',
+  }).then(normalizePortfolioEntry)
+}
+
+export function restorePortfolio(portfolioId: string) {
+  return fetchJson<PortfolioEntryWire>(API_BASE_URL, `/api/portfolios/${portfolioId}/restore`, {
+    method: 'POST',
+  }).then(normalizePortfolioEntry)
 }
 
 export function reorderPortfolios(portfolioIds: string[]) {
-  return fetchJson<PortfolioEntryRecord[]>(API_BASE_URL, '/api/portfolios/reorder', {
+  return fetchJson<PortfolioEntryWire[]>(API_BASE_URL, '/api/portfolios/reorder', {
     method: 'POST',
     body: JSON.stringify({ portfolio_ids: portfolioIds }),
-  })
+  }).then((rows) => rows.map(normalizePortfolioEntry))
 }
 
 export function getPortfolioTableViewStore<TStore>(
@@ -2417,25 +3057,8 @@ export function getPortfolioTransactionsWorkspace(
   )
 }
 
-export function getPortfolioTransactionPositionPreview(
-  portfolioId: string,
-  filters: {
-    account_id: string
-    instrument_id: string
-    as_of_date: string
-    trade_time?: string
-    exclude_transaction_id?: string
-  },
-) {
-  const query = buildQuery(filters)
-  return fetchJson<PortfolioTransactionPositionPreviewResponse>(
-    API_BASE_URL,
-    `/api/portfolios/${portfolioId}/transactions/position-preview${query}`,
-  )
-}
-
 export function getPortfolioPositions(portfolioId: string) {
-  return fetchJson<PortfolioPositionListResponse>(
+  return fetchJson<PortfolioDailyPublishedPositionListResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/positions`,
   )
@@ -2443,10 +3066,10 @@ export function getPortfolioPositions(portfolioId: string) {
 
 export function getPortfolioPositionLots(
   portfolioId: string,
-  filters: PortfolioPositionLotFilters = {},
+  filters: PortfolioDailyPublishedLotFilters = {},
 ) {
   const query = buildQuery(filters)
-  return fetchJson<PortfolioPositionLotListResponse>(
+  return fetchJson<PortfolioDailyPublishedLotListResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/position-lots${query}`,
   )
@@ -2456,14 +3079,17 @@ export function getPortfolioFxRates(portfolioId: string) {
   return fetchJson<PortfolioSharedFxRatesResponse>(
     API_BASE_URL,
     `/api/portfolios/${portfolioId}/fx-rates`,
-  )
-}
-
-export function getTransactionLedgerPostings(portfolioId: string, transactionId: string) {
-  return fetchJson<PortfolioLedgerPostingListResponse>(
-    API_BASE_URL,
-    `/api/portfolios/${portfolioId}/transactions/${transactionId}/ledger-postings`,
-  )
+  ).then((response) => ({
+    ...response,
+    rates: response.rates.map((rate, index) => ({
+      ...rate,
+      rate:
+        exactDecimalString(rate.rate, `fx_rates.rates[${index}].rate`) ??
+        (() => {
+          throw new Error(`fx_rates.rates[${index}].rate is required.`)
+        })(),
+    })),
+  }))
 }
 
 export function getPortfolioTransactions(portfolioId: string, filters: PortfolioTransactionFilters = {}) {
@@ -2483,7 +3109,14 @@ export function getPortfolioTransactionExecutionQuote(
   return fetchJson<PortfolioTransactionExecutionQuoteResponse>(
     API_BASE_URL,
     `/api/portfolios/${encodeURIComponent(portfolioId)}/transactions/execution-quote${query}`,
-  )
+  ).then((response) => ({
+    ...response,
+    value: exactDecimalString(response.value, 'execution_quote.value'),
+    suggested_transaction_price: exactDecimalString(
+      response.suggested_transaction_price,
+      'execution_quote.suggested_transaction_price',
+    ),
+  }))
 }
 
 export function getPortfolioInstrumentPriceChart(
@@ -2501,9 +3134,19 @@ export function getPortfolioInstrumentPriceChart(
   )
 }
 
-export function getPortfolioPerformance(portfolioId: string, filters: PortfolioPerformanceFilters = {}) {
+export function getPortfolioPerformanceReport(
+  portfolioId: string,
+  filters: PortfolioPerformanceFilters & {
+    axis?: PortfolioDailyPublishedAttributionAxis
+    frequency?: PortfolioDailyPublishedCalendarFrequency
+    group_key?: string
+  } = {},
+) {
   const query = buildQuery(filters)
-  return fetchJson<PortfolioPerformanceResponse>(API_BASE_URL, `/api/portfolios/${portfolioId}/performance${query}`)
+  return fetchJson<unknown>(
+    API_BASE_URL,
+    `/api/portfolios/${encodeURIComponent(portfolioId)}/performance/report${query}`,
+  ).then(normalizePublishedPerformanceReport)
 }
 
 export function getPortfolioRiskWorkspace(
@@ -2528,77 +3171,6 @@ export function getPortfolioRiskWorkspace(
   return fetchJson<PortfolioRiskWorkspaceResponse>(
     API_BASE_URL,
     `/api/portfolios/${encodeURIComponent(portfolioId)}/risk/workspace${query}`,
-  )
-}
-
-export function getPortfolioPerformanceComparison(
-  portfolioId: string,
-  filters: {
-    benchmark_instrument_id: string
-    start_date: string
-    end_date: string
-    as_of_date: string
-  },
-) {
-  const query = buildQuery(filters)
-  return fetchJson<PortfolioPerformanceComparisonResponse>(
-    API_BASE_URL,
-    `/api/portfolios/${encodeURIComponent(portfolioId)}/performance/comparison${query}`,
-  )
-}
-
-export function getPortfolioReturnCalendar(
-  portfolioId: string,
-  filters: PortfolioPerformanceFilters & { frequency?: PortfolioReturnCalendarFrequency } = {},
-) {
-  const query = buildQuery(filters)
-  return fetchJson<PortfolioReturnCalendarResponse>(
-    API_BASE_URL,
-    `/api/portfolios/${encodeURIComponent(portfolioId)}/performance/calendar${query}`,
-  )
-}
-
-export function getPortfolioPerformanceCalculation(
-  portfolioId: string,
-  filters: PortfolioPerformanceFilters = {},
-) {
-  const query = buildQuery(filters)
-  return fetchJson<PortfolioPerformanceCalculationResponse>(
-    API_BASE_URL,
-    `/api/portfolios/${portfolioId}/performance/calculation${query}`,
-  )
-}
-
-export function getPortfolioPerformanceCalculationGroups(
-  portfolioId: string,
-  filters: PortfolioPerformanceFilters & { axis?: PortfolioContributionAxis; taxonomy_id?: string } = {},
-) {
-  const query = buildQuery(filters)
-  return fetchJson<PortfolioPerformanceCalculationGroupsResponse>(
-    API_BASE_URL,
-    `/api/portfolios/${portfolioId}/performance/calculation/groups${query}`,
-  )
-}
-
-export function getPortfolioPerformanceContribution(
-  portfolioId: string,
-  filters: PortfolioPerformanceFilters & { axis?: PortfolioContributionAxis; taxonomy_id?: string; group_key?: string } = {},
-) {
-  const query = buildQuery(filters)
-  return fetchJson<PortfolioContributionReportResponse>(
-    API_BASE_URL,
-    `/api/portfolios/${portfolioId}/performance/contribution${query}`,
-  )
-}
-
-export function getPortfolioPerformanceBoundaryHoldings(
-  portfolioId: string,
-  filters: PortfolioPerformanceFilters = {},
-) {
-  const query = buildQuery(filters)
-  return fetchJson<PortfolioPeriodBoundaryHoldingsResponse>(
-    API_BASE_URL,
-    `/api/portfolios/${portfolioId}/performance/boundary-holdings${query}`,
   )
 }
 
@@ -2654,21 +3226,21 @@ export function deletePortfolioInstrumentUniverseRecord(portfolioId: string, ins
   )
 }
 
-export function getPortfolioResearchWorkbench(portfolioId: string, selectedRunId?: string) {
+export function getPortfolioAllocationResearchWorkbench(portfolioId: string, selectedRunId?: string) {
   const query = buildQuery({ selected_run_id: selectedRunId })
-  return fetchJson<PortfolioResearchWorkbenchResponse>(
+  return fetchJson<PortfolioAllocationResearchWorkbenchResponse>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/research/workbench${query}`,
+    `/api/portfolios/${portfolioId}/allocation-research/workbench${query}`,
   )
 }
 
-export function updatePortfolioResearchSettings(
+export function updatePortfolioAllocationResearchSettings(
   portfolioId: string,
-  payload: PortfolioResearchSettingsUpdatePayload,
+  payload: PortfolioAllocationResearchSettingsUpdatePayload,
 ) {
-  return fetchJson<PortfolioResearchSettingsRecord>(
+  return fetchJson<PortfolioAllocationResearchSettingsRecord>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/research/settings`,
+    `/api/portfolios/${portfolioId}/allocation-research/settings`,
     {
       method: 'PUT',
       body: JSON.stringify(payload),
@@ -2676,13 +3248,13 @@ export function updatePortfolioResearchSettings(
   )
 }
 
-export function createPortfolioResearchRun(
+export function createPortfolioAllocationResearchRun(
   portfolioId: string,
-  payload: PortfolioResearchRunCreatePayload = {},
+  payload: PortfolioAllocationResearchRunCreatePayload = {},
 ) {
-  return fetchJson<PortfolioResearchRunRecord>(
+  return fetchJson<PortfolioAllocationResearchRunRecord>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/research/runs`,
+    `/api/portfolios/${portfolioId}/allocation-research/runs`,
     {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -2690,23 +3262,23 @@ export function createPortfolioResearchRun(
   )
 }
 
-export function getPortfolioResearchBacktestBenchmarkComparison(
+export function getPortfolioPolicyReplayBenchmarkComparison(
   portfolioId: string,
-  researchRunId: string,
+  allocationResearchRunId: string,
   benchmarkInstrumentId: string,
 ) {
   const query = buildQuery({ benchmark_instrument_id: benchmarkInstrumentId })
-  return fetchJson<PortfolioResearchBacktestBenchmarkComparisonResponse>(
+  return fetchJson<PortfolioPolicyReplayBenchmarkComparisonResponse>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/research/runs/${researchRunId}/benchmark-comparison${query}`,
+    `/api/portfolios/${portfolioId}/allocation-research/runs/${allocationResearchRunId}/policy-replay/benchmark-comparison${query}`,
   )
 }
 
-export function getPortfolioResearchArtifactContent(portfolioId: string, path: string) {
+export function getPortfolioAllocationResearchArtifactContent(portfolioId: string, path: string) {
   const query = buildQuery({ path })
-  return fetchJson<PortfolioResearchArtifactContentResponse>(
+  return fetchJson<PortfolioAllocationResearchArtifactContentResponse>(
     API_BASE_URL,
-    `/api/portfolios/${portfolioId}/research/artifacts/content${query}`,
+    `/api/portfolios/${portfolioId}/allocation-research/artifacts/content${query}`,
   )
 }
 

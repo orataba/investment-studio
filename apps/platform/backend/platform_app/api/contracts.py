@@ -2,24 +2,39 @@ from base64 import b64decode
 from datetime import date, datetime
 from decimal import Decimal
 import binascii
-from typing import Literal
+import re
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from portfolio_ops_instrument_core.models import InstrumentIdentifier as PlatformInstrumentIdentifier
-from portfolio_ops_instrument_core.models import CorporateActionEvent as PlatformCorporateActionEvent
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    WithJsonSchema,
+    field_validator,
+    model_validator,
+)
+from portfolio_ops_instrument_core.models import (
+    InstrumentIdentifier as PlatformInstrumentIdentifier,
+)
+from portfolio_ops_instrument_core.models import (
+    CorporateActionEvent as PlatformCorporateActionEvent,
+)
 from portfolio_ops_instrument_core.models import (
     CanonicalCurrencyCode,
     CanonicalQuoteResolution,
     DataStatus,
-    IdentifierType,
     InstrumentType,
     MetricFamily,
     QuoteBasis,
+    QuoteNumericScaleState,
     QuoteRole,
     QuoteFreshnessPolicy,
     SourceObservationStatus,
 )
-from portfolio_ops_instrument_core.models import QuoteSelectionPolicy as PlatformQuoteSelectionPolicy
+from portfolio_ops_instrument_core.models import (
+    QuoteSelectionPolicy as PlatformQuoteSelectionPolicy,
+)
 
 
 class PlatformAppCard(BaseModel):
@@ -36,6 +51,7 @@ class PlatformAppsResponse(BaseModel):
     platform_name: str
     apps: list[PlatformAppCard]
 
+
 SourceMode = Literal["manual", "email", "api"]
 RefreshChannel = Literal["configured", "email", "tushare", "all"]
 SupportedCurrency = Literal["USD", "HKD", "CNY"]
@@ -49,6 +65,26 @@ EmailParserProfile = Literal[
 SUPPORTED_FX_CURRENCIES: tuple[SupportedCurrency, ...] = ("USD", "HKD", "CNY")
 MAX_NAV_IMPORT_BYTES = 25 * 1024 * 1024
 MAX_NAV_IMPORT_BASE64_CHARS = ((MAX_NAV_IMPORT_BYTES + 2) // 3) * 4
+PLAIN_DECIMAL_INPUT_PATTERN = r"^[+-]?(?:0|[1-9]\d*)(?:\.\d+)?$"
+
+
+def _require_plain_decimal_json_string(value: object) -> object:
+    if not isinstance(value, str):
+        raise ValueError("Decimal inputs must be JSON strings.")
+    normalized = value.strip()
+    if not re.fullmatch(PLAIN_DECIMAL_INPUT_PATTERN, normalized):
+        raise ValueError("Decimal inputs must use plain decimal notation.")
+    return normalized
+
+
+PlainDecimalInput = Annotated[
+    Decimal,
+    BeforeValidator(_require_plain_decimal_json_string),
+    WithJsonSchema(
+        {"type": "string", "pattern": PLAIN_DECIMAL_INPUT_PATTERN},
+        mode="validation",
+    ),
+]
 
 
 class PlatformMarketDataPoint(BaseModel):
@@ -62,6 +98,9 @@ class PlatformMarketDataPoint(BaseModel):
     quote_basis: QuoteBasis
     as_of_date: date
     value: Decimal
+    value_input_scale: int = Field(ge=0)
+    numeric_scale_state: QuoteNumericScaleState
+    payload_schema_version: Literal[1, 2]
     currency: CanonicalCurrencyCode
     source_ref: str | None = None
     status: Literal["complete"] = "complete"
@@ -81,6 +120,9 @@ class PlatformQuoteObservationRevision(BaseModel):
     revision_id: str = Field(min_length=1)
     revision_number: int = Field(ge=1)
     value: Decimal | None = None
+    value_input_scale: int | None = Field(default=None, ge=0)
+    numeric_scale_state: QuoteNumericScaleState | None = None
+    payload_schema_version: Literal[1, 2]
     source_ref: str | None = None
     status: Literal["complete", "partial", "rejected", "withdrawn"]
     source_published_at: datetime | None = None
@@ -274,7 +316,7 @@ class PlatformMarketDataUpsertRequest(BaseModel):
     metric_family: MetricFamily
     quote_basis: QuoteBasis
     as_of_date: date
-    value: Decimal
+    value: PlainDecimalInput
     currency: CanonicalCurrencyCode
     source_ref: str | None = None
     status: SourceObservationStatus = "complete"
@@ -283,7 +325,14 @@ class PlatformMarketDataUpsertRequest(BaseModel):
     @model_validator(mode="after")
     def validate_quote_basis(self) -> "PlatformMarketDataUpsertRequest":
         allowed_bases: dict[str, set[str]] = {
-            "price": {"last", "close", "adjusted_close", "clean_price", "dirty_price", "par"},
+            "price": {
+                "last",
+                "close",
+                "adjusted_close",
+                "clean_price",
+                "dirty_price",
+                "par",
+            },
             "nav": {"official_nav", "total_return_nav"},
             "fx": {"spot"},
         }
@@ -315,7 +364,7 @@ class PlatformFxRateUpsertRequest(BaseModel):
 
     base_currency: SupportedCurrency
     quote_currency: SupportedCurrency
-    rate: Decimal = Field(gt=0)
+    rate: PlainDecimalInput = Field(gt=0)
     as_of_date: date
     source_ref: str | None = None
     status: DataStatus = "complete"
@@ -434,7 +483,9 @@ class PlatformNavImportPreviewRequest(BaseModel):
             (self.file_content_base64 or "").strip()
         )
         if has_text == has_file:
-            raise ValueError("Provide either raw_text or file_name + file_content_base64.")
+            raise ValueError(
+                "Provide either raw_text or file_name + file_content_base64."
+            )
         return self
 
     def decoded_bytes(self) -> bytes | None:

@@ -11,10 +11,9 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field, fields
 from datetime import date, datetime, time, timezone
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import json
-import math
 from typing import Literal, Mapping, Sequence, TypeAlias, cast
 from uuid import uuid4
 
@@ -42,7 +41,7 @@ TransactionActorSource: TypeAlias = Literal[
     "migration",
 ]
 InitialRevisionKind: TypeAlias = Literal["baseline", "create"]
-DecimalInput: TypeAlias = Decimal | int | float | str
+DecimalInput: TypeAlias = Decimal | int | str
 
 _SOURCE_KINDS = frozenset({"manual", "import", "reconciliation", "migration", "system"})
 _ACTOR_TYPES = frozenset({"user", "service", "migration"})
@@ -58,10 +57,18 @@ _DECIMAL_SCALES = {
     "price": 12,
     "gross_amount": 8,
     "counter_amount": 8,
-    "fx_rate": 18,
+    "quoted_fx_rate": 18,
     "fees": 8,
     "taxes": 8,
 }
+_NUMERIC_SCALE_STATES = frozenset({"declared", "legacy_inferred"})
+_CONSIDERATION_BASES = frozenset({"exact_quantity_price", "source_reported"})
+_METHODOLOGY_OWNED_PER_UNIT_INSTRUMENT_TYPES = frozenset(
+    {"equity", "fund", "etf", "exchange_traded_fund"}
+)
+_PRICE_AMOUNT_TRANSACTION_TYPES = frozenset(
+    {"buy", "sell", "dividend_reinvestment", "opening_balance"}
+)
 
 
 class TransactionRevisionError(RuntimeError):
@@ -166,11 +173,65 @@ def _time_value(value: object, field_name: str) -> time:
     return value
 
 
-def _decimal_value(value: object, *, field_name: str, scale: int) -> Decimal:
-    if isinstance(value, bool) or not isinstance(value, (Decimal, int, float, str)):
+def _canonical_decimal_string(value: Decimal) -> str:
+    """Render a finite Decimal without context rounding or presentation zeroes."""
+
+    if value.is_zero():
+        return "0"
+    sign, digits, exponent = value.as_tuple()
+    normalized_digits = list(digits)
+    while normalized_digits and normalized_digits[-1] == 0:
+        normalized_digits.pop()
+        exponent += 1
+    coefficient = "".join(str(digit) for digit in normalized_digits) or "0"
+    if exponent >= 0:
+        rendered = coefficient + ("0" * exponent)
+    else:
+        split_at = len(coefficient) + exponent
+        if split_at > 0:
+            rendered = f"{coefficient[:split_at]}.{coefficient[split_at:]}"
+        else:
+            rendered = f"0.{('0' * -split_at)}{coefficient}"
+    return f"-{rendered}" if sign else rendered
+
+
+def _decimal_fractional_digits(value: Decimal) -> int:
+    if value.is_zero():
+        return 0
+    _sign, digits, exponent = value.as_tuple()
+    normalized_digits = list(digits)
+    while normalized_digits and normalized_digits[-1] == 0:
+        normalized_digits.pop()
+        exponent += 1
+    return max(-exponent, 0)
+
+
+def _decimal_integer_digits(value: Decimal) -> int:
+    if value.is_zero():
+        return 0
+    _sign, digits, exponent = value.as_tuple()
+    normalized_digits = list(digits)
+    while normalized_digits and normalized_digits[-1] == 0:
+        normalized_digits.pop()
+        exponent += 1
+    return max(len(normalized_digits) + exponent, 0)
+
+
+def _decimal_value_and_input_scale(
+    value: object,
+    *,
+    field_name: str,
+    scale: int,
+) -> tuple[Decimal, int]:
+    if isinstance(value, float):
+        raise TransactionRevisionPayloadError(
+            f"{field_name} must not cross the fact boundary as a binary float"
+        )
+    if isinstance(value, bool) or not isinstance(
+        value,
+        (Decimal, int, str),
+    ):
         raise TransactionRevisionPayloadError(f"{field_name} must be decimal-compatible")
-    if isinstance(value, float) and not math.isfinite(value):
-        raise TransactionRevisionPayloadError(f"{field_name} must be finite")
     try:
         decimal_value = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
@@ -178,36 +239,61 @@ def _decimal_value(value: object, *, field_name: str, scale: int) -> Decimal:
     if not decimal_value.is_finite():
         raise TransactionRevisionPayloadError(f"{field_name} must be finite")
 
-    quantum = Decimal(1).scaleb(-scale)
-    try:
-        with localcontext() as context:
-            context.prec = 80
-            quantized = decimal_value.quantize(quantum)
-    except InvalidOperation as exc:
-        raise TransactionRevisionPayloadError(f"{field_name} exceeds Numeric(38, {scale})") from exc
-    if quantized != decimal_value:
+    input_scale = max(-decimal_value.as_tuple().exponent, 0)
+    if input_scale > scale:
+        raise TransactionRevisionPayloadError(
+            f"{field_name} input declares more than {scale} decimal places"
+        )
+    if _decimal_fractional_digits(decimal_value) > scale:
         raise TransactionRevisionPayloadError(
             f"{field_name} has more than {scale} decimal places; implicit rounding is forbidden"
         )
-    if quantized == 0:
-        quantized = quantized.copy_abs()
-    integer_part = format(abs(quantized), "f").partition(".")[0].lstrip("0")
-    if len(integer_part) > 38 - scale:
+    if _decimal_integer_digits(decimal_value) > 38 - scale:
         raise TransactionRevisionPayloadError(f"{field_name} exceeds Numeric(38, {scale})")
-    return quantized
+    canonical = Decimal(_canonical_decimal_string(decimal_value))
+    return canonical, input_scale
 
 
-def _optional_decimal(value: object, *, field_name: str, scale: int) -> Decimal | None:
-    return None if value is None else _decimal_value(value, field_name=field_name, scale=scale)
+def _input_scale(
+    value: object,
+    *,
+    field_name: str,
+    max_scale: int,
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TransactionRevisionPayloadError(
+            f"{field_name} must be an integer between 0 and {max_scale}"
+        )
+    if not 0 <= value <= max_scale:
+        raise TransactionRevisionPayloadError(
+            f"{field_name} must be between 0 and {max_scale}"
+        )
+    return value
+
+
+def _exact_decimal_product(left: Decimal, right: Decimal) -> Decimal:
+    """Multiply two finite decimals without consulting the ambient context."""
+
+    left_sign, left_digits, left_exponent = left.as_tuple()
+    right_sign, right_digits, right_exponent = right.as_tuple()
+    left_coefficient = int("".join(str(digit) for digit in left_digits) or "0")
+    right_coefficient = int("".join(str(digit) for digit in right_digits) or "0")
+    coefficient = left_coefficient * right_coefficient
+    if left_sign != right_sign:
+        coefficient = -coefficient
+    rendered = Decimal((1 if coefficient < 0 else 0, tuple(
+        int(character) for character in str(abs(coefficient))
+    ), left_exponent + right_exponent))
+    return rendered.copy_abs() if rendered.is_zero() else rendered
 
 
 def _json_value(value: object, path: str = "instrument_snapshot_json") -> object:
     if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float):
-        if not math.isfinite(value):
-            raise TransactionRevisionPayloadError(f"{path} contains a non-finite number")
-        return value
+        raise TransactionRevisionPayloadError(
+            f"{path} contains a binary float; exact decimals must be canonical strings"
+        )
     if isinstance(value, list | tuple):
         return [_json_value(item, f"{path}[]") for item in value]
     if isinstance(value, Mapping):
@@ -297,7 +383,16 @@ class TransactionFactPayload:
     quantity: DecimalInput | None = None
     price: DecimalInput | None = None
     counter_amount: DecimalInput | None = None
-    fx_rate: DecimalInput | None = None
+    quoted_fx_rate: DecimalInput | None = None
+    consideration_basis: str | None = None
+    numeric_scale_state: str = "declared"
+    quantity_input_scale: int | None = None
+    price_input_scale: int | None = None
+    gross_amount_input_scale: int | None = None
+    counter_amount_input_scale: int | None = None
+    quoted_fx_rate_input_scale: int | None = None
+    fees_input_scale: int | None = None
+    taxes_input_scale: int | None = None
     transfer_scope: str | None = None
     transfer_object_type: str | None = None
     transfer_group_id: str | None = None
@@ -325,20 +420,118 @@ class TransactionFactPayload:
             "counterparty_account_id",
         ):
             object.__setattr__(self, name, _optional_text(getattr(self, name), name))
+        consideration_basis = _optional_text(
+            self.consideration_basis,
+            "consideration_basis",
+        )
+        if (
+            consideration_basis is not None
+            and consideration_basis not in _CONSIDERATION_BASES
+        ):
+            raise TransactionRevisionPayloadError(
+                f"unsupported consideration_basis: {consideration_basis}"
+            )
+        object.__setattr__(self, "consideration_basis", consideration_basis)
+        numeric_scale_state = _required_text(
+            self.numeric_scale_state,
+            "numeric_scale_state",
+        )
+        if numeric_scale_state not in _NUMERIC_SCALE_STATES:
+            raise TransactionRevisionPayloadError(
+                f"unsupported numeric_scale_state: {numeric_scale_state}"
+            )
+        object.__setattr__(self, "numeric_scale_state", numeric_scale_state)
         if self.instrument_snapshot_json is not None:
             snapshot = _json_value(self.instrument_snapshot_json)
             if not isinstance(snapshot, dict):
                 raise TransactionRevisionPayloadError("instrument_snapshot_json must be an object")
             object.__setattr__(self, "instrument_snapshot_json", snapshot)
         for name, scale in _DECIMAL_SCALES.items():
-            object.__setattr__(
-                self,
-                name,
-                _optional_decimal(getattr(self, name), field_name=name, scale=scale),
+            value = getattr(self, name)
+            scale_field = f"{name}_input_scale"
+            declared_scale = getattr(self, scale_field)
+            if value is None:
+                if declared_scale is not None:
+                    raise TransactionRevisionPayloadError(
+                        f"{scale_field} must be null when {name} is null"
+                    )
+                continue
+            decimal_value, inferred_scale = _decimal_value_and_input_scale(
+                value,
+                field_name=name,
+                scale=scale,
             )
+            resolved_scale = (
+                inferred_scale
+                if declared_scale is None
+                else _input_scale(
+                    declared_scale,
+                    field_name=scale_field,
+                    max_scale=scale,
+                )
+            )
+            if _decimal_fractional_digits(decimal_value) > resolved_scale:
+                raise TransactionRevisionPayloadError(
+                    f"{scale_field} cannot represent {name} exactly"
+                )
+            object.__setattr__(self, name, decimal_value)
+            object.__setattr__(self, scale_field, resolved_scale)
         for required_decimal in ("gross_amount", "fees", "taxes"):
             if getattr(self, required_decimal) is None:
                 raise TransactionRevisionPayloadError(f"{required_decimal} is required")
+        instrument_type = (
+            str(self.instrument_snapshot_json.get("instrument_type") or "")
+            .strip()
+            .lower()
+            if self.instrument_snapshot_json is not None
+            else ""
+        )
+        uses_security_consideration = (
+            self.transaction_type in _PRICE_AMOUNT_TRANSACTION_TYPES
+            and self.instrument_id is not None
+        )
+        if uses_security_consideration:
+            if self.consideration_basis is None:
+                raise TransactionRevisionPayloadError(
+                    f"{self.transaction_type} requires consideration_basis"
+                )
+            if self.quantity is None:
+                raise TransactionRevisionPayloadError(
+                    f"{self.transaction_type} requires quantity"
+                )
+        elif self.consideration_basis is not None:
+            raise TransactionRevisionPayloadError(
+                "consideration_basis is only valid for security price/amount transactions"
+            )
+        if self.consideration_basis == "exact_quantity_price":
+            if instrument_type not in _METHODOLOGY_OWNED_PER_UNIT_INSTRUMENT_TYPES:
+                raise TransactionRevisionPayloadError(
+                    "exact_quantity_price requires a methodology-owned per-unit "
+                    "fund, ETF, or equity contract"
+                )
+            if self.quantity is None or self.price is None:
+                raise TransactionRevisionPayloadError(
+                    "exact_quantity_price requires quantity and price"
+                )
+            expected_gross_amount = _exact_decimal_product(
+                self.quantity,
+                self.price,
+            )
+            if self.gross_amount != expected_gross_amount:
+                raise TransactionRevisionPayloadError(
+                    "gross_amount must exactly equal the amount implied by "
+                    "quantity, price, contract_multiplier=1, and price_factor=1 "
+                    f"for {instrument_type}"
+                )
+        if self.transaction_type == "fx_conversion":
+            if self.counter_amount is None:
+                raise TransactionRevisionPayloadError(
+                    "fx_conversion requires authoritative counter_amount"
+                )
+        elif self.counter_amount is not None or self.quoted_fx_rate is not None:
+            raise TransactionRevisionPayloadError(
+                "counter_amount and quoted_fx_rate are only valid for fx_conversion"
+            )
         object.__setattr__(self, "currency", _required_text(self.currency, "currency").upper())
         if self.note is not None and not isinstance(self.note, str):
             raise TransactionRevisionPayloadError("note must be a string or null")
@@ -365,7 +558,7 @@ def _canonical_scalar(value: object, *, field_name: str) -> object:
     if value is None or isinstance(value, (str, bool, int, float, list, dict)):
         return value
     if isinstance(value, Decimal):
-        return format(value, f".{_DECIMAL_SCALES[field_name]}f")
+        return _canonical_decimal_string(value)
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
     if isinstance(value, date):
@@ -555,9 +748,18 @@ _TRANSFER_MIRRORED_FIELDS = (
     "price",
     "gross_amount",
     "counter_amount",
-    "fx_rate",
+    "quoted_fx_rate",
     "fees",
     "taxes",
+    "consideration_basis",
+    "numeric_scale_state",
+    "quantity_input_scale",
+    "price_input_scale",
+    "gross_amount_input_scale",
+    "counter_amount_input_scale",
+    "quoted_fx_rate_input_scale",
+    "fees_input_scale",
+    "taxes_input_scale",
     "currency",
     "transfer_scope",
     "transfer_object_type",
@@ -686,17 +888,20 @@ def _validate_transfer_delete_commands(
             )
 
 
-def append_transaction_revision_batch(
+def append_transaction_revision_batch_unchecked(
     session: Session,
     *,
     portfolio_id: str,
     context: TransactionRevisionContext,
     mutations: Sequence[TransactionRevisionMutation],
 ) -> AppendedTransactionRevisionBatch:
-    """Preflight and append one atomic revision group, without committing.
+    """Low-level append only; it does not prove the resulting book replayable.
 
-    Existing transaction identities are expected to be locked by the caller.
-    The complete batch is validated before any ORM object is added to the session.
+    Production callers must hold the portfolio mutation lock and run
+    ``validate_prospective_transaction_history`` in the same database
+    transaction before committing.  Direct use is otherwise reserved for
+    fixture, migration, and database-constraint tests.  The complete batch is
+    structurally validated before any ORM object is added to the session.
     """
 
     portfolio_id = _required_text(portfolio_id, "portfolio_id")
@@ -895,44 +1100,6 @@ def append_transaction_revision_batch(
         revisions=tuple(revisions),
         created_identities=tuple(created_identities),
     )
-
-
-def append_transaction_create(
-    session: Session,
-    *,
-    portfolio_id: str,
-    context: TransactionRevisionContext,
-    command: CreateTransactionRevision,
-) -> TransactionRevisionRecordModel:
-    return append_transaction_revision_batch(
-        session, portfolio_id=portfolio_id, context=context, mutations=(command,)
-    ).revisions[0]
-
-
-def append_transaction_amendment(
-    session: Session,
-    *,
-    portfolio_id: str,
-    context: TransactionRevisionContext,
-    command: AmendTransactionRevision,
-) -> TransactionRevisionRecordModel:
-    return append_transaction_revision_batch(
-        session, portfolio_id=portfolio_id, context=context, mutations=(command,)
-    ).revisions[0]
-
-
-def append_transaction_delete(
-    session: Session,
-    *,
-    portfolio_id: str,
-    context: TransactionRevisionContext,
-    command: DeleteTransactionRevision,
-) -> TransactionRevisionRecordModel:
-    return append_transaction_revision_batch(
-        session, portfolio_id=portfolio_id, context=context, mutations=(command,)
-    ).revisions[0]
-
-
 def get_latest_transaction_revision(
     session: Session, *, portfolio_id: str, transaction_id: str
 ) -> TransactionRevisionRecordModel | None:
@@ -1065,10 +1232,7 @@ __all__ = [
     "TransactionRevisionHistoryEntry",
     "TransactionRevisionNoOpError",
     "TransactionRevisionPayloadError",
-    "append_transaction_amendment",
-    "append_transaction_create",
-    "append_transaction_delete",
-    "append_transaction_revision_batch",
+    "append_transaction_revision_batch_unchecked",
     "canonical_transaction_payload",
     "get_current_transaction",
     "get_latest_transaction_revision",

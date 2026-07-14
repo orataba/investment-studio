@@ -1,6 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Response, status
+from sqlalchemy.orm import Session
 
 from portfolio_app.core.settings import get_settings
+from portfolio_app.db.session import get_db_session
+from portfolio_app.services.readiness import check_portfolio_readiness
 
 router = APIRouter()
 
@@ -13,3 +16,14 @@ def health() -> dict[str, str]:
         "app": settings.app_name,
         "environment": settings.environment,
     }
+
+
+@router.get("/readiness")
+def readiness(
+    response: Response,
+    session: Session = Depends(get_db_session),
+) -> dict[str, object]:
+    report = check_portfolio_readiness(session, get_settings())
+    if not report.ready:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return report.as_dict()

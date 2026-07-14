@@ -10,7 +10,10 @@ from pathlib import Path
 APP_SERVICES = (
     "platform-api",
     "watchlist-api",
+    "watchlist-worker",
+    "platform-outbox-worker",
     "portfolio-api",
+    "portfolio-worker",
     "platform-web",
     "watchlist-web",
     "portfolio-web",
@@ -65,6 +68,7 @@ def main() -> int:
 
     for service in APP_SERVICES:
         label = f"{args.label_prefix}.{service}"
+        is_worker = service.endswith("-worker")
         payload: dict[str, object] = {
             "Label": label,
             "ProgramArguments": [
@@ -78,7 +82,7 @@ def main() -> int:
             "WorkingDirectory": str(project_root),
             "RunAtLoad": True,
             "KeepAlive": True,
-            "ProcessType": "Interactive",
+            "ProcessType": "Background" if is_worker else "Interactive",
             "ThrottleInterval": 5,
             "Umask": 0o077,
             "EnvironmentVariables": {

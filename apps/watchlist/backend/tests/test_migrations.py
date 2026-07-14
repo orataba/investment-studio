@@ -49,6 +49,91 @@ def test_watchlist_migration_snapshots_do_not_import_runtime_modules() -> None:
         _assert_no_runtime_imports(snapshot_path)
 
 
+def test_recalc_source_event_index_metadata_matches_migration_contract() -> None:
+    from watchlist_app.db.models.recalc import RecalcJob
+
+    index = next(
+        item
+        for item in RecalcJob.__table__.indexes
+        if item.name == "uq_recalc_job_source_event_identity"
+    )
+    assert index.unique is True
+    assert [column.name for column in index.columns] == [
+        "trigger_ref_type",
+        "trigger_ref_id",
+        "instrument_id",
+        "job_type",
+    ]
+    for dialect_name in ("sqlite", "postgresql"):
+        predicate = str(index.dialect_options[dialect_name]["where"]).lower()
+        assert "trigger_ref_type is not null" in predicate
+        assert "trim(trigger_ref_type) <> ''" in predicate
+        assert "trigger_ref_id is not null" in predicate
+        assert "trim(trigger_ref_id) <> ''" in predicate
+
+
+def test_recalc_retry_metadata_matches_migration_contract() -> None:
+    from watchlist_app.db.models.recalc import RecalcJob, RecalcWorkerRegistration
+
+    table = RecalcJob.__table__
+    assert table.c.attempt_count.nullable is False
+    assert table.c.max_attempts.nullable is False
+    assert table.c.available_at.nullable is False
+    assert any(
+        constraint.name == "ck_recalc_job_attempt_budget"
+        for constraint in table.constraints
+    )
+    claim_index = next(
+        index for index in table.indexes if index.name == "idx_recalc_job_claim"
+    )
+    assert [column.name for column in claim_index.columns] == [
+        "job_status",
+        "available_at",
+        "priority",
+        "enqueued_at",
+    ]
+    assert {
+        "last_successful_poll_at",
+        "last_poll_error",
+        "worker_state",
+        "stopped_at",
+    }.issubset(RecalcWorkerRegistration.__table__.c.keys())
+    assert any(
+        constraint.name == "ck_recalc_worker_registration_lifecycle"
+        for constraint in RecalcWorkerRegistration.__table__.constraints
+    )
+
+
+def test_recalc_inbox_generation_metadata_matches_migration_contract() -> None:
+    from watchlist_app.db.models.recalc import (
+        RecalcInvalidationState,
+        RecalcJob,
+        RecalcSourceEventInbox,
+    )
+
+    assert RecalcJob.__table__.c.claimed_generation.nullable is True
+    assert any(
+        constraint.name == "ck_recalc_job_claimed_generation"
+        for constraint in RecalcJob.__table__.constraints
+    )
+    assert any(
+        constraint.name == "uq_recalc_source_event_inbox_identity"
+        for constraint in RecalcSourceEventInbox.__table__.constraints
+    )
+    assert any(
+        constraint.name == "ck_recalc_source_event_inbox_lifecycle"
+        for constraint in RecalcSourceEventInbox.__table__.constraints
+    )
+    assert set(RecalcInvalidationState.__table__.primary_key.columns.keys()) == {
+        "instrument_id",
+        "job_type",
+    }
+    assert any(
+        constraint.name == "ck_recalc_invalidation_state_generation_order"
+        for constraint in RecalcInvalidationState.__table__.constraints
+    )
+
+
 def test_watchlist_migrations_upgrade_an_empty_database(tmp_path, monkeypatch) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'watchlist-migrations.db'}"
     monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
@@ -85,7 +170,49 @@ def test_watchlist_migrations_upgrade_an_empty_database(tmp_path, monkeypatch) -
         "exposure_updated_at",
     }.isdisjoint(watchlist_row_columns)
     recalc_columns = {column["name"] for column in inspector.get_columns("recalc_job")}
-    assert {"heartbeat_at", "lease_token"}.issubset(recalc_columns)
+    assert {
+        "heartbeat_at",
+        "lease_token",
+        "attempt_count",
+        "max_attempts",
+        "available_at",
+        "claimed_generation",
+    }.issubset(recalc_columns)
+    assert inspector.has_table("recalc_worker_registration")
+    assert inspector.has_table("recalc_source_event_inbox")
+    assert inspector.has_table("recalc_invalidation_state")
+    worker_columns = {
+        column["name"]
+        for column in inspector.get_columns("recalc_worker_registration")
+    }
+    assert worker_columns == {
+        "worker_id",
+        "instance_id",
+        "worker_version",
+        "started_at",
+        "last_heartbeat_at",
+        "last_successful_poll_at",
+        "last_poll_error",
+        "worker_state",
+        "stopped_at",
+        "metadata_json",
+    }
+    worker_indexes = {
+        index["name"]: index
+        for index in inspector.get_indexes("recalc_worker_registration")
+    }
+    assert worker_indexes["idx_recalc_worker_registration_last_heartbeat"][
+        "unique"
+    ] == 0
+    recalc_indexes = {
+        index["name"]: index for index in inspector.get_indexes("recalc_job")
+    }
+    assert recalc_indexes["idx_recalc_job_claim"]["column_names"] == [
+        "job_status",
+        "available_at",
+        "priority",
+        "enqueued_at",
+    ]
     assert not inspector.has_table("nav_fact")
     for table_name, canonical_timestamp in {
         "instrument_summary_read_model": "last_recalculated_at",
@@ -118,15 +245,222 @@ def test_watchlist_migrations_upgrade_an_empty_database(tmp_path, monkeypatch) -
             text("SELECT COUNT(*) FROM field_registry WHERE field_key = 'aum'")
         ) == 0
 
-    expected_unique_indexes = {
-        "recalc_job": "uq_recalc_job_running_instrument",
-        "performance_snapshot": "uq_performance_snapshot_current_instrument",
-        "risk_snapshot": "uq_risk_snapshot_current_instrument",
-        "instrument_research_rating": "uq_research_rating_current_instrument",
-    }
-    for table_name, index_name in expected_unique_indexes.items():
+    expected_unique_indexes = (
+        ("recalc_job", "uq_recalc_job_running_instrument"),
+        ("recalc_job", "uq_recalc_job_source_event_identity"),
+        ("performance_snapshot", "uq_performance_snapshot_current_instrument"),
+        ("risk_snapshot", "uq_risk_snapshot_current_instrument"),
+        ("instrument_research_rating", "uq_research_rating_current_instrument"),
+    )
+    for table_name, index_name in expected_unique_indexes:
         indexes = {index["name"]: index for index in inspector.get_indexes(table_name)}
         assert indexes[index_name]["unique"] == 1
+
+
+def test_recalc_retry_migration_backfills_existing_jobs_without_deleting_audit(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'watchlist-recalc-retry.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+
+    from watchlist_app.core.settings import get_settings
+
+    get_settings.cache_clear()
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "20260714_0032")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO instrument_detail (
+                    instrument_id, instrument_type, detail_view_type,
+                    instrument_name, is_active, metadata_json
+                ) VALUES (
+                    'retry-migration-fund', 'fund', 'fund',
+                    'Retry Migration Fund', 1, '{}'
+                )
+                """
+            )
+        )
+        for status in ("queued", "running", "completed", "failed"):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO recalc_job (
+                        recalc_job_id, job_type, instrument_id, trigger_type,
+                        trigger_ref_type, trigger_ref_id, job_status, priority,
+                        dedupe_key, payload_json, enqueued_at
+                    ) VALUES (
+                        :job_id, 'all', 'retry-migration-fund', 'migration',
+                        'migration_event', :trigger_ref_id, :status, 100,
+                        :dedupe_key, '{}', '2026-07-14 03:00:00'
+                    )
+                    """
+                ),
+                {
+                    "job_id": f"retry-{status}",
+                    "trigger_ref_id": f"retry-{status}",
+                    "status": status,
+                    "dedupe_key": f"retry-migration:{status}",
+                },
+            )
+
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT recalc_job_id, attempt_count, max_attempts, available_at,
+                       claimed_generation
+                FROM recalc_job
+                WHERE instrument_id = 'retry-migration-fund'
+                ORDER BY recalc_job_id
+                """
+            )
+        ).mappings().all()
+        inbox_rows = connection.execute(
+            text(
+                """
+                SELECT source_event_inbox_id, generation, consumed_at
+                FROM recalc_source_event_inbox
+                WHERE instrument_id = 'retry-migration-fund'
+                ORDER BY generation
+                """
+            )
+        ).mappings().all()
+        state = connection.execute(
+            text(
+                """
+                SELECT requested_generation, completed_generation
+                FROM recalc_invalidation_state
+                WHERE instrument_id = 'retry-migration-fund'
+                  AND job_type = 'all'
+                """
+            )
+        ).one()
+    assert {row["recalc_job_id"] for row in rows} == {
+        "retry-queued",
+        "retry-running",
+        "retry-completed",
+        "retry-failed",
+    }
+    assert {row["recalc_job_id"]: row["attempt_count"] for row in rows} == {
+        "retry-completed": 1,
+        "retry-failed": 3,
+        "retry-queued": 0,
+        "retry-running": 1,
+    }
+    assert all(row["max_attempts"] == 3 for row in rows)
+    assert all(row["available_at"] is not None for row in rows)
+    assert len(inbox_rows) == 4
+    assert [row["generation"] for row in inbox_rows] == [1, 2, 3, 4]
+    assert tuple(state) == (4, 1)
+    assert sum(row["consumed_at"] is not None for row in inbox_rows) == 1
+    assert {
+        row["recalc_job_id"]: row["claimed_generation"] for row in rows
+    } == {
+        "retry-completed": 1,
+        "retry-failed": 2,
+        "retry-queued": None,
+        "retry-running": 4,
+    }
+    get_settings.cache_clear()
+
+
+def test_source_event_idempotency_migration_rejects_historical_duplicates(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'watchlist-source-events.db'}"
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_URL", database_url)
+    monkeypatch.setenv("PORTFOLIO_OPS_WATCHLIST_DATABASE_SCHEMA", "")
+
+    from watchlist_app.core.settings import get_settings
+
+    get_settings.cache_clear()
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "20260714_0031")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO instrument_detail (
+                    instrument_id, instrument_type, detail_view_type,
+                    instrument_name, is_active, metadata_json
+                ) VALUES (
+                    'migration-source-event', 'fund', 'fund',
+                    'Migration Source Event', 1, '{}'
+                )
+                """
+            )
+        )
+        for job_id, enqueued_at, status in (
+            ("source-event-earliest", "2026-07-14 01:00:00", "completed"),
+            ("source-event-later", "2026-07-14 02:00:00", "failed"),
+        ):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO recalc_job (
+                        recalc_job_id, job_type, instrument_id, trigger_type,
+                        trigger_ref_type, trigger_ref_id, job_status, priority,
+                        dedupe_key, payload_json, enqueued_at
+                    ) VALUES (
+                        :job_id, 'all', 'migration-source-event',
+                        'market_data_refresh', 'instrument_registry_outbox',
+                        'migration-event-1', :status, 100,
+                        :dedupe_key, '{}', :enqueued_at
+                    )
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "status": status,
+                    "dedupe_key": f"migration-source-event:{job_id}",
+                    "enqueued_at": enqueued_at,
+                },
+            )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Cannot enforce recalc source-event idempotency",
+    ):
+        command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        assert connection.execute(
+            text(
+                """
+                SELECT recalc_job_id
+                FROM recalc_job
+                WHERE trigger_ref_type = 'instrument_registry_outbox'
+                  AND trigger_ref_id = 'migration-event-1'
+                  AND instrument_id = 'migration-source-event'
+                  AND job_type = 'all'
+                ORDER BY recalc_job_id
+                """
+            )
+        ).scalars().all() == ["source-event-earliest", "source-event-later"]
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            "20260714_0031"
+        )
+
+    assert "uq_recalc_job_source_event_identity" not in {
+        index["name"] for index in inspect(engine).get_indexes("recalc_job")
+    }
+
+    get_settings.cache_clear()
 
 
 def test_source_cutoff_rename_is_lossless_in_both_directions(

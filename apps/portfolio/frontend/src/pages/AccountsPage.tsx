@@ -11,10 +11,10 @@ import {
   getPortfolioAccountsWorkspace,
   type PortfolioAccountCreatePayload,
   type PortfolioAccountUpdatePayload,
-  type PortfolioAccountPositionRecord,
   type PortfolioAccountWorkspaceAccount,
   type PortfolioAccountsWorkspaceResponse,
-  type PortfolioLedgerPostingRecord,
+  type PortfolioPublishedAccountBalanceRecord,
+  type PortfolioPublishedAccountPositionRecord,
   type PortfolioTransactionRecord,
 } from '../lib/api'
 import {
@@ -93,7 +93,6 @@ export default function AccountsPage() {
   const [pendingCostMethodChange, setPendingCostMethodChange] = useState<PendingCostMethodChange | null>(null)
   const [savingCostMethodChange, setSavingCostMethodChange] = useState(false)
   const [showAllDirectTransactions, setShowAllDirectTransactions] = useState(false)
-  const [showAllLedgerEntries, setShowAllLedgerEntries] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [form, setForm] = useState<AccountFormState>(buildInitialAccountForm)
   const workspaceRequestSequenceRef = useRef(0)
@@ -327,19 +326,14 @@ export default function AccountsPage() {
   const editingAccount =
     visibleAccounts.find((item) => item.account.account_id === editingAccountId)?.account ?? null
 
-  const visibleLedgerPostings = workspace?.ledger_postings ?? []
+  const visibleBalances = workspace?.balances ?? []
   const visiblePositions = workspace?.positions ?? []
   const directTransactions = workspace?.linked_transactions ?? []
   const displayedDirectTransactions = showAllDirectTransactions
     ? directTransactions
     : directTransactions.slice(0, 8)
-  const displayedLedgerPostings = showAllLedgerEntries
-    ? visibleLedgerPostings
-    : visibleLedgerPostings.slice(0, 12)
-
   useEffect(() => {
     setShowAllDirectTransactions(false)
-    setShowAllLedgerEntries(false)
   }, [resolvedSelectedAccountId])
 
   if (!portfolioId) {
@@ -486,7 +480,7 @@ export default function AccountsPage() {
   return (
     <PortfolioWorkspaceLayout
       activeSection="Accounts"
-      toolbarLabel="View: Account Ledger"
+      toolbarLabel="View: Published Account State"
       controls={
         workspace ? (
           <div className="portfolio-summary-strip">
@@ -503,8 +497,8 @@ export default function AccountsPage() {
               <strong className="summary-card-value">{workspace.summary.securities_account_count}</strong>
             </article>
             <article className="summary-card">
-              <span className="summary-card-label">Ledger Entries</span>
-              <strong className="summary-card-value">{workspace.summary.ledger_posting_count}</strong>
+              <span className="summary-card-label">Balance Components</span>
+              <strong className="summary-card-value">{workspace.summary.balance_component_count}</strong>
             </article>
           </div>
         ) : undefined
@@ -515,7 +509,7 @@ export default function AccountsPage() {
           <div className="account-page-title-stack">
             <div className="panel-title">Accounts</div>
             <div className="portfolio-detail-meta">
-              Configure custody accounts and inspect their transaction-derived balances.
+              Configure custody accounts and inspect the current published Portfolio Daily statement.
             </div>
           </div>
           <button type="button" className="toolbar-link button-primary" onClick={openCreateAccountDrawer}>
@@ -530,9 +524,9 @@ export default function AccountsPage() {
         {!loading && !error && workspace ? (
           <>
             <div className="account-derivation-note">
-              <span className="account-source-badge">Transaction-derived</span>
+              <span className="account-source-badge">Published · {workspace.as_of_date}</span>
               <span>
-                Balances, positions, and ledger entries are read-only outputs. Edit the source transaction to change them.
+                Financial state comes from publication {workspace.publication.publication_id}. Raw transactions remain editable inputs.
               </span>
             </div>
 
@@ -569,8 +563,8 @@ export default function AccountsPage() {
                           <span>
                             <small>Account Value</small>
                             <strong>
-                              {accountRow.account_value_base != null
-                                ? formatCurrency(accountRow.account_value_base, workspace.base_currency)
+                              {accountRow.account_value_base_exact != null
+                                ? formatCurrency(accountRow.account_value_base_exact, workspace.base_currency)
                                 : '—'}
                             </strong>
                           </span>
@@ -619,34 +613,43 @@ export default function AccountsPage() {
                       <article>
                         <span>Account Value · {workspace.base_currency}</span>
                         <strong>
-                          {selectedAccount.account_value_base != null
-                            ? formatCurrency(selectedAccount.account_value_base, workspace.base_currency)
+                          {selectedAccount.account_value_base_exact != null
+                            ? formatCurrency(selectedAccount.account_value_base_exact, workspace.base_currency)
                             : '—'}
                         </strong>
                       </article>
                       <article>
-                        <span>Cash Balance · {selectedAccount.account.currency}</span>
+                        <span>Settled Cash · {selectedAccount.account.currency}</span>
                         <strong>
-                          {formatCurrency(selectedAccount.derived_cash_balance, selectedAccount.account.currency)}
+                          {formatCurrency(selectedAccount.settled_cash_local, selectedAccount.account.currency)}
                         </strong>
                       </article>
                       <article>
                         <span>
-                          Position Value · {selectedAccount.position_market_value_currency ?? workspace.base_currency}
+                          Position Value · {selectedAccount.account.currency}
                         </span>
                         <strong>
-                          {selectedAccount.position_market_value != null
-                            ? formatCurrency(
-                                selectedAccount.position_market_value,
-                                selectedAccount.position_market_value_currency ?? workspace.base_currency,
-                              )
+                          {selectedAccount.position_market_value_local_exact != null
+                            ? formatCurrency(selectedAccount.position_market_value_local_exact, selectedAccount.account.currency)
                             : '—'}
                         </strong>
                       </article>
                       <article>
-                        <span>Pending Settlement · {selectedAccount.account.currency}</span>
+                        <span>Pending Receivable · {selectedAccount.account.currency}</span>
                         <strong>
-                          {formatCurrency(selectedAccount.pending_settlement, selectedAccount.account.currency)}
+                          {formatCurrency(selectedAccount.pending_receivable_local, selectedAccount.account.currency)}
+                        </strong>
+                      </article>
+                      <article>
+                        <span>Pending Payable · {selectedAccount.account.currency}</span>
+                        <strong>
+                          {formatCurrency(selectedAccount.pending_payable_local, selectedAccount.account.currency)}
+                        </strong>
+                      </article>
+                      <article>
+                        <span>Open Cost Basis · {selectedAccount.account.currency}</span>
+                        <strong>
+                          {formatCurrency(selectedAccount.cost_basis_local_exact, selectedAccount.account.currency)}
                         </strong>
                       </article>
                     </div>
@@ -688,7 +691,8 @@ export default function AccountsPage() {
                     <div className="account-activity-counts">
                       <span><strong>{selectedAccount.position_line_count}</strong> position lines</span>
                       <span><strong>{selectedAccount.linked_transaction_count}</strong> affecting transactions</span>
-                      <span><strong>{selectedAccount.linked_posting_count}</strong> ledger entries</span>
+                      <span><strong>{selectedAccount.open_lot_count}</strong> open lots</span>
+                      <span><strong>{selectedAccount.balance_component_count}</strong> balance components</span>
                     </div>
                   </>
                 ) : (
@@ -713,8 +717,9 @@ export default function AccountsPage() {
                         <th>Instrument</th>
                         <th>Quantity</th>
                         <th>Cost Basis</th>
-                        <th>Last Price</th>
+                        <th>Adopted Price</th>
                         <th>Market Value</th>
+                        <th>Coverage</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -734,7 +739,7 @@ export default function AccountsPage() {
                 <div>
                   <div className="panel-title">Direct Transactions</div>
                   <div className="portfolio-detail-meta">
-                    Transactions booked directly to this account; settlement-only effects remain in the ledger.
+                    Editable source facts that affect this account, including settlement and transfer legs.
                   </div>
                 </div>
                 <div className="account-panel-header-actions">
@@ -785,47 +790,40 @@ export default function AccountsPage() {
             <section className="panel account-data-panel">
               <div className="panel-header">
                 <div>
-                  <div className="panel-title">Ledger Entries</div>
-                  <div className="portfolio-detail-meta">Immutable postings generated by source transactions</div>
+                  <div className="panel-title">Published Balance Components</div>
+                  <div className="portfolio-detail-meta">
+                    Exact cash, receivable, payable, and accrual output for {workspace.as_of_date}
+                  </div>
                 </div>
-                <div className="account-panel-header-actions">
-                  <span className="portfolio-detail-meta">
-                    {visibleLedgerPostings.length} entries · {selectedAccount?.account.account_name || 'No account selected'}
-                  </span>
-                  {visibleLedgerPostings.length > 12 ? (
-                    <button
-                      type="button"
-                      className="account-inline-action"
-                      onClick={() => setShowAllLedgerEntries((current) => !current)}
-                    >
-                      {showAllLedgerEntries ? 'Show Recent' : 'Show All'}
-                    </button>
-                  ) : null}
-                </div>
+                <span className="portfolio-detail-meta">
+                  {visibleBalances.length} components · {selectedAccount?.account.account_name || 'No account selected'}
+                </span>
               </div>
-              {visibleLedgerPostings.length ? (
+              {visibleBalances.length ? (
                 <div className="table-shell">
-                  <table className="accounts-data-table accounts-responsive-table account-ledger-table">
+                  <table className="accounts-data-table accounts-responsive-table">
                     <thead>
                       <tr>
-                        <th>Dates</th>
-                        <th>Entry</th>
-                        <th>Instrument</th>
-                        <th>Cash Delta</th>
-                        <th>Quantity Delta</th>
-                        <th>Cost Basis Delta</th>
+                        <th>Component</th>
                         <th>Reference</th>
+                        <th>Local Amount</th>
+                        <th>Base Amount</th>
+                        <th>Coverage</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {displayedLedgerPostings.map((posting) => (
-                        <LedgerPostingRow key={posting.posting_id} posting={posting} />
+                      {visibleBalances.map((balance) => (
+                        <BalanceRow
+                          key={`${balance.component_type}-${balance.component_key}-${balance.currency}`}
+                          balance={balance}
+                          baseCurrency={workspace.base_currency}
+                        />
                       ))}
                     </tbody>
                   </table>
                 </div>
               ) : (
-                <div className="account-empty-state">No ledger entries for this account.</div>
+                <div className="account-empty-state">No published balance components for this account.</div>
               )}
             </section>
           </>
@@ -1202,7 +1200,7 @@ function AccountTransactionRow({
             <span className="holding-secondary">{transaction.instrument_ref.instrument_name}</span>
           </div>
         ) : (
-          <span className="holding-secondary">Cash ledger</span>
+          <span className="holding-secondary">Cash</span>
         )}
       </td>
       <td data-label="Gross">{formatCurrency(transaction.gross_amount, transaction.currency)}</td>
@@ -1217,78 +1215,61 @@ function AccountTransactionRow({
           className="table-inline-link"
           to={accountTransactionHref(portfolioId, accountId, transaction.transaction_id)}
         >
-          Ledger Inspector
+          Open Transaction
         </Link>
       </td>
     </tr>
   )
 }
 
-function PositionRow({ position }: { position: PortfolioAccountPositionRecord }) {
+function PositionRow({ position }: { position: PortfolioPublishedAccountPositionRecord }) {
   return (
     <tr>
       <td className="holding-name-cell" data-label="Instrument">
         <div className="holding-name-stack">
-          <span>{primaryIdentifier(position)}</span>
-          <span className="holding-secondary">{position.instrument_ref.instrument_name}</span>
+          <span>{position.instrument_id}</span>
+          <span className="holding-secondary">{position.instrument_name}</span>
         </div>
       </td>
-      <td data-label="Quantity">{formatNumber(position.quantity, 2)}</td>
+      <td data-label="Quantity">{formatNumber(position.quantity_exact, 4)}</td>
       <td data-label="Cost Basis">
-        {position.cost_basis != null ? formatCurrency(position.cost_basis, position.currency) : '—'}
+        {formatCurrency(position.cost_basis_local_exact, position.currency)}
       </td>
-      <td data-label="Last Price">
-        {position.last_price != null ? formatUnitPrice(position.last_price, position.currency) : '—'}
+      <td data-label="Adopted Price">
+        {position.adopted_price_exact != null
+          ? formatUnitPrice(position.adopted_price_exact, position.currency)
+          : '—'}
       </td>
       <td data-label="Market Value">
-        {position.market_value != null ? formatCurrency(position.market_value, position.currency) : '—'}
+        {position.market_value_local_exact != null
+          ? formatCurrency(position.market_value_local_exact, position.currency)
+          : '—'}
       </td>
+      <td data-label="Coverage">{formatLabel(position.valuation_coverage_state)}</td>
     </tr>
   )
 }
 
-function LedgerPostingRow({ posting }: { posting: PortfolioLedgerPostingRecord }) {
+function BalanceRow({
+  balance,
+  baseCurrency,
+}: {
+  balance: PortfolioPublishedAccountBalanceRecord
+  baseCurrency: string
+}) {
   return (
     <tr>
-      <td data-label="Dates">
-        <div className="account-ledger-date-stack">
-          <span>{posting.trade_date}</span>
-          <span>Settles {posting.settlement_date}</span>
-        </div>
+      <td data-label="Component">
+        <span className="transaction-type-pill">{formatLabel(balance.component_type)}</span>
       </td>
-      <td data-label="Entry">
-        <div className="account-ledger-entry-stack">
-          <span className="transaction-type-pill">{formatLabel(posting.posting_role)}</span>
-          <span>{formatLabel(posting.source_transaction_type)}</span>
-        </div>
+      <td className="account-ledger-reference" data-label="Reference">{balance.component_key}</td>
+      <td data-label="Local Amount" className={signedValueClass(balance.local_amount)}>
+        {formatCurrency(balance.local_amount, balance.currency)}
       </td>
-      <td className="holding-name-cell" data-label="Instrument">
-        {posting.instrument_ref ? (
-          <div className="holding-name-stack">
-            <span>{primaryIdentifier(posting)}</span>
-            <span className="holding-secondary">{posting.instrument_ref.instrument_name}</span>
-          </div>
-        ) : (
-          <span className="holding-secondary">Cash ledger</span>
-        )}
+      <td data-label="Base Amount" className={signedValueClass(balance.base_amount_exact)}>
+        {formatCurrency(balance.base_amount_exact, baseCurrency)}
       </td>
-      <td
-        data-label="Cash Delta"
-        className={posting.cash_amount_delta != null && posting.cash_amount_delta < 0 ? 'negative-cell' : ''}
-      >
-        {formatSignedCurrency(posting.cash_amount_delta, posting.currency)}
-      </td>
-      <td data-label="Quantity Delta">{formatNumber(posting.quantity_delta, 2)}</td>
-      <td
-        data-label="Cost Basis Delta"
-        className={posting.cost_basis_delta != null && posting.cost_basis_delta < 0 ? 'negative-cell' : ''}
-      >
-        {posting.cost_basis_delta != null ? formatSignedCurrency(posting.cost_basis_delta, posting.currency) : '—'}
-      </td>
-      <td className="account-ledger-reference" data-label="Reference">
-        <span>{posting.transaction_id}</span>
-        <span>{posting.note || 'No note'}</span>
-      </td>
+      <td data-label="Coverage">{formatLabel(balance.coverage_state)}</td>
     </tr>
   )
 }

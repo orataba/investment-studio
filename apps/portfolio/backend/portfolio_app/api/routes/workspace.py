@@ -1,629 +1,982 @@
-from copy import deepcopy
+"""Published-only Portfolio overview and holdings workspace.
+
+Both surfaces are projections of one immutable Portfolio Daily publication.
+They never ensure, refresh, cache, or reconstruct financial values from mutable
+ledger/quote facts during a request.  Display configuration comes from the
+same sealed manifest as the financial output, so a response cannot mix an old
+publication with newly edited portfolio metadata.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
 from datetime import date
-from typing import cast
+from decimal import Decimal
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from portfolio_app.services.calculation_frequency import CalculationFrequency
-from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
-from portfolio_app.db.session import get_session_factory
-from portfolio_app.services.daily_snapshots import (
-    DAILY_SNAPSHOT_CALCULATION_VERSION,
-    build_materialized_instrument_holding_projection,
-    ensure_portfolio_daily_snapshots,
-    project_instrument_holding_row,
+from portfolio_app.api.contracts import PortfolioWorkspaceSummaryResponse
+from portfolio_app.api.published_portfolio_daily import (
+    calculation_not_ready,
+    read_published_latest,
 )
-from portfolio_app.services.instrument_charts import (
-    CanonicalInstrumentMarketData,
-    HOLDINGS_PRICE_CHART_RANGE_KEYS,
-    build_instrument_holdings_market_profiles,
-    empty_instrument_holdings_market_profile,
-    lock_instrument_market_data,
+from portfolio_app.calculations.numeric import (
+    canonical_decimal,
+    exact_decimal_subtract,
+    exact_decimal_sum,
 )
-from portfolio_app.services.risk_basis import calculation_frequency_profile_for_instruments
-from portfolio_app.services.workspace_cache import (
-    get_cached_materialized_holdings_workspace,
-    preload_portfolio_workspace_cache,
+from portfolio_app.calculations.portfolio_daily.db_models import (
+    portfolio_daily_config_input,
+    portfolio_daily_instrument_input,
 )
-from portfolio_app.services.ledger import (
-    build_position_lots,
-    summarize_position_lots,
+from portfolio_app.calculations.portfolio_daily.published_views import (
+    publication_metadata_response,
 )
-from portfolio_app.services.instrument_registry import InstrumentRegistryError
-from portfolio_app.services.performance import (
-    build_holdings_report,
-    corporate_action_quality_warnings,
-    is_cash_holding_instrument_id,
-    summarize_holding_day_change,
+from portfolio_app.calculations.portfolio_daily.published_repository import (
+    CurrentPortfolioDailyPublication,
+    PortfolioDailyContribution,
+    PortfolioDailyHolding,
+    PortfolioDailyLot,
 )
-from portfolio_app.services.portfolio_store import (
-    get_portfolio,
-    get_portfolio_live_summary,
-    list_accounts,
-    list_transactions,
-)
-from portfolio_app.services.risk_model import enrich_holdings_forward_risk, get_portfolio_risk_policy
-from portfolio_app.services.snapshot_selection import latest_fresh_complete_portfolio_snapshot
+from portfolio_app.core.operating_profiles import require_portfolio_operating_profile
+from portfolio_app.db.session import get_db_session
+
 
 router = APIRouter()
 
-_HOLDINGS_TREND_FIELD_NAMES = (
-    "instrument_trend_as_of_date",
-    "instrument_trend_basis",
-    "instrument_risk_frequency",
-    "instrument_return_1w",
-    "instrument_return_mtd",
-    "instrument_return_ytd",
-    "instrument_return_1y",
-    "instrument_volatility_1m",
-    "instrument_volatility_3m",
-    "instrument_volatility_6m",
-    "instrument_volatility_1y",
-    "instrument_return_series_1m",
-    "instrument_return_series_3m",
-    "instrument_return_series_6m",
-    "instrument_return_series_1y",
-    "instrument_return_series_all",
-    "instrument_holding_return_series",
-    "instrument_current_drawdown",
-    "instrument_max_drawdown",
-    "instrument_holding_max_drawdown",
-    "instrument_holding_start_date",
-)
-_HOLDINGS_RETURN_SERIES_FIELD_NAMES = (
-    "instrument_return_series_1m",
-    "instrument_return_series_3m",
-    "instrument_return_series_6m",
-    "instrument_return_series_1y",
-    "instrument_return_series_all",
-    "instrument_holding_return_series",
-)
 
-
-def _public_holdings_workspace_response(
-    workspace: dict[str, object],
+def _published_integrity_error(
+    portfolio_id: str,
     *,
-    include_return_series: bool,
-) -> dict[str, object]:
-    rows = workspace.get("rows")
-    row_items = rows if isinstance(rows, list) else []
-    instrument_types = {
-        str(instrument_core.get("instrument_type") or "").strip().lower()
-        for row in row_items
-        if isinstance(row, dict)
-        and isinstance((instrument_core := row.get("instrument_core")), dict)
-    }
-    instrument_ids = {
-        str(row.get("instrument_id") or "").strip()
-        for row in row_items
-        if isinstance(row, dict) and str(row.get("instrument_id") or "").strip()
-    }
-    workspace["quality_warnings"] = corporate_action_quality_warnings(
-        instrument_types,
-        instrument_ids,
+    reason: str,
+    **detail: object,
+) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "published_calculation_integrity_error",
+            "portfolio_id": portfolio_id,
+            "reason": reason,
+            **detail,
+        },
     )
-    if include_return_series:
-        return workspace
-    if isinstance(rows, list):
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            for field_name in _HOLDINGS_RETURN_SERIES_FIELD_NAMES:
-                row.pop(field_name, None)
-    return workspace
 
 
-def _parse_iso_date(value: object) -> date | None:
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip()
-        if not normalized:
-            return None
-        try:
-            return date.fromisoformat(normalized[:10])
-        except ValueError:
-            return None
-    return None
-
-
-def _holding_start_dates_by_instrument(position_lots: list[dict[str, object]]) -> dict[str, date]:
-    start_dates: dict[str, date] = {}
-    for position_lot in position_lots:
-        if str(position_lot.get("status") or "") != "open":
-            continue
-        instrument_id = str(position_lot.get("instrument_id") or "")
-        if not instrument_id:
-            continue
-        holding_start_date = _parse_iso_date(position_lot.get("acquisition_date")) or _parse_iso_date(
-            position_lot.get("opened_at")
-        )
-        if holding_start_date is None:
-            continue
-        current_start_date = start_dates.get(instrument_id)
-        if current_start_date is None or holding_start_date < current_start_date:
-            start_dates[instrument_id] = holding_start_date
-    return start_dates
-
-
-def _instrument_ids_from_holdings_workspace(workspace: dict[str, object]) -> list[str]:
-    instrument_ids: list[str] = []
-    rows = workspace.get("rows")
-    if not isinstance(rows, list):
-        return instrument_ids
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
-        if (
-            str(instrument_core.get("instrument_type") or "").strip().lower() == "cash"
-            or is_cash_holding_instrument_id(instrument_core.get("instrument_id") or row.get("line_id"))
-        ):
-            continue
-        instrument_id = str(instrument_core.get("instrument_id") or row.get("line_id") or "").strip()
-        if instrument_id and instrument_id not in instrument_ids:
-            instrument_ids.append(instrument_id)
-    return instrument_ids
-
-
-def _enrich_holdings_workspace_market_data(
-    workspace: dict[str, object],
+def _required_text(
+    row: dict[str, object],
+    field_name: str,
     *,
-    position_lots: list[dict[str, object]],
-    risk_basis_profile: dict[str, object],
-    market_data: CanonicalInstrumentMarketData,
-) -> dict[str, object]:
-    enriched_workspace = deepcopy(workspace)
-    enriched_workspace.pop("price_chart_range", None)
-    enriched_workspace["risk_basis"] = risk_basis_profile
-    calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
-    holding_start_dates = _holding_start_dates_by_instrument(position_lots)
-    market_profiles = build_instrument_holdings_market_profiles(
-        market_data,
-        holding_start_dates=holding_start_dates,
-        calculation_frequency=calculation_frequency,
-    )
-    rows = enriched_workspace.get("rows")
-    if not isinstance(rows, list):
-        return enriched_workspace
-
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
-        instrument_id = str(instrument_core.get("instrument_id") or row.get("line_id") or "")
-        if (
-            str(instrument_core.get("instrument_type") or "").strip().lower() == "cash"
-            or is_cash_holding_instrument_id(instrument_id)
-        ):
-            row.pop("price_chart", None)
-            row.update(
-                empty_instrument_holdings_market_profile(
-                    calculation_frequency=calculation_frequency,
-                )
-            )
-            continue
-        if not instrument_id:
-            row.pop("price_chart", None)
-            row.update(
-                empty_instrument_holdings_market_profile(
-                    calculation_frequency=calculation_frequency,
-                )
-            )
-            continue
-        holding_start_date = holding_start_dates.get(instrument_id)
-        row.pop("price_chart", None)
-        if instrument_id in market_profiles:
-            row.update(market_profiles[instrument_id])
-        else:
-            row.update(
-                empty_instrument_holdings_market_profile(
-                    holding_start_date=holding_start_date,
-                    calculation_frequency=calculation_frequency,
-                )
-            )
-    return enriched_workspace
-
-
-def _materialized_summary_is_current(portfolio_id: str) -> bool:
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, portfolio_id)
-        if state is None or state.daily_snapshot_status != "current":
-            return False
-        payload = session.scalar(
-            select(PortfolioDailySnapshotModel.snapshot_json)
-            .where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id)
-            .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
-            .limit(1)
-        )
-        if not isinstance(payload, dict):
-            return False
-        return (
-            str(payload.get("calculation_version") or "") == DAILY_SNAPSHOT_CALCULATION_VERSION
-            and latest_fresh_complete_portfolio_snapshot(session, portfolio_id) is not None
-        )
-
-
-def _require_portfolio(portfolio_id: str | None, *, live_if_materialized_stale: bool = False) -> dict[str, object]:
-    if not portfolio_id:
-        raise HTTPException(status_code=400, detail="portfolio_id is required")
-    if live_if_materialized_stale:
-        try:
-            ensure_portfolio_daily_snapshots(portfolio_id)
-        except InstrumentRegistryError as error:
-            raise HTTPException(status_code=502, detail=str(error)) from error
-    if live_if_materialized_stale and not _materialized_summary_is_current(portfolio_id):
-        resolved_portfolio = get_portfolio_live_summary(portfolio_id)
-    else:
-        resolved_portfolio = get_portfolio(portfolio_id)
-    if resolved_portfolio is None:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
-    return resolved_portfolio
-
-
-def _portfolio_calculation_frequency_status(portfolio: dict[str, object], *, as_of_date: date) -> str:
-    try:
-        return str(_portfolio_calculation_frequency_profile(portfolio, as_of_date=as_of_date)["status_label"])
-    except InstrumentRegistryError:
-        return "Risk basis unavailable"
-
-
-def _portfolio_calculation_frequency_profile(portfolio: dict[str, object], *, as_of_date: date) -> dict[str, object]:
-    portfolio_id = str(portfolio.get("portfolio_id") or "")
-    if not portfolio_id:
-        return calculation_frequency_profile_for_instruments([], end_date=as_of_date)
-
-    materialized_workspace = get_cached_materialized_holdings_workspace(
-        portfolio_id,
-        as_of_date=as_of_date,
-    )
-    if isinstance(materialized_workspace, dict):
-        instrument_ids = _instrument_ids_from_holdings_workspace(materialized_workspace)
-    else:
-        instrument_ids = []
-        accounts = list_accounts(portfolio_id)
-        position_lots = build_position_lots(
+    portfolio_id: str,
+    record_type: str,
+) -> str:
+    value = row.get(field_name)
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise _published_integrity_error(
             portfolio_id,
-            accounts,
-            list_transactions(portfolio_id, end_date=as_of_date),
-            as_of_date=as_of_date,
-            include_market_valuation=False,
+            reason="sealed_taxonomy_structure_invalid",
+            record_type=record_type,
+            field_name=field_name,
         )
-        for position_lot in position_lots:
-            if str(position_lot.get("status") or "") != "open":
-                continue
-            instrument_id = str(position_lot.get("instrument_id") or "").strip()
-            if instrument_id and instrument_id not in instrument_ids:
-                instrument_ids.append(instrument_id)
-    return calculation_frequency_profile_for_instruments(instrument_ids, end_date=as_of_date)
+    return value
 
 
-@router.get("/summary")
-def workspace_summary(portfolio_id: str | None = None) -> dict[str, object]:
-    resolved_portfolio = _require_portfolio(portfolio_id, live_if_materialized_stale=True)
+def _optional_text(
+    row: dict[str, object],
+    field_name: str,
+    *,
+    portfolio_id: str,
+    record_type: str,
+) -> str | None:
+    value = row.get(field_name)
+    if value is None:
+        return None
+    return _required_text(
+        row,
+        field_name,
+        portfolio_id=portfolio_id,
+        record_type=record_type,
+    )
 
-    as_of_date = str(resolved_portfolio.get("as_of_date") or date.today().isoformat())
-    parsed_as_of_date = date.fromisoformat(as_of_date)
-    calculation_frequency_status = _portfolio_calculation_frequency_status(
-        resolved_portfolio,
-        as_of_date=parsed_as_of_date,
+
+def _sealed_record_list(
+    taxonomy: dict[str, object],
+    field_name: str,
+    *,
+    portfolio_id: str,
+) -> tuple[dict[str, object], ...]:
+    value = taxonomy.get(field_name)
+    if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
+        raise _published_integrity_error(
+            portfolio_id,
+            reason="sealed_taxonomy_structure_invalid",
+            field_name=f"taxonomy.{field_name}",
+        )
+    return tuple(value)
+
+
+def _sealed_taxonomy_display_config(
+    config: dict[str, object],
+    *,
+    portfolio_id: str,
+) -> dict[str, object]:
+    """Project and validate taxonomy display state from the sealed manifest.
+
+    Empty taxonomy arrays are a valid explicit state (for example, an ETF-only
+    portfolio).  A missing or malformed taxonomy snapshot is not: silently
+    reading the live catalog would mix two different knowledge cutoffs.
+    """
+
+    taxonomy_value = config.get("taxonomy")
+    if not isinstance(taxonomy_value, dict):
+        raise _published_integrity_error(
+            portfolio_id,
+            reason="sealed_taxonomy_snapshot_missing",
+        )
+    taxonomy_rows = _sealed_record_list(
+        taxonomy_value,
+        "taxonomies",
+        portfolio_id=portfolio_id,
+    )
+    node_rows = _sealed_record_list(
+        taxonomy_value,
+        "nodes",
+        portfolio_id=portfolio_id,
+    )
+    assignment_rows = _sealed_record_list(
+        taxonomy_value,
+        "assignments",
+        portfolio_id=portfolio_id,
+    )
+
+    taxonomies: list[dict[str, object]] = []
+    taxonomy_ids: set[str] = set()
+    for row in taxonomy_rows:
+        record_type = "taxonomy"
+        taxonomy_id = _required_text(
+            row,
+            "taxonomy_id",
+            portfolio_id=portfolio_id,
+            record_type=record_type,
+        )
+        row_portfolio_id = _required_text(
+            row,
+            "portfolio_id",
+            portfolio_id=portfolio_id,
+            record_type=record_type,
+        )
+        if row_portfolio_id != portfolio_id or taxonomy_id in taxonomy_ids:
+            raise _published_integrity_error(
+                portfolio_id,
+                reason="sealed_taxonomy_referential_integrity_invalid",
+                record_type=record_type,
+                taxonomy_id=taxonomy_id,
+            )
+        taxonomy_ids.add(taxonomy_id)
+        primary_scope = _required_text(
+            row,
+            "primary_assignment_scope",
+            portfolio_id=portfolio_id,
+            record_type=record_type,
+        )
+        target_dimension = _required_text(
+            row,
+            "root_default_target_dimension",
+            portfolio_id=portfolio_id,
+            record_type=record_type,
+        )
+        planning_enabled = row.get("planning_enabled")
+        if (
+            primary_scope not in {"instrument", "account", "cash_bucket"}
+            or target_dimension not in {"weight", "risk_budget"}
+            or not isinstance(planning_enabled, bool)
+        ):
+            raise _published_integrity_error(
+                portfolio_id,
+                reason="sealed_taxonomy_structure_invalid",
+                record_type=record_type,
+                taxonomy_id=taxonomy_id,
+            )
+        taxonomies.append(
+            {
+                "taxonomy_id": taxonomy_id,
+                "portfolio_id": row_portfolio_id,
+                "name": _required_text(
+                    row,
+                    "name",
+                    portfolio_id=portfolio_id,
+                    record_type=record_type,
+                ),
+                "taxonomy_type": _required_text(
+                    row,
+                    "taxonomy_type",
+                    portfolio_id=portfolio_id,
+                    record_type=record_type,
+                ),
+                "purpose": _optional_text(
+                    row,
+                    "purpose",
+                    portfolio_id=portfolio_id,
+                    record_type=record_type,
+                ),
+                "primary_assignment_scope": primary_scope,
+                "planning_enabled": planning_enabled,
+                "budgeting_level": _optional_text(
+                    row,
+                    "budgeting_level",
+                    portfolio_id=portfolio_id,
+                    record_type=record_type,
+                ),
+                "root_default_target_dimension": target_dimension,
+                "status": _required_text(
+                    row,
+                    "status",
+                    portfolio_id=portfolio_id,
+                    record_type=record_type,
+                ),
+                "source_template_ref": _optional_text(
+                    row,
+                    "source_template_ref",
+                    portfolio_id=portfolio_id,
+                    record_type=record_type,
+                ),
+            }
+        )
+
+    nodes: list[dict[str, object]] = []
+    nodes_by_id: dict[str, dict[str, object]] = {}
+    for row in node_rows:
+        record_type = "taxonomy_node"
+        node_id = _required_text(
+            row,
+            "taxonomy_node_id",
+            portfolio_id=portfolio_id,
+            record_type=record_type,
+        )
+        taxonomy_id = _required_text(
+            row,
+            "taxonomy_id",
+            portfolio_id=portfolio_id,
+            record_type=record_type,
+        )
+        sort_order = row.get("sort_order")
+        is_terminal = row.get("is_terminal")
+        target_dimension = _required_text(
+            row,
+            "default_target_dimension",
+            portfolio_id=portfolio_id,
+            record_type=record_type,
+        )
+        if (
+            taxonomy_id not in taxonomy_ids
+            or node_id in nodes_by_id
+            or not isinstance(sort_order, int)
+            or isinstance(sort_order, bool)
+            or not isinstance(is_terminal, bool)
+            or target_dimension not in {"weight", "risk_budget"}
+        ):
+            raise _published_integrity_error(
+                portfolio_id,
+                reason="sealed_taxonomy_referential_integrity_invalid",
+                record_type=record_type,
+                taxonomy_id=taxonomy_id,
+                taxonomy_node_id=node_id,
+            )
+        normalized = {
+            "taxonomy_node_id": node_id,
+            "taxonomy_id": taxonomy_id,
+            "parent_taxonomy_node_id": _optional_text(
+                row,
+                "parent_taxonomy_node_id",
+                portfolio_id=portfolio_id,
+                record_type=record_type,
+            ),
+            "node_name": _required_text(
+                row,
+                "node_name",
+                portfolio_id=portfolio_id,
+                record_type=record_type,
+            ),
+            "node_code": _optional_text(
+                row,
+                "node_code",
+                portfolio_id=portfolio_id,
+                record_type=record_type,
+            ),
+            "sort_order": sort_order,
+            "is_terminal": is_terminal,
+            "default_target_dimension": target_dimension,
+            "status": _required_text(
+                row,
+                "status",
+                portfolio_id=portfolio_id,
+                record_type=record_type,
+            ),
+        }
+        nodes.append(normalized)
+        nodes_by_id[node_id] = normalized
+
+    for node in nodes:
+        parent_id = node["parent_taxonomy_node_id"]
+        if parent_id is None:
+            continue
+        parent = nodes_by_id.get(str(parent_id))
+        if parent is None or parent["taxonomy_id"] != node["taxonomy_id"]:
+            raise _published_integrity_error(
+                portfolio_id,
+                reason="sealed_taxonomy_referential_integrity_invalid",
+                record_type="taxonomy_node",
+                taxonomy_node_id=node["taxonomy_node_id"],
+            )
+
+    assignments: list[dict[str, object]] = []
+    assignment_ids: set[str] = set()
+    assignment_targets: set[tuple[str, str, str]] = set()
+    for row in assignment_rows:
+        record_type = "taxonomy_assignment"
+        assignment_id = _required_text(
+            row,
+            "assignment_id",
+            portfolio_id=portfolio_id,
+            record_type=record_type,
+        )
+        taxonomy_id = _required_text(
+            row,
+            "taxonomy_id",
+            portfolio_id=portfolio_id,
+            record_type=record_type,
+        )
+        node_id = _required_text(
+            row,
+            "taxonomy_node_id",
+            portfolio_id=portfolio_id,
+            record_type=record_type,
+        )
+        target_scope = _required_text(
+            row,
+            "target_scope",
+            portfolio_id=portfolio_id,
+            record_type=record_type,
+        )
+        target_entity_id = _required_text(
+            row,
+            "target_entity_id",
+            portfolio_id=portfolio_id,
+            record_type=record_type,
+        )
+        target_key = (taxonomy_id, target_scope, target_entity_id)
+        node = nodes_by_id.get(node_id)
+        if (
+            taxonomy_id not in taxonomy_ids
+            or node is None
+            or node["taxonomy_id"] != taxonomy_id
+            or target_scope not in {"instrument", "account", "cash_bucket"}
+            or assignment_id in assignment_ids
+            or target_key in assignment_targets
+        ):
+            raise _published_integrity_error(
+                portfolio_id,
+                reason="sealed_taxonomy_referential_integrity_invalid",
+                record_type=record_type,
+                assignment_id=assignment_id,
+            )
+        assignment_ids.add(assignment_id)
+        assignment_targets.add(target_key)
+        assignments.append(
+            {
+                "assignment_id": assignment_id,
+                "taxonomy_id": taxonomy_id,
+                "target_scope": target_scope,
+                "target_entity_id": target_entity_id,
+                "taxonomy_node_id": node_id,
+                "status": _required_text(
+                    row,
+                    "status",
+                    portfolio_id=portfolio_id,
+                    record_type=record_type,
+                ),
+            }
+        )
+
+    default_taxonomy = config.get("default_planning_taxonomy_id")
+    if default_taxonomy is not None and (
+        not isinstance(default_taxonomy, str)
+        or not default_taxonomy.strip()
+        or default_taxonomy != default_taxonomy.strip()
+        or default_taxonomy not in taxonomy_ids
+    ):
+        raise _published_integrity_error(
+            portfolio_id,
+            reason="sealed_taxonomy_referential_integrity_invalid",
+            record_type="default_planning_taxonomy",
+        )
+
+    return {
+        "default_planning_taxonomy_id": default_taxonomy,
+        "taxonomies": taxonomies,
+        "taxonomy_nodes": nodes,
+        "taxonomy_assignments": assignments,
+    }
+
+
+def _sealed_portfolio_config(
+    session: Session,
+    *,
+    manifest_id: object,
+    portfolio_id: str,
+) -> dict[str, object]:
+    row = (
+        session.execute(
+            select(
+                portfolio_daily_config_input.c.portfolio_id,
+                portfolio_daily_config_input.c.base_currency,
+                portfolio_daily_config_input.c.valuation_timezone,
+                portfolio_daily_config_input.c.operating_profile,
+                portfolio_daily_config_input.c.canonical_config,
+            ).where(
+                portfolio_daily_config_input.c.manifest_id == manifest_id,
+                portfolio_daily_config_input.c.portfolio_id == portfolio_id,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None or not isinstance(row["canonical_config"], dict):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "published_calculation_integrity_error",
+                "portfolio_id": portfolio_id,
+                "reason": "sealed_portfolio_config_missing",
+            },
+        )
+    canonical_config = dict(row["canonical_config"])
+    try:
+        operating_profile = require_portfolio_operating_profile(
+            row["operating_profile"],
+            context="Sealed portfolio config",
+        )
+    except ValueError as error:
+        raise _published_integrity_error(
+            portfolio_id,
+            reason="sealed_operating_profile_invalid",
+        ) from error
+    if canonical_config.get("operating_profile") != operating_profile:
+        raise _published_integrity_error(
+            portfolio_id,
+            reason="sealed_operating_profile_mismatch",
+        )
+    return {
+        "portfolio_id": str(row["portfolio_id"]),
+        "base_currency": str(row["base_currency"]),
+        "valuation_timezone": str(row["valuation_timezone"]),
+        **canonical_config,
+        "operating_profile": operating_profile,
+    }
+
+
+def _decimal_or_none(value: object, *, field_name: str) -> str | None:
+    return (
+        None if value is None else canonical_decimal(value, field_name=field_name)  # type: ignore[arg-type]
+    )
+
+
+def _sealed_instrument_configs(
+    session: Session,
+    *,
+    manifest_id: object,
+    instrument_ids: set[str],
+) -> dict[str, dict[str, object]]:
+    if not instrument_ids:
+        return {}
+    rows = session.execute(
+        select(
+            portfolio_daily_instrument_input.c.instrument_id,
+            portfolio_daily_instrument_input.c.canonical_instrument,
+        ).where(
+            portfolio_daily_instrument_input.c.manifest_id == manifest_id,
+            portfolio_daily_instrument_input.c.instrument_id.in_(
+                sorted(instrument_ids)
+            ),
+        )
+    ).mappings()
+    result = {
+        str(row["instrument_id"]): dict(row["canonical_instrument"])
+        for row in rows
+        if isinstance(row["canonical_instrument"], dict)
+    }
+    missing = sorted(instrument_ids - set(result))
+    if missing:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "published_calculation_integrity_error",
+                "reason": "sealed_instrument_config_missing",
+                "instrument_ids": missing,
+            },
+        )
+    return result
+
+
+def _sum_optional(
+    rows: tuple[PortfolioDailyHolding, ...],
+    field_name: str,
+) -> Decimal | None:
+    values = tuple(getattr(row, field_name) for row in rows)
+    if any(value is None for value in values):
+        return None
+    return exact_decimal_sum(
+        tuple(value for value in values if isinstance(value, Decimal))
+    )
+
+
+def _sum_lot_exact(
+    rows: tuple[PortfolioDailyLot, ...],
+    field_name: str,
+) -> Decimal | None:
+    values = tuple(getattr(row, field_name) for row in rows)
+    if any(value is None for value in values):
+        return None
+    return exact_decimal_sum(
+        tuple(value for value in values if isinstance(value, Decimal))
+    )
+
+
+def _instrument_contributions(
+    publication: CurrentPortfolioDailyPublication,
+    *,
+    as_of_date: date,
+) -> dict[str, PortfolioDailyContribution]:
+    result: dict[str, PortfolioDailyContribution] = {}
+    for row in publication.contributions:
+        if row.as_of_date != as_of_date or row.axis != "instrument":
+            continue
+        if row.group_key in result:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "published_calculation_integrity_error",
+                    "reason": "duplicate_instrument_contribution",
+                    "instrument_id": row.group_key,
+                },
+            )
+        result[row.group_key] = row
+    return result
+
+
+def _uniform_optional(
+    rows: tuple[PortfolioDailyHolding, ...],
+    field_name: str,
+) -> object | None:
+    values = {getattr(row, field_name) for row in rows}
+    return next(iter(values)) if len(values) == 1 else None
+
+
+def _published_holdings_workspace(
+    session: Session,
+    publication: CurrentPortfolioDailyPublication,
+    *,
+    instrument_id: str | None = None,
+) -> dict[str, object]:
+    if len(publication.snapshots) != 1:
+        raise calculation_not_ready(
+            publication.metadata.portfolio_id,
+            end_date=publication.requested_range_end,
+            reason="published_snapshot_missing",
+        )
+    snapshot = publication.snapshots[0]
+    config = _sealed_portfolio_config(
+        session,
+        manifest_id=publication.metadata.manifest_id,
+        portfolio_id=publication.metadata.portfolio_id,
+    )
+    sealed_taxonomy = _sealed_taxonomy_display_config(
+        config,
+        portfolio_id=publication.metadata.portfolio_id,
+    )
+    selected_holdings = tuple(
+        row
+        for row in publication.holdings
+        if instrument_id is None or row.instrument_id == instrument_id
+    )
+    instruments = _sealed_instrument_configs(
+        session,
+        manifest_id=publication.metadata.manifest_id,
+        instrument_ids={row.instrument_id for row in selected_holdings},
+    )
+    lots_by_instrument: dict[str, list[PortfolioDailyLot]] = defaultdict(list)
+    for lot in publication.lots:
+        lots_by_instrument[lot.instrument_id].append(lot)
+    contributions = _instrument_contributions(
+        publication,
+        as_of_date=snapshot.as_of_date,
+    )
+    grouped: dict[str, list[PortfolioDailyHolding]] = defaultdict(list)
+    for holding in selected_holdings:
+        grouped[holding.instrument_id].append(holding)
+
+    rows: list[dict[str, object]] = []
+    for resolved_instrument_id in sorted(grouped):
+        group = tuple(grouped[resolved_instrument_id])
+        quantity = exact_decimal_sum(tuple(row.quantity_exact for row in group))
+        market_value_local = _sum_optional(group, "market_value_local_exact")
+        market_value_base = _sum_optional(group, "market_value_base_exact")
+        instrument_lots = tuple(lots_by_instrument[resolved_instrument_id])
+        cost_basis_local = (
+            _sum_lot_exact(instrument_lots, "cost_basis_local_exact")
+            if instrument_lots
+            else None
+        )
+        cost_basis_base = (
+            _sum_lot_exact(instrument_lots, "cost_basis_base_exact")
+            if instrument_lots
+            and all(row.measured_base_cost for row in instrument_lots)
+            else None
+        )
+        unrealized_pnl_local = (
+            exact_decimal_subtract(market_value_local, cost_basis_local)
+            if market_value_local is not None and cost_basis_local is not None
+            else None
+        )
+        unrealized_pnl_base = (
+            exact_decimal_subtract(market_value_base, cost_basis_base)
+            if market_value_base is not None and cost_basis_base is not None
+            else None
+        )
+        contribution = contributions.get(resolved_instrument_id)
+        economic_pnl = (
+            contribution.economic_pnl_exact
+            if contribution is not None and contribution.measured
+            else None
+        )
+        return_contribution = (
+            exact_decimal_sum(
+                (
+                    contribution.contribution_method50,
+                    contribution.contribution_division_adjustment_exact,
+                )
+            )
+            if contribution is not None
+            and contribution.measured
+            and contribution.contribution_method50 is not None
+            else None
+        )
+        allocation = _sum_optional(group, "portfolio_weight")
+        coverage_rank = {"complete": 0, "partial": 1, "unavailable": 2}
+        coverage = max(
+            (row.valuation_coverage_state for row in group),
+            key=coverage_rank.__getitem__,
+        )
+        reason_codes = list(
+            dict.fromkeys(
+                reason
+                for row in group
+                for reason in (
+                    *row.valuation_coverage_reason_codes,
+                    *row.valuation_reason_codes,
+                )
+            )
+        )
+        if contribution is None:
+            reason_codes.append("instrument_contribution_missing")
+        elif not contribution.measured:
+            reason_codes.extend(contribution.reason_codes)
+        reason_codes = list(dict.fromkeys(reason_codes))
+        rows.append(
+            {
+                "line_id": resolved_instrument_id,
+                "instrument_core": instruments[resolved_instrument_id],
+                "quantity": canonical_decimal(quantity, field_name="quantity"),
+                "last_price": _decimal_or_none(
+                    _uniform_optional(group, "adopted_price_exact"),
+                    field_name="adopted_price_exact",
+                ),
+                "quote_as_of_date": snapshot.as_of_date.isoformat(),
+                "quote_status": _uniform_optional(
+                    group,
+                    "valuation_endpoint_status",
+                ),
+                "market_value": _decimal_or_none(
+                    market_value_local,
+                    field_name="market_value_local_exact",
+                ),
+                "market_value_base": _decimal_or_none(
+                    market_value_base,
+                    field_name="market_value_base_exact",
+                ),
+                "day_change_pct": None,
+                # Instrument attribution is published in portfolio base
+                # currency.  Do not mislabel it as an instrument-local amount.
+                "day_change_value": None,
+                "day_change_value_base": _decimal_or_none(
+                    economic_pnl,
+                    field_name="instrument_economic_pnl_exact",
+                ),
+                "portfolio_return_contribution": _decimal_or_none(
+                    return_contribution,
+                    field_name="instrument_contribution_effective",
+                ),
+                "cost_basis_method": None,
+                "cost_basis": _decimal_or_none(
+                    cost_basis_local,
+                    field_name="cost_basis_local",
+                ),
+                "cost_basis_base": _decimal_or_none(
+                    cost_basis_base,
+                    field_name="cost_basis_base",
+                ),
+                "unrealized_pnl": _decimal_or_none(
+                    unrealized_pnl_local,
+                    field_name="unrealized_pnl_local_exact",
+                ),
+                "unrealized_pnl_base": _decimal_or_none(
+                    unrealized_pnl_base,
+                    field_name="unrealized_pnl_ending_base",
+                ),
+                "unrealized_return": None,
+                "allocation": _decimal_or_none(
+                    allocation,
+                    field_name="portfolio_weight",
+                ),
+                "price_chart_1m": [],
+                "price_chart_3m": [],
+                "price_chart_6m": [],
+                "price_chart_1y": [],
+                "coverage_status": coverage,
+                "coverage_reason_codes": reason_codes,
+                "account_ids": sorted({row.account_id for row in group}),
+                "account_count": len({row.account_id for row in group}),
+                "open_position_lot_count": len(instrument_lots),
+            }
+        )
+
+    position_market_value = _sum_optional(
+        selected_holdings,
+        "market_value_base_exact",
+    )
+    pending_settlement = (
+        exact_decimal_subtract(
+            snapshot.pending_receivable,
+            snapshot.pending_payable,
+        )
+        if snapshot.pending_receivable is not None
+        and snapshot.pending_payable is not None
+        else None
+    )
+    selected_lots = tuple(
+        lot
+        for lot in publication.lots
+        if instrument_id is None or lot.instrument_id == instrument_id
+    )
+    total_cost_basis = (
+        _sum_lot_exact(selected_lots, "cost_basis_base_exact")
+        if selected_lots and all(row.measured_base_cost for row in selected_lots)
+        else None
+    )
+    total_unrealized = (
+        exact_decimal_subtract(position_market_value, total_cost_basis)
+        if position_market_value is not None and total_cost_basis is not None
+        else None
+    )
+    total_allocation = _sum_optional(
+        selected_holdings,
+        "portfolio_weight",
     )
     return {
-        "portfolio_id": resolved_portfolio["portfolio_id"],
-        "portfolio_name": resolved_portfolio["portfolio_name"],
-        "base_currency": resolved_portfolio["base_currency"],
-        "as_of_date": as_of_date,
-        "nav": resolved_portfolio.get("nav", 0.0),
-        "day_change_value": resolved_portfolio.get("day_change_value", 0.0),
-        "day_change_pct": resolved_portfolio.get("day_change_pct", 0.0),
-        "default_planning_taxonomy_id": resolved_portfolio.get("default_planning_taxonomy_id"),
-        "toolbar_label": "View: Portfolio Summary",
-        "badges": [
-            calculation_frequency_status,
-            "Ledger and performance kernel live",
-            "Planning taxonomy and target sets live",
-            "Current research target-weight solve live",
+        "portfolio_id": publication.metadata.portfolio_id,
+        "portfolio_name": str(
+            config.get("portfolio_name") or publication.metadata.portfolio_id
+        ),
+        "base_currency": snapshot.base_currency,
+        "as_of_date": snapshot.as_of_date.isoformat(),
+        "view_label": "View: Holdings",
+        "coverage_note": (
+            "Financial values are read from one immutable Portfolio Daily "
+            "publication; display metadata is read from its sealed manifest."
+        ),
+        "quality_warnings": list(snapshot.valuation_reason_codes),
+        "publication": publication_metadata_response(publication.metadata).model_dump(
+            mode="json"
+        ),
+        "sealed_display_config": {
+            "taxonomy": sealed_taxonomy,
+        },
+        "summary_cards": [
+            {"label": "Instruments", "value": str(len(rows)), "tone": "neutral"},
+            {
+                "label": "Account Lines",
+                "value": str(len(selected_holdings)),
+                "tone": "neutral",
+            },
+            {
+                "label": "Measured Lines",
+                "value": (
+                    f"{sum(1 for row in selected_holdings if row.measured_market_value)} "
+                    f"/ {len(selected_holdings)}"
+                ),
+                "tone": "neutral",
+            },
+            {
+                "label": "Coverage",
+                "value": snapshot.nav_coverage_state,
+                "tone": "neutral",
+            },
         ],
-        "sections": [
-            {"label": "Holdings", "href": "/holdings", "status": "api-backed"},
-            {"label": "Performance", "href": "/performance", "status": "workspace-backed"},
-            {"label": "Risk", "href": "/risk", "status": "workspace-backed"},
-            {"label": "Transactions", "href": "/transactions", "status": "api-backed"},
-            {"label": "Accounts", "href": "/accounts", "status": "api-backed"},
-            {"label": "Taxonomies", "href": "/taxonomies", "status": "workspace-backed"},
-            {"label": "Research", "href": "/research", "status": "workspace-backed"},
-        ],
+        "rows": rows,
+        "totals": {
+            "market_value": _decimal_or_none(
+                position_market_value,
+                field_name="position_market_value",
+            ),
+            "cash_balance": _decimal_or_none(
+                snapshot.settled_cash,
+                field_name="settled_cash",
+            ),
+            "pending_settlement": _decimal_or_none(
+                pending_settlement,
+                field_name="pending_settlement",
+            ),
+            "nav": _decimal_or_none(
+                snapshot.closing_nav,
+                field_name="closing_nav",
+            ),
+            "day_change_pct": _decimal_or_none(
+                snapshot.subperiod_twr_published,
+                field_name="subperiod_twr_published",
+            ),
+            "day_change_value": _decimal_or_none(
+                snapshot.economic_pnl,
+                field_name="economic_pnl",
+            ),
+            "cost_basis": _decimal_or_none(
+                total_cost_basis,
+                field_name="cost_basis_base",
+            ),
+            "unrealized_pnl_base": _decimal_or_none(
+                total_unrealized,
+                field_name="unrealized_pnl_ending_base",
+            ),
+            "unrealized_return": None,
+            "allocation": _decimal_or_none(
+                total_allocation,
+                field_name="portfolio_weight",
+            ),
+        },
     }
 
 
-@router.post("/preload")
-def preload_workspace(
-    background_tasks: BackgroundTasks,
+@router.get("/summary", response_model=PortfolioWorkspaceSummaryResponse)
+def workspace_summary(
     portfolio_id: str | None = None,
-) -> dict[str, object]:
-    resolved_portfolio = _require_portfolio(portfolio_id)
-    resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
-    warmed_surfaces = ["performance"]
-    background_tasks.add_task(preload_portfolio_workspace_cache, resolved_portfolio_id)
-    return {
-        "portfolio_id": resolved_portfolio_id,
-        "status": "queued",
-        "warmed_surfaces": warmed_surfaces,
-    }
+    as_of_date: date | None = None,
+    session: Session = Depends(get_db_session),
+) -> PortfolioWorkspaceSummaryResponse:
+    if portfolio_id is None or not portfolio_id.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "portfolio_id_required"},
+        )
+    publication = read_published_latest(
+        session,
+        portfolio_id=portfolio_id,
+        as_of_date=as_of_date,
+        tables=("snapshots", "holdings"),
+    )
+    if len(publication.snapshots) != 1:
+        raise calculation_not_ready(
+            portfolio_id,
+            end_date=as_of_date,
+            reason="published_snapshot_missing",
+        )
+    snapshot = publication.snapshots[0]
+    config = _sealed_portfolio_config(
+        session,
+        manifest_id=publication.metadata.manifest_id,
+        portfolio_id=portfolio_id,
+    )
+    instrument_count = len({row.instrument_id for row in publication.holdings})
+    operating_profile = require_portfolio_operating_profile(
+        config.get("operating_profile"),
+        context="Sealed portfolio config",
+    )
+    sections = [
+        {"label": "Holdings", "href": "/holdings", "status": "published"},
+        {"label": "Performance", "href": "/performance", "status": "published"},
+        {"label": "Risk", "href": "/risk", "status": "separate-calculation"},
+        {"label": "Transactions", "href": "/transactions", "status": "facts"},
+        {"label": "Accounts", "href": "/accounts", "status": "facts"},
+        {"label": "Taxonomies", "href": "/taxonomies", "status": "facts"},
+    ]
+    if operating_profile == "standard_taxonomy":
+        sections.append(
+            {
+                "label": "Allocation Lab",
+                "href": "/allocation-research",
+                "status": "separate-calculation",
+            }
+        )
+    return PortfolioWorkspaceSummaryResponse.model_validate(
+        {
+            "portfolio_id": portfolio_id,
+            "portfolio_name": str(config.get("portfolio_name") or portfolio_id),
+            "base_currency": snapshot.base_currency,
+            "operating_profile": operating_profile,
+            "valuation_timezone": str(config["valuation_timezone"]),
+            "as_of_date": snapshot.as_of_date.isoformat(),
+            "measured_nav": snapshot.measured_nav,
+            "nav": snapshot.closing_nav,
+            "economic_pnl": snapshot.economic_pnl,
+            "subperiod_twr_method50": snapshot.subperiod_twr_method50,
+            "subperiod_twr_published": snapshot.subperiod_twr_published,
+            "return_period_start_date": (
+                snapshot.return_period_start_date.isoformat()
+                if snapshot.return_period_start_date is not None
+                else None
+            ),
+            "return_period_end_date": (
+                snapshot.return_period_end_date.isoformat()
+                if snapshot.return_period_end_date is not None
+                else None
+            ),
+            "return_period_day_count": snapshot.return_period_day_count,
+            "instrument_count": instrument_count,
+            "nav_coverage_state": snapshot.nav_coverage_state,
+            "nav_reason_codes": list(snapshot.nav_reason_codes),
+            "book_pnl_coverage_state": snapshot.book_pnl_coverage_state,
+            "book_pnl_reason_codes": list(snapshot.book_pnl_reason_codes),
+            "return_coverage_state": snapshot.return_coverage_state,
+            "return_reason_codes": list(snapshot.return_reason_codes),
+            "valuation_endpoint_status": snapshot.valuation_endpoint_status,
+            "valuation_reason_codes": list(snapshot.valuation_reason_codes),
+            "default_planning_taxonomy_id": config.get("default_planning_taxonomy_id"),
+            "publication": publication_metadata_response(
+                publication.metadata
+            ).model_dump(mode="json"),
+            "toolbar_label": "View: Portfolio Summary",
+            "sections": sections,
+        }
+    )
 
 
 @router.get("/holdings")
 def holdings_workspace(
     portfolio_id: str | None = None,
     as_of_date: date | None = None,
-    include_return_series: bool = False,
+    session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    resolved_portfolio = _require_portfolio(portfolio_id, live_if_materialized_stale=as_of_date is None)
-
-    portfolio_as_of_date = (
-        date.fromisoformat(str(resolved_portfolio.get("as_of_date")))
-        if resolved_portfolio.get("as_of_date")
-        else None
-    )
-    resolved_as_of_date = as_of_date or portfolio_as_of_date or date.today()
-    resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
-    risk_policy = get_portfolio_risk_policy(resolved_portfolio_id)
-    requested_risk_frequency = str((risk_policy or {}).get("calculation_frequency") or "auto")
-    materialized_workspace = get_cached_materialized_holdings_workspace(
-        resolved_portfolio_id,
-        as_of_date=resolved_as_of_date,
-    )
-    if materialized_workspace is not None:
-        try:
-            instrument_ids = _instrument_ids_from_holdings_workspace(materialized_workspace)
-            market_data = lock_instrument_market_data(
-                instrument_ids,
-                as_of_date=resolved_as_of_date,
-                roles=("chart", "total_return"),
-            )
-            risk_basis_profile = calculation_frequency_profile_for_instruments(
-                instrument_ids,
-                end_date=resolved_as_of_date,
-                requested_frequency=requested_risk_frequency,
-                market_data=market_data,
-            )
-            calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
-            accounts = list_accounts(resolved_portfolio_id)
-            position_lots = build_position_lots(
-                resolved_portfolio_id,
-                accounts,
-                list_transactions(resolved_portfolio_id, end_date=resolved_as_of_date),
-                as_of_date=resolved_as_of_date,
-                include_market_valuation=False,
-            )
-            response = _enrich_holdings_workspace_market_data(
-                materialized_workspace,
-                position_lots=position_lots,
-                risk_basis_profile=risk_basis_profile,
-                market_data=market_data,
-            )
-            enriched_response = enrich_holdings_forward_risk(
-                response,
-                as_of_date=resolved_as_of_date,
-                calculation_frequency=calculation_frequency,
-                risk_policy=risk_policy or {},
-            )
-            return _public_holdings_workspace_response(
-                enriched_response,
-                include_return_series=include_return_series,
-            )
-        except InstrumentRegistryError as error:
-            raise HTTPException(status_code=502, detail=str(error)) from error
-
-    accounts = list_accounts(resolved_portfolio_id)
-    transactions = list_transactions(resolved_portfolio_id)
-    try:
-        position_lots = build_position_lots(
-            resolved_portfolio_id,
-            accounts,
-            list_transactions(resolved_portfolio_id, end_date=resolved_as_of_date),
-            as_of_date=resolved_as_of_date,
-            include_market_valuation=False,
+    if portfolio_id is None or not portfolio_id.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "portfolio_id_required"},
         )
-        holding_start_dates = _holding_start_dates_by_instrument(position_lots)
-        instrument_ids = []
-        for position_lot in position_lots:
-            if str(position_lot.get("status") or "") != "open":
-                continue
-            instrument_id = str(position_lot.get("instrument_id") or "").strip()
-            if instrument_id and instrument_id not in instrument_ids:
-                instrument_ids.append(instrument_id)
-        market_data = lock_instrument_market_data(
-            instrument_ids,
-            as_of_date=resolved_as_of_date,
-            roles=("chart", "total_return"),
-        )
-        risk_basis_profile = calculation_frequency_profile_for_instruments(
-            instrument_ids,
-            end_date=resolved_as_of_date,
-            requested_frequency=requested_risk_frequency,
-            market_data=market_data,
-        )
-        calculation_frequency = cast(CalculationFrequency, str(risk_basis_profile.get("resolved_frequency") or "daily"))
-        statement = build_holdings_report(
-            resolved_portfolio,
-            accounts,
-            transactions,
-            as_of_date=resolved_as_of_date,
-            include_cash_rows=True,
-            calculation_frequency=calculation_frequency,
-        )
-        market_profile_by_instrument = build_instrument_holdings_market_profiles(
-            market_data,
-            instrument_ids=[
-                instrument_id
-                for position in statement.get("positions", [])
-                if (instrument_id := str(position.get("instrument_id") or ""))
-                and not is_cash_holding_instrument_id(instrument_id)
-            ],
-            holding_start_dates=holding_start_dates,
-            calculation_frequency=calculation_frequency,
-        )
-    except InstrumentRegistryError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
-    positions = list(statement["positions"])
-    position_count = len(positions)
-    priced_position_count = sum(1 for position in positions if position.get("last_price") is not None)
-    position_lot_summary = summarize_position_lots(position_lots)
-
-    def market_profile_for_position(position: dict[str, object]) -> dict[str, object]:
-        instrument_id = str(position.get("instrument_id") or "")
-        if is_cash_holding_instrument_id(instrument_id):
-            profile = {
-                f"price_chart_{range_key}": (
-                    position.get(f"price_chart_{range_key}")
-                    if isinstance(position.get(f"price_chart_{range_key}"), list)
-                    else []
-                )
-                for range_key in HOLDINGS_PRICE_CHART_RANGE_KEYS
-            }
-            for field_name in _HOLDINGS_TREND_FIELD_NAMES:
-                profile[field_name] = position.get(field_name)
-            profile["instrument_holding_start_date"] = position.get("instrument_holding_start_date")
-            profile["instrument_trend_as_of_date"] = position.get("instrument_trend_as_of_date")
-            profile["instrument_trend_basis"] = position.get("instrument_trend_basis")
-            profile["instrument_risk_frequency"] = position.get("instrument_risk_frequency") or calculation_frequency
-            return profile
-        return (
-            market_profile_by_instrument[instrument_id]
-            if instrument_id
-            and instrument_id in market_profile_by_instrument
-            else empty_instrument_holdings_market_profile(calculation_frequency=calculation_frequency)
-        )
-
-    rows = [
-        {
-            "line_id": str(position.get("position_id") or position.get("instrument_id") or ""),
-            "instrument_core": position["instrument_ref"],
-            "quantity": position["quantity"],
-            "last_price": position.get("last_price"),
-            "quote_as_of_date": position.get("quote_as_of_date"),
-            "quote_metric_family": position.get("quote_metric_family"),
-            "quote_basis": position.get("quote_basis"),
-            "quote_source_ref": position.get("quote_source_ref"),
-            "quote_status": position.get("quote_status"),
-            "valuation_quote": position.get("valuation_quote"),
-            "market_value": position.get("market_value"),
-            "market_value_base": position.get("market_value_base"),
-            "day_change_pct": position.get("day_change_pct"),
-            "day_change_value": position.get("day_change_value"),
-            "day_change_value_base": position.get("day_change_value_base"),
-            "cost_basis_method": position.get("cost_basis_method"),
-            "cost_basis": position.get("cost_basis"),
-            "cost_basis_base": position.get("cost_basis_base"),
-            "unrealized_pnl": position.get("unrealized_pnl"),
-            "unrealized_pnl_base": position.get("unrealized_pnl_base"),
-            "unrealized_return": position.get("unrealized_return"),
-            "allocation": position.get("portfolio_weight"),
-            **market_profile_for_position(position),
-            "coverage_status": position.get("coverage_status")
-            or ("price-nav-fx" if position.get("market_value_base") is not None else "unpriced"),
-            "account_ids": [
-                str(account_id)
-                for account_id in list(position.get("account_ids") or [])
-                if str(account_id or "")
-            ],
-            "account_count": int(position.get("account_count") or 0),
-            "open_position_lot_count": int(position.get("open_position_lot_count") or 0),
-        }
-        for position in positions
-    ]
-    total_market_value_base = statement.get("total_market_value_base")
-    total_nav_base = statement.get("total_nav_base")
-    day_change_totals = summarize_holding_day_change(rows, total_market_value_base=total_market_value_base)
-
-    def is_cash_workspace_row(row: dict[str, object]) -> bool:
-        instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
-        return (
-            str(instrument_core.get("instrument_type") or "").strip().lower() == "cash"
-            or is_cash_holding_instrument_id(instrument_core.get("instrument_id") or row.get("line_id"))
-        )
-
-    cost_basis_rows = [row for row in rows if not is_cash_workspace_row(row)]
-    total_cost_basis_base = (
-        sum(float(row["cost_basis_base"]) for row in cost_basis_rows)
-        if cost_basis_rows and all(row.get("cost_basis_base") is not None for row in cost_basis_rows)
-        else 0.0
-        if not cost_basis_rows
-        else None
+    publication = read_published_latest(
+        session,
+        portfolio_id=portfolio_id,
+        as_of_date=as_of_date,
+        tables=("snapshots", "holdings", "lots", "contributions"),
     )
-    total_unrealized_pnl_base = (
-        sum(float(row["unrealized_pnl_base"]) for row in cost_basis_rows)
-        if cost_basis_rows
-        and all(row.get("unrealized_pnl_base") is not None for row in cost_basis_rows)
-        else 0.0
-        if not cost_basis_rows
-        else None
-    )
-    total_unrealized_return = (
-        total_unrealized_pnl_base / abs(total_cost_basis_base)
-        if total_unrealized_pnl_base is not None
-        and total_cost_basis_base is not None
-        and abs(total_cost_basis_base) > 1e-9
-        else None
-    )
-
-    response = {
-        "portfolio_id": resolved_portfolio["portfolio_id"],
-        "portfolio_name": resolved_portfolio["portfolio_name"],
-        "base_currency": statement["base_currency"],
-        "as_of_date": resolved_as_of_date.isoformat(),
-        "view_label": "View: Holdings",
-        "coverage_note": (
-            "Holdings now replay portfolio facts to the selected as-of date and value positions "
-            "with shared registry market data and shared FX at that boundary. PositionLots stay portfolio-private, "
-            "account-aware, and are derived from the same fact ledger."
-        ),
-        "risk_basis": risk_basis_profile,
-        "summary_cards": [
-            {"label": "Positions", "value": str(position_count), "tone": "neutral"},
-            {
-                "label": "Open PositionLots",
-                "value": str(position_lot_summary["open_position_lot_count"]),
-                "tone": "neutral",
-            },
-            {
-                "label": "Priced Lines",
-                "value": f"{priced_position_count} / {position_count}",
-                "tone": "neutral",
-            },
-            {"label": "Coverage", "value": "Holdings", "tone": "neutral"},
-        ],
-        "rows": rows,
-        "totals": {
-            "market_value": total_market_value_base,
-            "cash_balance": statement.get("cash_balance_base"),
-            "pending_settlement": statement.get("pending_settlement_base"),
-            "nav": total_nav_base,
-            "day_change_pct": day_change_totals["day_change_pct"],
-            "day_change_value": day_change_totals["day_change_value"],
-            "cost_basis": total_cost_basis_base,
-            "unrealized_pnl_base": total_unrealized_pnl_base,
-            "unrealized_return": total_unrealized_return,
-            "allocation": (
-                total_market_value_base / total_nav_base
-                if total_market_value_base is not None and total_nav_base is not None and total_nav_base > 1e-9
-                else None
-            ),
-        },
-    }
-    enriched_response = enrich_holdings_forward_risk(
-        response,
-        as_of_date=resolved_as_of_date,
-        calculation_frequency=calculation_frequency,
-        risk_policy=risk_policy or {},
-    )
-    return _public_holdings_workspace_response(
-        enriched_response,
-        include_return_series=include_return_series,
-    )
+    return _published_holdings_workspace(session, publication)
 
 
 @router.get("/holdings/instrument")
@@ -631,63 +984,41 @@ def instrument_holding_projection(
     portfolio_id: str | None = None,
     instrument_id: str | None = None,
     as_of_date: date | None = None,
+    session: Session = Depends(get_db_session),
 ) -> dict[str, object]:
-    if not instrument_id or not instrument_id.strip():
-        raise HTTPException(status_code=400, detail="instrument_id is required")
-    resolved_portfolio = _require_portfolio(portfolio_id)
-    resolved_portfolio_id = str(resolved_portfolio["portfolio_id"])
-    normalized_instrument_id = instrument_id.strip()
-    try:
-        response = build_materialized_instrument_holding_projection(
-            resolved_portfolio_id,
-            normalized_instrument_id,
-            as_of_date=as_of_date,
+    if portfolio_id is None or not portfolio_id.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "portfolio_id_required"},
         )
-    except InstrumentRegistryError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
-    if response is None:
-        fallback_workspace = holdings_workspace(
-            portfolio_id=resolved_portfolio_id,
-            as_of_date=as_of_date,
-            include_return_series=False,
+    if instrument_id is None or not instrument_id.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "instrument_id_required"},
         )
-        fallback_rows = fallback_workspace.get("rows")
-        matching_row = next(
-            (
-                item
-                for item in fallback_rows if isinstance(item, dict)
-                and str(
-                    (
-                        item.get("instrument_core")
-                        if isinstance(item.get("instrument_core"), dict)
-                        else {}
-                    ).get("instrument_id")
-                    or item.get("line_id")
-                    or ""
-                )
-                == normalized_instrument_id
-            ),
-            None,
-        ) if isinstance(fallback_rows, list) else None
-        response = {
-            "portfolio_id": fallback_workspace["portfolio_id"],
-            "portfolio_name": fallback_workspace["portfolio_name"],
-            "base_currency": fallback_workspace["base_currency"],
-            "as_of_date": fallback_workspace["as_of_date"],
-            "view_label": fallback_workspace.get("view_label") or "View: Holdings",
-            "row": project_instrument_holding_row(matching_row) if matching_row is not None else None,
-        }
-
-    row = response.get("row")
-    if isinstance(row, dict):
-        instrument_core = row.get("instrument_core") if isinstance(row.get("instrument_core"), dict) else {}
-        instrument_types = {str(instrument_core.get("instrument_type") or "").strip().lower()}
-        instrument_ids = {normalized_instrument_id}
-    else:
-        instrument_types = set()
-        instrument_ids = set()
-    response["quality_warnings"] = corporate_action_quality_warnings(
-        instrument_types,
-        instrument_ids,
+    publication = read_published_latest(
+        session,
+        portfolio_id=portfolio_id,
+        as_of_date=as_of_date,
+        tables=("snapshots", "holdings", "lots", "contributions"),
     )
-    return response
+    workspace = _published_holdings_workspace(
+        session,
+        publication,
+        instrument_id=instrument_id,
+    )
+    rows = workspace["rows"]
+    row = rows[0] if isinstance(rows, list) and rows else None
+    return {
+        "portfolio_id": workspace["portfolio_id"],
+        "portfolio_name": workspace["portfolio_name"],
+        "base_currency": workspace["base_currency"],
+        "as_of_date": workspace["as_of_date"],
+        "view_label": workspace["view_label"],
+        "publication": workspace["publication"],
+        "quality_warnings": workspace["quality_warnings"],
+        "row": row,
+    }
+
+
+__all__: list[str] = ["router"]

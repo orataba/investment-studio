@@ -5,6 +5,7 @@
 - PostgreSQL database: `portfolio_ops`
 - Schemas:
   - `instrument_registry`
+  - `calculation_registry`
   - `portfolio`
   - `watchlist`
 
@@ -40,13 +41,14 @@ this authorization.
 ```bash
 export PORTFOLIO_OPS_MIGRATION_EXPECTED_DATABASE=portfolio_ops
 (cd infra/instrument_registry && alembic upgrade head)
+(cd infra/calculation_registry && alembic upgrade head)
 (cd apps/portfolio/backend && PYTHONPATH=. alembic upgrade head)
 (cd apps/watchlist/backend && PYTHONPATH=. alembic upgrade head)
 ```
 
 `migrate_all.sh` is a low-level migration runner, not a production release
 entry point. A release must use the fail-closed orchestrator so writer fencing,
-one verified three-schema recovery point, rebuilds, audit, and service health
+one verified project-schema recovery point, rebuilds, audit, and service health
 are one workflow:
 
 ```bash
@@ -58,8 +60,8 @@ PORTFOLIO_OPS_RELEASE_AS_OF_DATE=YYYY-MM-DD \
 
 The orchestrator records and stops all managed API/Web/refresh writers, rejects
 unconfirmed targets and remaining client connections, creates and validates a
-single custom-format backup containing all three schemas, runs all migration
-chains, rebuilds Portfolio and Watchlist, requires a zero-failure/zero-warning
+single custom-format backup containing the exact pre-release schema set, runs all four migration
+chains, drains and verifies Portfolio publications, rebuilds Watchlist, requires a zero-failure/zero-warning
 JSON audit, creates a verified post-release backup, restores the prior service
 set, checks every previously active HTTP service, and—when Portfolio API was
 active—strictly serializes every portfolio's current transaction list and each
@@ -68,19 +70,26 @@ mutation fails, it restores the pre-release backup and leaves services stopped
 for operator review. `migrate_all.sh` remains available only as an internal
 step and for isolated disposable databases.
 
-## Rebuild Derived State After Breaking Migrations
+The first upgrade from a legacy deployment may begin with only
+`instrument_registry / portfolio / watchlist`. The release backup records that
+exact three-schema pre-state, the calculation migration creates
+`calculation_registry`, and rollback removes it again before restoring the
+legacy backup. Every successful current release and post-release backup must
+contain all four schemas.
+
+## Publish Derived State After Breaking Migrations
 
 Migrations change schema and invalidate obsolete projections; they do not hide
 that invalidation by translating legacy payloads on read.  After a migration
 that marks Portfolio or Watchlist derived state stale, keep application services
-stopped and run the canonical rebuild commands against the same explicitly
+stopped and run the canonical publication/rebuild commands against the same explicitly
 configured database:
 
 ```bash
 apps/portfolio/backend/.venv/bin/python \
-  apps/portfolio/backend/scripts/rebuild_portfolio_daily_snapshots.py \
+  apps/portfolio/backend/scripts/publish_portfolio_daily.py \
   --as-of-date YYYY-MM-DD \
-  --all
+  --timeout-seconds 3600
 
 apps/watchlist/backend/.venv/bin/python \
   apps/watchlist/backend/scripts/rebuild_watchlist_derived_state.py \
@@ -91,11 +100,18 @@ apps/watchlist/backend/.venv/bin/python \
 
 Neither CLI accepts a database URL argument: the caller must export the normal
 application database/schema variables so target selection cannot diverge from
-the migrated environment. Portfolio always rebuilds from the earliest affected
-date. Watchlist requires two fixed-order full-universe rounds because peer
+the migrated environment. The publication command atomically advances every
+Portfolio Daily scope generation and creates durable recompute intents, then
+dispatches those intents with the explicitly confirmed release date, runs the same
+lease/fencing worker used in production, and verifies that every portfolio's
+current generation has an immutable current publication for exactly that date;
+an idle queue, a stale publication, a different date, or a failed run is not
+release success. Watchlist requires two fixed-order full-universe rounds because peer
 cohort fingerprints produced in round one only become globally converged after
 every active instrument reads the updated cohort in round two. Any target
-failure keeps the command non-zero; a partial run is not release success.
+failure keeps the command non-zero; a partial run is not release success. Set
+`PORTFOLIO_OPS_RELEASE_PORTFOLIO_DRAIN_TIMEOUT_SECONDS` to change the release
+orchestrator's default 3600-second Portfolio drain deadline.
 
 Only restart services after `infra/scripts/audit_live_data.py` passes against a
 single repeatable-read database snapshot.
@@ -124,7 +140,7 @@ backups live under
 
 ## Reset Local Schemas
 
-如果本地数据库已经混入旧 schema、脏数据、半迁移状态，直接重建三套 schema：
+如果本地数据库已经混入旧 schema、脏数据、半迁移状态，直接重建四套 schema：
 
 ```bash
 CONFIRM_REBUILD_DATABASE=portfolio_ops ./infra/postgres/rebuild_local_schemas.sh
@@ -132,12 +148,13 @@ CONFIRM_REBUILD_DATABASE=portfolio_ops ./infra/postgres/rebuild_local_schemas.sh
 
 说明：
 
-- 这是破坏性命令，会删除 `instrument_registry / portfolio / watchlist` 三个 schema 的全部数据。
-- `CONFIRM_REBUILD_DATABASE` 必须与实时连接返回的数据库名完全一致；脚本随后把同一连接显式传给三套 Alembic，禁止 drop 与 migrate 指向不同数据库。
+- 这是破坏性命令，会删除 `instrument_registry / calculation_registry / portfolio / watchlist` 四个 schema 的全部数据。
+- `CONFIRM_REBUILD_DATABASE` 必须与实时连接返回的数据库名完全一致；脚本随后把同一连接显式传给四套 Alembic，禁止 drop 与 migrate 指向不同数据库。
 - 默认读取 `PORTFOLIO_OPS_LOCAL_POSTGRES_URL`。
 - 如果数据库地址不同，先在 backend `.env` 或 shell 环境里设置 `PORTFOLIO_OPS_LOCAL_POSTGRES_URL`。
 - migration 只重建结构和仓库内定义的 reference rows；业务导入数据、手工录入数据、历史 runtime 数据不会自动恢复。
-- `portfolio` schema 重建后默认是空组合状态；需要组合时，显式通过 UI/API 创建，或运行 `apps/portfolio/backend/scripts/import_real_portfolio_from_csv.py --csv-path ... --portfolio-id ...` 导入。
+- `portfolio` schema 重建后默认是空组合状态；需要组合时，显式通过 UI/API 创建，或运行 `apps/portfolio/backend/scripts/import_real_portfolio_from_csv.py --csv-path ... --portfolio-id ... --operating-profile standard_taxonomy` 导入。创建路径不得省略组合 operating profile。
+- CSV importer 只写入事实并提交 durable recompute intent；不要从导入命令期待同步 NAV。必须等待 Portfolio Daily worker 完成 fenced publication 后再消费持仓和绩效。
 - `watchlist` schema 重建后不会自动注入示例 watchlist、示例标签值或 demo 产品框架赋值。
 
 ## Runtime Defaults
@@ -146,7 +163,7 @@ CONFIRM_REBUILD_DATABASE=portfolio_ops ./infra/postgres/rebuild_local_schemas.sh
 - Portfolio backend connects to `portfolio`
 - Watchlist backend connects to `watchlist`
 
-Each backend sets PostgreSQL `search_path` from its own `database_schema` setting, so one database instance can host all three app schemas without cross-app table collisions.
+Each backend sets PostgreSQL `search_path` from its own domain schema plus the shared registries it consumes. One database instance hosts three application schemas and the shared `calculation_registry` without cross-app table collisions.
 
 当前 backend 顶层包名已经拆开：
 
@@ -156,7 +173,9 @@ Each backend sets PostgreSQL `search_path` from its own `database_schema` settin
 
 ## Testing
 
-Tests override the database URL to temporary SQLite databases. That path exists only for fast isolated tests; the repository default runtime target is PostgreSQL.
+Platform 与 Watchlist 的纯 service 快速测试可以使用临时 SQLite。Portfolio 的 DB/API 测试统一从已完成全部
+迁移和 seed 的 PostgreSQL template 克隆逐例隔离数据库，不再使用 SQLite 模拟 cross-schema、NUMERIC、
+deferred constraint 或 publication 语义。所有生产 runtime 仍只使用 PostgreSQL。
 
 仓库统一验证入口是 `infra/scripts/verify_repository.sh`；CI 运行方式和固定版本见
 [CI.md](./CI.md)。依赖安装与验证分离，脚本不会在测试中修改锁文件或安装未锁定依赖。
@@ -169,7 +188,8 @@ Each backend should run tests from its own `backend/` directory:
 (cd apps/watchlist/backend && pytest)
 ```
 
-SQLite fast tests 不会覆盖 PostgreSQL 专属的 cross-schema FK / search_path 行为。
+SQLite fast tests 不会覆盖 PostgreSQL 专属的 cross-schema FK / search_path 行为；Portfolio 因而把这些能力纳入
+普通 backend test gate，而不是只留给少量 integration case。
 共享资产存储边界、append-only 行情修订和交易账本约束的回归验证使用：
 
 ```bash
@@ -190,8 +210,8 @@ backend runtime `.env`，也不要让 API 使用测试角色。
 infra/launchd/bootstrap_local_database.sh
 ```
 
-单独运行 pytest 时，连接不可用可能按测试夹具语义跳过；统一验证入口会解析 JUnit 报告，任何
-skip 或零收集都直接失败。角色缺失或权限错误也不能作为“环境不可用”静默通过。
+Portfolio 单独运行 pytest 时也必须显式提供可用的 `PORTFOLIO_OPS_TEST_POSTGRES_URL`，连接、角色或权限错误
+直接失败。统一验证入口还会解析 JUnit 报告；任何 skip 或零收集都直接失败。
 
 ## Repository Hygiene
 

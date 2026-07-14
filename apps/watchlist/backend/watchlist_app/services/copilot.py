@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from statistics import mean
-from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -472,11 +471,6 @@ class CopilotService:
             serialize_payload(risk_record.payload_json)
             if risk_record is not None
             else default_fund_risk_payload()
-        )
-        nav_settings = (
-            serialize_payload(manual_profile.nav_settings_json)
-            if manual_profile is not None
-            else {}
         )
         nav_rows = []
         chart_record = self.read_model_repository.get_chart(session, instrument_id)

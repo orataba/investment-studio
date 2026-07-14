@@ -7,7 +7,6 @@ from fastapi import APIRouter, HTTPException, Query
 from portfolio_app.api.contracts import RiskWorkspaceResponse
 from portfolio_app.services.fact_currency import PortfolioFactCurrencyError
 from portfolio_app.services.instrument_registry import InstrumentRegistryError
-from portfolio_app.services.ledger import LedgerDataIntegrityError
 from portfolio_app.services.risk_workspace import (
     ALL_INSTRUMENTS_SCOPE,
     RiskWorkspaceNotFoundError,
@@ -43,7 +42,7 @@ def get_risk_workspace(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except RiskWorkspaceRequestError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    except (PortfolioFactCurrencyError, LedgerDataIntegrityError, ValueError) as error:
+    except (PortfolioFactCurrencyError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except InstrumentRegistryError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error

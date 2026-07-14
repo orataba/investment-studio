@@ -67,6 +67,7 @@ if [[ -z "${CONFIRM_RELEASE:-}" ]]; then
 fi
 
 source "$SCRIPT_DIR/load_runtime_env.sh"
+source "$PROJECT_ROOT/infra/service_inventory.sh"
 portfolio_ops_reject_repository_env_files "$PROJECT_ROOT"
 for env_spec in \
   platform:PORTFOLIO_OPS_PLATFORM_ \
@@ -81,7 +82,7 @@ for env_spec in \
 done
 
 mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR" "$PROJECT_ROOT/var/watchlist-documents" \
-  "$PROJECT_ROOT/var/portfolio-research-outputs"
+  "$PROJECT_ROOT/var/portfolio-allocation-research-outputs"
 
 "$SCRIPT_DIR/bootstrap_local_database.sh"
 
@@ -94,7 +95,7 @@ leave_services_stopped_on_failure() {
   if [[ $exit_code -ne 0 && "$services_stopped" == "true" ]]; then
     if [[ "$new_services_started" == "true" ]]; then
       local service
-      for service in platform-api watchlist-api portfolio-api platform-web watchlist-web portfolio-web market-data-refresh; do
+      for service in "${PORTFOLIO_OPS_ALL_SERVICE_NAMES[@]}"; do
         launchctl bootout "gui/$UID/$LABEL_PREFIX.$service" >/dev/null 2>&1 || true
       done
     fi
@@ -146,7 +147,7 @@ done
 
 domain="gui/$UID"
 new_services_started=true
-for service in platform-api watchlist-api portfolio-api platform-web watchlist-web portfolio-web market-data-refresh; do
+for service in "${PORTFOLIO_OPS_ALL_SERVICE_NAMES[@]}"; do
   label="$LABEL_PREFIX.$service"
   plist="$LAUNCH_AGENTS_DIR/$label.plist"
   launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
@@ -154,14 +155,14 @@ for service in platform-api watchlist-api portfolio-api platform-web watchlist-w
   launchctl enable "$domain/$label"
 done
 
-for service in platform-api watchlist-api portfolio-api platform-web watchlist-web portfolio-web; do
+for service in "${PORTFOLIO_OPS_RUNTIME_SERVICE_NAMES[@]}"; do
   launchctl kickstart -k "$domain/$LABEL_PREFIX.$service"
 done
 
 health_urls=(
-  http://127.0.0.1:8002/api/health
-  http://127.0.0.1:8000/api/health
-  http://127.0.0.1:8001/api/health
+  http://127.0.0.1:8002/api/readiness
+  http://127.0.0.1:8000/api/readiness
+  http://127.0.0.1:8001/api/readiness
   http://127.0.0.1:5172/
   http://127.0.0.1:5173/
   http://127.0.0.1:5174/

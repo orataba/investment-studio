@@ -14,6 +14,7 @@
 数据库拓扑是：
 
 - `instrument_registry` schema
+- `calculation_registry` schema
 - `watchlist` schema
 - `portfolio` schema
 
@@ -42,11 +43,12 @@
 
 - 直接读写 `portfolio`
 - 直接读取 `instrument_registry`
+- 通过共享 `calculation_registry` 提交/消费 run、sealed manifest、durable job 与 publication 生命周期
 - 在本地维护自己的 ledger、lots、performance、risk、taxonomy、target set、research
 
 ## Shared Layer
 
-当前共享层分成三部分：
+当前共享层分成四部分：
 
 ### `packages/instrument-core`
 
@@ -71,6 +73,13 @@
 
 后续如果沉淀 layout、基础组件或设计系统，也优先放在这里，而不是复制到各 app。
 
+### `packages/calculation-core`
+
+承载跨 producer 稳定、但不包含领域公式的计算生命周期 contract：scope generation、run、sealed manifest、
+durable job/lease/fencing、immutable publication、current pointer 与 lifecycle repository。Portfolio Daily、
+Portfolio Risk、Watchlist Analytics 或 Allocation Research 只能增加自己的 typed dependency/output adapter，
+不能复制状态机或把领域 payload 塞进共享 JSON。
+
 ### `instrument_registry` schema
 
 承载共享资产主档和共享市场事实：
@@ -87,6 +96,12 @@ revision 以 append-only 方式保存值、来源证据、状态及更正历史�
 DTO 只是 current complete revision 的投影，不是另一份事实表。
 
 `instrument_registry` 的 Alembic 入口独立放在 [infra/instrument_registry](../infra/instrument_registry/README.md)，不再挂在 `platform` app 下。
+
+### `calculation_registry` schema
+
+承载跨领域计算运行与发布生命周期，不承载估值、绩效、风险或研究公式。其 Alembic 入口独立放在
+`infra/calculation_registry`；Portfolio 的 transaction/quote/FX/config dependency 与日频 NUMERIC output
+仍由 `portfolio` schema 拥有。
 
 ## Storage Boundary
 

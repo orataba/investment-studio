@@ -980,7 +980,10 @@ export default function TaxonomiesPage() {
       const totalEntityValueBase =
         holdingRowsForEntities.reduce((total, row) => total + (row.market_value_base ?? 0), 0) +
         (includeCashBuckets
-          ? visibleCashAccounts.reduce((total, accountRow) => total + (accountRow.derived_cash_balance_base ?? 0), 0)
+          ? visibleCashAccounts.reduce(
+              (total, accountRow) => total + Number(accountRow.settled_cash_base_exact ?? 0),
+              0,
+            )
           : 0)
 
       const holdingEntities = holdingRowsForEntities.map((row) => {
@@ -1083,16 +1086,19 @@ export default function TaxonomiesPage() {
       }
 
       const cashEntities = visibleCashAccounts.map((accountRow) => {
+        const settledCashBase = accountRow.settled_cash_base_exact == null
+          ? null
+          : Number(accountRow.settled_cash_base_exact)
         return {
           entity_id: accountRow.account.account_id,
           target_scope: 'cash_bucket' as const,
           label: accountRow.account.account_name,
           supporting_label: accountRow.account.currency,
           allocation:
-            accountRow.derived_cash_balance_base != null && totalEntityValueBase > 1e-9
-              ? accountRow.derived_cash_balance_base / totalEntityValueBase
+            settledCashBase != null && totalEntityValueBase > 1e-9
+              ? settledCashBase / totalEntityValueBase
               : null,
-          market_value_base: accountRow.derived_cash_balance_base ?? null,
+          market_value_base: settledCashBase,
           current_assignment: null,
           current_node: null,
           holding_state: 'held',
@@ -1128,7 +1134,10 @@ export default function TaxonomiesPage() {
             label: `${accountRow.account.account_name} · Cash`,
             supporting_label: accountRow.account.currency,
             allocation: null,
-            market_value_base: accountRow.derived_cash_balance_base ?? null,
+            market_value_base:
+              accountRow.settled_cash_base_exact == null
+                ? null
+                : Number(accountRow.settled_cash_base_exact),
             current_assignment: assignment,
             current_node: currentNode,
             holding_state: 'held',

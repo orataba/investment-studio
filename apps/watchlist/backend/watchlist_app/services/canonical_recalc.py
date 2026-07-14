@@ -1709,6 +1709,18 @@ class CanonicalRecalcService:
                     raise RecalcJobLeaseLostError(
                         f"Recalc lease lost before completion: {record.recalc_job_id}"
                     )
+                pending_generation = (
+                    self.recalc_repository.complete_claimed_generation(
+                        session,
+                        record,
+                    )
+                )
+                if pending_generation is not None:
+                    self._enqueue_invalidation_follow_up(
+                        session,
+                        record=record,
+                        requested_generation=pending_generation,
+                    )
                 self._enqueue_source_change_follow_up(session, record=record, result=result)
             if commit:
                 session.commit()
@@ -1765,6 +1777,18 @@ class CanonicalRecalcService:
                     raise RecalcJobLeaseLostError(
                         f"Recalc lease lost before completion: {record.recalc_job_id}"
                     )
+                pending_generation = (
+                    self.recalc_repository.complete_claimed_generation(
+                        session,
+                        record,
+                    )
+                )
+                if pending_generation is not None:
+                    self._enqueue_invalidation_follow_up(
+                        session,
+                        record=record,
+                        requested_generation=pending_generation,
+                    )
                 self._enqueue_source_change_follow_up(session, record=record, result=result)
             if commit:
                 session.commit()
@@ -1778,22 +1802,58 @@ class CanonicalRecalcService:
         except RecalcJobLeaseLostError:
             session.rollback()
             raise
-        except Exception as exc:
-            if not self.recalc_repository.mark_failed(
-                session,
-                record,
-                lease_token=lease_token,
-                error_message=str(exc),
-            ):
-                session.rollback()
-                raise RecalcJobLeaseLostError(
-                    f"Recalc lease lost while recording failure: {record.recalc_job_id}"
-                ) from exc
-            if commit:
-                session.commit()
-            else:
-                session.flush()
+        except Exception:
+            # The durable worker owns retry/dead-letter state transitions. Keep
+            # this boundary responsible only for rolling back materialization.
+            session.rollback()
             raise
+
+    def _enqueue_invalidation_follow_up(
+        self,
+        session: Session,
+        *,
+        record,
+        requested_generation: int,
+    ) -> None:
+        existing = self.recalc_repository.find_open_job(
+            session,
+            instrument_id=record.instrument_id,
+            job_type=record.job_type,
+        )
+        if existing is not None:
+            return
+        trigger_ref_id = (
+            f"{record.instrument_id}:{record.job_type}:{requested_generation}"
+        )
+        try:
+            with session.begin_nested():
+                self.recalc_repository.create(
+                    session,
+                    recalc_job_id=make_recalc_job_id(),
+                    job_type=record.job_type,
+                    instrument_id=record.instrument_id,
+                    trigger_type="coalesced_source_event_follow_up",
+                    trigger_ref_type="recalc_invalidation_generation",
+                    trigger_ref_id=trigger_ref_id,
+                    job_status="queued",
+                    priority=100 if record.job_type == "all" else 90,
+                    dedupe_key=make_recalc_dedupe_key(
+                        job_type=record.job_type,
+                        instrument_id=record.instrument_id,
+                    ),
+                    payload_json={
+                        "requested_by": "coalesced_source_event_follow_up",
+                        "requested_generation": requested_generation,
+                    },
+                )
+        except IntegrityError:
+            existing = self.recalc_repository.find_open_job(
+                session,
+                instrument_id=record.instrument_id,
+                job_type=record.job_type,
+            )
+            if existing is None:
+                raise
 
     def _enqueue_source_change_follow_up(
         self,

@@ -1,12 +1,15 @@
 # Portfolio Operations Server Deployment
 
-This project runs six user-systemd services in production:
+This project runs nine user-systemd services in production:
 
 - `portfolio-ops-platform-api.service`
+- `portfolio-ops-platform-outbox-worker.service`
 - `portfolio-ops-platform-web.service`
 - `portfolio-ops-watchlist-api.service`
+- `portfolio-ops-watchlist-worker.service`
 - `portfolio-ops-watchlist-web.service`
 - `portfolio-ops-portfolio-api.service`
+- `portfolio-ops-portfolio-worker.service`
 - `portfolio-ops-portfolio-web.service`
 
 The market-data timer is installed separately as:
@@ -39,12 +42,18 @@ database target and valuation date shown there.
 
 The installer binds both API and web services to `127.0.0.1` by default. Set
 `API_HOST` or `WEB_HOST` explicitly only when a reverse proxy or network policy
-requires another bind address.
+requires another bind address. If any of the six `*_API_PORT` / `*_WEB_PORT`
+values are overridden, release and restore runtime gates use the same values for
+readiness, web smoke, and the Portfolio read-contract smoke. Wildcard bind hosts
+(`0.0.0.0` or `::`) are probed through `127.0.0.1`; a concrete bind host is
+probed at that address. `API_HEALTH_HOST` and `WEB_HEALTH_HOST` may override only
+the probe address when routing requires it, and must also be passed to direct
+release or restore commands.
 
-Before applying migrations, the installer records and stops all six managed app
-units plus the market-data refresh timer/running worker. It then delegates to
+Before applying migrations, the installer records and stops all nine managed
+long-running units plus the market-data refresh timer/running oneshot. It then delegates to
 `infra/scripts/release_database.sh`, which creates a verified pre-release
-backup, applies all three Alembic chains, rebuilds Portfolio and Watchlist,
+backup, applies all four Alembic chains, rebuilds Portfolio and Watchlist,
 requires a zero-failure/zero-warning audit, and creates a verified post-release
 backup. If the installer fails after fencing the writers, managed services stay
 stopped for operator review. If the database-release workflow itself fails after
@@ -74,9 +83,15 @@ PORTFOLIO_OPS_RELEASE_AS_OF_DATE=YYYY-MM-DD \
   infra/systemd/install_app_services.sh
 ```
 
+To remove the managed user units without deleting databases, state, or logs:
+
+```bash
+PROJECT_ROOT="$PWD" infra/systemd/uninstall_app_services.sh
+```
+
 For another process manager, run the same fail-closed database release first.
 Do not invoke `migrate_all.sh` as a production deployment command: it is the
-internal three-chain runner and does not own backup, rollback, rebuild, audit,
+internal four-chain runner and does not own backup, rollback, rebuild, audit,
 writer fencing, or health checks.
 
 ```bash
@@ -94,8 +109,9 @@ creates verified pre/post backups, rebuilds both derived-state domains, and
 requires a zero-warning audit. If it fails after database mutation, it attempts
 to restore the pre-release backup and leaves services stopped; the external
 deployer must preserve that fail-closed state for operator review. The systemd
-installer itself records and stops all six applications plus the refresh
-timer/running worker; an interrupted oneshot refresh is not replayed
+installer itself records and stops all nine long-running processes (including
+the Platform market-data outbox worker, Watchlist recalc worker, and Portfolio Daily calculation worker) plus the refresh timer/running oneshot;
+an interrupted oneshot refresh is not replayed
 automatically after the audited rebuild.
 
 Install and start the market-data timer:
@@ -124,10 +140,15 @@ allowing overlapping batches.
 ## Health Checks
 
 ```bash
-curl --noproxy '*' -fsS http://127.0.0.1:8102/api/health
-curl --noproxy '*' -fsS http://127.0.0.1:8100/api/watchlists
-curl --noproxy '*' -fsS http://127.0.0.1:8101/api/portfolios
+curl --noproxy '*' -fsS http://127.0.0.1:8102/api/readiness
+curl --noproxy '*' -fsS http://127.0.0.1:8100/api/readiness
+curl --noproxy '*' -fsS http://127.0.0.1:8101/api/readiness
 curl --noproxy '*' -fsS http://127.0.0.1:3100/
 curl --noproxy '*' -fsS http://127.0.0.1:3101/
 curl --noproxy '*' -fsS http://127.0.0.1:3102/
 ```
+
+Platform readiness is fail-closed unless the instrument registry migration is current,
+a fresh running outbox worker is registered, no dead-letter event exists, and the oldest
+pending/processing event remains within the configured age bound. The outbox worker unit
+requires the Watchlist API unit and uses the Platform runtime environment.

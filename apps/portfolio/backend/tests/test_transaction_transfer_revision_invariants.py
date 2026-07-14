@@ -25,7 +25,7 @@ from portfolio_app.services.transaction_revisions import (
     TransactionFactPayload,
     TransactionRevisionPayloadError,
     TransactionRevisionContext,
-    append_transaction_revision_batch,
+    append_transaction_revision_batch_unchecked,
 )
 
 
@@ -63,7 +63,8 @@ def _cash_transfer_leg(
         "price": None,
         "gross_amount": gross_amount,
         "counter_amount": None,
-        "fx_rate": None,
+        "quoted_fx_rate": None,
+        "consideration_basis": None,
         "fees": "0.00000000",
         "taxes": "0.00000000",
         "currency": "USD",
@@ -157,7 +158,7 @@ def test_revision_primitive_rejects_single_transfer_create_without_store_guard()
             TransactionRevisionPayloadError,
             match="requires exactly one in leg and one out leg",
         ):
-            append_transaction_revision_batch(
+            append_transaction_revision_batch_unchecked(
                 session,
                 portfolio_id="portfolio-ops",
                 context=context,
@@ -353,7 +354,7 @@ def test_revision_primitive_rejects_transfer_amend_and_single_leg_delete() -> No
             TransactionRevisionPayloadError,
             match="cannot be amended",
         ):
-            append_transaction_revision_batch(
+            append_transaction_revision_batch_unchecked(
                 session,
                 portfolio_id="portfolio-ops",
                 context=context,
@@ -375,7 +376,7 @@ def test_revision_primitive_rejects_transfer_amend_and_single_leg_delete() -> No
             TransactionRevisionPayloadError,
             match="must be deleted atomically",
         ):
-            append_transaction_revision_batch(
+            append_transaction_revision_batch_unchecked(
                 session,
                 portfolio_id="portfolio-ops",
                 context=context,
@@ -455,7 +456,7 @@ def test_transfer_settlement_cash_account_is_rejected_by_database() -> None:
 
     with get_session_factory()() as session:
         with pytest.raises(IntegrityError, match="transfer_fields"):
-            append_transaction_revision_batch(
+            append_transaction_revision_batch_unchecked(
                 session,
                 portfolio_id="portfolio-ops",
                 context=context,
@@ -596,6 +597,7 @@ def _legacy_transfer_row(
         ),
     ),
 )
+@pytest.mark.no_database
 def test_0036_preflight_rejects_unpaired_legacy_internal_transfers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

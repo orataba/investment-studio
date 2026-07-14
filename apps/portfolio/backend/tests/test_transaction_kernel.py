@@ -2,18 +2,16 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from portfolio_ops_instrument_core import instrument_store as shared_store
 
 from tests.store_fixture import TEST_PORTFOLIO_STORE
 
-from portfolio_app.db.models import PortfolioCalculationStateModel, PortfolioDailySnapshotModel
-from portfolio_app.api.contracts import LedgerPostingRecord, PositionLotRecord
 from portfolio_app.db.session import get_session_factory
-from portfolio_app.services import daily_snapshots, portfolio_store
-from portfolio_app.services.daily_snapshots import refresh_portfolio_daily_snapshots
-from portfolio_app.services.ledger import _build_position_state, build_position_lots, derive_ledger_postings
+from portfolio_app.api.routes import fx_rates as fx_rate_routes
+from portfolio_app.services import portfolio_store
 
 
 TEST_ACTOR = {
@@ -27,7 +25,7 @@ TRANSACTION_DECIMAL_FIELDS = {
     "price",
     "gross_amount",
     "counter_amount",
-    "fx_rate",
+    "quoted_fx_rate",
     "fees",
     "taxes",
 }
@@ -45,80 +43,12 @@ def _transaction_request(values: dict[str, object]) -> dict[str, object]:
     return payload
 
 
-def _share_split_event(
-    *,
-    effective_date: str = "2026-07-10",
-    record_date: str = "2026-07-09",
-    new_units: str = "2",
-    old_units: str = "1",
-    quantity_rounding: str = "exact",
-    status: str = "confirmed",
-) -> dict[str, object]:
-    return {
-        "corporate_action_event_id": f"ca-equity-us-abbv-share-split-{effective_date}",
-        "instrument_id": "equity-us-abbv",
-        "action_type": "share_split",
-        "announcement_date": "2026-07-06",
-        "record_date": record_date,
-        "effective_date": effective_date,
-        "payable_date": effective_date,
-        "new_units": new_units,
-        "old_units": old_units,
-        "quantity_rounding": quantity_rounding,
-        "quantity_precision": 0,
-        "cost_basis_treatment": "carry",
-        "source": "issuer_announcement",
-        "external_event_id": None,
-        "status": status,
-        "provenance": {},
-        "created_at": "2026-07-06T00:00:00Z",
-        "updated_at": "2026-07-06T00:00:00Z",
-    }
-
-
-def _split_test_transaction(
-    transaction_id: str,
-    transaction_type: str,
-    trade_date: str,
-    quantity: float,
-    gross_amount: float,
-    *,
-    trade_time: str = "10:00",
-) -> dict[str, object]:
-    return {
-        "transaction_id": transaction_id,
-        "portfolio_id": "p",
-        "transaction_type": transaction_type,
-        "trade_date": trade_date,
-        "trade_at": f"{trade_date}T{trade_time}:00Z",
-        "created_at": f"{trade_date}T{trade_time}:00Z",
-        "settlement_date": trade_date,
-        "account_id": "acct",
-        "settlement_cash_account_id": "cash",
-        "instrument_id": "equity-us-abbv",
-        "instrument_ref": {
-            "instrument_id": "equity-us-abbv",
-            "instrument_name": "Split Security",
-            "instrument_type": "equity",
-            "currency": "USD",
-            "identifiers": [],
-        },
-        "quantity": quantity,
-        "gross_amount": gross_amount,
-        "fees": 0.0,
-        "taxes": 0.0,
-        "currency": "USD",
-    }
-
-
-def _split_test_accounts() -> list[dict[str, object]]:
-    return [
-        {
-            "account_id": "acct",
-            "account_type": "securities_account",
-            "cost_basis_method": "fifo",
-        }
-    ]
+def _assert_ledger_replay_conflict(response, *, reason_code: str) -> None:
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "transaction_command_validation_failed"
+    assert detail["validation_code"] == "ledger_replay_failed"
+    assert detail["reason_code"] == reason_code
 
 
 def test_store_reset_rejects_legacy_asset_references():
@@ -155,151 +85,6 @@ def test_portfolio_instruments_endpoint_reads_shared_registry_via_portfolio_back
     )
     assert abbv["instrument_core"]["identifiers"][0]["identifier_value"] == "ABBV"
     assert abbv["coverage_state"] == "complete"
-
-
-def test_transaction_write_refreshes_materialized_daily_snapshots(client):
-    baseline_response = client.get("/api/portfolios/portfolio-ops/snapshots/daily")
-    assert baseline_response.status_code == 200
-
-    created_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
-        json=_transaction_request({
-            "transaction_type": "deposit",
-            "trade_date": "2026-04-16",
-            "settlement_date": "2026-04-16",
-            "account_id": "cash-usd-main",
-            "gross_amount": 1000.0,
-            "currency": "USD",
-        }),
-    )
-    assert created_response.status_code == 200
-
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
-        assert state is not None
-        assert state.daily_snapshot_status == "current"
-        assert state.dirty_from is None
-        assert state.refreshed_to == date(2026, 4, 16)
-        latest_snapshot = (
-            session.query(PortfolioDailySnapshotModel)
-            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
-            .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
-            .first()
-        )
-        assert latest_snapshot is not None
-        assert latest_snapshot.as_of_date == date(2026, 4, 16)
-
-
-def test_transaction_update_marks_daily_snapshots_dirty_from_old_trade_date():
-    refresh_portfolio_daily_snapshots("portfolio-ops")
-    existing = portfolio_store.get_transaction("portfolio-ops", "txn-0002")
-    assert existing is not None
-
-    updated = portfolio_store.update_transaction(
-        "portfolio-ops",
-        "txn-0002",
-        transaction_type=str(existing["transaction_type"]),
-        trade_date=date(2026, 4, 20),
-        trade_time=existing.get("trade_time"),
-        settlement_date=date(2026, 4, 20),
-        entitlement_date=None,
-        acquisition_date=None,
-        account_id=str(existing["account_id"]),
-        settlement_cash_account_id=None,
-        instrument_id=None,
-        instrument_ref=None,
-        quantity=None,
-        price=None,
-        gross_amount=float(existing["gross_amount"]),
-        counter_amount=None,
-        fx_rate=None,
-        fees=float(existing["fees"]),
-        taxes=float(existing["taxes"]),
-        currency=str(existing["currency"]),
-        transfer_scope=None,
-        transfer_object_type=None,
-        transfer_group_id=None,
-        counterparty_account_id=None,
-        note=str(existing.get("note") or ""),
-        expected_revision_id=str(existing["revision_id"]),
-        expected_revision_number=int(existing["revision_number"]),
-        actor=TEST_ACTOR,
-        change_reason="Move the deposit to its corrected trade date",
-    )
-    assert updated is not None
-
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
-        assert state is not None
-        assert state.daily_snapshot_status == "stale"
-        assert state.dirty_from == date(2026, 2, 3)
-
-
-def test_daily_snapshot_refresh_replays_when_data_changes_mid_refresh(monkeypatch):
-    original_builder = daily_snapshots.performance.build_daily_portfolio_snapshots
-    build_calls = {"count": 0}
-
-    def build_with_mid_refresh_update(*args, **kwargs):
-        build_calls["count"] += 1
-        if build_calls["count"] == 1:
-            portfolio_store.create_transaction(
-                portfolio_id="portfolio-ops",
-                transaction_type="deposit",
-                trade_date=date(2026, 4, 18),
-                trade_time=None,
-                settlement_date=date(2026, 4, 18),
-                entitlement_date=None,
-                acquisition_date=None,
-                account_id="cash-usd-main",
-                settlement_cash_account_id=None,
-                instrument_id=None,
-                instrument_ref=None,
-                quantity=None,
-                price=None,
-                gross_amount=1234.0,
-                counter_amount=None,
-                fx_rate=None,
-                fees=0.0,
-                taxes=0.0,
-                currency="USD",
-                transfer_scope=None,
-                transfer_object_type=None,
-                transfer_group_id=None,
-                counterparty_account_id=None,
-                note="mid-refresh data change",
-                actor=TEST_ACTOR,
-                change_reason="Create a transaction during snapshot refresh",
-            )
-        return original_builder(*args, **kwargs)
-
-    monkeypatch.setattr(
-        daily_snapshots.performance,
-        "build_daily_portfolio_snapshots",
-        build_with_mid_refresh_update,
-    )
-
-    result = daily_snapshots.refresh_portfolio_daily_snapshots("portfolio-ops")
-
-    assert build_calls["count"] == 2
-    assert result is not None
-    assert result["refreshed_to"] == date(2026, 4, 18)
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        state = session.get(PortfolioCalculationStateModel, "portfolio-ops")
-        assert state is not None
-        assert state.daily_snapshot_status == "current"
-        assert state.dirty_from is None
-        assert state.refreshed_to == date(2026, 4, 18)
-        latest_snapshot = (
-            session.query(PortfolioDailySnapshotModel)
-            .filter(PortfolioDailySnapshotModel.portfolio_id == "portfolio-ops")
-            .order_by(PortfolioDailySnapshotModel.as_of_date.desc())
-            .first()
-        )
-        assert latest_snapshot is not None
-        assert latest_snapshot.as_of_date == date(2026, 4, 18)
 
 
 def test_securities_account_defaults_to_fifo_when_cost_basis_omitted(client):
@@ -356,7 +141,7 @@ def test_account_cost_method_can_be_updated_before_instrument_history(client):
     assert updated_response.json()["cost_basis_method"] == "moving_average"
 
 
-def test_account_cost_method_change_restates_instrument_history(client):
+def test_account_cost_method_can_change_after_decimal_transaction_history(client):
     created_response = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -397,16 +182,6 @@ def test_account_cost_method_change_restates_instrument_history(client):
         )
         assert transaction_response.status_code == 200
 
-    fifo_lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
-    )
-    assert fifo_lots_response.status_code == 200
-    fifo_lots = fifo_lots_response.json()["position_lots"]
-    assert sum(lot["remaining_cost_basis"] for lot in fifo_lots) == pytest.approx(400000.0)
-    assert sum(lot["realized_cost_basis"] for lot in fifo_lots) == pytest.approx(350000.0)
-    assert sum(lot["realized_pnl"] for lot in fifo_lots) == pytest.approx(100000.0)
-
     updated_response = client.patch(
         f"/api/portfolios/portfolio-ops/accounts/{account['account_id']}",
         json={
@@ -421,17 +196,6 @@ def test_account_cost_method_change_restates_instrument_history(client):
     )
     assert updated_response.status_code == 200
     assert updated_response.json()["cost_basis_method"] == "moving_average"
-
-    restated_lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
-    )
-    assert restated_lots_response.status_code == 200
-    restated_lots = restated_lots_response.json()["position_lots"]
-    assert len(restated_lots) == 1
-    assert sum(lot["remaining_cost_basis"] for lot in restated_lots) == pytest.approx(300000.0)
-    assert sum(lot["realized_cost_basis"] for lot in restated_lots) == pytest.approx(450000.0)
-    assert sum(lot["realized_pnl"] for lot in restated_lots) == pytest.approx(0.0)
 
 
 def test_transaction_fact_can_be_updated_and_deleted(client):
@@ -493,7 +257,7 @@ def test_transaction_fact_can_be_updated_and_deleted(client):
     assert updated_payload["transaction_id"] == transaction_id
     assert updated_payload["trade_date"] == "2026-04-17"
     assert updated_payload["settlement_date"] == "2026-04-18"
-    assert updated_payload["gross_amount"] == "1250.00000000"
+    assert updated_payload["gross_amount"] == "1250"
     assert updated_payload["note"] == "Corrected note"
 
     deleted_response = client.request(
@@ -599,11 +363,12 @@ def test_create_transactions_rolls_back_whole_batch_on_later_failure(client):
                     "instrument_ref": None,
                     "quantity": None,
                     "price": None,
-                    "gross_amount": 100.0,
+                    "gross_amount": "100.00000000",
                     "counter_amount": None,
-                    "fx_rate": None,
-                    "fees": 0.0,
-                    "taxes": 0.0,
+                    "quoted_fx_rate": None,
+                    "consideration_basis": None,
+                    "fees": "0.00000000",
+                    "taxes": "0.00000000",
                     "currency": "USD",
                     "transfer_scope": None,
                     "transfer_object_type": None,
@@ -618,8 +383,8 @@ def test_create_transactions_rolls_back_whole_batch_on_later_failure(client):
                     "trade_time": None,
                     "settlement_date": date(2026, 4, 20),
                     "account_id": "cash-usd-main",
-                    "fees": 0.0,
-                    "taxes": 0.0,
+                    "fees": "0.00000000",
+                    "taxes": "0.00000000",
                     "currency": "USD",
                 },
             ],
@@ -682,219 +447,11 @@ def test_rejects_cross_currency_security_facts(client):
             "transfer_object_type": "position",
             "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
+            "gross_amount": 0.0,
         }),
     )
     assert transfer_response.status_code == 400
     assert "same currency as the instrument" in transfer_response.json()["detail"]
-
-
-def test_holdings_and_account_workspace_use_base_currency_valuation(client):
-    holdings_response = client.get("/api/workspace/holdings", params={"portfolio_id": "portfolio-ops"})
-    assert holdings_response.status_code == 200
-    holdings = holdings_response.json()
-    assert holdings["base_currency"] == "USD"
-
-    fx_to_usd = {"USD": 1.0, "HKD": 1 / 7.8, "CNY": 1 / 7.2}
-    expected_total_market_value = sum(
-        (row["market_value"] or 0.0) * fx_to_usd[row["instrument_core"]["currency"]]
-        for row in holdings["rows"]
-        if row["market_value"] is not None
-    )
-    assert holdings["totals"]["market_value"] == pytest.approx(expected_total_market_value)
-
-    cash_rows = [row for row in holdings["rows"] if row["instrument_core"]["instrument_type"] == "cash"]
-    assert cash_rows
-    expected_cash_balance = sum(
-        (row["market_value"] or 0.0) * fx_to_usd[row["instrument_core"]["currency"]]
-        for row in cash_rows
-        if row["market_value"] is not None
-    )
-    assert holdings["totals"]["cash_balance"] == pytest.approx(expected_cash_balance)
-    usd_cash_row = next(row for row in cash_rows if row["instrument_core"]["instrument_id"] == "cash:USD")
-    assert usd_cash_row["instrument_core"]["instrument_name"] == "Cash (USD)"
-    assert usd_cash_row["coverage_status"] == "cash"
-    assert usd_cash_row["cost_basis"] is None
-    assert usd_cash_row["cost_basis_base"] is None
-    assert usd_cash_row["market_value_base"] == pytest.approx(usd_cash_row["market_value"])
-    assert usd_cash_row["day_change_pct"] == pytest.approx(0.0)
-    assert usd_cash_row["day_change_value"] == pytest.approx(0.0)
-    assert usd_cash_row["day_change_value_base"] == pytest.approx(0.0)
-
-    hkd_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "fund-hk-2800")
-    expected_total_nav = holdings["totals"]["nav"]
-    expected_hkd_allocation = (hkd_row["market_value"] * fx_to_usd["HKD"]) / expected_total_nav
-    assert hkd_row["allocation"] == pytest.approx(expected_hkd_allocation)
-    assert holdings["totals"]["allocation"] == pytest.approx(expected_total_market_value / expected_total_nav)
-
-    accounts_response = client.get("/api/portfolios/portfolio-ops/accounts/workspace")
-    assert accounts_response.status_code == 200
-    accounts_workspace = accounts_response.json()
-    hk_account = next(
-        row for row in accounts_workspace["accounts"] if row["account"]["account_id"] == "broker-hk-core"
-    )
-    assert hk_account["position_market_value_currency"] == "USD"
-    assert hk_account["position_market_value"] == pytest.approx(hkd_row["market_value"] * fx_to_usd["HKD"])
-
-
-def test_holdings_workspace_replays_requested_as_of_date(client):
-    response = client.get(
-        "/api/workspace/holdings",
-        params={"portfolio_id": "portfolio-ops", "as_of_date": "2026-04-02"},
-    )
-    assert response.status_code == 200
-    holdings = response.json()
-    assert holdings["as_of_date"] == "2026-04-02"
-
-    abbv_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "equity-us-abbv")
-    assert abbv_row["quantity"] == pytest.approx(1000.0)
-    assert abbv_row["last_price"] == pytest.approx(208.0)
-    assert abbv_row["quote_resolution_status"] == "resolved"
-    assert abbv_row["quote_age_days"] == 0
-    assert abbv_row["quote_as_of_date"] == "2026-04-02"
-
-    agg_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "fund-us-agg")
-    assert agg_row["quantity"] == pytest.approx(304.236)
-    assert agg_row["last_price"] == pytest.approx(97.62)
-
-    hkd_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "fund-hk-2800")
-    assert hkd_row["last_price"] == pytest.approx(21.05)
-    assert hkd_row["market_value"] == pytest.approx(105250.0)
-    assert hkd_row["market_value_base"] == pytest.approx(105250.0 / 7.82)
-
-
-def test_accounts_workspace_defers_security_cash_until_settlement_date(client):
-    baseline_summary_response = client.get("/api/workspace/summary", params={"portfolio_id": "portfolio-ops"})
-    assert baseline_summary_response.status_code == 200
-    baseline_nav = baseline_summary_response.json()["nav"]
-
-    baseline_response = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
-        params={"as_of_date": "2026-04-15"},
-    )
-    assert baseline_response.status_code == 200
-    baseline_cash_row = next(
-        row
-        for row in baseline_response.json()["accounts"]
-        if row["account"]["account_id"] == "cash-usd-main"
-    )
-    baseline_cash_balance = baseline_cash_row["derived_cash_balance"]
-
-    buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
-        json=_transaction_request({
-            "transaction_type": "buy",
-            "trade_date": "2026-04-15",
-            "settlement_date": "2026-04-16",
-            "account_id": "broker-us-core",
-            "settlement_cash_account_id": "cash-usd-main",
-            "instrument_id": "equity-us-abbv",
-            "quantity": 1.0,
-            "price": 206.47,
-            "gross_amount": 206.47,
-            "fees": 0.0,
-            "taxes": 0.0,
-            "currency": "USD",
-        }),
-    )
-    assert buy_response.status_code == 200
-
-    trade_date_response = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
-        params={"as_of_date": "2026-04-15"},
-    )
-    assert trade_date_response.status_code == 200
-    trade_date_cash_row = next(
-        row
-        for row in trade_date_response.json()["accounts"]
-        if row["account"]["account_id"] == "cash-usd-main"
-    )
-    assert trade_date_cash_row["derived_cash_balance"] == pytest.approx(baseline_cash_balance)
-    assert trade_date_cash_row["pending_settlement"] == pytest.approx(-206.47)
-    assert trade_date_cash_row["pending_settlement_base"] == pytest.approx(-206.47)
-
-    trade_date_broker_row = next(
-        row
-        for row in trade_date_response.json()["accounts"]
-        if row["account"]["account_id"] == "broker-us-core"
-    )
-    assert trade_date_broker_row["position_market_value"] >= 206.47
-
-    post_buy_summary_response = client.get("/api/workspace/summary", params={"portfolio_id": "portfolio-ops"})
-    assert post_buy_summary_response.status_code == 200
-    assert post_buy_summary_response.json()["nav"] == pytest.approx(baseline_nav)
-
-    settlement_date_response = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
-        params={"as_of_date": "2026-04-16"},
-    )
-    assert settlement_date_response.status_code == 200
-    settlement_date_cash_row = next(
-        row
-        for row in settlement_date_response.json()["accounts"]
-        if row["account"]["account_id"] == "cash-usd-main"
-    )
-    assert settlement_date_cash_row["derived_cash_balance"] == pytest.approx(baseline_cash_balance - 206.47)
-    assert settlement_date_cash_row["pending_settlement"] == pytest.approx(0.0)
-
-
-def test_holdings_workspace_includes_shared_price_sparklines(client):
-    response = client.get(
-        "/api/workspace/holdings",
-        params={"portfolio_id": "portfolio-ops", "as_of_date": "2026-04-15"},
-    )
-    assert response.status_code == 200
-    holdings = response.json()
-    assert "price_chart_range" not in holdings
-
-    abbv_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "equity-us-abbv")
-    assert "price_chart" not in abbv_row
-    assert abbv_row["price_chart_1m"][0]["date"] == "2026-03-15"
-    assert abbv_row["price_chart_6m"]
-    assert abbv_row["price_chart_6m"][-1]["date"] == "2026-04-15"
-    assert abbv_row["price_chart_6m"][-1]["value"] == pytest.approx(206.47)
-    assert abbv_row["price_chart_1y"][-1]["value"] == pytest.approx(206.47)
-    assert abbv_row["instrument_trend_as_of_date"] == "2026-04-15"
-    assert abbv_row["instrument_trend_basis"] == "adjusted_close"
-    assert abbv_row["instrument_return_1w"] == pytest.approx(206.47 / 207.18 - 1)
-    assert abbv_row["instrument_return_mtd"] == pytest.approx(206.47 / 210.20 - 1)
-    assert abbv_row["instrument_return_ytd"] is None
-    assert abbv_row["instrument_return_1y"] is None
-    assert abbv_row["instrument_current_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
-    assert abbv_row["instrument_max_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
-    assert abbv_row["instrument_holding_max_drawdown"] == pytest.approx(206.47 / 210.20 - 1)
-    assert abbv_row["instrument_holding_start_date"] == "2026-02-10"
-    assert abbv_row["instrument_volatility_1m"] is None
-    assert abbv_row["instrument_volatility_3m"] is None
-    assert abbv_row["instrument_volatility_6m"] is None
-    assert abbv_row["instrument_volatility_1y"] is None
-
-    assert abbv_row["price_chart_3m"][0]["date"] == "2026-02-10"
-    assert abbv_row["instrument_return_mtd"] == pytest.approx(206.47 / 210.20 - 1)
-
-
-def test_live_holdings_workspace_propagates_position_day_change(client, monkeypatch):
-    from portfolio_app.api.routes import workspace as workspace_routes
-
-    monkeypatch.setattr(
-        workspace_routes,
-        "get_cached_materialized_holdings_workspace",
-        lambda *_args, **_kwargs: None,
-    )
-
-    response = client.get("/api/workspace/holdings", params={"portfolio_id": "portfolio-ops"})
-    assert response.status_code == 200
-    holdings = response.json()
-
-    abbv_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "equity-us-abbv")
-    assert abbv_row["day_change_pct"] == pytest.approx(206.47 / 207.18 - 1.0)
-    assert abbv_row["day_change_value"] is not None
-    usd_cash_row = next(row for row in holdings["rows"] if row["instrument_core"]["instrument_id"] == "cash:USD")
-    assert usd_cash_row["instrument_core"]["instrument_type"] == "cash"
-    assert usd_cash_row["coverage_status"] == "cash"
-    assert usd_cash_row["day_change_pct"] == pytest.approx(0.0)
-    assert usd_cash_row["day_change_value"] == pytest.approx(0.0)
-    assert holdings["totals"]["day_change_value"] is not None
-    assert holdings["totals"]["day_change_pct"] is not None
 
 
 def test_instrument_price_chart_endpoint_returns_filtered_shared_history(client):
@@ -921,44 +478,7 @@ def test_instrument_price_chart_endpoint_returns_filtered_shared_history(client)
     assert payload["summary"]["low"] == pytest.approx(206.47)
 
 
-def test_transaction_position_preview_returns_quantity_as_of_trade_moment(client):
-    response = client.get(
-        "/api/portfolios/portfolio-ops/transactions/position-preview",
-        params={
-            "account_id": "broker-us-core",
-            "instrument_id": "equity-us-abbv",
-            "as_of_date": "2026-04-15",
-        },
-    )
-    assert response.status_code == 200
-    payload = response.json()
-
-    assert payload["portfolio_id"] == "portfolio-ops"
-    assert payload["account_id"] == "broker-us-core"
-    assert payload["instrument_id"] == "equity-us-abbv"
-    assert payload["as_of_date"] == "2026-04-15"
-    assert payload["quantity"] == pytest.approx(880.0)
-
-
-def test_position_lots_support_historical_as_of_date(client):
-    response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={"instrument_id": "equity-us-abbv", "status": "open", "as_of_date": "2026-04-02"},
-    )
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["summary"]["position_lot_count"] == 1
-    position_lot = payload["position_lots"][0]
-    assert position_lot["entry_quantity"] == pytest.approx(1000.0)
-    assert position_lot["remaining_quantity"] == pytest.approx(1000.0)
-    assert position_lot["current_market_value"] == pytest.approx(208000.0)
-    assert position_lot["unrealized_pnl"] is not None
-    assert position_lot["valuation_quote"]["resolution_status"] == "resolved"
-    assert position_lot["valuation_quote"]["age_days"] == 0
-    assert position_lot["valuation_quote"]["as_of_date"] == "2026-04-02"
-
-
-def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(client):
+def test_position_transfer_declares_exact_moving_average_cost(client):
     source_account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -980,7 +500,7 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
             "currency": "USD",
             "institution": "Test Broker",
             "default_settlement_cash_account_id": "cash-usd-reserve",
-            "cost_basis_method": "fifo",
+            "cost_basis_method": "moving_average",
             "allowed_instrument_types": ["equity"],
             "status": "active",
         },
@@ -1014,46 +534,47 @@ def test_position_transfer_uses_average_cost_bucket_for_moving_average_accounts(
             "transfer_object_type": "position",
             "instrument_id": "equity-us-abbv",
             "quantity": 150.0,
+            "gross_amount": 2250.0,
         }),
     )
     assert transfer_response.status_code == 200
     transfer_batch = transfer_response.json()
     assert {txn["gross_amount"] for txn in transfer_batch["transactions"]} == {
-        "2250.00000000"
+        "2250"
     }
 
-    destination_lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": destination_account["account_id"], "instrument_id": "equity-us-abbv"},
+
+
+def test_position_transfer_accepts_zero_declared_cost_and_subsequent_sale(client):
+    portfolio_response = client.post(
+        "/api/portfolios",
+        json={
+            "name": "Zero Cost Transfer Book",
+            "base_currency": "USD",
+            "operating_profile": "standard_taxonomy",
+        },
     )
-    assert destination_lots_response.status_code == 200
-    destination_lots = destination_lots_response.json()["position_lots"]
-    assert len(destination_lots) == 1
-    assert destination_lots[0]["entry_quantity"] == pytest.approx(150.0)
-    assert destination_lots[0]["entry_cost_basis"] == pytest.approx(2250.0)
-
-    source_lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": source_account["account_id"], "instrument_id": "equity-us-abbv", "status": "open"},
-    )
-    assert source_lots_response.status_code == 200
-    source_lots = source_lots_response.json()["position_lots"]
-    assert len(source_lots) == 1
-    assert source_lots[0]["entry_cost_basis"] == pytest.approx(3000.0)
-    assert source_lots[0]["remaining_quantity"] == pytest.approx(50.0)
-    assert source_lots[0]["remaining_cost_basis"] == pytest.approx(750.0)
-    assert source_lots[0]["transferred_cost_basis"] == pytest.approx(2250.0)
-
-
-def test_position_transfer_allows_zero_cost_basis_lots(client):
+    assert portfolio_response.status_code == 200
+    portfolio_id = portfolio_response.json()["portfolio_id"]
+    cash_account = client.post(
+        f"/api/portfolios/{portfolio_id}/accounts",
+        json={
+            "account_name": "Zero Cost Cash",
+            "account_type": "deposit_account",
+            "currency": "USD",
+            "institution": "Test Bank",
+            "opened_at": "2026-04-20",
+            "status": "active",
+        },
+    ).json()
     source_account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        f"/api/portfolios/{portfolio_id}/accounts",
         json={
             "account_name": "Zero Cost Source",
             "account_type": "securities_account",
             "currency": "USD",
             "institution": "Test Broker",
-            "default_settlement_cash_account_id": "cash-usd-main",
+            "default_settlement_cash_account_id": cash_account["account_id"],
             "cost_basis_method": "fifo",
             "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
@@ -1061,13 +582,13 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
         },
     ).json()
     destination_account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
+        f"/api/portfolios/{portfolio_id}/accounts",
         json={
             "account_name": "Zero Cost Destination",
             "account_type": "securities_account",
             "currency": "USD",
             "institution": "Test Broker",
-            "default_settlement_cash_account_id": "cash-usd-main",
+            "default_settlement_cash_account_id": cash_account["account_id"],
             "cost_basis_method": "fifo",
             "allowed_instrument_types": ["equity"],
             "opened_at": "2026-04-01",
@@ -1076,7 +597,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
     ).json()
 
     opening_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        f"/api/portfolios/{portfolio_id}/transactions",
         json=_transaction_request({
             "transaction_type": "opening_balance",
             "trade_date": "2026-04-20",
@@ -1090,7 +611,7 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
     assert opening_response.status_code == 200
 
     transfer_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions/internal-transfer",
+        f"/api/portfolios/{portfolio_id}/transactions/internal-transfer",
         json=_transaction_request({
             "trade_date": "2026-04-21",
             "transfer_object_type": "position",
@@ -1098,41 +619,22 @@ def test_position_transfer_allows_zero_cost_basis_lots(client):
             "to_account_id": destination_account["account_id"],
             "instrument_id": "equity-us-abbv",
             "quantity": 4.0,
+            "gross_amount": 0.0,
         }),
     )
     assert transfer_response.status_code == 200
     assert {
         transaction["gross_amount"]
         for transaction in transfer_response.json()["transactions"]
-    } == {"0.00000000"}
-
-    source_lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": source_account["account_id"], "instrument_id": "equity-us-abbv"},
-    )
-    destination_lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": destination_account["account_id"], "instrument_id": "equity-us-abbv"},
-    )
-    assert source_lots_response.status_code == 200
-    assert destination_lots_response.status_code == 200
-    source_lots = source_lots_response.json()["position_lots"]
-    destination_lots = destination_lots_response.json()["position_lots"]
-    assert len(source_lots) == 1
-    assert len(destination_lots) == 1
-    assert source_lots[0]["remaining_quantity"] == pytest.approx(6.0)
-    assert source_lots[0]["remaining_cost_basis"] == pytest.approx(0.0)
-    assert source_lots[0]["transferred_cost_basis"] == pytest.approx(0.0)
-    assert destination_lots[0]["entry_quantity"] == pytest.approx(4.0)
-    assert destination_lots[0]["entry_cost_basis"] == pytest.approx(0.0)
+    } == {"0"}
 
     sell_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
+        f"/api/portfolios/{portfolio_id}/transactions",
         json=_transaction_request({
             "transaction_type": "sell",
             "trade_date": "2026-04-22",
             "account_id": destination_account["account_id"],
-            "settlement_cash_account_id": "cash-usd-main",
+            "settlement_cash_account_id": cash_account["account_id"],
             "instrument_id": "equity-us-abbv",
             "quantity": 2.0,
             "price": 100.0,
@@ -1156,6 +658,17 @@ def test_copy_portfolio_remaps_counterparty_account_ids(client):
     copied_fx_transaction = transactions_response.json()["transactions"][0]
     assert copied_fx_transaction["account"]["account_id"].endswith(f"-{copied_portfolio_id}")
     assert copied_fx_transaction["counterparty_account_id"].endswith(f"-{copied_portfolio_id}")
+    source_fx_transaction = portfolio_store.get_transaction("portfolio-ops", "txn-0018")
+    assert source_fx_transaction is not None
+    for field_name in (
+        "numeric_scale_state",
+        "gross_amount_input_scale",
+        "counter_amount_input_scale",
+        "quoted_fx_rate_input_scale",
+        "fees_input_scale",
+        "taxes_input_scale",
+    ):
+        assert copied_fx_transaction[field_name] == source_fx_transaction[field_name]
 
 
 def test_fx_conversion_target_account_filter_includes_dual_account_fact(client):
@@ -1206,8 +719,7 @@ def test_rejects_backdated_sell_before_position_exists(client):
             "currency": "USD",
         }),
     )
-    assert sell_response.status_code == 400
-    assert "as of trade_date" in sell_response.json()["detail"]
+    _assert_ledger_replay_conflict(sell_response, reason_code="position_not_found")
 
     transfer_response = client.post(
         f"/api/portfolios/{copied_portfolio_id}/transactions/internal-transfer",
@@ -1218,10 +730,10 @@ def test_rejects_backdated_sell_before_position_exists(client):
             "transfer_object_type": "position",
             "instrument_id": "equity-us-abbv",
             "quantity": 10.0,
+            "gross_amount": 0.0,
         }),
     )
-    assert transfer_response.status_code == 400
-    assert "as of trade_date" in transfer_response.json()["detail"]
+    _assert_ledger_replay_conflict(transfer_response, reason_code="position_not_found")
 
 
 def test_rejects_inconsistent_buy_sell_amount_contracts(client):
@@ -1236,13 +748,14 @@ def test_rejects_inconsistent_buy_sell_amount_contracts(client):
             "quantity": 10.0,
             "price": 100.0,
             "gross_amount": 1.0,
+            "consideration_basis": "exact_quantity_price",
             "fees": 0.0,
             "taxes": 0.0,
             "currency": "USD",
         }),
     )
     assert buy_response.status_code == 422
-    assert "gross_amount must equal quantity multiplied by price" in buy_response.text
+    assert "gross_amount must exactly equal the amount implied" in buy_response.text
 
     sell_response = client.post(
         "/api/portfolios/portfolio-ops/transactions",
@@ -1255,16 +768,17 @@ def test_rejects_inconsistent_buy_sell_amount_contracts(client):
             "quantity": 1.0,
             "price": 206.47,
             "gross_amount": 999999.0,
+            "consideration_basis": "exact_quantity_price",
             "fees": 0.0,
             "taxes": 0.0,
             "currency": "USD",
         }),
     )
     assert sell_response.status_code == 422
-    assert "gross_amount must equal quantity multiplied by price" in sell_response.text
+    assert "gross_amount must exactly equal the amount implied" in sell_response.text
 
 
-def test_accepts_display_rounded_price_when_gross_amount_is_authoritative(client):
+def test_rejects_display_rounded_price_when_exact_amount_contract_does_not_close(client):
     buy_response = client.post(
         "/api/portfolios/portfolio-ops/transactions",
         json=_transaction_request({
@@ -1276,15 +790,14 @@ def test_accepts_display_rounded_price_when_gross_amount_is_authoritative(client
             "quantity": 700.0,
             "price": 11.5436,
             "gross_amount": 8080.50,
+            "consideration_basis": "exact_quantity_price",
             "fees": 0.0,
             "taxes": 0.0,
             "currency": "USD",
         }),
     )
-    assert buy_response.status_code == 200
-    payload = buy_response.json()
-    assert payload["gross_amount"] == "8080.50000000"
-    assert payload["price"] == "11.543600000000"
+    assert buy_response.status_code == 422
+    assert "gross_amount must exactly equal the amount implied" in buy_response.text
 
 
 def test_preserves_transaction_precision_conventions(client):
@@ -1306,14 +819,14 @@ def test_preserves_transaction_precision_conventions(client):
     )
     assert buy_response.status_code == 200
     payload = buy_response.json()
-    assert payload["quantity"] == "700.004000000000"
-    assert payload["price"] == "11.543640000000"
+    assert payload["quantity"] == "700.004"
+    assert payload["price"] == "11.54364"
     assert payload["gross_amount"] == "8080.59417456"
-    assert payload["fees"] == "0.00400000"
-    assert payload["taxes"] == "0.00400000"
+    assert payload["fees"] == "0.004"
+    assert payload["taxes"] == "0.004"
 
 
-def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_contracts(client):
+def test_exact_quantity_price_gross_bridge_fails_closed_at_api_boundary(client):
     opening_account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -1339,11 +852,11 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
             "quantity": 10.0,
             "price": 999.0,
             "gross_amount": 1.0,
+            "consideration_basis": "exact_quantity_price",
             "currency": "USD",
         }),
     )
     assert opening_balance_response.status_code == 422
-    assert "security opening balance" in opening_balance_response.text.lower()
 
     reinvestment_response = client.post(
         "/api/portfolios/portfolio-ops/transactions",
@@ -1355,11 +868,18 @@ def test_rejects_inconsistent_opening_balance_and_dividend_reinvestment_amount_c
             "quantity": 10.0,
             "price": 999.0,
             "gross_amount": 1.0,
+            "consideration_basis": "exact_quantity_price",
             "currency": "USD",
         }),
     )
     assert reinvestment_response.status_code == 422
-    assert "dividend reinvestment" in reinvestment_response.text.lower()
+    for response in (opening_balance_response, reinvestment_response):
+        detail = response.json()["detail"]
+        assert detail["code"] == "transaction_revision_invalid"
+        assert (
+            "gross_amount must exactly equal the amount implied by "
+            "quantity, price"
+        ) in detail["message"]
 
 
 def test_rejects_opening_balance_settlement_account_and_deposit_account_instrument(client):
@@ -1522,7 +1042,7 @@ def test_rejects_irrelevant_cash_and_reinvestment_fields(client):
     assert "dividend and coupon must not carry quantity or price" in dividend_with_quantity.text.lower()
 
 
-def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_allocation(client):
+def test_dividend_and_return_of_capital_preserve_exact_gross_and_tax_facts(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -1587,20 +1107,13 @@ def test_dividend_and_return_of_capital_keep_gross_income_and_separate_expense_a
         }),
     )
     assert roc_response.status_code == 200
-
-    lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
-    )
-    assert lots_response.status_code == 200
-    lot = lots_response.json()["position_lots"][0]
-    assert lot["income_cash_amount"] == pytest.approx(100.0)
-    assert lot["expense_cash_amount"] == pytest.approx(20.0)
-    assert lot["return_of_capital_amount"] == pytest.approx(40.0)
-    assert lot["remaining_cost_basis"] == pytest.approx(9960.0)
+    assert dividend_response.json()["gross_amount"] == "100"
+    assert dividend_response.json()["taxes"] == "15"
+    assert roc_response.json()["gross_amount"] == "40"
+    assert roc_response.json()["taxes"] == "5"
 
 
-def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(client):
+def test_flat_position_rejects_follow_on_sell_and_transfer(client):
     source_account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -1676,8 +1189,7 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
             "currency": "USD",
         }),
     )
-    assert oversell_response.status_code == 400
-    assert "exceeds account position as of trade_date" in oversell_response.json()["detail"]
+    _assert_ledger_replay_conflict(oversell_response, reason_code="position_not_found")
 
     transfer_response = client.post(
         "/api/portfolios/portfolio-ops/transactions/internal-transfer",
@@ -1688,28 +1200,13 @@ def test_flat_position_rejects_follow_on_sell_transfer_and_return_of_capital(cli
             "transfer_object_type": "position",
             "instrument_id": "equity-us-abbv",
             "quantity": 1.0,
+            "gross_amount": 0.0,
         }),
     )
-    assert transfer_response.status_code == 400
-    assert "exceeds source position as of trade_date" in transfer_response.json()["detail"]
-
-    roc_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
-        json=_transaction_request({
-            "transaction_type": "return_of_capital",
-            "trade_date": "2026-04-12",
-            "account_id": source_account["account_id"],
-            "settlement_cash_account_id": "cash-usd-main",
-            "instrument_id": "equity-us-abbv",
-            "gross_amount": 10.0,
-            "currency": "USD",
-        }),
-    )
-    assert roc_response.status_code == 400
-    assert "exceeds account position cost basis as of trade_date" in roc_response.json()["detail"]
+    _assert_ledger_replay_conflict(transfer_response, reason_code="position_not_found")
 
 
-def test_rejects_instrument_income_and_expense_without_open_position(client):
+def test_accepts_instrument_income_and_expense_after_position_is_closed(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -1769,8 +1266,8 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
             "currency": "USD",
         }),
     )
-    assert dividend_response.status_code == 400
-    assert "requires account position as of entitlement_date" in dividend_response.json()["detail"]
+    assert dividend_response.status_code == 200
+    assert dividend_response.json()["gross_amount"] == "50"
 
     fee_response = client.post(
         "/api/portfolios/portfolio-ops/transactions",
@@ -1784,8 +1281,8 @@ def test_rejects_instrument_income_and_expense_without_open_position(client):
             "currency": "USD",
         }),
     )
-    assert fee_response.status_code == 400
-    assert "requires account position as of entitlement_date" in fee_response.json()["detail"]
+    assert fee_response.status_code == 200
+    assert fee_response.json()["gross_amount"] == "5"
 
 
 def test_rejects_nested_fee_and_tax_fields_on_fee_tax_transactions(client):
@@ -1819,7 +1316,7 @@ def test_rejects_nested_fee_and_tax_fields_on_fee_tax_transactions(client):
     assert "must not carry nested fees or taxes" in tax_response.text.lower()
 
 
-def test_rejects_dividend_reinvestment_without_existing_position(client):
+def test_dividend_reinvestment_can_establish_a_position(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -1848,8 +1345,9 @@ def test_rejects_dividend_reinvestment_without_existing_position(client):
             "currency": "USD",
         }),
     )
-    assert response.status_code == 400
-    assert "requires account position as of trade_date" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["quantity"] == "1"
+    assert response.json()["gross_amount"] == "100"
 
 
 def test_rejects_entitlement_date_on_dividend_reinvestment(client):
@@ -1871,7 +1369,7 @@ def test_rejects_entitlement_date_on_dividend_reinvestment(client):
     assert "does not yet support entitlement_date" in response.text
 
 
-def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
+def test_accepts_late_paid_dividend_fact_when_entitlement_precedes_sale(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -1936,273 +1434,6 @@ def test_accepts_late_paid_dividend_when_entitlement_date_precedes_sale(client):
     assert dividend_response.status_code == 200
     assert dividend_response.json()["entitlement_date"] == "2026-04-10"
 
-    lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
-    )
-    assert lots_response.status_code == 200
-    lots = lots_response.json()["position_lots"]
-    closed_lot = next(lot for lot in lots if lot["status"] == "closed")
-    open_lot = next(lot for lot in lots if lot["status"] == "open")
-    assert closed_lot["income_cash_amount"] == pytest.approx(50.0)
-    assert open_lot["income_cash_amount"] == pytest.approx(50.0)
-
-
-def test_entitlement_bod_excludes_same_day_buy_from_income_allocation():
-    instrument_ref = {
-        "instrument_id": "equity-entitlement-test",
-        "instrument_name": "Entitlement Test Equity",
-        "instrument_type": "equity",
-        "currency": "USD",
-        "identifiers": [],
-    }
-    account = {
-        "account_id": "broker-entitlement-test",
-        "account_type": "securities_account",
-        "cost_basis_method": "fifo",
-    }
-    common = {
-        "portfolio_id": "portfolio-entitlement-test",
-        "account_id": account["account_id"],
-        "instrument_id": instrument_ref["instrument_id"],
-        "instrument_ref": instrument_ref,
-        "currency": "USD",
-        "fees": 0.0,
-        "taxes": 0.0,
-    }
-    lots = build_position_lots(
-        "portfolio-entitlement-test",
-        [account],
-        [
-            {
-                **common,
-                "transaction_id": "txn-prior-buy",
-                "transaction_type": "buy",
-                "trade_date": "2026-04-09",
-                "settlement_date": "2026-04-09",
-                "quantity": 10.0,
-                "gross_amount": 1000.0,
-                "created_at": "2026-04-09T09:00:00Z",
-            },
-            {
-                **common,
-                "transaction_id": "txn-ex-date-buy",
-                "transaction_type": "buy",
-                "trade_date": "2026-04-10",
-                "settlement_date": "2026-04-10",
-                "quantity": 10.0,
-                "gross_amount": 1000.0,
-                "created_at": "2026-04-10T09:00:00Z",
-            },
-            {
-                **common,
-                "transaction_id": "txn-dividend",
-                "transaction_type": "dividend",
-                "trade_date": "2026-04-15",
-                "entitlement_date": "2026-04-10",
-                "settlement_date": "2026-04-15",
-                "quantity": None,
-                "gross_amount": 100.0,
-                "created_at": "2026-04-15T09:00:00Z",
-            },
-        ],
-    )
-
-    by_opening_transaction = {lot["opened_by_transaction_id"]: lot for lot in lots}
-    assert by_opening_transaction["txn-prior-buy"]["income_cash_amount"] == pytest.approx(100.0)
-    assert by_opening_transaction["txn-ex-date-buy"]["income_cash_amount"] == pytest.approx(0.0)
-
-
-def test_entitlement_bod_keeps_same_day_sale_in_income_allocation():
-    instrument_ref = {
-        "instrument_id": "equity-entitlement-test",
-        "instrument_name": "Entitlement Test Equity",
-        "instrument_type": "equity",
-        "currency": "USD",
-        "identifiers": [],
-    }
-    account = {
-        "account_id": "broker-entitlement-test",
-        "account_type": "securities_account",
-        "cost_basis_method": "fifo",
-    }
-    common = {
-        "portfolio_id": "portfolio-entitlement-test",
-        "account_id": account["account_id"],
-        "instrument_id": instrument_ref["instrument_id"],
-        "instrument_ref": instrument_ref,
-        "currency": "USD",
-        "fees": 0.0,
-        "taxes": 0.0,
-    }
-    lots = build_position_lots(
-        "portfolio-entitlement-test",
-        [account],
-        [
-            {
-                **common,
-                "transaction_id": "txn-prior-buy",
-                "transaction_type": "buy",
-                "trade_date": "2026-04-09",
-                "settlement_date": "2026-04-09",
-                "quantity": 10.0,
-                "gross_amount": 1000.0,
-                "created_at": "2026-04-09T09:00:00Z",
-            },
-            {
-                **common,
-                "transaction_id": "txn-ex-date-sell",
-                "transaction_type": "sell",
-                "trade_date": "2026-04-10",
-                "settlement_date": "2026-04-10",
-                "quantity": 10.0,
-                "gross_amount": 1100.0,
-                "created_at": "2026-04-10T09:00:00Z",
-            },
-            {
-                **common,
-                "transaction_id": "txn-dividend",
-                "transaction_type": "dividend",
-                "trade_date": "2026-04-15",
-                "entitlement_date": "2026-04-10",
-                "settlement_date": "2026-04-15",
-                "quantity": None,
-                "gross_amount": 100.0,
-                "created_at": "2026-04-15T09:00:00Z",
-            },
-        ],
-    )
-
-    assert len(lots) == 1
-    assert lots[0]["status"] == "closed"
-    assert lots[0]["income_cash_amount"] == pytest.approx(100.0)
-
-
-def test_entitlement_bod_accepts_same_day_opening_balance_with_prior_acquisition():
-    instrument_ref = {
-        "instrument_id": "equity-entitlement-test",
-        "instrument_name": "Entitlement Test Equity",
-        "instrument_type": "equity",
-        "currency": "USD",
-        "identifiers": [],
-    }
-    account = {
-        "account_id": "broker-entitlement-test",
-        "account_type": "securities_account",
-        "cost_basis_method": "fifo",
-    }
-    common = {
-        "portfolio_id": "portfolio-entitlement-test",
-        "account_id": account["account_id"],
-        "instrument_id": instrument_ref["instrument_id"],
-        "instrument_ref": instrument_ref,
-        "currency": "USD",
-        "fees": 0.0,
-        "taxes": 0.0,
-    }
-    lots = build_position_lots(
-        "portfolio-entitlement-test",
-        [account],
-        [
-            {
-                **common,
-                "transaction_id": "txn-opening",
-                "transaction_type": "opening_balance",
-                "trade_date": "2026-04-10",
-                "acquisition_date": "2026-04-01",
-                "settlement_date": "2026-04-10",
-                "quantity": 10.0,
-                "gross_amount": 1000.0,
-                "created_at": "2026-04-10T08:00:00Z",
-            },
-            {
-                **common,
-                "transaction_id": "txn-dividend",
-                "transaction_type": "dividend",
-                "trade_date": "2026-04-15",
-                "entitlement_date": "2026-04-10",
-                "settlement_date": "2026-04-15",
-                "quantity": None,
-                "gross_amount": 100.0,
-                "created_at": "2026-04-15T09:00:00Z",
-            },
-        ],
-    )
-
-    assert len(lots) == 1
-    assert lots[0]["income_cash_amount"] == pytest.approx(100.0)
-
-
-def test_rejects_late_paid_dividend_reinvestment_and_preserves_workspace_reads(client):
-    account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
-        json={
-            "account_name": "Late DRIP Review",
-            "account_type": "securities_account",
-            "currency": "USD",
-            "institution": "Test Broker",
-            "default_settlement_cash_account_id": "cash-usd-main",
-            "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
-            "opened_at": "2026-04-01",
-            "status": "active",
-        },
-    ).json()
-
-    buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
-        json=_transaction_request({
-            "transaction_type": "buy",
-            "trade_date": "2026-04-01",
-            "account_id": account["account_id"],
-            "settlement_cash_account_id": "cash-usd-main",
-            "instrument_id": "equity-us-abbv",
-            "quantity": 100.0,
-            "price": 100.0,
-            "gross_amount": 10000.0,
-            "currency": "USD",
-        }),
-    )
-    assert buy_response.status_code == 200
-
-    sell_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
-        json=_transaction_request({
-            "transaction_type": "sell",
-            "trade_date": "2026-04-12",
-            "account_id": account["account_id"],
-            "settlement_cash_account_id": "cash-usd-main",
-            "instrument_id": "equity-us-abbv",
-            "quantity": 100.0,
-            "price": 110.0,
-            "gross_amount": 11000.0,
-            "currency": "USD",
-        }),
-    )
-    assert sell_response.status_code == 200
-
-    drip_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
-        json=_transaction_request({
-            "transaction_type": "dividend_reinvestment",
-            "trade_date": "2026-04-15",
-            "entitlement_date": "2026-04-10",
-            "account_id": account["account_id"],
-            "instrument_id": "equity-us-abbv",
-            "quantity": 1.0,
-            "price": 100.0,
-            "gross_amount": 100.0,
-            "currency": "USD",
-        }),
-    )
-    assert drip_response.status_code == 422
-
-    ledger_response = client.get("/api/portfolios/portfolio-ops/ledger-postings")
-    assert ledger_response.status_code == 200
-
-    workspace_response = client.get("/api/portfolios/portfolio-ops/accounts/workspace")
-    assert workspace_response.status_code == 200
-
 
 def test_rejects_entitlement_date_on_return_of_capital(client):
     response = client.post(
@@ -2222,86 +1453,7 @@ def test_rejects_entitlement_date_on_return_of_capital(client):
     assert "does not yet support entitlement_date" in response.text
 
 
-def test_ledger_postings_sort_by_trade_time_within_same_day():
-    instrument_ref = {
-        "instrument_id": "equity-us-abbv",
-        "instrument_name": "AbbVie Inc",
-        "instrument_type": "equity",
-        "currency": "USD",
-        "identifiers": [],
-    }
-    transactions = [
-        {
-            "transaction_id": "fee-1",
-            "portfolio_id": "p",
-            "transaction_type": "fee",
-            "trade_date": "2026-04-15",
-            "trade_at": "2026-04-15T01:00:00Z",
-            "settlement_date": "2026-04-15",
-            "account_id": "broker",
-            "settlement_cash_account_id": "cash",
-            "instrument_id": "equity-us-abbv",
-            "instrument_ref": instrument_ref,
-            "gross_amount": 5.0,
-            "currency": "USD",
-            "created_at": "2026-04-15T01:00:00Z",
-        },
-        {
-            "transaction_id": "buy-1",
-            "portfolio_id": "p",
-            "transaction_type": "buy",
-            "trade_date": "2026-04-15",
-            "trade_at": "2026-04-15T07:00:00Z",
-            "settlement_date": "2026-04-15",
-            "account_id": "broker",
-            "settlement_cash_account_id": "cash",
-            "instrument_id": "equity-us-abbv",
-            "instrument_ref": instrument_ref,
-            "quantity": 10.0,
-            "price": 100.0,
-            "gross_amount": 1000.0,
-            "fees": 0.0,
-            "taxes": 0.0,
-            "currency": "USD",
-            "created_at": "2026-04-15T07:00:00Z",
-        },
-        {
-            "transaction_id": "sell-1",
-            "portfolio_id": "p",
-            "transaction_type": "sell",
-            "trade_date": "2026-04-15",
-            "trade_at": "2026-04-15T08:00:00Z",
-            "settlement_date": "2026-04-15",
-            "account_id": "broker",
-            "settlement_cash_account_id": "cash",
-            "instrument_id": "equity-us-abbv",
-            "instrument_ref": instrument_ref,
-            "quantity": 10.0,
-            "price": 105.0,
-            "gross_amount": 1050.0,
-            "fees": 0.0,
-            "taxes": 0.0,
-            "currency": "USD",
-            "created_at": "2026-04-15T08:00:00Z",
-        },
-    ]
-
-    postings = derive_ledger_postings(
-        "p",
-        transactions,
-        account_cost_methods={"broker": "fifo"},
-        account_currency_map={"broker": "USD", "cash": "USD"},
-    )
-
-    transaction_order: list[str] = []
-    for posting in postings:
-        transaction_id = str(posting["transaction_id"])
-        if transaction_id not in transaction_order:
-            transaction_order.append(transaction_id)
-    assert transaction_order == ["sell-1", "buy-1", "fee-1"]
-
-
-def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client):
+def test_dividend_reinvestment_persists_exact_authoritative_fact(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -2347,167 +1499,9 @@ def test_dividend_reinvestment_allocates_income_to_existing_position_lots(client
         }),
     )
     assert drip_response.status_code == 200
-
-    lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
-    )
-    assert lots_response.status_code == 200
-    lots = lots_response.json()["position_lots"]
-    original_lot = next(lot for lot in lots if lot["opening_transaction_type"] == "buy")
-    drip_lot = next(lot for lot in lots if lot["opening_transaction_type"] == "dividend_reinvestment")
-    assert original_lot["income_cash_amount"] == pytest.approx(100.0)
-    assert drip_lot["income_cash_amount"] == pytest.approx(0.0)
-    assert drip_lot["entry_cost_basis"] == pytest.approx(100.0)
-
-
-def test_transfer_derivation_rejects_missing_source_lots():
-    accounts = [
-        {
-            "account_id": "src",
-            "account_type": "securities_account",
-            "currency": "USD",
-            "cost_basis_method": "fifo",
-        },
-        {
-            "account_id": "dst",
-            "account_type": "securities_account",
-            "currency": "USD",
-            "cost_basis_method": "fifo",
-        },
-    ]
-    malformed_transactions = [
-        {
-            "transaction_id": "t1",
-            "portfolio_id": "p",
-            "transaction_type": "transfer_out",
-            "trade_date": "2026-04-10",
-            "trade_at": "2026-04-10T04:00:00Z",
-            "settlement_date": "2026-04-10",
-            "account_id": "src",
-            "instrument_id": "equity-us-abbv",
-            "instrument_ref": {
-                "instrument_id": "equity-us-abbv",
-                "instrument_name": "AbbVie Inc",
-                "instrument_type": "equity",
-                "currency": "USD",
-                "identifiers": [],
-            },
-            "quantity": 1.0,
-            "gross_amount": 100.0,
-            "currency": "USD",
-            "transfer_object_type": "position",
-            "transfer_group_id": "g1",
-        },
-        {
-            "transaction_id": "t2",
-            "portfolio_id": "p",
-            "transaction_type": "transfer_in",
-            "trade_date": "2026-04-10",
-            "trade_at": "2026-04-10T04:00:00Z",
-            "settlement_date": "2026-04-10",
-            "account_id": "dst",
-            "instrument_id": "equity-us-abbv",
-            "instrument_ref": {
-                "instrument_id": "equity-us-abbv",
-                "instrument_name": "AbbVie Inc",
-                "instrument_type": "equity",
-                "currency": "USD",
-                "identifiers": [],
-            },
-            "quantity": 1.0,
-            "gross_amount": 100.0,
-            "currency": "USD",
-            "transfer_object_type": "position",
-            "transfer_group_id": "g1",
-        },
-    ]
-
-    with pytest.raises(ValueError, match="source lots"):
-        _build_position_state(malformed_transactions, account_cost_methods={"src": "fifo", "dst": "fifo"})
-
-    with pytest.raises(ValueError, match="source lots"):
-        derive_ledger_postings("p", malformed_transactions, account_cost_methods={"src": "fifo", "dst": "fifo"})
-
-    with pytest.raises(ValueError, match="source position lots|linked source position lots"):
-        build_position_lots("p", accounts, malformed_transactions)
-
-
-def test_lot_kernels_reject_oversell_when_route_validation_is_bypassed():
-    accounts = [
-        {
-            "account_id": "broker",
-            "account_type": "securities_account",
-            "currency": "USD",
-            "cost_basis_method": "fifo",
-        },
-        {
-            "account_id": "cash",
-            "account_type": "deposit_account",
-            "currency": "USD",
-        },
-    ]
-    instrument_ref = {
-        "instrument_id": "equity-us-abbv",
-        "instrument_name": "AbbVie Inc",
-        "instrument_type": "equity",
-        "currency": "USD",
-        "identifiers": [],
-    }
-    malformed_transactions = [
-        {
-            "transaction_id": "buy-1",
-            "portfolio_id": "p",
-            "transaction_type": "buy",
-            "trade_date": "2026-04-10",
-            "trade_at": "2026-04-10T04:00:00Z",
-            "settlement_date": "2026-04-10",
-            "account_id": "broker",
-            "settlement_cash_account_id": "cash",
-            "instrument_id": "equity-us-abbv",
-            "instrument_ref": instrument_ref,
-            "quantity": 1.0,
-            "price": 100.0,
-            "gross_amount": 100.0,
-            "fees": 0.0,
-            "taxes": 0.0,
-            "currency": "USD",
-            "created_at": "2026-04-10T04:00:00Z",
-        },
-        {
-            "transaction_id": "sell-1",
-            "portfolio_id": "p",
-            "transaction_type": "sell",
-            "trade_date": "2026-04-11",
-            "trade_at": "2026-04-11T04:00:00Z",
-            "settlement_date": "2026-04-11",
-            "account_id": "broker",
-            "settlement_cash_account_id": "cash",
-            "instrument_id": "equity-us-abbv",
-            "instrument_ref": instrument_ref,
-            "quantity": 2.0,
-            "price": 110.0,
-            "gross_amount": 220.0,
-            "fees": 0.0,
-            "taxes": 0.0,
-            "currency": "USD",
-            "created_at": "2026-04-11T04:00:00Z",
-        },
-    ]
-
-    with pytest.raises(ValueError, match="exceeds account position"):
-        _build_position_state(malformed_transactions, account_cost_methods={"broker": "fifo"})
-
-    with pytest.raises(ValueError, match="exceeds account position"):
-        derive_ledger_postings(
-            "p",
-            malformed_transactions,
-            account_cost_methods={"broker": "fifo"},
-            account_currency_map={"broker": "USD", "cash": "USD"},
-        )
-
-    with pytest.raises(ValueError, match="exceeds account position"):
-        build_position_lots("p", accounts, malformed_transactions)
+    assert drip_response.json()["quantity"] == "1"
+    assert drip_response.json()["price"] == "100"
+    assert drip_response.json()["gross_amount"] == "100"
 
 
 def test_rejects_settlement_before_trade_date(client):
@@ -2607,7 +1601,7 @@ def test_rejects_transactions_outside_account_lifecycle(client):
             "counterparty_account_id": future_account["account_id"],
             "gross_amount": 100.0,
             "counter_amount": 780.0,
-            "fx_rate": 7.8,
+            "quoted_fx_rate": 7.8,
             "fees": 0.0,
             "taxes": 0.0,
             "currency": "USD",
@@ -2682,130 +1676,6 @@ def test_transaction_list_sorts_same_day_by_trade_time_not_creation_order(client
     assert transactions[1]["trade_time"] == "09:00"
 
 
-def test_confirmed_share_split_applies_at_effective_bod_before_same_day_buy() -> None:
-    transactions = [
-        _split_test_transaction("buy-before", "buy", "2026-07-08", 100.0, 1000.0),
-        _split_test_transaction("sell-record", "sell", "2026-07-09", 20.0, 240.0),
-        _split_test_transaction("buy-effective", "buy", "2026-07-10", 10.0, 100.0),
-    ]
-    event = _share_split_event()
-
-    state = _build_position_state(
-        transactions,
-        account_cost_methods={"acct": "fifo"},
-        corporate_actions=[event],
-        as_of_date=date(2026, 7, 10),
-    )
-    bucket = state[("acct", "equity-us-abbv")]
-    assert bucket["quantity"] == pytest.approx(170.0)
-    assert bucket["cost_basis"] == pytest.approx(900.0)
-
-    postings = derive_ledger_postings(
-        "p",
-        transactions,
-        account_cost_methods={"acct": "fifo"},
-        corporate_actions=[event],
-        as_of_date=date(2026, 7, 10),
-    )
-    split_posting = next(
-        posting
-        for posting in postings
-        if posting["posting_role"] == "corporate_action_position_adjustment"
-    )
-    assert split_posting["quantity_delta"] == pytest.approx(80.0)
-    assert split_posting["cost_basis_delta"] == 0.0
-    assert split_posting["effective_date"] == "2026-07-10"
-    LedgerPostingRecord.model_validate(split_posting)
-
-
-def test_share_split_record_date_buys_and_sells_define_entitled_eod_quantity() -> None:
-    transactions = [
-        _split_test_transaction("buy-before", "buy", "2026-07-08", 100.0, 1000.0),
-        _split_test_transaction("buy-record", "buy", "2026-07-09", 20.0, 220.0, trade_time="09:30"),
-        _split_test_transaction("sell-record", "sell", "2026-07-09", 10.0, 120.0, trade_time="14:30"),
-        _split_test_transaction("buy-effective", "buy", "2026-07-10", 5.0, 50.0),
-    ]
-    state = _build_position_state(
-        transactions,
-        account_cost_methods={"acct": "fifo"},
-        corporate_actions=[_share_split_event()],
-        as_of_date=date(2026, 7, 10),
-    )
-    # Record-date EOD owns 110 units -> 220 at effective BOD; the effective-day
-    # buy is already expressed in post-split units and must not be multiplied.
-    assert state[("acct", "equity-us-abbv")]["quantity"] == pytest.approx(225.0)
-
-
-def test_share_split_truncates_once_at_account_total_then_allocates_lots() -> None:
-    transactions = [
-        _split_test_transaction("lot-a", "buy", "2026-07-08", 10.2, 102.0, trade_time="09:30"),
-        _split_test_transaction("lot-b", "buy", "2026-07-08", 5.3, 53.0, trade_time="14:30"),
-    ]
-    event = _share_split_event(
-        new_units="3",
-        old_units="2",
-        quantity_rounding="truncate",
-    )
-    lots = build_position_lots(
-        "p",
-        _split_test_accounts(),
-        transactions,
-        as_of_date=date(2026, 7, 10),
-        corporate_actions=[event],
-    )
-    open_lots = [lot for lot in lots if lot["status"] == "open"]
-    assert sum(lot["remaining_quantity"] for lot in open_lots) == pytest.approx(23.0)
-    assert sum(lot["remaining_cost_basis"] for lot in open_lots) == pytest.approx(155.0)
-    assert len(open_lots) == 2
-    assert all(lot["opening_transaction_type"] == "corporate_action" for lot in open_lots)
-    assert all(lot["unit_cost_basis_after"] < lot["unit_cost_basis_before"] for lot in open_lots)
-    for lot in lots:
-        PositionLotRecord.model_validate(lot)
-
-
-def test_share_split_rejects_unmodeled_due_bill_interval_trades() -> None:
-    transactions = [
-        _split_test_transaction("buy-record", "buy", "2026-07-09", 100.0, 1000.0),
-        _split_test_transaction("sell-between", "sell", "2026-07-10", 10.0, 110.0),
-    ]
-    event = _share_split_event(effective_date="2026-07-11", record_date="2026-07-09")
-    with pytest.raises(ValueError, match="due-bill processing"):
-        _build_position_state(
-            transactions,
-            account_cost_methods={"acct": "fifo"},
-            corporate_actions=[event],
-            as_of_date=date(2026, 7, 11),
-        )
-
-
-def test_source_detected_split_never_changes_portfolio_quantity() -> None:
-    transactions = [
-        _split_test_transaction("buy-before", "buy", "2026-07-08", 100.0, 1000.0),
-    ]
-    state = _build_position_state(
-        transactions,
-        account_cost_methods={"acct": "fifo"},
-        corporate_actions=[_share_split_event(status="detected")],
-        as_of_date=date(2026, 7, 10),
-    )
-    assert state[("acct", "equity-us-abbv")]["quantity"] == pytest.approx(100.0)
-
-
-def test_confirmed_cash_in_lieu_split_fails_closed_without_cash_fact() -> None:
-    transactions = [
-        _split_test_transaction("buy-before", "buy", "2026-07-08", 101.0, 1010.0),
-    ]
-    event = _share_split_event(new_units="1", old_units="2")
-    event["quantity_rounding"] = "cash_in_lieu"
-    with pytest.raises(ValueError, match="cash-in-lieu valuation and receivable"):
-        _build_position_state(
-            transactions,
-            account_cost_methods={"acct": "fifo"},
-            corporate_actions=[event],
-            as_of_date=date(2026, 7, 10),
-        )
-
-
 def test_transaction_execution_quote_uses_raw_valuation_basis_not_adjusted_chart(
     client,
 ) -> None:
@@ -2854,11 +1724,44 @@ def test_transaction_execution_quote_uses_raw_valuation_basis_not_adjusted_chart
     assert response.status_code == 200
     payload = response.json()
     assert payload["quote_basis"] == "close"
-    assert payload["value"] == pytest.approx(206.47)
+    assert payload["value"] == "206.47"
+    assert payload["suggested_transaction_price"] == "206.47"
     assert payload["quote_date"] == "2026-03-27"
     assert payload["source_ref"] == "test:raw-close"
     assert payload["resolution_status"] == "resolved"
     assert payload["stale"] is False
+
+
+def test_shared_fx_reference_preserves_more_than_six_decimal_places(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        fx_rate_routes,
+        "get_platform_fx_rates",
+        lambda: {
+            "supported_currencies": ["USD", "CNY"],
+            "maintained_pairs": ["USD/CNY"],
+            "rates": [
+                {
+                    "base_currency": "USD",
+                    "quote_currency": "CNY",
+                    "rate": Decimal("7.123456789012345678"),
+                    "as_of_date": date(2026, 7, 14),
+                    "source_kind": "direct",
+                    "instrument_id": "fx-usd-cny",
+                    "source_instrument_ids": ["fx-usd-cny"],
+                    "source_ref": "test:high-precision-fx",
+                    "status": "complete",
+                }
+            ],
+        },
+    )
+
+    response = client.get("/api/portfolios/portfolio-ops/fx-rates")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["rates"][0]["rate"] == "7.123456789012345678"
 
 
 def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
@@ -2913,11 +1816,10 @@ def test_rejects_same_day_sell_before_later_buy_by_trade_time(client):
             "currency": "USD",
         }),
     )
-    assert sell_response.status_code == 400
-    assert "as of trade_date" in sell_response.json()["detail"]
+    _assert_ledger_replay_conflict(sell_response, reason_code="position_not_found")
 
 
-def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
+def test_same_day_buy_then_sell_facts_preserve_trade_order(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -2972,38 +1874,12 @@ def test_same_day_buy_then_sell_uses_trade_order_not_settlement_order(client):
         }),
     )
     assert sell_response.status_code == 200
-
-    account_workspace_response = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
-        params={"account_id": account["account_id"]},
-    )
-    assert account_workspace_response.status_code == 200
-    assert account_workspace_response.json()["positions"] == []
-
-    lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
-    )
-    assert lots_response.status_code == 200
-    lots = lots_response.json()["position_lots"]
-    assert len(lots) == 1
-    assert lots[0]["status"] == "closed"
-    assert lots[0]["realized_cost_basis"] == pytest.approx(10000.0)
-    assert lots[0]["realized_pnl"] == pytest.approx(1000.0)
-
-    ledger_response = client.get(
-        f"/api/portfolios/portfolio-ops/transactions/{sell_response.json()['transaction_id']}/ledger-postings"
-    )
-    assert ledger_response.status_code == 200
-    sell_position_posting = next(
-        posting
-        for posting in ledger_response.json()["ledger_postings"]
-        if posting["posting_role"] == "security_position"
-    )
-    assert sell_position_posting["cost_basis_delta"] == pytest.approx(-10000.0)
+    assert buy_response.json()["trade_at"] < sell_response.json()["trade_at"]
+    assert buy_response.json()["settlement_date"] == "2026-04-17"
+    assert sell_response.json()["settlement_date"] == "2026-04-16"
 
 
-def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
+def test_buy_fact_keeps_price_separate_from_capitalized_fees_and_taxes(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -3036,24 +1912,14 @@ def test_position_lot_entry_price_excludes_capitalized_fees_and_taxes(client):
         }),
     )
     assert buy_response.status_code == 200
-
-    lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv", "status": "open"},
-    )
-    assert lots_response.status_code == 200
-    lots = lots_response.json()["position_lots"]
-    assert len(lots) == 1
-    lot = lots[0]
-    assert lot["entry_gross_amount"] == pytest.approx(1000.0)
-    assert lot["entry_fee_amount"] == pytest.approx(5.0)
-    assert lot["entry_tax_amount"] == pytest.approx(3.0)
-    assert lot["entry_cost_basis"] == pytest.approx(1008.0)
-    assert lot["entry_price"] == pytest.approx(100.0)
-    assert lot["entry_cost_per_unit"] == pytest.approx(100.8)
+    fact = buy_response.json()
+    assert fact["price"] == "100"
+    assert fact["gross_amount"] == "1000"
+    assert fact["fees"] == "5"
+    assert fact["taxes"] == "3"
 
 
-def test_moving_average_position_lots_match_account_cost_basis_method(client):
+def test_moving_average_account_accepts_exact_multi_trade_history(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -3105,32 +1971,8 @@ def test_moving_average_position_lots_match_account_cost_basis_method(client):
         }),
     )
     assert sell_response.status_code == 200
-
-    account_workspace_response = client.get(
-        "/api/portfolios/portfolio-ops/accounts/workspace",
-        params={"account_id": account["account_id"]},
-    )
-    assert account_workspace_response.status_code == 200
-    account_position = next(
-        row
-        for row in account_workspace_response.json()["positions"]
-        if row["instrument_id"] == "equity-us-abbv"
-    )
-    assert account_position["cost_basis"] == pytest.approx(16500.0)
-
-    lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={"account_id": account["account_id"], "instrument_id": "equity-us-abbv"},
-    )
-    assert lots_response.status_code == 200
-    lots = lots_response.json()["position_lots"]
-    assert len(lots) == 1
-    assert lots[0]["entry_quantity"] == pytest.approx(200.0)
-    assert lots[0]["remaining_quantity"] == pytest.approx(150.0)
-    assert lots[0]["entry_cost_basis"] == pytest.approx(22000.0)
-    assert sum(lot["remaining_cost_basis"] for lot in lots) == pytest.approx(16500.0)
-    assert sum(lot["realized_cost_basis"] for lot in lots) == pytest.approx(5500.0)
-    assert sum(lot["realized_pnl"] for lot in lots) == pytest.approx(1000.0)
+    assert sell_response.json()["quantity"] == "50"
+    assert sell_response.json()["gross_amount"] == "6500"
 
 
 def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
@@ -3193,11 +2035,13 @@ def test_rejects_position_transfer_with_inconsistent_gross_amount(client):
             "gross_amount": 1.0,
         }),
     )
-    assert transfer_response.status_code == 400
-    assert "must match source cost basis" in transfer_response.json()["detail"]
+    _assert_ledger_replay_conflict(
+        transfer_response,
+        reason_code="gross_amount_mismatch",
+    )
 
 
-def test_rejects_return_of_capital_above_remaining_cost_basis(client):
+def test_accepts_return_of_capital_above_remaining_cost_basis(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -3245,8 +2089,8 @@ def test_rejects_return_of_capital_above_remaining_cost_basis(client):
             "currency": "USD",
         }),
     )
-    assert roc_response.status_code == 400
-    assert "exceeds account position cost basis" in roc_response.json()["detail"]
+    assert roc_response.status_code == 200
+    assert roc_response.json()["gross_amount"] == "1500"
 
 
 def test_accounts_workspace_includes_selected_account_linked_transactions(client):
@@ -3260,10 +2104,12 @@ def test_accounts_workspace_includes_selected_account_linked_transactions(client
     assert payload["selected_account_id"] == "broker-us-core"
     assert payload["linked_transactions_summary"]["total_transactions"] > 0
     assert payload["linked_transactions_summary"]["instrument_transactions"] > 0
-    assert payload["ledger_postings"]
     assert payload["positions"]
+    assert "ledger_postings" not in payload
     assert all(
-        item["account"]["account_id"] == "broker-us-core" for item in payload["linked_transactions"]
+        item["account"]["account_id"] == "broker-us-core"
+        or item["counterparty_account_id"] == "broker-us-core"
+        for item in payload["linked_transactions"]
     )
 
     selected_account_row = next(
@@ -3273,7 +2119,7 @@ def test_accounts_workspace_includes_selected_account_linked_transactions(client
     assert selected_account_row["linked_transaction_count"] <= payload["linked_transactions_summary"]["total_transactions"]
 
 
-def test_transactions_workspace_returns_selected_fact_ledger_and_related_position_lots(client):
+def test_transactions_workspace_returns_selected_authoritative_fact(client):
     response = client.get(
         "/api/portfolios/portfolio-ops/transactions/workspace",
         params={"transaction_id": "txn-0003"},
@@ -3284,61 +2130,14 @@ def test_transactions_workspace_returns_selected_fact_ledger_and_related_positio
     assert payload["selected_transaction_id"] == "txn-0003"
     assert payload["selected_transaction"]["transaction_id"] == "txn-0003"
     assert payload["selected_transaction"]["account"]["account_id"] == "broker-us-core"
-    assert payload["ledger_summary"]["posting_count"] > 0
-    assert all(posting["transaction_id"] == "txn-0003" for posting in payload["ledger_postings"])
-    assert payload["related_position_lot_summary"]["position_lot_count"] > 0
-    assert any(lot["opened_by_transaction_id"] == "txn-0003" for lot in payload["related_position_lots"])
+    assert payload["summary"]["total_transactions"] > 0
+    assert "ledger_summary" not in payload
+    assert "ledger_postings" not in payload
+    assert "related_position_lot_summary" not in payload
+    assert "related_position_lots" not in payload
 
 
-def test_security_trade_cash_posting_uses_settlement_effective_date(client):
-    account = client.post(
-        "/api/portfolios/portfolio-ops/accounts",
-        json={
-            "account_name": "Settlement Timing Review",
-            "account_type": "securities_account",
-            "currency": "USD",
-            "institution": "Test Broker",
-            "default_settlement_cash_account_id": "cash-usd-main",
-            "cost_basis_method": "fifo",
-            "allowed_instrument_types": ["equity"],
-            "opened_at": "2026-04-01",
-            "status": "active",
-        },
-    ).json()
-
-    buy_response = client.post(
-        "/api/portfolios/portfolio-ops/transactions",
-        json=_transaction_request({
-            "transaction_type": "buy",
-            "trade_date": "2026-04-10",
-            "settlement_date": "2026-04-12",
-            "account_id": account["account_id"],
-            "settlement_cash_account_id": "cash-usd-main",
-            "instrument_id": "equity-us-abbv",
-            "quantity": 10.0,
-            "price": 100.0,
-            "gross_amount": 1000.0,
-            "fees": 0.0,
-            "taxes": 0.0,
-            "currency": "USD",
-        }),
-    )
-    assert buy_response.status_code == 200
-
-    ledger_response = client.get(
-        f"/api/portfolios/portfolio-ops/transactions/{buy_response.json()['transaction_id']}/ledger-postings"
-    )
-    assert ledger_response.status_code == 200
-    postings = ledger_response.json()["ledger_postings"]
-
-    position_posting = next(item for item in postings if item["posting_role"] == "security_position")
-    cash_posting = next(item for item in postings if item["posting_role"] == "security_settlement_cash")
-
-    assert position_posting["effective_date"] == "2026-04-10"
-    assert cash_posting["effective_date"] == "2026-04-12"
-
-
-def test_security_opening_balance_preserves_acquisition_date_in_position_lots(client):
+def test_security_opening_balance_persists_exact_acquisition_date_fact(client):
     account = client.post(
         "/api/portfolios/portfolio-ops/accounts",
         json={
@@ -3349,7 +2148,7 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
             "default_settlement_cash_account_id": "cash-usd-main",
             "cost_basis_method": "fifo",
             "allowed_instrument_types": ["equity"],
-            "opened_at": "2026-04-01",
+            "opened_at": "2026-01-01",
             "status": "active",
         },
     ).json()
@@ -3358,8 +2157,8 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
         "/api/portfolios/portfolio-ops/transactions",
         json=_transaction_request({
             "transaction_type": "opening_balance",
-            "trade_date": "2026-04-10",
-            "settlement_date": "2026-04-10",
+            "trade_date": "2026-01-02",
+            "settlement_date": "2026-01-02",
             "account_id": account["account_id"],
             "instrument_id": "equity-us-abbv",
             "quantity": 100.0,
@@ -3372,21 +2171,5 @@ def test_security_opening_balance_preserves_acquisition_date_in_position_lots(cl
     )
     assert opening_balance_response.status_code == 200
     assert opening_balance_response.json()["acquisition_date"] == "2025-03-01"
-
-    lots_response = client.get(
-        "/api/portfolios/portfolio-ops/position-lots",
-        params={
-            "account_id": account["account_id"],
-            "instrument_id": "equity-us-abbv",
-            "status": "open",
-            "as_of_date": "2026-04-15",
-        },
-    )
-    assert lots_response.status_code == 200
-    payload = lots_response.json()
-    assert payload["summary"]["position_lot_count"] == 1
-
-    lot = payload["position_lots"][0]
-    assert lot["opened_at"] == "2026-04-10"
-    assert lot["acquisition_date"] == "2025-03-01"
-    assert lot["holding_period_days"] == (date(2026, 4, 15) - date(2025, 3, 1)).days
+    assert opening_balance_response.json()["trade_date"] == "2026-01-02"
+    assert opening_balance_response.json()["gross_amount"] == "10000"

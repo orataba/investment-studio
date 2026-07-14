@@ -10,24 +10,18 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import Integer, and_, cast, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from portfolio_ops_instrument_core.db_models import (
-    QuoteObservation,
-    QuoteObservationRevision,
-    QuoteSeries,
-)
-
 from portfolio_app.core.settings import get_settings
+from portfolio_app.core.operating_profiles import (
+    PortfolioOperatingProfile,
+    require_portfolio_operating_profile,
+)
 from portfolio_app.db.models import (
     AccountRecordModel,
-    PortfolioCalculationStateModel,
-    PortfolioDailyContributionSliceModel,
-    PortfolioDailyHoldingSnapshotModel,
-    PortfolioDailySnapshotModel,
     PortfolioInstrumentUniverseRecordModel,
     PortfolioRecordModel,
     TargetSetLineRecordModel,
     TargetSetRecordModel,
-    ResearchSettingsRecordModel,
+    AllocationResearchSettingsRecordModel,
     TaxonomyAssignmentRecordModel,
     TaxonomyNodeRecordModel,
     TaxonomyRecordModel,
@@ -39,19 +33,16 @@ from portfolio_app.db.models import (
 )
 from portfolio_app.db.session import get_session_factory
 from portfolio_app.services.fact_currency import require_portfolio_fact_currency
-from portfolio_app.services.ledger import (
-    build_account_workspace,
-    build_position_lots,
-    validate_transaction_position_history,
+from portfolio_app.services.transaction_command_validator import (
+    validate_prospective_transaction_history,
 )
-from portfolio_app.services.snapshot_selection import default_portfolio_snapshot
 from portfolio_app.services.transaction_revisions import (
     AmendTransactionRevision,
     CreateTransactionRevision,
     DeleteTransactionRevision,
     TransactionFactPayload,
     TransactionRevisionContext,
-    append_transaction_revision_batch,
+    append_transaction_revision_batch_unchecked,
     list_transaction_revision_history as list_revision_history_records,
     refresh_transaction_current_projection,
 )
@@ -76,6 +67,14 @@ SYSTEM_CASH_TARGET_MEMBER_ID = "__cash__"
 SYSTEM_CASH_TARGET_LABEL = "Cash"
 LEGACY_ASSET_REFERENCE_KEYS = {"asset_id", "asset_name", "asset_type"}
 INSTRUMENT_REF_REQUIRED_KEYS = {"instrument_id", "instrument_name", "instrument_type", "currency"}
+PORTFOLIO_ORDER_ADVISORY_LOCK_KEY = 7_205_759_403_792_793
+
+
+def _lock_portfolio_order(session: Any) -> None:
+    """Serialize lifecycle/order mutations so active sort positions stay unique."""
+    session.scalar(
+        select(func.pg_advisory_xact_lock(PORTFOLIO_ORDER_ADVISORY_LOCK_KEY))
+    )
 
 
 def _current_utc_timestamp() -> str:
@@ -165,19 +164,28 @@ def _transaction_fact_payload(
     settlement_cash_account_id: str | None,
     instrument_id: str | None,
     instrument_ref: dict[str, object] | None,
-    quantity: Decimal | int | float | str | None,
-    price: Decimal | int | float | str | None,
-    gross_amount: Decimal | int | float | str,
-    counter_amount: Decimal | int | float | str | None,
-    fx_rate: Decimal | int | float | str | None,
-    fees: Decimal | int | float | str,
-    taxes: Decimal | int | float | str,
+    quantity: Decimal | int | str | None,
+    price: Decimal | int | str | None,
+    gross_amount: Decimal | int | str,
+    counter_amount: Decimal | int | str | None,
+    quoted_fx_rate: Decimal | int | str | None,
+    consideration_basis: str | None,
+    fees: Decimal | int | str,
+    taxes: Decimal | int | str,
     currency: str,
     transfer_scope: str | None,
     transfer_object_type: str | None,
     transfer_group_id: str | None,
     counterparty_account_id: str | None,
     note: str | None,
+    numeric_scale_state: str = "declared",
+    quantity_input_scale: int | None = None,
+    price_input_scale: int | None = None,
+    gross_amount_input_scale: int | None = None,
+    counter_amount_input_scale: int | None = None,
+    quoted_fx_rate_input_scale: int | None = None,
+    fees_input_scale: int | None = None,
+    taxes_input_scale: int | None = None,
 ) -> TransactionFactPayload:
     if isinstance(instrument_ref, dict):
         _validate_instrument_ref_contract(
@@ -223,7 +231,16 @@ def _transaction_fact_payload(
         price=price,
         gross_amount=gross_amount,
         counter_amount=counter_amount,
-        fx_rate=fx_rate,
+        quoted_fx_rate=quoted_fx_rate,
+        consideration_basis=consideration_basis,
+        numeric_scale_state=numeric_scale_state,
+        quantity_input_scale=quantity_input_scale,
+        price_input_scale=price_input_scale,
+        gross_amount_input_scale=gross_amount_input_scale,
+        counter_amount_input_scale=counter_amount_input_scale,
+        quoted_fx_rate_input_scale=quoted_fx_rate_input_scale,
+        fees_input_scale=fees_input_scale,
+        taxes_input_scale=taxes_input_scale,
         fees=fees,
         taxes=taxes,
         currency=require_portfolio_fact_currency(
@@ -312,6 +329,10 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
                 portfolio.get("base_currency"),
                 context=f"Portfolio '{portfolio_id}' base",
             )
+            require_portfolio_operating_profile(
+                portfolio.get("operating_profile"),
+                context=f"Portfolio '{portfolio_id}'",
+            )
             portfolio.setdefault("valuation_timezone", "Asia/Shanghai")
             portfolio.setdefault("valuation_cutoff_policy", "latest_complete_eod")
             portfolio.setdefault("default_planning_taxonomy_id", None)
@@ -353,8 +374,8 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
             raise ValueError(f"Transaction '{transaction.get('transaction_id')}' with instrument_id requires instrument_ref.")
         if "counter_amount" not in transaction:
             transaction["counter_amount"] = None
-        if "fx_rate" not in transaction:
-            transaction["fx_rate"] = None
+        if "quoted_fx_rate" not in transaction:
+            transaction["quoted_fx_rate"] = None
         trade_date_value = transaction.get("trade_date")
         try:
             resolved_trade_date = (
@@ -391,6 +412,8 @@ def _normalize_store(store: dict[str, object]) -> dict[str, object]:
 
 
 def reset_store(data: dict[str, object] | None = None) -> None:
+    if get_settings().environment.strip().lower() != "test":
+        raise RuntimeError("reset_store is reserved for explicit test fixtures.")
     payload = data if data is not None else EMPTY_STORE
     normalized = _normalize_store(deepcopy(payload))
     session_factory = get_session_factory()
@@ -477,13 +500,12 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "portfolio_id": item.portfolio_id,
                 "portfolio_name": item.portfolio_name,
                 "base_currency": item.base_currency,
+                "operating_profile": require_portfolio_operating_profile(
+                    item.operating_profile,
+                    context=f"Portfolio '{item.portfolio_id}'",
+                ),
                 "valuation_timezone": item.valuation_timezone,
                 "valuation_cutoff_policy": item.valuation_cutoff_policy,
-                "as_of_date": item.as_of_date.isoformat() if item.as_of_date is not None else None,
-                "nav": item.nav,
-                "day_change_value": item.day_change_value,
-                "day_change_pct": item.day_change_pct,
-                "securities_count": item.securities_count,
                 "sort_order": item.sort_order,
                 "default_planning_taxonomy_id": item.default_planning_taxonomy_id,
             }
@@ -531,7 +553,16 @@ def _load_store_from_db(session) -> dict[str, object]:
                 "price": item.price,
                 "gross_amount": item.gross_amount,
                 "counter_amount": item.counter_amount,
-                "fx_rate": item.fx_rate,
+                "quoted_fx_rate": item.quoted_fx_rate,
+                "consideration_basis": item.consideration_basis,
+                "numeric_scale_state": item.numeric_scale_state,
+                "quantity_input_scale": item.quantity_input_scale,
+                "price_input_scale": item.price_input_scale,
+                "gross_amount_input_scale": item.gross_amount_input_scale,
+                "counter_amount_input_scale": item.counter_amount_input_scale,
+                "quoted_fx_rate_input_scale": item.quoted_fx_rate_input_scale,
+                "fees_input_scale": item.fees_input_scale,
+                "taxes_input_scale": item.taxes_input_scale,
                 "fees": item.fees,
                 "taxes": item.taxes,
                 "currency": item.currency,
@@ -636,10 +667,6 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
             "ledger. Create a fresh test database instead."
         )
 
-    session.execute(delete(PortfolioDailyContributionSliceModel))
-    session.execute(delete(PortfolioDailyHoldingSnapshotModel))
-    session.execute(delete(PortfolioDailySnapshotModel))
-    session.execute(delete(PortfolioCalculationStateModel))
     session.execute(delete(PortfolioInstrumentUniverseRecordModel))
     session.execute(delete(TargetSetLineRecordModel))
     session.execute(delete(TargetSetRecordModel))
@@ -655,7 +682,6 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
     for raw_portfolio in list(normalized.get("portfolios", [])):
         if not isinstance(raw_portfolio, dict):
             continue
-        as_of_date = raw_portfolio.get("as_of_date")
         session.add(
             PortfolioRecordModel(
                 portfolio_id=str(raw_portfolio.get("portfolio_id") or "").strip(),
@@ -667,21 +693,19 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
                         f"'{str(raw_portfolio.get('portfolio_id') or '<unknown>')}' base"
                     ),
                 ),
+                operating_profile=require_portfolio_operating_profile(
+                    raw_portfolio.get("operating_profile"),
+                    context=(
+                        "Portfolio "
+                        f"'{str(raw_portfolio.get('portfolio_id') or '<unknown>')}'"
+                    ),
+                ),
                 valuation_timezone=str(raw_portfolio.get("valuation_timezone") or "Asia/Shanghai").strip()
                 or "Asia/Shanghai",
                 valuation_cutoff_policy=str(
                     raw_portfolio.get("valuation_cutoff_policy") or "latest_complete_eod"
                 ).strip()
                 or "latest_complete_eod",
-                as_of_date=(
-                    date.fromisoformat(str(as_of_date))
-                    if as_of_date
-                    else None
-                ),
-                nav=float(raw_portfolio.get("nav") or 0.0),
-                day_change_value=float(raw_portfolio.get("day_change_value") or 0.0),
-                day_change_pct=float(raw_portfolio.get("day_change_pct") or 0.0),
-                securities_count=int(raw_portfolio.get("securities_count") or 0),
                 sort_order=int(raw_portfolio.get("sort_order") or 0),
                 default_planning_taxonomy_id=(
                     str(raw_portfolio.get("default_planning_taxonomy_id")).strip()
@@ -951,7 +975,12 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
             price=raw_transaction.get("price"),
             gross_amount=raw_transaction.get("gross_amount") or Decimal("0"),
             counter_amount=raw_transaction.get("counter_amount"),
-            fx_rate=raw_transaction.get("fx_rate"),
+            quoted_fx_rate=raw_transaction.get("quoted_fx_rate"),
+            consideration_basis=(
+                str(raw_transaction["consideration_basis"])
+                if raw_transaction.get("consideration_basis")
+                else None
+            ),
             fees=raw_transaction.get("fees") or Decimal("0"),
             taxes=raw_transaction.get("taxes") or Decimal("0"),
             currency=str(raw_transaction.get("currency") or ""),
@@ -993,7 +1022,10 @@ def _save_store_to_db(session, data: dict[str, object]) -> None:
         "actor_source": "trusted_service",
     }
     for portfolio_id, commands in fixture_commands_by_portfolio.items():
-        append_transaction_revision_batch(
+        # Explicit test-fixture exception to prospective command validation.
+        # reset_store is environment-gated above and cannot serve production
+        # transaction mutations.
+        append_transaction_revision_batch_unchecked(
             session,
             portfolio_id=portfolio_id,
             context=_transaction_revision_context(
@@ -1015,16 +1047,16 @@ def _serialize_portfolio_row(item: PortfolioRecordModel) -> dict[str, object]:
             item.base_currency,
             context=f"Portfolio '{item.portfolio_id}' base",
         ),
+        "operating_profile": require_portfolio_operating_profile(
+            item.operating_profile,
+            context=f"Portfolio '{item.portfolio_id}'",
+        ),
         "valuation_timezone": item.valuation_timezone,
         "valuation_cutoff_policy": item.valuation_cutoff_policy,
-        "as_of_date": item.as_of_date.isoformat() if item.as_of_date is not None else None,
-        "nav": item.nav,
-        "day_change_value": item.day_change_value,
-        "day_change_pct": item.day_change_pct,
-        "securities_count": item.securities_count,
         "sort_order": item.sort_order,
         "default_planning_taxonomy_id": item.default_planning_taxonomy_id,
         "risk_policy_json": deepcopy(item.risk_policy_json) if isinstance(item.risk_policy_json, dict) else None,
+        "lifecycle_status": item.lifecycle_status,
     }
 
 
@@ -1046,257 +1078,6 @@ def _safe_date(value: object) -> date | None:
         except ValueError:
             return None
     return None
-
-
-def _max_transaction_trade_date(transactions: list[TransactionCurrentModel]) -> date | None:
-    return max((transaction.trade_date for transaction in transactions if transaction.trade_date is not None), default=None)
-
-
-def _max_transaction_activity_date(transactions: list[TransactionCurrentModel]) -> date | None:
-    activity_dates = [
-        candidate
-        for transaction in transactions
-        for candidate in (
-            transaction.trade_date,
-            transaction.settlement_date,
-            transaction.entitlement_date,
-        )
-        if candidate is not None
-    ]
-    return max(activity_dates, default=None)
-
-
-def _latest_market_data_date_for_instruments(session, instrument_ids: set[str]) -> date | None:
-    normalized_instrument_ids = {instrument_id for instrument_id in instrument_ids if instrument_id}
-    if not normalized_instrument_ids:
-        return None
-
-    return session.scalar(
-        select(QuoteObservation.as_of_date)
-        .select_from(QuoteSeries)
-        .join(
-            QuoteObservation,
-            QuoteObservation.quote_series_id == QuoteSeries.quote_series_id,
-        )
-        .join(
-            QuoteObservationRevision,
-            QuoteObservationRevision.observation_id
-            == QuoteObservation.observation_id,
-        )
-        .where(
-            QuoteSeries.instrument_id.in_(normalized_instrument_ids),
-            QuoteSeries.metric_family.in_(("price", "nav")),
-            QuoteObservationRevision.is_current.is_(True),
-            QuoteObservationRevision.status == "complete",
-            QuoteObservationRevision.value.is_not(None),
-        )
-        .group_by(QuoteObservation.as_of_date)
-        .having(
-            func.count(func.distinct(QuoteSeries.instrument_id))
-            == len(normalized_instrument_ids)
-        )
-        .order_by(QuoteObservation.as_of_date.desc())
-        .limit(1)
-    )
-
-
-def _resolve_live_portfolio_as_of_date(
-    session,
-    item: PortfolioRecordModel,
-    *,
-    accounts: list[AccountRecordModel],
-    transactions: list[TransactionCurrentModel],
-) -> date:
-    transaction_rows = [_serialize_transaction_row(transaction) for transaction in transactions]
-    portfolio_as_of_date = item.as_of_date
-    latest_trade_date = _max_transaction_trade_date(transactions)
-    latest_activity_date = _max_transaction_activity_date(transactions)
-    transacted_instrument_ids = {
-        str(transaction.instrument_id or "")
-        for transaction in transactions
-        if str(transaction.instrument_id or "")
-    }
-
-    latest_transacted_market_date = _latest_market_data_date_for_instruments(session, transacted_instrument_ids)
-    source_candidate_dates = [
-        candidate
-        for candidate in (
-            latest_activity_date,
-            latest_transacted_market_date,
-        )
-        if candidate is not None
-    ]
-    candidate_as_of_date = max(source_candidate_dates, default=portfolio_as_of_date or date.today())
-
-    boundary_transactions = [
-        transaction
-        for transaction in transaction_rows
-        if (_safe_date(transaction.get("trade_date")) or date.min) <= candidate_as_of_date
-    ]
-    open_instrument_ids = {
-        str(position_lot.get("instrument_id") or "")
-        for position_lot in build_position_lots(
-            item.portfolio_id,
-            [_serialize_account_row(account) for account in accounts],
-            boundary_transactions,
-            status="open",
-            as_of_date=candidate_as_of_date,
-            include_market_valuation=False,
-        )
-        if str(position_lot.get("instrument_id") or "")
-    }
-    latest_open_market_date = _latest_market_data_date_for_instruments(session, open_instrument_ids)
-    if latest_open_market_date is not None:
-        resolved_candidate_dates = [
-            candidate
-            for candidate in (
-                latest_activity_date,
-                latest_open_market_date,
-            )
-            if candidate is not None
-        ]
-        return max(resolved_candidate_dates, default=candidate_as_of_date)
-
-    fallback_candidate_dates = [
-        candidate
-        for candidate in (
-            latest_activity_date,
-            latest_transacted_market_date,
-            portfolio_as_of_date,
-        )
-        if candidate is not None
-    ]
-    return max(fallback_candidate_dates, default=candidate_as_of_date)
-
-
-def _build_live_portfolio_rollup(
-    session,
-    item: PortfolioRecordModel,
-    *,
-    accounts: list[AccountRecordModel],
-    transactions: list[TransactionCurrentModel],
-) -> dict[str, object]:
-    base_payload = _serialize_portfolio_row(item)
-    as_of_date = _resolve_live_portfolio_as_of_date(
-        session,
-        item,
-        accounts=accounts,
-        transactions=transactions,
-    )
-    base_payload["as_of_date"] = as_of_date.isoformat()
-    if not accounts and not transactions:
-        return {
-            **base_payload,
-            "nav": 0.0,
-            "nav_coverage_state": "complete",
-            "nav_coverage_reason_codes": [],
-            "valuation_coverage": {
-                "account_count": 0,
-                "valued_account_count": 0,
-                "unvalued_account_count": 0,
-                "missing_account_ids": [],
-            },
-        }
-
-    workspace = build_account_workspace(
-        item.portfolio_id,
-        [_serialize_account_row(account) for account in accounts],
-        [_serialize_transaction_row(transaction) for transaction in transactions],
-        selected_account_id=None,
-        base_currency=item.base_currency,
-        as_of_date=as_of_date,
-    )
-    account_rollups = workspace.get("accounts", [])
-    account_rollups = [account for account in account_rollups if isinstance(account, dict)]
-    valued_accounts = [
-        account for account in account_rollups if _safe_float(account.get("account_value_base")) is not None
-    ]
-    missing_account_ids = [
-        str((account.get("account") or {}).get("account_id") or "")
-        for account in account_rollups
-        if _safe_float(account.get("account_value_base")) is None
-    ]
-    nav = (
-        sum(float(account["account_value_base"]) for account in valued_accounts)
-        if len(valued_accounts) == len(account_rollups)
-        else None
-    )
-    summary = workspace.get("summary", {})
-    return {
-        **base_payload,
-        "nav": nav,
-        "nav_coverage_state": str(
-            summary.get("valuation_coverage_state") or "unavailable"
-        ),
-        "nav_coverage_reason_codes": (
-            []
-            if len(valued_accounts) == len(account_rollups)
-            else ["account_valuation_incomplete"]
-        ),
-        "valuation_coverage": {
-            "account_count": len(account_rollups),
-            "valued_account_count": len(valued_accounts),
-            "unvalued_account_count": len(account_rollups) - len(valued_accounts),
-            "missing_account_ids": [account_id for account_id in missing_account_ids if account_id],
-        },
-        "securities_count": int(summary.get("position_line_count") or 0),
-    }
-
-
-def _serialize_portfolio_row_with_live_summary(
-    session,
-    item: PortfolioRecordModel,
-) -> dict[str, object]:
-    accounts = session.scalars(
-        select(AccountRecordModel)
-        .where(AccountRecordModel.portfolio_id == item.portfolio_id)
-        .order_by(AccountRecordModel.account_id)
-    ).all()
-    transactions = session.scalars(
-        select(TransactionCurrentModel)
-        .where(TransactionCurrentModel.portfolio_id == item.portfolio_id)
-        .order_by(
-            TransactionCurrentModel.trade_date,
-            TransactionCurrentModel.trade_at,
-            TransactionCurrentModel.created_at,
-            TransactionCurrentModel.transaction_id,
-            TransactionCurrentModel.settlement_date,
-        )
-    ).all()
-    return _build_live_portfolio_rollup(session, item, accounts=accounts, transactions=transactions)
-
-
-def _serialize_portfolio_row_with_materialized_summary(
-    session,
-    item: PortfolioRecordModel,
-) -> dict[str, object]:
-    payload = _serialize_portfolio_row(item)
-    latest_snapshot = default_portfolio_snapshot(session, item.portfolio_id)
-    if latest_snapshot is None:
-        payload["nav"] = None
-        payload["day_change_value"] = None
-        payload["day_change_pct"] = None
-        payload["nav_coverage_state"] = "unavailable"
-        payload["nav_coverage_reason_codes"] = [
-            "materialized_snapshot_not_available"
-        ]
-        return payload
-
-    snapshot = latest_snapshot.snapshot_json if isinstance(latest_snapshot.snapshot_json, dict) else {}
-    payload["as_of_date"] = latest_snapshot.as_of_date.isoformat()
-    payload["nav"] = _safe_float(snapshot.get("nav"))
-    # Day change is cash-flow-neutral investment P&L.  Raw NAV movement would
-    # misclassify subscriptions, withdrawals, and inception funding as return.
-    payload["day_change_value"] = _safe_float(snapshot.get("delta"))
-    payload["day_change_pct"] = _safe_float(snapshot.get("daily_twr"))
-    payload["nav_coverage_state"] = str(
-        snapshot.get("nav_coverage_state") or "unavailable"
-    )
-    payload["nav_coverage_reason_codes"] = list(
-        snapshot.get("nav_coverage_reason_codes") or []
-    )
-    payload["securities_count"] = int(snapshot.get("total_position_count") or 0)
-    return payload
 
 
 def _serialize_account_row(item: AccountRecordModel) -> dict[str, object]:
@@ -1351,7 +1132,16 @@ def _serialize_transaction_row(item: TransactionCurrentModel) -> dict[str, objec
         "price": item.price,
         "gross_amount": item.gross_amount,
         "counter_amount": item.counter_amount,
-        "fx_rate": item.fx_rate,
+        "quoted_fx_rate": item.quoted_fx_rate,
+        "consideration_basis": item.consideration_basis,
+        "numeric_scale_state": item.numeric_scale_state,
+        "quantity_input_scale": item.quantity_input_scale,
+        "price_input_scale": item.price_input_scale,
+        "gross_amount_input_scale": item.gross_amount_input_scale,
+        "counter_amount_input_scale": item.counter_amount_input_scale,
+        "quoted_fx_rate_input_scale": item.quoted_fx_rate_input_scale,
+        "fees_input_scale": item.fees_input_scale,
+        "taxes_input_scale": item.taxes_input_scale,
         "fees": item.fees,
         "taxes": item.taxes,
         "currency": require_portfolio_fact_currency(
@@ -1739,28 +1529,6 @@ def _lock_portfolio_for_transaction_mutation(session, portfolio_id: str) -> bool
         .with_for_update()
     )
     return portfolio_key is not None
-
-
-def _validate_portfolio_transaction_history(session, portfolio_id: str) -> None:
-    accounts = list(
-        session.scalars(
-            select(AccountRecordModel).where(AccountRecordModel.portfolio_id == portfolio_id)
-        ).all()
-    )
-    transactions = list(
-        session.scalars(
-            select(TransactionCurrentModel).where(TransactionCurrentModel.portfolio_id == portfolio_id)
-        ).all()
-    )
-    validate_transaction_position_history(
-        portfolio_id,
-        [_serialize_transaction_row(record) for record in transactions],
-        account_cost_methods={
-            account.account_id: str(account.cost_basis_method or "fifo")
-            for account in accounts
-            if account.account_type == "securities_account"
-        },
-    )
 
 
 def _next_account_id(existing_ids: list[str], account_name: str, account_type: str) -> str:
@@ -2241,17 +2009,22 @@ def _sort_transactions(records: list[dict[str, object]]) -> list[dict[str, objec
     )
 
 
-def list_portfolios() -> list[dict[str, object]]:
+def list_portfolios(*, include_archived: bool = False) -> list[dict[str, object]]:
     session_factory = get_session_factory()
     with session_factory() as session:
+        statement = select(PortfolioRecordModel)
+        if not include_archived:
+            statement = statement.where(
+                PortfolioRecordModel.lifecycle_status == "active"
+            )
         portfolios = session.scalars(
-            select(PortfolioRecordModel).order_by(
+            statement.order_by(
                 PortfolioRecordModel.sort_order,
                 PortfolioRecordModel.portfolio_name,
                 PortfolioRecordModel.portfolio_id,
             )
         ).all()
-        return [_serialize_portfolio_row_with_materialized_summary(session, item) for item in portfolios]
+        return [_serialize_portfolio_row(item) for item in portfolios]
 
 
 def get_portfolio(portfolio_id: str) -> dict[str, object] | None:
@@ -2260,16 +2033,7 @@ def get_portfolio(portfolio_id: str) -> dict[str, object] | None:
         record = session.get(PortfolioRecordModel, portfolio_id)
         if record is None:
             return None
-        return _serialize_portfolio_row_with_materialized_summary(session, record)
-
-
-def get_portfolio_live_summary(portfolio_id: str) -> dict[str, object] | None:
-    session_factory = get_session_factory()
-    with session_factory() as session:
-        record = session.get(PortfolioRecordModel, portfolio_id)
-        if record is None:
-            return None
-        return _serialize_portfolio_row_with_live_summary(session, record)
+        return _serialize_portfolio_row(record)
 
 
 def list_taxonomies(portfolio_id: str) -> list[dict[str, object]]:
@@ -2384,10 +2148,15 @@ def update_taxonomy(
         if not record.planning_enabled:
             if portfolio.default_planning_taxonomy_id == taxonomy_id:
                 portfolio.default_planning_taxonomy_id = None
-            research_settings = session.get(ResearchSettingsRecordModel, portfolio_id)
-            if research_settings is not None and research_settings.planning_taxonomy_id == taxonomy_id:
-                research_settings.planning_taxonomy_id = None
-                research_settings.comparator_taxonomy_node_id = None
+            allocation_research_settings = session.get(
+                AllocationResearchSettingsRecordModel, portfolio_id
+            )
+            if (
+                allocation_research_settings is not None
+                and allocation_research_settings.planning_taxonomy_id == taxonomy_id
+            ):
+                allocation_research_settings.planning_taxonomy_id = None
+                allocation_research_settings.comparator_taxonomy_node_id = None
 
         session.commit()
         return _serialize_taxonomy_row(record)
@@ -3240,10 +3009,15 @@ def delete_taxonomy(portfolio_id: str, taxonomy_id: str) -> bool:
             return False
         if portfolio.default_planning_taxonomy_id == taxonomy_id:
             portfolio.default_planning_taxonomy_id = None
-        research_settings = session.get(ResearchSettingsRecordModel, portfolio_id)
-        if research_settings is not None and research_settings.planning_taxonomy_id == taxonomy_id:
-            research_settings.planning_taxonomy_id = None
-            research_settings.comparator_taxonomy_node_id = None
+        allocation_research_settings = session.get(
+            AllocationResearchSettingsRecordModel, portfolio_id
+        )
+        if (
+            allocation_research_settings is not None
+            and allocation_research_settings.planning_taxonomy_id == taxonomy_id
+        ):
+            allocation_research_settings.planning_taxonomy_id = None
+            allocation_research_settings.comparator_taxonomy_node_id = None
         affected_instrument_ids = {
             str(item.target_entity_id or "").strip()
             for item in session.scalars(
@@ -3414,9 +3188,33 @@ def set_default_planning_taxonomy(
         return _serialize_portfolio_row(portfolio)
 
 
-def create_portfolio(name: str, *, base_currency: str) -> dict[str, object]:
+def update_portfolio_operating_profile(
+    portfolio_id: str,
+    *,
+    operating_profile: PortfolioOperatingProfile,
+) -> dict[str, object] | None:
     session_factory = get_session_factory()
     with session_factory() as session:
+        portfolio = session.get(PortfolioRecordModel, portfolio_id)
+        if portfolio is None:
+            return None
+        portfolio.operating_profile = require_portfolio_operating_profile(
+            operating_profile,
+            context=f"Portfolio '{portfolio_id}'",
+        )
+        session.commit()
+        return _serialize_portfolio_row(portfolio)
+
+
+def create_portfolio(
+    name: str,
+    *,
+    base_currency: str,
+    operating_profile: PortfolioOperatingProfile,
+) -> dict[str, object]:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        _lock_portfolio_order(session)
         portfolios = session.scalars(select(PortfolioRecordModel)).all()
         resolved_name = name.strip()
         if not resolved_name:
@@ -3424,6 +3222,10 @@ def create_portfolio(name: str, *, base_currency: str) -> dict[str, object]:
         resolved_base_currency = require_portfolio_fact_currency(
             base_currency,
             context=f"New portfolio '{resolved_name}' base",
+        )
+        resolved_operating_profile = require_portfolio_operating_profile(
+            operating_profile,
+            context=f"New portfolio '{resolved_name}'",
         )
         base_id = _slugify(resolved_name)
         candidate = base_id
@@ -3433,20 +3235,20 @@ def create_portfolio(name: str, *, base_currency: str) -> dict[str, object]:
             candidate = f"{base_id}-{suffix}"
             suffix += 1
 
+        active_count = sum(
+            1 for item in portfolios if item.lifecycle_status == "active"
+        )
         record = PortfolioRecordModel(
             portfolio_id=candidate,
             portfolio_name=resolved_name,
             base_currency=resolved_base_currency,
+            operating_profile=resolved_operating_profile,
             valuation_timezone="Asia/Shanghai",
             valuation_cutoff_policy="latest_complete_eod",
-            as_of_date=date.today(),
-            nav=0.0,
-            day_change_value=0.0,
-            day_change_pct=0.0,
-            securities_count=0,
-            sort_order=len(portfolios),
+            sort_order=active_count,
             default_planning_taxonomy_id=None,
             risk_policy_json=None,
+            lifecycle_status="active",
         )
         session.add(record)
         session.commit()
@@ -3456,6 +3258,7 @@ def create_portfolio(name: str, *, base_currency: str) -> dict[str, object]:
 def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
     session_factory = get_session_factory()
     with session_factory() as session:
+        _lock_portfolio_order(session)
         portfolios = session.scalars(
             select(PortfolioRecordModel).order_by(
                 PortfolioRecordModel.sort_order,
@@ -3469,6 +3272,10 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
             source.base_currency,
             context=f"Portfolio '{source.portfolio_id}' base",
         )
+        source_operating_profile = require_portfolio_operating_profile(
+            source.operating_profile,
+            context=f"Portfolio '{source.portfolio_id}'",
+        )
 
         copied_name = f"{source.portfolio_name} Copy"
         base_id = _slugify(copied_name)
@@ -3479,20 +3286,20 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
             candidate = f"{base_id}-{suffix}"
             suffix += 1
 
+        active_count = sum(
+            1 for item in portfolios if item.lifecycle_status == "active"
+        )
         copied = PortfolioRecordModel(
             portfolio_id=candidate,
             portfolio_name=copied_name,
             base_currency=source_base_currency,
+            operating_profile=source_operating_profile,
             valuation_timezone=source.valuation_timezone,
             valuation_cutoff_policy=source.valuation_cutoff_policy,
-            as_of_date=source.as_of_date,
-            nav=source.nav,
-            day_change_value=source.day_change_value,
-            day_change_pct=source.day_change_pct,
-            securities_count=source.securities_count,
-            sort_order=len(portfolios),
+            sort_order=active_count,
             default_planning_taxonomy_id=None,
             risk_policy_json=deepcopy(source.risk_policy_json) if isinstance(source.risk_policy_json, dict) else None,
+            lifecycle_status="active",
         )
         session.add(copied)
 
@@ -3740,7 +3547,12 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                 price=copied_transaction.get("price"),
                 gross_amount=copied_transaction.get("gross_amount") or Decimal("0"),
                 counter_amount=copied_transaction.get("counter_amount"),
-                fx_rate=copied_transaction.get("fx_rate"),
+                quoted_fx_rate=copied_transaction.get("quoted_fx_rate"),
+                consideration_basis=(
+                    str(copied_transaction["consideration_basis"])
+                    if copied_transaction.get("consideration_basis")
+                    else None
+                ),
                 fees=copied_transaction.get("fees") or Decimal("0"),
                 taxes=copied_transaction.get("taxes") or Decimal("0"),
                 currency=str(copied_transaction["currency"]),
@@ -3761,6 +3573,32 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
                     else None
                 ),
                 note=str(copied_transaction["note"]) if copied_transaction.get("note") else None,
+                numeric_scale_state=str(copied_transaction["numeric_scale_state"]),
+                quantity_input_scale=(
+                    int(copied_transaction["quantity_input_scale"])
+                    if copied_transaction.get("quantity_input_scale") is not None
+                    else None
+                ),
+                price_input_scale=(
+                    int(copied_transaction["price_input_scale"])
+                    if copied_transaction.get("price_input_scale") is not None
+                    else None
+                ),
+                gross_amount_input_scale=int(
+                    copied_transaction["gross_amount_input_scale"]
+                ),
+                counter_amount_input_scale=(
+                    int(copied_transaction["counter_amount_input_scale"])
+                    if copied_transaction.get("counter_amount_input_scale") is not None
+                    else None
+                ),
+                quoted_fx_rate_input_scale=(
+                    int(copied_transaction["quoted_fx_rate_input_scale"])
+                    if copied_transaction.get("quoted_fx_rate_input_scale") is not None
+                    else None
+                ),
+                fees_input_scale=int(copied_transaction["fees_input_scale"]),
+                taxes_input_scale=int(copied_transaction["taxes_input_scale"]),
             )
             copied_transaction_commands.append(
                 CreateTransactionRevision(
@@ -3771,7 +3609,7 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
             )
 
         if copied_transaction_commands:
-            append_transaction_revision_batch(
+            append_transaction_revision_batch_unchecked(
                 session,
                 portfolio_id=candidate,
                 context=_transaction_revision_context(
@@ -3789,94 +3627,108 @@ def copy_portfolio(portfolio_id: str) -> dict[str, object] | None:
             )
 
         session.flush()
+        validate_prospective_transaction_history(
+            session,
+            portfolio_id=candidate,
+        )
         _refresh_portfolio_instrument_universe_records(session, candidate)
         session.commit()
         return _serialize_portfolio_row(copied)
 
 
-def delete_portfolio(portfolio_id: str) -> bool:
+def archive_portfolio(portfolio_id: str) -> dict[str, object] | None:
     session_factory = get_session_factory()
     with session_factory() as session:
+        _lock_portfolio_order(session)
         portfolios = session.scalars(
-            select(PortfolioRecordModel).order_by(
+            select(PortfolioRecordModel)
+            .where(PortfolioRecordModel.lifecycle_status == "active")
+            .order_by(
                 PortfolioRecordModel.sort_order,
                 PortfolioRecordModel.portfolio_id,
             )
         ).all()
-        if len(portfolios) <= 1:
-            raise ValueError("At least one portfolio must remain.")
-
         target = next((item for item in portfolios if item.portfolio_id == portfolio_id), None)
         if target is None:
-            return False
+            archived = session.get(PortfolioRecordModel, portfolio_id)
+            if archived is not None and archived.lifecycle_status == "archived":
+                return _serialize_portfolio_row(archived)
+            return None
+        if len(portfolios) <= 1:
+            raise ValueError("At least one active portfolio must remain.")
 
-        transaction_identity_count = session.scalar(
-            select(func.count())
-            .select_from(TransactionIdentityRecordModel)
-            .where(TransactionIdentityRecordModel.portfolio_id == portfolio_id)
-        )
-        if int(transaction_identity_count or 0) > 0:
-            raise ValueError(
-                "A portfolio with transaction audit history cannot be deleted. "
-                "Keep the portfolio as the immutable books-and-records boundary."
-            )
-
-        session.execute(
-            delete(TaxonomyAssignmentRecordModel).where(
-                TaxonomyAssignmentRecordModel.taxonomy_id.in_(
-                    select(TaxonomyRecordModel.taxonomy_id).where(TaxonomyRecordModel.portfolio_id == portfolio_id)
-                )
-            )
-        )
-        session.execute(
-            delete(TaxonomyNodeRecordModel).where(
-                TaxonomyNodeRecordModel.taxonomy_id.in_(
-                    select(TaxonomyRecordModel.taxonomy_id).where(TaxonomyRecordModel.portfolio_id == portfolio_id)
-                )
-            )
-        )
-        session.execute(delete(PortfolioDailyContributionSliceModel).where(PortfolioDailyContributionSliceModel.portfolio_id == portfolio_id))
-        session.execute(delete(PortfolioDailyHoldingSnapshotModel).where(PortfolioDailyHoldingSnapshotModel.portfolio_id == portfolio_id))
-        session.execute(delete(PortfolioDailySnapshotModel).where(PortfolioDailySnapshotModel.portfolio_id == portfolio_id))
-        session.execute(delete(PortfolioCalculationStateModel).where(PortfolioCalculationStateModel.portfolio_id == portfolio_id))
-        session.execute(delete(PortfolioInstrumentUniverseRecordModel).where(PortfolioInstrumentUniverseRecordModel.portfolio_id == portfolio_id))
-        session.execute(delete(TaxonomyRecordModel).where(TaxonomyRecordModel.portfolio_id == portfolio_id))
-        session.execute(delete(AccountRecordModel).where(AccountRecordModel.portfolio_id == portfolio_id))
-        session.execute(delete(PortfolioRecordModel).where(PortfolioRecordModel.portfolio_id == portfolio_id))
-
-        remaining = [
-            item
-            for item in session.scalars(
-                select(PortfolioRecordModel).order_by(
-                    PortfolioRecordModel.sort_order,
-                    PortfolioRecordModel.portfolio_id,
-                )
-            ).all()
-        ]
+        target.lifecycle_status = "archived"
+        session.flush()
+        remaining = [item for item in portfolios if item.portfolio_id != portfolio_id]
+        for index, item in enumerate(remaining):
+            item.sort_order = -(index + 1)
+        session.flush()
         for index, item in enumerate(remaining):
             item.sort_order = index
         session.commit()
-        return True
+        return _serialize_portfolio_row(target)
+
+
+def restore_portfolio(portfolio_id: str) -> dict[str, object] | None:
+    session_factory = get_session_factory()
+    with session_factory() as session:
+        _lock_portfolio_order(session)
+        target = session.get(PortfolioRecordModel, portfolio_id)
+        if target is None:
+            return None
+        if target.lifecycle_status == "active":
+            return _serialize_portfolio_row(target)
+        active_count = session.scalar(
+            select(func.count())
+            .select_from(PortfolioRecordModel)
+            .where(PortfolioRecordModel.lifecycle_status == "active")
+        )
+        target.lifecycle_status = "active"
+        target.sort_order = int(active_count or 0)
+        session.commit()
+        return _serialize_portfolio_row(target)
 
 
 def reorder_portfolios(portfolio_ids: list[str]) -> list[dict[str, object]]:
     session_factory = get_session_factory()
     with session_factory() as session:
+        _lock_portfolio_order(session)
         portfolios = session.scalars(
-            select(PortfolioRecordModel).order_by(
+            select(PortfolioRecordModel)
+            .where(PortfolioRecordModel.lifecycle_status == "active")
+            .order_by(
                 PortfolioRecordModel.sort_order,
                 PortfolioRecordModel.portfolio_id,
             )
         ).all()
         by_id = {item.portfolio_id: item for item in portfolios}
-        ordered_ids = [portfolio_id for portfolio_id in portfolio_ids if portfolio_id in by_id]
-        remaining_ids = [item.portfolio_id for item in portfolios if item.portfolio_id not in ordered_ids]
-        final_ids = ordered_ids + remaining_ids
+        if len(portfolio_ids) != len(set(portfolio_ids)):
+            raise ValueError("Portfolio reorder must not contain duplicate ids.")
+        supplied = set(portfolio_ids)
+        expected = set(by_id)
+        if supplied != expected:
+            missing = sorted(expected - supplied)
+            unknown = sorted(supplied - expected)
+            details: list[str] = []
+            if missing:
+                details.append(f"missing={','.join(missing)}")
+            if unknown:
+                details.append(f"unknown={','.join(unknown)}")
+            raise ValueError(
+                "Portfolio reorder must be an exact permutation of active ids"
+                + (f" ({'; '.join(details)})" if details else ".")
+            )
+        final_ids = list(portfolio_ids)
+        for index, portfolio_id in enumerate(final_ids):
+            by_id[portfolio_id].sort_order = -(index + 1)
+        session.flush()
         for index, portfolio_id in enumerate(final_ids):
             by_id[portfolio_id].sort_order = index
         session.commit()
         reordered = session.scalars(
-            select(PortfolioRecordModel).order_by(
+            select(PortfolioRecordModel)
+            .where(PortfolioRecordModel.lifecycle_status == "active")
+            .order_by(
                 PortfolioRecordModel.sort_order,
                 PortfolioRecordModel.portfolio_name,
                 PortfolioRecordModel.portfolio_id,
@@ -3946,7 +3798,16 @@ _REVISION_FACT_FIELDS = (
     "price",
     "gross_amount",
     "counter_amount",
-    "fx_rate",
+    "quoted_fx_rate",
+    "consideration_basis",
+    "numeric_scale_state",
+    "quantity_input_scale",
+    "price_input_scale",
+    "gross_amount_input_scale",
+    "counter_amount_input_scale",
+    "quoted_fx_rate_input_scale",
+    "fees_input_scale",
+    "taxes_input_scale",
     "fees",
     "taxes",
     "currency",
@@ -3995,7 +3856,16 @@ def _serialize_transaction_revision_snapshot(
         "price": revision.price,
         "gross_amount": revision.gross_amount,
         "counter_amount": revision.counter_amount,
-        "fx_rate": revision.fx_rate,
+        "quoted_fx_rate": revision.quoted_fx_rate,
+        "consideration_basis": revision.consideration_basis,
+        "numeric_scale_state": revision.numeric_scale_state,
+        "quantity_input_scale": revision.quantity_input_scale,
+        "price_input_scale": revision.price_input_scale,
+        "gross_amount_input_scale": revision.gross_amount_input_scale,
+        "counter_amount_input_scale": revision.counter_amount_input_scale,
+        "quoted_fx_rate_input_scale": revision.quoted_fx_rate_input_scale,
+        "fees_input_scale": revision.fees_input_scale,
+        "taxes_input_scale": revision.taxes_input_scale,
         "fees": revision.fees,
         "taxes": revision.taxes,
         "currency": revision.currency,
@@ -4125,11 +3995,6 @@ def create_account(
             status=(status or "active").strip() or "active",
         )
         session.add(record)
-        _mark_daily_snapshots_stale(
-            portfolio_id,
-            dirty_from=opened_at,
-            session=session,
-        )
         session.commit()
         return _serialize_account_row(record)
 
@@ -4160,24 +4025,6 @@ def update_account(
         if record is None:
             return None
 
-        previous_opened_at = record.opened_at
-        previous_cost_basis_method = record.cost_basis_method
-        first_instrument_transaction_date = None
-        if cost_basis_method != previous_cost_basis_method:
-            first_instrument_transaction_date = session.scalar(
-                select(func.min(TransactionCurrentModel.trade_date)).where(
-                    TransactionCurrentModel.portfolio_id == portfolio_id,
-                    or_(
-                        TransactionCurrentModel.account_id == account_id,
-                        TransactionCurrentModel.counterparty_account_id == account_id,
-                    ),
-                    or_(
-                        TransactionCurrentModel.instrument_id.is_not(None),
-                        TransactionCurrentModel.transfer_object_type == "position",
-                    ),
-                )
-            )
-
         record.account_name = account_name.strip()
         record.institution = (institution or "").strip() or None
         record.default_settlement_cash_account_id = default_settlement_cash_account_id
@@ -4186,18 +4033,10 @@ def update_account(
         record.opened_at = opened_at
         record.closed_at = closed_at
         record.status = (status or "active").strip() or "active"
-        dirty_from = min(
-            (
-                candidate
-                for candidate in (first_instrument_transaction_date, previous_opened_at, opened_at)
-                if candidate is not None
-            ),
-            default=None,
-        )
-        _mark_daily_snapshots_stale(
-            portfolio_id,
-            dirty_from=dirty_from,
-            session=session,
+        session.flush()
+        validate_prospective_transaction_history(
+            session,
+            portfolio_id=portfolio_id,
         )
         session.commit()
         return _serialize_account_row(record)
@@ -4246,21 +4085,6 @@ def list_transactions(
         return [_serialize_transaction_row(item) for item in records]
 
 
-def _mark_daily_snapshots_stale(
-    portfolio_id: str,
-    *,
-    dirty_from: date | None = None,
-    session=None,
-) -> None:
-    from portfolio_app.services.daily_snapshots import mark_portfolio_daily_snapshots_stale
-
-    mark_portfolio_daily_snapshots_stale(
-        portfolio_id,
-        dirty_from=dirty_from,
-        session=session,
-    )
-
-
 def create_transaction(
     portfolio_id: str,
     *,
@@ -4274,13 +4098,14 @@ def create_transaction(
     settlement_cash_account_id: str | None,
     instrument_id: str | None,
     instrument_ref: dict[str, object] | None,
-    quantity: Decimal | int | float | str | None,
-    price: Decimal | int | float | str | None,
-    gross_amount: Decimal | int | float | str,
-    counter_amount: Decimal | int | float | str | None,
-    fx_rate: Decimal | int | float | str | None,
-    fees: Decimal | int | float | str,
-    taxes: Decimal | int | float | str,
+    quantity: Decimal | int | str | None,
+    price: Decimal | int | str | None,
+    gross_amount: Decimal | int | str,
+    counter_amount: Decimal | int | str | None,
+    quoted_fx_rate: Decimal | int | str | None,
+    consideration_basis: str | None,
+    fees: Decimal | int | str,
+    taxes: Decimal | int | str,
     currency: str,
     transfer_scope: str | None,
     transfer_object_type: str | None,
@@ -4313,7 +4138,8 @@ def create_transaction(
                 "price": price,
                 "gross_amount": gross_amount,
                 "counter_amount": counter_amount,
-                "fx_rate": fx_rate,
+                "quoted_fx_rate": quoted_fx_rate,
+                "consideration_basis": consideration_basis,
                 "fees": fees,
                 "taxes": taxes,
                 "currency": currency,
@@ -4393,7 +4219,12 @@ def create_transactions(
                 price=values.get("price"),
                 gross_amount=values["gross_amount"],
                 counter_amount=values.get("counter_amount"),
-                fx_rate=values.get("fx_rate"),
+                quoted_fx_rate=values.get("quoted_fx_rate"),
+                consideration_basis=(
+                    str(values["consideration_basis"])
+                    if values.get("consideration_basis")
+                    else None
+                ),
                 fees=values["fees"],
                 taxes=values["taxes"],
                 currency=str(values["currency"]),
@@ -4422,7 +4253,7 @@ def create_transactions(
             )
             facts_by_transaction_id[transaction_id] = facts
 
-        append_transaction_revision_batch(
+        append_transaction_revision_batch_unchecked(
             session,
             portfolio_id=portfolio_id,
             context=_transaction_revision_context(
@@ -4443,19 +4274,16 @@ def create_transactions(
         )
         if set(created_by_id) != set(transaction_ids):
             raise RuntimeError("Created transaction revisions are missing from transaction_current.")
-        _validate_portfolio_transaction_history(session, portfolio_id)
-        dirty_from = min((facts.trade_date for facts in facts_by_transaction_id.values()), default=None)
+        validate_prospective_transaction_history(
+            session,
+            portfolio_id=portfolio_id,
+        )
         affected_instrument_ids = {
             str(facts.instrument_id or "").strip()
             for facts in facts_by_transaction_id.values()
             if str(facts.instrument_id or "").strip()
         }
         _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
-        _mark_daily_snapshots_stale(
-            portfolio_id,
-            dirty_from=dirty_from,
-            session=session,
-        )
         session.commit()
         return [_serialize_transaction_row(created_by_id[transaction_id]) for transaction_id in transaction_ids]
 
@@ -4474,13 +4302,14 @@ def update_transaction(
     settlement_cash_account_id: str | None,
     instrument_id: str | None,
     instrument_ref: dict[str, object] | None,
-    quantity: Decimal | int | float | str | None,
-    price: Decimal | int | float | str | None,
-    gross_amount: Decimal | int | float | str,
-    counter_amount: Decimal | int | float | str | None,
-    fx_rate: Decimal | int | float | str | None,
-    fees: Decimal | int | float | str,
-    taxes: Decimal | int | float | str,
+    quantity: Decimal | int | str | None,
+    price: Decimal | int | str | None,
+    gross_amount: Decimal | int | str,
+    counter_amount: Decimal | int | str | None,
+    quoted_fx_rate: Decimal | int | str | None,
+    consideration_basis: str | None,
+    fees: Decimal | int | str,
+    taxes: Decimal | int | str,
     currency: str,
     transfer_scope: str | None,
     transfer_object_type: str | None,
@@ -4512,7 +4341,6 @@ def update_transaction(
             raise ValueError(
                 "Paired internal transfer facts must be deleted and recreated as one batch."
             )
-        previous_trade_date = record.trade_date
         previous_instrument_id = str(record.instrument_id or "").strip()
         facts = _transaction_fact_payload(
             transaction_id=transaction_id,
@@ -4530,7 +4358,8 @@ def update_transaction(
             price=price,
             gross_amount=gross_amount,
             counter_amount=counter_amount,
-            fx_rate=fx_rate,
+            quoted_fx_rate=quoted_fx_rate,
+            consideration_basis=consideration_basis,
             fees=fees,
             taxes=taxes,
             currency=currency,
@@ -4540,7 +4369,7 @@ def update_transaction(
             counterparty_account_id=counterparty_account_id,
             note=note,
         )
-        append_transaction_revision_batch(
+        append_transaction_revision_batch_unchecked(
             session,
             portfolio_id=portfolio_id,
             context=_transaction_revision_context(
@@ -4568,9 +4397,9 @@ def update_transaction(
         updated_record = current_by_id.get(transaction_id)
         if updated_record is None:
             raise RuntimeError("Amended transaction is missing from transaction_current.")
-        dirty_from = min(
-            (candidate for candidate in (previous_trade_date, updated_record.trade_date) if candidate is not None),
-            default=None,
+        validate_prospective_transaction_history(
+            session,
+            portfolio_id=portfolio_id,
         )
         affected_instrument_ids = {
             affected_instrument_id
@@ -4580,13 +4409,7 @@ def update_transaction(
             }
             if affected_instrument_id
         }
-        _validate_portfolio_transaction_history(session, portfolio_id)
         _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
-        _mark_daily_snapshots_stale(
-            portfolio_id,
-            dirty_from=dirty_from,
-            session=session,
-        )
         session.commit()
         return _serialize_transaction_row(updated_record)
 
@@ -4656,7 +4479,7 @@ def delete_transactions(
             )
             for transaction_id in normalized_transaction_ids
         ]
-        appended = append_transaction_revision_batch(
+        appended = append_transaction_revision_batch_unchecked(
             session,
             portfolio_id=portfolio_id,
             context=_transaction_revision_context(
@@ -4676,19 +4499,11 @@ def delete_transactions(
         )
         if remaining:
             raise RuntimeError("Deleted transaction revisions remain in transaction_current.")
-        _validate_portfolio_transaction_history(session, portfolio_id)
-        _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
-        deleted_dates = [
-            parsed_date
-            for parsed_date in (_safe_date(record.get("trade_date")) for record in serialized)
-            if parsed_date is not None
-        ]
-        dirty_from = min(deleted_dates, default=None)
-        _mark_daily_snapshots_stale(
-            portfolio_id,
-            dirty_from=dirty_from,
-            session=session,
+        validate_prospective_transaction_history(
+            session,
+            portfolio_id=portfolio_id,
         )
+        _refresh_portfolio_instrument_universe_records(session, portfolio_id, affected_instrument_ids)
         deletion_by_id = {
             revision.transaction_id: revision for revision in appended.revisions
         }

@@ -67,7 +67,6 @@ export PORTFOLIO_OPS_PLATFORM_FRONTEND_URL=http://127.0.0.1:5172
 export PORTFOLIO_OPS_PLATFORM_WATCHLIST_URL=http://127.0.0.1:5173
 export PORTFOLIO_OPS_PLATFORM_PORTFOLIO_URL=http://127.0.0.1:5174
 export PORTFOLIO_OPS_PLATFORM_WATCHLIST_API_URL=http://127.0.0.1:8000
-export PORTFOLIO_OPS_PLATFORM_PORTFOLIO_API_URL=http://127.0.0.1:8001
 
 refresh_arguments=(
   --channel "$CHANNEL"
@@ -75,7 +74,6 @@ refresh_arguments=(
   --retry-failed-attempts "$RETRY_FAILED_ATTEMPTS"
   --lock-file "$LOCK_FILE"
   --summary-file "$SUMMARY_FILE"
-  --require-downstream-success
   --json
 )
 if [[ "$FAIL_ON_ITEM_FAILURE" == "true" ]]; then

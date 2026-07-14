@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import Decimal, localcontext
 import json
 
 import pytest
@@ -16,6 +16,7 @@ from portfolio_ops_instrument_core.canonical_fx import (
     CanonicalFxCalculationDependency,
     CanonicalFxResolution,
     CanonicalFxResolverError,
+    compose_effective_fx_rate,
     resolve_canonical_fx_window_book_in_session,
 )
 from portfolio_ops_instrument_core.db_models import (
@@ -26,6 +27,7 @@ from portfolio_ops_instrument_core.db_models import (
 )
 from portfolio_ops_instrument_core.models import QuoteFreshnessPolicy
 from portfolio_ops_instrument_core.quote_revisions import (
+    QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
     make_quote_revision_id,
     quote_revision_payload_hash,
 )
@@ -37,6 +39,23 @@ CARRY_5 = QuoteFreshnessPolicy(
     mode="calendar_day_carry_forward",
     max_age_days=5,
 )
+
+
+def test_cross_rate_rounds_only_inverse_division_and_keeps_exact_product() -> None:
+    inverse_quote = Decimal("7.000000000000000001")
+    direct_quote = Decimal(
+        "1.234567890123456789012345678901234567890123456789012345678901"
+    )
+
+    with localcontext() as context:
+        context.prec = 6
+        rate = compose_effective_fx_rate(((inverse_quote, True), (direct_quote, False)))
+
+    assert rate == Decimal(
+        "0.176366841446208112690854119636432350742752762450366231145536"
+        "58960485507324619979782600549202749850770255192045"
+    )
+    assert len(rate.as_tuple().digits) == 110
 
 
 @pytest.fixture
@@ -137,6 +156,9 @@ def _withdraw_current_fx_observation(
                 observation_id=observation.observation_id,
                 revision_number=revision_number,
                 value=None,
+                value_input_scale=None,
+                numeric_scale_state=None,
+                payload_schema_version=QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
                 source_ref="test:withdrawn",
                 status="withdrawn",
                 source_published_at=None,
@@ -145,6 +167,7 @@ def _withdraw_current_fx_observation(
                     value=None,
                     source_ref="test:withdrawn",
                     status="withdrawn",
+                    payload_schema_version=QUOTE_REVISION_PAYLOAD_SCHEMA_V2,
                 ),
                 is_current=True,
                 superseded_at=None,
@@ -198,26 +221,29 @@ def test_direct_inverse_cross_and_identity_paths_keep_decimal_lineage_and_stable
     ]
     book = _book(factory, pairs=pairs)
 
-    direct = book.rate_at("USD", "HKD", date(2026, 7, 13))
-    inverse = book.rate_at("HKD", "USD", date(2026, 7, 13))
-    cross = book.rate_at("HKD", "CNY", date(2026, 7, 13))
-    identity = book.rate_at("CNY", "CNY", date(2026, 7, 13))
+    with localcontext() as context:
+        context.prec = 6
+        direct = book.rate_at("USD", "HKD", date(2026, 7, 13))
+        inverse = book.rate_at("HKD", "USD", date(2026, 7, 13))
+        cross = book.rate_at("HKD", "CNY", date(2026, 7, 13))
+        identity = book.rate_at("CNY", "CNY", date(2026, 7, 13))
 
     hkd_rate = Decimal("7.800000000000000000000001")
     cny_rate = Decimal("7.200000000000000000000002")
     assert direct.path_kind == "direct"
     assert direct.rate == hkd_rate
     assert inverse.path_kind == "inverse"
-    assert inverse.rate == Decimal("1") / hkd_rate
+    assert inverse.rate == compose_effective_fx_rate(((hkd_rate, True),))
     assert inverse.legs[0].inverted is True
     assert cross.path_kind == "cross"
-    assert cross.rate == cny_rate / hkd_rate
+    assert cross.rate == compose_effective_fx_rate(
+        ((hkd_rate, True), (cny_rate, False))
+    )
+    assert len(cross.rate.as_tuple().digits) == 74
     assert cross.effective_as_of_date == date(2026, 7, 10)
     assert cross.reliability_status == "qualified"
     assert [leg.operation for leg in cross.legs] == ["divide", "multiply"]
-    assert [
-        leg.calculation_dependency.path_position for leg in cross.legs
-    ] == [1, 2]
+    assert [leg.calculation_dependency.path_position for leg in cross.legs] == [1, 2]
     assert all(
         leg.calculation_dependency.quote_calculation_dependency is not None
         for leg in cross.legs
@@ -237,10 +263,16 @@ def test_direct_inverse_cross_and_identity_paths_keep_decimal_lineage_and_stable
     assert identity.rate == Decimal("1")
     assert identity.effective_as_of_date == date(2026, 7, 13)
 
-    assert direct.calculation_dependency.fingerprint != inverse.calculation_dependency.fingerprint
-    assert cross.calculation_dependency.fingerprint != book.rate_at(
-        "HKD", "CNY", date(2026, 7, 12)
-    ).calculation_dependency.fingerprint
+    assert (
+        direct.calculation_dependency.fingerprint
+        != inverse.calculation_dependency.fingerprint
+    )
+    assert (
+        cross.calculation_dependency.fingerprint
+        != book.rate_at(
+            "HKD", "CNY", date(2026, 7, 12)
+        ).calculation_dependency.fingerprint
+    )
 
     reordered_book = _book(factory, pairs=list(reversed(pairs)))
     reordered_cross = reordered_book.rate_at("HKD", "CNY", date(2026, 7, 13))
@@ -393,7 +425,9 @@ def test_cross_fails_closed_when_either_leg_is_late_or_missing(fx_registry) -> N
     assert missing_cross.reason_codes == ["missing_fx_leg", "unavailable_fx_leg"]
 
 
-def test_locked_window_has_bounded_queries_and_rate_at_never_queries(fx_registry) -> None:
+def test_locked_window_has_bounded_queries_and_rate_at_never_queries(
+    fx_registry,
+) -> None:
     engine, factory = fx_registry
     _create_fx_instruments(factory)
     for point_date, hkd_rate, cny_rate in (
@@ -441,9 +475,10 @@ def test_locked_window_has_bounded_queries_and_rate_at_never_queries(fx_registry
             date(2026, 7, 7),
             date(2026, 7, 13),
         ):
-            assert book.rate_at(
-                "HKD", "CNY", requested_date
-            ).resolution_status == "resolved"
+            assert (
+                book.rate_at("HKD", "CNY", requested_date).resolution_status
+                == "resolved"
+            )
         assert len(statements) == construction_query_count
     finally:
         event.remove(engine, "before_cursor_execute", capture_statement)
@@ -534,7 +569,9 @@ def test_cross_path_accepts_inverse_maintained_pivot_legs(
     cross = book.rate_at("HKD", "CNY", date(2026, 7, 13))
 
     assert cross.resolution_status == "resolved"
-    assert cross.rate == Decimal("0.1282") / Decimal("0.1389")
+    assert cross.rate == compose_effective_fx_rate(
+        ((Decimal("0.1282"), False), (Decimal("0.1389"), True))
+    )
     assert [leg.instrument_id for leg in cross.legs] == [
         "fx-hkd-usd",
         "fx-cny-usd",

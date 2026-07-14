@@ -3,9 +3,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ApiError,
   clearPortfolioApiCache,
+  createPortfolioTransaction,
   deletePortfolioTransaction,
   getPortfolioTransactionRevisionHistory,
   updatePortfolioTransaction,
+  restorePortfolioTransactionInputScale,
   type PortfolioTransactionActorInput,
   type PortfolioTransactionUpdatePayload,
 } from './lib/api'
@@ -39,6 +41,90 @@ afterEach(() => {
 })
 
 describe('transaction revision API contract', () => {
+  it('restores the recorded input scale without changing the numeric fact', () => {
+    expect(restorePortfolioTransactionInputScale('1.23', 4)).toBe('1.2300')
+    expect(restorePortfolioTransactionInputScale('123', 2)).toBe('123.00')
+    expect(restorePortfolioTransactionInputScale('0', 2)).toBe('0.00')
+    expect(restorePortfolioTransactionInputScale('0', 2, { zeroAsEmpty: true })).toBe('')
+  })
+
+  it('fails closed when transaction decimal scale lineage is malformed', () => {
+    expect(() => restorePortfolioTransactionInputScale('1e-2', 2)).toThrow(
+      'Invalid transaction decimal response',
+    )
+    expect(() => restorePortfolioTransactionInputScale('1.2300', 2)).toThrow(
+      'exceeds its recorded input scale',
+    )
+    expect(() => restorePortfolioTransactionInputScale('1.23', null)).toThrow(
+      'Invalid transaction decimal input scale',
+    )
+  })
+
+  it('sends source-reported security evidence as plain decimal strings without inventing price', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createPortfolioTransaction('portfolio-1', {
+      transaction_type: 'buy',
+      trade_date: '2026-07-13',
+      settlement_date: '2026-07-14',
+      account_id: 'broker-cny',
+      settlement_cash_account_id: 'cash-cny',
+      instrument_id: 'fund-1',
+      quantity: '100.00',
+      price: null,
+      gross_amount: '123.4500',
+      counter_amount: null,
+      quoted_fx_rate: null,
+      consideration_basis: 'source_reported',
+      fees: '0.00',
+      taxes: '0.00',
+      currency: 'CNY',
+      actor,
+    })
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body).toMatchObject({
+      quantity: '100.00',
+      price: null,
+      gross_amount: '123.4500',
+      consideration_basis: 'source_reported',
+      quoted_fx_rate: null,
+    })
+    expect(body).not.toHaveProperty('fx_rate')
+  })
+
+  it('keeps FX actual counter cash independent from an optional quoted rate', async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createPortfolioTransaction('portfolio-1', {
+      transaction_type: 'fx_conversion',
+      trade_date: '2026-07-13',
+      settlement_date: '2026-07-13',
+      account_id: 'cash-usd',
+      counterparty_account_id: 'cash-cny',
+      gross_amount: '100.00',
+      counter_amount: '716.83',
+      quoted_fx_rate: '7.1680',
+      consideration_basis: null,
+      fees: '0',
+      taxes: '0',
+      currency: 'USD',
+      actor,
+    })
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      gross_amount: '100.00',
+      counter_amount: '716.83',
+      quoted_fx_rate: '7.1680',
+    })
+  })
+
   it('sends precise decimal strings and optimistic concurrency metadata on update', async () => {
     const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
       Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),

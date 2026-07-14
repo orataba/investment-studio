@@ -47,7 +47,7 @@ SUCCESSFUL_MIGRATION_RUNNER="$TEST_ROOT/successful-migration-runner"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
-  'psql --host "$PORTFOLIO_OPS_DB_HOST" --port "$PORTFOLIO_OPS_DB_PORT" --username "$PORTFOLIO_OPS_DB_USER" --dbname "$PORTFOLIO_OPS_DB_NAME" --set ON_ERROR_STOP=1 --command "UPDATE portfolio.release_sentinel SET value = '\''migration-complete'\''"' \
+  'psql --host "$PORTFOLIO_OPS_DB_HOST" --port "$PORTFOLIO_OPS_DB_PORT" --username "$PORTFOLIO_OPS_DB_USER" --dbname "$PORTFOLIO_OPS_DB_NAME" --set ON_ERROR_STOP=1 --command "CREATE SCHEMA IF NOT EXISTS calculation_registry; UPDATE portfolio.release_sentinel SET value = '\''migration-complete'\''"' \
   > "$SUCCESSFUL_MIGRATION_RUNNER"
 
 FAILING_GATE="$TEST_ROOT/failing-gate"
@@ -72,7 +72,7 @@ chmod +x \
   "$SUCCESSFUL_GATE"
 
 run_release() {
-  local migration_runner="$1" gate_runner="$2"
+  local migration_runner="$1" gate_runner="$2" service_manager="${3:-none}"
   CONFIRM_RELEASE="$TARGET_DATABASE@$DATABASE_HOST:$DATABASE_PORT" \
   PORTFOLIO_OPS_DB_HOST="$DATABASE_HOST" \
   PORTFOLIO_OPS_DB_PORT="$DATABASE_PORT" \
@@ -84,7 +84,7 @@ run_release() {
   PORTFOLIO_OPS_RELEASE_BACKUP_DIR="$TEST_ROOT/backups" \
   PORTFOLIO_OPS_RELEASE_MIGRATION_RUNNER="$migration_runner" \
   PORTFOLIO_OPS_RELEASE_POST_MIGRATION_GATE="$gate_runner" \
-  PORTFOLIO_OPS_RELEASE_SERVICE_MANAGER=none \
+  PORTFOLIO_OPS_RELEASE_SERVICE_MANAGER="$service_manager" \
   PYTHON_BIN="$PYTHON_BIN" \
     "$REPOSITORY_ROOT/infra/scripts/release_database.sh"
 }
@@ -103,6 +103,12 @@ partial_value="$(
     --command 'SELECT value FROM portfolio.release_sentinel'
 )"
 [[ "$partial_value" == "original-data" ]]
+partial_calculation_schema="$(
+  psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" \
+    --dbname "$TARGET_DATABASE" --tuples-only --no-align \
+    --command "SELECT to_regnamespace('calculation_registry') IS NULL"
+)"
+[[ "$partial_calculation_schema" == "t" ]]
 
 set +e
 run_release "$SUCCESSFUL_MIGRATION_RUNNER" "$FAILING_GATE"
@@ -118,18 +124,86 @@ gate_value="$(
     --command 'SELECT value FROM portfolio.release_sentinel'
 )"
 [[ "$gate_value" == "original-data" ]]
+gate_calculation_schema="$(
+  psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" \
+    --dbname "$TARGET_DATABASE" --tuples-only --no-align \
+    --command "SELECT to_regnamespace('calculation_registry') IS NULL"
+)"
+[[ "$gate_calculation_schema" == "t" ]]
 
-run_release "$SUCCESSFUL_MIGRATION_RUNNER" "$SUCCESSFUL_GATE"
+SYSTEMCTL_CALLS="$TEST_ROOT/systemctl-fence-calls"
+MOCK_SYSTEMD_BIN="$TEST_ROOT/systemd-bin"
+mkdir -p "$MOCK_SYSTEMD_BIN"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'printf "%s\n" "$*" >> "$SYSTEMCTL_CALLS"' \
+  'if [[ "$*" == "--user is-active --quiet portfolio-ops-portfolio-api.service" ]]; then exit 0; fi' \
+  'if [[ "$*" == "--user is-active portfolio-ops-portfolio-api.service" ]]; then printf "active\n"; exit 0; fi' \
+  'if [[ "${1:-}" == "--user" && "${2:-}" == "is-active" ]]; then printf "inactive\n"; exit 3; fi' \
+  'exit 0' \
+  > "$MOCK_SYSTEMD_BIN/systemctl"
+chmod +x "$MOCK_SYSTEMD_BIN/systemctl"
+export SYSTEMCTL_CALLS
+
+set +e
+PATH="$MOCK_SYSTEMD_BIN:$PATH" \
+  run_release "$PARTIAL_MIGRATION_RUNNER" "$SUCCESSFUL_GATE" systemd \
+  > "$TEST_ROOT/unfenced-rollback.out" 2>&1
+unfenced_status=$?
+set -e
+if [[ $unfenced_status -eq 0 ]]; then
+  echo "Release unexpectedly succeeded when the managed-writer fence failed." >&2
+  exit 1
+fi
+[[ "$unfenced_status" -eq 70 ]]
+grep -Fq 'AUTOMATIC ROLLBACK SKIPPED' "$TEST_ROOT/unfenced-rollback.out"
+grep -Fq -- '--user stop portfolio-ops-platform-api.service' "$SYSTEMCTL_CALLS"
+unfenced_value="$(
+  psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" \
+    --dbname "$TARGET_DATABASE" --tuples-only --no-align \
+    --command 'SELECT value FROM portfolio.release_sentinel'
+)"
+[[ "$unfenced_value" == "partial-migration" ]]
+psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" \
+  --dbname "$TARGET_DATABASE" --set ON_ERROR_STOP=1 \
+  --command "UPDATE portfolio.release_sentinel SET value = 'original-data'" >/dev/null
+
+SYSTEMCTL_CALLS="$TEST_ROOT/systemctl-no-replay-calls"
+: > "$SYSTEMCTL_CALLS"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'printf "%s\n" "$*" >> "$SYSTEMCTL_CALLS"' \
+  'if [[ "$*" == "--user is-active --quiet portfolio-ops-market-data-refresh.timer" ]]; then exit 0; fi' \
+  'if [[ "$*" == "--user is-active --quiet portfolio-ops-market-data-refresh.service" ]]; then exit 0; fi' \
+  'if [[ "${1:-}" == "--user" && "${2:-}" == "is-active" ]]; then exit 3; fi' \
+  'exit 0' \
+  > "$MOCK_SYSTEMD_BIN/systemctl"
+chmod +x "$MOCK_SYSTEMD_BIN/systemctl"
+PATH="$MOCK_SYSTEMD_BIN:$PATH" \
+  run_release "$SUCCESSFUL_MIGRATION_RUNNER" "$SUCCESSFUL_GATE" systemd
+grep -Fxq -- '--user start portfolio-ops-market-data-refresh.timer' "$SYSTEMCTL_CALLS"
+if grep -Fq -- '--user start portfolio-ops-market-data-refresh.service' "$SYSTEMCTL_CALLS"; then
+  echo "Release replayed the fenced systemd refresh oneshot." >&2
+  exit 1
+fi
 released_value="$(
   psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" \
     --dbname "$TARGET_DATABASE" --tuples-only --no-align \
     --command 'SELECT value FROM portfolio.release_sentinel'
 )"
 [[ "$released_value" == "migration-complete" ]]
+released_calculation_schema="$(
+  psql --host "$DATABASE_HOST" --port "$DATABASE_PORT" --username "$DATABASE_USER" \
+    --dbname "$TARGET_DATABASE" --tuples-only --no-align \
+    --command "SELECT to_regnamespace('calculation_registry') IS NOT NULL"
+)"
+[[ "$released_calculation_schema" == "t" ]]
 
 backup_count="$(find "$TEST_ROOT/backups" -name '*.pgdump' -type f | wc -l | tr -d ' ')"
 checksum_count="$(find "$TEST_ROOT/backups" -name '*.pgdump.sha256' -type f | wc -l | tr -d ' ')"
 [[ "$backup_count" -ge 4 ]]
 [[ "$checksum_count" == "$backup_count" ]]
 
-echo "release partial-migration rollback, gate rollback, and success test passed."
+echo "release rollback, verified fencing, no-replay, and success test passed."

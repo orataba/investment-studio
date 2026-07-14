@@ -204,7 +204,11 @@ def quote_resolution_payload(
         "role": resolution.role,
         "requested_as_of_date": requested_as_of_date,
         "resolution_status": resolution.resolution_status,
-        "value": float(value) if isinstance(value, Decimal) else None,
+        # Decimal is the canonical in-process representation.  Individual API
+        # contracts decide how to serialize it; converting here would inject a
+        # binary-float approximation before consumers can apply their own
+        # explicit financial boundary.
+        "value": value if isinstance(value, Decimal) else None,
         "as_of_date": observation_date,
         "metric_family": resolution.metric_family,
         "quote_basis": resolution.quote_basis,
